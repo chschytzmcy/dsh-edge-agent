@@ -43,6 +43,29 @@
   config:
     defaultCategory: CLOUD
 
+# Realm-aware tool registry (thin view over `ctx.tools`); M2 keeps
+# `enableToolIsolation=true` so the A2 intent-router can filter the
+# visible tool set per run.
+- id: tools
+  name: '@deepseek-harness-edge-agent/dsh-edge-agent/tools'
+  inject: [auditLog]
+  config:
+    defaultRateLimitPerMinute: 60
+    enableToolIsolation: true
+    presentationMode: native
+
+# M2 local bundle: three LOCAL-realm tools (file_read / file_write /
+# calculate) registered against `ctx.tools`. `readOnly=true` keeps
+# file_write disabled for the M2 minimum.
+- id: local-tools
+  name: '@deepseek-harness-edge-agent/dsh-edge-agent/local-tools'
+  inject: [edgeTools]
+  config:
+    allowList: !!js (process.env.DSH_EDGE_LOCAL_TOOLS_ALLOWLIST ?? '/tmp').split(',').map((s) => s.trim()).filter(Boolean)
+    readOnly: !!js process.env.DSH_EDGE_LOCAL_TOOLS_WRITABLE !== 'true'
+    maxFileSize: 1048576
+    timeoutMs: 10000
+
 # Standard upstream services needed for an agent loop to run a one-shot task.
 - id: user-questions
   name: '@deepseek-ai/dsh-user-questions'
@@ -74,11 +97,17 @@
         model: deepseek-chat
         cwd: !!js process.cwd()
     persona: |
-      You are edge-agent (M1, cloud-only). Answer in the user's language.
-      Be brief. Do not claim to use local tools or sandboxing — they are
-      not enabled at this stage.
+      You are edge-agent (M2, cloud LLM with LOCAL-realm tools). Answer in
+      the user's language. Be brief. When the user asks you to read or
+      compute against a local file, call the matching `local_*` tool with
+      its declared parameter shape; do not invent file contents. The
+      available local tools are: `local_file_read`, `local_file_write`
+      (when enabled), and `local_calculate`. Do not assume a network tool,
+      a shell, or sandboxing beyond what the tool schemas declare.
 
-# Subprocess group required by any tool-using agent loop. M1 ships no
-# tools, but agent-spine still expects the group to exist on startup.
+# Subprocess group required by any tool-using agent loop. M2 registers
+# LOCAL-realm tools (file_read / file_write / calculate) against
+# `ctx.tools`; the upstream dsh-agent loop dispatches them in-process, so
+# the subprocess group is still required for future shell-based tools.
 - id: subprocess
   name: '@deepseek-ai/dsh-subprocess-local'

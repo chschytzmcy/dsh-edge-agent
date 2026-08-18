@@ -19,10 +19,12 @@ import type { Context } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
 import {
   attributionHeaders,
+  CallId as brandCallId,
   LlmAdapter,
   LlmError,
 } from '@deepseek-ai/dsh-llm'
 import type {
+  CallId,
   GenerateOptions,
   LlmModelInfo,
   LlmProviderInfo,
@@ -143,7 +145,10 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
 
     yield { type: 'block-start', index: 0, blockType: 'text' }
     let assembledText = ''
-    let finishKind: 'stop' | 'length' = 'stop'
+    let finishKind: 'stop' | 'length' | 'tool-calls' = 'stop'
+    const toolCalls = new Map<number, { id: string; name: string; arguments: string }>()
+    let sawToolCall = false
+    let sawText = false
 
     const stream = response.body as unknown as ReadableStream<Uint8Array>
     const reader = stream.getReader()
@@ -161,7 +166,23 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
           if (chunk === undefined) continue
           if (chunk.kind === 'text-delta') {
             assembledText += chunk.text
+            sawText = true
             yield { type: 'text-delta', index: 0, text: chunk.text }
+          } else if (chunk.kind === 'tool-call-delta') {
+            sawToolCall = true
+            const current = toolCalls.get(chunk.index) ?? { id: '', name: '', arguments: '' }
+            if (chunk.id !== undefined) current.id = chunk.id
+            if (chunk.name !== undefined) current.name = chunk.name
+            current.arguments += chunk.argumentsDelta
+            toolCalls.set(chunk.index, current)
+            const idForChunk = chunk.id ?? current.id
+            yield {
+              type: 'tool-call-delta',
+              index: chunk.index,
+              id: brandCallId(idForChunk),
+              name: chunk.name,
+              argumentsDelta: chunk.argumentsDelta,
+            }
           } else if (chunk.kind === 'finish') {
             finishKind = chunk.finishReason
           }
@@ -176,16 +197,27 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
       reader.releaseLock()
     }
 
-    yield {
-      type: 'block-end',
-      index: 0,
-      block: { type: 'text', text: assembledText },
+    if (sawText) {
+      yield {
+        type: 'block-end',
+        index: 0,
+        block: { type: 'text', text: assembledText },
+      }
+    }
+    for (const [index, call] of [...toolCalls.entries()].sort((a, b) => a[0] - b[0])) {
+      yield {
+        type: 'block-end',
+        index,
+        block: { type: 'tool-call', id: brandCallId(call.id), name: call.name, arguments: call.arguments },
+      }
     }
     yield {
       type: 'finish',
       reason: finishKind === 'length'
         ? { kind: 'max-tokens' }
-        : { kind: 'stop' },
+        : finishKind === 'tool-calls' || sawToolCall
+          ? { kind: 'tool-calls' }
+          : { kind: 'stop' },
     }
   }
 }
@@ -240,7 +272,8 @@ function extractText(blocks: readonly { type: string; text?: string }[]): string
 
 type ParsedEvent =
   | { kind: 'text-delta'; text: string }
-  | { kind: 'finish'; finishReason: 'stop' | 'length' }
+  | { kind: 'tool-call-delta'; index: number; id?: string; name?: string; argumentsDelta: string }
+  | { kind: 'finish'; finishReason: 'stop' | 'length' | 'tool-calls' }
 
 function splitSseEvents(buffer: string): { events: string[]; remainder: string } {
   // SSE frames end with `\n\n`; tolerate `\r\n\r\n` and lone newlines.
@@ -276,8 +309,24 @@ function parseSseEvent(raw: string): ParsedEvent | undefined {
     if (typeof content === 'string' && content.length > 0) {
       return { kind: 'text-delta', text: content }
     }
+    const toolCalls = delta?.tool_calls
+    if (Array.isArray(toolCalls) && toolCalls.length > 0) {
+      const first = toolCalls[0] as Record<string, unknown>
+      const fn = first.function as Record<string, unknown> | undefined
+      const index = typeof first.index === 'number' ? first.index : 0
+      return {
+        kind: 'tool-call-delta',
+        index,
+        id: typeof first.id === 'string' ? first.id : undefined,
+        name: typeof fn?.name === 'string' ? fn.name : undefined,
+        argumentsDelta: typeof fn?.arguments === 'string' ? fn.arguments : '',
+      }
+    }
     const finishReason = choice.finish_reason
     if (typeof finishReason === 'string') {
+      if (finishReason === 'tool_calls') {
+        return { kind: 'finish', finishReason: 'tool-calls' }
+      }
       return {
         kind: 'finish',
         finishReason: finishReason === 'length' ? 'length' : 'stop',
