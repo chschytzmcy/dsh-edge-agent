@@ -1,56 +1,303 @@
 /**
- * local-llm-adapter — registers a local LLM (e.g. llama.cpp running on
- * device) on the shared `ctx.llm` runtime. Bound to the LOCAL realm:
- * no outbound network, no remote attestation needed.
+ * local-llm-adapter — M4 multi-model + routing.
+ *
+ * Registers one or two provider routes on the shared `ctx.llm` runtime:
+ *
+ *   - `local-qwen3-4b-mock` — synthetic, in-process. Echoes the last
+ *     user message as `[LOCAL-MOCK] {text}` so the rest of the agent
+ *     loop (intent-router, model-router, tool dispatch) can be
+ *     exercised end-to-end without a network call.
+ *   - `local-qwen3-4b`     — real OpenAI-compatible `/chat/completions`
+ *     endpoint. Defaults to `http://127.0.0.1:8080/v1` (llama.cpp's
+ *     `server` binary). The reachable endpoint in this repo is
+ *     `http://192.168.66.195:8701/v1`.
+ *
+ * Both modes share `LlmAdapter` from `@deepseek-ai/dsh-llm` and the
+ * OpenAI-compatible SSE parser in `./openai-sse.js` so wire-protocol
+ * changes land in one place. The mock path skips the network entirely
+ * and yields a single text block.
  *
  * @module dsh-edge-agent/local-llm-adapter
  */
 
-import { Service } from '@deepseek-ai/cordis'
+import type { Context } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
+import { attributionHeaders, LlmAdapter, LlmError } from '@deepseek-ai/dsh-llm'
+import type {
+  GenerateOptions,
+  LlmModelInfo,
+  LlmProviderInfo,
+  LlmResolvedModelInfo,
+  StreamChunk,
+} from '@deepseek-ai/dsh-llm'
+
+import {
+  buildChatCompletionsBody,
+  extractText,
+  iterateSseFrames,
+  sseEventToChunk,
+  sseFinishReason,
+  terminalChunks,
+} from './openai-sse.js'
 
 export const name = 'local-llm-adapter'
 
-export const inject = [] as const
+export const inject = ['llm'] as const
+
+/** Per-mode behaviour. `mock` is in-process; `real` POSTs to baseUrl. */
+export type LocalLlmMode = 'mock' | 'real'
 
 export interface Config {
+  /** Provider route ids this adapter owns. */
   providers: string[]
-  modelPath: string
-  contextSize: number
-  threads: number
+  /** Whether the local-* route hits a real HTTP backend or echoes the prompt. */
+  mode: LocalLlmMode
+  /** OpenAI-compatible endpoint for `mode: 'real'`. `defaultModel` is sent as the model id. */
+  baseUrl: string
+  /** Default model id when the request omits one. */
+  defaultModel: string
+  /** Optional bearer header for an authenticated llama.cpp server. */
+  apiKeyEnv?: string
 }
 
 export const Config: Schema<Config> = Schema.object({
-  providers: Schema.array(Schema.string()).default(['local-qwen3-4b']),
-  modelPath: Schema.string().required(),
-  contextSize: Schema.natural().default(8192),
-  threads: Schema.natural().default(4),
+  providers: Schema.array(Schema.string()).default(['local-qwen3-4b-mock', 'local-qwen3-4b']),
+  mode: Schema.union(['mock', 'real'] as const).default('mock'),
+  baseUrl: Schema.string().default('http://127.0.0.1:8080/v1'),
+  defaultModel: Schema.string().default('qwen3-4b'),
+  apiKeyEnv: Schema.string().description('Optional env-slot name carrying an auth bearer for `mode: real`.'),
 })
 
 export interface LocalLlmAdapter {
   readonly providers: string[]
-  stream(options: any): AsyncIterable<any>
+  stream(options: GenerateOptions): AsyncIterable<StreamChunk>
 }
 
-export class LocalLlmAdapterImpl extends Service implements LocalLlmAdapter {
-  readonly providers: string[]
-  constructor(ctx: any, config: Config) {
-    super(ctx, 'localLlmAdapter')
-    this.providers = config.providers
+/**
+ * Combined adapter. Holds one inner adapter per configured provider so
+ * `ctx.llm.registerAdapter([...], this)` can route any of them through
+ * the same instance — keeping the `dispose` set in lockstep with the
+ * registration.
+ */
+export class LocalLlmAdapterImpl extends LlmAdapter {
+  private readonly providersList: string[]
+  private readonly innerByProvider: Map<string, LlmAdapter>
+
+  constructor(config: Config) {
+    super()
+    this.providersList = [...config.providers]
+    this.innerByProvider = new Map()
+    for (const provider of this.providersList) {
+      this.innerByProvider.set(
+        provider,
+        config.mode === 'real' && !provider.endsWith('-mock')
+          ? new RealLocalAdapter(provider, config)
+          : new MockLocalAdapter(provider),
+      )
+    }
   }
-  async *stream(options: any): AsyncIterable<any> {
-    void options
-    yield { type: 'done' }
+
+  get providers(): string[] {
+    return [...this.providersList]
+  }
+
+  override providerInfo(provider: string): LlmProviderInfo {
+    return { id: provider, name: provider }
+  }
+
+  override listModels(provider: string): Promise<readonly LlmModelInfo[]> {
+    const inner = this.innerByProvider.get(provider)
+    return inner
+      ? inner.listModels(provider)
+      : Promise.resolve([])
+  }
+
+  override resolveModel(
+    provider: string,
+    model: string,
+    signal?: AbortSignal,
+  ): Promise<LlmResolvedModelInfo> {
+    const inner = this.innerByProvider.get(provider)
+    return inner
+      ? inner.resolveModel(provider, model, signal)
+      : Promise.resolve({ provider, id: model, name: model })
+  }
+
+  override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+    const inner = this.innerByProvider.get(options.provider)
+    if (inner === undefined) {
+      throw new LlmError(
+        `local-llm-adapter: unknown provider route "${options.provider}" (registered: ${this.providersList.join(', ')})`,
+        'UNKNOWN_PROVIDER',
+      )
+    }
+    yield* inner.stream(options)
   }
 }
 
-export async function apply(ctx: any, config: Config): Promise<() => Promise<void>> {
-  const adapter = new LocalLlmAdapterImpl(ctx, config)
-  ctx.plugin(LocalLlmAdapterImpl, config)
-  // Register on the LLM runtime.
-  const llm = (ctx as any).llm
-  if (llm?.registerAdapter) {
-    llm.registerAdapter(config.providers, adapter)
+/**
+ * In-process echo adapter. No network; the response is the last user
+ * message prefixed with `[LOCAL-MOCK]`. The intent is to drive the
+ * whole agent loop (intent classification, tool dispatch) without
+ * needing GPU resources.
+ */
+class MockLocalAdapter extends LlmAdapter {
+  private readonly providerName: string
+
+  constructor(provider: string) {
+    super()
+    this.providerName = provider
   }
-  return async () => {}
+
+  get providers(): string[] {
+    return [this.providerName]
+  }
+
+  override providerInfo(_provider: string): LlmProviderInfo {
+    return { id: this.providerName, name: this.providerName }
+  }
+
+  override listModels(_provider: string): Promise<readonly LlmModelInfo[]> {
+    return Promise.resolve([
+      {
+        provider: this.providerName,
+        id: this.providerName,
+        name: this.providerName,
+        inputModalities: ['text'],
+      },
+    ])
+  }
+
+  override resolveModel(
+    _provider: string,
+    model: string,
+  ): Promise<LlmResolvedModelInfo> {
+    return Promise.resolve({ provider: this.providerName, id: model, name: model })
+  }
+
+  override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+    const lastUser = [...options.messages]
+      .reverse()
+      .find((message) => message.role === 'user')
+    const body = lastUser !== undefined ? extractText(lastUser.content).trim() : ''
+    const reply = body.length > 0 ? `[LOCAL-MOCK] ${body}` : '[LOCAL-MOCK] (no user text)'
+
+    yield { type: 'block-start', index: 0, blockType: 'text' }
+    yield { type: 'text-delta', index: 0, text: reply }
+    yield { type: 'block-end', index: 0, block: { type: 'text', text: reply } }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  }
+}
+
+/**
+ * Real backend. Mirrors `CloudLlmAdapterImpl` but skips the bearer
+ * header unless `Config.apiKeyEnv` is set (llama.cpp `server` does
+ * not require auth by default). Bound to LAN/loopback endpoints only.
+ */
+class RealLocalAdapter extends LlmAdapter {
+  private readonly providerName: string
+  private readonly baseUrl: string
+  private readonly defaultModel: string
+  private readonly apiKeyEnv: string | undefined
+
+  constructor(provider: string, config: Config) {
+    super()
+    this.providerName = provider
+    this.baseUrl = config.baseUrl.replace(/\/+$/u, '')
+    this.defaultModel = config.defaultModel
+    this.apiKeyEnv = config.apiKeyEnv
+  }
+
+  get providers(): string[] {
+    return [this.providerName]
+  }
+
+  override providerInfo(_provider: string): LlmProviderInfo {
+    return { id: this.providerName, name: this.providerName }
+  }
+
+  override listModels(_provider: string): Promise<readonly LlmModelInfo[]> {
+    return Promise.resolve([
+      {
+        provider: this.providerName,
+        id: this.defaultModel,
+        name: this.defaultModel,
+        inputModalities: ['text'],
+      },
+    ])
+  }
+
+  override resolveModel(
+    _provider: string,
+    model: string,
+  ): Promise<LlmResolvedModelInfo> {
+    return Promise.resolve({ provider: this.providerName, id: model, name: model })
+  }
+
+  override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+    const url = `${this.baseUrl}/chat/completions`
+    const body = buildChatCompletionsBody(options, this.defaultModel, undefined)
+    const headers: Record<string, string> = {
+      'content-type': 'application/json',
+      'accept': 'text/event-stream',
+      ...attributionHeaders(),
+    }
+    const apiKey = this.apiKeyEnv !== undefined ? readApiKey(this.apiKeyEnv) : undefined
+    if (apiKey !== undefined) headers.authorization = `Bearer ${apiKey}`
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal: options.signal,
+    })
+
+    yield { type: 'block-start', index: 0, blockType: 'text' }
+    let assembledText = ''
+    let finishKind: 'stop' | 'length' | 'tool-calls' | undefined
+    const toolCalls = new Map<number, { id: string; name: string; arguments: string }>()
+    let sawText = false
+    let sawToolCall = false
+
+    const throwOnWire = (message: string): never => {
+      throw new LlmError(`local-llm-adapter (${this.providerName}): SSE stream interrupted: ${message}`, 'PROVIDER_ERROR')
+    }
+
+    for await (const event of iterateSseFrames(response, throwOnWire)) {
+      const reason = sseFinishReason(event)
+      if (reason !== undefined) {
+        finishKind = reason
+        continue
+      }
+      const result = sseEventToChunk(event, toolCalls)
+      if (result === null) continue
+      if (result.chunk.type === 'text-delta') {
+        assembledText += (result.chunk as { text: string }).text
+        sawText = result.sawText
+      } else if (result.chunk.type === 'tool-call-delta') {
+        sawToolCall = result.sawToolCall
+      }
+      yield result.chunk
+    }
+
+    yield* terminalChunks(sawText, assembledText, toolCalls, finishKind, sawToolCall)
+  }
+}
+
+function readApiKey(slot: string): string | undefined {
+  if (typeof process === 'undefined' || !process.env) return undefined
+  const value = process.env[slot]
+  if (typeof value !== 'string' || value.length === 0) return undefined
+  return value
+}
+
+export async function apply(ctx: Context, config: Config): Promise<() => Promise<void>> {
+  const adapter = new LocalLlmAdapterImpl(config)
+  const llm = (ctx as unknown as {
+    llm: { registerAdapter(providers: string[], adapter: LlmAdapter): { (): void } }
+  }).llm
+  const registration = llm.registerAdapter(config.providers, adapter)
+  return async () => {
+    registration()
+  }
 }

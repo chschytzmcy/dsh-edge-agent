@@ -1,15 +1,20 @@
-# edge-m1 — M1 minimal profile: cloud DeepSeek only, no security, no
-# local LLM, no persistence. Run:
+# edge-m1 — M4 profile: multi-model + routing. Run:
 #
 #   pnpm dsh --config profiles/edge-m1.cordis.yml "你好"
+#   pnpm dsh --config profiles/edge-m1.cordis.yml --provider local-qwen3-4b-mock "你好"
+#   DSH_EDGE_LOCAL_LLM_MODE=real DSH_EDGE_LOCAL_LLM_BASEURL=http://192.168.66.195:8701/v1 \
+#     pnpm dsh --config profiles/edge-m1.cordis.yml --provider local-qwen3-4b "你好"
 #
 # Requires `DEEPSEEK_API_KEY` in the launching environment. Override the
 # base URL with `DEEPSEEK_BASE_URL` (default `https://api.deepseek.com`).
+# Set `DSH_EDGE_LOCAL_LLM_MODE` to `real` to route `local-qwen3-4b` to
+# the LAN endpoint named by `DSH_EDGE_LOCAL_LLM_BASEURL` (default
+# `http://127.0.0.1:8080/v1`).
 #
-# This profile deliberately exercises the M1 contract from § 8.3 of
-# dsh-edge-agent-design-v6.md: only the three new dsh-edge-agent plugins
-# (cloud-llm-adapter, model-router, intent-router) plus the upstream
-# services needed to register an adapter and drive an agent loop.
+# This profile exercises the M4 contract from § 8.6 of
+# dsh-edge-agent-design-v6.md: a single shared `ctx.llm` runtime mounts
+# two adapters (cloud-llm-adapter, local-llm-adapter) and the
+# model-router resolves the per-request provider.
 
 # User-settings document: hot-reloads overrides from `$DSH_HOME/settings.yaml`.
 - id: settings
@@ -30,12 +35,25 @@
     apiKeyEnv: DEEPSEEK_API_KEY
     defaultModel: deepseek-chat
 
+# M4: local LLM adapter — owns the `local-qwen3-4b-mock` (in-process)
+# and `local-qwen3-4b` (real OpenAI-compatible `/chat/completions`)
+# routes. `mode` flips between mock and real via the env slot.
+- id: local-llm-adapter
+  name: '@deepseek-harness-edge-agent/dsh-edge-agent/local-llm-adapter'
+  inject: [llm]
+  config:
+    providers: [local-qwen3-4b-mock, local-qwen3-4b]
+    mode: !!js process.env.DSH_EDGE_LOCAL_LLM_MODE ?? 'mock'
+    baseUrl: !!js process.env.DSH_EDGE_LOCAL_LLM_BASEURL ?? 'http://127.0.0.1:8080/v1'
+    defaultModel: !!js process.env.DSH_EDGE_LOCAL_LLM_MODEL ?? 'qwen3-4b'
+    apiKeyEnv: !!js process.env.DSH_EDGE_LOCAL_LLM_KEY_ENV ?? undefined
+
 - id: model-router
   name: '@deepseek-harness-edge-agent/dsh-edge-agent/model-router'
   inject: [llm]
   config:
     defaultModel: cloud-deepseek-v4
-    localModels: [local-qwen3-4b-mock]
+    localModels: [local-qwen3-4b-mock, local-qwen3-4b]
     cloudModels: [cloud-deepseek-v4]
 
 - id: intent-router
@@ -115,17 +133,27 @@
   config:
     agents:
       - id: main
-        provider: cloud-deepseek-v4
-        model: deepseek-chat
+        provider: !!js process.env.DSH_EDGE_PROVIDER ?? 'cloud-deepseek-v4'
+        model: !!js process.env.DSH_EDGE_MODEL ?? 'deepseek-chat'
         cwd: !!js process.cwd()
     persona: |
-      You are edge-agent (M2, cloud LLM with LOCAL-realm tools). Answer in
+      You are edge-agent (M4, multi-model with LOCAL-realm tools). Answer in
       the user's language. Be brief. When the user asks you to read or
       compute against a local file, call the matching `local_*` tool with
       its declared parameter shape; do not invent file contents. The
       available local tools are: `local_file_read`, `local_file_write`
       (when enabled), and `local_calculate`. Do not assume a network tool,
       a shell, or sandboxing beyond what the tool schemas declare.
+
+      The active LLM provider is whatever `DSH_EDGE_PROVIDER` selects:
+        - `cloud-deepseek-v4` (default) — DeepSeek Chat Completions, requires
+          `DEEPSEEK_API_KEY`.
+        - `local-qwen3-4b-mock` — in-process echo, no network.
+        - `local-qwen3-4b`     — LAN endpoint at `DSH_EDGE_LOCAL_LLM_BASEURL`
+          (default `http://127.0.0.1:8080/v1`); turn it on with
+          `DSH_EDGE_LOCAL_LLM_MODE=real`.
+      Stay within whichever model the user picked; do not switch providers
+      mid-conversation.
 
 # Subprocess group required by any tool-using agent loop. M2 registers
 # LOCAL-realm tools (file_read / file_write / calculate) against

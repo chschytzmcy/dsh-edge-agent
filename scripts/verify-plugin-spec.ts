@@ -48,6 +48,7 @@ const pluginSpecs: Array<{ file: string; spec: Spec }> = []
 for (const file of sources) {
   const base = basename(file, '.ts')
   if (base === 'contract' || base === 'types' || base === 'invariant' || base === 'invariant-install' || base === 'llm-adapters') continue
+  if (base === 'openai-sse') continue
   if (base === 'plugin' || base === 'index') continue
   const content = readFileSync(file, 'utf8')
 

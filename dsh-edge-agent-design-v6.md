@@ -4529,7 +4529,7 @@ DSH 当前实现相比论文理想保证有以下差距，本设计通过插件�
 > 本章在 v6 的基础上重排实施节奏。v6 的 13 阶段按"基础设施分层"递进——先 S0-S1 跑通骨架、S2 才上 TCM、S5 才把"双 LLM realm"接好。这意味着 S4 的最小验证必须用 mock LLM 模拟真后端，端到端验收不可靠。本版本改用"先端到端跑通，再逐层加固"的两段式：
 >
 > - **M 段（必选）**：M0-M5。M5 完成时，端侧智能体**作为普通的本地 LLM 客户端已可用**——能对话、能调本地工具、能记会话、能切模型、能被 HTTP 形态调用。所有 M 段的代码**裸奔**：明文 HTTPS、明文 SQLite、API Key 仅环境变量、无审计告警、无输入检查、无加密。
-> - **A 段（增强，可选）**：A1-A9。在 M 段基础上叠加纵深防御：输入/输出防护（A1）、意图路由 + 脱敏管线（A2）、TCM + 加密层（A3）、OHTTP 通信（A4）、远程证明（A5）、主动防御（A6）、本地 LLM 真后端（A7）、公网搜索（A8）、语音输入（A9）。A 段任意阶段独立选做，没有 A-A 强依赖链。
+> - **A 段（增强，可选）**：A1-A8。在 M 段基础上叠加纵深防御：输入/输出防护（A1）、意图路由 + 脱敏管线（A2）、TCM + 加密层（A3）、OHTTP 通信（A4）、远程证明（A5）、主动防御（A6）、公网搜索（A7）、语音输入（A8）。A 段任意阶段独立选做，没有 A-A 强依赖链。A 段本地 LLM 真后端（原 v7.0 A7）已在 M4 实现，故此处不再列。
 >
 > 选这条路线的理由：
 > 1. M 段每一步都能用真 API 验收，调试循环短。
@@ -4555,9 +4555,8 @@ DSH 当前实现相比论文理想保证有以下差距，本设计通过插件�
 | **A4** | 零信任通信（OHTTP） | `ohttp-gateway`（RFC 9458 HPKE）+ `secure-bridge`（mode=ohttp） | M5 | tcpdump 验证外层仅密文 |
 | **A5** | 远程证明 | `attestation`（simulated，JWT 签发） | A3 | 生成 token + mock verify 服务 |
 | **A6** | 主动防御 | `td-bus`（规则 + 响应动作） | A3+A4 | 高频请求自动 block-cloud |
-| **A7** | 本地 LLM 真后端 | `local-llm-adapter` 接 llama.cpp | M4 | RK3588 上 Q4 推理 demo |
-| **A8** | 公网搜索 | `web-search`（duckduckgo / brave） | M5 | "今天 AI 新闻" 返回真实结果 |
-| **A9** | 语音输入 | `voice-input`（Whisper-tiny） | A7 | 麦克风 → 文本 → Agent Loop |
+| **A7** | 公网搜索 | `web-search`（duckduckgo / brave） | M5 | "今天 AI 新闻" 返回真实结果 |
+| **A8** | 语音输入 | `voice-input`（Whisper-tiny） | M4 | 麦克风 → 文本 → Agent Loop |
 
 ### 8.2 M0：脚手架（已完成）
 
@@ -4648,33 +4647,44 @@ $ pnpm dsh --profile edge-minimal sessions list
 
 **产出物**：`tests/integration/sessions.test.ts`、`tests/integration/audit-log.test.ts`
 
-### 8.6 M4：多模型 + 路由
+### 8.6 M4：多模型 + 路由（合并 v7.0 原 M4 + A7）
 
-**目标**：同一会话内能切换不同 LLM 后端。
+**目标**：同一会话内能切换不同 LLM 后端——本地 mock + 本地真机（llama.cpp OpenAI-compatible endpoint）+ 云端 DeepSeek，三者共存并由同一个 `ctx.llm` runtime 调度。
+
+**v7.1 合并说明**：v7.0 把 M4（mock）与 A7（真 llama.cpp）拆成两段。本仓库有一台可达的本地 LLM（`http://192.168.66.195:8701/v1`，OpenAI 兼容 chat-completions 流式），没有必要先 mock 再替；本阶段直接把两条路径都实现在 `local-llm-adapter` 里，靠 `Config.mode` 在 `mock` 与 `real` 之间切换。`A7` 原条目（v7.0 § 8.13）整体删去。
 
 **任务**：
 
-- [ ] 填实 `local-llm-adapter`：mock 后端，按固定 prompt 返回 `"[LOCAL-MOCK] ..."`
-  - 通过 `ctx.llm.registerAdapter(['local-qwen3-4b-mock'], new LocalAdapter())` 注册
-- [ ] `model-router` 升级：`options.providers` 数组中第一个元素匹配已注册 adapter 时转发，否则返回错误
-- [ ] 通过工具参数或 system prompt 显式指定模型名（最简单的实现）
-- [ ] 单元测试：`ctx.llm.stream({ providers: ['local-qwen3-4b-mock'], messages })` 命中 local mock；`providers: ['cloud-deepseek-v4']` 命中 cloud
+- [ ] 填实 `local-llm-adapter` 双模式：
+  - `mode: 'mock'` —— 同步按用户最后一条 user 文本返回 `"[LOCAL-MOCK] {trim(prompt)}"`，无网络
+  - `mode: 'real'` —— POST 到 `{baseUrl}/chat/completions`，复用 `cloud-llm-adapter` 的 SSE 解析逻辑（包含 tool-calls delta 透传）
+  - 两条路径都注册到同一个 `ctx.llm.registerAdapter(['local-qwen3-4b-mock', 'local-qwen3-4b'], adapter)`，route 名是 dispatch key
+- [ ] `model-router` 升级：`options.provider` 命中 LOCAL 时返回 `realm='LOCAL'`；命不中返回错误；`options.model` 透传
+- [ ] 通过 `provider`/`model` 显式路由（system prompt 提示 + agent 配置两种暴露路径）
+- [ ] 单元测试：
+  - mock：route `local-qwen3-4b-mock` 命中 mock adapter，stream 出来 `[LOCAL-MOCK] 你好`
+  - real：route `local-qwen3-4b` 命中真后端，stub `fetch` 验证 wire body
+  - cloud：route `cloud-deepseek-v4` 命中 cloud-llm-adapter（回归 M1）
+  - model-router：`resolveRoute('local-qwen3-4b-mock')` → LOCAL；`'cloud-deepseek-v4'` → CLOUD
 
 **验证**：
 
 ```bash
-$ pnpm dsh --profile edge-minimal run --providers local-qwen3-4b-mock "今天天气"
-✅ [LOCAL-MOCK] 我是本地 mock 模型，今天天气...
+$ pnpm dsh --config profiles/edge-m1.cordis.yml --provider local-qwen3-4b-mock "今天天气"
+✅ [LOCAL-MOCK] 今天天气...
 
-$ pnpm dsh --profile edge-minimal run --providers cloud-deepseek-v4 "今天天气"
+$ pnpm dsh --config profiles/edge-m1.cordis.yml --provider cloud-deepseek-v4 "今天天气"
 ✅ DeepSeek 真实响应
+
+$ DSH_EDGE_LOCAL_LLM_MODE=real \
+  DSH_EDGE_LOCAL_LLM_BASEURL=http://192.168.66.195:8701/v1 \
+  pnpm dsh --config profiles/edge-m1.cordis.yml --provider local-qwen3-4b "今天天气"
+✅ 真 llama.cpp 响应
 ```
 
-**注意**：本阶段**不**实现 realm 隔离（§ 11.2 (3) 确认 isolate 不可行）。多 provider 全部注册到同一个 `ctx.llm` 单例 service。
+**注意**：本阶段**不**实现 realm 隔离（§ 11.2 (3) 确认 isolate 不可行）。多 provider 全部注册到同一个 `ctx.llm` 单例 service。`mode: 'real'` 走 `127.0.0.1` / 内网 LAN；A4 OHTTP 阶段不动这条路径，只接管 cloud-llm-adapter 的出口。
 
-**A7 阶段**会把 local mock 替换为真 llama.cpp backend；M4 先用 mock 跑通路由。
-
-**产出物**：`tests/integration/model-router.test.ts`
+**产出物**：`tests/unit/local-llm-adapter.test.ts`、`tests/unit/model-router.test.ts`（扩展）
 
 ### 8.7 M5：HTTP API 服务（M 段终点，端侧智能体已可用）
 
@@ -4723,7 +4733,7 @@ $ curl -X POST http://127.0.0.1:8080/v1/chat \
 
 ### A 段：增强加固（可选，按需取用）
 
-> M5 完成后系统已可用。下面 9 个 A 段**互相独立**，可按优先级挑着做。每个 A 段都依赖 M5（包含所有 M 段插件）。A-A 弱依赖：A3 解锁 A5；A1+A2+A4 → A6；A7 → A9。
+> M5 完成后系统已可用。下面 8 个 A 段**互相独立**，可按优先级挑着做。每个 A 段都依赖 M5（包含所有 M 段插件）。A-A 弱依赖：A3 解锁 A5；A1+A2+A4 → A6；M4（含本地真 LLM）解锁 A8。
 
 ### 8.8 A1：输入/输出防护
 
@@ -4814,19 +4824,7 @@ $ curl -X POST http://127.0.0.1:8080/v1/chat \
 - [ ] 订阅关键事件（`ohttp/request-sent`、`tools/realm-violation`、`policy/tamper-detected`）
 - [ ] `secure-bridge` 订阅 `td-bus/block-cloud-requests` 实现自动阻断
 
-### 8.14 A7：本地 LLM 真后端
-
-**目标**：`local-llm-adapter` 接 llama.cpp（替换 M4 的 mock）。
-
-**任务**：
-
-- [ ] 集成 `node-llama-cpp` 或自编译 llama.cpp FFI
-- [ ] 模型加载：Qwen3-4B-Q4_K_M（~2.5GB）
-- [ ] RK3588 / D3000M 性能 bench
-
-**依赖**：硬件平台；A7 不阻塞任何 M / 其他 A 段。
-
-### 8.15 A8：公网搜索
+### 8.14 A7：公网搜索
 
 **目标**：`web-search` 真实接入（duckduckgo HTML / brave API）。
 
@@ -4836,7 +4834,7 @@ $ curl -X POST http://127.0.0.1:8080/v1/chat \
 - [ ] 域名黑名单过滤
 - [ ] 速率限制
 
-### 8.16 A9：语音输入
+### 8.15 A8：语音输入
 
 **目标**：`voice-input` 接 Whisper-tiny。
 
@@ -4856,9 +4854,8 @@ $ curl -X POST http://127.0.0.1:8080/v1/chat \
 M0 ─→ M1 ─→ M2 ─→ M3 ─→ M4 ─→ M5 ─┤── A4 ohttp
                   │                ├── A5 attestation（需 A3）
                   │                ├── A6 td-bus（需 A1+A2+A4）
-                  │                ├── A7 local LLM 真后端
-                  │                ├── A8 web-search
-                  │                └── A9 voice-input（需 A7）
+                  │                ├── A7 web-search（原 § 8.14）
+                  │                └── A8 voice-input（原 § 8.15，需 M4 真实本地 LLM）
 
 A 段互相独立，按需取用
 ```
@@ -4880,10 +4877,9 @@ A 段互相独立，按需取用
 | A4 | +2 | +800 | 3 人天（OHTTP 复杂） |
 | A5 | +1 | +300 | 1 人天 |
 | A6 | +1 | +500 | 1 人天 |
-| A7 | (替换) | +500 | 3 人天（native binding） |
-| A8 | +1 | +400 | 1 人天 |
-| A9 | +1 | +600 | 3 人天（whisper native） |
-| **A 段合计** | **~10** | **~5000** | **~17 人天** |
+| A7 | +1 | +400 | 1 人天 |
+| A8 | +1 | +600 | 3 人天（whisper native） |
+| **A 段合计** | **~8** | **~5000** | **~15 人天** |
 
 ### 8.19 每阶段通用验证清单
 
@@ -4903,8 +4899,8 @@ A 段互相独立，按需取用
 | `cordis:group` + `isolate` 在当前 DSH 版本未按预期暴露子 ctx 句柄 | （不再用，v6 已修正） | 模型路由改用 `ctx.llm.registerAdapter(providers, adapter)` 共享单例 service |
 | DSH 内置 `llm` service 存在并冲突 | M1 | 在 cordis.yml 中行级 `disabled: true` |
 | OHTTP 部署复杂 | A4 | A4 拆为 A4a（直连 TLS）+ A4b（OHTTP），先打通 TLS 再升级 |
-| Whisper native 编译失败 | A9 | 退回方案：用纯 JS 实现的 Web Speech API（浏览器侧）替代 |
-| RK3588 上 llama.cpp Q4 推理延迟过高 | A7 | 退化到 M4 mock LLM，先打通链路；性能优化放 A7 之后 |
+| Whisper native 编译失败 | A8 | 退回方案：用纯 JS 实现的 Web Speech API（浏览器侧）替代 |
+| RK3588 上 llama.cpp Q4 推理延迟过高 | M4 | 退化到 `mode: 'mock'`，先打通链路；性能优化放 M4 之后 |
 
 ### 8.21 阶段准入/准出标准
 
@@ -4943,8 +4939,10 @@ A 段互相独立，按需取用
 | **M2** | 填实 `local-tools` 子集 | L1 | ❌ | `ctx.tools.register()` |
 | M2 | `tools` 注册表最小版 | L1 | ❌ | Realm 校验先 hardcode |
 | **M3** | `sessions` / `local-storage` / `audit-log` 明文版 | L1 | ❌ | SQLite 原文 |
-| **M4** | `local-llm-adapter` mock | L1 | ❌ | `ctx.llm.registerAdapter(['local-qwen3-4b-mock'], ...)` |
+| **M4** | `local-llm-adapter` mock + 真后端（`mode` 切换） | L1 | ❌ | `ctx.llm.registerAdapter(['local-qwen3-4b-mock', 'local-qwen3-4b'], ...)` |
+| M4 | `local-llm-adapter` 真模式 POST `{baseUrl}/chat/completions` | L1 | ❌ | OpenAI 兼容 SSE，HTTP 出端不加密（LAN only） |
 | M4 | `model-router` 按 `options.providers` 分发 | L1 | ❌ | 不替换 `ctx.llm` |
+| M4 | LAN 性能 bench（可选） | L3 | ❌ | 与 DSH 无关 |
 | **M5** | `http-api` 实现 REST + SSE | L1 | ❌ | 通过 `ctx.agents.create()` 触发 |
 | M5 | `cordis.yml` 中 `disabled: dsh-web-app` | L2 | ❌ | 行级 `disabled: true`（Loader 真实字段） |
 | **A1** | `prompt-guard` 5 类攻击拦截 + PII redact | L1 | ❌ | waterfall listener 返回决策对象 |
@@ -4963,23 +4961,21 @@ A 段互相独立，按需取用
 | A5 | 部署 mock verify 服务 | L3 | ❌ | |
 | **A6** | `td-bus` 检测 + 响应 | L1 | ❌ | 内部 `ctx.event.on(...)` |
 | A6 | 订阅 `td-bus/block-cloud-requests` | L1 | ❌ | |
-| **A7** | `local-llm-adapter` 接 llama.cpp | L1 | ❌ | llama.cpp binding 在插件内 import |
-| A7 | RK3588 / D3000M 性能 bench | L3 | ❌ | |
-| **A8** | `web-search` 真接入 | L1 | ❌ | `ctx.secure-bridge.sendCloudRequest` |
-| **A9** | `voice-input` 接 Whisper-tiny | L1 | ❌ | Whisper binding 在插件内 import |
-| A9 | 转写结果接 `prompt-guard` 入口 | L1 | ❌ | 在应用层组装 |
+| **A7** | `web-search` 真接入 | L1 | ❌ | `ctx.secure-bridge.sendCloudRequest` |
+| **A8** | `voice-input` 接 Whisper-tiny | L1 | ❌ | Whisper binding 在插件内 import |
+| A8 | 转写结果接 `prompt-guard` 入口 | L1 | ❌ | 在应用层组装 |
 
 #### 8.22.3 关键边界确认
 
 | 风险点 | 阶段 | 合规处理 |
 |---|---|---|
-| Whisper native binding 直接 import | A9 | ✅ 在 `voice-input` 插件 `apply()` 内 import；❌ 不得在 DSH 启动器、Loader、Agent Loop 中 import |
-| llama.cpp native binding 直接调用 | A7 | ✅ 在 `local-llm-adapter` 插件 `apply()` 内 import；❌ 不得绕过插件 |
+| Whisper native binding 直接 import | A8 | ✅ 在 `voice-input` 插件 `apply()` 内 import；❌ 不得在 DSH 启动器、Loader、Agent Loop 中 import |
+| llama.cpp / OpenAI-compatible endpoint 调用 | M4 | ✅ 在 `local-llm-adapter` 插件 `apply()` 内 import / HTTP；❌ 不得绕过插件 |
 | OHTTP 库直接 import | A4 | ✅ 在 `ohttp-gateway` 插件内 import；其他插件仅通过 `ctx['ohttp-gateway']` 访问 |
 | TEE SDK 直接调用（TrustZone/Keystone） | A3/A5 | ✅ 在 `tcm` 插件内 import native SDK；其他插件仅通过 `ctx.tcm.xxx()` 访问 |
 | AES-256-GCM / X25519 直接调用 | A3/A5 | ✅ 在 `tcm` 插件内通过 `crypto.subtle` / `node:crypto` 实现 |
 | DSH 内置 Agent Loop 直接替换 | M2/M5 | ✅ 仅作为 consumer 使用，**不替换**；通过 `ctx.event.on('agent/pre-step')` 事件拦截注入 |
-| DSH 内置 `tools` service 直接扩展 | M2/A8 | ✅ 通过 `ctx.tools.register()` 注入；❌ 不得修改 DSH 内置 tools 实现 |
+| DSH 内置 `tools` service 直接扩展 | M2/A7 | ✅ 通过 `ctx.tools.register()` 注入；❌ 不得修改 DSH 内置 tools 实现 |
 | `cordis.yml` 中新增 `disabled: true` 行级字段 | M5 | ✅ 合法（DSH Loader 配置层）；真实字段名是 `disabled` |
 | docker-compose / mock service / test fixture | A4/A5 | ✅ 合法测试基础设施，**不在 DSH 仓库内** |
 
@@ -4994,7 +4990,7 @@ A 段互相独立，按需取用
 
 #### 8.22.5 最终合规结论
 
-**本版本第八章所列 M0-M5（必选）+ A1-A9（可选）的每一步骤都仅涉及以下三类操作：**
+**本版本第八章所列 M0-M5（必选）+ A1-A8（可选）的每一步骤都仅涉及以下三类操作：**
 
 1. **L1 插件代码**（`src/dsh-adapter/<plugin>.ts`）—— 自由
 2. **L2 DSH 配置层**（`cordis.yml`）—— 自由
@@ -5244,11 +5240,11 @@ describe('http-api', () => {
 
 ## 九、合规性最终声明（v7.0）
 
-本设计（v7.0）包含：
+本设计（v7.1）包含：
 - **19 个核心插件**（§ 二，全部按 v6.0/v7.0 修订：named-export 四项 + `Config` zod schema）
 - **1 个可选对外服务插件**（§ 8.23，`http-api`，已修正 `disabled:` 字段与 `runAgentLoop` 入口；并入 M5 阶段必做）
-- **M 段 6 阶段必选实施计划**（§ 8.2 - § 8.7：M0 脚手架 → M1 Cloud 直连 → M2 工具调用 → M3 明文会话 → M4 多模型路由 → M5 HTTP API）+ **A 段 9 阶段增强加固**（§ 8.8 - § 8.16：A1 输入/输出防护 → A2 意图路由 + 脱敏 → A3 TCM + 加密 → A4 OHTTP → A5 远程证明 → A6 主动防御 → A7 本地 LLM 真后端 → A8 公网搜索 → A9 语音输入），A 段独立可选、无 A-A 强依赖链
-- **逐阶段合规复核矩阵**（§ 8.22）：覆盖 M0-M5 与 A1-A9 每阶段
+- **M 段 6 阶段必选实施计划**（§ 8.2 - § 8.7：M0 脚手架 → M1 Cloud 直连 → M2 工具调用 → M3 明文会话 → M4 多模型路由【含本地 mock + 真 llama.cpp】 → M5 HTTP API）+ **A 段 8 阶段增强加固**（§ 8.8 - § 8.15：A1 输入/输出防护 → A2 意图路由 + 脱敏 → A3 TCM + 加密 → A4 OHTTP → A5 远程证明 → A6 主动防御 → A7 公网搜索 → A8 语音输入）。v7.1 把 v7.0 的 A7（本地 LLM 真后端）合并进了 M4，因此 A 段降为 8 阶段。
+- **逐阶段合规复核矩阵**（§ 8.22）：覆盖 M0-M5 与 A1-A8 每阶段
 - **可行性复核（§ 十一）**：基于 DSH 真实源码（`packages/core/agent/src/runtime-types.ts`、`packages/core/tools/src/index.ts`、`packages/llm/llm/src/index.ts`、`packages/preset/agent-presets/src/mount.ts` 等）的逐项实证；v7.0 新增了 M 段"裸奔 E2E"合规复核
 
 **全部内容仅涉及 DSH 插件代码（§ 二）+ DSH 配置层（cordis.yml）+ 测试基础设施**，**完全不修改 DSH 核心代码**。
