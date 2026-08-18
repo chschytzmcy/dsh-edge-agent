@@ -1,0 +1,49 @@
+{
+  "name": "agent-preset-edge",
+  "version": "0.1.0",
+  "description": "Full edge-agent preset: 19 core plugins + 1 http-api. Mounts via cordis.yml row id `dsh-edge-agent`.",
+  "composition": {
+    "plugins": [
+      "tcm",
+      "local-storage",
+      "sessions",
+      "audit-log",
+      "privacy-policy",
+      "tools",
+      "prompt-guard",
+      "intent-router",
+      "model-router",
+      "local-llm-adapter",
+      "cloud-llm-adapter",
+      "sanitizer-pipeline",
+      "ohttp-gateway",
+      "secure-bridge",
+      "attestation",
+      "td-bus",
+      "local-tools",
+      "web-search",
+      "voice-input",
+      "plugin-host"
+    ],
+    "optional": [
+      "http-api"
+    ]
+  },
+  "default": {
+    "dataLevel": "sanitized",
+    "realm": "AUTO",
+    "persona": "You are a privacy-first assistant running on the user's device."
+  },
+  "config": {
+    "defaultTtlSeconds": 3600,
+    "maxConcurrentSessions": 8,
+    "auditLevel": "info",
+    "promptGuardEnabled": true,
+    "tdBusEnabled": true,
+    "realmEnforcement": "strict"
+  },
+  "appliesWhen": {
+    "dataLevel": ["public", "sanitized", "internal"],
+    "realm": ["LOCAL", "CLOUD", "SANITIZED", "AUTO"]
+  }
+}

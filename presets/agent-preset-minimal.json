@@ -1,0 +1,32 @@
+{
+  "name": "agent-preset-minimal",
+  "version": "0.1.0",
+  "description": "Minimal edge-agent preset: tcm + local-storage + sessions + audit-log + local-llm-adapter only. No cloud, no OHTTP, no http-api. Useful for tests, smoke checks, and resource-constrained devices.",
+  "composition": {
+    "plugins": [
+      "tcm",
+      "local-storage",
+      "sessions",
+      "audit-log",
+      "local-llm-adapter"
+    ],
+    "optional": []
+  },
+  "default": {
+    "dataLevel": "public",
+    "realm": "LOCAL",
+    "persona": "You are a minimal local-only assistant."
+  },
+  "config": {
+    "defaultTtlSeconds": 1800,
+    "maxConcurrentSessions": 2,
+    "auditLevel": "warn",
+    "promptGuardEnabled": false,
+    "tdBusEnabled": false,
+    "realmEnforcement": "permissive"
+  },
+  "appliesWhen": {
+    "dataLevel": ["public"],
+    "realm": ["LOCAL"]
+  }
+}

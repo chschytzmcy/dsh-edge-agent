@@ -1,0 +1,13 @@
+node_modules/
+package-lock.json
+/lib/
+*.log
+.DS_Store
+*.tsbuildinfo
+*.tgz
+AGENTS.md
+.dsh-prompt-debug.json
+.env
+.env.local
+coverage/
+*.tsbuildinfo

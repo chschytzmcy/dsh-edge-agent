@@ -1,0 +1,88 @@
+# dsh-edge-agent CI — three stages: build → verify → regression.
+#
+# Triggered on every push to master and every PR. The full sequence is:
+#   1. install (pnpm install --frozen-lockfile)
+#   2. compile (tsc -p tsconfig.json → lib/types/)
+#   3. verify  (verify:build = boundary + contract + patch-surface + plugin-spec + package)
+#   4. test    (vitest unit tests)
+
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build & verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.20'
+          cache: 'pnpm'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Compile
+        run: pnpm run compile
+
+      - name: Verify (boundary / contract / patch-surface / plugin-spec / package)
+        run: pnpm run verify:build
+
+      - name: Upload build artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lib
+          path: lib/
+          retention-days: 7
+
+  test:
+    name: unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: build
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.20'
+          cache: 'pnpm'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Compile
+        run: pnpm run compile
+
+      - name: Run unit tests
+        run: pnpm test -- --run
+
+      - name: Run smoke test
+        run: pnpm run smoke

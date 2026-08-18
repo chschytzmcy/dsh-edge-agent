@@ -1,0 +1,113 @@
+# dsh-edge-agent patch — applied after the official dsh-base insert.
+# Every row below either (a) overrides a base row's whole `config` with
+# edge-specific values, or (b) is mounted under `insert:` so it appears
+# AFTER the base layer (required for plugin-host, model-router, etc).
+#
+# The dsh-edge-agent row is the aggregator; its sub-plugins are mounted
+# directly so a user who only wants e.g. `ohttp-gateway` can pull that
+# single subpath without dragging in the full tree.
+
+# ── surface-specific overrides over the dsh-base layer ────────────────────
+
+# Deployment persona: the edge agent's default is a private-assistant tone
+# (not "coding agent"). DSH_EDGE_PERSONA wins; default below.
+- id: system-prompt
+  config:
+    persona: !!js process.env.DSH_EDGE_PERSONA ?? 'You are a privacy-first assistant running on the user\'s device.'
+
+# Native DeepSeek adapter for the cloud realm. The edge agent always
+# prefers local-first; this row exists so cloud-llm-adapter can reach it.
+# The DSH setting (apiKeyEnv) is honored; no key is stored in this profile.
+- id: llm-deepseek
+  config:
+    apiKeyEnv: !!js process.env.DSH_EDGE_CLOUD_KEY_ENV ?? 'DEEPSEEK_API_KEY'
+    baseURL: !!js process.env.DEEPSEEK_BASE_URL
+    thinking: enabled
+    reasoningEffort: max
+
+# The edge agent creates/resumes its agent at runtime; no declarative
+# agents are started at boot, and the configured agent list stays the
+# base's empty default.
+- id: agent-loop
+  config:
+    agents: []
+
+# Approval policy: edge agent defaults to ASK everywhere (no
+# danger-full-access by default; user must opt in via env var).
+# On Windows the trust model matches every other terminal coding agent.
+- id: approval
+  config:
+    policy: !!js "process.platform === 'win32' ? 'never' : ((process.env.DSH_EDGE_PERMISSION_MODE ?? 'ask') === 'danger-full-access' ? 'never' : 'ask')"
+
+# Sessions live in the edge-agent specific JSONL store so the
+# ~/.dsh-edge-agent/sessions directory is isolated from any other DSH
+# bundle.
+- id: session-persistence-jsonl
+  config:
+    root: !!js process.env.DSH_EDGE_SESSION_ROOT ?? (process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent/sessions'
+
+# Sandbox: tighter than dsh-base (workspace-write, not danger-full-access).
+# On Windows the no-sandbox trust model applies.
+- id: sandbox-policy
+  config:
+    mode: !!js "process.platform === 'win32' ? 'danger-full-access' : (process.env.DSH_EDGE_PERMISSION_MODE ?? 'workspace-write')"
+    workspaceRoot: !!js process.cwd()
+
+# ── edge-agent rows ──────────────────────────────────────────────────────
+
+- insert:
+
+    # Plugin-interop anchor (Community Consensus v0.15): the unified grant
+    # store, runtime generation id, and Host Descriptor live here. Mounted
+    # ahead of any third-party plugin row in this profile.
+    - id: plugin-host
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/plugin-host'
+
+    # Threat detection bus: subscribes to high-volume events and raises a
+    # quarantine action when patterns indicate abuse. Mounted before any
+    # plugin that emits to audit-log at high volume.
+    - id: td-bus
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/td-bus'
+
+    # Forward/reverse PII sanitization. The cloud realm is never raw text.
+    - id: sanitizer-pipeline
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/sanitizer-pipeline'
+
+    # OHTTP gateway: HPKE ciphertext to a relay that cannot link identity
+    # to content. The single outbound channel that the secure-bridge rides
+    # on top of.
+    - id: ohttp-gateway
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/ohttp-gateway'
+
+    # Outbound cloud channel. Cloud-llm-adapter routes through this.
+    - id: secure-bridge
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/secure-bridge'
+
+    # TEE attestation token generation + verification. Used by the cloud
+    # to confirm the device it is talking to is running a known TCB.
+    - id: attestation
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/attestation'
+
+    # The main aggregator plugin. Mounts every sub-plugin in boot order
+    # and registers the model-facing `services` namespace.
+    - id: dsh-edge-agent
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent'
+      inject: [agents, llm, sessions, invariants]
+      config:
+        teeType: !!js process.env.DSH_EDGE_TEE_TYPE ?? 'simulated'
+        storageRoot: !!js process.env.DSH_EDGE_STORAGE_ROOT ?? ((process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent')
+        policyPath: !!js process.env.DSH_EDGE_POLICY_PATH ?? ((process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent/policy.json')
+        defaultDataLevel: !!js process.env.DSH_EDGE_DEFAULT_DATA_LEVEL ?? 'sanitized'
+        allowFallbackTls: !!js process.env.DSH_EDGE_ALLOW_FALLBACK_TLS === 'true'
+        sessionWindowSize: !!js parseInt(process.env.DSH_EDGE_SESSION_WINDOW_SIZE ?? '32', 10)
+
+    # Optional S13 plugin: HTTP API for external consumers (mobile apps).
+    # Disabled by default; opt in with DSH_EDGE_HTTP_API=true.
+    - id: http-api
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/http-api'
+      inject: [agents, sessions, auditLog]
+      config:
+        host: !!js process.env.DSH_EDGE_HTTP_HOST ?? '127.0.0.1'
+        port: !!js parseInt(process.env.DSH_EDGE_HTTP_PORT ?? '3080', 10)
+        bearerToken: !!js process.env.DSH_EDGE_HTTP_BEARER ?? undefined
+        requireAttestation: !!js process.env.DSH_EDGE_HTTP_REQUIRE_ATTEST !== 'false'

@@ -1,0 +1,48 @@
+# edge-standard — recommended production profile. Local-first with cloud fallback.
+# Uses the full 19-plugin tree but disables optional http-api by default.
+#
+# Run: dsh --config profiles/edge-standard.cordis.yml
+
+# This profile inherits from the root cordis.yml — only differences are listed below.
+# Differences vs cordis.yml:
+#   - defaultDataLevel: public  (vs 'sanitized')
+#   - allowFallbackTls: false   (vs false)
+#   - maxConcurrentSessions: 4  (vs 8)
+
+- id: sessions
+  name: '@deepseek-ai/dsh-session-persistence-jsonl'
+  config:
+    root: !!js (process.env.DSH_EDGE_SESSION_ROOT ?? (process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent-standard/sessions')
+
+- id: local-storage
+  name: '@deepseek-harness-edge-agent/dsh-edge-agent/local-storage'
+  inject: [tcm]
+  config:
+    root: !!js (process.env.DSH_EDGE_STORAGE_ROOT ?? (process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent-standard') + '/storage'
+    filename: storage.enc.db
+
+- id: sessions-edge
+  name: '@deepseek-harness-edge-agent/dsh-edge-agent/sessions'
+  inject: [tcm, localStorage]
+  config:
+    defaultTtlSeconds: 3600
+    maxConcurrentSessions: 4
+
+- id: privacy-policy
+  name: '@deepseek-harness-edge-agent/dsh-edge-agent/privacy-policy'
+  inject: [tcm, localStorage, auditLog]
+  config:
+    policyPath: !!js (process.env.DSH_EDGE_POLICY_PATH ?? (process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent-standard/policy.json')
+    hotReload: true
+    watchIntervalMs: 5000
+
+- id: dsh-edge-agent
+  name: '@deepseek-harness-edge-agent/dsh-edge-agent'
+  inject: [agents, llm, sessions, invariants]
+  config:
+    teeType: !!js process.env.DSH_EDGE_TEE_TYPE ?? 'simulated'
+    storageRoot: !!js process.env.DSH_EDGE_STORAGE_ROOT ?? ((process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent-standard')
+    policyPath: !!js process.env.DSH_EDGE_POLICY_PATH ?? ((process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent-standard/policy.json')
+    defaultDataLevel: public
+    allowFallbackTls: false
+    sessionWindowSize: 32

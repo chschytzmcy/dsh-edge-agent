@@ -1,0 +1,3 @@
+// Integration tests live here. They depend on a real DSH app tree and are
+// out of scope for the v0.1.0 scaffold — populated starting at the S1-S5
+// implementation stages.

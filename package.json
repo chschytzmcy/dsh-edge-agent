@@ -1,0 +1,180 @@
+{
+  "name": "@deepseek-harness-edge-agent/dsh-edge-agent",
+  "version": "0.1.0",
+  "description": "Edge-side private agent built on DSH Cordis plugin mechanism: TEE-secured, OHTTP-encrypted, multi-LLM-routed, zero-core-modification.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git@github.com:chschytzmcy/dsh-edge-agent.git"
+  },
+  "bugs": {
+    "url": "https://github.com/chschytzmcy/dsh-edge-agent/issues"
+  },
+  "homepage": "https://github.com/chschytzmcy/dsh-edge-agent#readme",
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "packageManager": "pnpm@11.7.0",
+  "bin": {
+    "dsh-edge-agent": "./bin/dsh-edge-agent.js"
+  },
+  "main": "lib/types/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "import": "./lib/types/index.js"
+    },
+    "./tcm": {
+      "types": "./lib/types/dsh-adapter/tcm.d.ts",
+      "import": "./lib/types/dsh-adapter/tcm.js"
+    },
+    "./local-storage": {
+      "types": "./lib/types/dsh-adapter/local-storage.d.ts",
+      "import": "./lib/types/dsh-adapter/local-storage.js"
+    },
+    "./sessions": {
+      "types": "./lib/types/dsh-adapter/sessions.d.ts",
+      "import": "./lib/types/dsh-adapter/sessions.js"
+    },
+    "./audit-log": {
+      "types": "./lib/types/dsh-adapter/audit-log.d.ts",
+      "import": "./lib/types/dsh-adapter/audit-log.js"
+    },
+    "./privacy-policy": {
+      "types": "./lib/types/dsh-adapter/privacy-policy.d.ts",
+      "import": "./lib/types/dsh-adapter/privacy-policy.js"
+    },
+    "./tools": {
+      "types": "./lib/types/dsh-adapter/tools.d.ts",
+      "import": "./lib/types/dsh-adapter/tools.js"
+    },
+    "./prompt-guard": {
+      "types": "./lib/types/dsh-adapter/prompt-guard.d.ts",
+      "import": "./lib/types/dsh-adapter/prompt-guard.js"
+    },
+    "./intent-router": {
+      "types": "./lib/types/dsh-adapter/intent-router.d.ts",
+      "import": "./lib/types/dsh-adapter/intent-router.js"
+    },
+    "./model-router": {
+      "types": "./lib/types/dsh-adapter/model-router.d.ts",
+      "import": "./lib/types/dsh-adapter/model-router.js"
+    },
+    "./local-llm-adapter": {
+      "types": "./lib/types/dsh-adapter/local-llm-adapter.d.ts",
+      "import": "./lib/types/dsh-adapter/local-llm-adapter.js"
+    },
+    "./cloud-llm-adapter": {
+      "types": "./lib/types/dsh-adapter/cloud-llm-adapter.d.ts",
+      "import": "./lib/types/dsh-adapter/cloud-llm-adapter.js"
+    },
+    "./sanitizer-pipeline": {
+      "types": "./lib/types/dsh-adapter/sanitizer-pipeline.d.ts",
+      "import": "./lib/types/dsh-adapter/sanitizer-pipeline.js"
+    },
+    "./ohttp-gateway": {
+      "types": "./lib/types/dsh-adapter/ohttp-gateway.d.ts",
+      "import": "./lib/types/dsh-adapter/ohttp-gateway.js"
+    },
+    "./secure-bridge": {
+      "types": "./lib/types/dsh-adapter/secure-bridge.d.ts",
+      "import": "./lib/types/dsh-adapter/secure-bridge.js"
+    },
+    "./attestation": {
+      "types": "./lib/types/dsh-adapter/attestation.d.ts",
+      "import": "./lib/types/dsh-adapter/attestation.js"
+    },
+    "./td-bus": {
+      "types": "./lib/types/dsh-adapter/td-bus.d.ts",
+      "import": "./lib/types/dsh-adapter/td-bus.js"
+    },
+    "./local-tools": {
+      "types": "./lib/types/dsh-adapter/local-tools.d.ts",
+      "import": "./lib/types/dsh-adapter/local-tools.js"
+    },
+    "./web-search": {
+      "types": "./lib/types/dsh-adapter/web-search.d.ts",
+      "import": "./lib/types/dsh-adapter/web-search.js"
+    },
+    "./voice-input": {
+      "types": "./lib/types/dsh-adapter/voice-input.d.ts",
+      "import": "./lib/types/dsh-adapter/voice-input.js"
+    },
+    "./plugin-host": {
+      "types": "./lib/types/dsh-adapter/plugin-host.d.ts",
+      "import": "./lib/types/dsh-adapter/plugin-host.js"
+    },
+    "./http-api": {
+      "types": "./lib/types/dsh-adapter/http-api.d.ts",
+      "import": "./lib/types/dsh-adapter/http-api.js"
+    },
+    "./llm-adapters": {
+      "types": "./lib/types/dsh-adapter/llm-adapters.d.ts",
+      "import": "./lib/types/dsh-adapter/llm-adapters.js"
+    },
+    "./invariant": {
+      "types": "./lib/types/dsh-adapter/invariant.d.ts",
+      "default": "./lib/types/dsh-adapter/invariant.js"
+    },
+    "./types": {
+      "types": "./lib/types/dsh-adapter/types.d.ts",
+      "import": "./lib/types/dsh-adapter/types.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "bin",
+    "lib",
+    "cordis.patch.yml",
+    "cordis.yml",
+    "presets",
+    "profiles"
+  ],
+  "engines": {
+    "node": "^22.19 || >=24"
+  },
+  "scripts": {
+    "clean": "node scripts/clean-lib.mjs",
+    "compile": "npm run clean && tsc -p tsconfig.json",
+    "prepare": "npm run compile",
+    "build": "npm run compile && npm run verify:build",
+    "dev": "node --import tsx/esm scripts/smoke.tsx",
+    "smoke": "npm run build && node --import tsx/esm scripts/smoke.tsx",
+    "test": "vitest run tests/unit",
+    "verify:build": "npm run verify:boundary && npm run verify:contract && npm run verify:patch-surface && npm run verify:plugin-spec",
+    "verify:boundary": "node --import tsx/esm scripts/verify-adapter-boundary.ts",
+    "verify:contract": "node --import tsx/esm scripts/verify-upstream-contract.ts",
+    "verify:patch-surface": "node --import tsx/esm scripts/verify-patch-surface.ts",
+    "verify:plugin-spec": "node --import tsx/esm scripts/verify-plugin-spec.ts",
+    "verify:package": "npm pack --dry-run --json --ignore-scripts | node scripts/verify-package.mjs"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/schemastery": "^3.18.1",
+    "@deepseek-ai/dsh-agent": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-llm": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-tools": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-session": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-system-prompt": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-events": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-scope": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-scope-disk": "0.1.0-rc.6"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/schemastery": "^3.18.1",
+    "@types/node": "^22.10.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.0.0",
+    "yaml": "^2.9.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

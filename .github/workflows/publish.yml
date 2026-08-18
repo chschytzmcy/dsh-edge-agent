@@ -1,0 +1,82 @@
+# dsh-edge-agent publish workflow — triggered by tag push (vX.Y.Z).
+#
+# Pre-publish checklist:
+#   1. pnpm run verify:build is green
+#   2. pnpm test is green
+#   3. CHANGELOG.md is updated
+#   4. package.json#version is bumped
+#   5. commit message uses Conventional Commits
+#
+# Publishing targets:
+#   - npm (public, requires NPM_TOKEN)
+#   - GitHub release (auto-generated notes)
+
+name: publish
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  npm:
+    name: publish to npm
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.20'
+          registry-url: 'https://registry.npmjs.org'
+          cache: 'pnpm'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Compile
+        run: pnpm run compile
+
+      - name: Verify (boundary / contract / patch-surface / plugin-spec)
+        run: pnpm run verify:build
+
+      - name: Run tests
+        run: pnpm test -- --run
+
+      - name: Publish
+        run: pnpm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  release:
+    name: github release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: npm
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          fail_on_unmatched_files: true

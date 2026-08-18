@@ -1,0 +1,13 @@
+lib/**/*.tsbuildinfo
+src/
+tests/
+scripts/
+docs/
+examples/
+presets/
+profiles/
+.github/
+.editorconfig
+.gitignore
+.gitattributes
+AGENTS.md
