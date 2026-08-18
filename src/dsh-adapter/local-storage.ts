@@ -1,80 +1,179 @@
 /**
- * local-storage — encrypted SQLite-backed key/value store. Each value is
- * AES-256-GCM encrypted via the TCM service before being written to disk.
+ * local-storage — M3 PLAINTEXT key/value store. Each "collection" is an
+ * ordered append-only log of `{op, key, value}` JSON lines. Reads project
+ * the latest write per key (a compacted view), and writes append a single
+ * line. No encryption, no compression, no TCM dependency.
+ *
+ * M3 NOTE — A3 replaces this entire file with an encrypted SQLite-backed
+ * store. The plugin shape (Service + put/get/delete/list) is the durable
+ * contract; the on-disk format is an implementation detail.
  *
  * @module dsh-edge-agent/local-storage
  */
 
+import type { Context } from '@deepseek-ai/cordis'
 import { Service } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
-import type { TcmService } from './tcm.js'
+import { mkdir, readFile, writeFile, rename } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 
 export const name = 'local-storage'
 
-export const inject = ['tcm'] as const
+export const inject = [] as const
 
 export interface Config {
+  /** Directory holding the storage files. Created if missing. */
   root: string
+  /** Filename inside `root`. Each line is one log entry. */
   filename: string
 }
 
 export const Config: Schema<Config> = Schema.object({
   root: Schema.string().required(),
-  filename: Schema.string().default('storage.enc.db'),
+  filename: Schema.string().default('storage.plain.jsonl'),
 })
+
+export interface KVEntry {
+  key: string
+  value: unknown
+}
 
 export interface StorageService {
   get<T = unknown>(collection: string, key: string): Promise<T | null>
   put<T = unknown>(collection: string, key: string, value: T): Promise<void>
   delete(collection: string, key: string): Promise<void>
-  list(collection: string): Promise<Array<{ key: string; value: unknown }>>
-  count(collection: string): Promise<number>
-}
-
-export class LocalStorageService extends Service {
-  constructor(ctx: any) {
-    super(ctx, 'localStorage')
-  }
-  async get<T>(collection: string, key: string): Promise<T | null> {
-    const tcm: TcmService = (this.ctx as any).tcm
-    void tcm
-    return null
-  }
-  async put<T>(collection: string, key: string, value: T): Promise<void> {
-    const tcm: TcmService = (this.ctx as any).tcm
-    void tcm
-    void value
-  }
-  async delete(collection: string, key: string): Promise<void> {
-    void collection
-    void key
-  }
-  async list(collection: string): Promise<Array<{ key: string; value: unknown }>> {
-    void collection
-    return []
-  }
-  async count(collection: string): Promise<number> {
-    return 0
-  }
+  list(collection: string): Promise<KVEntry[]>
+  /** Drop every entry in one collection; M3-only test/teardown hook. */
+  clear(collection: string): Promise<void>
 }
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
-    localStorage: LocalStorageService
+    localStorage: LocalStorageServiceImpl
   }
 }
 
-export async function apply(ctx: any, config: Config): Promise<() => Promise<void>> {
-  ctx.plugin(LocalStorageService)
-  void config
-  return async () => {
-    // flush + close db
+/**
+ * JSONL-backed KV store. One file per `Config.filename`; lines are
+ * `{op: 'put'|'delete', collection, key, value, ts}` records.
+ */
+export class LocalStorageServiceImpl extends Service {
+  private readonly filePath: string
+  private cache = new Map<string, Map<string, unknown>>()
+  private writeQueue: Promise<void> = Promise.resolve()
+  private loaded = false
+
+  constructor(ctx: Context, config: Config) {
+    super(ctx, 'localStorage')
+    this.filePath = join(config.root, config.filename)
+  }
+
+  /** Initial scan; idempotent. M3 calls this once per process. */
+  async load(): Promise<void> {
+    if (this.loaded) return
+    if (!existsSync(this.filePath)) {
+      await mkdir(dirname(this.filePath), { recursive: true })
+      this.loaded = true
+      return
+    }
+    const raw = await readFile(this.filePath, 'utf-8')
+    for (const line of raw.split('\n')) {
+      const trimmed = line.trim()
+      if (trimmed.length === 0) continue
+      let parsed: Record<string, unknown>
+      try {
+        parsed = JSON.parse(trimmed) as Record<string, unknown>
+      } catch {
+        continue
+      }
+      const op = parsed.op as string | undefined
+      const collection = parsed.collection as string | undefined
+      const key = parsed.key as string | undefined
+      if (!collection || !key) continue
+      const bucket = this.collection(collection)
+      if (op === 'delete') bucket.delete(key)
+      else if (op === 'put') bucket.set(key, parsed.value)
+    }
+    this.loaded = true
+  }
+
+  async get<T = unknown>(collection: string, key: string): Promise<T | null> {
+    await this.load()
+    const bucket = this.collection(collection)
+    const value = bucket.get(key)
+    if (value === undefined) return null
+    return value as T
+  }
+
+  async put<T = unknown>(collection: string, key: string, value: T): Promise<void> {
+    await this.load()
+    this.collection(collection).set(key, value)
+    await this.append({ op: 'put', collection, key, value, ts: Date.now() })
+  }
+
+  async delete(collection: string, key: string): Promise<void> {
+    await this.load()
+    const bucket = this.collection(collection)
+    if (!bucket.delete(key)) return
+    await this.append({ op: 'delete', collection, key, ts: Date.now() })
+  }
+
+  async list(collection: string): Promise<KVEntry[]> {
+    await this.load()
+    const bucket = this.collection(collection)
+    return [...bucket.entries()].map(([key, value]) => ({ key, value }))
+  }
+
+  async clear(collection: string): Promise<void> {
+    await this.load()
+    this.cache.set(collection, new Map())
+    await this.append({ op: 'clear', collection, ts: Date.now() })
+  }
+
+  private collection(name: string): Map<string, unknown> {
+    let bucket = this.cache.get(name)
+    if (!bucket) {
+      bucket = new Map()
+      this.cache.set(name, bucket)
+    }
+    return bucket
+  }
+
+  /** Append one record; serialized through a tail-of-promise chain. */
+  private append(record: Record<string, unknown>): Promise<void> {
+    const line = JSON.stringify(record)
+    this.writeQueue = this.writeQueue.then(async () => {
+      await mkdir(dirname(this.filePath), { recursive: true })
+      const prev = existsSync(this.filePath) ? await readFile(this.filePath, 'utf-8') : ''
+      const next = prev.length === 0 ? `${line}\n` : `${prev}${line}\n`
+      // Atomic-ish write: write to a temp file and rename.
+      const tmp = `${this.filePath}.tmp-${process.pid}`
+      await writeFile(tmp, next, 'utf-8')
+      await rename(tmp, this.filePath)
+    })
+    return this.writeQueue
   }
 }
 
-/** Shutdown hook used by the main plugin (plugin.ts). */
-export async function storageShutdown(ctx: any): Promise<() => Promise<void>> {
+export async function apply(ctx: Context, config: Config): Promise<() => Promise<void>> {
+  const service = new LocalStorageServiceImpl(ctx, config)
+  await service.load()
+  const dispose = ctx.provide('localStorage', service)
   return async () => {
-    // promote nothing; subscribed by main plugin
+    dispose()
+  }
+}
+
+/**
+ * Main-aggregator shutdown hook. Flushes any pending in-memory state
+ * (none today; the JSONL layer writes on every put/delete) and disposes
+ * the local-storage service. A3 will replace this body with an
+ * encryption-key zeroization step.
+ */
+export async function storageShutdown(ctx: Context): Promise<() => Promise<void>> {
+  const svc = (ctx as unknown as { localStorage?: { dispose?: () => void } }).localStorage
+  return async () => {
+    svc?.dispose?.()
   }
 }

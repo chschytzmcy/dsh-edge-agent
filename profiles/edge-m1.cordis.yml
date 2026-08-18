@@ -75,10 +75,32 @@
   config:
     policy: !!js "process.platform === 'win32' ? 'never' : ((process.env.DSH_EDGE_PERMISSION_MODE ?? 'workspace-write') === 'danger-full-access' ? 'never' : 'ask')"
 
-- id: sessions
-  name: '@deepseek-ai/dsh-session-persistence-jsonl'
+# M3 plaintext storage + audit chain (A3 swaps these for TCM-encrypted).
+# local-storage backs sessions + audit-log + future realm-tagged stores.
+- id: local-storage
+  name: '@deepseek-harness-edge-agent/dsh-edge-agent/local-storage'
   config:
-    root: !!js (process.env.DSH_EDGE_SESSION_ROOT ?? (process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent-m1/sessions')
+    root: !!js (process.env.DSH_EDGE_STORAGE_ROOT ?? (process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent-m1/storage')
+    filename: storage.plain.jsonl
+
+# Session store built on top of local-storage. Plaintext, full-blob-per-key.
+- id: sessions
+  name: '@deepseek-harness-edge-agent/dsh-edge-agent/sessions'
+  inject: [localStorage]
+  config:
+    defaultTtlSeconds: !!js parseInt(process.env.DSH_EDGE_SESSION_TTL ?? '3600', 10)
+    maxConcurrentSessions: !!js parseInt(process.env.DSH_EDGE_SESSION_MAX ?? '64', 10)
+    collection: sessions
+
+# Audit log: ring buffer + periodic flush to plaintext JSONL.
+- id: audit-log
+  name: '@deepseek-harness-edge-agent/dsh-edge-agent/audit-log'
+  config:
+    minLevel: !!js process.env.DSH_EDGE_AUDIT_MIN_LEVEL ?? 'info'
+    ringBufferSize: 512
+    flushIntervalMs: !!js parseInt(process.env.DSH_EDGE_AUDIT_FLUSH_MS ?? '1000', 10)
+    filename: audit.plain.jsonl
+    root: !!js (process.env.DSH_EDGE_AUDIT_ROOT ?? (process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent-m1/audit')
 
 - id: token-meter
   name: '@deepseek-ai/dsh-token-meter'
