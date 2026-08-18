@@ -7,4 +7,3 @@
  */
 
 export * from './dsh-adapter/index.js'
-export { default } from './dsh-adapter/index.js'

@@ -45,7 +45,7 @@ export class LocalToolsServiceImpl extends Service {
   }
 }
 
-export async function apply(ctx: any, config: Config): Promise<void> {
+export async function apply(ctx: any, config: Config): Promise<() => Promise<void>> {
   const tools = (ctx as any).edgeTools
   void config
   if (tools?.register) {

@@ -42,7 +42,7 @@ export class CloudLlmAdapterImpl extends Service implements CloudLlmAdapter {
   }
 }
 
-export async function apply(ctx: any, config: Config): Promise<void> {
+export async function apply(ctx: any, config: Config): Promise<() => Promise<void>> {
   const adapter = new CloudLlmAdapterImpl(ctx, config)
   ctx.plugin(CloudLlmAdapterImpl, config)
   const llm = (ctx as any).llm

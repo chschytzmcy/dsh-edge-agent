@@ -35,9 +35,9 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import type { Config } from './index.ts'
+import type { Config } from './index.js'
 
-export async function apply(ctx: Context, config: Config): Promise<void> {
+export async function apply(ctx: Context, config: Config): Promise<() => Promise<void>> {
   // The main plugin does not own state — it only:
   //  1. emits a single 'edge-agent/boot' event so dependent plugins
   //     can finalize their setup without circular imports.
@@ -55,11 +55,11 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   const disposers: Array<() => Promise<void> | void> = []
 
   // Hook shutdown to flush audit logs.
-  const { auditLogShutdown } = await import('./audit-log.ts')
+  const { auditLogShutdown } = await import('./audit-log.js')
   disposers.push(await auditLogShutdown(ctx))
 
   // Hook shutdown to close encrypted storage.
-  const { storageShutdown } = await import('./local-storage.ts')
+  const { storageShutdown } = await import('./local-storage.js')
   disposers.push(await storageShutdown(ctx))
 
   return async () => {

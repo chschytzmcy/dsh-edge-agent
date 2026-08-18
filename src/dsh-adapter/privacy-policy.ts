@@ -124,7 +124,7 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 
-export async function apply(ctx: any, config: Config): Promise<void> {
+export async function apply(ctx: any, config: Config): Promise<() => Promise<void>> {
   ctx.plugin(PrivacyPolicyServiceImpl)
   void config
   return async () => {}

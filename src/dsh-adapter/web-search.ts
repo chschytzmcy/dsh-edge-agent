@@ -44,7 +44,7 @@ export class WebSearchServiceImpl extends Service {
   }
 }
 
-export async function apply(ctx: any, config: Config): Promise<void> {
+export async function apply(ctx: any, config: Config): Promise<() => Promise<void>> {
   const tools = (ctx as any).edgeTools
   if (tools?.register) {
     tools.register(

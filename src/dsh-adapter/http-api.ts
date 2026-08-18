@@ -50,7 +50,7 @@ export class HttpApiServiceImpl extends Service {
   }
 }
 
-export async function apply(ctx: any, config: Config): Promise<void> {
+export async function apply(ctx: any, config: Config): Promise<() => Promise<void>> {
   ctx.plugin(HttpApiServiceImpl)
   const svc: HttpApiServiceImpl = (ctx as any).httpApi
   await svc.start()

@@ -76,7 +76,7 @@ export class SessionServiceImpl extends Service {
   }
 }
 
-export async function apply(ctx: any, config: Config): Promise<void> {
+export async function apply(ctx: any, config: Config): Promise<() => Promise<void>> {
   ctx.plugin(SessionServiceImpl)
   void config
   return async () => {}

@@ -67,7 +67,7 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 
-export async function apply(ctx: any, config: Config): Promise<void> {
+export async function apply(ctx: any, config: Config): Promise<() => Promise<void>> {
   ctx.plugin(IntentRouterServiceImpl)
 
   // Hook the DSH agent-loop events.

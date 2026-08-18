@@ -44,7 +44,7 @@ export class LocalLlmAdapterImpl extends Service implements LocalLlmAdapter {
   }
 }
 
-export async function apply(ctx: any, config: Config): Promise<void> {
+export async function apply(ctx: any, config: Config): Promise<() => Promise<void>> {
   const adapter = new LocalLlmAdapterImpl(ctx, config)
   ctx.plugin(LocalLlmAdapterImpl, config)
   // Register on the LLM runtime.

@@ -53,40 +53,40 @@ export const Config: Schema<Config> = Schema.object({
   sessionWindowSize: Schema.natural().description('Number of recent turns to keep in the conversation slice.'),
 })
 
-export async function apply(ctx: Context, config: Config): Promise<void> {
+export async function apply(ctx: Context, config: Config): Promise<() => Promise<void>> {
   // 1. Drift check — warn at boot when upstream DSH has moved.
-  const { upstreamDrift } = await import('./contract.ts')
+  const { upstreamDrift } = await import('./contract.js')
   for (const entry of await upstreamDrift()) {
     console.warn(`[dsh-edge-agent] upstream drift: ${entry.pkg} has ${entry.installed} (expected ${entry.expected})`)
   }
 
   // 2. Delegate to the real implementation under plugin.ts.
-  const { apply: bootstrap } = await import('./plugin.ts')
+  const { apply: bootstrap } = await import('./plugin.js')
   return bootstrap(ctx, config)
 }
 
 // Convenience: re-export the canonical subpath plugins so that consumers
 // who `import '@deepseek-harness-edge-agent/dsh-edge-agent'` can also
 // pull individual cordis rows out of the same module.
-export * from './tcm.ts'
-export * from './local-storage.ts'
-export * from './sessions.ts'
-export * from './audit-log.ts'
-export * from './privacy-policy.ts'
-export * from './tools.ts'
-export * from './prompt-guard.ts'
-export * from './intent-router.ts'
-export * from './model-router.ts'
-export * from './local-llm-adapter.ts'
-export * from './cloud-llm-adapter.ts'
-export * from './sanitizer-pipeline.ts'
-export * from './ohttp-gateway.ts'
-export * from './secure-bridge.ts'
-export * from './attestation.ts'
-export * from './td-bus.ts'
-export * from './local-tools.ts'
-export * from './web-search.ts'
-export * from './voice-input.ts'
-export * from './plugin-host.ts'
-export * from './http-api.ts'
-export * from './llm-adapters.ts'
+export * from './tcm.js'
+export * from './local-storage.js'
+export * from './sessions.js'
+export * from './audit-log.js'
+export * from './privacy-policy.js'
+export * from './tools.js'
+export * from './prompt-guard.js'
+export * from './intent-router.js'
+export * from './model-router.js'
+export * from './local-llm-adapter.js'
+export * from './cloud-llm-adapter.js'
+export * from './sanitizer-pipeline.js'
+export * from './ohttp-gateway.js'
+export * from './secure-bridge.js'
+export * from './attestation.js'
+export * from './td-bus.js'
+export * from './local-tools.js'
+export * from './web-search.js'
+export * from './voice-input.js'
+export * from './plugin-host.js'
+export * from './http-api.js'
+export * from './llm-adapters.js'

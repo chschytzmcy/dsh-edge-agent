@@ -46,7 +46,7 @@ export class VoiceInputServiceImpl extends Service {
   }
 }
 
-export async function apply(ctx: any, config: Config): Promise<void> {
+export async function apply(ctx: any, config: Config): Promise<() => Promise<void>> {
   ctx.plugin(VoiceInputServiceImpl)
   void config
   return async () => {}

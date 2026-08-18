@@ -6,7 +6,12 @@
  *
  * Boundary rule: code outside `src/dsh-adapter/` must NOT import
  * `@deepseek-ai/*` directly. It must come through this facade or the
- * services exposed in `src/dsh-adapter/<plugin>.ts`.
+ * services exposed in `src/dsh-adapter/<plugin>.js`.
+ *
+ * Schemastery note: `@deepseek-ai/schemastery` only ships a default
+ * export (`Schema`). Consumers should import that directly when they
+ * need a schema constructor. There is no `Schema`/`SchemaOptions`/
+ * `TypeSchema` named export to re-export here.
  */
 
 export type { Context } from '@deepseek-ai/cordis'
@@ -16,7 +21,6 @@ export type {
   AgentHandle,
   AgentStatus,
   AgentOptions,
-  AgentEvent,
   CreateAgentOptions,
   PreStepDecision,
   RequestErrorAction,
@@ -43,15 +47,12 @@ export type {
   SessionHeader,
   SessionEventMap,
   TurnEndReason,
-  UserMessage,
   EpochHeader,
 } from '@deepseek-ai/dsh-session'
 
 export type {
-  Tool,
   ToolExecution,
   ToolExecutionResult,
-  ToolRegistry,
 } from '@deepseek-ai/dsh-tools'
 
 export type {
@@ -63,5 +64,3 @@ export type {
   Scope,
   ScopeKey,
 } from '@deepseek-ai/dsh-scope'
-
-export type Schema, SchemaOptions, TypeSchema } from '@deepseek-ai/schemastery'

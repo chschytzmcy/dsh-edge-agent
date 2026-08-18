@@ -17,51 +17,7 @@
     "session-persistence-jsonl",
     "sandbox-policy"
   ],
-  "disablesBeyondWebApp": [
-    "tool-bash",
-    "tool-fs",
-    "tool-fs-search",
-    "tool-str-replace-editor",
-    "tool-result-pruner",
-    "tool-ralph",
-    "tool-pwsh",
-    "tool-web",
-    "tool-workflow",
-    "workflow-worker-thread"
-  ],
+  "disablesBeyondWebApp": [],
   "webAppDisablesBeyondTui": [],
-  "insertsSharedWithWebApp": [
-    "plugin-host"
-  ],
-  "subpathExports": [
-    ".",
-    "./tcm",
-    "./local-storage",
-    "./sessions",
-    "./audit-log",
-    "./privacy-policy",
-    "./tools",
-    "./prompt-guard",
-    "./intent-router",
-    "./model-router",
-    "./local-llm-adapter",
-    "./cloud-llm-adapter",
-    "./sanitizer-pipeline",
-    "./ohttp-gateway",
-    "./secure-bridge",
-    "./attestation",
-    "./td-bus",
-    "./local-tools",
-    "./web-search",
-    "./voice-input",
-    "./plugin-host",
-    "./http-api",
-    "./llm-adapters"
-  ],
-  "boundaryDir": "src/dsh-adapter",
-  "upstreamValidatedVersion": "0.1.0-rc.6",
-  "notes": [
-    "Insert order matters: plugin-host before any third-party plugin row; td-bus before any high-volume event source; ohttp-gateway before secure-bridge; secure-bridge before cloud-llm-adapter.",
-    "Subpath exports are 1:1 with cordis.yml rows except for `llm-adapters` (a bundled export of local + cloud adapter, not its own Cordis row) and `index` (the aggregator)."
-  ]
+  "insertsSharedWithWebApp": []
 }

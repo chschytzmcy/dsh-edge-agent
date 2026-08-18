@@ -9,7 +9,7 @@
  *   - The threat level is consulted before every LLM request
  */
 
-import type { Context } from './types.ts'
+import type { Context } from './types.js'
 
 export const PACKAGE_NAME = '@deepseek-harness-edge-agent/dsh-edge-agent'
 
@@ -17,7 +17,7 @@ export const name = 'dsh-edge-agent-invariant'
 
 export const inject = ['invariants'] as const
 
-export async function apply(ctx: Context): Promise<void> {
+export async function apply(ctx: Context): Promise<() => Promise<void>> {
   // Lazy-load the invariant registry to avoid pulling the runtime into
   // pure type-graph evaluation paths.
   const { installedRef } = await import('./invariant-install.js')

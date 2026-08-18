@@ -47,7 +47,7 @@ const pluginSpecs: Array<{ file: string; spec: Spec }> = []
 
 for (const file of sources) {
   const base = basename(file, '.ts')
-  if (base === 'contract' || base === 'types' || base === 'invariant' || base === 'llm-adapters') continue
+  if (base === 'contract' || base === 'types' || base === 'invariant' || base === 'invariant-install' || base === 'llm-adapters') continue
   if (base === 'plugin' || base === 'index') continue
   const content = readFileSync(file, 'utf8')
 
@@ -111,8 +111,8 @@ for (const [key, value] of Object.entries(exports)) {
   const v = value as Record<string, string> | string
   const importPath = typeof v === 'string' ? v : v.import
   if (!importPath) continue
-  // source maps to ./src/<x>.ts; lib maps to ./lib/types/<x>.js
-  const srcCandidate = join(root, 'src', `${basename(key) === '.' ? 'index' : key.replace(/^\.\//u, ''))}.ts`)
+  // source maps to ./src/dsh-adapter/<x>.ts; lib maps to ./lib/types/dsh-adapter/<x>.js
+  const srcCandidate = join(root, 'src', 'dsh-adapter', `${basename(key) === '.' ? 'index' : key.replace(/^\.\//u, '')}.ts`)
   if (!existsSync(srcCandidate)) {
     exportViolations.push(`export '${key}' → no source file at ${relative(root, srcCandidate)}`)
   }

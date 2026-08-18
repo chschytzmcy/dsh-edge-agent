@@ -28,9 +28,7 @@ export const UPSTREAM_BLESSED_PACKAGES = [
   '@deepseek-ai/dsh-tools',
   '@deepseek-ai/dsh-session',
   '@deepseek-ai/dsh-system-prompt',
-  '@deepseek-ai/dsh-events',
   '@deepseek-ai/dsh-scope',
-  '@deepseek-ai/dsh-scope-disk',
 ] as const
 
 export type BlessedPackage = (typeof UPSTREAM_BLESSED_PACKAGES)[number]

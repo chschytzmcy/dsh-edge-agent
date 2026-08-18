@@ -7,7 +7,7 @@
 
 import { Service } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
-import type { TcmService } from './tcm.ts'
+import type { TcmService } from './tcm.js'
 
 export const name = 'local-storage'
 
@@ -64,7 +64,7 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 
-export async function apply(ctx: any, config: Config): Promise<void> {
+export async function apply(ctx: any, config: Config): Promise<() => Promise<void>> {
   ctx.plugin(LocalStorageService)
   void config
   return async () => {
