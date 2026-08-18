@@ -1,28 +1,29 @@
 /**
- * intent-router — classifies user input into LOCAL / CLOUD / SANITIZED
- * realms, enforces routing rules from the privacy policy, and gates
- * agent-loop events.
+ * intent-router — M1 minimal: every input defaults to CLOUD. The router
+ * exists so downstream code can ask "where did this go?" without branching
+ * on hard-coded strings. Real classification (rule + LLM fallback) lands
+ * in A2; sanitization, prompt-guard, sessions, and audit-log listeners
+ * also land there, not in M1.
  *
  * @module dsh-edge-agent/intent-router
  */
 
+import type { Context } from '@deepseek-ai/cordis'
 import { Service } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
 
 export const name = 'intent-router'
 
-export const inject = ['llm', 'promptGuard', 'privacyPolicy', 'auditLog', 'sessions', 'localStorage'] as const
+export const inject = [] as const
 
 export interface Config {
-  /** When true, allow fallback to LLM classifier when rule match is low-confidence. */
-  enableLlmFallback: boolean
-  /** Minimum confidence to accept a rule-based classification. */
-  ruleConfidenceThreshold: number
+  /** Default realm when classification finds no rule. */
+  defaultCategory: 'LOCAL' | 'CLOUD' | 'SANITIZED'
 }
 
 export const Config: Schema<Config> = Schema.object({
-  enableLlmFallback: Schema.boolean().default(true),
-  ruleConfidenceThreshold: Schema.number().default(0.6),
+  defaultCategory: Schema.union(['LOCAL', 'CLOUD', 'SANITIZED'] as const)
+    .default('CLOUD'),
 })
 
 export interface Intent {
@@ -40,24 +41,45 @@ export interface IntentRouterService {
 }
 
 export class IntentRouterServiceImpl extends Service {
-  constructor(ctx: any) {
+  private readonly defaultCategory: Intent['category']
+
+  constructor(ctx: Context, defaultCategory: Intent['category']) {
     super(ctx, 'intentRouter')
+    this.defaultCategory = defaultCategory
   }
+
   async classify(text: string, context?: { recentMessages?: unknown[] }): Promise<Intent> {
-    void text
-    void context
-    return {
-      category: 'LOCAL',
-      confidence: 1,
-      targetRealm: 'local',
-      rationale: 'default',
-      dataLevel: 'public',
-      requiresSanitization: false,
-    }
+    return classifyDefault(this.defaultCategory, text, context)
   }
-  resolve(intent: Intent) {
-    void intent
-    return { realm: 'local', config: {} }
+
+  resolve(intent: Intent): { realm: string; config: Record<string, unknown> } {
+    return resolveIntent(intent)
+  }
+}
+
+/** Pure default classifier used by M1 (no rules, no LLM fallback). */
+export function classifyDefault(
+  defaultCategory: Intent['category'],
+  _text: string,
+  _context?: { recentMessages?: unknown[] },
+): Intent {
+  void _text
+  void _context
+  return {
+    category: defaultCategory,
+    confidence: 1,
+    targetRealm: defaultCategory === 'CLOUD' ? 'cloud' : 'local',
+    rationale: `m1-default:${defaultCategory.toLowerCase()}`,
+    dataLevel: 'public',
+    requiresSanitization: false,
+  }
+}
+
+/** Map an Intent to a realm/config tuple the rest of the agent loop can consume. */
+export function resolveIntent(intent: Intent): { realm: string; config: Record<string, unknown> } {
+  return {
+    realm: intent.targetRealm,
+    config: { intentCategory: intent.category },
   }
 }
 
@@ -67,54 +89,10 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 
-export async function apply(ctx: any, config: Config): Promise<() => Promise<void>> {
-  ctx.plugin(IntentRouterServiceImpl)
-
-  // Hook the DSH agent-loop events.
-  const ctxAny = ctx as any
-  if (typeof ctxAny.event?.on === 'function') {
-    ctxAny.event.on('agent/pre-step', async (payload: any) => {
-      const router: IntentRouterServiceImpl = ctxAny.intentRouter
-      const guard = ctxAny.promptGuard
-      const session = ctxAny.sessions
-      const audit = ctxAny.auditLog
-
-      // 1. input safety
-      if (payload?.input && guard) {
-        const v = await guard.checkInput(payload.input)
-        if (!v.safe) {
-          return { kind: 'reject' as const }
-        }
-      }
-      // 2. intent classification
-      if (payload?.input) {
-        const intent = await router.classify(payload.input, {
-          recentMessages: payload.session ? await session.get(payload.session.id) : undefined,
-        })
-        payload.intent = intent
-      }
-      void audit
-    })
-
-    ctxAny.event.on('agent/request', async (payload: any) => {
-      const intent: Intent | undefined = payload?.intent
-      const audit = ctxAny.auditLog
-      if (intent && audit) {
-        await audit.log({
-          level: 'info',
-          type: 'llm-call',
-          action: 'pre-call',
-          plugin: 'intent-router',
-          realm: intent.targetRealm,
-          metadata: { intent: intent.category, dataLevel: intent.dataLevel },
-          dataExfiltrated: intent.targetRealm !== 'local',
-          sanitized: intent.category === 'SANITIZED',
-          success: true,
-        })
-      }
-    })
+export async function apply(ctx: Context, config: Config): Promise<() => Promise<void>> {
+  const service = new IntentRouterServiceImpl(ctx, config.defaultCategory)
+  const dispose = ctx.provide('intentRouter', service)
+  return async () => {
+    dispose()
   }
-
-  void config
-  return async () => {}
 }

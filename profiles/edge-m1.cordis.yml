@@ -1,0 +1,84 @@
+# edge-m1 — M1 minimal profile: cloud DeepSeek only, no security, no
+# local LLM, no persistence. Run:
+#
+#   pnpm dsh --config profiles/edge-m1.cordis.yml "你好"
+#
+# Requires `DEEPSEEK_API_KEY` in the launching environment. Override the
+# base URL with `DEEPSEEK_BASE_URL` (default `https://api.deepseek.com`).
+#
+# This profile deliberately exercises the M1 contract from § 8.3 of
+# dsh-edge-agent-design-v6.md: only the three new dsh-edge-agent plugins
+# (cloud-llm-adapter, model-router, intent-router) plus the upstream
+# services needed to register an adapter and drive an agent loop.
+
+# User-settings document: hot-reloads overrides from `$DSH_HOME/settings.yaml`.
+- id: settings
+  name: '@deepseek-ai/dsh-settings-file'
+
+# Credential store: resolves `DEEPSEEK_API_KEY` at request time.
+- id: credentials
+  name: '@deepseek-ai/dsh-credentials-local'
+
+# Upstream DeepSeek adapter is intentionally NOT mounted. edge-agent's
+# own cloud-llm-adapter owns the cloud provider route so a future A4
+# (OHTTP) stage can swap the wire transport without touching upstream.
+- id: cloud-llm-adapter
+  name: '@deepseek-harness-edge-agent/dsh-edge-agent/cloud-llm-adapter'
+  config:
+    providers: [cloud-deepseek-v4]
+    baseUrl: !!js process.env.DEEPSEEK_BASE_URL ?? 'https://api.deepseek.com'
+    apiKeyEnv: DEEPSEEK_API_KEY
+    defaultModel: deepseek-chat
+
+- id: model-router
+  name: '@deepseek-harness-edge-agent/dsh-edge-agent/model-router'
+  inject: [llm]
+  config:
+    defaultModel: cloud-deepseek-v4
+    localModels: [local-qwen3-4b-mock]
+    cloudModels: [cloud-deepseek-v4]
+
+- id: intent-router
+  name: '@deepseek-harness-edge-agent/dsh-edge-agent/intent-router'
+  config:
+    defaultCategory: CLOUD
+
+# Standard upstream services needed for an agent loop to run a one-shot task.
+- id: user-questions
+  name: '@deepseek-ai/dsh-user-questions'
+
+- id: approval
+  name: '@deepseek-ai/dsh-user-approval'
+  config:
+    policy: !!js "process.platform === 'win32' ? 'never' : ((process.env.DSH_EDGE_PERMISSION_MODE ?? 'workspace-write') === 'danger-full-access' ? 'never' : 'ask')"
+
+- id: sessions
+  name: '@deepseek-ai/dsh-session-persistence-jsonl'
+  config:
+    root: !!js (process.env.DSH_EDGE_SESSION_ROOT ?? (process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent-m1/sessions')
+
+- id: token-meter
+  name: '@deepseek-ai/dsh-token-meter'
+
+- id: fs
+  name: '@deepseek-ai/dsh-fs-local'
+  config:
+    cwd: !!js process.cwd()
+
+- id: agent-spine
+  name: '@deepseek-ai/dsh-agent-spine-demo'
+  config:
+    agents:
+      - id: main
+        provider: cloud-deepseek-v4
+        model: deepseek-chat
+        cwd: !!js process.cwd()
+    persona: |
+      You are edge-agent (M1, cloud-only). Answer in the user's language.
+      Be brief. Do not claim to use local tools or sandboxing — they are
+      not enabled at this stage.
+
+# Subprocess group required by any tool-using agent loop. M1 ships no
+# tools, but agent-spine still expects the group to exist on startup.
+- id: subprocess
+  name: '@deepseek-ai/dsh-subprocess-local'
