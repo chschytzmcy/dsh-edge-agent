@@ -63,11 +63,13 @@ export interface SessionsService {
   touch(id: string): Promise<void>
 }
 
-declare module '@deepseek-ai/cordis' {
-  interface Context {
-    sessions: SessionsServiceImpl
-  }
-}
+// NOTE: declaration merging disabled to avoid conflict with upstream dsh-session's SessionStore.
+// The edge-agent's session service is accessed via ctx.get('sessions') instead of ctx.sessions.
+// declare module '@deepseek-ai/cordis' {
+//   interface Context {
+//     sessions: SessionsServiceImpl
+//   }
+// }
 
 export class SessionsServiceImpl extends Service {
   private readonly collection: string

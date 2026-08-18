@@ -103,6 +103,8 @@
     # Optional S13 plugin: HTTP API for external consumers (mobile apps).
     # Enabled by default; the server starts on the configured port.
     - id: http-api
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/http-api'
+      inject: [agents]
       config:
         host: !!js process.env.DSH_EDGE_HTTP_HOST ?? '127.0.0.1'
         port: !!js parseInt(process.env.DSH_EDGE_HTTP_PORT ?? '3080', 10)

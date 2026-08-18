@@ -24,6 +24,8 @@
   # stage will swap the wire transport under cloud-llm-adapter.
 
 - id: http-api
+  name: '@deepseek-harness-edge-agent/dsh-edge-agent/http-api'
+  inject: [agents]
   # M5: HTTP API service for external consumers
   config:
     host: !!js process.env.DSH_EDGE_HTTP_HOST ?? '127.0.0.1'

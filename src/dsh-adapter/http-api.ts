@@ -18,7 +18,7 @@ import type { SessionEvent } from '@deepseek-ai/dsh-session'
 
 export const name = 'http-api'
 
-export const inject = ['agents', 'sessions', 'auditLog'] as const
+export const inject = ['agents'] as const
 
 export interface Config {
   host: string
