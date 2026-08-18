@@ -20,7 +20,7 @@ import {
 describe('local-tools (M2)', () => {
   it('exports the canonical plugin shape', () => {
     assert.equal(localTools.name, 'local-tools')
-    assert.deepEqual([...localTools.inject], ['edgeTools'])
+    assert.deepEqual([...localTools.inject], ['edgeTools', 'tools'])
     assert.equal(typeof localTools.apply, 'function')
     assert.ok(localTools.Config)
   })

@@ -27,7 +27,7 @@ import type { ToolsServiceImpl } from './tools.ts'
 
 export const name = 'local-tools'
 
-export const inject = ['edgeTools'] as const
+export const inject = ['edgeTools', 'tools'] as const
 
 export interface Config {
   /** Paths whose prefixes are readable (and writable when `readOnly=false`). */

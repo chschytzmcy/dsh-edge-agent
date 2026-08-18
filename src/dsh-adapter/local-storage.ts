@@ -157,12 +157,12 @@ export class LocalStorageServiceImpl extends Service {
 }
 
 export async function apply(ctx: Context, config: Config): Promise<() => Promise<void>> {
+  // LocalStorageServiceImpl extends `Service`, so its constructor calls
+  // `ctx.reflect.provide('localStorage', this)` for us. Do not call
+  // `ctx.provide` again — that would throw "service already registered".
   const service = new LocalStorageServiceImpl(ctx, config)
   await service.load()
-  const dispose = ctx.provide('localStorage', service)
-  return async () => {
-    dispose()
-  }
+  return async () => {}
 }
 
 /**

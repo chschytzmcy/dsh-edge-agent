@@ -90,9 +90,9 @@ declare module '@deepseek-ai/cordis' {
 }
 
 export async function apply(ctx: Context, config: Config): Promise<() => Promise<void>> {
-  const service = new IntentRouterServiceImpl(ctx, config.defaultCategory)
-  const dispose = ctx.provide('intentRouter', service)
-  return async () => {
-    dispose()
-  }
+  // IntentRouterServiceImpl extends `Service`, so its constructor calls
+  // `ctx.reflect.provide('intentRouter', this)` for us. Do not call
+  // `ctx.provide` again — that would throw "service already registered".
+  void new IntentRouterServiceImpl(ctx, config.defaultCategory)
+  return async () => {}
 }

@@ -111,9 +111,9 @@ declare module '@deepseek-ai/cordis' {
 }
 
 export async function apply(ctx: Context, config: Config): Promise<() => Promise<void>> {
-  const service = new ModelRouterServiceImpl(ctx, config.localModels, config.cloudModels)
-  const dispose = ctx.provide('modelRouter', service)
-  return async () => {
-    dispose()
-  }
+  // ModelRouterServiceImpl extends `Service`, so its constructor calls
+  // `ctx.reflect.provide('modelRouter', this)` for us. Do not call
+  // `ctx.provide` again — that would throw "service already registered".
+  void new ModelRouterServiceImpl(ctx, config.localModels, config.cloudModels)
+  return async () => {}
 }

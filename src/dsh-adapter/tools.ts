@@ -134,13 +134,13 @@ function upstreamTools(ctx: Context): UpstreamToolView[] {
 }
 
 export async function apply(ctx: Context, config: Config): Promise<() => Promise<void>> {
-  const service = new ToolsServiceImpl(ctx)
-  const dispose = ctx.provide('edgeTools', service)
+  // ToolsServiceImpl extends `Service`, so its constructor calls
+  // `ctx.reflect.provide('edgeTools', this)` for us. Do not call
+  // `ctx.provide` again — that would throw "service already registered".
+  void new ToolsServiceImpl(ctx)
   // M2: pass config through to the audit log so M3 persistence can pick it
   // up. The default rate limit is plumbed in via the definition that
   // `local-tools` emits (every tool definition inherits it).
   void config
-  return async () => {
-    dispose()
-  }
+  return async () => {}
 }

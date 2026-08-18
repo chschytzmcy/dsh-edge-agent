@@ -1,0 +1,217 @@
+# Custom M4 overlay: disable the upstream DeepSeek adapter (we own the
+# cloud provider route) and mount the edge-agent subpath plugins that
+# are not already provided by dsh-base / dsh-headless.
+#
+# Rows dsh-base already owns: settings, credentials, llm, subprocess,
+# sandbox, user-questions, approval, permission, tools, token-meter,
+# system-prompt, agent-loop, fs-sandbox, llm-pi-ai, llm-deepseek.
+# Rows dsh-headless adds: code-runtime, headless-startup, headless-runner,
+# plus its system-prompt / hmr overrides.
+#
+# This overlay therefore only adds NEW ids (or rewrites existing rows).
+#
+# It also disables upstream bundle rows that are stubbed in this repo
+# (http-api, dsh-edge-agent aggregator, ohttp-gateway, web-search,
+# voice-input, secure-bridge, attestation, td-bus, sanitizer-pipeline,
+# plugin-host, dsh-edge-agent) because their apply() functions crash on
+# boot — they are M5+ work, not M4. Re-enable one at a time as the
+# corresponding code lands.
+
+# ── upstream-disabled rows ──────────────────────────────────────────────────────
+- id: llm-deepseek
+  disabled: true
+  # edge-agent owns the CLOUD provider route; the future A4 (OHTTP)
+  # stage will swap the wire transport under cloud-llm-adapter.
+
+- id: http-api
+  disabled: true
+  # Optional S13 plugin; not exercised in M4.
+
+- id: dsh-edge-agent
+  disabled: true
+  # Aggregator; M4 is a single-purpose headless driver, so the
+  # aggregator stays disabled.
+
+- id: plugin-host
+  disabled: true
+- id: td-bus
+  disabled: true
+- id: sanitizer-pipeline
+  disabled: true
+- id: ohttp-gateway
+  disabled: true
+- id: secure-bridge
+  disabled: true
+- id: attestation
+  disabled: true
+- id: web-search
+  disabled: true
+- id: voice-input
+  disabled: true
+
+# Force the agent loop to a provider that edge-agent registered. The
+# default in dsh-base is `deepseek-official`, which we just disabled.
+- id: agent-default-model
+  config:
+    provider: !!js process.env.DSH_EDGE_PROVIDER ?? 'cloud-deepseek-v4'
+    model: !!js process.env.DSH_EDGE_MODEL ?? 'deepseek-chat'
+
+# Persona override: edge-agent (M4, multi-model) lives above the base
+# "You are a coding agent…" so the headless startup sits on top of it.
+- id: system-prompt
+  config:
+    persona: !!js (process.env.DSH_EDGE_PERSONA ?? 'You are edge-agent (M4, multi-model with LOCAL-realm tools). Answer in the user\'s language. Be brief. Stay within the model selected by DSH_EDGE_PROVIDER. The available local tools are local_file_read, local_file_write (when enabled), and local_calculate; do not assume a network tool or shell. When the user asks you to read or compute against a local file, call the matching local_* tool with its declared parameter shape; do not invent file contents.')
+
+# ── new plugin inserts ─────────────────────────────────────────────────────────
+
+# ── dsh-base tools stripped to keep the real-LLM context small ─────────────
+# The bundled dsh-base patch mounts many tool rows that contribute large
+# system-prompt sections. The qwen3-4b endpoint caps at 13 000 input
+# tokens; for the M4 smoke we only need file_read / file_write /
+# calculate (the LOCAL-realm tools mounted by `local-tools`). Every
+# row below stays on disk so an M5+ profile can re-enable them.
+
+- id: tool-bash
+  disabled: true
+- id: tool-pwsh
+  disabled: true
+- id: tool-fs
+  disabled: true
+- id: tool-fs-search
+  disabled: true
+- id: tool-jobs
+  disabled: true
+- id: tool-skill
+  disabled: true
+- id: tool-web
+  disabled: true
+- id: tool-subagent
+  disabled: true
+- id: tool-subagent-fork
+  disabled: true
+- id: tool-subagent-control
+  disabled: true
+- id: tool-subagent-list-agents
+  disabled: true
+- id: tool-subagent-report
+  disabled: true
+- id: tool-workflow
+  disabled: true
+- id: tool-ralph
+  disabled: true
+- id: tool-todo
+  disabled: true
+- id: tool-goal
+  disabled: true
+- id: tool-str-replace-editor
+  disabled: true
+- id: web
+  disabled: true
+- id: web-search-deepseek
+  disabled: true
+- id: skill-filesystem
+  disabled: true
+- id: skill-badge
+  disabled: true
+- id: subagent
+  disabled: true
+- id: subagent-spawn-in-process
+  disabled: true
+- id: subagent-fork-in-process
+  disabled: true
+- id: workflow-worker-thread
+  disabled: true
+- id: goal
+  disabled: true
+- id: goal-round-driver
+  disabled: true
+- id: command-goal
+  disabled: true
+- id: session-title-llm
+  disabled: true
+- id: session-telemetry-otel
+  disabled: true
+- id: repeat-tool-reminder
+  disabled: true
+- id: spill-local
+  disabled: true
+- id: spill-policy
+  disabled: true
+- id: session-checkpoint-policy
+  disabled: true
+- id: tool-result-pruner
+  disabled: true
+- id: tool-call-timeout-policy
+  disabled: true
+- id: compaction-basic
+  disabled: true
+- id: command-compact
+  disabled: true
+- insert:
+    - id: cloud-llm-adapter
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/cloud-llm-adapter'
+      inject: [llm]
+      config:
+        providers: [cloud-deepseek-v4]
+        baseUrl: !!js process.env.DEEPSEEK_BASE_URL ?? 'https://api.deepseek.com'
+        apiKeyEnv: DEEPSEEK_API_KEY
+        defaultModel: deepseek-chat
+
+    - id: local-llm-adapter
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/local-llm-adapter'
+      inject: [llm]
+      config:
+        providers: [local-qwen3-4b-mock, local-qwen3-4b]
+        mode: !!js process.env.DSH_EDGE_LOCAL_LLM_MODE ?? 'mock'
+        baseUrl: !!js process.env.DSH_EDGE_LOCAL_LLM_BASEURL ?? 'http://127.0.0.1:8080/v1'
+        defaultModel: !!js process.env.DSH_EDGE_LOCAL_LLM_MODEL ?? 'qwen3-4b'
+        apiKeyEnv: !!js process.env.DSH_EDGE_LOCAL_LLM_KEY_ENV ?? undefined
+
+    - id: model-router
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/model-router'
+      inject: [llm]
+      config:
+        defaultModel: !!js process.env.DSH_EDGE_MODEL_ROUTER_DEFAULT ?? 'cloud-deepseek-v4'
+        localModels: [local-qwen3-4b-mock, local-qwen3-4b]
+        cloudModels: [cloud-deepseek-v4]
+
+    - id: intent-router
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/intent-router'
+      config:
+        defaultCategory: CLOUD
+
+    # NOTE: id renamed from `tools` to avoid colliding with dsh-base.
+    - id: edge-tools-registry
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/tools'
+      inject: [auditLog]
+      config:
+        defaultRateLimitPerMinute: 60
+        enableToolIsolation: true
+        presentationMode: native
+
+    - id: local-tools
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/local-tools'
+      inject: [edgeTools, tools]
+      config:
+        allowList: !!js (process.env.DSH_EDGE_LOCAL_TOOLS_ALLOWLIST ?? '/tmp').split(',').map((s) => s.trim()).filter(Boolean)
+        readOnly: !!js process.env.DSH_EDGE_LOCAL_TOOLS_WRITABLE !== 'true'
+        maxFileSize: 1048576
+        timeoutMs: 10000
+
+    - id: local-storage
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/local-storage'
+      config:
+        root: !!js (process.env.DSH_EDGE_STORAGE_ROOT ?? (process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent-m1/storage')
+        filename: storage.plain.jsonl
+
+    # NOTE: `sessions` and `audit-log` are NOT mounted — `dsh-session`
+    # provides `sessions` upstream and nothing provides `auditLog` so
+    # audit-log is mounted below under its own name.
+    - id: audit-log
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/audit-log'
+      config:
+        minLevel: !!js process.env.DSH_EDGE_AUDIT_MIN_LEVEL ?? 'info'
+        ringBufferSize: 512
+        flushIntervalMs: !!js parseInt(process.env.DSH_EDGE_AUDIT_FLUSH_MS ?? '1000', 10)
+        filename: audit.plain.jsonl
+        root: !!js (process.env.DSH_EDGE_AUDIT_ROOT ?? (process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent-m1/audit')

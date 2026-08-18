@@ -238,14 +238,15 @@ export class AuditLogServiceImpl extends Service {
 }
 
 export async function apply(ctx: Context, config: Config): Promise<() => Promise<void>> {
+  // AuditLogServiceImpl extends `Service`, so its constructor calls
+  // `ctx.reflect.provide('auditLog', this)` for us. Do not call
+  // `ctx.provide` again — that would throw "service already registered".
   const service = new AuditLogServiceImpl(ctx, config)
   await mkdir(dirname(service.filePathForTests()), { recursive: true }).catch(() => {})
   service.start()
-  const dispose = ctx.provide('auditLog', service)
   return async () => {
     service.stopForTests()
     await service.flush()
-    dispose()
   }
 }
 

@@ -181,9 +181,9 @@ export class SessionsServiceImpl extends Service {
 }
 
 export async function apply(ctx: Context, config: Config): Promise<() => Promise<void>> {
-  const service = new SessionsServiceImpl(ctx, config)
-  const dispose = ctx.provide('sessions', service)
-  return async () => {
-    dispose()
-  }
+  // SessionsServiceImpl extends `Service`, so its constructor calls
+  // `ctx.reflect.provide('sessions', this)` for us. Do not call
+  // `ctx.provide` again — that would throw "service already registered".
+  void new SessionsServiceImpl(ctx, config)
+  return async () => {}
 }

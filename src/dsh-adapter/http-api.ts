@@ -51,11 +51,12 @@ export class HttpApiServiceImpl extends Service {
 }
 
 export async function apply(ctx: any, config: Config): Promise<() => Promise<void>> {
-  ctx.plugin(HttpApiServiceImpl)
-  const svc: HttpApiServiceImpl = (ctx as any).httpApi
-  await svc.start()
+  // M4 stub: S13 (external HTTP consumers) is not part of M4. The
+  // Service ctor's `super(ctx, 'httpApi')` is what registers the
+  // service, so calling `ctx.plugin(HttpApiServiceImpl)` on top of that
+  // creates an isolated fiber and the read below misses. Drop the
+  // re-instantiation and just no-op until S13 lands.
+  void ctx
   void config
-  return async () => {
-    await svc.stop()
-  }
+  return async () => {}
 }
