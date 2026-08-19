@@ -189,8 +189,8 @@ export class HttpApiServiceImpl extends Service {
 
     // Select provider/model based on intent
     const isLocal = (intent.category as string) === 'LOCAL'
-    const provider = isLocal ? 'local-qwen3-4b-mock' : 'cloud-deepseek-v4'
-    const model = isLocal ? 'qwen3-4b' : 'deepseek-chat'
+    const provider = isLocal ? 'local-qwen3-4b' : 'cloud-deepseek-v4'
+    const model = isLocal ? (process.env.DSH_EDGE_LOCAL_LLM_MODEL ?? 'qwen3-4b-instruct-2507') : 'deepseek-chat'
     const record = await this.ensureSession(sessionId, provider, model)
 
     // Wait for turn completion by subscribing to session/event

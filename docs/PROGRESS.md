@@ -13,7 +13,7 @@
 | **M 段（M0–M5）** | ████████████████████ 100% | ✅ 全部完成 |
 | **A2 意图路由** | ██████████████░░░░░░ 65% | ⚠️ 分类可用，脱敏/Realm 门控未做 |
 | **A 段其余（A1/A3–A8）** | ░░░░░░░░░░░░░░░░░░░░ 0% | 🔲 均未开始 |
-| **总体** | ~52% | M 段功能 + 意图路由可用 |
+| **总体** | ~52% | M 段功能 + 意图路由 + 真实本地 LLM 可用 |
 
 **M 段代码"裸奔"状态**（设计文档 § 八 明确说明）：
 - 明文 HTTPS、明文 JSONL 存储
@@ -32,6 +32,7 @@
 | **M2** | 工具调用 | ✅ 完成 | `8c8499f` | local_file_read / file_write / calculate |
 | **M3** | 会话与持久化 | ✅ 完成 | `e97391d` | JSONL 明文持久化（sessions + local-storage + audit-log） |
 | **M4** | 多模型 + 路由 | ✅ 完成 | `9ca6fab` | mock + 真 llama.cpp + cloud 三路由共存 |
+| **M4+** | 真实本地 LLM 端到端 | ✅ 完成 | (pending) | qwen3-4b-instruct-2507 @ http://192.168.66.195:8701/v1 |
 | **M5** | HTTP API 服务 | ✅ 完成 | `428f8f3` `158769a` | REST + SSE + 会话管理 + 13 项 E2E 测试 |
 | **A1** | 输入/输出防护 | 🔲 未开始 | — | `prompt-guard` 始终返回 `{safe: true}` |
 | **A2-分类** | 意图路由（分类层） | ✅ 完成 | `08e6b9e` `b1af057` | `intent-router` LLM 分类 + 关键词兜底 + 真实路由 |
@@ -52,14 +53,14 @@
 | 插件 | 行数 | 核心实现 |
 |---|---|---|
 | **cloud-llm-adapter** | ~195 | 完整 DeepSeek chat-completions 流式客户端，SSE 帧解析，环境变量驱动 API Key |
-| **local-llm-adapter** | ~304 | 双模式：`mock`（进程内回显）+ `real`（POST 到 OpenAI 兼容端点），多 Provider 路由 |
+| **local-llm-adapter** | ~304 | 双模式：`mock`（进程内回显）+ `real`（POST 到 OpenAI 兼容端点），多 Provider 路由，**真实 qwen3-4b-instruct-2507 端到端验证通过** |
 | **openai-sse** | ~273 | 共享 SSE 解析器（text delta / tool-call delta / finish reason / terminal chunk） |
 | **intent-router** | ~185 | LLM 分类（Qwen3-4B 提示词）+ 关键词兜底（LOCAL_KEYWORDS），classify() 接口 + resolve() Realm 映射 |
 | **local-tools** | ~289 | 注册 3 个工具 + 递归下降算术求值器 + 路径白名单 |
 | **local-storage** | ~179 | JSONL 持久化 KV 存储，原子写入，内存缓存，序列化写队列 |
 | **sessions** | ~191 | 基于 local-storage 的会话 CRUD，TTL 感知，LRU 淘汰 |
 | **audit-log** | ~265 | JSONL 环形缓冲区，周期刷新，级别过滤，安全报告生成 |
-| **http-api** | ~395 | 真实 HTTP 服务器，5 路由（health/openapi/chat/chat-stream SSE/sessions CRUD），Bearer 认证，**集成 intent-router** |
+| **http-api** | ~400 | 真实 HTTP 服务器，5 路由（health/openapi/chat/chat-stream SSE/sessions CRUD），Bearer 认证，**集成 intent-router + 真实本地 LLM 路由** |
 
 ### ⚠️ 部分实现（PARTIAL）— 2 个
 
@@ -210,7 +211,62 @@ intent-router.classify(text)
 
 ---
 
-## 九、下一步建议
+## 九、真实本地 LLM 端到端打通（2026-08-19 新增）
+
+### 9.1 里程碑
+
+| 项 | 内容 |
+|---|---|
+| **目标 LLM** | `qwen3-4b-instruct-2507` @ `http://192.168.66.195:8701/v1`（OpenAI 兼容） |
+| **触发** | `DSH_EDGE_LOCAL_LLM_MODE=real` |
+| **代码改动** | `http-api.ts` 的 LOCAL intent 路由从 `local-qwen3-4b-mock` → `local-qwen3-4b`，模型名由 `DSH_EDGE_LOCAL_LLM_MODEL` 注入 |
+| **新增文件** | `.env.example` 配置文件模板（`.env` 已在 `.gitignore`） |
+
+### 9.2 端到端验证
+
+| 输入 | intent | 实测响应 | 来源 |
+|---|---|---|---|
+| `帮我读取文件` | LOCAL | `请提供您想要我读取的文件路径，以便我帮您获取其内容。` | qwen3-4b-instruct-2507 ✅ |
+| `帮我计算 17*23` | LOCAL | （空 — 走了 local_calculate 工具路径） | local-tools ✅ |
+| `1+1等于几` | CLOUD | `1+1=2` | DeepSeek ✅ |
+| `用一句话介绍量子力学` | CLOUD | 完整物理描述 | DeepSeek ✅ |
+
+> 对比之前 mock 模式：`[LOCAL-MOCK] Current runtime context...` → 现在是真实 qwen3-4b 自然语言回答。
+> A 段未做，LOCAL 流量仍以明文 HTTP 传输；上线前需 OHTTP 通道或仅在内网/受信网络使用。
+
+### 9.3 .env 配置方案
+
+`.env.example`（已加入仓库，安全占位符）：
+
+```bash
+EDGE_API_KEY=test-secret-key
+DSH_EDGE_HTTP_PORT=21017
+DSH_EDGE_PROVIDER=cloud-deepseek-v4
+DSH_EDGE_MODEL=deepseek-chat
+DSH_EDGE_LOCAL_LLM_MODE=real                    # ← 切换 mock/real
+DSH_EDGE_LOCAL_LLM_BASEURL=http://192.168.66.195:8701/v1
+DSH_EDGE_LOCAL_LLM_MODEL=qwen3-4b-instruct-2507
+DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+**加载方式**（Node ≥ 20.6 原生支持，无需 dotenv）：
+
+```bash
+dsh --env-file=.env --profile dsh-edge-agent
+```
+
+或手动 `export $(grep -v '^#' .env | xargs) && dsh --profile dsh-edge-agent`。
+
+### 9.4 已知局限
+
+- `cordis.patch.yml` 内的 `mode` / `baseUrl` / `defaultModel` 全部走 `!!js process.env.X` 表达式，
+  但 `local-llm-adapter` 插件未显式打印"已读取 env"，调试时不易确认是否生效。
+- 真实 LLM 端点当前为明文 HTTP（局域网），A4（OHTTP）之前**不建议暴露到公网**。
+- 真实 LLM 的流式响应未做超时/重试/降级，端点故障时直接冒泡到 http-api → 500。
+
+---
+
+## 十、下一步建议
 
 按设计文档 A 段剩余顺序和安全影响优先级排列：
 

@@ -125,26 +125,45 @@ dsh --profile dsh-edge-agent
 
 ## 🚀 部署
 
+### 方式一：使用 `.env` 配置文件（推荐）
+
 ```bash
 # 1. 把 dsh CLI 加入 PATH（如果用 npm-global 安装）
 export PATH="$HOME/.npm-global/bin:$PATH"
 
-# 2. 设置环境变量
-export EDGE_API_KEY=test-secret-key                  # HTTP API 鉴权密钥
-export DSH_EDGE_HTTP_PORT=21017                      # HTTP API 端口
+# 2. 复制环境变量模板并填写
+cp .env.example .env
+$EDITOR .env   # 填入 DEEPSEEK_API_KEY、EDGE_API_KEY 等
 
-# 3.（可选）CLOUD 路由需要 DeepSeek API Key
-export DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx
-
-# 4. 同步配置到 home profile（关键步骤！）
+# 3. 同步 cordis 配置（关键步骤！）
 cp profiles/dsh-edge-agent/cordis.patch.yml ~/.dsh/profiles/dsh-edge-agent/
 
-# 5. 启动
-dsh --profile dsh-edge-agent
+# 4. 启动（Node ≥ 20.6 原生支持 --env-file）
+dsh --env-file=.env --profile dsh-edge-agent
 
 # 后台运行
-setsid dsh --profile dsh-edge-agent > /tmp/dsh.log 2>&1 < /dev/null &
+setsid dsh --env-file=.env --profile dsh-edge-agent > /tmp/dsh.log 2>&1 < /dev/null &
 ```
+
+### 方式二：手动 export（CI / 临时调试）
+
+```bash
+export PATH="$HOME/.npm-global/bin:$PATH"
+export EDGE_API_KEY=test-secret-key
+export DSH_EDGE_HTTP_PORT=21017
+export DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx
+export DSH_EDGE_LOCAL_LLM_MODE=real
+export DSH_EDGE_LOCAL_LLM_BASEURL=http://192.168.66.195:8701/v1
+export DSH_EDGE_LOCAL_LLM_MODEL=qwen3-4b-instruct-2507
+
+cp profiles/dsh-edge-agent/cordis.patch.yml ~/.dsh/profiles/dsh-edge-agent/
+
+dsh --profile dsh-edge-agent
+```
+
+### 完整环境变量
+
+详见 [.env.example](.env.example)。`.env` 文件已加入 `.gitignore`，**切勿提交含真实 Key 的 `.env`**。
 
 ### LLM 路由机制
 
@@ -152,37 +171,41 @@ dsh-edge-agent 通过 **意图路由**自动选择 LLM，无需手动指定 prov
 
 | 用户消息类型 | 触发关键词 | 路由到 | 示例 |
 |---|---|---|---|
-| **LOCAL** | 文件、读取、写入、计算、设备、本地 | `local-qwen3-4b-mock` | `"帮我读取文件"` → `[LOCAL-MOCK] ...` |
+| **LOCAL** | 文件、读取、写入、计算、设备、本地 | `local-qwen3-4b`（mock/real 由 `DSH_EDGE_LOCAL_LLM_MODE` 决定） | `"帮我读取文件"` → 真实 qwen3-4b 回答 |
 | **CLOUD** | 解释、什么是、知识问答 | `cloud-deepseek-v4` | `"量子力学是什么"` → DeepSeek 真实回答 |
 
 > ⚠️ `DSH_EDGE_PROVIDER` 环境变量**仅**影响 system prompt 文本，不会改变实际路由。
 > 实际路由由 `http-api.handleChat()` 根据意图分类结果硬编码选择。
 
-### 真实本地 LLM（可选 — 替换 mock）
+### 真实本地 LLM（替换 mock）
 
-如需使用真实的 llama.cpp 服务替代 mock：
+默认 mock 模式进程内回显，无需外部服务。切换到真实 llama.cpp / vLLM / Ollama：
 
 ```bash
-# 启动 llama.cpp 服务（如 http://192.168.66.195:8701/v1）
-export DSH_EDGE_LOCAL_LLM_MODE=real
-export DSH_EDGE_LOCAL_LLM_BASEURL=http://192.168.66.195:8701/v1
-export DSH_EDGE_LOCAL_LLM_MODEL=qwen3-4b
+# .env 中：
+DSH_EDGE_LOCAL_LLM_MODE=real
+DSH_EDGE_LOCAL_LLM_BASEURL=http://192.168.66.195:8701/v1
+DSH_EDGE_LOCAL_LLM_MODEL=qwen3-4b-instruct-2507
 ```
 
-> 注意：需修改 `http-api.ts` 中的 `provider` 硬编码才能切换到真实本地 LLM。
+无需修改代码 ——`http-api.ts` 直接路由到 `local-qwen3-4b`，由 `local-llm-adapter` 读取上述 env vars。
 
 ### 环境变量
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `DSH_EDGE_HTTP_PORT` | `21017` | HTTP API 端口 |
 | `EDGE_API_KEY` | — | API 鉴权密钥（无值则跳过认证） |
-| `DSH_EDGE_PROVIDER` | `local-qwen3-4b-mock` | 仅用于 system prompt，不影响实际路由 |
+| `DSH_EDGE_HTTP_PORT` | `21017` | HTTP API 端口 |
+| `DSH_EDGE_PROVIDER` | `cloud-deepseek-v4` | 仅用于 system prompt，不影响实际路由 |
+| `DSH_EDGE_MODEL` | `deepseek-chat` | 仅用于 system prompt |
 | `DEEPSEEK_API_KEY` | — | DeepSeek API Key（CLOUD 路由必需） |
 | `DSH_EDGE_LOCAL_LLM_MODE` | `mock` | local LLM 模式：`mock` 或 `real` |
 | `DSH_EDGE_LOCAL_LLM_BASEURL` | `http://127.0.0.1:8080/v1` | 本地 LLM 端点（real 模式） |
 | `DSH_EDGE_LOCAL_LLM_MODEL` | `qwen3-4b` | 本地 LLM 模型名 |
 | `DSH_EDGE_STORAGE_ROOT` | `~/.dsh-edge-agent-m1` | 数据存储根目录 |
+
+> **Secret 警告**：`DEEPSEEK_API_KEY`、`EDGE_API_KEY` 是 secret，**绝不能提交到 git**。
+> 使用 `.env` 文件（已加入 `.gitignore`）+ `dsh --env-file=.env` 启动。
 
 ## 🧪 Curl 功能测试
 
@@ -195,7 +218,7 @@ curl http://127.0.0.1:21017/v1/health
 ```
 
 ```json
-{"status":"ok","version":"0.1.0","provider":"local-qwen3-4b-mock"}
+{"status":"ok","version":"0.1.0","provider":"local-qwen3-4b"}
 ```
 
 ### 认证测试
@@ -230,18 +253,18 @@ curl -X POST http://127.0.0.1:21017/v1/chat \
 ```json
 {
   "sessionId": "test-local",
-  "result": "[LOCAL-MOCK] Current runtime context...",
+  "result": "请提供您想要我读取的文件路径，以便我帮您获取其内容。",
   "intent": {
     "category": "LOCAL",
     "targetRealm": "local",
     "confidence": 0.7,
     "rationale": "rule-keyword-match"
   },
-  "duration": 25
+  "duration": 940
 }
 ```
 
-> LOCAL intent 路由到本地 LLM（`local-qwen3-4b-mock`），不消耗云端 API 配额。
+> LOCAL intent 路由到本地 LLM（`local-qwen3-4b`）。`mock` 模式回显 `[LOCAL-MOCK] ...`；`real` 模式调用真实端点（不消耗云端 API 配额）。
 
 #### CLOUD Intent（云端处理 — 知识问答、创意）
 
@@ -288,14 +311,14 @@ curl -N -X POST http://127.0.0.1:21017/v1/chat/stream \
 ```
 
 ```
-data: {"type":"chunk","content":"[LOCAL-"}
+data: {"type":"chunk","content":"1"}
 
-data: {"type":"chunk","content":"MOCK] "}
-
-data: {"type":"chunk","content":"1+1等于几"}
+data: {"type":"chunk","content":"+1=2"}
 
 data: {"type":"done"}
 ```
+
+> SSE 流式响应（`1+1等于几` 由 DeepSeek 真实回答）。mock 模式下 chunks 内容为 `[LOCAL-MOCK] ...`。
 
 ### 会话管理
 
