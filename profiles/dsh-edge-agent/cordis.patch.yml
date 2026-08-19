@@ -182,7 +182,7 @@
 
     - id: intent-router
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/intent-router'
-      inject: [llm]
+      inject: [llm, auditLog]
       config:
         defaultCategory: CLOUD
         classificationProvider: local-qwen3-4b-mock

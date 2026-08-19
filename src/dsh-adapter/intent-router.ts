@@ -16,7 +16,12 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 
 export const name = 'intent-router'
 
-export const inject = ['llm'] as const
+export const inject = ['llm', 'auditLog'] as const
+
+/** Minimal interface our router needs from the audit-log service. */
+interface AuditLike {
+  log(entry: { level: 'debug' | 'info' | 'warn' | 'error' | 'security'; kind: string; source: string; payload: Record<string, unknown> }): Promise<unknown>
+}
 
 export interface Config {
   /** Default realm when classification finds no rule. */
@@ -57,27 +62,58 @@ export class IntentRouterServiceImpl extends Service {
   private readonly defaultCategory: Intent['category']
   private readonly classificationProvider: string
   private readonly llm: any
+  private readonly auditLog: AuditLike | undefined
 
-  constructor(ctx: Context, config: Config) {
+  constructor(ctx: Context, config: Config, auditLog?: AuditLike) {
     super(ctx, 'intentRouter')
     this.defaultCategory = config.defaultCategory
     this.classificationProvider = config.classificationProvider
     this.llm = (ctx as any).llm
+    this.auditLog = auditLog
+  }
+
+  private audit(level: 'debug' | 'info' | 'warn' | 'error' | 'security', kind: string, payload: Record<string, unknown>): void {
+    if (!this.auditLog) return
+    void this.auditLog.log({ level, kind, source: 'intent-router', payload }).catch(() => {})
   }
 
   async classify(text: string, context?: { recentMessages?: unknown[] }): Promise<Intent> {
+    const start = Date.now()
+    const textPreview = text.slice(0, 80)
+    this.audit('info', 'intent.classify.start', { textLen: text.length, textPreview, classifier: this.classificationProvider })
+
     // Try LLM classification first
     try {
-      return await this.classifyWithLlm(text)
-    } catch (err) {
+      const intent = await this.classifyWithLlm(text)
+      this.audit('info', 'intent.classify.end', {
+        textLen: text.length,
+        path: 'llm',
+        category: intent.category,
+        confidence: intent.confidence,
+        rationale: intent.rationale,
+        durationMs: Date.now() - start,
+      })
+      return intent
+    } catch (err: any) {
+      this.audit('warn', 'intent.classify.llm_error', { textLen: text.length, error: err?.message ?? String(err) })
       // Fall back to keyword rules
-      return this.classifyWithRules(text)
+      const intent = this.classifyWithRules(text)
+      this.audit('info', 'intent.classify.end', {
+        textLen: text.length,
+        path: 'rules-after-llm-error',
+        category: intent.category,
+        confidence: intent.confidence,
+        rationale: intent.rationale,
+        durationMs: Date.now() - start,
+      })
+      return intent
     }
   }
 
   private async classifyWithLlm(text: string): Promise<Intent> {
     if (!this.llm) {
-      return this.classifyWithRules(text)
+      this.audit('debug', 'intent.llm.skipped', { reason: 'no-llm-handle' })
+      throw new Error('intent-router: no llm handle')
     }
 
     const prompt = `判断以下用户请求属于哪类：
@@ -95,7 +131,9 @@ export class IntentRouterServiceImpl extends Service {
       source: { kind: 'user' },
     })
 
+    const llmStart = Date.now()
     let responseText = ''
+    let chunks = 0
     try {
       const stream = this.llm.generate({
         provider: this.classificationProvider,
@@ -103,14 +141,16 @@ export class IntentRouterServiceImpl extends Service {
       })
 
       for await (const chunk of stream) {
+        chunks++
         if (chunk.type === 'text-delta') {
           responseText += (chunk as any).text
         }
       }
-    } catch (err) {
-      // LLM call failed, fall back to rules
-      return this.classifyWithRules(text)
+    } catch (err: any) {
+      this.audit('warn', 'intent.llm.error', { durationMs: Date.now() - llmStart, error: err?.message ?? String(err) })
+      throw err
     }
+    this.audit('debug', 'intent.llm.response', { durationMs: Date.now() - llmStart, chunks, responseLen: responseText.length, responsePreview: responseText.trim().slice(0, 40) })
 
     const normalized = responseText.trim().toUpperCase()
     if (normalized.includes('LOCAL')) {
@@ -134,14 +174,16 @@ export class IntentRouterServiceImpl extends Service {
     }
 
     // LLM responded but unclear, fall back to rules
-    return this.classifyWithRules(text)
+    this.audit('debug', 'intent.llm.unclear', { responsePreview: normalized.slice(0, 40) })
+    throw new Error('intent-router: llm response unclear')
   }
 
   private classifyWithRules(text: string): Intent {
     const lower = text.toLowerCase()
-    const hasLocalKeyword = LOCAL_KEYWORDS.some((kw) => lower.includes(kw.toLowerCase()))
+    const matched = LOCAL_KEYWORDS.find((kw) => lower.includes(kw.toLowerCase()))
 
-    if (hasLocalKeyword) {
+    if (matched !== undefined) {
+      this.audit('debug', 'intent.rules.hit', { matchedKeyword: matched })
       return {
         category: 'LOCAL',
         confidence: 0.7,
@@ -152,6 +194,7 @@ export class IntentRouterServiceImpl extends Service {
       }
     }
 
+    this.audit('debug', 'intent.rules.miss', { defaultCategory: this.defaultCategory })
     return {
       category: this.defaultCategory,
       confidence: 0.5,
@@ -182,6 +225,7 @@ declare module '@deepseek-ai/cordis' {
 }
 
 export async function apply(ctx: Context, config: Config): Promise<() => Promise<void>> {
-  const service = new IntentRouterServiceImpl(ctx, config)
+  const auditLog = (ctx as unknown as { auditLog?: AuditLike }).auditLog
+  const service = new IntentRouterServiceImpl(ctx, config, auditLog)
   return async () => {}
 }
