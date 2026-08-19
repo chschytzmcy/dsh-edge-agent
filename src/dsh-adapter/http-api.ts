@@ -18,7 +18,7 @@ import type { SessionEvent } from '@deepseek-ai/dsh-session'
 
 export const name = 'http-api'
 
-export const inject = ['agents', 'intentRouter'] as const
+export const inject = ['agents', 'intentRouter', 'auditLog'] as const
 
 export interface Config {
   host: string
@@ -62,6 +62,17 @@ export class HttpApiServiceImpl extends Service {
     private auditLog: any,
   ) {
     super(cordisCtx, 'httpApi')
+  }
+
+  /** Emit an audit-log entry (silent no-op if missing or wrong API). */
+  private audit(level: 'debug' | 'info' | 'warn' | 'error' | 'security', kind: string, payload: Record<string, unknown>): void {
+    if (!this.auditLog || typeof this.auditLog.log !== 'function') return
+    void this.auditLog.log({ level, kind, source: 'http-api', payload }).catch(() => {})
+  }
+
+  /** One-line access log to stdout (visible in /tmp/dsh.log). */
+  private accessLog(reqId: string, method: string, path: string, status: number, durationMs: number, extra?: string): void {
+    console.log(`[http-api][${reqId}] ${method} ${path} ${status} ${durationMs}ms${extra ? ' ' + extra : ''}`)
   }
 
   async start(): Promise<void> {
@@ -114,16 +125,20 @@ export class HttpApiServiceImpl extends Service {
   private async handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`)
     const path = url.pathname
+    const reqId = randomUUID().slice(0, 8)
+    const start = Date.now()
 
     // Public routes (no auth)
     if (req.method === 'GET' && path === '/v1/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ status: 'ok' }))
+      this.accessLog(reqId, 'GET', path, 200, Date.now() - start)
       return
     }
     if (req.method === 'GET' && path === '/v1/openapi.json') {
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify(this.getOpenApiSpec()))
+      this.accessLog(reqId, 'GET', path, 200, Date.now() - start)
       return
     }
 
@@ -131,29 +146,37 @@ export class HttpApiServiceImpl extends Service {
     if (!this.checkAuth(req)) {
       res.writeHead(401, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: 'Unauthorized' }))
+      this.accessLog(reqId, req.method ?? '?', path, 401, Date.now() - start, 'auth-fail')
+      this.audit('warn', 'http.auth.fail', { reqId, method: req.method, path })
       return
     }
 
     try {
       if (req.method === 'POST' && path === '/v1/chat') {
-        await this.handleChat(req, res)
+        await this.handleChat(req, res, reqId, start)
       } else if (req.method === 'POST' && path === '/v1/chat/stream') {
-        await this.handleChatStream(req, res)
+        await this.handleChatStream(req, res, reqId, start)
       } else if (req.method === 'GET' && path === '/v1/sessions') {
         this.handleListSessions(res)
+        this.accessLog(reqId, 'GET', path, 200, Date.now() - start)
       } else if (req.method === 'GET' && path.startsWith('/v1/sessions/')) {
         const id = path.slice('/v1/sessions/'.length)
         this.handleGetSession(id, res)
+        this.accessLog(reqId, 'GET', path, 200, Date.now() - start)
       } else if (req.method === 'DELETE' && path.startsWith('/v1/sessions/')) {
         const id = path.slice('/v1/sessions/'.length)
         await this.handleDeleteSession(id, res)
+        this.accessLog(reqId, 'DELETE', path, 204, Date.now() - start)
       } else {
         res.writeHead(404, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ error: 'Not found' }))
+        this.accessLog(reqId, req.method ?? '?', path, 404, Date.now() - start)
       }
     } catch (err: any) {
       res.writeHead(500, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: err.message ?? 'Internal error' }))
+      this.accessLog(reqId, req.method ?? '?', path, 500, Date.now() - start, `err="${err.message ?? 'unknown'}"`)
+      this.audit('error', 'http.error', { reqId, method: req.method, path, error: err.message })
     }
   }
 
@@ -165,17 +188,18 @@ export class HttpApiServiceImpl extends Service {
     return scheme === 'Bearer' && token === this.config.bearerToken
   }
 
-  private async handleChat(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  private async handleChat(req: IncomingMessage, res: ServerResponse, reqId: string, start: number): Promise<void> {
     const body = await this.readJsonBody(req)
     const { message, sessionId: requestedSessionId } = body
     if (!message || typeof message !== 'string') {
       res.writeHead(400, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: 'message is required' }))
+      this.accessLog(reqId, 'POST', '/v1/chat', 400, Date.now() - start, 'no-message')
       return
     }
 
-    const start = Date.now()
     const sessionId = requestedSessionId ?? randomUUID()
+    this.audit('info', 'http.chat.start', { reqId, sessionId, messageLen: message.length, messagePreview: message.slice(0, 80) })
 
     // Classify intent using intent-router
     let intent = { category: 'CLOUD' as const, confidence: 0, targetRealm: 'cloud', rationale: 'no-classifier' }
@@ -191,6 +215,7 @@ export class HttpApiServiceImpl extends Service {
     const isLocal = (intent.category as string) === 'LOCAL'
     const provider = isLocal ? 'local-qwen3-4b' : 'cloud-deepseek-v4'
     const model = isLocal ? (process.env.DSH_EDGE_LOCAL_LLM_MODEL ?? 'qwen3-4b-instruct-2507') : 'deepseek-chat'
+    this.audit('info', 'http.chat.route', { reqId, sessionId, intent: intent.category, provider, model, confidence: intent.confidence, rationale: intent.rationale })
     const record = await this.ensureSession(sessionId, provider, model)
 
     // Wait for turn completion by subscribing to session/event
@@ -222,6 +247,8 @@ export class HttpApiServiceImpl extends Service {
 
     const result = await turnEnd
     const duration = Date.now() - start
+    this.audit('info', 'http.chat.end', { reqId, sessionId, provider, model, durationMs: duration, resultLen: result.length })
+    this.accessLog(reqId, 'POST', '/v1/chat', 200, duration, `${provider}/${model} intent=${intent.category}`)
 
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(
@@ -239,16 +266,18 @@ export class HttpApiServiceImpl extends Service {
     )
   }
 
-  private async handleChatStream(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  private async handleChatStream(req: IncomingMessage, res: ServerResponse, reqId: string, start: number): Promise<void> {
     const body = await this.readJsonBody(req)
     const { message, sessionId: requestedSessionId } = body
     if (!message || typeof message !== 'string') {
       res.writeHead(400, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: 'message is required' }))
+      this.accessLog(reqId, 'POST', '/v1/chat/stream', 400, Date.now() - start, 'no-message')
       return
     }
 
     const sessionId = requestedSessionId ?? randomUUID()
+    this.audit('info', 'http.chat.stream.start', { reqId, sessionId, messageLen: message.length })
 
     // Classify intent (same as handleChat) so SSE routes to the correct LLM
     let intent = { category: 'CLOUD' as const, confidence: 0, targetRealm: 'cloud', rationale: 'no-classifier' }
@@ -263,6 +292,7 @@ export class HttpApiServiceImpl extends Service {
     const isLocal = (intent.category as string) === 'LOCAL'
     const provider = isLocal ? 'local-qwen3-4b' : 'cloud-deepseek-v4'
     const model = isLocal ? (process.env.DSH_EDGE_LOCAL_LLM_MODEL ?? 'qwen3-4b-instruct-2507') : 'deepseek-chat'
+    this.audit('info', 'http.chat.stream.route', { reqId, sessionId, intent: intent.category, provider, model })
     const record = await this.ensureSession(sessionId, provider, model)
 
     res.writeHead(200, {
@@ -270,6 +300,7 @@ export class HttpApiServiceImpl extends Service {
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive',
     })
+    this.accessLog(reqId, 'POST', '/v1/chat/stream', 200, Date.now() - start, `${provider}/${model} intent=${intent.category}`)
 
     // Emit intent first so client knows the routing decision
     res.write(`data: ${JSON.stringify({ type: 'intent', intent: { category: intent.category, targetRealm: intent.targetRealm, confidence: intent.confidence, rationale: intent.rationale } })}\n\n`)
@@ -282,6 +313,8 @@ export class HttpApiServiceImpl extends Service {
         }
       } else if (event.type === 'turn/end') {
         res.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`)
+        const duration = Date.now() - start
+        this.audit('info', 'http.chat.stream.end', { reqId, sessionId, provider, model, durationMs: duration })
         dispose()
         res.end()
       }
