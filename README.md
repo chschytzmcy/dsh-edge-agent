@@ -126,44 +126,63 @@ dsh --profile dsh-edge-agent
 ## 🚀 部署
 
 ```bash
-# 设置环境变量
-export EDGE_API_KEY=test-secret-key
-export DSH_EDGE_HTTP_PORT=21017
-export DSH_EDGE_PROVIDER=local-qwen3-4b-mock   # mock 模式，无需 API Key
+# 1. 把 dsh CLI 加入 PATH（如果用 npm-global 安装）
+export PATH="$HOME/.npm-global/bin:$PATH"
 
-# 启动
+# 2. 设置环境变量
+export EDGE_API_KEY=test-secret-key                  # HTTP API 鉴权密钥
+export DSH_EDGE_HTTP_PORT=21017                      # HTTP API 端口
+
+# 3.（可选）CLOUD 路由需要 DeepSeek API Key
+export DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx
+
+# 4. 同步配置到 home profile（关键步骤！）
+cp profiles/dsh-edge-agent/cordis.patch.yml ~/.dsh/profiles/dsh-edge-agent/
+
+# 5. 启动
 dsh --profile dsh-edge-agent
 
 # 后台运行
-dsh --profile dsh-edge-agent > /tmp/dsh-edge-agent.log 2>&1 &
+setsid dsh --profile dsh-edge-agent > /tmp/dsh.log 2>&1 < /dev/null &
 ```
 
-### LLM Provider 选择
+### LLM 路由机制
+
+dsh-edge-agent 通过 **意图路由**自动选择 LLM，无需手动指定 provider：
+
+| 用户消息类型 | 触发关键词 | 路由到 | 示例 |
+|---|---|---|---|
+| **LOCAL** | 文件、读取、写入、计算、设备、本地 | `local-qwen3-4b-mock` | `"帮我读取文件"` → `[LOCAL-MOCK] ...` |
+| **CLOUD** | 解释、什么是、知识问答 | `cloud-deepseek-v4` | `"量子力学是什么"` → DeepSeek 真实回答 |
+
+> ⚠️ `DSH_EDGE_PROVIDER` 环境变量**仅**影响 system prompt 文本，不会改变实际路由。
+> 实际路由由 `http-api.handleChat()` 根据意图分类结果硬编码选择。
+
+### 真实本地 LLM（可选 — 替换 mock）
+
+如需使用真实的 llama.cpp 服务替代 mock：
 
 ```bash
-# Mock 模式（测试用，无需 API Key）
-export DSH_EDGE_PROVIDER=local-qwen3-4b-mock
-
-# Cloud 模式（需 DeepSeek API Key）
-export DEEPSEEK_API_KEY=sk-...
-export DSH_EDGE_PROVIDER=cloud-deepseek-v4
-
-# 本地真实 LLM（需 llama.cpp 服务）
-export DSH_EDGE_PROVIDER=local-qwen3-4b
+# 启动 llama.cpp 服务（如 http://192.168.66.195:8701/v1）
 export DSH_EDGE_LOCAL_LLM_MODE=real
 export DSH_EDGE_LOCAL_LLM_BASEURL=http://192.168.66.195:8701/v1
+export DSH_EDGE_LOCAL_LLM_MODEL=qwen3-4b
 ```
+
+> 注意：需修改 `http-api.ts` 中的 `provider` 硬编码才能切换到真实本地 LLM。
 
 ### 环境变量
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
 | `DSH_EDGE_HTTP_PORT` | `21017` | HTTP API 端口 |
-| `EDGE_API_KEY` | — | API 鉴权密钥 |
-| `DSH_EDGE_PROVIDER` | `local-qwen3-4b-mock` | LLM 提供者 |
-| `DEEPSEEK_API_KEY` | — | DeepSeek API Key（cloud 模式必需） |
-| `DSH_EDGE_LOCAL_LLM_BASEURL` | `http://127.0.0.1:8080/v1` | 本地 LLM 端点 |
-| `DSH_EDGE_STORAGE_ROOT` | `~/.dsh-edge-agent` | 数据存储根目录 |
+| `EDGE_API_KEY` | — | API 鉴权密钥（无值则跳过认证） |
+| `DSH_EDGE_PROVIDER` | `local-qwen3-4b-mock` | 仅用于 system prompt，不影响实际路由 |
+| `DEEPSEEK_API_KEY` | — | DeepSeek API Key（CLOUD 路由必需） |
+| `DSH_EDGE_LOCAL_LLM_MODE` | `mock` | local LLM 模式：`mock` 或 `real` |
+| `DSH_EDGE_LOCAL_LLM_BASEURL` | `http://127.0.0.1:8080/v1` | 本地 LLM 端点（real 模式） |
+| `DSH_EDGE_LOCAL_LLM_MODEL` | `qwen3-4b` | 本地 LLM 模型名 |
+| `DSH_EDGE_STORAGE_ROOT` | `~/.dsh-edge-agent-m1` | 数据存储根目录 |
 
 ## 🧪 Curl 功能测试
 
