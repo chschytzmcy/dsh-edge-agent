@@ -183,8 +183,10 @@
 
     - id: intent-router
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/intent-router'
+      inject: [llm]
       config:
         defaultCategory: CLOUD
+        classificationProvider: local-qwen3-4b-mock
 
     # NOTE: id renamed from `tools` to avoid colliding with dsh-base.
     - id: edge-tools-registry

@@ -1,42 +1,82 @@
 /**
- * intent-router plugin tests — M1 minimal: default-category routing.
+ * intent-router plugin tests — LLM-based classification + keyword fallback.
  *
- * A2 will expand this surface (rules + LLM fallback + prompt-guard
- * listener); M1 only checks the canonical shape and the
- * default-to-CLOUD behaviour.
+ * Tests the rule-based fallback path (no real LLM call in unit tests).
  */
 
 import assert from 'node:assert/strict'
 import { describe, it } from 'vitest'
 
 import * as router from '../../src/dsh-adapter/intent-router.ts'
-import { classifyDefault } from '../../src/dsh-adapter/intent-router.ts'
+import { IntentRouterServiceImpl } from '../../src/dsh-adapter/intent-router.ts'
 
-describe('intent-router (M1)', () => {
+describe('intent-router', () => {
   it('exports the canonical plugin shape', () => {
     assert.equal(router.name, 'intent-router')
-    assert.deepEqual([...router.inject], [])
+    assert.deepEqual([...router.inject], ['llm'])
     assert.equal(typeof router.apply, 'function')
     assert.ok(router.Config)
   })
 
-  it('defaults to the CLOUD realm in M1', async () => {
-    const intent = await classifyDefault('CLOUD', '你好')
-    assert.equal(intent.category, 'CLOUD')
-    assert.equal(intent.confidence, 1)
-    assert.equal(intent.targetRealm, 'cloud')
-    assert.match(intent.rationale, /m1-default:cloud/u)
-  })
+  it('classifies LOCAL intent via keyword rules (fallback)', async () => {
+    // Create a mock context without real llm
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: null,
+    } as any
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b-mock',
+    })
 
-  it('honors a configured default category of LOCAL', async () => {
-    const intent = await classifyDefault('LOCAL', 'list files')
+    const intent = await service.classify('帮我读取文件内容')
     assert.equal(intent.category, 'LOCAL')
     assert.equal(intent.targetRealm, 'local')
-    assert.match(intent.rationale, /m1-default:local/u)
+    assert.equal(intent.requiresSanitization, false)
+    assert.match(intent.rationale, /rule-keyword-match/u)
   })
 
-  it('marks requiresSanitization=false (M1 has no sanitization layer)', async () => {
-    const intent = await classifyDefault('CLOUD', 'what is the weather')
+  it('classifies CLOUD intent via keyword rules (fallback)', async () => {
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: null,
+    } as any
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b-mock',
+    })
+
+    const intent = await service.classify('解释一下量子力学')
+    assert.equal(intent.category, 'CLOUD')
+    assert.equal(intent.targetRealm, 'cloud')
+  })
+
+  it('falls back to defaultCategory when no keywords match', async () => {
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: null,
+    } as any
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b-mock',
+    })
+
+    const intent = await service.classify('你好')
+    assert.equal(intent.category, 'CLOUD')
+    assert.match(intent.rationale, /default:cloud/u)
+  })
+
+  it('marks requiresSanitization=false (M3 has no sanitization layer)', async () => {
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: null,
+    } as any
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b-mock',
+    })
+
+    const intent = await service.classify('what is the weather')
     assert.equal(intent.requiresSanitization, false)
   })
 })

@@ -18,7 +18,7 @@ import type { SessionEvent } from '@deepseek-ai/dsh-session'
 
 export const name = 'http-api'
 
-export const inject = ['agents'] as const
+export const inject = ['agents', 'intentRouter'] as const
 
 export interface Config {
   host: string
@@ -53,6 +53,7 @@ export class HttpApiServiceImpl extends Service {
   private server: Server | undefined
   private readonly sessions = new Map<string, SessionRecord>()
   private running = false
+  private intentRouter: any
 
   constructor(
     private cordisCtx: any,
@@ -65,6 +66,19 @@ export class HttpApiServiceImpl extends Service {
 
   async start(): Promise<void> {
     if (this.running) return
+    // Get intentRouter after all plugins are loaded
+    try {
+      const router = (this.cordisCtx as any).intentRouter
+      if (router && typeof router.classify === 'function') {
+        this.intentRouter = router
+        console.log('[http-api] intentRouter: found and valid')
+      } else {
+        console.log('[http-api] intentRouter: exists but invalid', router)
+      }
+    } catch (err: any) {
+      console.log('[http-api] Error getting intentRouter:', err?.message)
+    }
+
     this.server = createServer((req, res) => this.handleRequest(req, res))
     await new Promise<void>((resolve, reject) => {
       this.server!.once('error', reject)
@@ -164,6 +178,16 @@ export class HttpApiServiceImpl extends Service {
     const sessionId = requestedSessionId ?? randomUUID()
     const record = await this.ensureSession(sessionId)
 
+    // Classify intent using intent-router
+    let intent = { category: 'CLOUD' as const, confidence: 0, targetRealm: 'cloud', rationale: 'no-classifier' }
+    if (this.intentRouter) {
+      try {
+        intent = await this.intentRouter.classify(message)
+      } catch (err: any) {
+        // Intent classification failed, use default
+      }
+    }
+
     // Wait for turn completion by subscribing to session/event
     const turnEnd = new Promise<string>((resolve) => {
       const dispose = this.cordisCtx.on('session/event', (session: any, event: SessionEvent) => {
@@ -198,7 +222,12 @@ export class HttpApiServiceImpl extends Service {
       JSON.stringify({
         sessionId,
         result,
-        intent: { category: 'CLOUD' },
+        intent: {
+          category: intent.category,
+          targetRealm: intent.targetRealm,
+          confidence: intent.confidence,
+          rationale: intent.rationale,
+        },
         duration,
       }),
     )
