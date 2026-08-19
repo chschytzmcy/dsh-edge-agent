@@ -11,3 +11,4 @@ AGENTS.md
 .env.local
 coverage/
 *.tsbuildinfo
+.claude/
