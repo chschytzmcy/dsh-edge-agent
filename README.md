@@ -56,11 +56,11 @@
 | `cloud-llm-adapter` | DeepSeek API 流式客户端 | ✅ 可用 |
 | `local-llm-adapter` | 本地 LLM（mock + 真 llama.cpp） | ✅ 可用 |
 | `model-router` | 多模型路由分发 | ✅ 可用 |
+| `intent-router` | LLM 意图分类 → LOCAL/CLOUD 路由 | ✅ 可用 |
 | `local-tools` | 本地工具（file_read/write/calculate） | ✅ 可用 |
 | `http-api` | REST + SSE HTTP 服务器 | ✅ 可用 |
 | `tcm` | 可信计算模块 | 🔲 桩 |
 | `prompt-guard` | 输入/输出安全防护 | 🔲 桩 |
-| `intent-router` | 意图分类 → Realm 路由 | 🔲 桩 |
 | `sanitizer-pipeline` | PII 脱敏/还原 | 🔲 桩 |
 | `ohttp-gateway` | OHTTP 网关 | 🔲 桩 |
 | `secure-bridge` | 端云安全通信桥 | 🔲 桩 |
@@ -70,7 +70,7 @@
 | `voice-input` | 语音输入 | 🔲 桩 |
 | `plugin-host` | 第三方插件宿主 | 🔲 桩 |
 
-> M 段（M0–M5）已全部完成，A 段安全加固均未开始。详见 [docs/PROGRESS.md](docs/PROGRESS.md)。
+> M 段（M0–M5）已全部完成，意图识别（LOCAL/CLOUD）路由已端到端打通。A 段安全加固均未开始。详见 [docs/PROGRESS.md](docs/PROGRESS.md)。
 
 ## 📦 安装
 
@@ -199,21 +199,65 @@ curl -s -o /dev/null -w "%{http_code}" -X POST http://127.0.0.1:21017/v1/chat \
 
 ### Chat 同步
 
+#### LOCAL Intent（本地处理 — 文件操作、计算）
+
 ```bash
 curl -X POST http://127.0.0.1:21017/v1/chat \
   -H "Authorization: Bearer test-secret-key" \
   -H "Content-Type: application/json" \
-  -d '{"message":"你好，请介绍一下自己","sessionId":"test-001"}'
+  -d '{"message":"帮我读取文件","sessionId":"test-local"}'
 ```
 
 ```json
 {
-  "sessionId": "test-001",
-  "result": "[LOCAL-MOCK] 你好，请介绍一下自己",
-  "intent": {"category": "CLOUD"},
-  "duration": 123
+  "sessionId": "test-local",
+  "result": "[LOCAL-MOCK] Current runtime context...",
+  "intent": {
+    "category": "LOCAL",
+    "targetRealm": "local",
+    "confidence": 0.7,
+    "rationale": "rule-keyword-match"
+  },
+  "duration": 25
 }
 ```
+
+> LOCAL intent 路由到本地 LLM（`local-qwen3-4b-mock`），不消耗云端 API 配额。
+
+#### CLOUD Intent（云端处理 — 知识问答、创意）
+
+```bash
+curl -X POST http://127.0.0.1:21017/v1/chat \
+  -H "Authorization: Bearer test-secret-key" \
+  -H "Content-Type: application/json" \
+  -d '{"message":"用一句话介绍量子力学","sessionId":"test-cloud"}'
+```
+
+```json
+{
+  "sessionId": "test-cloud",
+  "result": "量子力学是研究微观粒子（如原子、电子、光子）运动规律的理论，其核心在于粒子状态由波函数描述，观测结果具有概率性，且存在波粒二象性、叠加与纠缠等现象。",
+  "intent": {
+    "category": "CLOUD",
+    "targetRealm": "cloud",
+    "confidence": 0.5,
+    "rationale": "default:cloud"
+  },
+  "duration": 1575
+}
+```
+
+> CLOUD intent 路由到 `cloud-deepseek-v4`，需要 `DEEPSEEK_API_KEY` 环境变量。
+
+### Intent 分类规则
+
+| 关键词触发 LOCAL | 默认 / 知识类 → CLOUD |
+|---|---|
+| 文件、读取、写入、删除、计算、加减乘除 | 解释、什么是、如何、为什么 |
+| 本地、设备、系统、磁盘、目录、文件夹 | 你好、介绍、帮我写 |
+| file, read, write, delete, calculate | 量子、相对论、Python |
+
+分类流程：先用本地 Qwen3-4B 判断 → 失败时降级到关键词规则。
 
 ### Chat 流式（SSE）
 
