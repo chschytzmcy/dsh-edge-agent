@@ -90,7 +90,7 @@ pnpm install
 ```bash
 # 设置环境变量
 export EDGE_API_KEY=test-secret-key
-export DSH_EDGE_HTTP_PORT=3080
+export DSH_EDGE_HTTP_PORT=21017
 export DSH_EDGE_PROVIDER=local-qwen3-4b-mock   # mock 模式，无需 API Key
 
 # 启动
@@ -120,7 +120,7 @@ export DSH_EDGE_LOCAL_LLM_BASEURL=http://192.168.66.195:8701/v1
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `DSH_EDGE_HTTP_PORT` | `3080` | HTTP API 端口 |
+| `DSH_EDGE_HTTP_PORT` | `21017` | HTTP API 端口 |
 | `EDGE_API_KEY` | — | API 鉴权密钥 |
 | `DSH_EDGE_PROVIDER` | `local-qwen3-4b-mock` | LLM 提供者 |
 | `DEEPSEEK_API_KEY` | — | DeepSeek API Key（cloud 模式必需） |
@@ -129,12 +129,12 @@ export DSH_EDGE_LOCAL_LLM_BASEURL=http://192.168.66.195:8701/v1
 
 ## 🧪 Curl 功能测试
 
-> 假设服务器运行在 `http://127.0.0.1:3080`，API Key 为 `test-secret-key`。
+> 假设服务器运行在 `http://127.0.0.1:21017`，API Key 为 `test-secret-key`。
 
 ### Health Check
 
 ```bash
-curl http://127.0.0.1:3080/v1/health
+curl http://127.0.0.1:21017/v1/health
 ```
 
 ```json
@@ -145,16 +145,16 @@ curl http://127.0.0.1:3080/v1/health
 
 ```bash
 # 无 Token → 401
-curl -s -o /dev/null -w "%{http_code}" -X POST http://127.0.0.1:3080/v1/chat \
+curl -s -o /dev/null -w "%{http_code}" -X POST http://127.0.0.1:21017/v1/chat \
   -H "Content-Type: application/json" -d '{"message":"hi"}'
 
 # 错误 Token → 401
-curl -s -o /dev/null -w "%{http_code}" -X POST http://127.0.0.1:3080/v1/chat \
+curl -s -o /dev/null -w "%{http_code}" -X POST http://127.0.0.1:21017/v1/chat \
   -H "Authorization: Bearer wrong-key" \
   -H "Content-Type: application/json" -d '{"message":"hi"}'
 
 # 正确 Token → 200
-curl -s -o /dev/null -w "%{http_code}" -X POST http://127.0.0.1:3080/v1/chat \
+curl -s -o /dev/null -w "%{http_code}" -X POST http://127.0.0.1:21017/v1/chat \
   -H "Authorization: Bearer test-secret-key" \
   -H "Content-Type: application/json" -d '{"message":"hi"}'
 ```
@@ -162,7 +162,7 @@ curl -s -o /dev/null -w "%{http_code}" -X POST http://127.0.0.1:3080/v1/chat \
 ### Chat 同步
 
 ```bash
-curl -X POST http://127.0.0.1:3080/v1/chat \
+curl -X POST http://127.0.0.1:21017/v1/chat \
   -H "Authorization: Bearer test-secret-key" \
   -H "Content-Type: application/json" \
   -d '{"message":"你好，请介绍一下自己","sessionId":"test-001"}'
@@ -180,7 +180,7 @@ curl -X POST http://127.0.0.1:3080/v1/chat \
 ### Chat 流式（SSE）
 
 ```bash
-curl -N -X POST http://127.0.0.1:3080/v1/chat/stream \
+curl -N -X POST http://127.0.0.1:21017/v1/chat/stream \
   -H "Authorization: Bearer test-secret-key" \
   -H "Content-Type: application/json" \
   -d '{"message":"1+1等于几","sessionId":"test-002"}'
@@ -200,22 +200,22 @@ data: {"type":"done"}
 
 ```bash
 # 列出所有会话
-curl http://127.0.0.1:3080/v1/sessions \
+curl http://127.0.0.1:21017/v1/sessions \
   -H "Authorization: Bearer test-secret-key"
 
 # 获取特定会话
-curl http://127.0.0.1:3080/v1/sessions/test-001 \
+curl http://127.0.0.1:21017/v1/sessions/test-001 \
   -H "Authorization: Bearer test-secret-key"
 
 # 删除会话
-curl -X DELETE http://127.0.0.1:3080/v1/sessions/test-001 \
+curl -X DELETE http://127.0.0.1:21017/v1/sessions/test-001 \
   -H "Authorization: Bearer test-secret-key"
 ```
 
 ### OpenAPI Spec
 
 ```bash
-curl http://127.0.0.1:3080/v1/openapi.json | jq .
+curl http://127.0.0.1:21017/v1/openapi.json | jq .
 ```
 
 ---

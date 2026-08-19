@@ -10,7 +10,7 @@
  * Expected: all tests pass with ✅
  */
 
-const BASE_URL = process.env.DSH_EDGE_HTTP_URL ?? 'http://127.0.0.1:3080'
+const BASE_URL = process.env.DSH_EDGE_HTTP_URL ?? 'http://127.0.0.1:21017'
 const API_KEY = process.env.EDGE_API_KEY ?? 'test123'
 
 async function test(name: string, fn: () => Promise<void>) {

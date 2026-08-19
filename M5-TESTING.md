@@ -44,16 +44,16 @@ dsh --profile dsh-edge-agent &
 
 ```bash
 # 健康检查
-curl http://127.0.0.1:3080/v1/health
+curl http://127.0.0.1:21017/v1/health
 
 # 同步聊天
-curl -X POST http://127.0.0.1:3080/v1/chat \
+curl -X POST http://127.0.0.1:21017/v1/chat \
   -H "Authorization: Bearer $EDGE_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"message":"你好"}'
 
 # SSE 流式
-curl -N -X POST http://127.0.0.1:3080/v1/chat/stream \
+curl -N -X POST http://127.0.0.1:21017/v1/chat/stream \
   -H "Authorization: Bearer $EDGE_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"message":"讲个笑话"}'
@@ -78,7 +78,7 @@ curl -N -X POST http://127.0.0.1:3080/v1/chat/stream \
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `DSH_EDGE_PROVIDER` | `local-qwen3-4b-mock` | LLM provider |
-| `DSH_EDGE_HTTP_PORT` | `3080` | HTTP 端口 |
+| `DSH_EDGE_HTTP_PORT` | `21017` | HTTP 端口 |
 | `EDGE_API_KEY` | `test-secret-key` | API 密钥 |
 | `DEEPSEEK_API_KEY` | - | DeepSeek API key (cloud) |
 | `KEEP_SERVER_RUNNING` | `false` | 测试后保持运行 |
@@ -131,7 +131,7 @@ export PATH="$PWD/packages/examples/agent-spine-demo/bin:$PATH"
 DSH_EDGE_HTTP_PORT=3081 ./scripts/m5-e2e-test.sh
 
 # 或杀掉占用进程
-lsof -ti:3080 | xargs kill -9
+lsof -ti:21017 | xargs kill -9
 ```
 
 ### 问题：服务器启动失败

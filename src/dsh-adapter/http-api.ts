@@ -31,7 +31,7 @@ export interface Config {
 
 export const Config: Schema<Config> = Schema.object({
   host: Schema.string().default('127.0.0.1'),
-  port: Schema.natural().default(3080),
+  port: Schema.natural().default(21017),
   bearerToken: Schema.string(),
   requireAttestation: Schema.boolean().default(true),
 })

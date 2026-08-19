@@ -172,7 +172,7 @@
   inject: [agents, sessions, auditLog]
   config:
     host: 127.0.0.1
-    port: 3080
+    port: 21017
     requireAttestation: true
 
 - id: dsh-edge-agent

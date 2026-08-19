@@ -151,7 +151,7 @@
 | Variable | Default | Description |
 |---|---|---|
 | `DSH_EDGE_HTTP_HOST` | `127.0.0.1` | HTTP server bind address |
-| `DSH_EDGE_HTTP_PORT` | `3080` | HTTP server port |
+| `DSH_EDGE_HTTP_PORT` | `21017` | HTTP server port |
 | `DSH_EDGE_HTTP_BEARER` | — | Bearer token (disabled if unset) |
 | `DSH_EDGE_HTTP_REQUIRE_ATTEST` | `true` | Require attestation |
 

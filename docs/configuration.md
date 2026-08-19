@@ -151,7 +151,7 @@ dsh-edge-agent 通过**环境变量**和 `cordis.yml` 进行配置。所有环�
 | 变量 | 默认值 | 说明 |
 |---|---|---|
 | `DSH_EDGE_HTTP_HOST` | `127.0.0.1` | HTTP 服务器绑定地址 |
-| `DSH_EDGE_HTTP_PORT` | `3080` | HTTP 服务器端口 |
+| `DSH_EDGE_HTTP_PORT` | `21017` | HTTP 服务器端口 |
 | `DSH_EDGE_HTTP_BEARER` | — | Bearer token（如不设则禁用） |
 | `DSH_EDGE_HTTP_REQUIRE_ATTEST` | `true` | 是否要求 attestation |
 

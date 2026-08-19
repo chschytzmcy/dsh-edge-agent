@@ -7,7 +7,7 @@
 #
 # 环境变量：
 #   DSH_EDGE_PROVIDER     - LLM provider (default: local-qwen3-4b-mock)
-#   DSH_EDGE_HTTP_PORT    - HTTP 端口 (default: 3080)
+#   DSH_EDGE_HTTP_PORT    - HTTP 端口 (default: 21017)
 #   EDGE_API_KEY          - API 密钥 (default: test-secret-key)
 #   DEEPSEEK_API_KEY      - DeepSeek API key (cloud provider 必需)
 #   SKIP_DSH_INSTALL      - 跳过 dsh 安装检查 (set to "true")
@@ -24,7 +24,7 @@ NC='\033[0m' # No Color
 
 # 配置
 PROFILE="dsh-edge-agent"
-PORT="${DSH_EDGE_HTTP_PORT:-3080}"
+PORT="${DSH_EDGE_HTTP_PORT:-21017}"
 API_KEY="${EDGE_API_KEY:-test-secret-key}"
 PROVIDER="${DSH_EDGE_PROVIDER:-local-qwen3-4b-mock}"
 BASE_URL="http://127.0.0.1:$PORT"
