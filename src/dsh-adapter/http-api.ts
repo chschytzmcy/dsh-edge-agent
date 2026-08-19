@@ -176,7 +176,6 @@ export class HttpApiServiceImpl extends Service {
 
     const start = Date.now()
     const sessionId = requestedSessionId ?? randomUUID()
-    const record = await this.ensureSession(sessionId)
 
     // Classify intent using intent-router
     let intent = { category: 'CLOUD' as const, confidence: 0, targetRealm: 'cloud', rationale: 'no-classifier' }
@@ -188,12 +187,19 @@ export class HttpApiServiceImpl extends Service {
       }
     }
 
+    // Select provider/model based on intent
+    const isLocal = (intent.category as string) === 'LOCAL'
+    const provider = isLocal ? 'local-qwen3-4b-mock' : 'cloud-deepseek-v4'
+    const model = isLocal ? 'qwen3-4b' : 'deepseek-chat'
+    const record = await this.ensureSession(sessionId, provider, model)
+
     // Wait for turn completion by subscribing to session/event
     const turnEnd = new Promise<string>((resolve) => {
       const dispose = this.cordisCtx.on('session/event', (session: any, event: SessionEvent) => {
         if (session.id !== sessionId) return
         if (event.type === 'turn/end') {
-          const lastAssistant = record.agent.session.events
+          const events = record.agent.session.events
+          const lastAssistant = events
             .filter((e) => e.type === 'assistant/message')
             .pop()
           const text = lastAssistant
@@ -304,11 +310,15 @@ export class HttpApiServiceImpl extends Service {
     res.end()
   }
 
-  private async ensureSession(sessionId: string): Promise<SessionRecord> {
+  private async ensureSession(sessionId: string, provider?: string, model?: string): Promise<SessionRecord> {
     let record = this.sessions.get(sessionId)
     if (!record) {
       const handle = await this.agents.create({
         sessionId: SessionId(sessionId),
+        agentOptions: {
+          provider: provider ?? 'local-qwen3-4b-mock',
+          model: model ?? 'qwen3-4b',
+        },
         meta: { cwd: process.cwd() },
       })
       record = { agent: handle.agent, handle, createdAt: Date.now() }
