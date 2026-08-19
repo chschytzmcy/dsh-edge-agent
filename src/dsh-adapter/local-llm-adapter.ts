@@ -42,7 +42,17 @@ import {
 
 export const name = 'local-llm-adapter'
 
-export const inject = ['llm'] as const
+export const inject = ['llm', 'auditLog'] as const
+
+/** Minimal interface our adapter needs from the audit-log service. */
+interface AuditLike {
+  log(entry: { level: 'debug' | 'info' | 'warn' | 'error' | 'security'; kind: string; source: string; payload: Record<string, unknown> }): Promise<unknown>
+}
+
+function audit(log: AuditLike | undefined, level: 'debug' | 'info' | 'warn' | 'error' | 'security', kind: string, payload: Record<string, unknown>): void {
+  if (!log) return
+  void log.log({ level, kind, source: 'local-llm-adapter', payload }).catch(() => {})
+}
 
 /** Per-mode behaviour. `mock` is in-process; `real` POSTs to baseUrl. */
 export type LocalLlmMode = 'mock' | 'real'
@@ -83,7 +93,7 @@ export class LocalLlmAdapterImpl extends LlmAdapter {
   private readonly providersList: string[]
   private readonly innerByProvider: Map<string, LlmAdapter>
 
-  constructor(config: Config) {
+  constructor(config: Config, auditLog?: AuditLike) {
     super()
     this.providersList = [...config.providers]
     this.innerByProvider = new Map()
@@ -91,8 +101,8 @@ export class LocalLlmAdapterImpl extends LlmAdapter {
       this.innerByProvider.set(
         provider,
         config.mode === 'real' && !provider.endsWith('-mock')
-          ? new RealLocalAdapter(provider, config)
-          : new MockLocalAdapter(provider),
+          ? new RealLocalAdapter(provider, config, auditLog)
+          : new MockLocalAdapter(provider, auditLog),
       )
     }
   }
@@ -143,10 +153,12 @@ export class LocalLlmAdapterImpl extends LlmAdapter {
  */
 class MockLocalAdapter extends LlmAdapter {
   private readonly providerName: string
+  private readonly auditLog: AuditLike | undefined
 
-  constructor(provider: string) {
+  constructor(provider: string, auditLog?: AuditLike) {
     super()
     this.providerName = provider
+    this.auditLog = auditLog
   }
 
   get providers(): string[] {
@@ -181,6 +193,9 @@ class MockLocalAdapter extends LlmAdapter {
       .find((message) => message.role === 'user')
     const body = lastUser !== undefined ? extractText(lastUser.content).trim() : ''
     const reply = body.length > 0 ? `[LOCAL-MOCK] ${body}` : '[LOCAL-MOCK] (no user text)'
+    const start = Date.now()
+    audit(this.auditLog, 'info', 'llm.local.mock.start', { provider: options.provider, model: options.model, messageCount: options.messages.length, promptLen: body.length })
+    audit(this.auditLog, 'info', 'llm.local.mock.end', { provider: options.provider, model: options.model, durationMs: Date.now() - start, resultLen: reply.length, finishKind: 'stop' })
 
     yield { type: 'block-start', index: 0, blockType: 'text' }
     yield { type: 'text-delta', index: 0, text: reply }
@@ -199,13 +214,15 @@ class RealLocalAdapter extends LlmAdapter {
   private readonly baseUrl: string
   private readonly defaultModel: string
   private readonly apiKeyEnv: string | undefined
+  private readonly auditLog: AuditLike | undefined
 
-  constructor(provider: string, config: Config) {
+  constructor(provider: string, config: Config, auditLog?: AuditLike) {
     super()
     this.providerName = provider
     this.baseUrl = config.baseUrl.replace(/\/+$/u, '')
     this.defaultModel = config.defaultModel
     this.apiKeyEnv = config.apiKeyEnv
+    this.auditLog = auditLog
   }
 
   get providers(): string[] {
@@ -245,12 +262,32 @@ class RealLocalAdapter extends LlmAdapter {
     const apiKey = this.apiKeyEnv !== undefined ? readApiKey(this.apiKeyEnv) : undefined
     if (apiKey !== undefined) headers.authorization = `Bearer ${apiKey}`
 
-    const response = await fetch(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body),
-      signal: options.signal,
-    })
+    const promptText = options.messages.map((m) => `${m.role}:${extractText(m.content)}`).join('\n')
+    const promptLen = promptText.length
+    const start = Date.now()
+    audit(this.auditLog, 'info', 'llm.local.real.start', { provider: options.provider, model: options.model, messageCount: options.messages.length, promptLen, baseUrl: this.baseUrl })
+
+    let response: Response
+    try {
+      response = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+        signal: options.signal,
+      })
+    } catch (err: any) {
+      const durationMs = Date.now() - start
+      audit(this.auditLog, 'error', 'llm.local.real.network_error', { provider: options.provider, model: options.model, durationMs, error: err?.message ?? String(err) })
+      throw err
+    }
+
+    if (!response.ok) {
+      const durationMs = Date.now() - start
+      let respBody = ''
+      try { respBody = await response.text() } catch { /* ignore */ }
+      audit(this.auditLog, 'error', 'llm.local.real.http_error', { provider: options.provider, model: options.model, status: response.status, durationMs, respBody: respBody.slice(0, 500) })
+      throw new LlmError(`local-llm-adapter (${this.providerName}): HTTP ${response.status}: ${respBody.slice(0, 200)}`, 'PROVIDER_ERROR')
+    }
 
     yield { type: 'block-start', index: 0, blockType: 'text' }
     let assembledText = ''
@@ -263,21 +300,41 @@ class RealLocalAdapter extends LlmAdapter {
       throw new LlmError(`local-llm-adapter (${this.providerName}): SSE stream interrupted: ${message}`, 'PROVIDER_ERROR')
     }
 
-    for await (const event of iterateSseFrames(response, throwOnWire)) {
-      const reason = sseFinishReason(event)
-      if (reason !== undefined) {
-        finishKind = reason
-        continue
+    let wireError: string | undefined
+    try {
+      for await (const event of iterateSseFrames(response, throwOnWire)) {
+        const reason = sseFinishReason(event)
+        if (reason !== undefined) {
+          finishKind = reason
+          continue
+        }
+        const result = sseEventToChunk(event, toolCalls)
+        if (result === null) continue
+        if (result.chunk.type === 'text-delta') {
+          assembledText += (result.chunk as { text: string }).text
+          sawText = result.sawText
+        } else if (result.chunk.type === 'tool-call-delta') {
+          sawToolCall = result.sawToolCall
+        }
+        yield result.chunk
       }
-      const result = sseEventToChunk(event, toolCalls)
-      if (result === null) continue
-      if (result.chunk.type === 'text-delta') {
-        assembledText += (result.chunk as { text: string }).text
-        sawText = result.sawText
-      } else if (result.chunk.type === 'tool-call-delta') {
-        sawToolCall = result.sawToolCall
-      }
-      yield result.chunk
+    } catch (err: any) {
+      wireError = err?.message ?? String(err)
+      throw err
+    } finally {
+      const durationMs = Date.now() - start
+      audit(this.auditLog, 'info', 'llm.local.real.end', {
+        provider: options.provider,
+        model: options.model,
+        durationMs,
+        promptLen,
+        resultLen: assembledText.length,
+        toolCallCount: toolCalls.size,
+        finishKind,
+        sawText,
+        sawToolCall,
+        ...(wireError !== undefined ? { wireError } : {}),
+      })
     }
 
     yield* terminalChunks(sawText, assembledText, toolCalls, finishKind, sawToolCall)
@@ -292,7 +349,8 @@ function readApiKey(slot: string): string | undefined {
 }
 
 export async function apply(ctx: Context, config: Config): Promise<() => Promise<void>> {
-  const adapter = new LocalLlmAdapterImpl(config)
+  const auditLog = (ctx as unknown as { auditLog?: AuditLike }).auditLog
+  const adapter = new LocalLlmAdapterImpl(config, auditLog)
   const llm = (ctx as unknown as {
     llm: { registerAdapter(providers: string[], adapter: LlmAdapter): { (): void } }
   }).llm

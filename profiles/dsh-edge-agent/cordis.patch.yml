@@ -155,7 +155,7 @@
 
     - id: cloud-llm-adapter
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/cloud-llm-adapter'
-      inject: [llm]
+      inject: [llm, auditLog]
       config:
         providers: [cloud-deepseek-v4]
         baseUrl: !!js process.env.DEEPSEEK_BASE_URL ?? 'https://api.deepseek.com'
@@ -164,7 +164,7 @@
 
     - id: local-llm-adapter
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/local-llm-adapter'
-      inject: [llm]
+      inject: [llm, auditLog]
       config:
         providers: [local-qwen3-4b-mock, local-qwen3-4b]
         mode: !!js process.env.DSH_EDGE_LOCAL_LLM_MODE ?? 'mock'

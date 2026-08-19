@@ -33,6 +33,7 @@ import type {
 
 import {
   buildChatCompletionsBody,
+  extractText,
   iterateSseFrames,
   sseEventToChunk,
   sseFinishReason,
@@ -41,7 +42,12 @@ import {
 
 export const name = 'cloud-llm-adapter'
 
-export const inject = ['llm'] as const
+export const inject = ['llm', 'auditLog'] as const
+
+/** Minimal interface our adapter needs from the audit-log service. */
+interface AuditLike {
+  log(entry: { level: 'debug' | 'info' | 'warn' | 'error' | 'security'; kind: string; source: string; payload: Record<string, unknown> }): Promise<unknown>
+}
 
 export interface Config {
   /** Provider route ids this adapter owns; defaults match DeepSeek. */
@@ -79,14 +85,21 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
   private readonly apiKeyEnv: string
   private readonly defaultModel: string
   private readonly temperature: number | undefined
+  private readonly auditLog: AuditLike | undefined
 
-  constructor(config: Config) {
+  constructor(config: Config, auditLog?: AuditLike) {
     super()
     this.providersList = [...config.providers]
     this.baseUrl = config.baseUrl.replace(/\/+$/u, '')
     this.apiKeyEnv = config.apiKeyEnv
     this.defaultModel = config.defaultModel
     this.temperature = config.temperature
+    this.auditLog = auditLog
+  }
+
+  private audit(level: 'debug' | 'info' | 'warn' | 'error' | 'security', kind: string, payload: Record<string, unknown>): void {
+    if (!this.auditLog) return
+    void this.auditLog.log({ level, kind, source: 'cloud-llm-adapter', payload }).catch(() => {})
   }
 
   /** Mirror {@link CloudLlmAdapter.providers}; the upstream registry reads it. */
@@ -121,6 +134,7 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
   override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
     const apiKey = readApiKey(this.apiKeyEnv)
     if (!apiKey) {
+      this.audit('error', 'llm.cloud.missing_key', { provider: options.provider, model: options.model, envSlot: this.apiKeyEnv })
       throw new LlmError(
         `cloud-llm-adapter: missing API key in env slot "${this.apiKeyEnv}"`,
         'MISSING_CREDENTIAL',
@@ -128,6 +142,12 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
     }
     const url = `${this.baseUrl}/chat/completions`
     const body = buildChatCompletionsBody(options, this.defaultModel, this.temperature)
+    const promptText = options.messages.map((m) => `${m.role}:${extractText(m.content)}`).join('\n')
+    const promptLen = promptText.length
+    const messageCount = options.messages.length
+    const start = Date.now()
+    this.audit('info', 'llm.cloud.start', { provider: options.provider, model: options.model, messageCount, promptLen, baseUrl: this.baseUrl })
+
     const headers: Record<string, string> = {
       'content-type': 'application/json',
       'authorization': `Bearer ${apiKey}`,
@@ -135,12 +155,27 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
       ...attributionHeaders(),
     }
 
-    const response = await fetch(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body),
-      signal: options.signal,
-    })
+    let response: Response
+    try {
+      response = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+        signal: options.signal,
+      })
+    } catch (err: any) {
+      const durationMs = Date.now() - start
+      this.audit('error', 'llm.cloud.network_error', { provider: options.provider, model: options.model, durationMs, error: err?.message ?? String(err) })
+      throw err
+    }
+
+    if (!response.ok) {
+      const durationMs = Date.now() - start
+      let respBody = ''
+      try { respBody = await response.text() } catch { /* ignore */ }
+      this.audit('error', 'llm.cloud.http_error', { provider: options.provider, model: options.model, status: response.status, durationMs, respBody: respBody.slice(0, 500) })
+      throw new LlmError(`cloud-llm-adapter: HTTP ${response.status}: ${respBody.slice(0, 200)}`, 'PROVIDER_ERROR')
+    }
 
     yield { type: 'block-start', index: 0, blockType: 'text' }
     let assembledText = ''
@@ -153,21 +188,41 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
       throw new LlmError(`cloud-llm-adapter: SSE stream interrupted: ${message}`, 'PROVIDER_ERROR')
     }
 
-    for await (const event of iterateSseFrames(response, throwOnWire)) {
-      const reason = sseFinishReason(event)
-      if (reason !== undefined) {
-        finishKind = reason
-        continue
+    let wireError: string | undefined
+    try {
+      for await (const event of iterateSseFrames(response, throwOnWire)) {
+        const reason = sseFinishReason(event)
+        if (reason !== undefined) {
+          finishKind = reason
+          continue
+        }
+        const result = sseEventToChunk(event, toolCalls)
+        if (result === null) continue
+        if (result.chunk.type === 'text-delta') {
+          assembledText += (result.chunk as { text: string }).text
+          sawText = result.sawText
+        } else if (result.chunk.type === 'tool-call-delta') {
+          sawToolCall = result.sawToolCall
+        }
+        yield result.chunk
       }
-      const result = sseEventToChunk(event, toolCalls)
-      if (result === null) continue
-      if (result.chunk.type === 'text-delta') {
-        assembledText += (result.chunk as { text: string }).text
-        sawText = result.sawText
-      } else if (result.chunk.type === 'tool-call-delta') {
-        sawToolCall = result.sawToolCall
-      }
-      yield result.chunk
+    } catch (err: any) {
+      wireError = err?.message ?? String(err)
+      throw err
+    } finally {
+      const durationMs = Date.now() - start
+      this.audit('info', 'llm.cloud.end', {
+        provider: options.provider,
+        model: options.model,
+        durationMs,
+        promptLen,
+        resultLen: assembledText.length,
+        toolCallCount: toolCalls.size,
+        finishKind,
+        sawText,
+        sawToolCall,
+        ...(wireError !== undefined ? { wireError } : {}),
+      })
     }
 
     yield* terminalChunks(sawText, assembledText, toolCalls, finishKind, sawToolCall)
@@ -183,7 +238,8 @@ function readApiKey(slot: string): string | undefined {
 }
 
 export async function apply(ctx: Context, config: Config): Promise<() => Promise<void>> {
-  const adapter = new CloudLlmAdapterImpl(config)
+  const auditLog = (ctx as unknown as { auditLog?: AuditLike }).auditLog
+  const adapter = new CloudLlmAdapterImpl(config, auditLog)
   const llm = (ctx as unknown as {
     llm: { registerAdapter(providers: string[], adapter: LlmAdapter): { (): void } }
   }).llm
