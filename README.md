@@ -74,15 +74,53 @@
 
 ## 📦 安装
 
+### 快速安装（推荐）
+
 ```bash
-# 前置
+# 前置：dsh CLI + pnpm
 npm install -g @deepseek-ai/dsh pnpm
 
-# 克隆并安装
+# 克隆并一键安装
 git clone https://github.com/chschytzmcy/dsh-edge-agent.git
 cd dsh-edge-agent
 pnpm install
 ./install.sh
+```
+
+### 详细安装（单命令逐步执行）
+
+```bash
+# 1. 安装 dsh CLI（DeepSeek Harness 官方客户端）
+npm install -g @deepseek-ai/dsh
+
+# 2. 安装 pnpm 包管理器
+npm install -g pnpm
+
+# 3. 克隆仓库
+git clone https://github.com/chschytzmcy/dsh-edge-agent.git
+cd dsh-edge-agent
+
+# 4. 安装项目依赖
+pnpm install
+
+# 5. 编译 TypeScript
+pnpm run compile
+
+# 6. 运行验证（确保所有插件形状正确）
+pnpm run verify:build
+
+# 7. 运行单元测试（16 个测试文件）
+pnpm test
+
+# 8. 将插件安装到 DSH profile
+#    这会自动创建 ~/.dsh/profiles/dsh-edge-agent/ 并注入所有插件
+dsh plugin --profile dsh-edge-agent add @deepseek-harness-edge-agent/dsh-edge-agent
+
+# 9. 验证 profile 已创建
+ls ~/.dsh/profiles/dsh-edge-agent/
+
+# 10. 启动服务
+dsh --profile dsh-edge-agent
 ```
 
 ## 🚀 部署
