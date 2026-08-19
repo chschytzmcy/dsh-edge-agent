@@ -96,6 +96,8 @@ export class AuditLogServiceImpl extends Service {
   private readonly ringBufferSize: number
   private readonly flushIntervalMs: number
   private ringBuffer: AuditEntry[] = []
+  /** Index of the first entry in ringBuffer that has NOT yet been flushed. */
+  private flushIndex = 0
   private flushTimer: ReturnType<typeof setInterval> | undefined
   private dirty = false
   private flushPromise: Promise<void> = Promise.resolve()
@@ -143,6 +145,9 @@ export class AuditLogServiceImpl extends Service {
     this.ringBuffer.push(record)
     if (this.ringBuffer.length > this.ringBufferSize) {
       this.ringBuffer.shift()
+      // Keep flushIndex aligned with the buffer: an entry was dropped from
+      // the front, so the "first unflushed" boundary shifts back by one.
+      this.flushIndex = Math.max(0, this.flushIndex - 1)
     }
     this.dirty = true
   }
@@ -188,15 +193,27 @@ export class AuditLogServiceImpl extends Service {
     if (!this.dirty) return
     // Serialise flushes.
     this.flushPromise = this.flushPromise.then(async () => {
-      const snapshot = [...this.ringBuffer]
-      if (snapshot.length === 0) return
+      // Only flush the [flushIndex..length) slice — never re-write entries
+      // already on disk.
+      const start = this.flushIndex
+      const end = this.ringBuffer.length
+      if (start >= end) {
+        this.dirty = false
+        return
+      }
+      const toWrite = this.ringBuffer.slice(start, end)
+      if (toWrite.length === 0) {
+        this.dirty = false
+        return
+      }
       await mkdir(dirname(this.filePath), { recursive: true })
       const prev = existsSync(this.filePath) ? await readFile(this.filePath, 'utf-8') : ''
-      const lines = snapshot.map((e) => JSON.stringify(e)).join('\n') + '\n'
+      const lines = toWrite.map((e) => JSON.stringify(e)).join('\n') + '\n'
       const next = prev + lines
       const tmp = `${this.filePath}.tmp-${process.pid}`
       await writeFile(tmp, next, 'utf-8')
       await rename(tmp, this.filePath)
+      this.flushIndex = end
       this.dirty = false
     })
     return this.flushPromise
@@ -205,7 +222,9 @@ export class AuditLogServiceImpl extends Service {
   /** Read every entry from disk; used by query() to span past the ring buffer. */
   private async readAllFromDisk(): Promise<AuditEntry[]> {
     const disk = await this.readDiskEntries()
-    // Merge in-memory entries not yet flushed.
+    // Disk already holds entries [0..flushIndex); only merge the unflushed
+    // tail [flushIndex..length) of the ring buffer to avoid duplicates.
+    const unflushed = this.ringBuffer.slice(this.flushIndex)
     const seen = new Set<number>()
     const merged: AuditEntry[] = []
     for (const e of disk) {
@@ -214,7 +233,7 @@ export class AuditLogServiceImpl extends Service {
         merged.push(e)
       }
     }
-    for (const e of this.ringBuffer) {
+    for (const e of unflushed) {
       if (!seen.has(e.ts)) merged.push(e)
     }
     return merged
