@@ -125,7 +125,9 @@ dsh --profile dsh-edge-agent
 
 ## 🚀 部署
 
-### 方式一：使用 `.env` 配置文件（推荐）
+### 方式一：使用 `.env.sh` 加载器（推荐）
+
+⚠️ **DSH 限制**：`.env` 不能直接放进 `node --env-file=.env`，DSH 会拒绝加载「进程启动敏感」变量（如 `DSH_EDGE_HTTP_PORT`、`DSH_EDGE_LOCAL_LLM_BASEURL`）。因此使用 `.env.sh` 加载器，它只把安全变量放入 `.env`，其他变量由加载器 export。
 
 ```bash
 # 1. 把 dsh CLI 加入 PATH（如果用 npm-global 安装）
@@ -138,20 +140,28 @@ $EDITOR .env   # 填入 DEEPSEEK_API_KEY、EDGE_API_KEY 等
 # 3. 同步 cordis 配置（关键步骤！）
 cp profiles/dsh-edge-agent/cordis.patch.yml ~/.dsh/profiles/dsh-edge-agent/
 
-# 4. 启动（Node ≥ 20.6 原生支持 --env-file）
-dsh --env-file=.env --profile dsh-edge-agent
+# 4. 启动（.env.sh 自动 export 所有 DSH_EDGE_* 变量）
+source .env.sh && dsh --profile dsh-edge-agent
 
 # 后台运行
-setsid dsh --env-file=.env --profile dsh-edge-agent > /tmp/dsh.log 2>&1 < /dev/null &
+setsid bash -c 'source .env.sh && dsh --profile dsh-edge-agent' > /tmp/dsh.log 2>&1 < /dev/null &
 ```
+
+`.env.sh` 会打印加载的变量（脱敏）便于调试。
 
 ### 方式二：手动 export（CI / 临时调试）
 
 ```bash
 export PATH="$HOME/.npm-global/bin:$PATH"
+
+# 业务变量（可以放在 .env 里用 set -a 加载）
 export EDGE_API_KEY=test-secret-key
-export DSH_EDGE_HTTP_PORT=21017
 export DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx
+
+# DSH_EDGE_* 必须是 export（不能放进 .env）
+export DSH_EDGE_HTTP_PORT=21017
+export DSH_EDGE_PROVIDER=cloud-deepseek-v4
+export DSH_EDGE_MODEL=deepseek-chat
 export DSH_EDGE_LOCAL_LLM_MODE=real
 export DSH_EDGE_LOCAL_LLM_BASEURL=http://192.168.66.195:8701/v1
 export DSH_EDGE_LOCAL_LLM_MODEL=qwen3-4b-instruct-2507
