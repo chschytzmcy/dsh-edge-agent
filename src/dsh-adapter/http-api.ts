@@ -249,13 +249,30 @@ export class HttpApiServiceImpl extends Service {
     }
 
     const sessionId = requestedSessionId ?? randomUUID()
-    const record = await this.ensureSession(sessionId)
+
+    // Classify intent (same as handleChat) so SSE routes to the correct LLM
+    let intent = { category: 'CLOUD' as const, confidence: 0, targetRealm: 'cloud', rationale: 'no-classifier' }
+    if (this.intentRouter) {
+      try {
+        intent = await this.intentRouter.classify(message)
+      } catch (err: any) {
+        // Intent classification failed, use default
+      }
+    }
+
+    const isLocal = (intent.category as string) === 'LOCAL'
+    const provider = isLocal ? 'local-qwen3-4b' : 'cloud-deepseek-v4'
+    const model = isLocal ? (process.env.DSH_EDGE_LOCAL_LLM_MODEL ?? 'qwen3-4b-instruct-2507') : 'deepseek-chat'
+    const record = await this.ensureSession(sessionId, provider, model)
 
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive',
     })
+
+    // Emit intent first so client knows the routing decision
+    res.write(`data: ${JSON.stringify({ type: 'intent', intent: { category: intent.category, targetRealm: intent.targetRealm, confidence: intent.confidence, rationale: intent.rationale } })}\n\n`)
 
     const dispose = this.cordisCtx.on('session/event', (_session: any, event: SessionEvent) => {
       if (event.type === 'assistant/chunk') {
