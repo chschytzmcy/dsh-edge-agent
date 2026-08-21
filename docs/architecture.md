@@ -58,7 +58,8 @@ dsh-edge-agent 由 **19 个核心插件 + 1 个可选 http-api** 组成。所有
                        │
         ┌──────────────┼──────────────┐
         │              │              │
-  local-tools    web-search     voice-input
+  DSH tools       voice-input    plugin-host
+  (bash/fs/web)        │              │
         │              │              │
         └──────────────┘              │
                                       │
@@ -74,8 +75,10 @@ dsh-edge-agent 由 **19 个核心插件 + 1 个可选 http-api** 组成。所有
 
    plugin-host (interop anchor, 第三方插件挂载点)
 
-   http-api (可选, 外部消费者接口)
+   http-api (可选，外部消费者接口)
 ```
+
+> **工具复用**: dsh-edge-agent 使用 DSH 原生工具（`@deepseek-ai/dsh-tool-bash`、`dsh-tool-fs`、`dsh-tool-web`），而非自行实现。详见 [dsh-native-tools-analysis.md](dsh-native-tools-analysis.md)。
 
 ### 插件清单
 
@@ -97,11 +100,12 @@ dsh-edge-agent 由 **19 个核心插件 + 1 个可选 http-api** 组成。所有
 | `secure-bridge` | 端云安全桥 | — |
 | `attestation` | TEE 远程证明 | — |
 | `td-bus` | 威胁检测总线 | — |
-| `local-tools` | 本地工具集 | LOCAL |
-| `web-search` | 公网搜索 | CLOUD |
+| `tools` | Realm 工具注册表配置 | — |
 | `voice-input` | 语音输入 | LOCAL |
 | `plugin-host` | 第三方插件互操作锚点 | — |
 | `http-api` | HTTP API（可选） | — |
+
+> **工具复用**: dsh-edge-agent 不再自行实现工具插件，而是复用 DSH 原生工具（`dsh-tool-bash`、`dsh-tool-fs`、`dsh-tool-web`），通过 `tools` 插件配置 Realm 标记。详见 [dsh-native-tools-analysis.md](dsh-native-tools-analysis.md)。
 
 ## 🌍 Realm 模型
 

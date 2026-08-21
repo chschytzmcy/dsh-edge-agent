@@ -142,6 +142,17 @@ export class AuditLogServiceImpl extends Service {
       source: entry.source,
       payload: entry.payload,
     }
+    // Verify lossless JSON up front so a non-serializable payload never
+    // wedges the flush path. `session.event` payloads are derived from the
+    // session log (already JSON-validated by dsh-session), but defensively
+    // double-check; one bad entry would otherwise break the whole flush.
+    try {
+      JSON.stringify(record)
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(`[audit-log] dropping non-JSON entry kind=${entry.kind} source=${entry.source} err=${(err as Error).message}`)
+      return
+    }
     this.ringBuffer.push(record)
     if (this.ringBuffer.length > this.ringBufferSize) {
       this.ringBuffer.shift()
@@ -208,13 +219,23 @@ export class AuditLogServiceImpl extends Service {
       }
       await mkdir(dirname(this.filePath), { recursive: true })
       const prev = existsSync(this.filePath) ? await readFile(this.filePath, 'utf-8') : ''
-      const lines = toWrite.map((e) => JSON.stringify(e)).join('\n') + '\n'
-      const next = prev + lines
-      const tmp = `${this.filePath}.tmp-${process.pid}`
-      await writeFile(tmp, next, 'utf-8')
-      await rename(tmp, this.filePath)
-      this.flushIndex = end
-      this.dirty = false
+      try {
+        const lines = toWrite.map((e) => JSON.stringify(e)).join('\n') + '\n'
+        const next = prev + lines
+        const tmp = `${this.filePath}.tmp-${process.pid}`
+        await writeFile(tmp, next, 'utf-8')
+        await rename(tmp, this.filePath)
+        this.flushIndex = end
+        this.dirty = false
+      } catch (err) {
+        // A single non-serializable entry would otherwise pin the buffer
+        // forever and stop every subsequent flush. Drop the batch and report;
+        // log() already pre-validates JSON so this is a belt-and-braces guard.
+        // eslint-disable-next-line no-console
+        console.error(`[audit-log] flush failed, dropping ${toWrite.length} entries: ${(err as Error).message}`)
+        this.flushIndex = end
+        this.dirty = false
+      }
     })
     return this.flushPromise
   }

@@ -143,14 +143,20 @@ export function sseEventToChunk(
     current.arguments += event.argumentsDelta
     toolCalls.set(event.index, current)
     const idForChunk = event.id ?? current.id
+    // CRITICAL: dsh-session's `snapshotJsonValue` rejects chunks with `undefined`
+    // fields (throws "carries non-JSON-serializable data"). When DeepSeek splits
+    // a tool call across multiple deltas, intermediate chunks omit `name` (and
+    // on the very first chunk the local accumulator's `name` is still `''`).
+    // Strip `undefined` so the chunk survives lossless JSON validation.
+    const chunk: StreamChunk = {
+      type: 'tool-call-delta',
+      index: event.index,
+      id: brandCallId(idForChunk as CallId | string) as CallId,
+      argumentsDelta: event.argumentsDelta,
+    }
+    if (event.name !== undefined) chunk.name = event.name
     return {
-      chunk: {
-        type: 'tool-call-delta',
-        index: event.index,
-        id: brandCallId(idForChunk as CallId | string) as CallId,
-        name: event.name,
-        argumentsDelta: event.argumentsDelta,
-      },
+      chunk,
       sawText: false,
       sawToolCall: true,
     }
@@ -174,10 +180,14 @@ export function* terminalChunks(
   if (sawText) {
     yield { type: 'block-end', index: 0, block: { type: 'text', text: assembledText } }
   }
-  for (const [index, call] of [...toolCalls.entries()].sort((a, b) => a[0] - b[0])) {
+  // CRITICAL: Tool-call block-ends must use indices that don't collide with text (index 0).
+  // The BlockAssembler uses chunk.index to track blocks, so text and tool-calls must have
+  // distinct indices. Use 1, 2, 3... for tool-calls.
+  let toolCallIndex = 1
+  for (const [, call] of [...toolCalls.entries()].sort((a, b) => a[0] - b[0])) {
     yield {
       type: 'block-end',
-      index,
+      index: toolCallIndex++,
       block: {
         type: 'tool-call',
         id: brandCallId(call.id as CallId | string) as CallId,

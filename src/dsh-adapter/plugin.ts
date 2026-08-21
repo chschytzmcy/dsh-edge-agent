@@ -18,11 +18,15 @@
  *  14. td-bus        (depends on audit-log, privacy-policy)
  *  15. intent-router (depends on llm, prompt-guard, privacy-policy, sessions)
  *  16. sanitizer-pipeline (depends on local-storage, privacy-policy)
- *  17. local-tools   (depends on tools, local-storage)
- *  18. web-search    (depends on tools, secure-bridge, audit-log)
- *  19. voice-input   (depends on sessions, audit-log)
- *  20. plugin-host   (depends on agents, sessions)
- *  21. http-api      (depends on agents, sessions, audit-log)
+ *  17. voice-input   (depends on sessions, audit-log)
+ *  18. plugin-host   (depends on agents, sessions)
+ *  19. http-api      (depends on agents, sessions, audit-log)
+ *
+ * Note: local-tools and web-search have been removed. Use DSH native tools:
+ *   - @deepseek-ai/dsh-tool-bash (bash execution)
+ *   - @deepseek-ai/dsh-tool-fs (file read/write/edit)
+ *   - @deepseek-ai/dsh-tool-web (web_search + web_fetch)
+ *   - @deepseek-ai/dsh-web-search-deepseek (DeepSeek search provider)
  *
  * Each plugin's own `apply` declares its `inject` dependencies; the DSH
  * Loader activates them in topological order automatically. This file

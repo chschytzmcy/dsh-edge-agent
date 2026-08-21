@@ -1,11 +1,10 @@
 /**
- * M4 unit tests — local-llm-adapter mock + real-mode dispatch.
+ * M4 unit tests — local-llm-adapter real-mode dispatch.
  *
- * Mock-mode echo is fully exercised. Real-mode is exercised against a
- * stubbed `fetch` that returns the same SSE shape as the cloud tests;
- * the `local-qwen3-4b` route hits the real path, the `local-qwen3-4b-mock`
- * route never touches the network. Provider routing asserts the inner
- * adapter picked by route id.
+ * Every provider route the adapter owns hits the network. The
+ * `local-qwen3-4b` route is exercised against a stubbed `fetch`
+ * that returns the same SSE shape as the cloud tests. Provider
+ * routing asserts the inner adapter picked by route id.
  *
  * Run via `pnpm test -t local-llm-adapter`.
  */
@@ -65,84 +64,15 @@ function restoreFetch(): void {
   globalThis.fetch = originalFetch
 }
 
-describe('local-llm-adapter (M4)', () => {
+describe('local-llm-adapter (M4, real-only)', () => {
   it('exports the canonical plugin shape', () => {
     assert.equal(localMod.name, 'local-llm-adapter')
-    assert.deepEqual([...localMod.inject], ['llm'])
+    assert.deepEqual([...localMod.inject], ['llm', 'auditLog'])
     assert.equal(typeof localMod.apply, 'function')
     assert.ok(localMod.Config)
   })
 
-  it('mock mode echoes the last user message as [LOCAL-MOCK] {text}', async () => {
-    const adapter = new LocalLlmAdapterImpl({
-      providers: ['local-qwen3-4b-mock'],
-      mode: 'mock',
-      baseUrl: 'http://127.0.0.1:8080/v1',
-      defaultModel: 'qwen3-4b',
-    })
-
-    const chunks: unknown[] = []
-    for await (const chunk of adapter.stream({
-      provider: 'local-qwen3-4b-mock',
-      model: 'qwen3-4b',
-      messages: [
-        { role: 'system', content: [{ type: 'text', text: 'be terse' }] },
-        { role: 'user', content: [{ type: 'text', text: '你好' }] },
-      ],
-    })) {
-      chunks.push(chunk)
-    }
-
-    const types = chunks.map((c) => (c as { type: string }).type)
-    assert.deepEqual(types, ['block-start', 'text-delta', 'block-end', 'finish'])
-
-    const text = (chunks[1] as { text: string }).text
-    assert.equal(text, '[LOCAL-MOCK] 你好')
-
-    const block = (chunks[2] as { block: { text: string } }).block
-    assert.equal(block.text, '[LOCAL-MOCK] 你好')
-  })
-
-  it('mock mode falls back to "(no user text)" when the user slot is empty', async () => {
-    const adapter = new LocalLlmAdapterImpl({
-      providers: ['local-qwen3-4b-mock'],
-      mode: 'mock',
-      baseUrl: 'http://127.0.0.1:8080/v1',
-      defaultModel: 'qwen3-4b',
-    })
-
-    const chunks: unknown[] = []
-    for await (const chunk of adapter.stream({
-      provider: 'local-qwen3-4b-mock',
-      model: 'qwen3-4b',
-      messages: [],
-    })) {
-      chunks.push(chunk)
-    }
-    const text = (chunks[1] as { text: string }).text
-    assert.equal(text, '[LOCAL-MOCK] (no user text)')
-  })
-
-  it('mock mode never calls fetch', async () => {
-    installFetchMock(() => sseResponse([]))
-    const adapter = new LocalLlmAdapterImpl({
-      providers: ['local-qwen3-4b-mock'],
-      mode: 'mock',
-      baseUrl: 'http://127.0.0.1:8080/v1',
-      defaultModel: 'qwen3-4b',
-    })
-    for await (const _ of adapter.stream({
-      provider: 'local-qwen3-4b-mock',
-      model: 'qwen3-4b',
-      messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
-    })) {
-      // drain
-    }
-    assert.equal(fetchCallCount, 0, 'mock path must not hit the network')
-    restoreFetch()
-  })
-
-  it('real mode posts to {baseUrl}/chat/completions with the configured default model', async () => {
+  it('posts to {baseUrl}/chat/completions with the configured default model', async () => {
     installFetchMock(() => sseResponse([
       { choices: [{ delta: { content: 'pong' }, finish_reason: null }] },
       { choices: [{ delta: {}, finish_reason: 'stop' }] },
@@ -150,7 +80,6 @@ describe('local-llm-adapter (M4)', () => {
 
     const adapter = new LocalLlmAdapterImpl({
       providers: ['local-qwen3-4b'],
-      mode: 'real',
       baseUrl: 'http://127.0.0.1:8080/v1',
       defaultModel: 'qwen3-4b',
     })
@@ -182,14 +111,13 @@ describe('local-llm-adapter (M4)', () => {
     restoreFetch()
   })
 
-  it('real mode omits the bearer header when no apiKeyEnv is configured', async () => {
+  it('omits the bearer header when no apiKeyEnv is configured', async () => {
     installFetchMock(() => sseResponse([
       { choices: [{ delta: { content: 'ok' }, finish_reason: 'stop' }] },
     ]))
 
     const adapter = new LocalLlmAdapterImpl({
       providers: ['local-qwen3-4b'],
-      mode: 'real',
       baseUrl: 'http://192.168.66.195:8701/v1',
       defaultModel: 'qwen3-4b',
     })
@@ -208,7 +136,7 @@ describe('local-llm-adapter (M4)', () => {
     restoreFetch()
   })
 
-  it('real mode threads the apiKeyEnv bearer when configured', async () => {
+  it('threads the apiKeyEnv bearer when configured', async () => {
     process.env.DSH_EDGE_LOCAL_LLM_KEY = 'sk-llm-test'
     installFetchMock(() => sseResponse([
       { choices: [{ delta: { content: 'ok' }, finish_reason: 'stop' }] },
@@ -216,7 +144,6 @@ describe('local-llm-adapter (M4)', () => {
 
     const adapter = new LocalLlmAdapterImpl({
       providers: ['local-qwen3-4b'],
-      mode: 'real',
       baseUrl: 'http://192.168.66.195:8701/v1',
       defaultModel: 'qwen3-4b',
       apiKeyEnv: 'DSH_EDGE_LOCAL_LLM_KEY',
@@ -238,51 +165,49 @@ describe('local-llm-adapter (M4)', () => {
     restoreFetch()
   })
 
-  it('routes the right inner adapter by provider id when both are mounted', async () => {
+  it('routes the right inner adapter by provider id when multiple routes are mounted', async () => {
     installFetchMock(() => sseResponse([
       { choices: [{ delta: { content: 'remote-reply' }, finish_reason: 'stop' }] },
     ]))
 
     const adapter = new LocalLlmAdapterImpl({
-      providers: ['local-qwen3-4b-mock', 'local-qwen3-4b'],
-      mode: 'real',
+      providers: ['local-qwen3-4b', 'local-qwen3-4b-alt'],
       baseUrl: 'http://192.168.66.195:8701/v1',
       defaultModel: 'qwen3-4b',
     })
 
-    // Mock route must not hit the network.
-    const mockChunks: unknown[] = []
-    for await (const chunk of adapter.stream({
-      provider: 'local-qwen3-4b-mock',
-      model: 'qwen3-4b',
-      messages: [{ role: 'user', content: [{ type: 'text', text: 'echo' }] }],
-    })) {
-      mockChunks.push(chunk)
-    }
-    const mockText = (mockChunks[1] as { text: string }).text
-    assert.equal(mockText, '[LOCAL-MOCK] echo')
-    assert.equal(fetchCallCount, 0)
-
-    // Real route must hit the network.
-    const realChunks: unknown[] = []
+    // First route hits the network (signal-pulled landing).
+    const firstChunks: unknown[] = []
     for await (const chunk of adapter.stream({
       provider: 'local-qwen3-4b',
       model: 'qwen3-4b',
-      messages: [{ role: 'user', content: [{ type: 'text', text: 'remote' }] }],
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'first' }] }],
     })) {
-      realChunks.push(chunk)
+      firstChunks.push(chunk)
     }
-    const realText = (realChunks[1] as { text: string }).text
-    assert.equal(realText, 'remote-reply')
+    const firstText = (firstChunks[1] as { text: string }).text
+    assert.equal(firstText, 'remote-reply')
     assert.equal(fetchCallCount, 1)
+
+    // Second route hits the network too (no in-process mock).
+    const secondChunks: unknown[] = []
+    for await (const chunk of adapter.stream({
+      provider: 'local-qwen3-4b-alt',
+      model: 'qwen3-4b',
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'second' }] }],
+    })) {
+      secondChunks.push(chunk)
+    }
+    const secondText = (secondChunks[1] as { text: string }).text
+    assert.equal(secondText, 'remote-reply')
+    assert.equal(fetchCallCount, 2)
     restoreFetch()
   })
 
   it('throws UNKNOWN_PROVIDER for routes the adapter does not own', async () => {
     installFetchMock(() => sseResponse([]))
     const adapter = new LocalLlmAdapterImpl({
-      providers: ['local-qwen3-4b-mock'],
-      mode: 'mock',
+      providers: ['local-qwen3-4b'],
       baseUrl: 'http://127.0.0.1:8080/v1',
       defaultModel: 'qwen3-4b',
     })

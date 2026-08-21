@@ -41,7 +41,7 @@
 | **A4** | 零信任通信 | 🔲 未开始 | — | `ohttp-gateway` + `secure-bridge` 均为桩 |
 | **A5** | 远程证明 | 🔲 未开始 | — | `attestation` 为桩 |
 | **A6** | 主动防御 | 🔲 未开始 | — | `td-bus` 为桩 |
-| **A7** | 公网搜索 | 🔲 未开始 | — | `web-search` 返回空数组 |
+| **A7** | 公网搜索 | ✅ 已完成 | — | 复用 DSH 原生 `dsh-web-search-deepseek`，通过 DeepSeek Anthropic API 实现真实搜索 |
 | **A8** | 语音输入 | 🔲 未开始 | — | `voice-input` 返回空字符串 |
 
 ---
@@ -53,10 +53,10 @@
 | 插件 | 行数 | 核心实现 |
 |---|---|---|
 | **cloud-llm-adapter** | ~195 | 完整 DeepSeek chat-completions 流式客户端，SSE 帧解析，环境变量驱动 API Key |
-| **local-llm-adapter** | ~304 | 双模式：`mock`（进程内回显）+ `real`（POST 到 OpenAI 兼容端点），多 Provider 路由，**真实 qwen3-4b-instruct-2507 端到端验证通过** |
+| **local-llm-adapter** | ~290 | 真实 OpenAI 兼容端点（POST 到 `{baseUrl}/chat/completions`），多 Provider 路由，**qwen3-4b-instruct-2507 端到端验证通过** |
 | **openai-sse** | ~273 | 共享 SSE 解析器（text delta / tool-call delta / finish reason / terminal chunk） |
 | **intent-router** | ~185 | LLM 分类（Qwen3-4B 提示词）+ 关键词兜底（LOCAL_KEYWORDS），classify() 接口 + resolve() Realm 映射 |
-| **local-tools** | ~289 | 注册 3 个工具 + 递归下降算术求值器 + 路径白名单 |
+| **tools** | ~147 | Realm 工具注册表配置，为 DSH 原生工具添加 Realm 标记 |
 | **local-storage** | ~179 | JSONL 持久化 KV 存储，原子写入，内存缓存，序列化写队列 |
 | **sessions** | ~191 | 基于 local-storage 的会话 CRUD，TTL 感知，LRU 淘汰 |
 | **audit-log** | ~265 | JSONL 环形缓冲区，周期刷新，级别过滤，安全报告生成 |
@@ -81,7 +81,7 @@
 | **secure-bridge** | ~74 | sendCloudRequest() 返回 {status: 200, body: null} |
 | **attestation** | ~74 | generateToken() 返回空字符串 |
 | **td-bus** | ~72 | getThreatLevel() 返回 'normal' |
-| **web-search** | ~70 | search() 返回空数组 |
+| **voice-input** | ~120 | 语音输入（Whisper-tiny 预留接口） |
 | **voice-input** | ~54 | transcribe() 返回空字符串 |
 
 另有 **plugin-host**（~65 行），`list()` 返回 `[]`，`get()` 返回 `null`。
@@ -227,7 +227,7 @@ intent-router.classify(text)
 | 输入 | intent | 实测响应 | 来源 |
 |---|---|---|---|
 | `帮我读取文件` | LOCAL | `请提供您想要我读取的文件路径，以便我帮您获取其内容。` | qwen3-4b-instruct-2507 ✅ |
-| `帮我计算 17*23` | LOCAL | （空 — 走了 local_calculate 工具路径） | local-tools ✅ |
+| `帮我计算 17*23` | LOCAL | （空 — 走了 bash 工具路径） | DSH bash ✅ |
 | `1+1等于几` | CLOUD | `1+1=2` | DeepSeek ✅ |
 | `用一句话介绍量子力学` | CLOUD | 完整物理描述 | DeepSeek ✅ |
 
@@ -243,7 +243,7 @@ EDGE_API_KEY=test-secret-key
 DSH_EDGE_HTTP_PORT=21017
 DSH_EDGE_PROVIDER=cloud-deepseek-v4
 DSH_EDGE_MODEL=deepseek-chat
-DSH_EDGE_LOCAL_LLM_MODE=real                    # ← 切换 mock/real
+DSH_EDGE_LOCAL_LLM_BASEURL=http://192.168.66.195:8701/v1
 DSH_EDGE_LOCAL_LLM_BASEURL=http://192.168.66.195:8701/v1
 DSH_EDGE_LOCAL_LLM_MODEL=qwen3-4b-instruct-2507
 DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
@@ -278,7 +278,7 @@ dsh --env-file=.env --profile dsh-edge-agent
 | 🟡 **P1** | **A4** | `ohttp-gateway` + `secure-bridge` OHTTP 通道 | 目前云通信无隐私保护 | ~3 人天 |
 | 🟢 **P2** | **A5** | `attestation` TEE 远程证明 | 需 A3 先行 | ~1 人天 |
 | 🟢 **P2** | **A6** | `td-bus` 威胁检测 + 自动响应 | 需 A1+A2+A4 | ~1 人天 |
-| 🟢 **P2** | **A7** | `web-search` 真实搜索接入 | 功能增强，非安全关键 | ~1 人天 |
+| 🟢 **P2** | **A7** | ~~`web-search` 真实搜索接入~~ | ✅ 已完成，复用 DSH 原生工具 | — |
 | 🟢 **P3** | **A8** | `voice-input` Whisper-tiny 语音 | 需 M4 真实本地 LLM | ~3 人天 |
 
 **简而言之：功能骨架已立，意图路由已通，安全灵魂待铸。** M 段证明了"能跑通"，A 段才能实现"能安全地跑"。

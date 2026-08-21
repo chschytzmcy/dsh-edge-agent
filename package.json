@@ -90,14 +90,6 @@
       "types": "./lib/types/dsh-adapter/td-bus.d.ts",
       "import": "./lib/types/dsh-adapter/td-bus.js"
     },
-    "./local-tools": {
-      "types": "./lib/types/dsh-adapter/local-tools.d.ts",
-      "import": "./lib/types/dsh-adapter/local-tools.js"
-    },
-    "./web-search": {
-      "types": "./lib/types/dsh-adapter/web-search.d.ts",
-      "import": "./lib/types/dsh-adapter/web-search.js"
-    },
     "./voice-input": {
       "types": "./lib/types/dsh-adapter/voice-input.d.ts",
       "import": "./lib/types/dsh-adapter/voice-input.js"

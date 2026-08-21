@@ -13,20 +13,20 @@ import { IntentRouterServiceImpl } from '../../src/dsh-adapter/intent-router.ts'
 describe('intent-router', () => {
   it('exports the canonical plugin shape', () => {
     assert.equal(router.name, 'intent-router')
-    assert.deepEqual([...router.inject], ['llm'])
+    assert.deepEqual([...router.inject], ['llm', 'auditLog'])
     assert.equal(typeof router.apply, 'function')
     assert.ok(router.Config)
   })
 
   it('classifies LOCAL intent via keyword rules (fallback)', async () => {
-    // Create a mock context without real llm
+    // Create a context without real llm so the LLM path falls back to rules.
     const mockCtx = {
       reflect: { provide: () => {} },
       llm: null,
     } as any
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b-mock',
+      classificationProvider: 'local-qwen3-4b',
     })
 
     const intent = await service.classify('帮我读取文件内容')
@@ -43,7 +43,7 @@ describe('intent-router', () => {
     } as any
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b-mock',
+      classificationProvider: 'local-qwen3-4b',
     })
 
     const intent = await service.classify('解释一下量子力学')
@@ -58,7 +58,7 @@ describe('intent-router', () => {
     } as any
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b-mock',
+      classificationProvider: 'local-qwen3-4b',
     })
 
     const intent = await service.classify('你好')
@@ -73,7 +73,7 @@ describe('intent-router', () => {
     } as any
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b-mock',
+      classificationProvider: 'local-qwen3-4b',
     })
 
     const intent = await service.classify('what is the weather')

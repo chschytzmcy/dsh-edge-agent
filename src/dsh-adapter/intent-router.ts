@@ -3,8 +3,8 @@
  *
  * Uses the local Qwen3-4B (via ctx.llm) to classify user messages as
  * LOCAL (file ops, device control, calculations) or CLOUD (knowledge,
- * chat, creative tasks). Falls back to keyword rules when LLM is
- * unavailable or in mock mode.
+ * chat, creative tasks). Falls back to keyword rules when the LLM
+ * call fails (timeout, network error, unclear response).
  *
  * @module dsh-edge-agent/intent-router
  */
@@ -28,12 +28,15 @@ export interface Config {
   defaultCategory: 'LOCAL' | 'CLOUD' | 'SANITIZED'
   /** Provider to use for intent classification. */
   classificationProvider: string
+  /** Model id passed alongside `classificationProvider`. */
+  classificationModel: string
 }
 
 export const Config: Schema<Config> = Schema.object({
   defaultCategory: Schema.union(['LOCAL', 'CLOUD', 'SANITIZED'] as const)
     .default('CLOUD'),
-  classificationProvider: Schema.string().default('local-qwen3-4b-mock'),
+  classificationProvider: Schema.string().default('local-qwen3-4b'),
+  classificationModel: Schema.string().default('qwen3-4b'),
 })
 
 export interface Intent {
@@ -61,6 +64,7 @@ const LOCAL_KEYWORDS = [
 export class IntentRouterServiceImpl extends Service {
   private readonly defaultCategory: Intent['category']
   private readonly classificationProvider: string
+  private readonly classificationModel: string
   private readonly llm: any
   private readonly auditLog: AuditLike | undefined
 
@@ -68,6 +72,7 @@ export class IntentRouterServiceImpl extends Service {
     super(ctx, 'intentRouter')
     this.defaultCategory = config.defaultCategory
     this.classificationProvider = config.classificationProvider
+    this.classificationModel = config.classificationModel
     this.llm = (ctx as any).llm
     this.auditLog = auditLog
   }
@@ -80,7 +85,7 @@ export class IntentRouterServiceImpl extends Service {
   async classify(text: string, context?: { recentMessages?: unknown[] }): Promise<Intent> {
     const start = Date.now()
     const textPreview = text.slice(0, 80)
-    this.audit('info', 'intent.classify.start', { textLen: text.length, textPreview, classifier: this.classificationProvider })
+    this.audit('info', 'intent.classify.start', { textLen: text.length, textPreview, classifier: this.classificationProvider, model: this.classificationModel })
 
     // Try LLM classification first
     try {
@@ -135,8 +140,9 @@ export class IntentRouterServiceImpl extends Service {
     let responseText = ''
     let chunks = 0
     try {
-      const stream = this.llm.generate({
+      const stream = this.llm.stream({
         provider: this.classificationProvider,
+        model: this.classificationModel,
         messages: [userMessage],
       })
 

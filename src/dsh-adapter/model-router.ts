@@ -40,7 +40,6 @@ export interface Config {
 export const Config: Schema<Config> = Schema.object({
   defaultModel: Schema.string().default('cloud-deepseek-v4'),
   localModels: Schema.array(Schema.string()).default([
-    'local-qwen3-4b-mock',
     'local-qwen3-4b',
   ]),
   cloudModels: Schema.array(Schema.string()).default(['cloud-deepseek-v4']),
@@ -84,7 +83,7 @@ export class ModelRouterServiceImpl extends Service {
 /** Pure route classifier. Exported so unit tests can pin it without a Cordis ctx. */
 export function resolveRoute(
   model: string,
-  localModels: readonly string[] = ['local-qwen3-4b-mock', 'local-qwen3-4b'],
+  localModels: readonly string[] = ['local-qwen3-4b'],
   cloudModels: readonly string[] = ['cloud-deepseek-v4'],
 ): ResolvedRoute {
   const normalized = model.length > 0 ? model : 'cloud-deepseek-v4'

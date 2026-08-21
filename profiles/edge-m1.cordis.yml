@@ -35,15 +35,14 @@
     apiKeyEnv: DEEPSEEK_API_KEY
     defaultModel: deepseek-chat
 
-# M4: local LLM adapter — owns the `local-qwen3-4b-mock` (in-process)
-# and `local-qwen3-4b` (real OpenAI-compatible `/chat/completions`)
-# routes. `mode` flips between mock and real via the env slot.
+# M4: local LLM adapter — owns the `local-qwen3-4b` provider route
+# (real OpenAI-compatible `/chat/completions`). No in-process mock;
+# every call leaves the process.
 - id: local-llm-adapter
   name: '@deepseek-harness-edge-agent/dsh-edge-agent/local-llm-adapter'
   inject: [llm]
   config:
-    providers: [local-qwen3-4b-mock, local-qwen3-4b]
-    mode: !!js process.env.DSH_EDGE_LOCAL_LLM_MODE ?? 'mock'
+    providers: [local-qwen3-4b]
     baseUrl: !!js process.env.DSH_EDGE_LOCAL_LLM_BASEURL ?? 'http://127.0.0.1:8080/v1'
     defaultModel: !!js process.env.DSH_EDGE_LOCAL_LLM_MODEL ?? 'qwen3-4b'
     apiKeyEnv: !!js process.env.DSH_EDGE_LOCAL_LLM_KEY_ENV ?? undefined
@@ -53,7 +52,7 @@
   inject: [llm]
   config:
     defaultModel: cloud-deepseek-v4
-    localModels: [local-qwen3-4b-mock, local-qwen3-4b]
+    localModels: [local-qwen3-4b]
     cloudModels: [cloud-deepseek-v4]
 
 - id: intent-router

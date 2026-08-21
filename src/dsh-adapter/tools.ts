@@ -64,10 +64,13 @@ declare module '@deepseek-ai/cordis' {
 
 /**
  * Live snapshot of the dsh-edge-agent tool surface. Reads from `ctx.tools`
- * (upstream registry) and the in-memory realm map maintained by
- * `local-tools.ts` (and any future realm-aware plugin). The class is
+ * (upstream registry) and the in-memory realm map. The class is
  * intentionally a thin view, not a writer — to add a tool, register
  * through `ctx.tools.register()`.
+ *
+ * Note: DSH native tools (bash, read, write, edit, web_search, web_fetch)
+ * are now used directly. Realm tagging can be added via event listeners
+ * or middleware if needed.
  */
 export class ToolsServiceImpl extends Service {
   private readonly realm = new Map<string, ToolRealm>()
@@ -76,7 +79,7 @@ export class ToolsServiceImpl extends Service {
     super(ctx, 'edgeTools')
   }
 
-  /** Set by `local-tools` (and any realm-aware plugin) inside its `apply`. */
+  /** Set realm tag for a tool. Call after tool registration. */
   setRealm(toolName: string, realm: ToolRealm): void {
     this.realm.set(toolName, realm)
   }
@@ -139,8 +142,7 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
   // `ctx.provide` again — that would throw "service already registered".
   void new ToolsServiceImpl(ctx)
   // M2: pass config through to the audit log so M3 persistence can pick it
-  // up. The default rate limit is plumbed in via the definition that
-  // `local-tools` emits (every tool definition inherits it).
+  // up. The default rate limit is plumbed in via tool definitions.
   void config
   return async () => {}
 }

@@ -1,21 +1,18 @@
 /**
  * local-llm-adapter — M4 multi-model + routing.
  *
- * Registers one or two provider routes on the shared `ctx.llm` runtime:
+ * Registers one or more provider routes on the shared `ctx.llm`
+ * runtime, all backed by a real OpenAI-compatible `/chat/completions`
+ * endpoint. Defaults to `http://127.0.0.1:8080/v1` (llama.cpp's
+ * `server` binary); the reachable endpoint in this repo is
+ * `http://192.168.66.195:8701/v1`. No in-process mock — every call
+ * leaves the process.
  *
- *   - `local-qwen3-4b-mock` — synthetic, in-process. Echoes the last
- *     user message as `[LOCAL-MOCK] {text}` so the rest of the agent
- *     loop (intent-router, model-router, tool dispatch) can be
- *     exercised end-to-end without a network call.
- *   - `local-qwen3-4b`     — real OpenAI-compatible `/chat/completions`
- *     endpoint. Defaults to `http://127.0.0.1:8080/v1` (llama.cpp's
- *     `server` binary). The reachable endpoint in this repo is
- *     `http://192.168.66.195:8701/v1`.
- *
- * Both modes share `LlmAdapter` from `@deepseek-ai/dsh-llm` and the
- * OpenAI-compatible SSE parser in `./openai-sse.js` so wire-protocol
- * changes land in one place. The mock path skips the network entirely
- * and yields a single text block.
+ * The wire-protocol parser lives in `./openai-sse.js` so changes to
+ * the SSE framing land in one place and are shared by the cloud
+ * adapter. The body builder flips `stream: true` and merges adapter
+ * defaults (model, temperature) so the upstream server sees the same
+ * shape the dsh agent loop emits.
  *
  * @module dsh-edge-agent/local-llm-adapter
  */
@@ -54,15 +51,10 @@ function audit(log: AuditLike | undefined, level: 'debug' | 'info' | 'warn' | 'e
   void log.log({ level, kind, source: 'local-llm-adapter', payload }).catch(() => {})
 }
 
-/** Per-mode behaviour. `mock` is in-process; `real` POSTs to baseUrl. */
-export type LocalLlmMode = 'mock' | 'real'
-
 export interface Config {
   /** Provider route ids this adapter owns. */
   providers: string[]
-  /** Whether the local-* route hits a real HTTP backend or echoes the prompt. */
-  mode: LocalLlmMode
-  /** OpenAI-compatible endpoint for `mode: 'real'`. `defaultModel` is sent as the model id. */
+  /** OpenAI-compatible endpoint. `/chat/completions` is appended. */
   baseUrl: string
   /** Default model id when the request omits one. */
   defaultModel: string
@@ -71,11 +63,10 @@ export interface Config {
 }
 
 export const Config: Schema<Config> = Schema.object({
-  providers: Schema.array(Schema.string()).default(['local-qwen3-4b-mock', 'local-qwen3-4b']),
-  mode: Schema.union(['mock', 'real'] as const).default('mock'),
+  providers: Schema.array(Schema.string()).default(['local-qwen3-4b']),
   baseUrl: Schema.string().default('http://127.0.0.1:8080/v1'),
   defaultModel: Schema.string().default('qwen3-4b'),
-  apiKeyEnv: Schema.string().description('Optional env-slot name carrying an auth bearer for `mode: real`.'),
+  apiKeyEnv: Schema.string().description('Optional env-slot name carrying an auth bearer.'),
 })
 
 export interface LocalLlmAdapter {
@@ -84,10 +75,10 @@ export interface LocalLlmAdapter {
 }
 
 /**
- * Combined adapter. Holds one inner adapter per configured provider so
- * `ctx.llm.registerAdapter([...], this)` can route any of them through
- * the same instance — keeping the `dispose` set in lockstep with the
- * registration.
+ * Adapter facade. Owns one real-HTTP inner adapter per configured
+ * provider route so `ctx.llm.registerAdapter([...], this)` can route
+ * any of them through the same instance — keeping the `dispose`
+ * set in lockstep with the registration.
  */
 export class LocalLlmAdapterImpl extends LlmAdapter {
   private readonly providersList: string[]
@@ -98,12 +89,7 @@ export class LocalLlmAdapterImpl extends LlmAdapter {
     this.providersList = [...config.providers]
     this.innerByProvider = new Map()
     for (const provider of this.providersList) {
-      this.innerByProvider.set(
-        provider,
-        config.mode === 'real' && !provider.endsWith('-mock')
-          ? new RealLocalAdapter(provider, config, auditLog)
-          : new MockLocalAdapter(provider, auditLog),
-      )
+      this.innerByProvider.set(provider, new RealLocalAdapter(provider, config, auditLog))
     }
   }
 
@@ -142,65 +128,6 @@ export class LocalLlmAdapterImpl extends LlmAdapter {
       )
     }
     yield* inner.stream(options)
-  }
-}
-
-/**
- * In-process echo adapter. No network; the response is the last user
- * message prefixed with `[LOCAL-MOCK]`. The intent is to drive the
- * whole agent loop (intent classification, tool dispatch) without
- * needing GPU resources.
- */
-class MockLocalAdapter extends LlmAdapter {
-  private readonly providerName: string
-  private readonly auditLog: AuditLike | undefined
-
-  constructor(provider: string, auditLog?: AuditLike) {
-    super()
-    this.providerName = provider
-    this.auditLog = auditLog
-  }
-
-  get providers(): string[] {
-    return [this.providerName]
-  }
-
-  override providerInfo(_provider: string): LlmProviderInfo {
-    return { id: this.providerName, name: this.providerName }
-  }
-
-  override listModels(_provider: string): Promise<readonly LlmModelInfo[]> {
-    return Promise.resolve([
-      {
-        provider: this.providerName,
-        id: this.providerName,
-        name: this.providerName,
-        inputModalities: ['text'],
-      },
-    ])
-  }
-
-  override resolveModel(
-    _provider: string,
-    model: string,
-  ): Promise<LlmResolvedModelInfo> {
-    return Promise.resolve({ provider: this.providerName, id: model, name: model })
-  }
-
-  override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
-    const lastUser = [...options.messages]
-      .reverse()
-      .find((message) => message.role === 'user')
-    const body = lastUser !== undefined ? extractText(lastUser.content).trim() : ''
-    const reply = body.length > 0 ? `[LOCAL-MOCK] ${body}` : '[LOCAL-MOCK] (no user text)'
-    const start = Date.now()
-    audit(this.auditLog, 'info', 'llm.local.mock.start', { provider: options.provider, model: options.model, messageCount: options.messages.length, promptLen: body.length })
-    audit(this.auditLog, 'info', 'llm.local.mock.end', { provider: options.provider, model: options.model, durationMs: Date.now() - start, resultLen: reply.length, finishKind: 'stop' })
-
-    yield { type: 'block-start', index: 0, blockType: 'text' }
-    yield { type: 'text-delta', index: 0, text: reply }
-    yield { type: 'block-end', index: 0, block: { type: 'text', text: reply } }
-    yield { type: 'finish', reason: { kind: 'stop' } }
   }
 }
 
@@ -265,7 +192,7 @@ class RealLocalAdapter extends LlmAdapter {
     const promptText = options.messages.map((m) => `${m.role}:${extractText(m.content)}`).join('\n')
     const promptLen = promptText.length
     const start = Date.now()
-    audit(this.auditLog, 'info', 'llm.local.real.start', { provider: options.provider, model: options.model, messageCount: options.messages.length, promptLen, baseUrl: this.baseUrl })
+    audit(this.auditLog, 'info', 'llm.local.start', { provider: options.provider, model: options.model, messageCount: options.messages.length, promptLen, baseUrl: this.baseUrl })
 
     let response: Response
     try {
@@ -277,7 +204,7 @@ class RealLocalAdapter extends LlmAdapter {
       })
     } catch (err: any) {
       const durationMs = Date.now() - start
-      audit(this.auditLog, 'error', 'llm.local.real.network_error', { provider: options.provider, model: options.model, durationMs, error: err?.message ?? String(err) })
+      audit(this.auditLog, 'error', 'llm.local.network_error', { provider: options.provider, model: options.model, durationMs, error: err?.message ?? String(err) })
       throw err
     }
 
@@ -285,7 +212,7 @@ class RealLocalAdapter extends LlmAdapter {
       const durationMs = Date.now() - start
       let respBody = ''
       try { respBody = await response.text() } catch { /* ignore */ }
-      audit(this.auditLog, 'error', 'llm.local.real.http_error', { provider: options.provider, model: options.model, status: response.status, durationMs, respBody: respBody.slice(0, 500) })
+      audit(this.auditLog, 'error', 'llm.local.http_error', { provider: options.provider, model: options.model, status: response.status, durationMs, respBody: respBody.slice(0, 500) })
       throw new LlmError(`local-llm-adapter (${this.providerName}): HTTP ${response.status}: ${respBody.slice(0, 200)}`, 'PROVIDER_ERROR')
     }
 
@@ -323,7 +250,7 @@ class RealLocalAdapter extends LlmAdapter {
       throw err
     } finally {
       const durationMs = Date.now() - start
-      audit(this.auditLog, 'info', 'llm.local.real.end', {
+      audit(this.auditLog, 'info', 'llm.local.end', {
         provider: options.provider,
         model: options.model,
         durationMs,

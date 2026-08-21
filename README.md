@@ -54,11 +54,11 @@
 | `sessions` | 会话管理（CRUD + TTL + LRU） | ✅ 可用 |
 | `audit-log` | JSONL 审计日志 | ✅ 可用 |
 | `cloud-llm-adapter` | DeepSeek API 流式客户端 | ✅ 可用 |
-| `local-llm-adapter` | 本地 LLM（mock + 真 llama.cpp） | ✅ 可用 |
+| `local-llm-adapter` | 本地 LLM（OpenAI 兼容端点直连） | ✅ 可用 |
 | `model-router` | 多模型路由分发 | ✅ 可用 |
 | `intent-router` | LLM 意图分类 → LOCAL/CLOUD 路由 | ✅ 可用 |
-| `local-tools` | 本地工具（file_read/write/calculate） | ✅ 可用 |
 | `http-api` | REST + SSE HTTP 服务器 | ✅ 可用 |
+| `tools` | Realm 工具注册表配置 | ✅ 可用 |
 | `tcm` | 可信计算模块 | 🔲 桩 |
 | `prompt-guard` | 输入/输出安全防护 | 🔲 桩 |
 | `sanitizer-pipeline` | PII 脱敏/还原 | 🔲 桩 |
@@ -66,10 +66,11 @@
 | `secure-bridge` | 端云安全通信桥 | 🔲 桩 |
 | `attestation` | TEE 远程证明 | 🔲 桩 |
 | `td-bus` | 威胁检测总线 | 🔲 桩 |
-| `web-search` | 公网搜索 | 🔲 桩 |
 | `voice-input` | 语音输入 | 🔲 桩 |
 | `plugin-host` | 第三方插件宿主 | 🔲 桩 |
 
+> **工具复用**: dsh-edge-agent 使用 DSH 原生工具（bash、read/write/edit、web_search/web_fetch），而非自行实现。详见 [docs/dsh-native-tools-analysis.md](docs/dsh-native-tools-analysis.md)。
+>
 > M 段（M0–M5）已全部完成，意图识别（LOCAL/CLOUD）路由已端到端打通。A 段安全加固均未开始。详见 [docs/PROGRESS.md](docs/PROGRESS.md)。
 
 ## 📦 安装
@@ -181,24 +182,22 @@ dsh-edge-agent 通过 **意图路由**自动选择 LLM，无需手动指定 prov
 
 | 用户消息类型 | 触发关键词 | 路由到 | 示例 |
 |---|---|---|---|
-| **LOCAL** | 文件、读取、写入、计算、设备、本地 | `local-qwen3-4b`（mock/real 由 `DSH_EDGE_LOCAL_LLM_MODE` 决定） | `"帮我读取文件"` → 真实 qwen3-4b 回答 |
+| **LOCAL** | 文件、读取、写入、计算、设备、本地 | `local-qwen3-4b`（真实 OpenAI 兼容端点） | `"帮我读取文件"` → 真实 qwen3-4b 回答 |
 | **CLOUD** | 解释、什么是、知识问答 | `cloud-deepseek-v4` | `"量子力学是什么"` → DeepSeek 真实回答 |
 
 > ⚠️ `DSH_EDGE_PROVIDER` 环境变量**仅**影响 system prompt 文本，不会改变实际路由。
 > 实际路由由 `http-api.handleChat()` 根据意图分类结果硬编码选择。
 
-### 真实本地 LLM（替换 mock）
+### 本地 LLM 端点
 
-默认 mock 模式进程内回显，无需外部服务。切换到真实 llama.cpp / vLLM / Ollama：
+`local-llm-adapter` 始终走真实 OpenAI 兼容端点（默认 `http://127.0.0.1:8080/v1`）。
+通过环境变量指向任一 llama.cpp / vLLM / Ollama 实例：
 
 ```bash
-# .env 中：
-DSH_EDGE_LOCAL_LLM_MODE=real
-DSH_EDGE_LOCAL_LLM_BASEURL=http://192.168.66.195:8701/v1
-DSH_EDGE_LOCAL_LLM_MODEL=qwen3-4b-instruct-2507
+# .env.sh 中：
+export DSH_EDGE_LOCAL_LLM_BASEURL=http://192.168.66.195:8701/v1
+export DSH_EDGE_LOCAL_LLM_MODEL=qwen3-4b-instruct-2507
 ```
-
-无需修改代码 ——`http-api.ts` 直接路由到 `local-qwen3-4b`，由 `local-llm-adapter` 读取上述 env vars。
 
 ### 环境变量
 
@@ -209,9 +208,10 @@ DSH_EDGE_LOCAL_LLM_MODEL=qwen3-4b-instruct-2507
 | `DSH_EDGE_PROVIDER` | `cloud-deepseek-v4` | 仅用于 system prompt，不影响实际路由 |
 | `DSH_EDGE_MODEL` | `deepseek-chat` | 仅用于 system prompt |
 | `DEEPSEEK_API_KEY` | — | DeepSeek API Key（CLOUD 路由必需） |
-| `DSH_EDGE_LOCAL_LLM_MODE` | `mock` | local LLM 模式：`mock` 或 `real` |
-| `DSH_EDGE_LOCAL_LLM_BASEURL` | `http://127.0.0.1:8080/v1` | 本地 LLM 端点（real 模式） |
+| `DSH_EDGE_LOCAL_LLM_BASEURL` | `http://127.0.0.1:8080/v1` | 本地 LLM 端点 |
 | `DSH_EDGE_LOCAL_LLM_MODEL` | `qwen3-4b` | 本地 LLM 模型名 |
+| `DSH_EDGE_INTENT_PROVIDER` | `local-qwen3-4b` | 意图分类所用 provider |
+| `DSH_EDGE_INTENT_MODEL` | `qwen3-4b` | 意图分类所用模型 |
 | `DSH_EDGE_STORAGE_ROOT` | `~/.dsh-edge-agent-m1` | 数据存储根目录 |
 
 > **Secret 警告**：`DEEPSEEK_API_KEY`、`EDGE_API_KEY` 是 secret，**绝不能提交到 git**。
@@ -274,7 +274,7 @@ curl -X POST http://127.0.0.1:21017/v1/chat \
 }
 ```
 
-> LOCAL intent 路由到本地 LLM（`local-qwen3-4b`）。`mock` 模式回显 `[LOCAL-MOCK] ...`；`real` 模式调用真实端点（不消耗云端 API 配额）。
+> LOCAL intent 路由到本地 LLM（`local-qwen3-4b`），直连真实 OpenAI 兼容端点（不消耗云端 API 配额）。
 
 #### CLOUD Intent（云端处理 — 知识问答、创意）
 
@@ -328,7 +328,7 @@ data: {"type":"chunk","content":"+1=2"}
 data: {"type":"done"}
 ```
 
-> SSE 流式响应（`1+1等于几` 由 DeepSeek 真实回答）。mock 模式下 chunks 内容为 `[LOCAL-MOCK] ...`。
+> SSE 流式响应（`1+1等于几` 由 DeepSeek 真实回答）。
 
 ### 会话管理
 

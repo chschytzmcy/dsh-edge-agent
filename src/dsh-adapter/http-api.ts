@@ -66,7 +66,9 @@ export class HttpApiServiceImpl extends Service {
 
   /** Emit an audit-log entry (silent no-op if missing or wrong API). */
   private audit(level: 'debug' | 'info' | 'warn' | 'error' | 'security', kind: string, payload: Record<string, unknown>): void {
-    if (!this.auditLog || typeof this.auditLog.log !== 'function') return
+    if (!this.auditLog || typeof this.auditLog.log !== 'function') {
+      return
+    }
     void this.auditLog.log({ level, kind, source: 'http-api', payload }).catch(() => {})
   }
 
@@ -221,7 +223,6 @@ export class HttpApiServiceImpl extends Service {
     // Wait for turn completion by subscribing to session/event
     const turnEnd = new Promise<string>((resolve) => {
       const dispose = this.cordisCtx.on('session/event', (session: any, event: SessionEvent) => {
-        if (session.id !== sessionId) return
         if (event.type === 'turn/end') {
           const events = record.agent.session.events
           const lastAssistant = events
@@ -366,7 +367,7 @@ export class HttpApiServiceImpl extends Service {
       const handle = await this.agents.create({
         sessionId: SessionId(sessionId),
         agentOptions: {
-          provider: provider ?? 'local-qwen3-4b-mock',
+          provider: provider ?? 'local-qwen3-4b',
           model: model ?? 'qwen3-4b',
         },
         meta: { cwd: process.cwd() },

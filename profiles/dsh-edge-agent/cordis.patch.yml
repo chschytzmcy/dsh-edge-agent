@@ -52,11 +52,13 @@
     provider: !!js process.env.DSH_EDGE_PROVIDER ?? 'cloud-deepseek-v4'
     model: !!js process.env.DSH_EDGE_MODEL ?? 'deepseek-chat'
 
-# Persona override: edge-agent (M4, multi-model) lives above the base
-# "You are a coding agent…" so the headless startup sits on top of it.
+# Persona override: edge-agent (M4, multi-model). The persona is kept
+# provider-agnostic so DeepSeek (CLOUD) is not constrained by local-tool
+# mentions. LOCAL-realm tools are registered separately via local-tools
+# plugin and appear in the tool list, not in the persona text.
 - id: system-prompt
   config:
-    persona: !!js (process.env.DSH_EDGE_PERSONA ?? 'You are edge-agent (M4, multi-model with LOCAL-realm tools). Answer in the user\'s language. Be brief. Stay within the model selected by DSH_EDGE_PROVIDER. The available local tools are local_file_read, local_file_write (when enabled), and local_calculate; do not assume a network tool or shell. When the user asks you to read or compute against a local file, call the matching local_* tool with its declared parameter shape; do not invent file contents.')
+    persona: !!js (process.env.DSH_EDGE_PERSONA ?? 'You are edge-agent, a privacy-first AI assistant running on the user\'s edge device. Answer in the user\'s language. Be concise and helpful. You have access to local tools for file operations and calculations when appropriate. For knowledge questions, current events, or complex reasoning, provide comprehensive answers. Use the tool registry (bash, read, write, edit, glob, grep, todo_write, web_search, web_fetch, send_message, interrupt_agent, subagent_fork, local_file_read, local_file_write, local_calculate) when an action is required; call the matching tool with the correct parameter shape and never invent tool names.')
 
 # ── new plugin inserts ─────────────────────────────────────────────────────────
 
@@ -67,19 +69,27 @@
 # calculate (the LOCAL-realm tools mounted by `local-tools`). Every
 # row below stays on disk so an M5+ profile can re-enable them.
 
+# 启用的工具（测试用）
 - id: tool-bash
-  disabled: true
-- id: tool-pwsh
-  disabled: true
 - id: tool-fs
-  disabled: true
 - id: tool-fs-search
+- id: tool-web
+- id: web
+- id: dsh-web
+- id: tool-todo
+- id: tool-str-replace-editor
+- id: web-search-deepseek
+  # Provides the DeepSeek-backed search provider for `ctx.web.search()`.
+  # Shares $DEEPSEEK_API_KEY with cloud-llm-adapter; hits the Anthropic-
+  # compatible endpoint (api.deepseek.com/anthropic/v1) using the native
+  # web_search_20250305 server tool, not the chat-completions base.
+
+# 禁用的工具
+- id: tool-pwsh
   disabled: true
 - id: tool-jobs
   disabled: true
 - id: tool-skill
-  disabled: true
-- id: tool-web
   disabled: true
 - id: tool-subagent
   disabled: true
@@ -95,15 +105,7 @@
   disabled: true
 - id: tool-ralph
   disabled: true
-- id: tool-todo
-  disabled: true
 - id: tool-goal
-  disabled: true
-- id: tool-str-replace-editor
-  disabled: true
-- id: web
-  disabled: true
-- id: web-search-deepseek
   disabled: true
 - id: skill-filesystem
   disabled: true
@@ -166,8 +168,7 @@
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/local-llm-adapter'
       inject: [llm, auditLog]
       config:
-        providers: [local-qwen3-4b-mock, local-qwen3-4b]
-        mode: !!js process.env.DSH_EDGE_LOCAL_LLM_MODE ?? 'mock'
+        providers: [local-qwen3-4b]
         baseUrl: !!js process.env.DSH_EDGE_LOCAL_LLM_BASEURL ?? 'http://127.0.0.1:8080/v1'
         defaultModel: !!js process.env.DSH_EDGE_LOCAL_LLM_MODEL ?? 'qwen3-4b'
         apiKeyEnv: !!js process.env.DSH_EDGE_LOCAL_LLM_KEY_ENV ?? undefined
@@ -177,7 +178,7 @@
       inject: [llm]
       config:
         defaultModel: !!js process.env.DSH_EDGE_MODEL_ROUTER_DEFAULT ?? 'cloud-deepseek-v4'
-        localModels: [local-qwen3-4b-mock, local-qwen3-4b]
+        localModels: [local-qwen3-4b]
         cloudModels: [cloud-deepseek-v4]
 
     - id: intent-router
@@ -185,7 +186,8 @@
       inject: [llm, auditLog]
       config:
         defaultCategory: CLOUD
-        classificationProvider: local-qwen3-4b-mock
+        classificationProvider: !!js process.env.DSH_EDGE_INTENT_PROVIDER ?? 'local-qwen3-4b'
+        classificationModel: !!js process.env.DSH_EDGE_INTENT_MODEL ?? 'qwen3-4b'
 
     # NOTE: id renamed from `tools` to avoid colliding with dsh-base.
     - id: edge-tools-registry

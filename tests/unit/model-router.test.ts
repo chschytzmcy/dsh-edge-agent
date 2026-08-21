@@ -31,13 +31,9 @@ describe('model-router (M1 + M4)', () => {
   })
 
   it('routes local-* catalog routes to the LOCAL realm', () => {
-    const r = resolveRoute('local-qwen3-4b-mock')
+    const r = resolveRoute('local-qwen3-4b')
     assert.equal(r.realm, 'LOCAL')
-    assert.equal(r.provider, 'local-qwen3-4b-mock')
-
-    const r2 = resolveRoute('local-qwen3-4b')
-    assert.equal(r2.realm, 'LOCAL')
-    assert.equal(r2.provider, 'local-qwen3-4b')
+    assert.equal(r.provider, 'local-qwen3-4b')
   })
 
   it('routes cloud-* catalog routes to the CLOUD realm', () => {
@@ -74,16 +70,14 @@ describe('model-router (M1 + M4)', () => {
   it('M4: ModelRouterServiceImpl exposes listAvailable + isAvailable', () => {
     const svc = new ModelRouterServiceImpl(
       fakeCtx(),
-      ['local-qwen3-4b-mock', 'local-qwen3-4b'],
+      ['local-qwen3-4b'],
       ['cloud-deepseek-v4'],
     )
     const all = svc.listAvailable()
-    assert.ok(all.includes('local-qwen3-4b-mock'))
     assert.ok(all.includes('local-qwen3-4b'))
     assert.ok(all.includes('cloud-deepseek-v4'))
 
     assert.equal(svc.isAvailable('local-qwen3-4b'), true)
-    assert.equal(svc.isAvailable('local-qwen3-4b-mock'), true)
     assert.equal(svc.isAvailable('cloud-deepseek-v4'), true)
     assert.equal(svc.isAvailable('gpt-4'), false)
     assert.equal(svc.isAvailable(''), false)
