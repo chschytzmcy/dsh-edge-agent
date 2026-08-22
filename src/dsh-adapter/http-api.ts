@@ -223,17 +223,32 @@ export class HttpApiServiceImpl extends Service {
     // Wait for turn completion by subscribing to session/event
     const turnEnd = new Promise<string>((resolve) => {
       const dispose = this.cordisCtx.on('session/event', (session: any, event: SessionEvent) => {
+        // Debug: log all events
+        console.log(`[http-api][${reqId}] session/event: ${event.type}`)
+
         if (event.type === 'turn/end') {
           const events = record.agent.session.events
+          console.log(`[http-api][${reqId}] turn/end - total events: ${events.length}`)
+
+          // Debug: log all event types
+          const eventTypes = events.map((e: any) => e.type)
+          console.log(`[http-api][${reqId}] event types:`, eventTypes.join(', '))
+
           const lastAssistant = events
             .filter((e) => e.type === 'assistant/message')
             .pop()
+
+          console.log(`[http-api][${reqId}] lastAssistant found: ${!!lastAssistant}`)
+
           const text = lastAssistant
             ? (lastAssistant as any).data.message.content
                 .filter((b: any) => b.type === 'text')
                 .map((b: any) => b.text)
                 .join('')
             : ''
+
+          console.log(`[http-api][${reqId}] extracted text length: ${text.length}`)
+
           dispose()
           resolve(text)
         }
@@ -244,6 +259,8 @@ export class HttpApiServiceImpl extends Service {
       content: [{ type: 'text', text: message }],
       source: { kind: 'user' },
     })
+
+    // Call followup - it's fire-and-forget, agent loop runs async
     record.agent.followup(userMessage)
 
     const result = await turnEnd
@@ -364,6 +381,7 @@ export class HttpApiServiceImpl extends Service {
   private async ensureSession(sessionId: string, provider?: string, model?: string): Promise<SessionRecord> {
     let record = this.sessions.get(sessionId)
     if (!record) {
+      console.log(`[http-api] Creating agent with provider=${provider}, model=${model}`)
       const handle = await this.agents.create({
         sessionId: SessionId(sessionId),
         agentOptions: {
@@ -372,6 +390,7 @@ export class HttpApiServiceImpl extends Service {
         },
         meta: { cwd: process.cwd() },
       })
+      console.log(`[http-api] Agent created successfully`)
       record = { agent: handle.agent, handle, createdAt: Date.now() }
       this.sessions.set(sessionId, record)
     }

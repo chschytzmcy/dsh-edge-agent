@@ -276,12 +276,15 @@ function readApiKey(slot: string): string | undefined {
 }
 
 export async function apply(ctx: Context, config: Config): Promise<() => Promise<void>> {
+  console.log(`[local-llm-adapter] apply() called with providers: ${config.providers?.join(', ')}`)
   const auditLog = (ctx as unknown as { auditLog?: AuditLike }).auditLog
   const adapter = new LocalLlmAdapterImpl(config, auditLog)
   const llm = (ctx as unknown as {
     llm: { registerAdapter(providers: string[], adapter: LlmAdapter): { (): void } }
   }).llm
+  console.log(`[local-llm-adapter] Registering adapter for providers: ${config.providers?.join(', ')}`)
   const registration = llm.registerAdapter(config.providers, adapter)
+  console.log(`[local-llm-adapter] Adapter registered successfully`)
   return async () => {
     registration()
   }

@@ -132,14 +132,17 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
   }
 
   override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+    console.log(`[cloud-llm-adapter] stream() called for provider=${options.provider}, model=${options.model}`)
     const apiKey = readApiKey(this.apiKeyEnv)
     if (!apiKey) {
+      console.log(`[cloud-llm-adapter] ERROR: Missing API key in env slot: ${this.apiKeyEnv}`)
       this.audit('error', 'llm.cloud.missing_key', { provider: options.provider, model: options.model, envSlot: this.apiKeyEnv })
       throw new LlmError(
         `cloud-llm-adapter: missing API key in env slot "${this.apiKeyEnv}"`,
         'MISSING_CREDENTIAL',
       )
     }
+    console.log(`[cloud-llm-adapter] API key found, calling ${this.baseUrl}/chat/completions`)
     const url = `${this.baseUrl}/chat/completions`
     const body = buildChatCompletionsBody(options, this.defaultModel, this.temperature)
     const promptText = options.messages.map((m) => `${m.role}:${extractText(m.content)}`).join('\n')
@@ -238,12 +241,15 @@ function readApiKey(slot: string): string | undefined {
 }
 
 export async function apply(ctx: Context, config: Config): Promise<() => Promise<void>> {
+  console.log(`[cloud-llm-adapter] apply() called with providers: ${config.providers?.join(', ')}`)
   const auditLog = (ctx as unknown as { auditLog?: AuditLike }).auditLog
   const adapter = new CloudLlmAdapterImpl(config, auditLog)
   const llm = (ctx as unknown as {
     llm: { registerAdapter(providers: string[], adapter: LlmAdapter): { (): void } }
   }).llm
+  console.log(`[cloud-llm-adapter] Registering adapter for providers: ${config.providers?.join(', ')}`)
   const registration = llm.registerAdapter(config.providers, adapter)
+  console.log(`[cloud-llm-adapter] Adapter registered successfully`)
   return async () => {
     registration()
   }
