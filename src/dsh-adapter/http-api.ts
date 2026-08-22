@@ -27,6 +27,10 @@ export interface Config {
   bearerToken?: string
   /** Whether to require attestation on first request. */
   requireAttestation: boolean
+  /** Session idle timeout in ms. Sessions not accessed within this are cleaned up. 0 = disabled. */
+  sessionIdleTimeoutMs: number
+  /** Maximum active sessions. LRU eviction when exceeded. 0 = unlimited. */
+  maxActiveSessions: number
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -34,6 +38,8 @@ export const Config: Schema<Config> = Schema.object({
   port: Schema.natural().default(21017),
   bearerToken: Schema.string(),
   requireAttestation: Schema.boolean().default(true),
+  sessionIdleTimeoutMs: Schema.natural().default(30 * 60 * 1000), // 30 min
+  maxActiveSessions: Schema.natural().default(100),
 })
 
 export interface HttpApiService {
@@ -47,6 +53,7 @@ interface SessionRecord {
   agent: Agent
   handle: AgentHandle
   createdAt: number
+  lastAccessedAt: number
 }
 
 export class HttpApiServiceImpl extends Service {
@@ -54,6 +61,7 @@ export class HttpApiServiceImpl extends Service {
   private readonly sessions = new Map<string, SessionRecord>()
   private running = false
   private intentRouter: any
+  private cleanupTimer: ReturnType<typeof setInterval> | undefined
 
   constructor(
     private cordisCtx: any,
@@ -102,11 +110,22 @@ export class HttpApiServiceImpl extends Service {
       })
     })
     this.running = true
-    this.auditLog?.info?.(`[http-api] listening on ${this.config.host}:${this.config.port}`)
+    // Start periodic session cleanup
+    if (this.config.sessionIdleTimeoutMs > 0) {
+      this.cleanupTimer = setInterval(() => {
+        this.cleanupExpiredSessions()
+      }, Math.min(this.config.sessionIdleTimeoutMs / 2, 60000)) // Check every min(timeout/2, 60s)
+      if (typeof this.cleanupTimer.unref === 'function') this.cleanupTimer.unref()
+    }
+    this.audit('info', 'http.started', { host: this.config.host, port: this.config.port })
   }
 
   async stop(): Promise<void> {
     if (!this.running || !this.server) return
+    if (this.cleanupTimer) {
+      clearInterval(this.cleanupTimer)
+      this.cleanupTimer = undefined
+    }
     await new Promise<void>((resolve) => {
       this.server!.close(() => resolve())
       for (const record of this.sessions.values()) {
@@ -115,6 +134,7 @@ export class HttpApiServiceImpl extends Service {
       this.sessions.clear()
     })
     this.running = false
+    this.audit('info', 'http.stopped', {})
   }
 
   isRunning(): boolean {
@@ -391,6 +411,7 @@ export class HttpApiServiceImpl extends Service {
     const list = Array.from(this.sessions.entries()).map(([id, record]) => ({
       sessionId: id,
       createdAt: record.createdAt,
+      lastAccessedAt: record.lastAccessedAt,
     }))
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({ sessions: list }))
@@ -403,8 +424,9 @@ export class HttpApiServiceImpl extends Service {
       res.end(JSON.stringify({ error: 'Session not found' }))
       return
     }
+    this.audit('debug', 'session.accessed', { sessionId: id })
     res.writeHead(200, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify({ sessionId: id, createdAt: record.createdAt }))
+    res.end(JSON.stringify({ sessionId: id, createdAt: record.createdAt, lastAccessedAt: record.lastAccessedAt }))
   }
 
   private async handleDeleteSession(id: string, res: ServerResponse): Promise<void> {
@@ -416,6 +438,7 @@ export class HttpApiServiceImpl extends Service {
     }
     await record.handle.dispose()
     this.sessions.delete(id)
+    this.audit('info', 'session.deleted', { sessionId: id })
     res.writeHead(204)
     res.end()
   }
@@ -423,6 +446,10 @@ export class HttpApiServiceImpl extends Service {
   private async ensureSession(sessionId: string, provider?: string, model?: string): Promise<SessionRecord> {
     let record = this.sessions.get(sessionId)
     if (!record) {
+      // Check max active sessions and evict LRU if needed
+      if (this.config.maxActiveSessions > 0 && this.sessions.size >= this.config.maxActiveSessions) {
+        await this.evictLeastRecentSession()
+      }
       console.log(`[http-api] Creating agent with provider=${provider}, model=${model}`)
       const handle = await this.agents.create({
         sessionId: SessionId(sessionId),
@@ -433,10 +460,72 @@ export class HttpApiServiceImpl extends Service {
         meta: { cwd: process.cwd() },
       })
       console.log(`[http-api] Agent created successfully`)
-      record = { agent: handle.agent, handle, createdAt: Date.now() }
+      const now = Date.now()
+      record = { agent: handle.agent, handle, createdAt: now, lastAccessedAt: now }
       this.sessions.set(sessionId, record)
+      this.audit('info', 'session.created', { sessionId, provider, model, totalSessions: this.sessions.size })
+    } else {
+      // Update last accessed time
+      record.lastAccessedAt = Date.now()
     }
     return record
+  }
+
+  /**
+   * Clean up sessions that have been idle longer than sessionIdleTimeoutMs.
+   * Called periodically by the cleanup timer.
+   */
+  private cleanupExpiredSessions(): void {
+    if (this.config.sessionIdleTimeoutMs <= 0) return
+    const now = Date.now()
+    const timeout = this.config.sessionIdleTimeoutMs
+    const expired: string[] = []
+
+    for (const [id, record] of this.sessions.entries()) {
+      if (now - record.lastAccessedAt > timeout) {
+        expired.push(id)
+      }
+    }
+
+    for (const id of expired) {
+      const record = this.sessions.get(id)
+      if (record) {
+        record.handle.dispose().catch(() => {})
+        this.sessions.delete(id)
+        this.audit('info', 'session.expired', { sessionId: id, idleMs: now - record.lastAccessedAt })
+      }
+    }
+
+    if (expired.length > 0) {
+      this.audit('debug', 'session.cleanup', { expiredCount: expired.length, remainingCount: this.sessions.size })
+    }
+  }
+
+  /**
+   * Evict the least-recently-used session to make room for a new one.
+   * Called when maxActiveSessions is reached.
+   */
+  private async evictLeastRecentSession(): Promise<void> {
+    let oldest: { id: string; lastAccessedAt: number } | null = null
+
+    for (const [id, record] of this.sessions.entries()) {
+      if (!oldest || record.lastAccessedAt < oldest.lastAccessedAt) {
+        oldest = { id, lastAccessedAt: record.lastAccessedAt }
+      }
+    }
+
+    if (oldest) {
+      const record = this.sessions.get(oldest.id)
+      if (record) {
+        await record.handle.dispose()
+        this.sessions.delete(oldest.id)
+        this.audit('info', 'session.evicted', {
+          sessionId: oldest.id,
+          reason: 'max-active-sessions-reached',
+          idleMs: Date.now() - oldest.lastAccessedAt,
+        })
+      }
+    }
   }
 
   private async readJsonBody(req: IncomingMessage): Promise<any> {

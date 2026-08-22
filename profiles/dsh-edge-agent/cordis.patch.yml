@@ -154,6 +154,8 @@
         port: !!js parseInt(process.env.DSH_EDGE_HTTP_PORT ?? '21017', 10)
         bearerToken: !!js process.env.EDGE_API_KEY ?? undefined
         requireAttestation: false
+        sessionIdleTimeoutMs: 1800000  # 30 min
+        maxActiveSessions: 100
 
     - id: cloud-llm-adapter
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/cloud-llm-adapter'
@@ -215,6 +217,10 @@
         flushIntervalMs: !!js parseInt(process.env.DSH_EDGE_AUDIT_FLUSH_MS ?? '1000', 10)
         filename: audit.plain.jsonl
         root: !!js (process.env.DSH_EDGE_AUDIT_ROOT ?? (process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent-m1/audit')
+        enablePIIRedaction: true
+        maxFileSizeBytes: 10485760  # 10MB
+        maxFileAgeDays: 7
+        maxRotatedFiles: 5
 
     # ── A1 端侧隐私安全防护 ─────────────────────────────────────────────────
     - id: prompt-guard

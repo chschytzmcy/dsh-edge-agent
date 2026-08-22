@@ -2,6 +2,11 @@
  * audit-log — M3 PLAINTEXT append-only log with an in-memory ring buffer.
  * Each entry is one JSON line:
  *   { ts, level, kind, source, payload }
+ *
+ * Phase 2 增强：
+ * - 敏感字段自动脱敏（手机号、身份证、银行卡、邮箱、API Key）
+ * - 日志轮转（按大小/时间）
+ *
  * M3 NOTE — A3 swaps the on-disk format for HMAC-chained tamper-evident
  * entries; the public surface (log / query / getSecurityReport) is the
  * durable contract.
@@ -12,9 +17,10 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { Service } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
-import { mkdir, readFile, writeFile, rename } from 'node:fs/promises'
+import { mkdir, readFile, writeFile, rename, stat } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { redactObject } from './pii-utils.js'
 
 export const name = 'audit-log'
 
@@ -41,6 +47,14 @@ export interface Config {
   filename: string
   /** Directory holding the audit log file. Created if missing. */
   root: string
+  /** Enable PII redaction in payload fields. */
+  enablePIIRedaction: boolean
+  /** Rotate log when file exceeds this size (bytes). 0 = disabled. */
+  maxFileSizeBytes: number
+  /** Rotate log when file age exceeds this (days). 0 = disabled. */
+  maxFileAgeDays: number
+  /** Maximum number of rotated files to keep. */
+  maxRotatedFiles: number
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -49,6 +63,10 @@ export const Config: Schema<Config> = Schema.object({
   flushIntervalMs: Schema.natural().default(1000),
   filename: Schema.string().default('audit.plain.jsonl'),
   root: Schema.string().required(),
+  enablePIIRedaction: Schema.boolean().default(true),
+  maxFileSizeBytes: Schema.natural().default(10 * 1024 * 1024), // 10MB
+  maxFileAgeDays: Schema.number().default(7),
+  maxRotatedFiles: Schema.natural().default(5),
 })
 
 export interface AuditEntry {
@@ -95,6 +113,10 @@ export class AuditLogServiceImpl extends Service {
   private readonly minLevel: AuditLevel
   private readonly ringBufferSize: number
   private readonly flushIntervalMs: number
+  private readonly enablePIIRedaction: boolean
+  private readonly maxFileSizeBytes: number
+  private readonly maxFileAgeDays: number
+  private readonly maxRotatedFiles: number
   private ringBuffer: AuditEntry[] = []
   /** Index of the first entry in ringBuffer that has NOT yet been flushed. */
   private flushIndex = 0
@@ -108,6 +130,10 @@ export class AuditLogServiceImpl extends Service {
     this.minLevel = config.minLevel
     this.ringBufferSize = config.ringBufferSize
     this.flushIntervalMs = config.flushIntervalMs
+    this.enablePIIRedaction = config.enablePIIRedaction
+    this.maxFileSizeBytes = config.maxFileSizeBytes
+    this.maxFileAgeDays = config.maxFileAgeDays
+    this.maxRotatedFiles = config.maxRotatedFiles
   }
 
   /** Test/apply helper that returns the audit log's current file path. */
@@ -135,12 +161,17 @@ export class AuditLogServiceImpl extends Service {
 
   async log(entry: Omit<AuditEntry, 'ts'> & { ts?: number }): Promise<void> {
     if (LEVEL_ORDER[entry.level] < LEVEL_ORDER[this.minLevel]) return
+    // Apply PII redaction to payload if enabled
+    let payload = entry.payload
+    if (this.enablePIIRedaction) {
+      payload = redactObject(entry.payload).redacted as Record<string, unknown>
+    }
     const record: AuditEntry = {
       ts: entry.ts ?? Date.now(),
       level: entry.level,
       kind: entry.kind,
       source: entry.source,
-      payload: entry.payload,
+      payload,
     }
     // Verify lossless JSON up front so a non-serializable payload never
     // wedges the flush path. `session.event` payloads are derived from the
@@ -218,6 +249,8 @@ export class AuditLogServiceImpl extends Service {
         return
       }
       await mkdir(dirname(this.filePath), { recursive: true })
+      // Check if rotation is needed before writing
+      await this.checkAndRotate()
       const prev = existsSync(this.filePath) ? await readFile(this.filePath, 'utf-8') : ''
       try {
         const lines = toWrite.map((e) => JSON.stringify(e)).join('\n') + '\n'
@@ -238,6 +271,46 @@ export class AuditLogServiceImpl extends Service {
       }
     })
     return this.flushPromise
+  }
+
+  /**
+   * Check if the current log file needs rotation (by size or age).
+   * If yes, rotate: current → .1, .1 → .2, ..., delete oldest beyond maxRotatedFiles.
+   */
+  private async checkAndRotate(): Promise<void> {
+    if (!existsSync(this.filePath)) return
+
+    try {
+      const stats = await stat(this.filePath)
+      const now = Date.now()
+      const ageMs = now - stats.mtimeMs
+      const ageDays = ageMs / (1000 * 60 * 60 * 24)
+
+      const needsRotation =
+        (this.maxFileSizeBytes > 0 && stats.size >= this.maxFileSizeBytes) ||
+        (this.maxFileAgeDays > 0 && ageDays >= this.maxFileAgeDays)
+
+      if (!needsRotation) return
+
+      // Rotate: shift .N → .N+1, then current → .1
+      for (let i = this.maxRotatedFiles; i >= 1; i--) {
+        const from = i === 1 ? this.filePath : `${this.filePath}.${i - 1}`
+        const to = `${this.filePath}.${i}`
+        if (existsSync(from)) {
+          await rename(from, to)
+        }
+      }
+
+      // Delete files beyond maxRotatedFiles
+      const oldest = `${this.filePath}.${this.maxRotatedFiles + 1}`
+      if (existsSync(oldest)) {
+        await import('node:fs/promises').then((fs) => fs.rm(oldest, { force: true }))
+      }
+    } catch (err) {
+      // Rotation failure should not block flushing
+      // eslint-disable-next-line no-console
+      console.error(`[audit-log] rotation failed: ${(err as Error).message}`)
+    }
   }
 
   /** Read every entry from disk; used by query() to span past the ring buffer. */
