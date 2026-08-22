@@ -14,6 +14,8 @@
 > 9. **Agent Loop 入口**：v5 自定义 `runAgentLoop(ctx, ...)`；v6.0 改为 `ctx.agents.create(...)` + `agent.followup(userMsg)`。
 >
 > **关于 DSH 对外服务能力**：DSH 内置 Runtime Profile 只有 `web`（浏览器 UI，3080 端口）和 `headless`（一次性 runner），**没有内置"对外 HTTP API 服务"形态**。如需对外提供结构化 API（如手机 APP、第三方服务调用），通过可选的 `http-api` 插件实现（§ 8.19）。
+>
+> **实施策略**：本设计采用**渐进式实施**（从轻到重），分 8 个阶段逐步落地。当前已完成 Phase 1（M1-M4 基础功能）+ Phase 2 的 A1 简化版（`prompt-guard` 简化实现），代码与设计匹配度约 40%。详见 [§ 1.6 渐进式实施路线图](#16-渐进式实施路线图) 及 [docs/implementation-roadmap.md](./implementation-roadmap.md)。
 
 ## 一、设计概述
 
@@ -96,6 +98,32 @@
 - **安全通信**：OHTTP（Oblivious HTTP, RFC 9458）
 - **远程证明**：TEE Attestation Token
 - **目标平台**：瑞芯微 RK3588 / 飞腾 D3000M（纯 CPU 推理）
+
+### 1.6 渐进式实施路线图
+
+> **实施原则**：从轻到重，先实现基本功能，再持续添加安全加固。每个阶段都可独立交付、独立验证，前一阶段是后一阶段的基础。
+
+本设计的所有能力**不是一次性实现**的，而是按照"**先跑起来 → 再加防护 → 最后上硬件**"的策略，分阶段渐进式落地。完整的 8 阶段路线图、当前状态、决策记录、验证标准见 [docs/implementation-roadmap.md](./implementation-roadmap.md)。
+
+**阶段概览**：
+
+| 阶段 | 目标 | 状态 | 关键交付物 |
+|---|---|---|---|
+| Phase 1 | 基础功能（能对话） | ✅ 已完成 | HTTP API、本地/云端 LLM 适配、意图路由、工具注册、审计日志、RK3588 部署 |
+| Phase 2 | 基础安全加固 | 🔜 进行中 | `prompt-guard` 简化版（PII 脱敏 + 注入检测 + 频率限制） |
+| Phase 3 | 存储加密 | 📋 计划中 | tcm 密钥管理、local-storage 字段级加密、sessions 加密存储 |
+| Phase 4 | 隐私策略引擎 | 📋 计划中 | privacy-policy 完整实现、sanitizer-pipeline、intent-router 联动 |
+| Phase 5 | 工具与多模态 | 📋 计划中 | tools Realm 权限、web-search、voice-input、local-tools 增强 |
+| Phase 6 | 威胁检测与自动响应 | 📋 计划中 | td-bus 完整实现、与 prompt-guard/secure-bridge 联动 |
+| Phase 7 | TEE 可信计算 | 📋 远期 | ARM TrustZone / RISC-V Keystone 集成、证明令牌、密封存储 |
+| Phase 8 | 零信任通信（可选） | ⚪ 用户决定暂不实施 | ohttp-gateway、secure-bridge（OHTTP + TLS 降级） |
+
+**当前状态（2026-08-22）**：处于 Phase 2，已完成 Phase 1（M1-M4 基础功能）+ Phase 2 中的 A1 简化版（`prompt-guard` 简化实现），代码与设计文档匹配度约 40%。
+
+**关键决策**：
+- ✅ **A2 传输层安全（OHTTP）暂不实施**：当前直接调用 DeepSeek API，无中间中继，HTTPS 已足够。保留为 Phase 8 远期规划。
+- ✅ **RK3588 NPU 优化不在本项目范围**：使用 rkllm3-server 提供的 OpenAI 兼容 API 即可，NPU 层优化属于硬件驱动范畴。
+- ✅ **A1 采用简化版实现**：`prompt-guard` 用纯正则实现，无 TCM/策略引擎依赖；Phase 4 完成后可升级为策略驱动。
 
 ---
 
