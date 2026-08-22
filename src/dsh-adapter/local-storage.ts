@@ -4,6 +4,8 @@
  * the latest write per key (a compacted view), and writes append a single
  * line. No encryption, no compression, no TCM dependency.
  *
+ * Phase 3 增强：存储时对敏感字段自动脱敏（PII redaction），复用 pii-utils。
+ *
  * M3 NOTE — A3 replaces this entire file with an encrypted SQLite-backed
  * store. The plugin shape (Service + put/get/delete/list) is the durable
  * contract; the on-disk format is an implementation detail.
@@ -17,6 +19,7 @@ import Schema from '@deepseek-ai/schemastery'
 import { mkdir, readFile, writeFile, rename } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { redactObject } from './pii-utils.js'
 
 export const name = 'local-storage'
 
@@ -27,11 +30,14 @@ export interface Config {
   root: string
   /** Filename inside `root`. Each line is one log entry. */
   filename: string
+  /** Enable PII redaction before writing to disk. */
+  enablePIIRedaction: boolean
 }
 
 export const Config: Schema<Config> = Schema.object({
   root: Schema.string().required(),
   filename: Schema.string().default('storage.plain.jsonl'),
+  enablePIIRedaction: Schema.boolean().default(true),
 })
 
 export interface KVEntry {
@@ -60,6 +66,7 @@ declare module '@deepseek-ai/cordis' {
  */
 export class LocalStorageServiceImpl extends Service {
   private readonly filePath: string
+  private readonly enablePIIRedaction: boolean
   private cache = new Map<string, Map<string, unknown>>()
   private writeQueue: Promise<void> = Promise.resolve()
   private loaded = false
@@ -67,6 +74,7 @@ export class LocalStorageServiceImpl extends Service {
   constructor(ctx: Context, config: Config) {
     super(ctx, 'localStorage')
     this.filePath = join(config.root, config.filename)
+    this.enablePIIRedaction = config.enablePIIRedaction
   }
 
   /** Initial scan; idempotent. M3 calls this once per process. */
@@ -108,8 +116,12 @@ export class LocalStorageServiceImpl extends Service {
 
   async put<T = unknown>(collection: string, key: string, value: T): Promise<void> {
     await this.load()
-    this.collection(collection).set(key, value)
-    await this.append({ op: 'put', collection, key, value, ts: Date.now() })
+    // Apply PII redaction to value before storing
+    const storedValue = this.enablePIIRedaction
+      ? redactObject(value).redacted
+      : value
+    this.collection(collection).set(key, storedValue)
+    await this.append({ op: 'put', collection, key, value: storedValue, ts: Date.now() })
   }
 
   async delete(collection: string, key: string): Promise<void> {

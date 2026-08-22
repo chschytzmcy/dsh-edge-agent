@@ -205,6 +205,7 @@
       config:
         root: !!js (process.env.DSH_EDGE_STORAGE_ROOT ?? (process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent-m1/storage')
         filename: storage.plain.jsonl
+        enablePIIRedaction: true
 
     # NOTE: `sessions` and `audit-log` are NOT mounted — `dsh-session`
     # provides `sessions` upstream and nothing provides `auditLog` so
