@@ -1,6 +1,6 @@
 # dsh-edge-agent 实施进度报告
 
-> **更新日期**：2026-08-19
+> **更新日期**：2026-08-22
 > **基线设计文档**：`dsh-edge-agent-design-v6.md`（§ 八 实施计划）
 > **版本**：v0.1.0
 
@@ -60,7 +60,7 @@
 | **local-storage** | ~179 | JSONL 持久化 KV 存储，原子写入，内存缓存，序列化写队列 |
 | **sessions** | ~191 | 基于 local-storage 的会话 CRUD，TTL 感知，LRU 淘汰 |
 | **audit-log** | ~265 | JSONL 环形缓冲区，周期刷新，级别过滤，安全报告生成 |
-| **http-api** | ~400 | 真实 HTTP 服务器，5 路由（health/openapi/chat/chat-stream SSE/sessions CRUD），Bearer 认证，**集成 intent-router + 真实本地 LLM 路由** |
+| **http-api** | ~464 | 真实 HTTP 服务器，5 路由（health/openapi/chat/chat-stream SSE/sessions CRUD），Bearer 认证，**集成 intent-router + 真实本地 LLM 路由**，access log + audit trace |
 
 ### ⚠️ 部分实现（PARTIAL）— 2 个
 
@@ -127,6 +127,18 @@
 ## 六、Git 提交历史
 
 ```
+b015af8 fix(tests): 修复单元测试导入和断言问题
+b2958f2 refactor: 复用 DSH 原生工具,删除重复实现
+ceb4a5e feat(intent-router): 完整审计 trace
+8bfa2bd fix(audit-log): flush() 不再重复写整个 ring buffer
+7c78d81 feat(llm-adapter): 每 LLM 调用挂 audit trace
+138ff03 feat(http-api): access log + audit trace + 修复 auditLog 注入
+7e776df fix(http-api): SSE 流式也走意图路由（之前强制 mock）
+f144872 feat(config): .env.sh loader 绕过 DSH 的 .env 限制
+69730ee feat(M4+): 真实本地 LLM 端到端 + .env 配置
+1fe14e8 fix(profile): 修复 http-api 必须在 insert 块里
+07d3c3b docs: 修正部署和 LLM Provider 选择说明
+ebf5f9e docs(PROGRESS): 记录意图路由实现（A2-分类完成）
 2e8c992 docs: README 加入 intent 路由示例
 b1af057 fix: 修复 agent loop 返回为空 — 传递 agentOptions
 08e6b9e feat: 实现意图识别 (LOCAL vs CLOUD) — LLM 分类 + 关键词兜底
@@ -143,7 +155,7 @@ dbee027 feat: scaffold dsh-edge-agent v0.1.0
 c7a2164 Initial commit
 ```
 
-共 14 次提交，M0→M1→M2→M3→M4→M5 + 意图路由增量链路清晰。
+共 26 次提交。M0→M5 + 意图路由 + 审计增强 + 工具复用 + 测试修复链路清晰。
 
 ---
 
@@ -266,7 +278,60 @@ dsh --env-file=.env --profile dsh-edge-agent
 
 ---
 
-## 十、下一步建议
+## 十、近期改进（2026-08-19 ~ 2026-08-22）
+
+### 10.1 DSH 原生工具复用（commit `b2958f2`）
+
+**变更**：删除自实现的 `local-tools` 和 `web-search` 插件，复用 DSH 原生工具：
+- `@deepseek-ai/dsh-tool-bash`（bash 执行）
+- `@deepseek-ai/dsh-tool-fs`（文件 read/write/edit）
+- `@deepseek-ai/dsh-tool-web`（web_search + web_fetch）
+- `@deepseek-ai/dsh-web-search-deepseek`（DeepSeek 搜索 provider）
+
+**收益**：
+- 减少代码重复，降低维护成本
+- 工具行为与 DSH 官方保持一致
+- `tools` 插件简化为 Realm 配置层（148 行）
+
+### 10.2 审计增强（commits `138ff03` `7c78d81` `ceb4a5e` `8bfa2bd`）
+
+**变更**：
+- `http-api`：添加 access log（每请求一行，含 reqId/method/path/status/duration）+ audit trace
+- `cloud-llm-adapter` / `local-llm-adapter`：每次 LLM 调用挂 audit trace
+- `intent-router`：完整的 classify 审计（start/end，含 duration、path、category、confidence）
+- `audit-log`：`flush()` 优化，不再重复写整个 ring buffer
+
+**收益**：
+- 请求链路可追踪（reqId 贯穿 http-api → intent-router → llm-adapter）
+- 安全审计数据完整（输入分类、LLM 调用、响应时间全记录）
+- 性能提升（audit-log flush 只写增量）
+
+### 10.3 单元测试修复（commit `b015af8`）
+
+**变更**：修复 6 个测试文件的导入和断言问题
+- 添加 `import { describe, it } from 'vitest'`
+- 修改 `import { default as X }` → `import * as X`（源文件使用命名导出）
+- 修复 `Config` 类型断言（`typeof === 'object'` → `assert.ok()`）
+- 修复 mock 函数返回值（`registerAdapter` 需返回 disposer）
+- 更新 `llm-adapters` 测试的 inject 数组和配置字段
+
+**结果**：99 个单元测试全部通过。
+
+### 10.4 .env.sh 加载器（commit `f144872`）
+
+**问题**：DSH 拒绝加载"进程启动敏感"变量（如 `DSH_EDGE_HTTP_PORT`、`DSH_EDGE_LOCAL_LLM_BASEURL`）到 `.env`。
+
+**方案**：`.env.sh` 加载器
+- 安全变量写入 `.env`（由 `dsh --env-file=.env` 加载）
+- `DSH_EDGE_*` 变量由加载器直接 `export` 到进程环境
+
+```bash
+source .env.sh && dsh --profile dsh-edge-agent
+```
+
+---
+
+## 十一、下一步建议
 
 按设计文档 A 段剩余顺序和安全影响优先级排列：
 

@@ -6,8 +6,7 @@
     "ohttp-gateway",
     "secure-bridge",
     "attestation",
-    "dsh-edge-agent",
-    "http-api"
+    "dsh-edge-agent"
   ],
   "configOverrides": [
     "system-prompt",

@@ -13,6 +13,16 @@
 | 插件开发 | [plugin-development.md](plugin-development.md) | [plugin-development.en.md](plugin-development.en.md) |
 | 上游适配契约 | [ADAPTER.md](ADAPTER.md) | — |
 
+## 🛠️ 实施与技术文档
+
+| 文档 | 说明 | 更新日期 |
+|---|---|---|
+| [PROGRESS.md](PROGRESS.md) | 实施进度报告（M 段 + A 段状态、提交历史、插件实现分类） | 2026-08-22 |
+| [plugin-architecture.md](plugin-architecture.md) | 插件架构详解（21 插件职责、依赖关系、启动顺序） | 2026-08-21 |
+| [dsh-native-tools-analysis.md](dsh-native-tools-analysis.md) | DSH 原生工具复用分析（bash/fs/web 工具集成） | 2026-08-21 |
+| [tool-reuse-changes.md](tool-reuse-changes.md) | 工具复用变更记录（自实现 → DSH 原生迁移） | 2026-08-21 |
+| [dsh-edge-agent-design-v6.md](dsh-edge-agent-design-v6.md) | 基线设计文档 v6（完整设计方案） | 2026-08-18 |
+
 ## 🎯 文档导航
 
 - **新用户**：从 [installation.md](installation.md) 开始
@@ -20,6 +30,8 @@
 - **安全审计员**：阅读 [threat-model.md](threat-model.md) 了解威胁模型和缓解措施
 - **插件开发者**：阅读 [plugin-development.md](plugin-development.md) 了解如何新增插件
 - **DSH 升级者**：阅读 [ADAPTER.md](ADAPTER.md) 了解上游版本合约
+- **项目跟进**：阅读 [PROGRESS.md](PROGRESS.md) 了解当前实施状态和下一步计划
+- **工具集成**：阅读 [dsh-native-tools-analysis.md](dsh-native-tools-analysis.md) 了解 DSH 原生工具复用
 
 ## 📝 文档约定
 

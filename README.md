@@ -217,9 +217,23 @@ export DSH_EDGE_LOCAL_LLM_MODEL=qwen3-4b-instruct-2507
 > **Secret 警告**：`DEEPSEEK_API_KEY`、`EDGE_API_KEY` 是 secret，**绝不能提交到 git**。
 > 使用 `.env` 文件（已加入 `.gitignore`）+ `dsh --env-file=.env` 启动。
 
-## 🧪 Curl 功能测试
+## 🧪 手动测试
 
 > 假设服务器运行在 `http://127.0.0.1:21017`，API Key 为 `test-secret-key`。
+
+### 启动服务
+
+```bash
+# 方式 1: 使用启动脚本（推荐）
+./scripts/launch-dev.sh
+
+# 方式 2: 手动启动
+source .env.sh
+dsh --profile dsh-edge-agent
+
+# 方式 3: 后台运行
+setsid bash -c 'source .env.sh && dsh --profile dsh-edge-agent' > /tmp/dsh.log 2>&1 < /dev/null &
+```
 
 ### Health Check
 
@@ -228,7 +242,7 @@ curl http://127.0.0.1:21017/v1/health
 ```
 
 ```json
-{"status":"ok","version":"0.1.0","provider":"local-qwen3-4b"}
+{"status":"ok"}
 ```
 
 ### 认证测试
@@ -301,6 +315,65 @@ curl -X POST http://127.0.0.1:21017/v1/chat \
 
 > CLOUD intent 路由到 `cloud-deepseek-v4`，需要 `DEEPSEEK_API_KEY` 环境变量。
 
+### 工具调用测试
+
+dsh-edge-agent 使用 DSH 原生工具，所有工具都通过模型自动调用。
+
+#### Bash 工具（本地命令执行）
+
+```bash
+curl -X POST http://127.0.0.1:21017/v1/chat \
+  -H "Authorization: Bearer test-secret-key" \
+  -H "Content-Type: application/json" \
+  -d '{"message":"帮我计算 17*23","sessionId":"test-bash"}'
+```
+
+模型会调用 `bash` 工具执行 `echo $((17*23))`，返回计算结果。
+
+#### 文件工具（读/写/编辑）
+
+```bash
+# 读取文件
+curl -X POST http://127.0.0.1:21017/v1/chat \
+  -H "Authorization: Bearer test-secret-key" \
+  -H "Content-Type: application/json" \
+  -d '{"message":"读取 /tmp/test.txt 文件内容","sessionId":"test-file-read"}'
+
+# 写入文件
+curl -X POST http://127.0.0.1:21017/v1/chat \
+  -H "Authorization: Bearer test-secret-key" \
+  -H "Content-Type: application/json" \
+  -d '{"message":"在 /tmp 创建 hello.txt，内容是 Hello World","sessionId":"test-file-write"}'
+
+# 编辑文件
+curl -X POST http://127.0.0.1:21017/v1/chat \
+  -H "Authorization: Bearer test-secret-key" \
+  -H "Content-Type: application/json" \
+  -d '{"message":"将 /tmp/hello.txt 中的 Hello 改为 Hi","sessionId":"test-file-edit"}'
+```
+
+#### Web 搜索工具（DeepSeek 搜索引擎）
+
+```bash
+curl -X POST http://127.0.0.1:21017/v1/chat \
+  -H "Authorization: Bearer test-secret-key" \
+  -H "Content-Type: application/json" \
+  -d '{"message":"搜索 DeepSeek V4 模型的最新消息","sessionId":"test-web-search"}'
+```
+
+模型会调用 `web_search` 工具，返回搜索结果摘要。
+
+#### Web 获取工具（抓取网页内容）
+
+```bash
+curl -X POST http://127.0.0.1:21017/v1/chat \
+  -H "Authorization: Bearer test-secret-key" \
+  -H "Content-Type: application/json" \
+  -d '{"message":"获取 https://example.com 的网页内容","sessionId":"test-web-fetch"}'
+```
+
+模型会调用 `web_fetch` 工具，返回网页内容摘要。
+
 ### Intent 分类规则
 
 | 关键词触发 LOCAL | 默认 / 知识类 → CLOUD |
@@ -321,14 +394,21 @@ curl -N -X POST http://127.0.0.1:21017/v1/chat/stream \
 ```
 
 ```
-data: {"type":"chunk","content":"1"}
+data: {"type":"intent","intent":{"category":"CLOUD","targetRealm":"cloud","confidence":0.85,"rationale":"llm-classified:cloud"}}
 
-data: {"type":"chunk","content":"+1=2"}
+data: {"type":"text","text":"1"}
+
+data: {"type":"text","text":"+1"}
+
+data: {"type":"text","text":"=2"}
 
 data: {"type":"done"}
 ```
 
-> SSE 流式响应（`1+1等于几` 由 DeepSeek 真实回答）。
+> SSE 流式响应。帧类型：
+> - `intent` — 首帧，携带意图分类结果
+> - `text` — 文本增量片段
+> - `done` — 结束帧
 
 ### 会话管理
 
@@ -351,6 +431,32 @@ curl -X DELETE http://127.0.0.1:21017/v1/sessions/test-001 \
 ```bash
 curl http://127.0.0.1:21017/v1/openapi.json | jq .
 ```
+
+## 🧪 自动化测试
+
+### 单元测试（99 个测试用例）
+
+```bash
+pnpm test
+```
+
+覆盖 16 个测试文件，包括：
+- 插件形状验证（name/inject/Config/apply）
+- SSE 解析、JSONL 持久化、HTTP 路由
+- 意图分类（LLM + 规则兜底）
+- 会话管理、审计日志
+
+### 构建验证
+
+```bash
+pnpm run verify:build
+```
+
+包含 4 个验证脚本：
+- `verify:boundary` — 适配器边界检查（`@deepseek-ai/*` 仅存在于 `src/dsh-adapter/`）
+- `verify:contract` — 上游版本契约（锁定 `0.1.0-rc.6`）
+- `verify:patch-surface` — 补丁面一致性
+- `verify:plugin-spec` — 插件规范（name+inject+Config+apply）
 
 ---
 

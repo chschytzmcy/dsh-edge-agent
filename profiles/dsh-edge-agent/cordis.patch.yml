@@ -198,15 +198,6 @@
         enableToolIsolation: true
         presentationMode: native
 
-    - id: local-tools
-      name: '@deepseek-harness-edge-agent/dsh-edge-agent/local-tools'
-      inject: [edgeTools, tools]
-      config:
-        allowList: !!js (process.env.DSH_EDGE_LOCAL_TOOLS_ALLOWLIST ?? '/tmp').split(',').map((s) => s.trim()).filter(Boolean)
-        readOnly: !!js process.env.DSH_EDGE_LOCAL_TOOLS_WRITABLE !== 'true'
-        maxFileSize: 1048576
-        timeoutMs: 10000
-
     - id: local-storage
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/local-storage'
       config:
