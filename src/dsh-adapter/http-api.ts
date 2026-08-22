@@ -18,7 +18,7 @@ import type { SessionEvent } from '@deepseek-ai/dsh-session'
 
 export const name = 'http-api'
 
-export const inject = ['agents', 'intentRouter', 'auditLog'] as const
+export const inject = ['agents', 'intentRouter', 'promptGuard', 'auditLog'] as const
 
 export interface Config {
   host: string
@@ -59,6 +59,7 @@ export class HttpApiServiceImpl extends Service {
     private cordisCtx: any,
     private config: Config,
     private agents: any,
+    private promptGuard: any,
     private auditLog: any,
   ) {
     super(cordisCtx, 'httpApi')
@@ -203,6 +204,25 @@ export class HttpApiServiceImpl extends Service {
     const sessionId = requestedSessionId ?? randomUUID()
     this.audit('info', 'http.chat.start', { reqId, sessionId, messageLen: message.length, messagePreview: message.slice(0, 80) })
 
+    // Input security check
+    if (this.promptGuard) {
+      try {
+        const inputCheck = await this.promptGuard.checkInput(message, sessionId)
+        if (!inputCheck.safe) {
+          this.accessLog(reqId, 'POST', '/v1/chat', 400, Date.now() - start, 'input-blocked')
+          res.writeHead(400, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({
+            error: 'Input blocked by security policy',
+            reason: inputCheck.reason,
+            riskLevel: inputCheck.riskLevel,
+          }))
+          return
+        }
+      } catch (err: any) {
+        this.audit('error', 'http.chat.input-check.error', { reqId, sessionId, error: err.message })
+      }
+    }
+
     // Classify intent using intent-router
     let intent = { category: 'CLOUD' as const, confidence: 0, targetRealm: 'cloud', rationale: 'no-classifier' }
     if (this.intentRouter) {
@@ -223,22 +243,11 @@ export class HttpApiServiceImpl extends Service {
     // Wait for turn completion by subscribing to session/event
     const turnEnd = new Promise<string>((resolve) => {
       const dispose = this.cordisCtx.on('session/event', (session: any, event: SessionEvent) => {
-        // Debug: log all events
-        console.log(`[http-api][${reqId}] session/event: ${event.type}`)
-
         if (event.type === 'turn/end') {
           const events = record.agent.session.events
-          console.log(`[http-api][${reqId}] turn/end - total events: ${events.length}`)
-
-          // Debug: log all event types
-          const eventTypes = events.map((e: any) => e.type)
-          console.log(`[http-api][${reqId}] event types:`, eventTypes.join(', '))
-
           const lastAssistant = events
             .filter((e) => e.type === 'assistant/message')
             .pop()
-
-          console.log(`[http-api][${reqId}] lastAssistant found: ${!!lastAssistant}`)
 
           const text = lastAssistant
             ? (lastAssistant as any).data.message.content
@@ -246,8 +255,6 @@ export class HttpApiServiceImpl extends Service {
                 .map((b: any) => b.text)
                 .join('')
             : ''
-
-          console.log(`[http-api][${reqId}] extracted text length: ${text.length}`)
 
           dispose()
           resolve(text)
@@ -263,7 +270,22 @@ export class HttpApiServiceImpl extends Service {
     // Call followup - it's fire-and-forget, agent loop runs async
     record.agent.followup(userMessage)
 
-    const result = await turnEnd
+    let result = await turnEnd
+
+    // Output security check (PII redaction)
+    let redactedInfo: Array<{ type: string; masked: string }> | undefined
+    if (this.promptGuard && result) {
+      try {
+        const outputCheck = await this.promptGuard.checkOutput(result)
+        result = outputCheck.filtered
+        if (outputCheck.redacted.length > 0) {
+          redactedInfo = outputCheck.redacted
+        }
+      } catch (err: any) {
+        this.audit('error', 'http.chat.output-check.error', { reqId, sessionId, error: err.message })
+      }
+    }
+
     const duration = Date.now() - start
     this.audit('info', 'http.chat.end', { reqId, sessionId, provider, model, durationMs: duration, resultLen: result.length })
     this.accessLog(reqId, 'POST', '/v1/chat', 200, duration, `${provider}/${model} intent=${intent.category}`)
@@ -280,6 +302,7 @@ export class HttpApiServiceImpl extends Service {
           rationale: intent.rationale,
         },
         duration,
+        ...(redactedInfo && { redacted: redactedInfo }),
       }),
     )
   }
@@ -296,6 +319,25 @@ export class HttpApiServiceImpl extends Service {
 
     const sessionId = requestedSessionId ?? randomUUID()
     this.audit('info', 'http.chat.stream.start', { reqId, sessionId, messageLen: message.length })
+
+    // Input security check
+    if (this.promptGuard) {
+      try {
+        const inputCheck = await this.promptGuard.checkInput(message, sessionId)
+        if (!inputCheck.safe) {
+          this.accessLog(reqId, 'POST', '/v1/chat/stream', 400, Date.now() - start, 'input-blocked')
+          res.writeHead(400, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({
+            error: 'Input blocked by security policy',
+            reason: inputCheck.reason,
+            riskLevel: inputCheck.riskLevel,
+          }))
+          return
+        }
+      } catch (err: any) {
+        this.audit('error', 'http.chat.stream.input-check.error', { reqId, sessionId, error: err.message })
+      }
+    }
 
     // Classify intent (same as handleChat) so SSE routes to the correct LLM
     let intent = { category: 'CLOUD' as const, confidence: 0, targetRealm: 'cloud', rationale: 'no-classifier' }
@@ -474,8 +516,10 @@ export class HttpApiServiceImpl extends Service {
 
 export async function apply(ctx: any, config: Config): Promise<() => Promise<void>> {
   const agents = ctx.get('agents')
+  const promptGuard = ctx.get('promptGuard')
   const auditLog = ctx.get('auditLog')
-  const service = new HttpApiServiceImpl(ctx, config, agents, auditLog)
+  console.log(`[http-api] apply() - promptGuard: ${!!promptGuard}, auditLog: ${!!auditLog}`)
+  const service = new HttpApiServiceImpl(ctx, config, agents, promptGuard, auditLog)
   await service.start()
   return async () => {
     await service.stop()

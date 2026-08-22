@@ -8,7 +8,7 @@ import * as guard from '../../src/dsh-adapter/prompt-guard.ts'
 describe('prompt-guard plugin', () => {
   it('exports the canonical plugin shape', () => {
     assert.equal(guard.name, 'prompt-guard')
-    assert.deepEqual([...guard.inject], ['tcm', 'privacyPolicy', 'auditLog'])
+    assert.deepEqual([...guard.inject], ['auditLog'])
     assert.equal(typeof guard.apply, 'function')
     assert.ok(guard.Config)
   })
@@ -16,8 +16,11 @@ describe('prompt-guard plugin', () => {
   it('default apply returns a disposer', async () => {
     const fakeCtx = { plugin: () => undefined } as never
     const dispose = await guard.apply(fakeCtx, {
-      rules: [],
-      enableModelDetection: false,
+      maxInputLength: 10000,
+      maxRequestsPerMinute: 20,
+      enablePIIRedaction: true,
+      enableInjectionDetection: true,
+      enableRateLimit: true,
     })
     assert.equal(typeof dispose, 'function')
     await dispose()
