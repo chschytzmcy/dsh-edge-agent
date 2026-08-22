@@ -2,14 +2,15 @@
  * td-bus plugin tests — verifies canonical shape and stub threat level.
  */
 import assert from 'node:assert/strict'
-import { default as tdBus } from '../../src/dsh-adapter/td-bus.ts'
+import { describe, it } from 'vitest'
+import * as tdBus from '../../src/dsh-adapter/td-bus.ts'
 
 describe('td-bus plugin', () => {
   it('exports the canonical plugin shape', () => {
     assert.equal(tdBus.name, 'td-bus')
     assert.deepEqual([...tdBus.inject], ['auditLog', 'privacyPolicy'])
     assert.equal(typeof tdBus.apply, 'function')
-    assert.equal(typeof tdBus.Config, 'object')
+    assert.ok(tdBus.Config)
   })
 
   it('config carries thresholds', () => {

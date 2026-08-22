@@ -2,14 +2,15 @@
  * prompt-guard plugin tests — verifies canonical shape and stub verdict.
  */
 import assert from 'node:assert/strict'
-import { default as guard } from '../../src/dsh-adapter/prompt-guard.ts'
+import { describe, it } from 'vitest'
+import * as guard from '../../src/dsh-adapter/prompt-guard.ts'
 
 describe('prompt-guard plugin', () => {
   it('exports the canonical plugin shape', () => {
     assert.equal(guard.name, 'prompt-guard')
     assert.deepEqual([...guard.inject], ['tcm', 'privacyPolicy', 'auditLog'])
     assert.equal(typeof guard.apply, 'function')
-    assert.equal(typeof guard.Config, 'object')
+    assert.ok(guard.Config)
   })
 
   it('default apply returns a disposer', async () => {

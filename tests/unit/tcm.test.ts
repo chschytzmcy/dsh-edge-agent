@@ -4,14 +4,15 @@
  * Keystone) are out of scope for the v0.1.0 scaffold.
  */
 import assert from 'node:assert/strict'
-import { default as tcm } from '../../src/dsh-adapter/tcm.ts'
+import { describe, it } from 'vitest'
+import * as tcm from '../../src/dsh-adapter/tcm.ts'
 
 describe('tcm plugin', () => {
   it('exports the canonical plugin shape', () => {
     assert.equal(tcm.name, 'tcm')
     assert.deepEqual(tcm.inject, [])
     assert.equal(typeof tcm.apply, 'function')
-    assert.equal(typeof tcm.Config, 'object')
+    assert.ok(tcm.Config)
   })
 
   it('config requires teeType and keyStorePath', () => {

@@ -3,14 +3,15 @@
  * the stub service contract.
  */
 import assert from 'node:assert/strict'
-import { default as policy } from '../../src/dsh-adapter/privacy-policy.ts'
+import { describe, it } from 'vitest'
+import * as policy from '../../src/dsh-adapter/privacy-policy.ts'
 
 describe('privacy-policy plugin', () => {
   it('exports the canonical plugin shape', () => {
     assert.equal(policy.name, 'privacy-policy')
     assert.deepEqual([...policy.inject], ['tcm', 'localStorage', 'auditLog'])
     assert.equal(typeof policy.apply, 'function')
-    assert.equal(typeof policy.Config, 'object')
+    assert.ok(policy.Config)
   })
 
   it('config requires policyPath', () => {

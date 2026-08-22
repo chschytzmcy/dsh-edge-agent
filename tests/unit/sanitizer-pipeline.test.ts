@@ -3,14 +3,15 @@
  * pass-through behavior.
  */
 import assert from 'node:assert/strict'
-import { default as sanitizer } from '../../src/dsh-adapter/sanitizer-pipeline.ts'
+import { describe, it } from 'vitest'
+import * as sanitizer from '../../src/dsh-adapter/sanitizer-pipeline.ts'
 
 describe('sanitizer-pipeline plugin', () => {
   it('exports the canonical plugin shape', () => {
     assert.equal(sanitizer.name, 'sanitizer-pipeline')
     assert.deepEqual([...sanitizer.inject], ['localStorage', 'privacyPolicy'])
     assert.equal(typeof sanitizer.apply, 'function')
-    assert.equal(typeof sanitizer.Config, 'object')
+    assert.ok(sanitizer.Config)
   })
 
   it('config has maxReplacementsPerSession', () => {

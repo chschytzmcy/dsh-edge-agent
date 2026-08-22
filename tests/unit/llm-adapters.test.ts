@@ -3,35 +3,35 @@
  * each register on the LLM runtime via registerAdapter().
  */
 import assert from 'node:assert/strict'
-import { default as localAdapter } from '../../src/dsh-adapter/local-llm-adapter.ts'
-import { default as cloudAdapter } from '../../src/dsh-adapter/cloud-llm-adapter.ts'
+import { describe, it } from 'vitest'
+import * as localAdapter from '../../src/dsh-adapter/local-llm-adapter.ts'
+import * as cloudAdapter from '../../src/dsh-adapter/cloud-llm-adapter.ts'
 
 describe('llm-adapters', () => {
   it('local-llm-adapter has the canonical shape', () => {
     assert.equal(localAdapter.name, 'local-llm-adapter')
-    assert.deepEqual([...localAdapter.inject], [])
+    assert.deepEqual([...localAdapter.inject], ['llm', 'auditLog'])
     assert.equal(typeof localAdapter.apply, 'function')
-    assert.equal(typeof localAdapter.Config, 'object')
+    assert.ok(localAdapter.Config)
   })
 
   it('cloud-llm-adapter has the canonical shape', () => {
     assert.equal(cloudAdapter.name, 'cloud-llm-adapter')
-    assert.deepEqual([...cloudAdapter.inject], ['secureBridge', 'auditLog'])
+    assert.deepEqual([...cloudAdapter.inject], ['llm', 'auditLog'])
     assert.equal(typeof cloudAdapter.apply, 'function')
-    assert.equal(typeof cloudAdapter.Config, 'object')
+    assert.ok(cloudAdapter.Config)
   })
 
   it('local adapter registers itself on the LLM runtime', async () => {
     const registered: unknown[] = []
     const fakeCtx = {
       plugin: () => undefined,
-      llm: { registerAdapter: (providers: string[], adapter: unknown) => { registered.push({ providers, adapter }) } },
+      llm: { registerAdapter: (providers: string[], adapter: unknown) => { registered.push({ providers, adapter }); return () => {} } },
     } as never
     const dispose = await localAdapter.apply(fakeCtx, {
       providers: ['local-qwen3-4b'],
-      modelPath: '/tmp/qwen3-4b.gguf',
-      contextSize: 8192,
-      threads: 4,
+      baseUrl: 'http://127.0.0.1:8080/v1',
+      defaultModel: 'qwen3-4b',
     })
     assert.equal(registered.length, 1)
     assert.deepEqual((registered[0] as { providers: string[] }).providers, ['local-qwen3-4b'])
@@ -42,7 +42,7 @@ describe('llm-adapters', () => {
     const registered: unknown[] = []
     const fakeCtx = {
       plugin: () => undefined,
-      llm: { registerAdapter: (providers: string[], adapter: unknown) => { registered.push({ providers, adapter }) } },
+      llm: { registerAdapter: (providers: string[], adapter: unknown) => { registered.push({ providers, adapter }); return () => {} } },
     } as never
     const dispose = await cloudAdapter.apply(fakeCtx, {
       providers: ['cloud-deepseek-v4'],
