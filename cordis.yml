@@ -190,6 +190,7 @@
     confidenceThreshold: !!js parseFloat(process.env.DSH_EDGE_INTENT_CONFIDENCE_THRESHOLD ?? '0.6')
     llmTimeoutMs: !!js parseInt(process.env.DSH_EDGE_INTENT_LLM_TIMEOUT_MS ?? '4000', 10)
     recentMessagesLimit: !!js parseInt(process.env.DSH_EDGE_INTENT_RECENT_LIMIT ?? '3', 10)
+    maxInputLength: !!js parseInt(process.env.DSH_EDGE_INTENT_MAX_INPUT ?? '2000', 10)
 
 # Model router — single `llm` surface, routes to local/cloud adapters.
 - id: model-router

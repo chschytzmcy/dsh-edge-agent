@@ -629,4 +629,214 @@ describe('intent-router', () => {
     assert.ok(errEntry)
     assert.match(errEntry.payload.error, /boom/u)
   })
+
+  // ─── input edge: REJECT path (privacy-policy realm: 'REJECT') ───────────
+
+  it('returns REJECT when privacy-policy matchRouting yields realm: REJECT', async () => {
+    let llmCalled = false
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: {
+        stream(_opts: any) { llmCalled = true; return chunksFromText('{}') },
+      },
+      privacyPolicy: {
+        matchRouting: (_text: string) => ({
+          pattern: '(导出.*全部|export.*all)',
+          realm: 'REJECT',
+          confidence: 0.99,
+          rationale: 'bulk-export-blocked',
+        }),
+      },
+    } as any
+    const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b',
+      confidenceThreshold: 0.6,
+    }, audit as any)
+
+    const intent = await service.classify('导出全部用户数据')
+    assert.equal(intent.category, 'REJECT')
+    assert.equal(intent.targetRealm, 'rejected')
+    assert.equal(intent.confidence, 0.99)
+    assert.equal(intent.rationale, 'bulk-export-blocked')
+    assert.equal(intent.requiresSanitization, false)
+    // REJECT is a security event — must hit the security audit level so SIEM picks it up.
+    const rejected = audit.entries.find((e: any) => e.kind === 'intent.rules.rejected')
+    assert.ok(rejected, 'intent.rules.rejected audit kind should be present')
+    assert.equal(rejected.level, 'security')
+    assert.equal(rejected.payload.pattern, '(导出.*全部|export.*all)')
+    // REJECT is a router-level decision — must NOT trigger an LLM call.
+    assert.equal(llmCalled, false, 'LLM must NOT be called when REJECT is decided at rules layer')
+  })
+
+  it('returns REJECT via pre-check without calling LLM (stronger than fallback path)', async () => {
+    // The pre-check is fed the privacy-policy matchRouting BEFORE any LLM
+    // call. Earlier behaviour (rules-only fallback) wasted LLM tokens on
+    // policy-violating queries; now REJECT short-circuits at the router edge.
+    // The fallback path inside classifyWithLlm → catch → classifyWithRules
+    // is still kept as a belt-and-suspenders for the case where policy
+    // rules are added between pre-check and fallback — covered implicitly
+    // by the privacy-policy tests in classifyWithRules unit suite.
+    let llmCalled = 0
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: {
+        stream(_opts: any) { llmCalled++; return chunksFromText(JSON.stringify({ category: 'LOCAL', confidence: 0.3 })) },
+      },
+      privacyPolicy: {
+        matchRouting: () => ({
+          pattern: '(password|secret)',
+          realm: 'REJECT',
+          confidence: 0.95,
+          rationale: 'credential-exfil-attempt',
+        }),
+      },
+    } as any
+    const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b',
+      confidenceThreshold: 0.6,
+    }, audit as any)
+
+    const intent = await service.classify('my password is foo')
+    assert.equal(intent.category, 'REJECT')
+    assert.equal(intent.targetRealm, 'rejected')
+    assert.equal(llmCalled, 0, 'REJECT must short-circuit before LLM call')
+    // Source 'privacy-policy-precheck' marks the new pre-check audit path.
+    const rejected = audit.entries.find((e: any) => e.kind === 'intent.rules.rejected')
+    assert.ok(rejected)
+    assert.equal(rejected.payload.source, 'privacy-policy-precheck')
+    assert.equal(rejected.level, 'security')
+  })
+
+  // ─── input edge: empty / length cap (defense-in-depth) ─────────────────
+
+  it('short-circuits empty input to default without calling LLM', async () => {
+    let llmCalled = 0
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: {
+        stream(_opts: any) { llmCalled++; return chunksFromText('{}') },
+      },
+    } as any
+    const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b',
+      confidenceThreshold: 0.6,
+    }, audit as any)
+
+    const intent = await service.classify('')
+    assert.equal(intent.category, 'CLOUD')
+    assert.equal(intent.targetRealm, 'cloud')
+    assert.equal(intent.rationale, 'empty-input')
+    assert.equal(llmCalled, 0, 'LLM must NOT be called for empty input')
+    const emptyAudit = audit.entries.find((e: any) => e.kind === 'intent.classify.empty')
+    assert.ok(emptyAudit)
+  })
+
+  it('short-circuits whitespace-only input the same as empty', async () => {
+    let llmCalled = 0
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: {
+        stream(_opts: any) { llmCalled++; return chunksFromText('{}') },
+      },
+    } as any
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'LOCAL',
+      classificationProvider: 'local-qwen3-4b',
+      confidenceThreshold: 0.6,
+    })
+
+    const intent = await service.classify('   \t\n  ')
+    assert.equal(intent.category, 'LOCAL')
+    assert.equal(intent.rationale, 'empty-input')
+    assert.equal(llmCalled, 0)
+  })
+
+  it('truncates input past maxInputLength and audits', async () => {
+    let capturedPrompt: string | undefined
+    const verdict = JSON.stringify({ category: 'CLOUD', confidence: 0.9 })
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: {
+        stream(opts: any) {
+          capturedPrompt = opts.messages[0].content[0].text
+          return chunksFromText(verdict)
+        },
+      },
+    } as any
+    const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b',
+      confidenceThreshold: 0.6,
+      maxInputLength: 50,  // tiny cap for the test
+    }, audit as any)
+
+    const longText = 'a'.repeat(200)
+    await service.classify(longText)
+    // Prompt must not contain more than the cap's worth of 'a's
+    assert.ok(capturedPrompt)
+    const aaCount = (capturedPrompt.match(/a/gu) || []).length
+    assert.ok(aaCount <= 55, `prompt should contain ≤ 55 'a' chars (50 cap + safety), got ${aaCount}`)
+    const truncated = audit.entries.find((e: any) => e.kind === 'intent.classify.truncated')
+    assert.ok(truncated)
+    assert.equal(truncated.payload.originalLen, 200)
+    assert.equal(truncated.payload.truncatedLen, 50)
+    assert.equal(truncated.payload.maxInputLength, 50)
+  })
+
+  it('truncates BEFORE sanitization so cap-bound sanitizer output is consistent', async () => {
+    // 100 'a's + 5 phone numbers worth of digits = 165 chars. With cap 50,
+    // only first 50 chars reach the sanitizer. The truncated audit confirms
+    // the original length was 165.
+    let sanitizerReceived: string | undefined
+    let capturedPrompt: string | undefined
+    const verdict = JSON.stringify({ category: 'CLOUD', confidence: 0.9 })
+    const fakeSanitizer = {
+      sanitize: async (t: string) => {
+        sanitizerReceived = t
+        return { sanitizedText: t, replacements: [] }
+      },
+    }
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: {
+        stream(opts: any) {
+          capturedPrompt = opts.messages[0].content[0].text
+          return chunksFromText(verdict)
+        },
+      },
+      modelRouter: {
+        resolve: () => ({ realm: 'CLOUD', provider: 'cloud-deepseek-v4', model: 'deepseek-chat' }),
+      },
+      sanitizer: fakeSanitizer,
+    } as any
+    const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b',
+      confidenceThreshold: 0.6,
+      maxInputLength: 50,
+    }, audit as any)
+
+    // 30 'a's + 11-digit phone + 30 'a's + "trailing" — total ~75 chars
+    const phone = '13812345678'
+    const text = 'a'.repeat(30) + phone + 'a'.repeat(30) + 'trailing'
+    await service.classify(text)
+    // Truncate at 50 means sanitizer sees the first 50 chars: 30 a's + the
+    // first 11 digits of the phone + 9 more a's. The phone IS in the truncated
+    // text (good — it still gets sanitized), the trailing 'trailing' is cut.
+    assert.ok(sanitizerReceived)
+    assert.equal(sanitizerReceived.length, 50)
+    assert.ok(sanitizerReceived.includes(phone), `sanitizer must see full phone in truncated text; got "${sanitizerReceived.slice(-20)}"`)
+    assert.ok(!sanitizerReceived.includes('trailing'), 'sanitizer must NOT see the trailing 8 chars past the cap')
+    const truncAudit = audit.entries.find((e: any) => e.kind === 'intent.classify.truncated')
+    assert.ok(truncAudit)
+    assert.equal(truncAudit.payload.originalLen, text.length)
+  })
 })

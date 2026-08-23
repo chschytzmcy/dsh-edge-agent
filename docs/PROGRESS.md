@@ -605,6 +605,104 @@ const prompt = `... 用户请求：${promptText}`   // 用 sanitized
 
 **总计**：268 个单测全过，verify:build 4 关全过，compile 零错。
 
+### 7.12 intent-router 输入边硬化 + REJECT 路径解锁（2026-08-23）
+
+**背景**：完整性矩阵重分析后定位 3 个 P0/P1 缺口：
+
+1. 🔴 **REJECT 路径契约级 bug** — `privacy-policy.ts:43` schema 允许 `realm: 'REJECT'`，`design-v6.md:430,1250,2017,5093` 把 REJECT 当 first-class category（policy.json 示例也含 REJECT 规则）。**但 `intent-router.ts:319` 用 `if (r.realm === 'LOCAL' || 'CLOUD' || 'SANITIZED')` 显式过滤 REJECT** —— 用户写在 policy.json 里的 REJECT 规则今天零效果。
+2. 🟡 **空输入短路缺失** — `text=''` 仍走 LLM → 浪费一次调用 → 落 default。
+3. 🟡 **输入长度上限缺失** — prompt-guard 有 `maxInputLength: 10000`，router 无。极端长文本可拖垮 qwen3-4b。
+
+**实现**（`src/dsh-adapter/intent-router.ts`）：
+
+**1) REJECT 解锁 + 策略预检**
+
+新增 `RULE_CATEGORIES` 常量，替换窄过滤器为宽匹配：
+
+```ts
+const RULE_CATEGORIES = ['LOCAL', 'CLOUD', 'SANITIZED', 'REJECT'] as const
+type RuleCategory = typeof RULE_CATEGORIES[number]
+
+// classifyWithRules 内
+if (r && (RULE_CATEGORIES as readonly string[]).includes(r.realm)) {
+  matchedRule = r as { ... realm: RuleCategory ... }
+}
+
+if (matchedRule) {
+  if (realm === 'REJECT') {
+    audit('security', 'intent.rules.rejected', { ... })
+    return { category: 'REJECT', targetRealm: 'rejected', ... }
+  }
+  ...
+}
+```
+
+新增 **策略预检**（`classify()` 入口，truncate 之后、LLM 之前）：
+
+```ts
+const pre = policy?.matchRouting?.(effectiveText)
+if (pre?.realm === 'REJECT') {
+  audit('security', 'intent.rules.rejected', { source: 'privacy-policy-precheck', ... })
+  return { category: 'REJECT', targetRealm: 'rejected', ... }   // 0 LLM tokens
+}
+```
+
+**预检 vs 兜底的两层设计**：
+- 预检：REJECT 在 router 边缘拦截，0 LLM 调用、0 延迟（policy-violating query 应尽快拒绝）
+- 兜底：`classifyWithLlm → catch → classifyWithRules` 内仍跑 matchRouting —— LLM 故障（qwen3-4b OOM / 超时）时 REJECT 仍生效（policy 必须在 LLM 不可用时也存活）
+
+**2) 空输入短路**
+
+```ts
+if (!text || !text.trim()) {
+  audit('debug', 'intent.classify.empty', { textLen: text?.length ?? 0 })
+  return { category: defaultCategory, ..., rationale: 'empty-input' }  // 0 LLM
+}
+```
+
+**3) 长度上限 + 截断审计**
+
+```ts
+let effectiveText = text
+if (text.length > this.maxInputLength) {       // default 2000
+  audit('warn', 'intent.classify.truncated', { originalLen, truncatedLen })
+  effectiveText = text.slice(0, this.maxInputLength)
+}
+```
+
+截断在 sanitize 之前：100 KB 长文本 + 5 个手机号 → 截到 2 KB → sanitizer 看到的 PII 数量可控。
+
+**Config 字段**：
+
+| 字段 | 默认 | env |
+|---|---|---|
+| `maxInputLength` | `2000` | `DSH_EDGE_INTENT_MAX_INPUT` |
+
+**新 audit kind**：
+| kind | level | 触发 |
+|---|---|---|
+| `intent.classify.empty` | debug | 空 / 纯空白输入 |
+| `intent.classify.truncated` | warn | 输入超 `maxInputLength` |
+| `intent.rules.rejected` (扩展) | **security** | REJECT 命中（`payload.source: 'privacy-policy-precheck'` / `'privacy-policy'` 区分两层） |
+| `intent.policy.precheck-error` | warn | 预检抛错（非致命，落入 LLM+rules 主链路） |
+
+**语义修正**：SANITIZED verdict 的 `dataLevel` 从 `'public'` 改为 `'sanitized'`（line 340）。下游 sanitizer / audit-log 据此知道这条 payload 是被 policy 重分类的，不是 public 默认假设。
+
+**契约边界**：router 返回 REJECT 后，**消费者契约**：
+- http-api 应把 `intent.category === 'REJECT'` 翻译成 `403 Forbidden`，不再走 LLM
+- agent-loop 的 `agent/pre-step` listener 应返回 `{ kind: 'reject', reason: intent.rationale }`
+- **本次不实现 http-api REJECT 处理**（独立 PR，避免范围蔓延）；PROGRESS §7.12 显式记录为待办
+
+**6 个新单测**：
+1. REJECT 规则命中（pre-check）→ category=`REJECT`, targetRealm=`rejected`, **LLM 0 次调用**, audit source=`privacy-policy-precheck`
+2. REJECT 预检路径：source=`privacy-policy-precheck`, level=`security`
+3. 空输入短路 → category=`CLOUD/LOCAL`（按 defaultCategory）, rationale=`empty-input`, **LLM 0 次调用**, audit `intent.classify.empty`
+4. 纯空白输入同上空短路
+5. 超长输入截断 → 50 字符 cap 下 200 字符只送 50 进 LLM prompt, audit `truncated: originalLen=200, truncatedLen=50`
+6. **截断在 sanitize 前** → 79 字符（含完整 phone）+ cap=50 → sanitizer 看到完整 11 位 phone（包含在 50 字符里），未超 cap 的 `trailing` 8 字符被切除
+
+**总计**：274 个单测全过（+6 new），verify:build 4 关全过，compile 零错。
+
 ---
 
 ## 八、关键发现

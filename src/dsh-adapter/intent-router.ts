@@ -42,6 +42,11 @@ export interface Config {
   /** Max number of recent messages to embed as multi-turn context.
    *  0 disables context. Default 3. */
   recentMessagesLimit?: number
+  /** Hard cap on input text length. Past this, the router truncates the
+   *  prompt input and audits `intent.classify.truncated`. Default 2000;
+   *  env DSH_EDGE_INTENT_MAX_INPUT overrides. Defense-in-depth against
+   *  pathologically long prompts overwhelming qwen3-4b. */
+  maxInputLength?: number
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -52,10 +57,11 @@ export const Config: Schema<Config> = Schema.object({
   confidenceThreshold: Schema.natural().default(0.6),
   llmTimeoutMs: Schema.natural().default(4000),
   recentMessagesLimit: Schema.natural().default(3),
+  maxInputLength: Schema.natural().default(2000),
 })
 
 export interface Intent {
-  category: 'LOCAL' | 'CLOUD' | 'SANITIZED'
+  category: 'LOCAL' | 'CLOUD' | 'SANITIZED' | 'REJECT'
   confidence: number
   targetRealm: string
   rationale: string
@@ -83,6 +89,7 @@ export class IntentRouterServiceImpl extends Service {
   private readonly confidenceThreshold: number
   private readonly llmTimeoutMs: number
   private readonly recentMessagesLimit: number
+  private readonly maxInputLength: number
   private readonly llm: any
   private readonly auditLog: AuditLike | undefined
 
@@ -94,6 +101,7 @@ export class IntentRouterServiceImpl extends Service {
     this.confidenceThreshold = config.confidenceThreshold
     this.llmTimeoutMs = config.llmTimeoutMs ?? 4000
     this.recentMessagesLimit = config.recentMessagesLimit ?? 3
+    this.maxInputLength = config.maxInputLength ?? 2000
     this.llm = (ctx as any).llm
     this.auditLog = auditLog
   }
@@ -105,14 +113,80 @@ export class IntentRouterServiceImpl extends Service {
 
   async classify(text: string, context?: { recentMessages?: unknown[]; sessionId?: string }): Promise<Intent> {
     const start = Date.now()
-    const textPreview = text.slice(0, 80)
-    this.audit('info', 'intent.classify.start', { textLen: text.length, textPreview, classifier: this.classificationProvider, model: this.classificationModel })
+
+    // Input edge: empty / whitespace-only text → short-circuit to default.
+    // Wasted LLM call is still bounded by llmTimeoutMs, but on the hot path
+    // (e.g. UI cleared input) we want zero latency.
+    if (!text || !text.trim()) {
+      this.audit('debug', 'intent.classify.empty', { textLen: text?.length ?? 0 })
+      return {
+        category: this.defaultCategory,
+        confidence: 0.5,
+        targetRealm: this.defaultCategory === 'CLOUD' ? 'cloud' : this.defaultCategory === 'SANITIZED' ? 'sanitized' : 'local',
+        rationale: 'empty-input',
+        dataLevel: 'public',
+        requiresSanitization: this.defaultCategory === 'SANITIZED',
+      }
+    }
+
+    // Input edge: length cap. Past this, truncate and audit. Sanitization
+    // (when classification LLM is CLOUD) happens on the truncated text, so
+    // a 100kB paste with 5 phone numbers still only ships 5 placeholders.
+    let effectiveText = text
+    if (text.length > this.maxInputLength) {
+      this.audit('warn', 'intent.classify.truncated', {
+        originalLen: text.length,
+        truncatedLen: this.maxInputLength,
+        maxInputLength: this.maxInputLength,
+      })
+      effectiveText = text.slice(0, this.maxInputLength)
+    }
+
+    // Policy pre-check: a privacy-policy REJECT rule short-circuits BEFORE
+    // the LLM call. Reasons:
+    //   1. REJECT is a strong policy signal — the user asked for something
+    //      policy already forbids. Spending LLM tokens to confirm is wasteful.
+    //   2. Latency on the rejection path matters: the policy-violating query
+    //      should be denied at router-edge, not after a 4 s LLM timeout.
+    //   3. The classification LLM may itself be unavailable (qwen3-4b OOM,
+    //      llama.cpp hang) — REJECT must survive LLM outage. The fallback
+    //      path inside classifyWithLlm → catch → classifyWithRules still
+    //      re-runs matchRouting, so REJECT is also covered post-LLM-failure.
+    const policy = (this.ctx as any).privacyPolicy
+    if (policy && typeof policy.matchRouting === 'function') {
+      try {
+        const pre = policy.matchRouting(effectiveText)
+        if (pre && pre.realm === 'REJECT') {
+          this.audit('security', 'intent.rules.rejected', {
+            source: 'privacy-policy-precheck',
+            pattern: pre.pattern,
+            confidence: pre.confidence,
+            rationale: pre.rationale,
+            textLen: effectiveText.length,
+          })
+          return {
+            category: 'REJECT',
+            confidence: pre.confidence,
+            targetRealm: 'rejected',
+            rationale: pre.rationale || 'policy-rule:reject',
+            dataLevel: 'internal',
+            requiresSanitization: false,
+          }
+        }
+      } catch (err: any) {
+        this.audit('warn', 'intent.policy.precheck-error', { error: err?.message ?? String(err) })
+        // Pre-check failure is non-fatal; fall through to LLM+rules path.
+      }
+    }
+
+    const textPreview = effectiveText.slice(0, 80)
+    this.audit('info', 'intent.classify.start', { textLen: effectiveText.length, textPreview, classifier: this.classificationProvider, model: this.classificationModel })
 
     // Try LLM classification first
     try {
-      const intent = await this.classifyWithLlm(text, context?.recentMessages, context?.sessionId)
+      const intent = await this.classifyWithLlm(effectiveText, context?.recentMessages, context?.sessionId)
       this.audit('info', 'intent.classify.end', {
-        textLen: text.length,
+        textLen: effectiveText.length,
         path: 'llm',
         category: intent.category,
         confidence: intent.confidence,
@@ -121,11 +195,11 @@ export class IntentRouterServiceImpl extends Service {
       })
       return intent
     } catch (err: any) {
-      this.audit('warn', 'intent.classify.llm_error', { textLen: text.length, error: err?.message ?? String(err) })
+      this.audit('warn', 'intent.classify.llm_error', { textLen: effectiveText.length, error: err?.message ?? String(err) })
       // Fall back to keyword rules
-      const intent = this.classifyWithRules(text)
+      const intent = this.classifyWithRules(effectiveText)
       this.audit('info', 'intent.classify.end', {
-        textLen: text.length,
+        textLen: effectiveText.length,
         path: 'rules-after-llm-error',
         category: intent.category,
         confidence: intent.confidence,
@@ -312,12 +386,18 @@ Respond ONLY with a single JSON object — no prose, no Markdown:
     // to the hardcoded keyword list (fail-open). The hardcoded list is the
     // last resort — even if privacy-policy is mounted but has zero rules,
     // we still try the local keyword fallback.
+    //
+    // REJECT is now a first-class category (previously silently filtered).
+    // Privacy-policy allows `realm: 'REJECT'` and design-v6 §2.15 treats it as
+    // "blocked at router, no model call, consumer should map to 403 /
+    // { kind: 'reject' } decision". audit kind `intent.rules.rejected` is
+    // security-level so SIEM picks it up.
     const policy = (this.ctx as any).privacyPolicy
-    let matchedRule: { pattern: string; realm: string; confidence: number; rationale: string } | null = null
+    let matchedRule: { pattern: string; realm: RuleCategory; confidence: number; rationale: string } | null = null
     try {
       const r = policy?.matchRouting?.(text)
-      if (r && (r.realm === 'LOCAL' || r.realm === 'CLOUD' || r.realm === 'SANITIZED')) {
-        matchedRule = r
+      if (r && (RULE_CATEGORIES as readonly string[]).includes(r.realm)) {
+        matchedRule = r as { pattern: string; realm: RuleCategory; confidence: number; rationale: string }
       }
     } catch (err: any) {
       this.audit('warn', 'intent.policy.error', { error: err?.message ?? String(err) })
@@ -325,6 +405,23 @@ Respond ONLY with a single JSON object — no prose, no Markdown:
 
     if (matchedRule) {
       const realm = matchedRule.realm
+      if (realm === 'REJECT') {
+        this.audit('security', 'intent.rules.rejected', {
+          source: 'privacy-policy',
+          pattern: matchedRule.pattern,
+          confidence: matchedRule.confidence,
+          rationale: matchedRule.rationale,
+          textLen: text.length,
+        })
+        return {
+          category: 'REJECT',
+          confidence: matchedRule.confidence,
+          targetRealm: 'rejected',
+          rationale: matchedRule.rationale || 'policy-rule:reject',
+          dataLevel: 'internal',
+          requiresSanitization: false,
+        }
+      }
       const targetRealm = realm === 'LOCAL' ? 'local' : realm === 'SANITIZED' ? 'sanitized' : 'cloud'
       this.audit('debug', 'intent.rules.hit', {
         source: 'privacy-policy',
@@ -333,11 +430,14 @@ Respond ONLY with a single JSON object — no prose, no Markdown:
         confidence: matchedRule.confidence,
       })
       return {
-        category: realm as Intent['category'],
+        category: realm,
         confidence: matchedRule.confidence,
         targetRealm,
         rationale: matchedRule.rationale || `policy-rule:${realm.toLowerCase()}`,
-        dataLevel: 'public',
+        // SANITIZED verdict carries a 'sanitized' data level so downstream
+        // consumers (sanitizer-pipeline, audit-log) know the payload was
+        // re-classified by policy, not the default public assumption.
+        dataLevel: realm === 'SANITIZED' ? 'sanitized' : 'public',
         requiresSanitization: realm === 'SANITIZED',
       }
     }
@@ -388,6 +488,11 @@ interface ClassificationVerdict {
   category: 'LOCAL' | 'CLOUD'
   confidence: number
 }
+
+/** Valid category values produced by classifyWithRules — wider than the LLM
+ *  verdict set because privacy-policy rules can declare REJECT. */
+const RULE_CATEGORIES = ['LOCAL', 'CLOUD', 'SANITIZED', 'REJECT'] as const
+type RuleCategory = typeof RULE_CATEGORIES[number]
 
 /**
  * Fence-tolerant parser for `{ category, confidence }` JSON the LLM returns.
