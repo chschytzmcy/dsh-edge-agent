@@ -82,4 +82,94 @@ describe('tools (M2)', () => {
     const all = service.list().map((t) => `${t.name}:${t.realm}`).sort()
     assert.deepEqual(all, ['cloud_search:CLOUD', 'local_file_read:LOCAL'])
   })
+
+  // ── G8: enableToolIsolation × intent-router verdict ─────────────────────────
+  // Pre-G8 the `enableToolIsolation` Config flag was defined but never plumbed
+  // — ToolsServiceImpl never received it. G8 wires it through the constructor
+  // and exposes `filterTools(intent)` + `isToolAllowed(name, intent)`. Consumers
+  // (http-api, agent-loop) drive tool visibility from the intent-router verdict.
+
+  /** A test fixture: 4 tools spanning all 3 known realms. */
+  function isolationCtx() {
+    return fakeCtx({
+      local_file_read: { description: 'r' },
+      local_calculate: { description: 'c' },
+      cloud_search: { description: 's' },
+      cloud_summarize: { description: 'su' },
+      sanitized_redact: { description: 'red' },
+    })
+  }
+
+  it('filterTools(LOCAL) returns only local_ tools when isolation is on', () => {
+    const service = new ToolsServiceImpl(isolationCtx() as never, { enableToolIsolation: true })
+    const names = service.filterTools({ category: 'LOCAL' }).map((t) => t.name).sort()
+    assert.deepEqual(names, ['local_calculate', 'local_file_read'])
+  })
+
+  it('filterTools(CLOUD) returns only cloud_ tools when isolation is on', () => {
+    const service = new ToolsServiceImpl(isolationCtx() as never, { enableToolIsolation: true })
+    const names = service.filterTools({ category: 'CLOUD' }).map((t) => t.name).sort()
+    // cloud_search + cloud_summarize only — SANITIZED tools are NOT visible
+    // to CLOUD realm (semantics: SANITIZED is its own realm, not a CLOUD
+    // sub-realm; cross-realm tool leak would defeat the purpose).
+    assert.deepEqual(names, ['cloud_search', 'cloud_summarize'])
+  })
+
+  it('filterTools(SANITIZED) returns only sanitized_ tools when isolation is on', () => {
+    const service = new ToolsServiceImpl(isolationCtx() as never, { enableToolIsolation: true })
+    const names = service.filterTools({ category: 'SANITIZED' }).map((t) => t.name)
+    assert.deepEqual(names, ['sanitized_redact'])
+  })
+
+  it('filterTools(REJECT) returns [] — no tools visible to a rejected intent', () => {
+    const service = new ToolsServiceImpl(isolationCtx() as never, { enableToolIsolation: true })
+    assert.deepEqual(service.filterTools({ category: 'REJECT' }), [])
+  })
+
+  it('filterTools() returns all tools regardless of intent when isolation is OFF (legacy)', () => {
+    const service = new ToolsServiceImpl(isolationCtx() as never, { enableToolIsolation: false })
+    const names = service.filterTools({ category: 'LOCAL' }).map((t) => t.name).sort()
+    assert.deepEqual(names, [
+      'cloud_search', 'cloud_summarize', 'local_calculate', 'local_file_read', 'sanitized_redact',
+    ])
+  })
+
+  it('filterTools() defaults to isolation OFF when no Config is supplied', () => {
+    // Backward compat: pre-G8 callers passed only `(ctx)`. They must still
+    // see all tools (the prior behavior — flag was inert).
+    const service = new ToolsServiceImpl(isolationCtx() as never)
+    const names = service.filterTools({ category: 'LOCAL' }).map((t) => t.name).sort()
+    assert.equal(names.length, 5)
+  })
+
+  it('isToolAllowed respects the same isolation matrix', () => {
+    const service = new ToolsServiceImpl(isolationCtx() as never, { enableToolIsolation: true })
+    // LOCAL intent: local_ allowed, others denied
+    assert.equal(service.isToolAllowed('local_file_read', { category: 'LOCAL' }), true)
+    assert.equal(service.isToolAllowed('cloud_search', { category: 'LOCAL' }), false)
+    assert.equal(service.isToolAllowed('sanitized_redact', { category: 'LOCAL' }), false)
+    // CLOUD intent: cloud_ allowed
+    assert.equal(service.isToolAllowed('cloud_search', { category: 'CLOUD' }), true)
+    assert.equal(service.isToolAllowed('local_file_read', { category: 'CLOUD' }), false)
+    // SANITIZED intent: sanitized_ allowed
+    assert.equal(service.isToolAllowed('sanitized_redact', { category: 'SANITIZED' }), true)
+    assert.equal(service.isToolAllowed('cloud_search', { category: 'SANITIZED' }), false)
+    // REJECT intent: NOTHING allowed (including tools the realm would normally see)
+    assert.equal(service.isToolAllowed('local_file_read', { category: 'REJECT' }), false)
+    assert.equal(service.isToolAllowed('cloud_search', { category: 'REJECT' }), false)
+  })
+
+  it('isToolAllowed with isolation OFF returns true for any registered tool', () => {
+    const service = new ToolsServiceImpl(isolationCtx() as never, { enableToolIsolation: false })
+    // ANY non-REJECT intent → all registered tools allowed
+    assert.equal(service.isToolAllowed('local_file_read', { category: 'CLOUD' }), true)
+    assert.equal(service.isToolAllowed('sanitized_redact', { category: 'LOCAL' }), true)
+    // REJECT still denies all (intent rejection is independent of isolation flag)
+    assert.equal(service.isToolAllowed('local_file_read', { category: 'REJECT' }), false)
+  })
+
+  it('isToolAllowed returns false for unregistered tool regardless of isolation', () => {
+    const service = new ToolsServiceImpl(isolationCtx() as never, { enableToolIsolation: true })
+    assert.equal(service.isToolAllowed('does_not_exist', { category: 'LOCAL' }), false)
+  })
 })

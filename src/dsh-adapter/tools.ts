@@ -8,8 +8,10 @@
  * to filter or list the visible tool set by realm.
  *
  * Realm filtering is opt-in — agents that do not care about realm scope
- * see the full upstream tool set. M2 accepts every realm; A2 will gate
- * which tool a given run can see based on the intent-router verdict.
+ * see the full upstream tool set. G8 (2026-08-23) wires `enableToolIsolation`
+ * to `filterTools(intent)` / `isToolAllowed(name, intent)`, so consumers
+ * (http-api, agent-loop) can drive tool visibility from the intent-router
+ * verdict. The flag is opt-out so legacy callers see the full set.
  *
  * @module dsh-edge-agent/tools
  */
@@ -54,7 +56,22 @@ export interface ToolsService {
   realmOf(name: string): ToolRealm | undefined
   /** M2 convenience: classify a tool name by its `local-` / `cloud-` / `sanitized-` prefix. */
   classify(name: string): ToolRealm
+  /** G8: tools visible to a given intent-router verdict. REJECT → []. When
+   *  `enableToolIsolation: false`, returns all tools regardless of intent
+   *  (legacy / opt-out callers). When `true`, returns the tools whose realm
+   *  matches `intent.category`. */
+  filterTools(intent: IntentLike): ToolSummary[]
+  /** G8: single-tool check for the same matrix. False for REJECT, false for
+   *  realm mismatches under isolation. */
+  isToolAllowed(toolName: string, intent: IntentLike): boolean
 }
+
+/** Structural shape of an intent-router verdict that `filterTools` /
+ *  `isToolAllowed` consume. Local to this module to avoid a circular
+ *  dependency on intent-router.ts — we accept any object that has
+ *  `category` in the right shape. intent-router's `Intent` already
+ *  satisfies it. */
+export type IntentLike = { readonly category: 'LOCAL' | 'CLOUD' | 'SANITIZED' | 'REJECT' }
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -74,9 +91,20 @@ declare module '@deepseek-ai/cordis' {
  */
 export class ToolsServiceImpl extends Service {
   private readonly realm = new Map<string, ToolRealm>()
+  private readonly enableToolIsolation: boolean
+  /** Default per-tool rate limit (informational; M3 persistence picks it up). */
+  private readonly defaultRateLimitPerMinute: number
+  /** Tool presentation mode (informational; not consulted by this service yet). */
+  private readonly presentationMode: 'native' | 'code-mode'
 
-  constructor(ctx: Context) {
+  constructor(ctx: Context, config?: Partial<Config>) {
     super(ctx, 'edgeTools')
+    // G8: Config is now plumbed. Pre-G8 callers (existing tests / single-arg
+    // constructor) get isolation OFF by default, which matches the prior
+    // behavior (the flag was defined but never applied).
+    this.enableToolIsolation = config?.enableToolIsolation ?? false
+    this.defaultRateLimitPerMinute = config?.defaultRateLimitPerMinute ?? 60
+    this.presentationMode = config?.presentationMode ?? 'native'
   }
 
   /** Set realm tag for a tool. Call after tool registration. */
@@ -105,6 +133,33 @@ export class ToolsServiceImpl extends Service {
 
   classify(name: string): ToolRealm {
     return this.realm.get(name) ?? classifyByPrefix(name)
+  }
+
+  /** G8: tools visible under a given intent-router verdict. */
+  filterTools(intent: IntentLike): ToolSummary[] {
+    if (intent.category === 'REJECT') return []
+    if (!this.enableToolIsolation) return this.list()
+    // Under isolation, classify each upstream tool by either an explicit
+    // setRealm override or its `local_` / `cloud_` / `sanitized_` prefix.
+    // The downstream `list(realm)` is strict (requires setRealm), so we
+    // inline the prefix-aware filter here.
+    const upstream = upstreamTools(this.ctx)
+    const out: ToolSummary[] = []
+    for (const tool of upstream) {
+      const r = this.realm.get(tool.name) ?? classifyByPrefix(tool.name)
+      if (r !== intent.category) continue
+      out.push({ name: tool.name, description: tool.description, realm: r })
+    }
+    return out
+  }
+
+  /** G8: single-tool check (cheaper than `filterTools(intent).some`). */
+  isToolAllowed(toolName: string, intent: IntentLike): boolean {
+    if (intent.category === 'REJECT') return false
+    if (!this.enableToolIsolation) return this.has(toolName)
+    if (!this.has(toolName)) return false
+    const toolRealm = this.realm.get(toolName) ?? classifyByPrefix(toolName)
+    return toolRealm === (intent.category as ToolRealm)
   }
 }
 
@@ -140,9 +195,8 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
   // ToolsServiceImpl extends `Service`, so its constructor calls
   // `ctx.reflect.provide('edgeTools', this)` for us. Do not call
   // `ctx.provide` again — that would throw "service already registered".
-  void new ToolsServiceImpl(ctx)
-  // M2: pass config through to the audit log so M3 persistence can pick it
-  // up. The default rate limit is plumbed in via tool definitions.
-  void config
+  // G8: Config now actually flows into the service — `enableToolIsolation`
+  // drives `filterTools` / `isToolAllowed`. Pre-G8 had `void config` here.
+  void new ToolsServiceImpl(ctx, config)
   return async () => {}
 }

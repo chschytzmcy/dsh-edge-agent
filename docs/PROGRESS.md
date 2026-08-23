@@ -865,6 +865,106 @@ config:
 
 ---
 
+### 7.15 tools.ts 接进 enableToolIsolation：intent → 工具可见性（G8，2026-08-23）
+
+**背景**：`tools.ts` 的 `Config` 里有 `enableToolIsolation: boolean`（默认 `true`）从 M2 就存在，但 **`apply()` 里 `void config`，`ToolsServiceImpl` 构造时根本不收 config**。换言之：开 / 关隔离的标志在 schema 层可见，到 service 层为零。意图路由的 verdict 已经能区分 LOCAL / CLOUD / SANITIZED / REJECT，但工具可见性还是一锅端。本节把 Config 真的接进 service，并新增 `filterTools(intent)` + `isToolAllowed(name, intent)` 两个 API。
+
+#### 7.15.1 实现
+
+**`src/dsh-adapter/tools.ts`** 三处改动：
+
+1. **ToolsServiceImpl 接受 Config**（optional，第二参数；不传 → 隔离 OFF，向后兼容）
+
+```ts
+constructor(ctx: Context, config?: Partial<Config>) {
+  super(ctx, 'edgeTools')
+  this.enableToolIsolation = config?.enableToolIsolation ?? false
+  this.defaultRateLimitPerMinute = config?.defaultRateLimitPerMinute ?? 60
+  this.presentationMode = config?.presentationMode ?? 'native'
+}
+```
+
+2. **filterTools(intent) — 返回该 intent 可见的工具列表**
+
+```ts
+filterTools(intent: IntentLike): ToolSummary[] {
+  if (intent.category === 'REJECT') return []
+  if (!this.enableToolIsolation) return this.list()       // legacy: 全可见
+  // 隔离 ON：按 (explicit setRealm ?? 前缀分类) 过滤
+  const upstream = upstreamTools(this.ctx)
+  const out: ToolSummary[] = []
+  for (const tool of upstream) {
+    const r = this.realm.get(tool.name) ?? classifyByPrefix(tool.name)
+    if (r !== intent.category) continue
+    out.push({ name: tool.name, description: tool.description, realm: r })
+  }
+  return out
+}
+```
+
+3. **isToolAllowed(toolName, intent) — 单工具检查**
+
+```ts
+isToolAllowed(toolName: string, intent: IntentLike): boolean {
+  if (intent.category === 'REJECT') return false            // REJECT 一票否决
+  if (!this.enableToolIsolation) return this.has(toolName)
+  if (!this.has(toolName)) return false
+  const toolRealm = this.realm.get(toolName) ?? classifyByPrefix(toolName)
+  return toolRealm === (intent.category as ToolRealm)
+}
+```
+
+**`IntentLike` 类型** — `tools.ts` 局部声明 `{ category: 'LOCAL' | 'CLOUD' | 'SANITIZED' | 'REJECT' }`，避免对 `intent-router.ts` 的硬依赖（结构化类型，`intent-router.Intent` 自动满足）。
+
+#### 7.15.2 隔离矩阵（enableToolIsolation=true 时）
+
+| intent \ 工具前缀 | `local_*` | `cloud_*` | `sanitized_*` |
+|---|---|---|---|
+| **LOCAL** | ✓ | ✗ | ✗ |
+| **CLOUD** | ✗ | ✓ | ✗ |
+| **SANITIZED** | ✗ | ✗ | ✓ |
+| **REJECT** | ✗ | ✗ | ✗ |
+
+**关键语义**：CLOUD 不见 SANITIZED，反之亦然。这是按 realm 严格切分，不是子集关系。SANITIZED 工具"既能跑 LOCAL 又能跑 CLOUD"的认知是错的——SANITIZED 本身就是独立 realm，跨 realm 漏工具就失去隔离意义。
+
+REJECT 一律不可见：被策略拒绝的请求连工具都不该看到（避免恶意 prompt 通过工具列表侧信道推断可执行动作）。
+
+#### 7.15.3 backward-compat 行为
+
+| 调用方式 | 行为 |
+|---|---|
+| `new ToolsServiceImpl(ctx)` | enableToolIsolation=false，filterTools 永远返回全量；pre-G8 测试和单参调用无需改 |
+| `new ToolsServiceImpl(ctx, { enableToolIsolation: true })` | 启用隔离矩阵 |
+| `apply(ctx, config)` | config.enableToolIsolation 流入 service；root yml 默认 true（已生效） |
+
+#### 7.15.4 测试覆盖（9 new cases in `tests/unit/tools.test.ts`）
+
+| # | 用例 | 验证 |
+|---|---|---|
+| 1 | LOCAL × isolation=ON | 只返回 `local_*` |
+| 2 | CLOUD × isolation=ON | 只返回 `cloud_*`（**不**含 sanitized_） |
+| 3 | SANITIZED × isolation=ON | 只返回 `sanitized_*` |
+| 4 | REJECT × isolation=ON | 返回 `[]` |
+| 5 | 任意 intent × isolation=OFF | 返回全部 5 个工具（legacy 行为） |
+| 6 | 不传 Config（单参构造） | 默认 isolation=OFF（向后兼容） |
+| 7 | isToolAllowed × isolation=ON | 4-realm × 5-tool 矩阵 |
+| 8 | isToolAllowed × isolation=OFF | 非 REJECT 全 true；REJECT 全 false |
+| 9 | isToolAllowed 未注册工具 | 始终 false（隔离标志无关） |
+
+**调试踩坑**：`list('LOCAL')` 仅匹配 `setRealm()` 显式标注的工具，对仅靠前缀（`local_file_read` 没显式 setRealm）的工具返回 `[]`。`filterTools` 不能直接复用 `list(realm)`——必须 inline 一份带 `classifyByPrefix` fallback 的过滤。这是 `list(realm)` 的 pre-existing 行为（已有测试 setRealm 了所有工具），`filterTools` 不能继承这个限制。
+
+#### 7.15.5 留给后续 PR
+
+**未实现**：http-api / agent-loop 消费 `filterTools(intent)`。本节只关 API + 矩阵 + 测试。下一步：
+
+1. http-api 在 `handleChat()` 拿到 intent 后，把 `intent.allowedTools = edgeTools.filterTools(intent)` 写入 audit `http.chat.route` + response headers，便于运维观察隔离是否生效。
+2. agent-loop 通过 `agent/pre-step` listener 在每轮 turn 前 mutate 工具列表（DSH 原生 tools 仍在 `ctx.tools`，需挂 wrapper）。
+3. prompt-guard 输入检查里加 `edgeTools.isToolAllowed(toolName, intent)`，拒绝 REJECT / 跨 realm 的工具调用请求。
+
+**总计**：298 个单测全过（+9 new），tools.test.ts 现在 14 用例，verify:build 4 关全过，compile 零错。
+
+---
+
 ## 八、关键发现
 
 1. **M 段代码"裸奔"时代结束** — Phase 2-4 为 M 段补齐了基础安全能力：PII 脱敏、审计日志轮转、会话管理、CLOUD 端到端脱敏。
