@@ -19,6 +19,7 @@ import Schema from '@deepseek-ai/schemastery'
 import { readFile, stat } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { dirname } from 'node:path'
+import { createHmac, timingSafeEqual } from 'node:crypto'
 
 export const name = 'privacy-policy'
 
@@ -149,6 +150,14 @@ export class PrivacyPolicyServiceImpl extends Service implements PrivacyPolicySe
   private lastMtime: number = 0
   private watchTimer: ReturnType<typeof setInterval> | undefined
   private listeners = new Map<string, Set<Function>>()
+  /**
+   * HMAC-SHA256 key for policy file signature verification. Read once at
+   * construction from `DSH_EDGE_POLICY_HMAC_KEY`. When set, every reload
+   * (initial + hot-reload) verifies `<policyPath>.sig` contains
+   * `hex(hmac_sha256(policyBody, key))`. Empty/undefined disables the
+   * check (dev/CI default) and emits `policy.signing.disabled` audit.
+   */
+  private readonly hmacKey: string | undefined
 
   constructor(
     ctx: any,
@@ -156,6 +165,7 @@ export class PrivacyPolicyServiceImpl extends Service implements PrivacyPolicySe
     private auditLog: any,
   ) {
     super(ctx, 'privacyPolicy')
+    this.hmacKey = process.env.DSH_EDGE_POLICY_HMAC_KEY?.trim() || undefined
   }
 
   /** Start the policy loader and optional hot-reload watcher. */
@@ -188,6 +198,46 @@ export class PrivacyPolicyServiceImpl extends Service implements PrivacyPolicySe
     }
     try {
       const raw = await readFile(path, 'utf-8')
+
+      // Signature verification (fail-closed on tamper). Only runs when
+      // DSH_EDGE_POLICY_HMAC_KEY is set. On mismatch: keep the in-memory
+      // policy, audit 'security', do NOT update lastMtime so the same
+      // tampered mtime does not re-trigger every poll.
+      if (this.hmacKey) {
+        const sigPath = `${path}.sig`
+        if (!existsSync(sigPath)) {
+          await this.audit('security', 'policy.tamper-detected', {
+            path, reason: 'signature-file-missing', sigPath,
+          })
+          return
+        }
+        let sigOk = false
+        try {
+          const sigRaw = await readFile(sigPath, 'utf-8')
+          sigOk = this.verifySignature(raw, sigRaw)
+        } catch (err: any) {
+          await this.audit('security', 'policy.tamper-detected', {
+            path, reason: 'signature-read-failed', error: err?.message ?? String(err),
+          })
+          return
+        }
+        if (!sigOk) {
+          await this.audit('security', 'policy.tamper-detected', {
+            path, reason: 'hmac-mismatch',
+          })
+          return
+        }
+      } else {
+        // First time we observe the "signing disabled" state — emit once
+        // so operators know the dev/CI default is in effect.
+        if (!this.signingDisabledEmitted) {
+          this.signingDisabledEmitted = true
+          await this.audit('info', 'policy.signing.disabled', {
+            hint: 'set DSH_EDGE_POLICY_HMAC_KEY to enable tamper detection',
+          })
+        }
+      }
+
       const parsed = JSON.parse(raw) as PrivacyPolicy
       // Basic validation
       if (!parsed.version || !Array.isArray(parsed.routingRules)) {
@@ -204,6 +254,34 @@ export class PrivacyPolicyServiceImpl extends Service implements PrivacyPolicySe
       this.emit('policy/loaded', this.policy)
     }
   }
+
+  /**
+   * HMAC-SHA256 verification using `node:crypto.timingSafeEqual`.
+   * Returns true iff `sigRaw` (hex) equals HMAC-SHA256(raw, hmacKey).
+   * Lenient on whitespace / case in `sigRaw` to keep operator workflow
+   * (`sha256sum policy.json | openssl dgst -hmac KEY -hex`) forgiving.
+   */
+  private verifySignature(raw: string, sigRaw: string): boolean {
+    if (!this.hmacKey) return true
+    const expected = createHmac('sha256', this.hmacKey).update(raw, 'utf-8').digest()
+    const cleaned = sigRaw.trim().replace(/^0x/u, '').replace(/\s+/gu, '').toLowerCase()
+    if (!/^[0-9a-f]+$/u.test(cleaned)) return false
+    if (cleaned.length !== expected.length * 2) return false
+    let actual: Buffer
+    try {
+      actual = Buffer.from(cleaned, 'hex')
+    } catch {
+      return false
+    }
+    try {
+      return timingSafeEqual(expected, actual)
+    } catch {
+      return false
+    }
+  }
+
+  /** Latch so the dev/CI "signing disabled" audit fires at most once. */
+  private signingDisabledEmitted = false
 
   /** Check if the policy file has been modified and reload if needed. */
   private async checkForUpdates(): Promise<void> {

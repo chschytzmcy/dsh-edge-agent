@@ -33,8 +33,9 @@ export interface InjectionRuleConfig {
   name: string
   pattern: string
   /** Phase C: rule severity — `block` (default, hard reject) vs `warn`
-   *  (passes through but audit-tagged) vs `sanitize` (placeholder; runtime
-   *  throws if selected because the rewrite logic is not implemented yet). */
+   *  (passes through but audit-tagged) vs `sanitize` (rewrite each match to
+   *  `[REDACTED:<ruleName>]`, audit `guard.rule.sanitized`, do NOT block;
+   *  the rewritten text is exposed via `InputCheckResult.sanitizedText`). */
   action?: 'block' | 'warn' | 'sanitize'
 }
 
@@ -86,6 +87,9 @@ interface InjectionPattern {
   lang: string
   /** Phase C: severity grading. Default `block` if absent (back-compat). */
   action: 'block' | 'warn' | 'sanitize'
+  /** Phase C: original source string, used by the sanitize action to
+   *  build the `[REDACTED:<ruleName>]` placeholder. */
+  rawPattern: string
 }
 
 /** Default bilingual injection patterns (14 rules), graded by severity.
@@ -97,28 +101,28 @@ interface InjectionPattern {
  */
 const DEFAULT_INJECTION_PATTERNS: InjectionPattern[] = [
   // 英文 — 直接注入 (block: 明确指令覆盖)
-  { name: 'direct-injection', pattern: /ignore\s+(all\s+)?previous\s+instructions/i, lang: 'en', action: 'block' },
-  { name: 'direct-injection-zh', pattern: /忽略\s*(之前|上面|以上)\s*(的)?\s*(指令|指示|命令)/u, lang: 'zh', action: 'block' },
-  { name: 'disregard-en', pattern: /disregard\s+(all\s+)?(prior|previous|above)\s+(instructions|rules)/i, lang: 'en', action: 'block' },
+  { name: 'direct-injection', rawPattern: 'ignore\\s+(all\\s+)?previous\\s+instructions', pattern: /ignore\s+(all\s+)?previous\s+instructions/i, lang: 'en', action: 'block' },
+  { name: 'direct-injection-zh', rawPattern: '忽略\\s*(之前|上面|以上)\\s*(的)?\\s*(指令|指示|命令)', pattern: /忽略\s*(之前|上面|以上)\s*(的)?\s*(指令|指示|命令)/u, lang: 'zh', action: 'block' },
+  { name: 'disregard-en', rawPattern: 'disregard\\s+(all\\s+)?(prior|previous|above)\\s+(instructions|rules)', pattern: /disregard\s+(all\s+)?(prior|previous|above)\s+(instructions|rules)/i, lang: 'en', action: 'block' },
 
   // 英文 — Prompt 泄漏 (block: 主动窃取系统提示)
-  { name: 'prompt-leak', pattern: /show\s+me\s+(your\s+)?system\s+prompt/i, lang: 'en', action: 'block' },
-  { name: 'prompt-leak-2', pattern: /(repeat|output|print|display)\s+(your|the|my)\s+(system\s+)?(prompt|instructions|rules|configuration)/i, lang: 'en', action: 'block' },
-  { name: 'prompt-leak-zh', pattern: /(输出|显示|打印|告诉|说说)\s*(?:我|你)?(?:的)?\s*(你的|我的)?\s*(系统|初始)?\s*(提示词|指令|配置|prompt)/u, lang: 'zh', action: 'block' },
+  { name: 'prompt-leak', rawPattern: 'show\\s+me\\s+(your\\s+)?system\\s+prompt', pattern: /show\s+me\s+(your\s+)?system\s+prompt/i, lang: 'en', action: 'block' },
+  { name: 'prompt-leak-2', rawPattern: '(repeat|output|print|display)\\s+(your|the|my)\\s+(system\\s+)?(prompt|instructions|rules|configuration)', pattern: /(repeat|output|print|display)\s+(your|the|my)\s+(system\s+)?(prompt|instructions|rules|configuration)/i, lang: 'en', action: 'block' },
+  { name: 'prompt-leak-zh', rawPattern: '(输出|显示|打印|告诉|说说)\\s*(?:我|你)?(?:的)?\\s*(你的|我的)?\\s*(系统|初始)?\\s*(提示词|指令|配置|prompt)', pattern: /(输出|显示|打印|告诉|说说)\s*(?:我|你)?(?:的)?\s*(你的|我的)?\s*(系统|初始)?\s*(提示词|指令|配置|prompt)/u, lang: 'zh', action: 'block' },
 
   // 英文 — 角色覆盖 (warn: 用户可能无恶意,仅自定义语气)
-  { name: 'role-override', pattern: /you\s+are\s+now\s+(a|an)\s+/i, lang: 'en', action: 'warn' },
-  { name: 'act-as', pattern: /act\s+as\s+(a|an|if)\s+/i, lang: 'en', action: 'warn' },
-  { name: 'pretend', pattern: /pretend\s+(to\s+be|you(?:'re|\s+are))\s+/i, lang: 'en', action: 'warn' },
+  { name: 'role-override', rawPattern: 'you\\s+are\\s+now\\s+(a|an)\\s+', pattern: /you\s+are\s+now\s+(a|an)\s+/i, lang: 'en', action: 'warn' },
+  { name: 'act-as', rawPattern: 'act\\s+as\\s+(a|an|if)\\s+', pattern: /act\s+as\s+(a|an|if)\s+/i, lang: 'en', action: 'warn' },
+  { name: 'pretend', rawPattern: 'pretend\\s+(to\\s+be|you(?:\\\'re|\\s+are))\\s+', pattern: /pretend\s+(to\s+be|you(?:'re|\s+are))\s+/i, lang: 'en', action: 'warn' },
 
   // 中文 — 角色覆盖 (warn: 教育场景常见,非攻击)
-  { name: 'role-override-zh', pattern: /你(现在|立即)?\s*(是|变成|扮演|充当)\s*(一个|一名)?/u, lang: 'zh', action: 'warn' },
-  { name: '假设-zh', pattern: /假设\s*(你|你是|你是一?个)/u, lang: 'zh', action: 'warn' },
-  { name: '从现在开始-zh', pattern: /从现在开始\s*(你|你就是|请你)/u, lang: 'zh', action: 'warn' },
+  { name: 'role-override-zh', rawPattern: '你(现在|立即)?\\s*(是|变成|扮演|充当)\\s*(一个|一名)?', pattern: /你(现在|立即)?\s*(是|变成|扮演|充当)\s*(一个|一名)?/u, lang: 'zh', action: 'warn' },
+  { name: '假设-zh', rawPattern: '假设\\s*(你|你是|你是一?个)', pattern: /假设\s*(你|你是|你是一?个)/u, lang: 'zh', action: 'warn' },
+  { name: '从现在开始-zh', rawPattern: '从现在开始\\s*(你|你就是|请你)', pattern: /从现在开始\s*(你|你就是|请你)/u, lang: 'zh', action: 'warn' },
 
   // 通用 — 安全绕过 (block: 越狱/DAN 模式明确攻击)
-  { name: 'bypass-dan', pattern: /DAN\s*(mode|jailbreak|do\s+anything\s+now)/i, lang: 'en', action: 'block' },
-  { name: '无限制模式-zh', pattern: /(无限制|不受限|越狱|解除限制|开发者模式)/u, lang: 'zh', action: 'block' },
+  { name: 'bypass-dan', rawPattern: 'DAN\\s*(mode|jailbreak|do\\s+anything\\s+now)', pattern: /DAN\s*(mode|jailbreak|do\s+anything\s+now)/i, lang: 'en', action: 'block' },
+  { name: '无限制模式-zh', rawPattern: '(无限制|不受限|越狱|解除限制|开发者模式)', pattern: /(无限制|不受限|越狱|解除限制|开发者模式)/u, lang: 'zh', action: 'block' },
 ]
 
 export interface InputCheckResult {
@@ -129,6 +133,13 @@ export interface InputCheckResult {
   dataClassification?: string
   /** 命中的注入规则名列表 */
   injectionPatterns?: string[]
+  /** Phase C sanitize: rewritten text when one or more `sanitize`-tier
+   *  injection rules rewrote matches. Undefined when no sanitize hit
+   *  occurred. Callers may forward this in place of the original input
+   *  to the model, but the original `text` argument is left untouched. */
+  sanitizedText?: string
+  /** Phase C sanitize: rule names that rewrote matches (each at least once). */
+  sanitizedRules?: string[]
 }
 
 export interface OutputCheckContext {
@@ -192,6 +203,7 @@ export class PromptGuardServiceImpl extends Service implements PromptGuardServic
         this.injectionPatterns.push({
           name: rule.name,
           pattern: new RegExp(rule.pattern, 'i'),
+          rawPattern: rule.pattern,
           lang: 'custom',
           action: rule.action ?? 'block',
         })
@@ -228,6 +240,11 @@ export class PromptGuardServiceImpl extends Service implements PromptGuardServic
   }
 
   async checkInput(text: string, sessionId: string): Promise<InputCheckResult> {
+    // Phase C sanitize: declare at function scope so the final `result`
+    // assembly (step 6) can attach them after model-based detection runs.
+    let sanitizedText: string | undefined
+    const sanitizedRuleNames: string[] = []
+
     // 1. 长度检查
     if (text.length > this.config.maxInputLength) {
       await this.audit('warn', 'input.too-long', { sessionId, length: text.length })
@@ -266,22 +283,30 @@ export class PromptGuardServiceImpl extends Service implements PromptGuardServic
     if (this.config.enableInjectionDetection) {
       const blockHits: string[] = []
       const warnHits: Array<{ name: string; action: 'warn' }> = []
+      // Phase C sanitize: rewrite matches in `text` to `[REDACTED:<ruleName>]`
+      // and expose the result via `result.sanitizedText`. We start from the
+      // original `text` and rebuild on each sanitize hit, so multi-rule
+      // redactions stack. Block rules still short-circuit before any
+      // sanitize rewrite.
       for (const { name, pattern, action } of this.injectionPatterns) {
-        if (pattern.test(text)) {
-          if (action === 'block') blockHits.push(name)
-          else if (action === 'warn') warnHits.push({ name, action: 'warn' })
-          else if (action === 'sanitize') {
-            // sanitize action: rewrite logic is not implemented yet.
-            // Fail-open: fall back to block-equivalent (safe:false) so we
-            // never silently pass a rule the operator explicitly tagged
-            // "needs rewriting". Operators who actually want pass-through
-            // can downgrade the rule to `warn` for now.
-            await this.audit('error', 'guard.rule.sanitize-not-implemented', {
-              sessionId, ruleName: name,
-            })
-            blockHits.push(name)
-          }
+        if (!pattern.test(text)) continue
+        if (action === 'block') {
+          blockHits.push(name)
+          continue
         }
+        if (action === 'warn') {
+          warnHits.push({ name, action: 'warn' })
+          continue
+        }
+        // action === 'sanitize'
+        const base = sanitizedText ?? text
+        const rewritten = base.replace(pattern, () => `[REDACTED:${name}]`)
+        if (rewritten === base) continue
+        sanitizedText = rewritten
+        if (!sanitizedRuleNames.includes(name)) sanitizedRuleNames.push(name)
+        await this.audit('info', 'guard.rule.sanitized', {
+          sessionId, ruleName: name, preview: text.slice(0, 100),
+        })
       }
 
       // block-tier: 拒收
@@ -306,6 +331,11 @@ export class PromptGuardServiceImpl extends Service implements PromptGuardServic
           patterns: warnHits.map(h => h.name),
           preview: text.slice(0, 100),
         })
+      }
+
+      // sanitize-tier: 用改写后的 text 走后续 PII 分类、模型辅助检测
+      if (sanitizedText !== undefined) {
+        text = sanitizedText
       }
     }
 
@@ -336,6 +366,14 @@ export class PromptGuardServiceImpl extends Service implements PromptGuardServic
     const modelResult = await this.modelBasedCheck(text)
     if (modelResult && !modelResult.safe) {
       return modelResult
+    }
+
+    // Phase C sanitize: attach rewritten text + the rules that fired so
+    // callers can choose to forward `sanitizedText` instead of the
+    // original input. Undefined when no sanitize rule matched.
+    if (sanitizedText !== undefined) {
+      result.sanitizedText = sanitizedText
+      result.sanitizedRules = sanitizedRuleNames
     }
 
     return result

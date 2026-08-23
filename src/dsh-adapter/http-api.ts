@@ -90,6 +90,25 @@ export class HttpApiServiceImpl extends Service {
     console.log(`[http-api][${reqId}] ${method} ${path} ${status} ${durationMs}ms${extra ? ' ' + extra : ''}`)
   }
 
+  /**
+   * Resolve the actual provider + model to use for a given intent verdict.
+   * Falls back to the legacy hardcoded pair (`local-qwen3-4b` /
+   * `cloud-deepseek-v4` plus env-overridable model) when:
+   *   - `modelRouter` is not registered on the cordis context (boot-order
+   *     race: http-api boots before model-router in some configs)
+   *   - `modelRouter.resolve` is unavailable
+   *   - the lookup throws (defensive: never let router failure break a
+   *     chat round-trip)
+   *
+   * Soft-dep pattern (no `inject`) — same as intent-router, because
+   * http-api boots ahead of model-router in the canonical plugin order.
+   * Extracted as a module-level pure function so unit tests can exercise
+   * the resolution matrix without standing up a full HttpApiServiceImpl.
+   */
+  private resolveRoute(isLocal: boolean): { provider: string; model: string; resolved: boolean } {
+    return resolveRoute(this.cordisCtx, isLocal)
+  }
+
   async start(): Promise<void> {
     if (this.running) return
     // Get intentRouter after all plugins are loaded
@@ -293,11 +312,13 @@ export class HttpApiServiceImpl extends Service {
       return
     }
 
-    // Select provider/model based on intent
+    // Select provider/model based on intent. The hardcoded pair is the
+    // fallback; modelRouter (registered later in boot order) takes
+    // precedence via lazy lookup so http-api doesn't need an inject dep.
     const isLocal = intent.category === 'LOCAL'
-    const provider = isLocal ? 'local-qwen3-4b' : 'cloud-deepseek-v4'
-    const model = isLocal ? (process.env.DSH_EDGE_LOCAL_LLM_MODEL ?? 'qwen3-4b-instruct-2507') : 'deepseek-chat'
-    this.audit('info', 'http.chat.route', { reqId, sessionId, intent: intent.category, provider, model, confidence: intent.confidence, rationale: intent.rationale })
+    const route = this.resolveRoute(isLocal)
+    const { provider, model } = route
+    this.audit('info', 'http.chat.route', { reqId, sessionId, intent: intent.category, provider, model, resolved: route.resolved, confidence: intent.confidence, rationale: intent.rationale })
 
     // Phase 4: Sanitize input for CLOUD requests
     let messageToSend = message
@@ -460,9 +481,9 @@ export class HttpApiServiceImpl extends Service {
     }
 
     const isLocal = intent.category === 'LOCAL'
-    const provider = isLocal ? 'local-qwen3-4b' : 'cloud-deepseek-v4'
-    const model = isLocal ? (process.env.DSH_EDGE_LOCAL_LLM_MODEL ?? 'qwen3-4b-instruct-2507') : 'deepseek-chat'
-    this.audit('info', 'http.chat.stream.route', { reqId, sessionId, intent: intent.category, provider, model })
+    const route = this.resolveRoute(isLocal)
+    const { provider, model } = route
+    this.audit('info', 'http.chat.stream.route', { reqId, sessionId, intent: intent.category, provider, model, resolved: route.resolved })
 
     // Phase 4: Sanitize input for CLOUD requests
     let messageToSend = message
@@ -729,6 +750,32 @@ export class HttpApiServiceImpl extends Service {
       },
     }
   }
+}
+
+/**
+ * Pure (exported for unit tests) route resolver. See the inline comment
+ * in HttpApiServiceImpl#resolveRoute for the soft-dep / fail-open contract.
+ */
+export function resolveRoute(
+  ctx: any,
+  isLocal: boolean,
+): { provider: string; model: string; resolved: boolean } {
+  const preferred = isLocal ? 'local-qwen3-4b' : 'cloud-deepseek-v4'
+  const fallbackModel = isLocal
+    ? (process.env.DSH_EDGE_LOCAL_LLM_MODEL ?? 'qwen3-4b-instruct-2507')
+    : 'deepseek-chat'
+  const mr = ctx?.modelRouter
+  if (mr && typeof mr.resolve === 'function') {
+    try {
+      const r = mr.resolve(preferred)
+      if (r && typeof r.provider === 'string' && typeof r.model === 'string') {
+        return { provider: r.provider, model: r.model, resolved: true }
+      }
+    } catch {
+      // fall through to hardcoded pair
+    }
+  }
+  return { provider: preferred, model: fallbackModel, resolved: false }
 }
 
 export async function apply(ctx: any, config: Config): Promise<() => Promise<void>> {

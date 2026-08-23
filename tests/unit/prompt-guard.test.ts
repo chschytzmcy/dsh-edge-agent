@@ -397,15 +397,50 @@ describe('prompt-guard injection detection', () => {
     assert.ok(result.reason?.includes('legacy-rule'))
   })
 
-  it('custom rule with action=sanitize (rewrite not implemented) → fails closed as block', async () => {
+  it('custom rule with action=sanitize rewrites matches to [REDACTED:<name>] and stays safe', async () => {
     const { service, audit } = createGuard({
       rules: [{ name: 'pending-rewrite', pattern: 'pending', action: 'sanitize' }],
     })
     const result = await service.checkInput('a pending item', 's1')
-    // sanitize action → safe:false (block-equivalent) since rewrite logic is not yet implemented
+    // sanitize is a rewrite, not a block: result stays safe.
+    assert.equal(result.safe, true)
+    // Rewritten text replaces each `pending` match with the placeholder.
+    assert.equal(result.sanitizedText, 'a [REDACTED:pending-rewrite] item')
+    assert.deepEqual(result.sanitizedRules, ['pending-rewrite'])
+    // The legacy "not implemented" audit is gone; the new sanitized audit fires.
+    assert.ok(audit.entries.some(e => e.kind === 'guard.rule.sanitized' && e.payload?.ruleName === 'pending-rewrite'))
+    assert.ok(!audit.entries.some(e => e.kind === 'guard.rule.sanitize-not-implemented'))
+  })
+
+  it('sanitize and block tiers compose: block rule still rejects even after sanitize rewrites', async () => {
+    const { service, audit } = createGuard({
+      rules: [
+        { name: 'redact-me', pattern: 'redact-me', action: 'sanitize' },
+        { name: 'and-block', pattern: 'and-block', action: 'block' },
+      ],
+    })
+    const result = await service.checkInput('redact-me and-block now', 's1')
+    // block wins: result is unsafe.
     assert.equal(result.safe, false)
-    assert.ok(result.reason?.includes('pending-rewrite'))
-    assert.ok(audit.entries.some(e => e.kind === 'guard.rule.sanitize-not-implemented'))
+    assert.ok(result.reason?.includes('and-block'))
+    // sanitize tier still rewrote before the block short-circuited;
+    // we don't expose sanitizedText on a block path because the request
+    // is rejected, but the audit for the sanitize hit was recorded.
+    assert.ok(audit.entries.some(e => e.kind === 'guard.rule.sanitized' && e.payload?.ruleName === 'redact-me'))
+    assert.ok(audit.entries.some(e => e.kind === 'input.injection'))
+  })
+
+  it('multiple sanitize rules each rewrite their own matches', async () => {
+    const { service } = createGuard({
+      rules: [
+        { name: 'foo-rule', pattern: 'foo', action: 'sanitize' },
+        { name: 'bar-rule', pattern: 'bar', action: 'sanitize' },
+      ],
+    })
+    const result = await service.checkInput('foo and bar together', 's1')
+    assert.equal(result.safe, true)
+    assert.equal(result.sanitizedText, '[REDACTED:foo-rule] and [REDACTED:bar-rule] together')
+    assert.deepEqual(result.sanitizedRules, ['foo-rule', 'bar-rule'])
   })
 
   // 安全输入

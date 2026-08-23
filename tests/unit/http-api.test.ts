@@ -325,3 +325,81 @@ describe('http-api plugin', () => {
     expect(res.status).toBe(404)
   })
 })
+
+// resolveRoute() is exported as a pure function from http-api so the
+// model-router wiring can be exercised without standing up the full HTTP
+// server + Service instance. The soft-dep contract: modelRouter on the
+// cordis context is preferred; when absent / throws, fall back to the
+// legacy hardcoded provider/model pair.
+import { resolveRoute } from '../../src/dsh-adapter/http-api.ts'
+
+describe('http-api resolveRoute (modelRouter wiring)', () => {
+  const prevEnv = process.env.DSH_EDGE_LOCAL_LLM_MODEL
+
+  afterEach(() => {
+    if (prevEnv === undefined) delete process.env.DSH_EDGE_LOCAL_LLM_MODEL
+    else process.env.DSH_EDGE_LOCAL_LLM_MODEL = prevEnv
+  })
+
+  it('falls back to hardcoded local provider+model when modelRouter is absent', () => {
+    delete process.env.DSH_EDGE_LOCAL_LLM_MODEL
+    const r = resolveRoute({}, true)
+    expect(r.resolved).toBe(false)
+    expect(r.provider).toBe('local-qwen3-4b')
+    expect(r.model).toBe('qwen3-4b-instruct-2507')
+  })
+
+  it('falls back to hardcoded cloud provider+model when modelRouter is absent', () => {
+    const r = resolveRoute({}, false)
+    expect(r.resolved).toBe(false)
+    expect(r.provider).toBe('cloud-deepseek-v4')
+    expect(r.model).toBe('deepseek-chat')
+  })
+
+  it('honors DSH_EDGE_LOCAL_LLM_MODEL env override on the local fallback path', () => {
+    process.env.DSH_EDGE_LOCAL_LLM_MODEL = 'qwen3-4b-fine-tuned'
+    const r = resolveRoute({}, true)
+    expect(r.resolved).toBe(false)
+    expect(r.model).toBe('qwen3-4b-fine-tuned')
+  })
+
+  it('uses modelRouter.resolve when present and returns the resolved route', () => {
+    let calledWith: string | undefined
+    const ctx = {
+      modelRouter: {
+        resolve: (preferred: string) => {
+          calledWith = preferred
+          return { realm: 'LOCAL', provider: 'local-qwen3-4b-tuned', model: 'qwen3-4b-ft-2026-08' }
+        },
+      },
+    }
+    const r = resolveRoute(ctx, true)
+    expect(calledWith).toBe('local-qwen3-4b')
+    expect(r.resolved).toBe(true)
+    expect(r.provider).toBe('local-qwen3-4b-tuned')
+    expect(r.model).toBe('qwen3-4b-ft-2026-08')
+  })
+
+  it('falls back when modelRouter.resolve throws (defensive: never break the chat round-trip)', () => {
+    const ctx = {
+      modelRouter: {
+        resolve: () => { throw new Error('router offline') },
+      },
+    }
+    const r = resolveRoute(ctx, false)
+    expect(r.resolved).toBe(false)
+    expect(r.provider).toBe('cloud-deepseek-v4')
+    expect(r.model).toBe('deepseek-chat')
+  })
+
+  it('falls back when modelRouter.resolve returns a malformed shape', () => {
+    const ctx = {
+      modelRouter: {
+        resolve: () => ({ provider: 123, model: null }), // wrong types
+      },
+    }
+    const r = resolveRoute(ctx, true)
+    expect(r.resolved).toBe(false)
+    expect(r.provider).toBe('local-qwen3-4b')
+  })
+})

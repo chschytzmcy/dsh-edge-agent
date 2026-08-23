@@ -10,6 +10,7 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, it } from 'vitest'
+import { createHmac } from 'node:crypto'
 
 import * as policy from '../../src/dsh-adapter/privacy-policy.ts'
 import { PrivacyPolicyServiceImpl } from '../../src/dsh-adapter/privacy-policy.ts'
@@ -329,5 +330,164 @@ describe('privacy-policy apply', () => {
     })
     assert.equal(typeof dispose, 'function')
     await dispose()
+  })
+})
+
+describe('privacy-policy HMAC signing', () => {
+  const TEST_KEY = 'unit-test-hmac-key-do-not-leak'
+
+  function withHmacKey<T>(fn: () => Promise<T>): Promise<T> {
+    const prev = process.env.DSH_EDGE_POLICY_HMAC_KEY
+    process.env.DSH_EDGE_POLICY_HMAC_KEY = TEST_KEY
+    return fn().finally(() => {
+      if (prev === undefined) delete process.env.DSH_EDGE_POLICY_HMAC_KEY
+      else process.env.DSH_EDGE_POLICY_HMAC_KEY = prev
+    })
+  }
+
+  function withoutHmacKey<T>(fn: () => Promise<T>): Promise<T> {
+    const prev = process.env.DSH_EDGE_POLICY_HMAC_KEY
+    delete process.env.DSH_EDGE_POLICY_HMAC_KEY
+    return fn().finally(() => {
+      if (prev !== undefined) process.env.DSH_EDGE_POLICY_HMAC_KEY = prev
+    })
+  }
+
+  function signBody(body: string, key: string = TEST_KEY): string {
+    return createHmac('sha256', key).update(body, 'utf-8').digest('hex')
+  }
+
+  it('loads successfully when a valid sidecar signature is present', async () => {
+    await withHmacKey(async () => {
+      const policyPath = writePolicyFile('policy.json')
+      const body = readFileSync(policyPath, 'utf-8')
+      writeFileSync(`${policyPath}.sig`, signBody(body), 'utf-8')
+
+      const audit = fakeAuditLog()
+      const svc = new PrivacyPolicyServiceImpl(fakeCtx() as never, {
+        policyPath, hotReload: false, watchIntervalMs: 5000,
+      }, audit)
+      await svc.reload()
+
+      assert.equal(svc.get().version, '1.0.0')
+      assert.ok(audit.entries.some((e) => e.kind === 'policy.loaded'))
+      assert.ok(!audit.entries.some((e) => e.kind === 'policy.tamper-detected'))
+    })
+  })
+
+  it('rejects a tampered body when the sidecar signature does not match', async () => {
+    await withHmacKey(async () => {
+      const policyPath = writePolicyFile('policy.json')
+      const body = readFileSync(policyPath, 'utf-8')
+      // Sign the unmodified body…
+      writeFileSync(`${policyPath}.sig`, signBody(body), 'utf-8')
+      // …then mutate the policy file behind the signature's back.
+      writeFileSync(policyPath, JSON.stringify({ ...TEST_POLICY, version: '9.9.9' }), 'utf-8')
+
+      const audit = fakeAuditLog()
+      const svc = new PrivacyPolicyServiceImpl(fakeCtx() as never, {
+        policyPath, hotReload: false, watchIntervalMs: 5000,
+      }, audit)
+      await svc.reload()
+
+      // In-memory policy must be the default, NOT the tampered file.
+      assert.equal(svc.get().version, '1.0.0')
+      // Tamper event was raised at security level.
+      const tamper = audit.entries.find((e) => e.kind === 'policy.tamper-detected')
+      assert.ok(tamper, 'expected policy.tamper-detected audit entry')
+      assert.equal(tamper!.level, 'security')
+      assert.equal(tamper!.payload.reason, 'hmac-mismatch')
+      // The tampered file's 'policy.loaded' must NOT have been emitted.
+      assert.ok(!audit.entries.some((e) => e.kind === 'policy.loaded'))
+    })
+  })
+
+  it('rejects when the sidecar signature file is missing and a key is configured', async () => {
+    await withHmacKey(async () => {
+      const policyPath = writePolicyFile('policy.json')
+      // intentionally do NOT write `${policyPath}.sig`
+
+      const audit = fakeAuditLog()
+      const svc = new PrivacyPolicyServiceImpl(fakeCtx() as never, {
+        policyPath, hotReload: false, watchIntervalMs: 5000,
+      }, audit)
+      await svc.reload()
+
+      assert.equal(svc.get().version, '1.0.0')
+      const tamper = audit.entries.find((e) => e.kind === 'policy.tamper-detected')
+      assert.ok(tamper)
+      assert.equal(tamper!.payload.reason, 'signature-file-missing')
+    })
+  })
+
+  it('skips verification when DSH_EDGE_POLICY_HMAC_KEY is unset (dev/CI)', async () => {
+    await withoutHmacKey(async () => {
+      const policyPath = writePolicyFile('policy.json')
+      // No sidecar file; no key — must still load.
+      const audit = fakeAuditLog()
+      const svc = new PrivacyPolicyServiceImpl(fakeCtx() as never, {
+        policyPath, hotReload: false, watchIntervalMs: 5000,
+      }, audit)
+      await svc.reload()
+
+      assert.equal(svc.get().version, '1.0.0')
+      assert.ok(audit.entries.some((e) => e.kind === 'policy.loaded'))
+      // Latched "signing disabled" notice fires once.
+      const notices = audit.entries.filter((e) => e.kind === 'policy.signing.disabled')
+      assert.equal(notices.length, 1)
+    })
+  })
+
+  it('emits policy.signing.disabled at most once across multiple reloads', async () => {
+    await withoutHmacKey(async () => {
+      const policyPath = writePolicyFile('policy.json')
+      const audit = fakeAuditLog()
+      const svc = new PrivacyPolicyServiceImpl(fakeCtx() as never, {
+        policyPath, hotReload: false, watchIntervalMs: 5000,
+      }, audit)
+      await svc.reload()
+      await svc.reload()
+      await svc.reload()
+
+      const notices = audit.entries.filter((e) => e.kind === 'policy.signing.disabled')
+      assert.equal(notices.length, 1)
+    })
+  })
+
+  it('accepts hex signatures with leading whitespace or mixed case', async () => {
+    await withHmacKey(async () => {
+      const policyPath = writePolicyFile('policy.json')
+      const body = readFileSync(policyPath, 'utf-8')
+      const hex = signBody(body)
+      const pretty = `\n  ${hex.slice(0, 16).toUpperCase()}${hex.slice(16).toLowerCase()}  \n`
+      writeFileSync(`${policyPath}.sig`, pretty, 'utf-8')
+
+      const audit = fakeAuditLog()
+      const svc = new PrivacyPolicyServiceImpl(fakeCtx() as never, {
+        policyPath, hotReload: false, watchIntervalMs: 5000,
+      }, audit)
+      await svc.reload()
+
+      assert.equal(svc.get().version, '1.0.0')
+      assert.ok(!audit.entries.some((e) => e.kind === 'policy.tamper-detected'))
+    })
+  })
+
+  it('rejects a non-hex signature gracefully (no throw, fail-closed)', async () => {
+    await withHmacKey(async () => {
+      const policyPath = writePolicyFile('policy.json')
+      writeFileSync(`${policyPath}.sig`, 'not-a-hex-string-at-all', 'utf-8')
+
+      const audit = fakeAuditLog()
+      const svc = new PrivacyPolicyServiceImpl(fakeCtx() as never, {
+        policyPath, hotReload: false, watchIntervalMs: 5000,
+      }, audit)
+      await svc.reload()
+
+      assert.equal(svc.get().version, '1.0.0')
+      const tamper = audit.entries.find((e) => e.kind === 'policy.tamper-detected')
+      assert.ok(tamper)
+      assert.equal(tamper!.payload.reason, 'hmac-mismatch')
+    })
   })
 })

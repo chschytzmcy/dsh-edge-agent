@@ -5353,15 +5353,16 @@ describe('http-api', () => {
 | intent-router 缺置信度分布可观测性 | **closed** — G9（commit `b4e5810`）在 `getStats()` 加入 `confidenceHistogram` 10-bucket × `{accepted, rejected}` |
 | `http-api` 缺 threat-block 阻断 | **closed** — `td-bus.shouldBlock()` 在 `handleChat` 入口 503 短路 |
 | `http-api` 缺会话映射清理 | **closed** — `handleDeleteSession` 调 `sanitizer.purge(id)`；LRU eviction 同步清理 |
+| 隐私策略文件**篡改检测**（签名验证） | **closed** — `privacy-policy` 新增 HMAC-SHA256 sidecar 校验：env `DSH_EDGE_POLICY_HMAC_KEY` 启用，启动 + mtime 轮询双路径校验；fail-closed `audit('security', 'policy.tamper-detected', { reason })`；env 未设走 dev/CI 默认并发出一次性 `policy.signing.disabled` 通知 |
+| `http-api` 的 `provider/model` 硬编码点 | **closed** — 提取 `resolveRoute(ctx, isLocal)`（http-api.ts）：优先 `modelRouter.resolve(preferred)`，失败/缺失时回退硬编码对；soft-dep 模式（不 `inject`）避免 boot order 变更 |
+| `prompt-guard` `action: sanitize` 行为未实装 | **closed** — sanitize 档位改为改写命中为 `[REDACTED:<ruleName>]`，audit `info` `guard.rule.sanitized`；block/warn 语义不变；改写后文本通过 `InputCheckResult.sanitizedText` 暴露给调用方 |
 
 #### 仍开放（后续阶段）
 
 | 问题 | 影响 | 建议下一步 |
 |---|---|---|
-| 隐私策略文件**篡改检测**（签名验证） | 当前仅 mtime 轮询热加载；攻击者改盘后可被加载 | A2.5 阶段：策略文件 HMAC 签名，启动时校验 + 轮询时增量校验 |
 | TEE 后端在裸机 RK3588 上的 TrustZone 接入 | `tcm` 当前 simulated 后端（`crypto.subtle` / `node:crypto`） | A3 阶段：real-mode 接口预留，simulated 完整覆盖 dev/CI |
 | Whisper / llama.cpp native binding 在 arm64 RK3588 上的打包 | 体积、依赖链、冷启动延迟 | A8 阶段做 bench；必要时 WASM 替代或预编译 `.node` artifact |
 | OHTTP Relay 部署：DSH 内置示例无 OHTTP 拓扑，需自建 | A4 阶段受外部依赖阻塞 | 提供 docker-compose 模板（含 relay + target mock）放在 `examples/ohttp-topology/` |
-| `http-api` 的 `provider/model` 硬编码点 | `handleChat` / `handleChatStream` 不走 `modelRouter.resolve()` | 中期：抽象 `route(intent)` 函数注入；远期：策略驱动 |
-| `prompt-guard` 缺输出 PII 自动 redact 的独立开关 | `checkOutput` 当前依赖 `redactedText` 字段；策略为 `block/warn/sanitize` 三档但 `sanitize` 行为未实现 | A1.5 阶段：补全 `sanitize` 路径（独立脱敏 vs 走 sanitizer-pipeline 复用） |
+| `prompt-guard` 缺输出 PII 自动 redact 的独立开关 | `checkOutput` 当前依赖 `redactedText` 字段；策略为 `block/warn/sanitize` 三档，输入端 `sanitize` 已实装，输出端仍是 redact-or-not 二档 | A1.5 阶段：补全输出端 `sanitize` 路径（独立脱敏 vs 走 sanitizer-pipeline 复用） |
 | 安全管线仅在 http-api 进程内生效 | 绕过 http-api 直调 `ctx.agents.followup()` 不享受任何拦截 | 若启用 web UI / CLI 直调 Agent Loop，需把整条管线复制一份到工具调用入口（v6.0 §4.1 修订已注明） |
