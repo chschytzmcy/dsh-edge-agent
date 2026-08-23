@@ -64,7 +64,7 @@ export interface Intent {
 }
 
 export interface IntentRouterService {
-  classify(text: string, context?: { recentMessages?: unknown[] }): Promise<Intent>
+  classify(text: string, context?: { recentMessages?: unknown[]; sessionId?: string }): Promise<Intent>
   resolve(intent: Intent): { realm: string; config: Record<string, unknown> }
 }
 
@@ -103,14 +103,14 @@ export class IntentRouterServiceImpl extends Service {
     void this.auditLog.log({ level, kind, source: 'intent-router', payload }).catch(() => {})
   }
 
-  async classify(text: string, context?: { recentMessages?: unknown[] }): Promise<Intent> {
+  async classify(text: string, context?: { recentMessages?: unknown[]; sessionId?: string }): Promise<Intent> {
     const start = Date.now()
     const textPreview = text.slice(0, 80)
     this.audit('info', 'intent.classify.start', { textLen: text.length, textPreview, classifier: this.classificationProvider, model: this.classificationModel })
 
     // Try LLM classification first
     try {
-      const intent = await this.classifyWithLlm(text, context?.recentMessages)
+      const intent = await this.classifyWithLlm(text, context?.recentMessages, context?.sessionId)
       this.audit('info', 'intent.classify.end', {
         textLen: text.length,
         path: 'llm',
@@ -136,10 +136,67 @@ export class IntentRouterServiceImpl extends Service {
     }
   }
 
-  private async classifyWithLlm(text: string, recentMessages?: unknown[]): Promise<Intent> {
+  private async classifyWithLlm(text: string, recentMessages?: unknown[], sessionId?: string): Promise<Intent> {
     if (!this.llm) {
       this.audit('debug', 'intent.llm.skipped', { reason: 'no-llm-handle' })
       throw new Error('intent-router: no llm handle')
+    }
+
+    // NEW: route the classification LLM call through model-router if mounted.
+    // Lazy-lookup on every call (not cached) because root cordis.yml declares
+    // intent-router BEFORE model-router — the service may not exist at the
+    // first classify() but will by the next one. Soft dependency: missing or
+    // throwing modelRouter falls back to config values (fail-open).
+    // ⚠️ classificationProvider MUST be a provider route id (with 'local-' /
+    // 'cloud-' prefix); bare model ids resolve to realm: 'CLOUD' (see
+    // model-router.ts:103). Current default 'local-qwen3-4b' is fine.
+    const modelRouter = (this.ctx as any).modelRouter
+    const resolved = (() => {
+      try { return modelRouter?.resolve?.(this.classificationProvider) }
+      catch { return undefined }
+    })()
+    const provider = resolved?.provider ?? this.classificationProvider
+    const model = resolved?.model ?? this.classificationModel
+    this.audit('debug', 'intent.llm.route', {
+      configured: this.classificationProvider,
+      resolvedRealm: resolved?.realm,
+      resolvedProvider: provider,
+      resolvedModel: model,
+      modelRouterMounted: Boolean(modelRouter),
+    })
+
+    // NEW: sanitize user text BEFORE the LLM prompt when the classification
+    // LLM lives in the CLOUD realm. This prevents PII (phone/id/bank/email/
+    // api-key) from leaving the device just to ask "is this LOCAL or CLOUD".
+    // Mirrors http-api's pattern: `if (!isLocal && this.sanitizer) ...`.
+    // Soft dep: missing or throwing sanitizer → use original text (fail-open,
+    // accept PII risk on the classification call; the *real* cloud call
+    // through http-api is still sanitized downstream).
+    let promptText = text
+    const resolvedRealm = resolved?.realm
+    if (resolvedRealm === 'CLOUD') {
+      const sanitizer = (this.ctx as any).sanitizer
+      if (sanitizer && typeof sanitizer.sanitize === 'function') {
+        try {
+          const result = await sanitizer.sanitize(text, { sessionId: sessionId ?? 'default' })
+          const replacementCount = Array.isArray(result?.replacements) ? result.replacements.length : 0
+          promptText = result?.sanitizedText ?? text
+          this.audit('info', 'intent.llm.sanitized', {
+            sessionId: sessionId ?? 'default',
+            originalLen: text.length,
+            sanitizedLen: promptText.length,
+            replacements: replacementCount,
+          })
+        } catch (err: any) {
+          this.audit('warn', 'intent.llm.sanitize-error', {
+            error: err?.message ?? String(err),
+            originalLen: text.length,
+          })
+          // fail-open: keep original text
+        }
+      } else {
+        this.audit('debug', 'intent.llm.sanitize-skipped', { reason: 'no-sanitizer-handle' })
+      }
     }
 
     // Multi-turn context: best-effort extract text from each message and
@@ -174,7 +231,7 @@ ${historyBlock}
 Respond ONLY with a single JSON object — no prose, no Markdown:
 { "category": "LOCAL"|"CLOUD", "confidence": <0.0-1.0> }
 
-用户请求：${text}`
+用户请求：${promptText}`
 
     const userMessage = createUserMessage({
       content: [{ type: 'text', text: prompt }],
@@ -184,29 +241,6 @@ Respond ONLY with a single JSON object — no prose, no Markdown:
     const llmStart = Date.now()
     let responseText = ''
     let chunks = 0
-
-    // NEW: route the classification LLM call through model-router if mounted.
-    // Lazy-lookup on every call (not cached) because root cordis.yml declares
-    // intent-router BEFORE model-router — the service may not exist at the
-    // first classify() but will by the next one. Soft dependency: missing or
-    // throwing modelRouter falls back to config values (fail-open).
-    // ⚠️ classificationProvider MUST be a provider route id (with 'local-' /
-    // 'cloud-' prefix); bare model ids resolve to realm: 'CLOUD' (see
-    // model-router.ts:103). Current default 'local-qwen3-4b' is fine.
-    const modelRouter = (this.ctx as any).modelRouter
-    const resolved = (() => {
-      try { return modelRouter?.resolve?.(this.classificationProvider) }
-      catch { return undefined }
-    })()
-    const provider = resolved?.provider ?? this.classificationProvider
-    const model = resolved?.model ?? this.classificationModel
-    this.audit('debug', 'intent.llm.route', {
-      configured: this.classificationProvider,
-      resolvedRealm: resolved?.realm,
-      resolvedProvider: provider,
-      resolvedModel: model,
-      modelRouterMounted: Boolean(modelRouter),
-    })
 
     // Hard timeout via signal — prevents llama.cpp / qwen3-4b hangs from
     // blocking the http-api main thread. On AbortError we throw and the

@@ -479,4 +479,154 @@ describe('intent-router', () => {
     const errEntry = audit.entries.find((e: any) => e.kind === 'intent.policy.error')
     assert.ok(errEntry)
   })
+
+  // ─── PII sanitization (v6 §2.6 + §2.15) ─────────────────────────────────
+
+  it('sanitizes user text before LLM prompt when classification LLM is CLOUD', async () => {
+    // Mirrors http-api's pattern: when classification goes to CLOUD, sanitize
+    // the input first so PII never leaves the device just to ask
+    // "is this LOCAL or CLOUD".
+    let capturedPrompt: string | undefined
+    let sanitizerCalled = 0
+    let sanitizerGotSessionId: string | undefined
+    const verdict = JSON.stringify({ category: 'CLOUD', confidence: 0.9 })
+    const fakeSanitizer = {
+      sanitize: async (text: string, ctx?: { sessionId?: string }) => {
+        sanitizerCalled++
+        sanitizerGotSessionId = ctx?.sessionId
+        return {
+          sanitizedText: text.replace(/1[3-9]\d{9}/u, '[PHONE_1]'),
+          replacements: [{ placeholder: '[PHONE_1]', originalValue: '13812345678' }],
+        }
+      },
+    }
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: {
+        stream(opts: any) {
+          capturedPrompt = opts.messages[0].content[0].text
+          return chunksFromText(verdict)
+        },
+      },
+      modelRouter: {
+        resolve: () => ({ realm: 'CLOUD', provider: 'cloud-deepseek-v4', model: 'deepseek-chat' }),
+      },
+      sanitizer: fakeSanitizer,
+    } as any
+    const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b',
+      confidenceThreshold: 0.6,
+    }, audit as any)
+
+    await service.classify('我的手机号是13812345678，帮我查个事', { sessionId: 'sess-A' })
+    assert.equal(sanitizerCalled, 1, 'sanitizer should be called once')
+    assert.equal(sanitizerGotSessionId, 'sess-A')
+    assert.ok(capturedPrompt)
+    assert.match(capturedPrompt, /\[PHONE_1\]/)
+    assert.doesNotMatch(capturedPrompt, /13812345678/)
+    const sanitizedEntry = audit.entries.find((e: any) => e.kind === 'intent.llm.sanitized')
+    assert.ok(sanitizedEntry)
+    assert.equal(sanitizedEntry.payload.replacements, 1)
+    assert.equal(sanitizedEntry.payload.sessionId, 'sess-A')
+  })
+
+  it('skips sanitization when classification LLM resolves to LOCAL', async () => {
+    let capturedPrompt: string | undefined
+    let sanitizerCalled = 0
+    const verdict = JSON.stringify({ category: 'LOCAL', confidence: 0.9 })
+    const fakeSanitizer = {
+      sanitize: async () => { sanitizerCalled++; return { sanitizedText: 'XX', replacements: [] } },
+    }
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: {
+        stream(opts: any) {
+          capturedPrompt = opts.messages[0].content[0].text
+          return chunksFromText(verdict)
+        },
+      },
+      modelRouter: {
+        resolve: () => ({ realm: 'LOCAL', provider: 'local-qwen3-4b', model: 'qwen3-4b' }),
+      },
+      sanitizer: fakeSanitizer,
+    } as any
+    const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b',
+      confidenceThreshold: 0.6,
+    }, audit as any)
+
+    const originalText = '查一下 13812345678'
+    await service.classify(originalText)
+    assert.equal(sanitizerCalled, 0, 'sanitizer should NOT be called for LOCAL LLM')
+    assert.ok(capturedPrompt)
+    assert.match(capturedPrompt, /13812345678/, 'original PII must reach LOCAL LLM unchanged')
+  })
+
+  it('fails open to original text when sanitizer is missing (CLOUD realm)', async () => {
+    let capturedPrompt: string | undefined
+    const verdict = JSON.stringify({ category: 'CLOUD', confidence: 0.9 })
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: {
+        stream(opts: any) {
+          capturedPrompt = opts.messages[0].content[0].text
+          return chunksFromText(verdict)
+        },
+      },
+      modelRouter: {
+        resolve: () => ({ realm: 'CLOUD', provider: 'cloud-deepseek-v4', model: 'deepseek-chat' }),
+      },
+      // no sanitizer key
+    } as any
+    const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b',
+      confidenceThreshold: 0.6,
+    }, audit as any)
+
+    const originalText = '查一下 13812345678'
+    await service.classify(originalText)
+    assert.ok(capturedPrompt)
+    assert.match(capturedPrompt, /13812345678/, 'original text must reach LLM when sanitizer is missing')
+    const skipEntry = audit.entries.find((e: any) => e.kind === 'intent.llm.sanitize-skipped')
+    assert.ok(skipEntry)
+    assert.equal(skipEntry.payload.reason, 'no-sanitizer-handle')
+  })
+
+  it('fails open to original text when sanitizer throws', async () => {
+    let capturedPrompt: string | undefined
+    const verdict = JSON.stringify({ category: 'CLOUD', confidence: 0.9 })
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: {
+        stream(opts: any) {
+          capturedPrompt = opts.messages[0].content[0].text
+          return chunksFromText(verdict)
+        },
+      },
+      modelRouter: {
+        resolve: () => ({ realm: 'CLOUD', provider: 'cloud-deepseek-v4', model: 'deepseek-chat' }),
+      },
+      sanitizer: { sanitize: async () => { throw new Error('boom') } },
+    } as any
+    const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b',
+      confidenceThreshold: 0.6,
+    }, audit as any)
+
+    const originalText = '查一下 13812345678'
+    await service.classify(originalText)
+    assert.ok(capturedPrompt)
+    assert.match(capturedPrompt, /13812345678/, 'original text must reach LLM when sanitizer throws')
+    const errEntry = audit.entries.find((e: any) => e.kind === 'intent.llm.sanitize-error')
+    assert.ok(errEntry)
+    assert.match(errEntry.payload.error, /boom/u)
+  })
 })

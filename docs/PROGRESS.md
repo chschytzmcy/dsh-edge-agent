@@ -550,7 +550,60 @@ if (matchedRule) {
 
 **总计**：264 个单测全过，verify:build 4 关全过，compile 零错。
 
----
+### 7.11 intent-router 接入 sanitizer-pipeline：PII 在 prompt 前脱敏（v6 §2.6，2026-08-23）
+
+**背景**：完成 #7.8 (model-router 路由) + #7.10 (privacy-policy 路由规则) 后，intent-router 把 `classificationProvider='local-qwen3-4b'` 路由成 `{realm: 'CLOUD', provider: 'cloud-deepseek-v4', model: 'deepseek-chat'}`（model-router.ts:103 裸 id 落 CLOUD 分支；但 `local-qwen3-4b` 是 provider route id，按配置默认仍然走 LOCAL）——**用户可改 yml 让分类 LLM 走云端**（如 qwen3-4b 不可用时降级到 deepseek-v4-fast）。此时**用户的原始 PII（手机/身份证/银行卡/邮箱/api-key）会跟着分类 prompt 一起发送到云端**，即便下游真实请求在 http-api 层会被 sanitizer 拦截。
+
+**实现**（`src/dsh-adapter/intent-router.ts:classifyWithLlm`）：把 model-router resolve + sanitizer.sanitize 提到 prompt 构造之前：
+
+```ts
+const modelRouter = (this.ctx as any).modelRouter
+const resolved = (() => {
+  try { return modelRouter?.resolve?.(this.classificationProvider) }
+  catch { return undefined }
+})()  // {realm, provider, model} | undefined
+...
+let promptText = text
+if (resolved?.realm === 'CLOUD') {
+  const sanitizer = (this.ctx as any).sanitizer
+  if (sanitizer?.sanitize) {
+    try {
+      const result = await sanitizer.sanitize(text, { sessionId: sessionId ?? 'default' })
+      promptText = result.sanitizedText
+      this.audit('info', 'intent.llm.sanitized', { ...replacements })
+    } catch { /* fail-open */ }
+  }
+}
+const prompt = `... 用户请求：${promptText}`   // 用 sanitized
+```
+
+**关键点**：
+- **只对 CLOUD 分类 LLM 脱敏**（LOCAL LLM 永远在端侧，不存在出网风险）
+- 软依赖：`ctx.sanitizer` 缺失或抛错 → 用原文本（fail-open；下游真实请求仍由 http-api 兜底脱敏）
+- `sessionId` 通过 context 传入（`classify(text, { sessionId })`），默认 `'default'` —— 占位符在同一会话内可复用
+- 不动 `inject`、不动 Config schema、不动构造函数签名（与 #7.8 #7.10 一致）
+- 镜像 http-api 已有模式（`if (!isLocal && this.sanitizer) { sanitize }`）
+
+**新 audit kind**：
+| kind | level | 触发 |
+|---|---|---|
+| `intent.llm.sanitized` | info | CLOUD realm 分类 LLM + sanitizer 命中，记 replacement 数 + 长度差 |
+| `intent.llm.sanitize-error` | warn | sanitize() 抛错，记 error + 原长 |
+| `intent.llm.sanitize-skipped` | debug | CLOUD realm 但 sanitizer handle 缺失 |
+
+**失败模式**：
+- `ctx.sanitizer` 不存在（plugin 未 mount）→ audit `sanitize-skipped`，用原文本
+- `sanitizer.sanitize()` 抛错 → audit `sanitize-error`，用原文本
+- LOCAL realm → 根本不查 sanitizer，零额外延迟
+- `sanitize()` 返回 `sanitizedText: undefined` → `?? text` 兜底
+
+**4 个新单测**：
+1. CLOUD + sanitizer 命中 → LLM 收到 `[PHONE_1]` 占位符而非 `13812345678`，audit `replacements: 1`、`sessionId: 'sess-A'`
+2. CLOUD + LOCAL realm → sanitizer 调用 0 次，LLM 收到原文（端侧 LLM 不需脱敏）
+3. CLOUD + sanitizer 缺失 → LLM 收到原文 + audit `sanitize-skipped: no-sanitizer-handle`
+4. CLOUD + sanitizer 抛错 → LLM 收到原文 + audit `sanitize-error`，主链路不中断
+
+**总计**：268 个单测全过，verify:build 4 关全过，compile 零错。
 
 ---
 
