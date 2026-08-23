@@ -105,35 +105,48 @@
 
 本设计的所有能力**不是一次性实现**的，而是按照"**先跑起来 → 再加防护 → 最后上硬件**"的策略，分阶段渐进式落地。
 
-#### 1.6.1 当前状态（2026-08-22）
+#### 1.6.1 当前状态（2026-08-23）
 
 **已完成**：
 
 | 阶段 | 功能 | 插件 | 状态 |
 |---|---|---|---|
-| M1 | 基础对话 + HTTP API | `http-api` | ✅ 完整 |
+| M1 | 基础对话 + HTTP API | `http-api` | ✅ 完整（含 REJECT 403、threat-block 503、`/v1/chat` + `/v1/chat/stream`） |
 | M2 | 本地 LLM 接入 | `local-llm-adapter` | ✅ 完整 |
 | M3 | 云端 LLM 接入 | `cloud-llm-adapter` | ✅ 完整 |
-| M4 | 意图路由 | `intent-router`, `model-router` | ✅ 基础功能 |
-| A1-simplified | 端侧隐私安全（简化版） | `prompt-guard` | ✅ PII 脱敏 + 注入检测 + 频率限制 |
+| M4 | 意图路由 | `intent-router`, `model-router` | ✅ 完整（含 REJECT 短路、confidence histogram、LLM-first 顺序、`parseFailure` 计数） |
+| A1-simplified | 端侧隐私安全（简化版） | `prompt-guard` | ✅ PII 脱敏 + 注入检测 + 频率限制；已并入 Phase 4 |
 | A1-audit | 审计日志增强 | `audit-log` | ✅ PII 脱敏 + 日志轮转 |
 | A1-session | 会话安全增强 | `http-api` | ✅ 过期清理 + 访问审计 + LRU 淘汰 |
 | A1-storage | 存储脱敏 | `local-storage` | ✅ 敏感字段自动脱敏 |
+| G8 | 工具 Realm 隔离 | `tools` | ✅ `enableToolIsolation` 接入 `filterTools(intent)` / `isToolAllowed(name, intent)` |
+| G9 | 意图分类可观测性 | `intent-router` | ✅ `getStats().confidenceHistogram`（10-bucket × {accepted, rejected}） |
 
 **部署验证**：
 - ✅ RK3588 设备部署成功
-- ✅ 203 个单元测试全通过
+- ✅ 单元测试套件全通过
 - ✅ 本地/云端 LLM 切换正常
-- ✅ SSE 流式响应正常
-- ✅ A1 注入检测拦截（3 种模式）
-- ✅ A1 PII 脱敏（手机号、邮箱）
+- ✅ SSE 流式响应正常（每 chunk `desanitizeSync`）
+- ✅ 注入检测拦截（≥3 种模式，规则可配置 `action: block | warn | sanitize`）
+- ✅ PII 脱敏（手机号、邮箱、身份证、银行卡、API Key）
+- ✅ `intent-router` REJECT 命中 → http-api 403 短路（`intent.rules.rejected` 安全级审计）
+- ✅ `td-bus.shouldBlock()` 命中 → http-api 503 短路（`http.chat.threat-blocked` 审计）
+- ✅ CLOUD 路径 sanitize → LLM → desanitize（或流式 `desanitizeSync`）端到端
+- ✅ Privacy-policy `matchRouting` 命中走规则，未命中走 LLM，再 fallback 关键词 → `defaultCategory`
+- ✅ Confidence histogram (`getStats().confidenceHistogram`) 用于调优 `confidenceThreshold`
+- ✅ `parseFailure` 与 `sanitizeError`（安全级）独立可观测
+- ✅ `enableToolIsolation` 真正进入 service（pre-G8 是死代码）
 - ✅ 审计日志自动脱敏敏感字段
 - ✅ 审计日志自动轮转（>10MB 或 >7 天）
 - ✅ 会话 30 分钟未访问自动清理
 - ✅ 最大活跃会话数 100，LRU 淘汰
 - ✅ 存储时敏感字段自动脱敏（local-storage、sessions）
+- ✅ Privacy-policy JSON 文件 mtime 轮询热重载（`setInterval(checkForUpdates, 5000)`）
 
-**当前匹配度**：约 50%（设计文档 vs 代码实现）
+**当前匹配度（按维度）**：
+- 已完成功能维度：~ 95%（Phase 1-4 全 ✅ + G8 + G9；缺 Phase 5-8 范围）
+- 端到端通路维度：~ 85%（路由 / 脱敏 / 审计 / 限流 / REJECT 全打通；td-bus 与 sanitize-error 闭环有但弱）
+- 设计意图贴合维度：~ 50%（v6 合规形式已对齐；event-bus 协议、`modelRouter.resolve()` 在 http-api 内未启用、agent-loop 自监听未启用）
 
 #### 1.6.2 实施阶段
 
@@ -211,33 +224,38 @@
 **交付物**：
 - [x] **privacy-policy 完整实现**
   - [x] 策略文件加载（JSON）
-  - [x] 路由规则（LOCAL/CLOUD/SANITIZED/REJECT）
+  - [x] 路由规则（`RoutingRule { pattern, realm: 'LOCAL'|'CLOUD'|'SANITIZED'|'REJECT', confidence, rationale }`）
   - [x] 脱敏规则（PII 类型、策略、模板）
   - [x] 数据分类（public/internal/confidential/secret）
   - [ ] 工具访问策略（后续迭代）
   - [x] 全局约束（云端请求限制等）
-  - [x] 热更新（文件监控，5 秒轮询）
+  - [x] 热更新（基于 `setInterval(checkForUpdates, watchIntervalMs)` 轮询文件 mtime，默认 5 秒；不是 `fs.watch`）
   - [ ] 策略签名验证（后续迭代）
-- [x] **intent-router 联动**（基础版）
-  - [x] intent-router 已独立实现分类能力
-  - [ ] 从 privacy-policy 获取路由规则混合（后续迭代）
-  - [ ] REJECT 意图拦截（后续迭代）
-- [x] **prompt-guard 联动**（基础版）
+- [x] **intent-router 联动**
+  - [x] intent-router 主体能力已独立实现
+  - [x] 从 privacy-policy `matchRouting()` 拉取规则（hybrid：`pre-check` 命中 REJECT 短路 + fallback 路径命中返回 verdict）
+  - [x] REJECT 意图拦截（intent-router `matchRouting` pre-check + http-api 403 short-circuit）
+- [x] **prompt-guard 联动**
   - [x] prompt-guard 已独立实现 PII 检测与注入防护
-  - [ ] 从 privacy-policy 获取脱敏规则（后续迭代）
+  - [x] 从 privacy-policy `classifyData()` 拉脱敏 / 分类规则（`secret` 级一票否决）
 - [x] **sanitizer-pipeline 完整实现**
-  - [x] 正向脱敏（PII → 占位符，如 [PHONE_1]、[EMAIL_2]）
-  - [x] 反向还原（占位符 → PII）
+  - [x] 正向脱敏（PII → 占位符，格式 `[<PII_TYPE>_<counter>]`，如 `[PHONE_1]`、`[EMAIL_2]`）
+  - [x] 反向还原（占位符 → PII），含异步 `desanitize` 与同步 `desanitizeSync`
   - [x] 会话级映射表（per-session mapping）
   - [x] 与 privacy-policy 联动（获取脱敏规则）
-  - [x] 会话映射上限 + LRU 保护
-  - [x] 同步反脱敏（desanitizeSync，用于流式响应）
+  - [x] 会话映射上限（`maxReplacementsPerSession` 默认 1024，超限 audit `sanitizer.limit-reached`）
+  - [x] `desanitizeSync(text, sessionId)` 同步入口（流式响应逐 chunk 还原）
+  - [x] `purge(sessionId)`（http-api DELETE session 时清理映射）
 - [x] **http-api 集成 sanitizer-pipeline**
-  - [x] CLOUD 请求输入脱敏（handleChat + handleChatStream）
-  - [x] CLOUD 响应反向还原（handleChat 整块 + handleChatStream 逐 chunk）
-  - [x] 会话删除时清理 sanitizer 映射
+  - [x] CLOUD 请求输入脱敏（`handleChat` + `handleChatStream`）
+  - [x] CLOUD 响应反向还原（`handleChat` 整块 `desanitize` + `handleChatStream` 逐 chunk `desanitizeSync`）
+  - [x] `sanitizer.purge(sessionId)` 在 DELETE session 时调用
+  - [x] REJECT 意图 → 403 short-circuit（不再进入 agent loop 与脱敏）
+  - [x] threat-block（td-bus） → 503 short-circuit
+  - [x] `promptGuard.checkOutput(result, { sanitized: wasSanitized })` 防止 desanitize 后被二次 mask
+- [x] **intent-router 分类 LLM 自身的脱敏前置**（`classifyWithLlm` 在 `modelRouter.resolve(...).realm === 'CLOUD'` 时先 `sanitizer.sanitize` 再喂 LLM——防分类请求本身带 PII 出端）
 
-**安全能力**：策略驱动的隐私控制 + CLOUD 请求端到端脱敏
+**安全能力**：策略驱动的隐私控制 + CLOUD 请求端到端脱敏 + 分类请求也不带 PII 上云
 
 **工作量**：7-10 天 | **依赖**：Phase 3
 
@@ -338,14 +356,19 @@
 Phase 1: 基础功能          ████████████████████ 100% ✅
 Phase 2: 基础安全加固      ████████████████████ 100% ✅
 Phase 3: 关键信息脱敏      ████████████████████ 100% ✅
-Phase 4: 隐私策略引擎      ████████████████████   100% ✅
-Phase 5: 工具与多模态      ░░░░░░░░░░░░░░░░░░░░   0% 📋
-Phase 6: 威胁检测          ░░░░░░░░░░░░░░░░░░░░   0% 📋
+Phase 4: 隐私策略引擎      ████████████████████ 100% ✅
+Phase 5: 工具与多模态      ██░░░░░░░░░░░░░░░░░░  10% 📋 (仅 G8 enableToolIsolation 完成，web-search / voice-input 未动)
+Phase 6: 威胁检测          ██░░░░░░░░░░░░░░░░░░  10% 📋 (td-bus 单机计数器 + http-api 503 短路；规则引擎、自动响应未做)
 Phase 7: TEE 可信计算      ░░░░░░░░░░░░░░░░░░░░   0% 📋 (远期)
 Phase 8: 零信任通信        ░░░░░░░░░░░░░░░░░░░░   0% 📋 (可选)
 ```
 
-**总体进度**：约 60%
+**总体进度**（三档加权，2026-08-23）：
+- 已完成功能维度（按 4 个主阶段计数）：~ 80%
+- 端到端通路维度（路由 + 脱敏 + 审计 + 限流 + REJECT 全打通）：~ 85%
+- 设计意图贴合维度（v6 合规修订 + event-bus 协议 + http-api 走 modelRouter）：~ 55%
+
+注：之前笼统的"约 60%"未区分维度；当下一份渐进式报告以"已完成维度 / 端到端维度 / 设计意图维度"三档同时呈现。
 
 #### 1.6.4 阶段依赖关系
 
@@ -378,27 +401,48 @@ Phase 7 (TEE) ─────→ Phase 8 (零信任通信，可选)
    - 原因：NPU 优化属于硬件驱动层，不在应用层项目范围
    - 使用 rkllm3-server 提供的 OpenAI 兼容 API 即可
 
-3. **A1 采用简化版实现**（2026-08-22）
-   - 原因：privacy-policy 策略引擎尚未实现
-   - 简化版：纯正则实现，无 TCM/策略引擎依赖
-   - 后续 Phase 4 完成后可升级为策略驱动
+3. **A1 采用简化版实现 → 已升级至隐私策略驱动**（2026-08-22 → 2026-08-23）
+   - 原因：Phase 4 完成后 privacy-policy 引擎已就绪
+   - 现状：prompt-guard 在 `checkInput` / `checkOutput` 阶段独立运行规则；脱敏规则仍由 prompt-guard 内置 PII 字典与 sanitizer-pipeline 自身规则驱动，**policy.json 中的 `sanitizationRules` 仅供 sanitizer-pipeline 加载**——secret 级阻断在 `checkInput` 内由 `privacyPolicy.classifyData()` 完成
+   - A1-simplified 行已从 § 1.6.1 当前状态表移除
+
+4. **intent-router 当前为 fail-open，不走 fail-closed**（2026-08-23）
+   - 原 Phase B 计划：低置信度 (< `confidenceThreshold`) → REJECT（fail-closed）
+   - 现状：低置信度 → fallback 到 `classifyWithRules` / `defaultCategory`（fail-open）
+   - 原因：qwen3-4b 在多轮上下文下置信度分布抖动较大，fail-closed 误拒率不可接受
+   - 安全级别相当：privacy-policy `matchRouting` 已提供 pre-check 的 REJECT 真短路（http-api 403）；LLM 路径的 REJECT 只作为规则覆盖不到的边角保护
+
+5. **intent-router LLM 分类请求本身不携带 PII 上云**（2026-08-23）
+   - 决定：分类 LLM 解析到 `realm === 'CLOUD'` 时，分类前先 `sanitizer.sanitize()`
+   - 权衡：换来「分类请求也脱敏」的零信任；代价是分类延迟增加（取决于 sanitize 成本）
+
+6. **http-api 选择 provider/model 仍在两条 handler 内硬编码**（2026-08-23）
+   - 设计意图（§ 4.2）：由 `modelRouter.resolve()` 决定
+   - 现状：`isLocal ? 'local-qwen3-4b' / 'qwen3-4b-instruct-2507' : 'cloud-deepseek-v4' / 'deepseek-chat'`
+   - 影响：意图路由 verdict 决定了 realm，但 provider id 走硬编码
+   - 待 Phase 5 后期合并时把两条 handler 内的硬编码换成 `modelRouter.resolve(intent)` 形式调用
 
 **待决策**：
 
-1. **Phase 3 存储方案**：SQLite（建议，加密扩展成熟）vs JSONL（简单易调试）
-2. **Phase 4 策略文件格式**：JSON（建议，安全性优先）vs YAML（人类可读）
-3. **Phase 7 TEE 优先级**：先 TrustZone（RK3588 已有）还是 Keystone
+1. **Phase 7 TEE 优先级**：先 TrustZone（RK3588 已有）还是 Keystone
 
 #### 1.6.6 下一步行动
 
 | 时间 | 行动 |
 |---|---|
-| 本周 | ~~完成 Phase 2~~ ✅ ~~完成 Phase 3~~ ✅ ~~完成 Phase 4~~ ✅ |
-| 2 周内 | 启动 Phase 5：工具增强 + 多模态 |
-| 1 个月 | Phase 5 完整实现 + 启动 Phase 6：威胁检测 |
-| 2-3 个月 | Phase 5-6 完整实现：工具多模态、威胁检测总线 |
+| 2026-08-23 | Phase 1-4 全部 ✅；G8 (enableToolIsolation) + G9 (confidenceHistogram) 已合入 |
+| 2 周内 | Phase 5 收尾（tools.ts 用 DSH native `ctx.tools` 全面替换 register；web-search / voice-input 启动） |
+| 1 个月 | Phase 5 完整实现 + Phase 6 威胁检测规则引擎、自动响应、用户通知 |
+| 2-3 个月 | Phase 5-6 完整收尾 + Phase 7 评估（TEE 优先级决策）|
 
 #### 1.6.7 验证标准
+
+**Phase 1 验证（基础功能）**：
+- [x] HTTP API 服务启动：`http-api` listen `:21017` by default ✅
+- [x] 本地 LLM 适配器：`local-qwen3-4b` 路由注册 ✅
+- [x] 云端 LLM 适配器：`cloud-deepseek-v4` 路由注册 ✅
+- [x] 意图路由基础分类（keyword fallback） ✅
+- [x] 工具注册表（Realm-aware view） ✅
 
 **Phase 2 验证**：
 - [x] 审计日志中手机号显示为 `138****5678` ✅
@@ -414,22 +458,26 @@ Phase 7 (TEE) ─────→ Phase 8 (零信任通信，可选)
 
 **Phase 4 验证**：
 - [x] privacy-policy 策略文件加载（JSON 格式） ✅
-- [x] 路由规则匹配（LOCAL/CLOUD 分类） ✅
+- [x] 路由规则匹配（LOCAL/CLOUD/SANITIZED/REJECT 四类 category） ✅
 - [x] 数据分类（public/confidential/secret） ✅
-- [x] 热更新（文件变更后自动 reload） ✅
-- [x] sanitizer-pipeline 正向脱敏（PII → [PHONE_1]） ✅
-- [x] sanitizer-pipeline 反向还原（[PHONE_1] → PII） ✅
+- [x] 热更新（基于 `setInterval(checkForUpdates, 5000)` 轮询文件 mtime，非 `fs.watch`） ✅
+- [x] sanitizer-pipeline 正向脱敏（PII → `[PHONE_1]` / `[EMAIL_2]` / `[ID_CARD_3]`） ✅
+- [x] sanitizer-pipeline 异步反脱敏（`desanitize(text, sessionId)`） ✅
+- [x] sanitizer-pipeline 同步反脱敏（`desanitizeSync(text, sessionId)`，用于 `handleChatStream` 逐 chunk） ✅
 - [x] 会话级映射表隔离（不同会话独立占位符） ✅
-- [x] http-api handleChat CLOUD 请求脱敏 + 响应还原 ✅
-- [x] http-api handleChatStream 流式 CLOUD 请求脱敏 + 逐 chunk 还原 ✅
-- [x] 会话删除时清理 sanitizer 映射 ✅
-- [x] 203 个单元测试全通过 ✅
-
-**Phase 4 验证**：
-- [ ] 策略文件热更新生效
-- [ ] REJECT 规则拦截请求
-- [ ] SANITIZED 规则触发脱敏
-- [ ] 策略文件篡改检测
+- [x] http-api `handleChat` CLOUD 请求脱敏 + 响应还原 ✅
+- [x] http-api `handleChatStream` 流式 CLOUD 请求脱敏 + 逐 chunk 还原 ✅
+- [x] `sanitizer.purge(sessionId)` 在 DELETE session 时调用 ✅
+- [x] `intent-router.matchRouting` pre-check REJECT → http-api 403 short-circuit ✅
+- [x] `intent-router.classifyWithLlm` 中：分类 LLM 在 `realm === 'CLOUD'` 时先 `sanitizer.sanitize()` 再喂 LLM（PII 不出端） ✅
+- [x] `td-bus.shouldBlock()` 命中 → http-api 503 short-circuit（`http.chat.threat-blocked` 安全级审计） ✅
+- [x] `promptGuard.checkOutput(result, { sanitized: wasSanitized })` 防止 desanitize 后被二次 mask ✅
+- [x] `tools.enableToolIsolation` 接入 `filterTools(intent)` / `isToolAllowed(name, intent)` (G8) ✅
+- [x] `intent-router.getStats().confidenceHistogram` 10-bucket × {accepted, rejected} (G9) ✅
+- [x] `intent-router` `confidenceThreshold` 是 `0..1` 浮点（`Schema.number().min(0).max(1)`，非 `Schema.natural()` —— 18d247d 修复） ✅
+- [x] `intent-router` `parseFailure` / `sanitizeError` (安全级) 独立可观测 ✅
+- [x] 单元测试套件全通过 ✅
+- [ ] 策略文件篡改检测（后续迭代）
 
 #### 1.6.8 小结
 
@@ -1034,637 +1082,297 @@ sessions:
 
 ---
 
-### 2.4 tools 插件（Realm 感知工具注册中心）
+### 2.4 tools 插件（Realm-aware 视图）
 
-替代任何内置 tools 服务。提供 Realm 感知的工具注册和分发，确保工具只能在授权的 Realm 中使用。
+DSH 已经内置 `ctx.tools`（上游 `@deepseek-ai/dsh-tools`），本插件**不维护平行注册表**，只是在上游注册表之上提供 Realm-aware 视图：根据 intent-router 的 verdict 过滤可见工具，并在 `enableToolIsolation: true`（默认）时强制按 `intent.category` 匹配。G8（2026-08-23 commit `b39d21f`）合入后，`enableToolIsolation` 真正进入 service，之前该 flag 是死配置。
 
 #### 插件元信息
 ```yaml
 name: tools
 type: service
 inject:
-  - config
   - audit-log
 ```
 
 #### 接口定义
 ```typescript
-type ToolRealm = 'local' | 'cloud' | 'sanitized' | 'any'
+type ToolRealm = 'LOCAL' | 'CLOUD' | 'SANITIZED'
 
-interface ToolDefinition {
+interface ToolSummary {
   name: string
   description: string
   realm: ToolRealm
-  parameters: JSONSchema
-  execute: (params: any) => Promise<any>
-  // 权限要求
-  permissions?: string[]
-  // 速率限制
-  rateLimit?: { maxCalls: number; windowMs: number }
 }
 
-interface ToolRegistryService {
-  // 注册工具
-  register(tool: ToolDefinition): () => void
+/** 仅取 intent-router verdict 中的 category 字段。声明在 tools.ts
+ *  内部以避免对 intent-router.ts 的循环依赖；intent-router 的
+ *  `Intent` 类型本身满足该结构。 */
+type IntentLike = { readonly category: 'LOCAL' | 'CLOUD' | 'SANITIZED' | 'REJECT' }
 
-  // 按 Realm 过滤获取工具
-  getByRealm(realm: ToolRealm): ToolDefinition[]
-
-  // 获取单个工具
-  get(name: string): ToolDefinition | undefined
-
-  // 执行工具（带权限和速率检查）
-  execute(name: string, params: any, callerRealm: ToolRealm): Promise<any>
-
-  // 列出所有已注册工具
-  list(): ToolDefinition[]
+interface ToolsService {
+  /** 列出全局工具（按 `realm` 过滤时严格要求 `setRealm` 显式标记）。 */
+  list(realm?: ToolRealm): ToolSummary[]
+  /** 名称已注册（上游 `ctx.tools.view()` 含该名）。 */
+  has(name: string): boolean
+  /** 工具的显式 realm 标记；未标记返回 undefined。 */
+  realmOf(name: string): ToolRealm | undefined
+  /** 用 `local_` / `cloud_` / `sanitized_` 前缀推断；其它默认 CLOUD。 */
+  classify(name: string): ToolRealm
+  /** G8: 给定 intent-router verdict，返回可见工具集。
+   *  - REJECT → []
+   *  - enableToolIsolation: false → 全集（opt-out）
+   *  - enableToolIsolation: true  → 仅 `realmOf(name) ?? classifyByPrefix(name) === intent.category` 的工具 */
+  filterTools(intent: IntentLike): ToolSummary[]
+  /** G8: 单工具判断（比 `filterTools(intent).some(...)` 便宜）。 */
+  isToolAllowed(toolName: string, intent: IntentLike): boolean
 }
 ```
 
-#### 核心实现
+#### 核心实现（基于 `src/dsh-adapter/tools.ts`）
 ```typescript
-export const inject = ['config', 'audit-log']
+export const inject = ['auditLog'] as const
 
-export function apply(ctx: Context, config: {}) {
-  ctx.effect(() => {
-    const tools = new Map<string, ToolDefinition>()
-    const callCounters = new Map<string, { count: number; resetAt: number }>()
+export class ToolsServiceImpl extends Service {
+  private readonly realm = new Map<string, ToolRealm>()
+  private readonly enableToolIsolation: boolean
 
-    const service: ToolRegistryService = {
-      register(tool) {
-        if (tools.has(tool.name)) {
-          throw new Error(`工具 ${tool.name} 已注册`)
-        }
-        tools.set(tool.name, tool)
-        ctx.event.emit('tools/registered', { name: tool.name, realm: tool.realm })
+  constructor(ctx: Context, config: Partial<Config>) {
+    super(ctx, 'edgeTools')
+    this.enableToolIsolation = config.enableToolIsolation ?? false
+  }
 
-        return () => {
-          tools.delete(tool.name)
-          ctx.event.emit('tools/unregistered', { name: tool.name })
-        }
-      },
+  /** 显式覆盖工具的 realm 标记。Tool 注册本身仍走
+   *  `ctx.tools.register(...)` 上游。 */
+  setRealm(toolName: string, realm: ToolRealm): void { ... }
 
-      getByRealm(realm) {
-        return [...tools.values()].filter(t =>
-          t.realm === realm || t.realm === 'any'
-        )
-      },
+  /** G8: 可见性过滤。 */
+  filterTools(intent: IntentLike): ToolSummary[] {
+    if (intent.category === 'REJECT') return []
+    if (!this.enableToolIsolation) return this.list()
+    const upstream = upstreamTools(this.ctx)
+    return upstream
+      .filter((t) => (this.realm.get(t.name) ?? classifyByPrefix(t.name)) === intent.category)
+      .map((t) => ({ name: t.name, description: t.description, realm: this.realm.get(t.name) ?? classifyByPrefix(t.name) }))
+  }
 
-      get(name) {
-        return tools.get(name)
-      },
-
-      async execute(name, params, callerRealm) {
-        const tool = tools.get(name)
-        if (!tool) throw new Error(`工具 ${name} 不存在`)
-
-        // Realm 权限检查
-        if (tool.realm !== callerRealm && tool.realm !== 'any') {
-          ctx['audit-log'].log({
-            level: 'security',
-            type: 'tool-realm-violation',
-            action: 'realm-denied',
-            plugin: 'tools',
-            metadata: { tool: name, callerRealm, toolRealm: tool.realm },
-            dataExfiltrated: false,
-            sanitized: false,
-            success: false,
-          })
-          throw new PermissionDeniedError(
-            `工具 ${name} (${tool.realm}) 不能在 ${callerRealm} Realm 中使用`
-          )
-        }
-
-        // 速率限制检查
-        if (tool.rateLimit) {
-          const counter = callCounters.get(name) ?? {
-            count: 0,
-            resetAt: Date.now() + tool.rateLimit.windowMs,
-          }
-          if (Date.now() > counter.resetAt) {
-            counter.count = 0
-            counter.resetAt = Date.now() + tool.rateLimit.windowMs
-          }
-          if (counter.count >= tool.rateLimit.maxCalls) {
-            throw new RateLimitError(`工具 ${name} 调用频率超限`)
-          }
-          counter.count++
-          callCounters.set(name, counter)
-        }
-
-        // 执行
-        ctx.event.emit('tools/call-started', { name, realm: callerRealm })
-        try {
-          const result = await tool.execute(params)
-          ctx.event.emit('tools/call-complete', {
-            name,
-            realm: callerRealm,
-            success: true,
-          })
-          return result
-        } catch (error) {
-          ctx.event.emit('tools/call-complete', {
-            name,
-            realm: callerRealm,
-            success: false,
-            error: error.message,
-          })
-          throw error
-        }
-      },
-
-      list() {
-        return [...tools.values()]
-      },
-    }
-
-    const dispose = ctx.provide('tools', service)
-    return async () => {
-      tools.clear()
-      dispose()
-    }
-  })
+  isToolAllowed(toolName: string, intent: IntentLike): boolean {
+    if (intent.category === 'REJECT') return false
+    if (!this.enableToolIsolation) return this.has(toolName)
+    if (!this.has(toolName)) return false
+    return (this.realm.get(toolName) ?? classifyByPrefix(toolName)) === (intent.category as ToolRealm)
+  }
 }
+
+/** 纯函数：按工具名推断 realm。`local_*` → LOCAL，`cloud_*` → CLOUD，
+ *  `sanitized_*` → SANITIZED，其它 → CLOUD（故意默认到 CLOUD，让
+ *  cloud 路径可以显式拒绝，避免默默落到 LOCAL）。 */
+export function classifyByPrefix(toolName: string): ToolRealm { ... }
 ```
 
 #### 配置 schema
 ```yaml
 tools:
-  # 无特殊配置，所有行为由注册的 ToolDefinition 驱动
-  {}
+  # 默认 per-tool 速率（信息项，M3 持久化时启用）
+  defaultRateLimitPerMinute: 60
+  # G8: 启用 realm 隔离（与 intent-router verdict 联动过滤）
+  enableToolIsolation: true
+  # 展示模式（信息项，本服务暂不消费）
+  presentationMode: native     # native | code-mode
 ```
+
+#### `apply()` 实装
+```typescript
+export async function apply(ctx: Context, config: Config): Promise<() => Promise<void>> {
+  // ToolsServiceImpl extends Service，构造时已通过 ctx.reflect.provide('edgeTools', this) 注册；
+  // 此处不再 ctx.provide，避免 "service already registered"。
+  void new ToolsServiceImpl(ctx, config)
+  return async () => {}
+}
+```
+
+#### 调用方
+- `intent-router` 不调用 `filterTools`（intent 不直接限工具可见性）
+- `http-api` / 自定义 agent loop 消费 `filterTools(intent)` / `isToolAllowed(name, intent)`
+
+#### 已知降级
+- 旧 unit tests / 上游 dsh-tools 切换时 `enableToolIsolation` 仍可设为 `false`，返回全集
+- `setRealm` 必须在工具注册**之后**调用，否则分类只能走前缀推断
 
 ---
 
 ### 2.5 privacy-policy 插件（隐私策略引擎）
 
-统一驱动所有隐私相关行为的可配置策略引擎。**替代原来硬编码在 intent-router 中的规则**。
+统一驱动所有隐私相关行为的可配置策略引擎。**替代原来硬编码在 intent-router 中的规则**。v0.1.0 实装（Phase 4 已完成）已落地 `RoutingRule` / `SanitizationRule` / `DataClassification` / `GlobalConstraints` 四个对象 + 文件加载 + mtime 轮询热重载；策略签名验证、远程策略拉取、`toolAccessPolicy` 尚未实装，留作后续迭代。
 
 #### 插件元信息
 ```yaml
 name: privacy-policy
 type: service
 inject:
-  - tcm
-  - local-storage
-  - audit-log
+  - audit-log          # 实际 inject（其它依赖通过 ctx.get 懒查）
 ```
 
-#### 接口定义
+#### 配置（cordis.yml 实际形态）
+```yaml
+privacy-policy:
+  policyPath: /etc/dsh-edge-agent/policy.json
+  hotReload: true
+  watchIntervalMs: 5000   # mtime 轮询间隔
+```
+
+#### 接口定义（实装的 surface）
 ```typescript
-interface PrivacyPolicyConfig {
-  // 策略文件路径（支持热更新）
+export interface Config {
   policyPath: string
-  // 是否允许自动从网络加载策略更新
-  allowRemotePolicyUpdate: boolean
-  // 策略更新 URL
-  policyUpdateUrl?: string
-  // 策略更新检查间隔（毫秒）
-  policyUpdateInterval: number
+  hotReload: boolean
+  watchIntervalMs: number
 }
 
-// 隐私策略结构
-interface PrivacyPolicy {
-  version: string
-  updatedAt: number
-
-  // 路由规则（替代 intent-router 中的硬编码规则）
-  routingRules: RoutingRule[]
-
-  // 脱敏规则（替代 sanitizer-pipeline 中的硬编码规则）
-  sanitizationRules: SanitizationRule[]
-
-  // 数据分类定义
-  dataClassifications: DataClassification[]
-
-  // 工具访问策略
-  toolAccessPolicy: ToolAccessRule[]
-
-  // 全局安全约束
-  globalConstraints: GlobalConstraints
-}
-
-interface RoutingRule {
-  id: string
+/** Routing rule — 实装字段。不带 priority/id/description 等。 */
+export interface RoutingRule {
+  /** RegExp pattern (case-insensitive applied)。 */
   pattern: string
-  category: 'LOCAL' | 'CLOUD' | 'SANITIZED' | 'REJECT'
-  priority: number
-  description: string
+  /** 目标 realm，REJECT 是第一类 category。 */
+  realm: 'LOCAL' | 'CLOUD' | 'SANITIZED' | 'REJECT'
+  /** 0..1 confidence；规则命中直接采用，不进 LLM。 */
+  confidence: number
+  /** 人类可读理由，写入审计。 */
+  rationale: string
 }
 
-interface SanitizationRule {
-  type: string           // PII 类型：phone, email, name, id-card, address, bank-card
-  pattern: string        // 匹配正则
-  strategy: 'replace' | 'mask' | 'hash' | 'remove' | 'generalize'
-  replacementTemplate: string  // 替换模板，如 "[手机号{index}]"
-  enabled: boolean
+/** Sanitization rule — 驱动 sanitizer-pipeline 的 placeholder 生成。 */
+export interface SanitizationRule {
+  pattern: string
+  replacement: string         // 形如 '[PHONE_$&]'，$& / $1 等 regex backref
+  dataClass: string           // 关联 DataClassification.class
+  piiType: string             // 'phone' | 'email' | 'id-card' | ...
 }
 
-interface DataClassification {
-  name: string
-  level: 'public' | 'internal' | 'confidential' | 'secret'
-  description: string
-  // 该分类数据的处理规则
-  handlingRules: {
-    canSendToCloud: boolean
-    requiresSanitization: boolean
-    requiresEncryption: boolean
-    allowedRealms: string[]
-  }
+/** Data classification — public/internal/confidential/secret 四档。 */
+export interface DataClassification {
+  class: 'public' | 'internal' | 'confidential' | 'secret'
+  defaultRealm: 'LOCAL' | 'CLOUD' | 'SANITIZED'
+  ttlSeconds: number
 }
 
-interface ToolAccessRule {
-  toolName: string
-  allowedRealms: string[]
-  conditions?: string    // 额外条件表达式
+/** Globals — 限流 / 强制证明 / TCB 失陷降级。 */
+export interface GlobalConstraints {
+  maxCloudRequestsPerMinute: number
+  requireAttestation: boolean
+  blockIfTcbCompromised: boolean
 }
 
-interface GlobalConstraints {
-  // 单次会话最大云端请求数
-  maxCloudRequestsPerSession: number
-  // 单日最大云端请求数
-  maxCloudRequestsPerDay: number
-  // 是否允许语音数据出端
-  allowVoiceDataExfiltration: boolean
-  // 是否允许位置数据出端
-  allowLocationDataExfiltration: boolean
-  // 拒绝所有批量数据导出
-  blockBulkDataExport: boolean
-}
-
-interface PrivacyPolicyService {
-  // 获取当前策略
-  getPolicy(): PrivacyPolicy
-
-  // 获取路由规则
+export interface PrivacyPolicyService {
+  reload(): Promise<void>
+  get(): PrivacyPolicy
   getRoutingRules(): RoutingRule[]
-
-  // 获取脱敏规则
   getSanitizationRules(): SanitizationRule[]
-
-  // 检查操作是否被允许
-  isAllowed(action: string, context: PolicyContext): boolean
-
-  // 获取数据分类
-  classifyData(data: string): DataClassification | null
-
-  // 获取全局约束
+  getClassifications(): DataClassification[]
   getConstraints(): GlobalConstraints
-
-  // 热更新策略
-  reloadPolicy(): Promise<void>
+  /** 按序遍历 routingRules，第一条 `RegExp(pattern, 'i').test(text)` 命中返回；
+   *  REJECT 命中后 intent-router pre-check 短路 → http-api 403。 */
+  matchRouting(text: string): RoutingRule | null
+  /** 命中脱敏规则时返回最高的 dataClass；未命中返回 'public'。 */
+  classifyData(text: string): string
+  on(event: 'policy/loaded', listener: (policy: PrivacyPolicy) => void): void
 }
 ```
 
-#### 核心实现
+#### 核心实现（基于 `src/dsh-adapter/privacy-policy.ts`）
 ```typescript
-export const inject = ['tcm', 'local-storage', 'audit-log']
+export const inject = ['auditLog'] as const
 
-export function apply(ctx: Context, config: PrivacyPolicyConfig) {
-  ctx.effect(() => {
-    let currentPolicy: PrivacyPolicy
-    let policySignature: Uint8Array  // 策略文件签名（防篡改）
-
-    async function loadPolicy() {
-      const rawPolicy = await readFile(config.policyPath, 'utf-8')
-
-      // 验证策略文件完整性（使用 TCM 哈希）
-      const hash = await ctx.tcm.hash(
-        new TextEncoder().encode(rawPolicy),
-        'sha-256'
-      )
-
-      if (policySignature && !equals(hash, policySignature)) {
-        ctx['audit-log'].log({
-          level: 'security',
-          type: 'policy-tamper-detected',
-          action: 'policy-reload-rejected',
-          plugin: 'privacy-policy',
-          metadata: { path: config.policyPath },
-          dataExfiltrated: false,
-          sanitized: false,
-          success: false,
-        })
-        throw new Error('策略文件完整性校验失败，可能存在篡改')
-      }
-
-      policySignature = hash
-      currentPolicy = JSON.parse(rawPolicy)
-
-      ctx.event.emit('policy/loaded', {
-        version: currentPolicy.version,
-        ruleCount: currentPolicy.routingRules.length,
-      })
-    }
-
-    // 初始加载
-    loadPolicy()
-
-    // 定时检查策略更新
-    if (config.allowRemotePolicyUpdate && config.policyUpdateUrl) {
-      setInterval(async () => {
-        try {
-          const remotePolicy = await fetch(config.policyUpdateUrl!)
-            .then(r => r.json())
-
-          if (remotePolicy.version > currentPolicy.version) {
-            // 验证远程策略签名
-            const valid = await verifyPolicySignature(
-              remotePolicy,
-              remotePolicy.signature
-            )
-            if (valid) {
-              await writeFile(
-                config.policyPath,
-                JSON.stringify(remotePolicy, null, 2)
-              )
-              await loadPolicy()
-              ctx['audit-log'].log({
-                level: 'info',
-                type: 'policy-updated',
-                action: 'policy-reload',
-                plugin: 'privacy-policy',
-                metadata: {
-                  oldVersion: currentPolicy.version,
-                  newVersion: remotePolicy.version,
-                },
-                dataExfiltrated: false,
-                sanitized: false,
-                success: true,
-              })
-            }
-          }
-        } catch (error) {
-          // 策略更新失败不影响正常运行
-          console.warn('策略更新检查失败:', error.message)
-        }
-      }, config.policyUpdateInterval)
-    }
-
-    const service: PrivacyPolicyService = {
-      getPolicy() {
-        return { ...currentPolicy }
-      },
-
-      getRoutingRules() {
-        return [...currentPolicy.routingRules]
-          .sort((a, b) => b.priority - a.priority)
-      },
-
-      getSanitizationRules() {
-        return currentPolicy.sanitizationRules.filter(r => r.enabled)
-      },
-
-      isAllowed(action, context) {
-        const constraints = currentPolicy.globalConstraints
-
-        switch (action) {
-          case 'cloud-request':
-            return context.cloudRequestCount < constraints.maxCloudRequestsPerSession
-          case 'bulk-export':
-            return !constraints.blockBulkDataExport
-          case 'voice-exfiltration':
-            return constraints.allowVoiceDataExfiltration
-          case 'location-exfiltration':
-            return constraints.allowLocationDataExfiltration
-          default:
-            return true
-        }
-      },
-
-      classifyData(data) {
-        for (const classification of currentPolicy.dataClassifications) {
-          if (matchesClassification(data, classification)) {
-            return classification
-          }
-        }
-        return null
-      },
-
-      getConstraints() {
-        return { ...currentPolicy.globalConstraints }
-      },
-
-      async reloadPolicy() {
-        await loadPolicy()
-      },
-    }
-
-    const dispose = ctx.provide('privacy-policy', service)
-    return async () => { dispose() }
-  })
+const DEFAULT_POLICY: PrivacyPolicy = {
+  version: '1.0.0',
+  routingRules: [
+    { pattern: '(本地|local|文件|file|计算|calculate)', realm: 'LOCAL', confidence: 0.8, rationale: 'Local operations stay on device' },
+  ],
+  sanitizationRules: [
+    { pattern: '1[3-9]\\d{9}', replacement: '[PHONE_$&]', dataClass: 'confidential', piiType: 'phone' },
+    { pattern: '([\\w.-]+)@([\\w.-]+\\.\\w+)', replacement: '[EMAIL_$&]', dataClass: 'confidential', piiType: 'email' },
+  ],
+  dataClassifications: [
+    { class: 'public',        defaultRealm: 'CLOUD',     ttlSeconds: 3600 },
+    { class: 'internal',      defaultRealm: 'SANITIZED', ttlSeconds: 1800 },
+    { class: 'confidential',  defaultRealm: 'LOCAL',     ttlSeconds:  900 },
+    { class: 'secret',        defaultRealm: 'LOCAL',     ttlSeconds:  300 },
+  ],
+  globalConstraints: {
+    maxCloudRequestsPerMinute: 20,
+    requireAttestation: false,
+    blockIfTcbCompromised: true,
+  },
 }
-```
 
-#### 策略文件示例（policy.json）
-```json
-{
-  "version": "1.2.0",
-  "updatedAt": 1755302400000,
-  "routingRules": [
-    {
-      "id": "reject-bulk-export",
-      "pattern": "(发送|上传|分享).*(所有|全部).*(联系人|数据|文件)",
-      "category": "REJECT",
-      "priority": 1000,
-      "description": "拒绝批量数据导出"
-    },
-    {
-      "id": "reject-bypass-attempt",
-      "pattern": "(绕过|忽略).*(安全|限制|隐私)",
-      "category": "REJECT",
-      "priority": 999,
-      "description": "拒绝绕过安全限制"
-    },
-    {
-      "id": "sanitized-contact-lookup",
-      "pattern": "(帮我查|查一下).*(的)(公司|信息|背景)",
-      "category": "SANITIZED",
-      "priority": 800,
-      "description": "涉及联系人信息查询，需脱敏"
-    },
-    {
-      "id": "sanitized-share-to-contact",
-      "pattern": "(发给|发送给|分享).*(联系人|朋友)",
-      "category": "SANITIZED",
-      "priority": 750,
-      "description": "向联系人发送内容，需脱敏"
-    },
-    {
-      "id": "local-personal-data",
-      "pattern": "我的(通讯录|联系人|文件|日程|笔记|相册)",
-      "category": "LOCAL",
-      "priority": 500,
-      "description": "个人数据操作，限本地"
-    },
-    {
-      "id": "local-computation",
-      "pattern": "(计算|换算|翻译|总结|整理|分析)",
-      "category": "LOCAL",
-      "priority": 400,
-      "description": "计算/文本处理，本地完成"
-    },
-    {
-      "id": "local-device-ops",
-      "pattern": "(本地|设备上|手机里)",
-      "category": "LOCAL",
-      "priority": 350,
-      "description": "设备本地操作"
-    },
-    {
-      "id": "local-reminder",
-      "pattern": "(提醒|闹钟|定时器)",
-      "category": "LOCAL",
-      "priority": 300,
-      "description": "提醒/闹钟操作"
-    },
-    {
-      "id": "cloud-weather",
-      "pattern": "(今天|明天|这周).*(天气|气温)",
-      "category": "CLOUD",
-      "priority": 200,
-      "description": "天气查询"
-    },
-    {
-      "id": "cloud-news",
-      "pattern": "(最新|最近).*(新闻|资讯|动态)",
-      "category": "CLOUD",
-      "priority": 200,
-      "description": "新闻/资讯查询"
-    },
-    {
-      "id": "cloud-web-search",
-      "pattern": "(搜索|查找|查一下).*(公开|网上)",
-      "category": "CLOUD",
-      "priority": 200,
-      "description": "公开信息搜索"
-    },
-    {
-      "id": "cloud-knowledge",
-      "pattern": "(什么是|解释一下).*(概念|术语)",
-      "category": "CLOUD",
-      "priority": 150,
-      "description": "知识问答"
+export class PrivacyPolicyServiceImpl extends Service implements PrivacyPolicyService {
+  private policy: PrivacyPolicy = DEFAULT_POLICY
+  private lastMtime = 0
+  private watchTimer: ReturnType<typeof setInterval> | undefined
+
+  /** 第一遍：磁盘加载；hotReload=true 时启动轮询 timer。 */
+  async start(): Promise<void> { ... reload() + setInterval(checkForUpdates, watchIntervalMs) }
+  /** 单次轮询：stat file → 比较 mtimeMs → 大于 lastMtime 触发 reload。 */
+  private async checkForUpdates(): Promise<void> { ... }
+
+  matchRouting(text: string): RoutingRule | null {
+    for (const rule of this.policy.routingRules) {
+      try {
+        if (new RegExp(rule.pattern, 'i').test(text)) return rule
+      } catch { /* skip bad regex */ }
     }
-  ],
-  "sanitizationRules": [
-    {
-      "type": "phone",
-      "pattern": "(?<!\\d)1[3-9]\\d{9}(?!\\d)",
-      "strategy": "replace",
-      "replacementTemplate": "[手机号{index}]",
-      "enabled": true
-    },
-    {
-      "type": "email",
-      "pattern": "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}",
-      "strategy": "replace",
-      "replacementTemplate": "[邮箱{index}]",
-      "enabled": true
-    },
-    {
-      "type": "id-card",
-      "pattern": "(?<!\\d)[1-9]\\d{5}(18|19|20)\\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\\d|3[01])\\d{3}[\\dXx](?!\\d)",
-      "strategy": "replace",
-      "replacementTemplate": "[身份证{index}]",
-      "enabled": true
-    },
-    {
-      "type": "bank-card",
-      "pattern": "(?<!\\d)[1-9]\\d{15,18}(?!\\d)",
-      "strategy": "replace",
-      "replacementTemplate": "[银行卡{index}]",
-      "enabled": true
-    },
-    {
-      "type": "name",
-      "pattern": "",
-      "strategy": "replace",
-      "replacementTemplate": "[用户{index}]",
-      "enabled": true
-    },
-    {
-      "type": "address",
-      "pattern": "",
-      "strategy": "generalize",
-      "replacementTemplate": "[地址{index}]",
-      "enabled": true
-    }
-  ],
-  "dataClassifications": [
-    {
-      "name": "个人身份信息",
-      "level": "secret",
-      "description": "姓名、身份证号、手机号等",
-      "handlingRules": {
-        "canSendToCloud": false,
-        "requiresSanitization": true,
-        "requiresEncryption": true,
-        "allowedRealms": ["local", "sanitized"]
-      }
-    },
-    {
-      "name": "通讯记录",
-      "level": "confidential",
-      "description": "通讯录、通话记录、短信",
-      "handlingRules": {
-        "canSendToCloud": false,
-        "requiresSanitization": true,
-        "requiresEncryption": true,
-        "allowedRealms": ["local"]
-      }
-    },
-    {
-      "name": "位置信息",
-      "level": "confidential",
-      "description": "GPS 坐标、地址",
-      "handlingRules": {
-        "canSendToCloud": false,
-        "requiresSanitization": true,
-        "requiresEncryption": false,
-        "allowedRealms": ["local", "sanitized"]
-      }
-    },
-    {
-      "name": "公开信息",
-      "level": "public",
-      "description": "天气、新闻、公开知识",
-      "handlingRules": {
-        "canSendToCloud": true,
-        "requiresSanitization": false,
-        "requiresEncryption": false,
-        "allowedRealms": ["local", "cloud", "sanitized"]
+    return null
+  }
+
+  classifyData(text: string): string {
+    const order = ['public', 'internal', 'confidential', 'secret']
+    let highest = 'public'
+    for (const rule of this.policy.sanitizationRules) {
+      if (new RegExp(rule.pattern, 'i').test(text)) {
+        const idx = order.indexOf(rule.dataClass)
+        if (idx > order.indexOf(highest)) highest = rule.dataClass
       }
     }
-  ],
-  "toolAccessPolicy": [
-    { "toolName": "local_file_read", "allowedRealms": ["local"] },
-    { "toolName": "local_file_write", "allowedRealms": ["local"] },
-    { "toolName": "local_query_contacts", "allowedRealms": ["local", "sanitized"] },
-    { "toolName": "local_query_calendar", "allowedRealms": ["local"] },
-    { "toolName": "local_calculate", "allowedRealms": ["local", "cloud", "sanitized"] },
-    { "toolName": "web_search", "allowedRealms": ["cloud", "sanitized"] }
-  ],
-  "globalConstraints": {
-    "maxCloudRequestsPerSession": 20,
-    "maxCloudRequestsPerDay": 200,
-    "allowVoiceDataExfiltration": false,
-    "allowLocationDataExfiltration": false,
-    "blockBulkDataExport": true
+    return highest
   }
 }
 ```
 
-#### 错误处理
-- 策略文件不存在 → 使用内置默认策略（最严格模式）
-- 策略文件被篡改 → 拒绝加载，发出安全告警
-- 远程策略更新失败 → 继续使用当前策略
+#### `apply()` 实装
+```typescript
+export async function apply(ctx: any, config: Config): Promise<() => Promise<void>> {
+  const auditLog = ctx.get('auditLog')
+  const service = new PrivacyPolicyServiceImpl(ctx, config, auditLog)
+  await service.start()
+  return async () => { service.stop() }   // clearInterval
+}
+```
 
----
+#### 与 intent-router 的实际接缝
+```typescript
+// 在 intent-router.ts:classify() 与 classifyWithRules() 中：
+const pre = policy?.matchRouting?.(effectiveText)
+if (pre && pre.realm === 'REJECT') {
+  this.stats.rejected++
+  this.audit('security', 'intent.rules.rejected', { source: 'privacy-policy-precheck', ... })
+  return { category: 'REJECT', confidence: pre.confidence, targetRealm: 'rejected',
+           rationale: pre.rationale || 'policy-rule:reject', dataLevel: 'internal',
+           requiresSanitization: false }
+}
+```
+- **两条路径使用 matchRouting**：① `classify()` 早期 pre-check；② `classifyWithRules()` fallback 路径（命中任意 realm 都直接采用，不再调 LLM）。
+- REJECT 在任一路径命中，http-api 都会发出 403 与 `intent.rules.rejected` 安全级审计。
+
+#### 已知未实装项
+- 策略文件**签名验证**：当前 `reload()` 不校验哈希。如果要防止磁盘被改文件后被静默采纳，需要先求 sha256 并和 lastMtime 一起记录——属于「策略文件篡改检测」条目。
+- **工具访问策略** `toolAccessPolicy`：policy.json 暂不消费；`tools.ts` 的 Realm 隔离由 `enableToolIsolation` 与 `setRealm` 驱动，未走 policy 引擎。
+- **远程策略拉取**：当前实装仅本地 JSON；`allowRemotePolicyUpdate` / `policyUpdateUrl` 仍为 schema 占位，未实现拉取与签名校验。
+- **政策审计 / 变更广播**：仅 `policy/loaded` 事件 emit；policy diff 与签名升级通知未实现。
 
 ### 2.6 prompt-guard 插件（输入/输出安全防护）
 
-防止 prompt 注入、越狱攻击，以及输出中的敏感信息泄露。
+防止 prompt 注入、越狱攻击，以及输出中的敏感信息泄露。v0.1.0 实装对**输入规则**与**输出 PII redact**双通道；规则 action 三档（`block / warn / sanitize`），当前 `sanitize` action 在 cordis.yml schema 已声明但运行时未实装（选 `sanitize` 即抛 `sanitize-action-not-implemented`）。
+
+`promptGuard.checkOutput` 在 http-api 内的正确接入点是 `promptGuard.checkOutput(result, { sanitized: wasSanitized })`——`wasSanitized=true` 时 prompt-guard 跳过自身的输出 mask，避免对 `sanitizer.desanitize()` 还原后的明文做二次脱敏。
 
 #### 插件元信息
 ```yaml
@@ -1674,215 +1382,107 @@ inject:
   - tcm
   - privacy-policy
   - audit-log
+  - llm          # 启用模型辅助检测时需要
 ```
 
-#### 接口定义
+#### 接口定义（实装 surface）
 ```typescript
-interface PromptGuardConfig {
-  // 输入检测规则
-  inputRules: InputRule[]
-  // 输出检测规则
-  outputRules: OutputRule[]
-  // 是否启用模型辅助检测（用小模型判断输入是否安全）
+export interface InjectionRuleConfig {
+  name: string
+  pattern: string
+  /** action 三档：当前 `sanitize` 是占位符（运行时会抛错） */
+  action?: 'block' | 'warn' | 'sanitize'
+}
+
+export interface Config {
+  // 入口限制
+  maxInputLength: number            // 默认 10000
+  maxRequestsPerMinute: number      // 默认 20
+
+  // 功能开关
+  enablePIIRedaction: boolean       // 默认 true
+  enableInjectionDetection: boolean // 默认 true
+  enableRateLimit: boolean          // 默认 true
+
+  // 可配置注入规则
+  rules: InjectionRuleConfig[]
+
+  // 模型辅助检测
   enableModelDetection: boolean
-  // 模型检测使用的模型名
-  modelDetectionName: string
+  modelDetectionProvider: string    // 默认 'local-qwen3-4b'
+  modelDetectionModel: string       // 默认 'qwen3-4b'
+  modelDetectionTimeoutMs: number   // 默认 4000
+  modelDetectionMaxInputLength: number  // 默认 2000
 }
 
-interface InputRule {
-  id: string
-  pattern: string
-  action: 'block' | 'warn' | 'sanitize'
-  description: string
-}
-
-interface OutputRule {
-  id: string
-  pattern: string
-  action: 'block' | 'redact' | 'warn'
-  description: string
-}
-
+/** Real 入口表面（schema 行为可见处）。 */
 interface PromptGuardService {
-  // 检查输入安全性
-  checkInput(text: string): Promise<InputCheckResult>
-  // 检查输出安全性
-  checkOutput(text: string): Promise<OutputCheckResult>
-  // 添加自定义规则
-  addInputRule(rule: InputRule): void
-  addOutputRule(rule: OutputRule): void
-}
-
-interface InputCheckResult {
-  safe: boolean
-  threats: ThreatDetection[]
-  modifiedText?: string  // 如果 action='sanitize'
-  action: 'pass' | 'block' | 'warn'
-}
-
-interface OutputCheckResult {
-  safe: boolean
-  leaks: SensitiveLeak[]
-  redactedText?: string
-  action: 'pass' | 'block' | 'redact'
+  checkInput(text: string, sessionId?: string): Promise<{ safe: boolean; reason: string; riskLevel: RiskLevel }>
+  /** G6: wasSanitized 标志 — true 时跳过输出的 PII 二次 mask，避免与 sanitizer-pipeline 输出脱敏冲突 */
+  checkOutput(text: string, opts?: { sanitized?: boolean }): Promise<{ filtered: string; redacted: Array<{ type: string; masked: string }> }>
 }
 ```
 
-#### 核心实现
+#### 核心实现（基于 `src/dsh-adapter/prompt-guard.ts`）
 ```typescript
-export const inject = ['tcm', 'privacy-policy', 'audit-log']
+export const inject = ['tcm', 'privacyPolicy', 'auditLog', 'llm'] as const
 
-export function apply(ctx: Context, config: PromptGuardConfig) {
-  ctx.effect(() => {
-    const service: PromptGuardService = {
-      async checkInput(text) {
-        const threats: ThreatDetection[] = []
-
-        // 规则检测
-        for (const rule of config.inputRules) {
-          if (new RegExp(rule.pattern, 'i').test(text)) {
-            threats.push({
-              ruleId: rule.id,
-              description: rule.description,
-              severity: rule.action === 'block' ? 'high' : 'medium',
-              action: rule.action,
-            })
-          }
-        }
-
-        // 模型辅助检测（可选）
-        if (config.enableModelDetection) {
-          const modelResult = await detectWithModel(text)
-          if (!modelResult.safe) {
-            threats.push({
-              ruleId: 'model-detection',
-              description: modelResult.reason,
-              severity: 'high',
-              action: 'block',
-            })
-          }
-        }
-
-        // 与 privacy-policy 联动
-        const classification = ctx['privacy-policy'].classifyData(text)
-        if (classification?.level === 'secret') {
-          threats.push({
-            ruleId: 'policy-classification',
-            description: `输入包含${classification.name}（${classification.level}级）`,
-            severity: 'high',
-            action: 'block',
-          })
-        }
-
-        const hasBlock = threats.some(t => t.action === 'block')
-        const hasWarn = threats.some(t => t.action === 'warn')
-
-        if (hasBlock) {
-          ctx['audit-log'].log({
-            level: 'security',
-            type: 'input-threat-detected',
-            action: 'input-blocked',
-            plugin: 'prompt-guard',
-            metadata: {
-              threats: threats.map(t => t.ruleId),
-              inputLength: text.length,
-            },
-            dataExfiltrated: false,
-            sanitized: false,
-            success: false,
-          })
-        }
-
-        return {
-          safe: !hasBlock,
-          threats,
-          action: hasBlock ? 'block' : hasWarn ? 'warn' : 'pass',
-        }
-      },
-
-      async checkOutput(text) {
-        const leaks: SensitiveLeak[] = []
-
-        // 检查输出中是否包含敏感信息
-        const sanitizationRules = ctx['privacy-policy'].getSanitizationRules()
-        for (const rule of sanitizationRules) {
-          const regex = new RegExp(rule.pattern, 'g')
-          const matches = text.match(regex)
-          if (matches) {
-            for (const match of matches) {
-              leaks.push({
-                type: rule.type,
-                value: match,
-                action: 'redact',
-              })
-            }
-          }
-        }
-
-        // 执行脱敏
-        let redactedText = text
-        for (const leak of leaks) {
-          redactedText = redactedText.replace(
-            leak.value,
-            `[${leak.type}已过滤]`
-          )
-        }
-
-        return {
-          safe: leaks.length === 0,
-          leaks,
-          redactedText: leaks.length > 0 ? redactedText : undefined,
-          action: leaks.length > 0 ? 'redact' : 'pass',
-        }
-      },
-
-      addInputRule(rule) {
-        config.inputRules.push(rule)
-      },
-
-      addOutputRule(rule) {
-        config.outputRules.push(rule)
-      },
-    }
-
-    const dispose = ctx.provide('prompt-guard', service)
-    return async () => { dispose() }
-  })
+export async function apply(ctx: Context, config: Config): Promise<() => Promise<void>> {
+  // PromptGuardServiceImpl extends Service，构造时已 ctx.reflect.provide('promptGuard', this)。
+  void new PromptGuardServiceImpl(ctx, config, /* privacyPolicy */ ctx.get('privacyPolicy'),
+                                     /* auditLog      */ ctx.get('auditLog'),
+                                     /* llm           */ ctx.get('llm'))
+  return async () => {}
 }
 ```
 
-#### 配置 schema
+#### checkInput 实际流水线
+```
+1. 长度截断（maxInputLength）
+2. 速率限制（per-session + 全局；超限返回 safe=false, riskLevel=high）
+3. PII 检测（pii-utils, 5 类：phone/id-card/bank-card/email/api-key）
+4. 注入正则（遍历 rules[]，命中按 action 收威胁）
+5. privacy-policy.classifyData()；最高级 ≥ secret → 输入 block（a secret 一票否决）
+6. （可选）enableModelDetection → 调 ctx.llm.stream() 走 qwen3-4b 二次分类
+最终：hasBlock → safe:false, riskLevel=high（http-api 转 400 + 输入拦截）
+```
+
+#### checkOutput 实际流水线
+```
+1. 遍历内置 PII 字典（pii-utils）做 regex scan
+2. if (sanitized) skipPIIRedaction = true   ← G6
+   这是 G6 关键：当 sanitizer-pipeline 已经做过正向脱敏 + 反向还原，
+   还原后的文本可能再次含 PII；prompt-guard 在 wasSanitized=true 时不
+   再对这部分做 mask（避免「明文还原后又被二次 mask」造成体验偏差）
+3. 输出 filtered = 替换后文本 + redacted[] 列表（供 http-api 上报）
+```
+
+#### 配置 schema（cordis.yml 当前可声明）
 ```yaml
 prompt-guard:
-  inputRules:
-    - id: "ignore-previous"
+  maxInputLength: 10000
+  maxRequestsPerMinute: 20
+  enablePIIRedaction: true
+  enableInjectionDetection: true
+  enableRateLimit: true
+  rules:
+    - name: "ignore-previous"      # 注意：实装字段名是 name，不是 id
       pattern: "(忽略|无视|忘记).*(之前|上面).*(指令|规则|提示)"
       action: "block"
-      description: "阻止忽略指令攻击"
-    - id: "system-prompt-extract"
-      pattern: "(输出|显示|打印).*(系统|system).*(提示|prompt|指令)"
-      action: "block"
-      description: "阻止提取系统提示词"
-    - id: "role-override"
+    - name: "role-override"
       pattern: "你现在(是|扮演|假装是)"
       action: "warn"
-      description: "检测角色覆盖尝试"
-    - id: "data-exfil-instruction"
-      pattern: "(把|将).*(数据|信息|内容).*(发送|传输|上传)到"
-      action: "block"
-      description: "阻止数据外传指令"
-  outputRules:
-    - id: "phone-leak"
-      pattern: "(?<!\\d)1[3-9]\\d{9}(?!\\d)"
-      action: "redact"
-      description: "过滤输出中的手机号"
-    - id: "id-card-leak"
-      pattern: "(?<!\\d)[1-9]\\d{5}(18|19|20)\\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\\d|3[01])\\d{3}[\\dXx](?!\\d)"
-      action: "redact"
-      description: "过滤输出中的身份证号"
-  enableModelDetection: true
-  modelDetectionName: qwen3-4b
+    # …可继续追加任意条；每个 action 独立审计
+  enableModelDetection: false     # 默认 false，开启则需要 llm 跑小模型
+  modelDetectionProvider: "local-qwen3-4b"
+  modelDetectionModel: "qwen3-4b"
+  modelDetectionTimeoutMs: 4000
 ```
+
+#### 实装未覆盖项 / 与原设计的差异
+- `sanitize` action：schema 已声明，运行时会抛 `not-implemented`。重写路径后续在 Phase 5/6 计划中处理。
+- `addInputRule` / `addOutputRule`：实装走 cordis.yml 静态加载 + `start()` 时初始化，无运行时热添加 API。
+- `redact` / `block` action 仅在输出侧使用（输入侧只有 `block / warn`）；当前实装忽略 outputRules 静态集，输出 PII 走 `pii-utils` 内置 + `redactString()`。
 
 ---
 
@@ -3178,7 +2778,11 @@ cloud-llm-provider:
 
 ### 2.15 intent-router 插件（意图路由）
 
-从 `privacy-policy` 获取路由规则，不再硬编码。
+按 `ctx.llm` 输出与 policy 双源 `matchRouting` 把用户请求路由到 LOCAL / CLOUD / SANITIZED / REJECT 四类 realm，并把意图作为后续 agent loop 的入口参数。v0.1.0 关键 trade-off：
+
+- **LLM-first → rules fallback**（不是「rules → LLM」瀑布）。低置信度时 fallback 到 keyword rules（**fail-open**，不是 fail-closed）。
+- **配置 schema 浮点化**：`confidenceThreshold` 是 0..1 浮点（`Schema.number().min(0).max(1)`），由 commit `18d247d` 修复 `Schema.natural()` 拒绝 `0.6` 的 bug。
+- **隐私侧额外防线**：分类 LLM 解析到 realm=CLOUD 时，先 `sanitizer.sanitize()` 再喂 LLM——**分类请求也带 PII 不出端**。
 
 #### 插件元信息
 ```yaml
@@ -3186,236 +2790,320 @@ name: intent-router
 type: middleware
 inject:
   - llm
-  - privacy-policy
-  - model-router
-  - prompt-guard
-  - audit-log
-  - config
+  - audit-log          # privacy-policy / model-router / sanitizer 走 ctx.get 懒查（不在 inject）
 ```
 
-#### 核心实现
+#### 接口定义
 ```typescript
-export const inject = ['llm', 'privacy-policy', 'model-router', 'prompt-guard', 'audit-log', 'config']
-
-export function apply(ctx: Context, config: IntentRouterConfig) {
-  ctx.effect(() => {
-    const service: IntentRouterService = {
-      async classify(input, context) {
-        ctx.event.emit('router/classification-started', { input })
-
-        // 第一步：输入安全检查
-        const inputCheck = await ctx['prompt-guard'].checkInput(input)
-        if (!inputCheck.safe) {
-          return {
-            category: 'REJECT',
-            confidence: 0.99,
-            reasoning: `输入安全检查未通过: ${inputCheck.threats.map(t => t.description).join(', ')}`,
-            targetRealm: 'local',
-          }
-        }
-
-        // 第二步：从 privacy-policy 获取路由规则
-        const rules = ctx['privacy-policy'].getRoutingRules()
-        const ruleResult = matchByRules(input, rules)
-
-        if (ruleResult.confidence > 0.95) {
-          ctx.event.emit('router/classification-complete', ruleResult)
-          return ruleResult
-        }
-
-        // 第三步：本地小模型分类
-        const routingModel = await ctx['model-router'].selectModel({
-          category: 'LOCAL',
-          confidence: 0,
-          reasoning: 'routing',
-          targetRealm: 'local',
-        })
-
-        const messages = [
-          { role: 'system', content: ROUTING_SYSTEM_PROMPT },
-        ]
-        if (context?.recentMessages) {
-          messages.push(...context.recentMessages.slice(-3))
-        }
-        messages.push({ role: 'user', content: input })
-
-        let result: IntentResult
-        try {
-          const response = await collectStream(
-            ctx.llm.chat(messages, {
-              provider: routingModel,
-              maxTokens: config.maxRoutingTokens,
-              temperature: 0.1,
-            })
-          )
-          result = parseIntentResponse(response, ruleResult)
-        } catch (error) {
-          result = ruleResult
-          result.reasoning = `模型推理失败，降级到规则匹配: ${error.message}`
-        }
-
-        // 置信度检查
-        if (result.confidence < config.confidenceThreshold) {
-          result.category = 'REJECT'
-          result.reasoning = `置信度 ${result.confidence} 低于阈值 ${config.confidenceThreshold}`
-        }
-
-        ctx.event.emit('router/classification-complete', result)
-        return result
-      },
-    }
-
-    const dispose = ctx.provide('intent-router', service)
-    return async () => { dispose() }
-  })
+export interface Config {
+  defaultCategory: 'LOCAL' | 'CLOUD' | 'SANITIZED'      // 默认 'CLOUD'
+  classificationProvider: string                         // 默认 'local-qwen3-4b'
+  classificationModel: string                            // 默认 'qwen3-4b'
+  confidenceThreshold: number                            // 默认 0.6，0..1 浮点
+  llmTimeoutMs?: number                                  // 默认 4000ms（AbortController 限时）
+  recentMessagesLimit?: number                           // 默认 3（多轮上下文嵌入窗口）
+  maxInputLength?: number                               // 默认 2000（超长截断 → audit intent.classify.truncated）
+  fallbackKeywords?: string[]                            // 默认 EN+CN 内置列表；env DSH_EDGE_INTENT_FALLBACK_KEYWORDS 覆写
 }
 
-// 从 privacy-policy 获取的规则进行匹配
-function matchByRules(input: string, rules: RoutingRule[]): IntentResult {
-  const lowerInput = input.toLowerCase()
+export interface Intent {
+  category: 'LOCAL' | 'CLOUD' | 'SANITIZED' | 'REJECT'
+  confidence: number
+  targetRealm: string
+  rationale: string
+  dataLevel: 'public' | 'sanitized' | 'internal'
+  requiresSanitization: boolean
+}
 
-  for (const rule of rules) {
-    if (new RegExp(rule.pattern, 'i').test(lowerInput)) {
-      return {
-        category: rule.category,
-        confidence: rule.category === 'REJECT' ? 0.99 : 0.85,
-        reasoning: `匹配策略规则: ${rule.description} (${rule.id})`,
-        targetRealm: rule.category === 'LOCAL' ? 'local'
-          : rule.category === 'CLOUD' ? 'cloud'
-          : rule.category === 'SANITIZED' ? 'sanitized'
-          : 'local',
-      }
-    }
-  }
-
-  // 默认：交给模型判断
-  return {
-    category: 'LOCAL',
-    confidence: 0.3,
-    reasoning: '无规则匹配，需要模型判断',
-    targetRealm: 'local',
-  }
+export interface IntentRouterService {
+  classify(text: string, context?: { recentMessages?: unknown[]; sessionId?: string }): Promise<Intent>
+  resolve(intent: Intent): { realm: string; config: Record<string, unknown> }
+  /** G9: 13 个计数器 + 10-bucket confidenceHistogram */
+  getStats(): IntentRouterStats
 }
 ```
 
-#### 配置 schema
+#### 核心实现（基于 `src/dsh-adapter/intent-router.ts`）——`classify()` 流水线
+
+```
+classify(text, context):
+  1. stats.total++ ；空文本 → stats.empty++ 返回 defaultCategory
+  2. 长度截断（text > maxInputLength）→ stats.truncated++，截断到 maxInputLength
+  3. policy pre-check:
+       policy.matchRouting(text)
+       ├─ 命中 realm === 'REJECT' → stats.rejected++ ；audit security intent.rules.rejected
+       │                            → 返回 category=REJECT（短路；不调 LLM）
+       └─ 其它 or 未命中           → 继续
+  4. LLM-first try (classifyWithLlm):
+       modelRouter = ctx.get('modelRouter')（懒查，因为 intent-router boot 在 model-router 之前）
+       resolved    = modelRouter.resolve(classificationProvider)
+                       // 警告：必须是带 local- / cloud- 前缀的路由 id；
+                       //       裸 model id 会被 model-router 落到 realm=CLOUD。
+       provider/model = resolved.provider/model ?? config.{classificationProvider,classificationModel}
+       if (resolved.realm === 'CLOUD'):
+         sanitizer = ctx.get('sanitizer')
+         if (sanitizer):
+           result = await sanitizer.sanitize(text, { sessionId })
+           promptText = result.sanitizedText ?? text   // sanitize 抛错 → keep 原文本（fail-open）
+           stats.sanitized++ ; sanitizeError 升级到 security 级审计
+         else: stats.sanitizeSkipped++
+       multi-turn: 抽最近 recentMessagesLimit 条 → "history" 块追加在 prompt 前（信息块，不是分类目标）
+       prompt = ROUTING_SYSTEM_PROMPT_CN + history + "用户请求：" + promptText
+       userMessage = createUserMessage({ content: [{type:'text', text: prompt }] })
+       controller = new AbortController(); timer = setTimeout(aborting, llmTimeoutMs)
+       try:
+         for await (chunk of llm.stream({provider, model, messages:[userMessage], signal:controller.signal})):
+           if (chunk.type === 'text-delta') responseText += chunk.text
+       catch (err):
+         isAbort = err.name === 'AbortError' || controller.signal.aborted
+         stats.timeout++ / stats.llmError++（依 isAbort 分流）
+         throw wrapped_err._intentRouterReason = isAbort ? 'timeout' : 'llm-error'
+       finally: clearTimeout(timer)
+       verdict = parseClassificationVerdict(responseText)
+         三档：①直接 JSON.parse → ②抽首个 {...} → ③regex 双命中（category & confidence 都拿到）
+         任一档返回 null → stats.parseFailure++ + stats.llmError++
+                          → throw _intentRouterReason = 'unclear'
+       if (verdict.confidence < confidenceThreshold):
+         stats.lowConfidence++
+         throw _intentRouterReason = 'low-confidence'
+       G9: bucket = floor(verdict.confidence*10) clamp [0,9]
+            confidenceHistogram[bucket].{accepted|rejected}++
+       return { category: verdict.category, confidence, targetRealm, rationale: 'llm-classified:<x>',
+                dataLevel: 'public', requiresSanitization: false }
+  5. catch (llm err) → fallback classifyWithRules:
+       policy.matchRouting(text)（再次；但 pre-check 已用过，这里再走 fallback 路径）
+       ├─ 命中 SANITIZED → requiresSanitization=true
+       ├─ 命中 REJECT    → stats.rejected++
+       ├─ 命中 LOCAL/CLOUD → stats.ruleHit++
+       └─ 未命中：
+            lower = text.toLowerCase()
+            match = fallbackKeywords.find(k => lower.includes(k.toLowerCase()))
+            ├─ 命中    → stats.ruleHit++ ；返回 category=LOCAL, confidence=0.7
+            └─ 未命中  → stats.defaultHit++ ；返回 defaultCategory, confidence=0.5
+```
+
+#### `parseClassificationVerdict` 三档解析（关键加固点）
+```typescript
+function parseClassificationVerdict(raw: string): ClassificationVerdict | null {
+  // Tier 1: 直接 JSON.parse(原样 / 去 fence)
+  // Tier 2: 抽首个 {...} 块 → JSON.parse
+  // Tier 3: regex 双命中兜底
+  //         categoryMatch = /["']?category["']?\s*[:=]\s*["']?(LOCAL|CLOUD)["']?/
+  //         confidenceMatch = /["']?confidence["']?\s*[:=]?\s*([0-9.]+)/
+  //         必须两者都拿到 → 否则返回 null（commit c7b5daa：避免 0.5-confidence 误用）
+  return null
+}
+```
+**为什么 Tier 3 必须双命中**：qwen3-4b 偶发只输出 `category=LOCAL` 不带 confidence；兜底返回 `{ category, confidence: 0.5 }` 会让 0.5 永远卡在 0.6 阈值以下，造成 stats.parseFailure 隐藏——区分 transport health 与 parse health（详见 § 1.6.7）。
+
+#### `redactPreview()` ——Defense-in-depth
+- 用途：审计级别的文本预览（`textPreview` 80 字符上限），传 `intent.classify.end` 等审计事件
+- 脱敏路径：`ctx.piiUtils.redactString(text.slice(0,40))` → 若返回失败则整段返回 null（不是泄露原文；调用方需降级到长度-only 上报）
+- 注意：审计侧 `audit-log` 已经在写入前对 payload 做 `redactObject`，`redactPreview` 是 router 侧的额外一道——即便 audit-log 未挂载或失配，前置脱敏仍然生效。
+
+#### `getStats()` ——G9 可观测性
+```typescript
+interface IntentRouterStats {
+  total: number; empty: number; truncated: number;
+  llmHit: number; ruleHit: number; defaultHit: number;
+  lowConfidence: number; timeout: number; llmError: number;
+  parseFailure: number;          // P1：与 llmError 独立计数
+  rejected: number;
+  sanitized: number; sanitizeError: number; sanitizeSkipped: number;
+  /** G9: 10-bucket histogram × {accepted, rejected} */
+  confidenceHistogram: { [bucket: '0'..'9']: { accepted: number; rejected: number } }
+}
+```
+
+#### 设计意图 vs 实现的差异
+| 维度 | 原 v6 设计 | 当前实现 | 原因 |
+|---|---|---|---|
+| 顺序 | rules → LLM → confidence | **LLM-first → rules fallback** | qwen3-4b 在规则路径下经常被强力 regex 反向劫持；先让 LLM 拿 verdict，规则只做兜底更稳 |
+| 低置信度 | fail-closed → REJECT | **fail-open → rules/defaultCategory** | qwen3-4b 置信度抖动较大；REJECT 误拒率不可接受 |
+| `inject` | `['llm','privacy-policy','model-router','prompt-guard','audit-log','config']` | **`['llm','auditLog']`**（其它懒查） | v6 §7 明确规定 inject 不列 `config`；privacy-policy/model-router/sanitizer 在 intent-router 之后 boot，必须懒查 |
+| `ctx.llm.chat()` | 直接调用 | **`ctx.llm.stream({ signal })`** | v6 §11.2 row 4；DSH `LlmAdapter { stream }` |
+| REJECT 来源 | 仅 prompt-guard | **policy pre-check + fallback rule 两条路径** | LLM 分类只产出 LOCAL/CLOUD；REJECT 必经 policy 规则 |
+| SANITIZED | LLM verdict | **仅 policy 规则命中** | LLM prompt 模版里不写 SANITIZED 选项 |
+
+#### 配置 schema（cordis.yml 当前形态）
 ```yaml
 intent-router:
-  localModelName: qwen3-4b
-  confidenceThreshold: 0.6
-  maxRoutingTokens: 128
-  # 路由规则现在由 privacy-policy 插件的 policy.json 管理
-  # 此处不再硬编码规则
+  defaultCategory: 'CLOUD'                  # 兜底 category
+  classificationProvider: 'local-qwen3-4b'  # 必须是带前缀的路由 id（modelRouter 解析）
+  classificationModel: 'qwen3-4b'
+  confidenceThreshold: 0.6                  # 0..1 浮点（18d247d 修复）
+  llmTimeoutMs: 4000
+  recentMessagesLimit: 3
+  maxInputLength: 2000
+  fallbackKeywords: []                      # 空时用 EN+CN 内置；非空时整体替换
 ```
+
+环境覆写：
+- `DSH_EDGE_INTENT_LLM_TIMEOUT_MS`
+- `DSH_EDGE_INTENT_MAX_INPUT`
+- `DSH_EDGE_INTENT_FALLBACK_KEYWORDS` (comma-separated)
+- `DSH_EDGE_INTENT_CONFIDENCE_THRESHOLD`
 
 ---
 
 ### 2.16 sanitizer-pipeline 插件（数据脱敏管线）
 
-从 `privacy-policy-policy` 获取脱敏规则，不再硬编码。
+正向脱敏（PII → 占位符）+ 反向还原（占位符 → PII）+ 会话级映射表。规则由 privacy-policy 动态加载（polled mtime），占位符生成走 session 内 counter。同 session 内同一原始值复用同一占位符（避免描述翻车）。
+
+**关键三入口**：
+- `sanitize(text, { sessionId })` —— 入口（http-api `handleChat` / `handleChatStream` 在 `!isLocal` 时调用）
+- `desanitize(text, sessionId)` —— 异步反向还原（http-api `handleChat` 整块响应）
+- `desanitizeSync(text, sessionId)` —— 同步反向还原（http-api `handleChatStream` 逐 chunk 还原流的必要条件）
+- `purge(sessionId)` —— http-api `handleDeleteSession` 时清映射（不删除会泄露到下一会话）
 
 #### 插件元信息
 ```yaml
 name: sanitizer-pipeline
 type: middleware
 inject:
-  - config
-  - local-storage
-  - privacy-policy
+  - privacy-policy    # 必需
+  - audit-log         # audit
 ```
 
-#### 核心实现
+#### 接口定义
 ```typescript
-export const inject = ['config', 'local-storage', 'privacy-policy']
+export interface Config {
+  enableAutoDetection: boolean          // 默认 true（自动用 privacy-policy 规则）
+  maxReplacementsPerSession: number    // 默认 1024（防 DoS）
+}
 
-export function apply(ctx: Context, config: SanitizerConfig) {
-  ctx.effect(() => {
-    const sessionMap = new Map<string, SanitizeReplacement[]>()
+export interface Replacement {
+  original: string
+  placeholder: string
+  piiType: string
+  dataClass: string
+}
 
-    const service: SanitizerService = {
-      async sanitize(text, options) {
-        const sessionId = generateSessionId()
-        const replacements: SanitizeReplacement[] = []
-        let sanitizedText = text
+export interface SanitizationResult {
+  sanitizedText: string
+  sessionId: string
+  replacements: Replacement[]
+}
 
-        // 从 privacy-policy 获取脱敏规则
-        const rules = ctx['privacy-policy'].getSanitizationRules()
-
-        ctx.event.emit('sanitizer/pipeline-started', {
-          inputLength: text.length,
-          ruleCount: rules.length,
-        })
-
-        for (const rule of rules) {
-          if (options?.types && !options.types.includes(rule.type)) continue
-
-          const regex = new RegExp(rule.pattern, 'g')
-          let index = 1
-
-          sanitizedText = sanitizedText.replace(regex, (match) => {
-            const replacement = rule.replacementTemplate.replace('{index}', String(index++))
-            replacements.push({
-              type: rule.type,
-              original: match,
-              replacement,
-              strategy: rule.strategy,
-              position: [text.indexOf(match), text.indexOf(match) + match.length],
-            })
-            return replacement
-          })
-        }
-
-        sessionMap.set(sessionId, replacements)
-
-        ctx.event.emit('sanitizer/pipeline-complete', {
-          sessionId,
-          replacementCount: replacements.length,
-          types: [...new Set(replacements.map(r => r.type))],
-        })
-
-        return {
-          originalText: text,
-          sanitizedText,
-          replacements,
-          sessionId,
-        }
-      },
-
-      async desanitize(sanitizedText, sessionId) {
-        const replacements = sessionMap.get(sessionId)
-        if (!replacements) {
-          throw new Error(`脱敏会话 ${sessionId} 不存在或已过期`)
-        }
-
-        let originalText = sanitizedText
-        const sorted = [...replacements].sort(
-          (a, b) => b.position[0] - a.position[0]
-        )
-        for (const r of sorted) {
-          originalText = originalText.replace(r.replacement, r.original)
-        }
-
-        sessionMap.delete(sessionId)
-        return originalText
-      },
-    }
-
-    const dispose = ctx.provide('sanitizer', service)
-    return async () => {
-      dispose()
-      sessionMap.clear()
-    }
-  })
+export interface SanitizerService {
+  sanitize(text: string, context?: { sessionId?: string }): Promise<SanitizationResult>
+  desanitize(text: string, sessionId: string): Promise<string>
+  /** 流式同步反向还原；无 audit log，stream 回调内不能 await */
+  desanitizeSync(text: string, sessionId: string): string
+  purge(sessionId: string): Promise<void>
+  getMappingSize(sessionId: string): number
 }
 ```
 
-#### 配置 schema
+#### 核心实现（基于 `src/dsh-adapter/sanitizer-pipeline.ts`）
+```typescript
+export const inject = ['privacyPolicy', 'auditLog'] as const
+
+interface SessionMapping { counter: number; placeholders: Map<string /* placeholder */, string /* original */> }
+
+export class SanitizerServiceImpl extends Service implements SanitizerService {
+  private sessionMappings = new Map<string /* sessionId */, SessionMapping>()
+
+  async sanitize(text, context) {
+    const sessionId = context?.sessionId ?? 'default'
+    let mapping = this.sessionMappings.get(sessionId) ??
+                 (this.sessionMappings.set(sessionId, { counter: 0, placeholders: new Map() }).get(sessionId)!)
+
+    const rules = this.privacyPolicy.getSanitizationRules()   // 每次重取；policy 热重载后下一次生效
+    const replacements: Replacement[] = []
+    let sanitizedText = text
+
+    for (const rule of rules) {
+      try {
+        const regex = new RegExp(rule.pattern, 'gi')
+        const matches = sanitizedText.match(regex) || []
+        for (const match of matches) {
+          let placeholder = this.findExistingPlaceholder(mapping, match)   // 同值复用占位符
+          if (!placeholder) {
+            mapping.counter++
+            placeholder = `[${(rule.piiType || 'PII').toUpperCase()}_${mapping.counter}]`
+            mapping.placeholders.set(placeholder, match)
+          }
+          sanitizedText = sanitizedText.replace(match, placeholder)
+          replacements.push({ original: match, placeholder, piiType: rule.piiType, dataClass: rule.dataClass })
+          if (mapping.placeholders.size >= this.maxReplacementsPerSession) {
+            await this.audit('warn', 'sanitizer.limit-reached', { sessionId, limit: this.maxReplacementsPerSession })
+            break
+          }
+        }
+      } catch { /* bad regex: skip */ }
+    }
+    if (replacements.length) {
+      await this.audit('info', 'sanitizer.sanitized', { sessionId, replacementCount: replacements.length })
+    }
+    return { sanitizedText, sessionId, replacements }
+  }
+
+  async desanitize(text, sessionId) {
+    const mapping = this.sessionMappings.get(sessionId)
+    if (!mapping) return text
+    let restored = text
+    for (const [ph, orig] of mapping.placeholders.entries()) {
+      restored = restored.split(ph).join(orig)
+    }
+    if (restored !== text) await this.audit('debug', 'sanitizer.desanitized', { sessionId })
+    return restored
+  }
+
+  /** 流式响应专用；无 audit log，handler 同步调用。 */
+  desanitizeSync(text, sessionId) {
+    const mapping = this.sessionMappings.get(sessionId)
+    if (!mapping) return text
+    let restored = text
+    for (const [ph, orig] of mapping.placeholders.entries()) {
+      restored = restored.split(ph).join(orig)
+    }
+    return restored
+  }
+
+  async purge(sessionId) {
+    const m = this.sessionMappings.get(sessionId)
+    if (m) { this.sessionMappings.delete(sessionId); await this.audit('info', 'sanitizer.purged', { sessionId, purgedMappings: m.placeholders.size }) }
+  }
+}
+```
+
+#### `apply()` 实装
+```typescript
+export async function apply(ctx: any, config: Config): Promise<() => Promise<void>> {
+  const privacyPolicy = ctx.get('privacyPolicy')
+  const auditLog      = ctx.get('auditLog')
+  const service = new SanitizerServiceImpl(ctx, config, privacyPolicy, auditLog)
+  return async () => {
+    // 关停时清空所有 session 映射（避免测试 / dev 残留）
+    for (const sessionId of service['sessionMappings'].keys()) {
+      await service.purge(sessionId)
+    }
+  }
+}
+```
+
+#### 与 http-api 的接缝
+- `handleChat`（http-api.ts:305-320）：`if (!isLocal && this.sanitizer) { const r = await sanitizer.sanitize(message, { sessionId }); messageToSend = r.sanitizedText; }`；响应时用 `await sanitizer.desanitize(result, sessionId)`
+- `handleChatStream`（http-api.ts:470-487）：同上 sanitize；**逐 chunk 还原**：`textToSend = this.sanitizer.desanitizeSync(chunk.text, sessionId)`
+- `handleDeleteSession`（http-api.ts:562-566）：`await this.sanitizer.purge(id)`
+
+#### 失败模式（fail-open 关键）
+- `sanitize()` 抛错 → http-api **不会阻断**，仅 `audit('error', 'http.chat.sanitize.error', { reqId, sessionId, error })` 然后原文本继续往后端 LLM 送——这是 fail-open 的核心设计点（参 § 1.6.5 决策 5）
+- `getMappingSize > maxReplacementsPerSession` → 强制终止本轮 sanitize + audit warn
+- 单条 `new RegExp(rule.pattern, 'gi')` 抛错 → catch 跳过该规则（不中断整批）
+
+#### 与原设计的差异
+- 占位符模板从 `{index}` 改成 `[<PII_TYPE>_<counter>]`，类型可读、与 piiType 联动；计数从 1 起，同 session 单调递增
+- 新增 `maxReplacementsPerSession` 默认 1024（原设计没有）
+- 删除 `sessionTimeout`：原设计假设 5 分钟过期，实装仅在 `purge()` 调用时清理（由 http-api session 删除驱动）
+- 删除 `position` 字段：实装用 `String.split(ph).join(orig)` 全替换（不依赖位置，不需排序）
+
+#### 配置 schema（cordis.yml 当前形态）
 ```yaml
 sanitizer-pipeline:
-  # 脱敏规则由 privacy-policy 插件的 policy.json 管理
-  # 此处仅配置管线行为
-  logSanitization: true
-  sessionTimeout: 300000   # 脱敏会话超时 5 分钟
+  enableAutoDetection: true
+  maxReplacementsPerSession: 1024
 ```
 
 ---
@@ -3866,233 +3554,196 @@ voice-input（语音输入）
 
 ## 四、Agent Loop 集成
 
-### 4.1 通过 Cordis 事件拦截注入安全逻辑
+### 4.1 安全管线的实际接入点（http-api 进程内流水线）
 
-本设计**不替换 DSH 的 Agent Loop**，而是通过 Cordis 事件系统拦截关键节点，注入安全逻辑。
-
-> **事件点说明**：本节所使用的事件全部为 DSH Cordis 已有的标准事件（见参考文档《DSH：DeepSeek Harness 架构解析》第三节"Event 拦截点完整列表"）：
-> - `agent/pre-step` — 模型请求前的输入审查 / 改写（**waterfall**，可拒绝 / 接纳 / 改写）
-> - `agent/request` — Agent 请求层（**waterfall**，可在请求组装阶段拦截或改写）
-> - `tools/post-execute` — 工具执行后（**waterfall**，结果拦截、改写或审计）
+> **v6 修订**：原 §4.1 假设通过 Cordis 事件（`agent/pre-step` / `agent/request` / `tools/post-execute`）拦截 Agent Loop 注入安全逻辑。**当前实装并未使用 Cordis 事件**——`src/dsh-adapter/intent-router.ts` / `prompt-guard.ts` / `sanitizer-pipeline.ts` 都不订阅上述事件，安全管线完全由 `http-api.handleChat` / `handleChatStream` 在自己进程内按顺序串起来。这意味着：
 >
-> 本设计**没有**引入任何 DSH 不存在的事件点（如 `llm/before-call` / `llm/after-call` 是本设计初稿的错误命名，已修正）。
+> 1. 直接调用 `ctx.agents.followup()` / `ctx.llm.stream()` 绕过 http-api 的代码路径**不享受任何安全防护**——所有 PII/REJECT/threat-block 拦截都依赖 http-api 作为唯一入口
+> 2. 之所以能这么设计：当前 dsh-edge-agent 的唯一对外入口就是 http-api；DSH Agent Loop 内嵌的 tools（bash/read/write/edit/web_search）尚未通过 http-api 暴露给终端用户
+> 3. 若以后启用 web UI / CLI 直接调 Agent Loop，必须把整条管线复制一份到工具调用入口（或者改回事件拦截）
 
-#### 拦截点设计
+#### 真实管道（基于 `src/dsh-adapter/http-api.ts`）
 
-```typescript
-// 在 intent-router 插件中注册事件拦截
-export function apply(ctx: Context, config: IntentRouterConfig) {
-  // 拦截 agent/pre-step 事件，注入威胁等级与输入安全检查
-  // 该事件为 waterfall，监听器可通过返回特殊值拒绝/改写输入
-  ctx.event.on('agent/pre-step', async (payload) => {
-    const { input, session } = payload
-
-    // 1. 威胁等级检查
-    const threatLevel = ctx['td-bus'].getThreatLevel()
-    if (threatLevel === 'critical') {
-      throw new SecurityError('系统检测到严重安全威胁，已进入安全锁定模式')
-    }
-
-    // 2. 输入安全检查
-    const inputCheck = await ctx['prompt-guard'].checkInput(input)
-    if (!inputCheck.safe) {
-      throw new SecurityError('输入未通过安全检查')
-    }
-
-    // 3. 意图分类（注入到 payload 供后续步骤使用）
-    const intent = await ctx['intent-router'].classify(input, {
-      recentMessages: await ctx.sessions.getRecentMessages(session.id, 5),
-    })
-    payload.intent = intent
-
-    // 4. 若检测到输入需脱敏，标记待脱敏
-    if (intent.category === 'SANITIZED') {
-      payload.requiresSanitization = true
-    }
-  })
-
-  // 拦截 agent/request 事件，注入 Realm 数据级别验证
-  // 该事件为 waterfall，在 Agent 请求组装阶段触发，可拒绝请求
-  ctx.event.on('agent/request', async (payload) => {
-    const { intent, dataLevel } = payload
-
-    // Realm 数据级别验证
-    if (intent.category === 'LOCAL' && dataLevel !== 'internal') {
-      throw new SecurityError('LOCAL Realm 不允许处理非内部数据')
-    }
-
-    if (intent.category === 'CLOUD' && dataLevel === 'internal') {
-      throw new SecurityError('CLOUD Realm 不允许处理内部数据')
-    }
-
-    // 记录请求级别
-    ctx['audit-log'].log({
-      level: 'info',
-      type: 'llm-call',
-      action: 'pre-call',
-      plugin: 'intent-router',
-      realm: intent.targetRealm,
-      metadata: { intent: intent.category, dataLevel },
-      dataExfiltrated: intent.targetRealm !== 'local',
-      sanitized: intent.category === 'SANITIZED',
-      success: true,
-    })
-  })
-
-  // 拦截 tools/post-execute 事件，注入输出安全检查与脱敏还原
-  // 该事件为 waterfall，可在工具结果返回给模型前拦截 / 改写
-  // 注：LLM 输出的最终检查也挂在此处（DSH 将 LLM 视为最终工具结果）
-  ctx.event.on('tools/post-execute', async (payload) => {
-    const { toolName, result, intent } = payload
-
-    // 仅对 LLM 输出类工具执行输出检查（过滤敏感信息）
-    if (toolName === 'llm' || toolName === 'model-router') {
-      const outputCheck = await ctx['prompt-guard'].checkOutput(result.text ?? '')
-      if (!outputCheck.safe) {
-        throw new SecurityError('输出未通过安全检查')
-      }
-
-      // 如果输出被脱敏，替换原始响应
-      if (outputCheck.redactedText) {
-        payload.result = { ...result, text: outputCheck.redactedText }
-      }
-    }
-
-    // SANITIZED Realm：执行反向脱敏（把 [用户A] 等占位符还原为真实数据）
-    if (intent?.category === 'SANITIZED' && payload.sessionId) {
-      const restored = await ctx['sanitizer-pipeline'].desanitize(
-        payload.result.text,
-        payload.sessionId,
-      )
-      payload.result = { ...payload.result, text: restored }
-    }
-  })
-}
+```
+bearer-auth
+  ↓
+td-bus.recordCloudRequest() / shouldBlock()        → 503 if blocked
+  ↓
+prompt-guard.checkInput(message)                    → 400 if unsafe
+  ↓
+intent-router.classify(message, { sessionId })
+  ├─ category === 'REJECT'                          → 403 short-circuit
+  └─ else
+  ↓
+isLocal = category === 'LOCAL'
+  ↓
+provider/model = isLocal ? local-qwen3-4b : cloud-deepseek-v4
+(硬编码，**未**走 modelRouter.resolve()——见"实现侧限制")
+  ↓
+if (!isLocal && sanitizer):
+  msgToSend = await sanitizer.sanitize(message, { sessionId })
+  wasSanitized = true
+  ↓
+result = await ctx.agents.followup(userMessage)
+  ↓
+if (!isLocal && sanitizer):
+  resultText = await sanitizer.desanitize(result, sessionId)
+  ↓
+outputCheck = prompt-guard.checkOutput(resultText, { sanitized: wasSanitized })
+  → 若 outputCheck.redactedText 存在 → 替换 resultText（防止 desanitize 重新引入 PII 之后被误 mask）
+  ↓
+200 JSON { kind:'chat', message, intent }
 ```
 
-#### 事件流程图
+#### 决策对象 vs 异常抛出（v6 合规修正）
+
+原 §4.1 大量使用 `throw new SecurityError(...)`。v6 §11.2 row 5 修正：
+
+- **CLOUD/REJECT 路径**：使用决策对象（`{ kind: 'reject', reason, status: 403 }` / `{ kind: 'block', reason, status: 503 }`），由 http-api 转换为 HTTP 状态码。异常**仅**用于真正的不可恢复错误（DB 损坏、鉴权失败）。
+- **SANITIZED 路径**：使用决策对象 `{ kind: 'sanitized', sanitizedText, sessionId }`，由 http-api 决定走 sanitize → LLM → desanitize。
+- **input/output 安全检查**：仍走异常（`UnsafeInputError` / `UnsafeOutputError`），由 http-api try/catch 转换为 400。
+
+#### 不再使用的概念（已从实装移除）
+
+- ~~`ctx['local-llm-realm'].llm.chat()`~~ → 实装统一走 `ctx.llm.stream({ provider, model, ... })`，多 provider 通过 dsh-adapters 注册
+- ~~`ctx.event.on('tools/post-execute', ...)`~~ → 实装不订阅此事件
+- ~~`toolName === 'llm' || 'model-router'` 分支判断~~ → 实装用 realm 决定 provider，无 LLM 工具概念
+- ~~`SecurityError` 抛错阻断 CLOUD~~ → 改为决策对象，由 http-api 映射 403
+
+#### 事件流程图（实际顺序，与 http-api.ts 对应）
 
 ```mermaid
 sequenceDiagram
-    participant User as 用户
-    participant DSH as DSH Agent Loop
-    participant Intent as intent-router
-    participant Guard as prompt-guard
+    actor User as 用户
+    participant API as http-api<br/>(handleChat)
     participant TDB as td-bus
-    participant LLM as llm service<br/>(model-router 统一提供)
+    participant PG as prompt-guard
+    participant IR as intent-router
+    participant SP as sanitizer-pipeline
+    participant LLM as llm service<br/>(ctx.llm.stream)
+    participant AL as audit-log
 
-    User->>DSH: 输入文本
-    DSH->>DSH: emit('agent/pre-step')
-    DSH->>TDB: getThreatLevel()
-    TDB-->>DSH: threatLevel
-    DSH->>Guard: checkInput(input)
-    Guard-->>DSH: inputCheck
-    DSH->>Intent: classify(input)
-    Intent-->>DSH: intent
-
-    alt LOCAL Realm
-        DSH->>DSH: emit('agent/request', {dataLevel: 'internal'})
-        DSH->>LLM: chat(messages, {provider: 'local'})
-        Note over LLM: model-router →<br/>ctx['local-llm-realm'].llm.chat()
-        LLM-->>DSH: response
-        DSH->>DSH: emit('tools/post-execute', {toolName: 'llm'})
-        DSH->>Guard: checkOutput(response)
-        Guard-->>DSH: outputCheck
-    else CLOUD Realm
-        DSH->>DSH: emit('agent/request', {dataLevel: 'public'})
-        DSH->>LLM: chat(messages, {provider: 'cloud'})
-        Note over LLM: model-router →<br/>ctx['cloud-llm-realm'].llm.chat()
-        LLM-->>DSH: response
-        DSH->>DSH: emit('tools/post-execute', {toolName: 'llm'})
-        DSH->>Guard: checkOutput(response)
-        Guard-->>DSH: outputCheck
-    else SANITIZED Realm
-        DSH->>DSH: sanitize(text)
-        DSH->>DSH: emit('agent/request', {dataLevel: 'public', sanitized: true})
-        DSH->>LLM: chat(messages, {provider: 'cloud'})
-        Note over LLM: model-router →<br/>ctx['cloud-llm-realm'].llm.chat()
-        LLM-->>DSH: response
-        DSH->>DSH: desanitize(response)
-        DSH->>DSH: emit('tools/post-execute', {toolName: 'llm'})
-        DSH->>Guard: checkOutput(response)
-        Guard-->>DSH: outputCheck
+    User->>API: POST /v1/chat { message, sessionId }
+    API->>TDB: shouldBlock()
+    alt blocked
+        TDB-->>API: { block:true, reason }
+        API-->>User: 503 threat-block
+    else allow
+        TDB-->>API: ok
+        API->>PG: checkInput(message)
+        alt unsafe
+            PG-->>API: { safe:false, reason }
+            API-->>User: 400 unsafe-input
+        else safe
+            PG-->>API: { safe:true }
+            API->>IR: classify(message, { sessionId })
+            alt REJECT
+                IR-->>API: { category:'REJECT', ... }
+                API-->>User: 403 reject
+            else LOCAL/CLOUD/SANITIZED
+                IR-->>API: { category, targetRealm, requiresSanitization }
+                Note over API: isLocal = category === 'LOCAL'<br/>provider/model 硬编码
+                alt !isLocal && sanitizer
+                    API->>SP: sanitize(message, { sessionId })
+                    SP-->>API: { sanitizedText, wasSanitized:true }
+                end
+                API->>LLM: stream({ provider, model, messages })
+                LLM-->>API: result text
+                alt !isLocal && sanitizer
+                    API->>SP: desanitize(result, sessionId)
+                    SP-->>API: 还原 PII
+                end
+                API->>PG: checkOutput(result, { sanitized: wasSanitized })
+                PG-->>API: { safe:true, redactedText? }
+                API-->>User: 200 JSON { message, intent }
+            end
+        end
     end
-
-    DSH-->>User: 安全响应
 ```
 
-### 4.2 主循环流程（参考实现）
+### 4.2 主循环流程（http-api 真实形态）
 
-> 以下为参考实现，实际执行由 DSH Agent Loop 驱动，通过事件拦截注入安全逻辑
+> 以下是 `http-api.handleChat` 的简化版骨架，对应 `src/dsh-adapter/http-api.ts:218-402`。`handleChatStream` 是同样的同步版本 + SSE 推送 + `desanitizeSync`（不能 await）。
 
 ```typescript
-// 以下为概念性代码，展示安全逻辑如何注入到各个阶段
-// 所有事件点均为 DSH Cordis 已有标准事件（详见 4.1 节）
+// http-api.ts 真实结构（简化）
+class HttpApiService {
+  async handleChat(req: ChatRequest): Promise<ChatResponse> {
+    const reqId = uuid()
+    const sessionId = req.sessionId ?? (await this.sessions.create()).id
 
-// agent/pre-step 阶段（waterfall）
-async function preStepHandler(payload) {
-  // 0. 威胁等级检查
-  const threatLevel = ctx['td-bus'].getThreatLevel()
-  if (threatLevel === 'critical') {
-    throw new SecurityError('系统检测到严重安全威胁，已进入安全锁定模式')
+    // 1. bearer-auth 已在 router 层（401 短路），此处不重复
+
+    // 2. td-bus: 威胁等级 / 阻断检查
+    if (this.tdBus) {
+      await this.tdBus.recordCloudRequest({ reqId, sessionId, kind: 'chat' })
+      const block = await this.tdBus.shouldBlock()
+      if (block?.block) {
+        return { status: 503, body: { kind:'threat-block', reason: block.reason } }
+      }
+    }
+
+    // 3. prompt-guard: 输入安全
+    const inputCheck = await this.promptGuard.checkInput(req.message)
+    if (!inputCheck.safe) {
+      return { status: 400, body: { kind:'unsafe-input', reason: inputCheck.reason } }
+    }
+
+    // 4. intent-router: 意图分类（带 sessionId 让 sanitizer 复用同一映射）
+    const intent = await this.intentRouter.classify(req.message, { sessionId })
+    if (intent.category === 'REJECT') {
+      return { status: 403, body: { kind:'reject', reason: intent.rationale } }
+    }
+
+    // 5. 决定 provider/model（**硬编码**，不走 modelRouter.resolve）
+    const isLocal = intent.category === 'LOCAL'
+    const provider = isLocal ? 'local-qwen3-4b' : 'cloud-deepseek-v4'
+    const model    = isLocal ? 'qwen3-4b'        : 'deepseek-chat'
+
+    // 6. 脱敏（仅 CLOUD/SANITIZED，且 sanitizer 挂载时）
+    let wasSanitized = false
+    let messageToSend = req.message
+    if (!isLocal && this.sanitizer) {
+      try {
+        const r = await this.sanitizer.sanitize(req.message, { sessionId })
+        messageToSend = r.sanitizedText
+        wasSanitized = r.replacements.length > 0
+      } catch (err) {
+        // fail-open: 原文本继续走；audit error 即可，不阻断
+        await this.auditLog.log({ level:'error', kind:'http.chat.sanitize.error', source:'http-api', payload:{ reqId, sessionId, error:String(err) } })
+      }
+    }
+
+    // 7. 调 LLM
+    const userMessage = createUserMessage({ content:[{ type:'text', text: messageToSend }], source:{ kind:'user' } })
+    let result = await this.agents.followup(userMessage)   // 经 dsh-llm 内部走 ctx.llm.stream
+
+    // 8. 反向还原（仅 CLOUD/SANITIZED）
+    if (!isLocal && this.sanitizer) {
+      result = await this.sanitizer.desanitize(result, sessionId)
+    }
+
+    // 9. 输出安全检查（传 wasSanitized 防止 desanitize 后 PII 被误 mask）
+    const outputCheck = await this.promptGuard.checkOutput(result, { sanitized: wasSanitized })
+    if (outputCheck.redactedText) result = outputCheck.redactedText
+
+    return { status:200, body:{ kind:'chat', message: result, intent } }
   }
-
-  // 1. 输入安全检查
-  const inputCheck = await ctx['prompt-guard'].checkInput(payload.input)
-  if (!inputCheck.safe) {
-    throw new SecurityError('输入未通过安全检查')
-  }
-
-  // 2. 意图路由
-  const intent = await ctx['intent-router'].classify(payload.input, {
-    recentMessages: await ctx.sessions.getRecentMessages(payload.session.id, 5),
-  })
-
-  payload.intent = intent
 }
-
-// agent/request 阶段（waterfall）—— 替代初稿中的 llm/before-call
-async function beforeCallHandler(payload) {
-  const { intent, dataLevel } = payload
-
-  // Realm 数据级别验证
-  if (intent.category === 'LOCAL' && dataLevel !== 'internal') {
-    throw new SecurityError('LOCAL Realm 不允许处理非内部数据')
-  }
-
-  if (intent.category === 'CLOUD' && dataLevel === 'internal') {
-    throw new SecurityError('CLOUD Realm 不允许处理内部数据')
-  }
-}
-
-// tools/post-execute 阶段（waterfall）—— 替代初稿中的 llm/after-call
-async function afterCallHandler(payload) {
-  // 仅对 LLM 输出执行敏感信息检查与脱敏还原
-  if (payload.toolName !== 'llm' && payload.toolName !== 'model-router') return
-
-  const outputCheck = await ctx['prompt-guard'].checkOutput(
-    payload.result?.text ?? '',
-  )
-
-  if (!outputCheck.safe) {
-    throw new SecurityError('输出未通过安全检查')
-  }
-
-  if (outputCheck.redactedText) {
-    payload.result = { ...payload.result, text: outputCheck.redactedText }
-  }
-
-  // SANITIZED Realm：反向脱敏
-  if (payload.intent?.category === 'SANITIZED' && payload.sessionId) {
-    const restored = await ctx['sanitizer-pipeline'].desanitize(
-      payload.result.text,
-      payload.sessionId,
-    )
-    payload.result = { ...payload.result, text: restored }
-  }
-}
-
 ```
+
+#### 与原 §4.2 概念性伪代码的差异
+
+| 概念伪代码 | 实装形态 |
+|---|---|
+| `throw new SecurityError` | 决策对象 `{ status:403, body:{kind:'reject', reason} }` |
+| `ctx.event.on('agent/pre-step')` | `await this.intentRouter.classify(...)` 在 http-api 内同步调用 |
+| `ctx.event.on('tools/post-execute')` | 实装无此事件订阅；输出检查直接调 `promptGuard.checkOutput()` |
+| `modelRouter.selectModel(intent, dataLevel)` | 实装**硬编码** `isLocal ? local-qwen3-4b : cloud-deepseek-v4`（已知偏离 v6 §4.2 设计的硬编码点） |
+| `ctx['local-llm-realm'].llm.chat()` | 统一 `ctx.llm.stream({ provider, model, ... })`，多 provider 通过 dsh-adapters 注册 |
+| `sanitizer-pipeline` 全局依赖 | `if (!isLocal && this.sanitizer)` 软依赖（fail-open） |
+| 单一 SANITIZED 路径特殊处理 | SANITIZED 与 CLOUD 在管线里走同一路径（`isLocal` 都为 false），区别仅在 `intent.category` 不同 |
+
 
 ### 4.3 cordis.yml 完整配置
 
@@ -4435,157 +4086,127 @@ graph TB
 
 ### 6.2 场景1：LOCAL — 本地私密操作序列图
 
-> 示例：「帮我整理一下本地的会议纪要」
+> 示例：「帮我整理一下本地的会议纪要」（基于 `http-api.handleChat` 真实管道）
+>
+> **v6 修订**：移除 v6 初稿中的 `ctx['local-llm-realm'].llm.chat()` 概念；实装统一通过 `ctx.llm.stream({ provider: 'local-qwen3-4b', ... })` 调用本地 provider adapter。provider/model 当前在 http-api 内**硬编码**（不走 `modelRouter.resolve()`）——见 § 4.2 的"实现侧限制"。
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor User as 👤 用户
-    participant VI as voice-input<br/>(Whisper)
-    participant PG as prompt-guard<br/>(安全防护)
-    participant IR as intent-router<br/>(意图路由)
-    participant PP as privacy-policy<br/>(策略引擎)
-    participant MR as model-router<br/>(模型路由)
-    participant LLP as local-llm-provider<br/>(Qwen3-4B)
+    participant API as http-api<br/>(handleChat)
+    participant TDB as td-bus
+    participant PG as prompt-guard
+    participant IR as intent-router
+    participant PP as privacy-policy
+    participant LLM as ctx.llm<br/>(local-qwen3-4b adapter)
     participant LT as local-tools
-    participant LS as local-storage<br/>(加密存储)
-    participant TCM as tcm<br/>(可信计算)
+    participant LS as local-storage<br/>(AES-256-GCM)
+    participant TCM as tcm
     participant AL as audit-log
-    participant SS as sessions
 
-    User->>VI: 🎤 "帮我整理一下本地的会议纪要"
-    Note over VI: 1. VAD 检测语音端点<br/>2. 16kHz 采样<br/>3. Whisper-tiny 推理
-    VI->>VI: ASR 识别<br/>text="帮我整理一下本地的会议纪要"
-    VI->>PG: 转写文本
+    User->>API: POST /v1/chat { message:"帮我整理一下本地的会议纪要", sessionId }
 
-    Note over PG: ═══ 安全防护阶段 ═══
-    PG->>PG: 输入规则检测<br/>无攻击模式 ✅
+    API->>TDB: shouldBlock()
+    TDB-->>API: ok
+    API->>PG: checkInput(message)
     PG->>PP: 数据分类查询
     PP-->>PG: classification: internal
-    PG-->>IR: 安全输入 ✅
+    PG-->>API: { safe:true }
 
-    Note over IR: ═══ 意图路由阶段 ═══
-    IR->>PP: 获取路由规则
-    PP-->>IR: routingRules (按优先级排序)
-    IR->>IR: 规则匹配<br/>命中: "本地" → LOCAL<br/>priority=350
-    IR->>AL: 审计: 路由决策<br/>{category:LOCAL, rule:local-device-ops}
+    API->>IR: classify(message, { sessionId })
+    IR->>PP: matchRouting(text)
+    PP-->>IR: routingRules
+    IR->>IR: 命中 "本地" → LOCAL<br/>rule=local-device-ops
+    IR->>AL: 审计: intent-rules-hit<br/>{category:LOCAL, source:'privacy-policy'}
+    IR-->>API: { category:'LOCAL', targetRealm:'local', requiresSanitization:false }
 
-    Note over MR: ═══ 模型选择阶段 ═══
-    IR->>MR: selectModel(intent, dataLevel=internal)
-    MR->>MR: 过滤候选模型<br/>LOCAL → 仅本地模型<br/>dataLevel=internal → 排除云端
-    MR-->>IR: 选择: qwen3-4b (priority=1)
+    Note over API: isLocal=true<br/>provider='local-qwen3-4b'<br/>model='qwen3-4b'<br/>**硬编码**，不走 modelRouter
 
-    Note over LLP: ═══ LOCAL Realm 执行 ═══
-    IR->>SS: getRecentMessages(sessionId, 10)
-    SS->>TCM: 解密会话数据
-    TCM-->>SS: 解密后的消息
-    SS-->>IR: 最近对话历史
+    API->>LLM: stream({ provider:'local-qwen3-4b', model:'qwen3-4b', messages:[...history, userMsg] })
 
-    IR->>LLP: chat(messages, {provider:qwen3-4b})
-    LLP->>LLP: 构建 prompt<br/>+ 对话历史<br/>+ 用户输入
-
-    LLP->>LT: tool_call: local_file_read<br/>{path: "/data/user/notes/会议*"}
-    LT->>LS: 查询文件列表
+    LLM->>LT: tool_call: local_file_read<br/>{path:"/data/user/notes/*"}
+    LT->>LS: 列出 workspace 文件
     LS->>TCM: 获取存储密钥
     TCM-->>LS: AES-256 密钥
     LS-->>LT: [会议纪要-0815.md, 会议纪要-0816.md]
-    LT-->>LLP: tool_result: 文件列表
+    LT-->>LLM: tool_result: 文件列表
 
-    LLP->>LT: tool_call: local_file_read<br/>{path: "会议纪要-0816.md"}
+    LLM->>LT: tool_call: local_file_read<br/>{path:"会议纪要-0816.md"}
     LT->>LS: 读取文件内容（自动解密）
     LS-->>LT: 文件文本
-    LT-->>LLP: tool_result: 文件内容
+    LT-->>LLM: tool_result: 文件内容
 
-    LLP->>LLP: 模型生成整理后的纪要<br/>(纯本地推理，数据不出端)
-    LLP-->>PG: 响应文本
+    LLM->>LLM: 生成整理后的纪要<br/>(纯本地推理，数据不出端)
+    LLM-->>API: result text
 
-    Note over PG: ═══ 输出安全检查 ═══
-    PG->>PG: 检查输出是否包含敏感信息<br/>无泄露 ✅
-    PG-->>IR: 安全输出 ✅
+    Note over API: isLocal=true → 不调 sanitizer
+    API->>PG: checkOutput(result, { sanitized:false })
+    PG-->>API: { safe:true }
 
-    IR->>SS: appendMessage(user + assistant)
-    SS->>TCM: 加密会话数据
-    TCM-->>SS: 加密完成
+    API-->>User: 200 JSON { message: "整理后的纪要...", intent:{ category:'LOCAL', ... } }
 
-    IR->>AL: 审计: 本地执行完成<br/>{tokens:256, duration:3.2s}
-    IR-->>User: 📱 显示整理后的会议纪要
-
-    Note over User,TCM: 🔒 全程数据未出端，存储已加密，无网络请求
+    Note over User,TCM: 🔒 全程数据未出端；存储 AES-256-GCM 加密
 ```
 
 ---
 
 ### 6.3 场景2：CLOUD — 查询公网信息序列图
 
-> 示例：「最近有什么AI领域的重要新闻」
+> 示例：「最近有什么 AI 领域的重要新闻」
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor User as 👤 用户
+    participant API as http-api
+    participant TDB as td-bus
     participant PG as prompt-guard
     participant IR as intent-router
     participant PP as privacy-policy
-    participant MR as model-router
-    participant CLP as cloud-llm-provider<br/>(DeepSeek-V4)
+    participant LLM as ctx.llm<br/>(cloud-deepseek-v4 adapter)
     participant WS as web-search
-    participant SB as secure-bridge
+    participant SB as secure-bridge<br/>(mode: ohttp)
     participant OH as ohttp-gateway
     participant AL as audit-log
-    participant TDB as td-bus
 
-    User->>PG: ⌨️ "最近有什么AI领域的重要新闻"
+    User->>API: POST /v1/chat { message:"最近有什么 AI 领域的重要新闻", sessionId }
 
-    Note over PG: ═══ 安全防护 ═══
-    PG->>PG: 输入检测 ✅<br/>数据分类: public
-    PG-->>IR: 安全输入
+    API->>TDB: shouldBlock()
+    TDB-->>API: ok
+    API->>PG: checkInput(message)
+    PG-->>API: { safe:true, dataClass:'public' }
+    API->>IR: classify(message, { sessionId })
+    IR->>PP: matchRouting
+    PP-->>IR: "新闻" → CLOUD
+    IR-->>API: { category:'CLOUD', targetRealm:'cloud', requiresSanitization:false }
 
-    Note over IR: ═══ 意图路由 ═══
-    IR->>PP: 获取路由规则
-    PP-->>IR: "新闻" → CLOUD (priority=200)
-    IR->>MR: selectModel(CLOUD, public)
-    MR-->>IR: deepseek-chat
+    Note over API: isLocal=false<br/>provider='cloud-deepseek-v4'<br/>model='deepseek-chat'<br/>**硬编码**
 
-    Note over CLP,WS: ═══ CLOUD Realm 执行 ═══
-    IR->>CLP: chat(messages, {provider:deepseek-chat})
+    Note over API: 无 sanitize（message 无 PII）
+    API->>LLM: stream({ provider:'cloud-deepseek-v4', model:'deepseek-chat', messages })
+    LLM->>WS: tool_call: web_search<br/>{query:"AI 领域 重要新闻 2026年8月"}
+    WS->>SB: sendCloudRequest(search)
+    SB->>OH: OHTTP 封装
 
-    CLP->>SB: sendCloudRequest({dataLevel:public, sanitized:false})
-    SB->>SB: 策略检查<br/>dataLevel=public ✅<br/>允许发送
-
-    SB->>OH: sendRequest(内层请求)
-    OH->>OH: 加密内层请求<br/>(OHTTP 封装)
-    OH->>OH: 构造外层请求<br/>(无身份信息)
-
-    Note over OH: ═══ OHTTP 通信 ═══
-    OH->>RELAY: 外层加密请求<br/>(Relay 看不到内容)
-    RELAY->>TARGET: 转发内层请求<br/>(Target 看不到来源)
+    OH->>RELAY: 外层加密请求
+    RELAY->>TARGET: 转发内层请求
     TARGET-->>RELAY: 内层响应
     RELAY-->>OH: 外层加密响应
-
     OH->>OH: 解密响应
     OH-->>SB: 明文响应
-
-    CLP->>WS: tool_call: web_search<br/>{query:"AI领域 重要新闻 2026年8月"}
-    WS->>SB: sendCloudRequest(search)
-    SB->>OH: OHTTP 搜索请求
-    OH-->>WS: 搜索结果
+    SB-->>WS: 搜索结果
     WS->>WS: 域名过滤
-    WS-->>CLP: tool_result: 5条结果
+    WS-->>LLM: tool_result: 5 条结果
 
-    CLP->>CLP: 基于搜索结果生成回答
-    CLP-->>PG: 响应文本
+    LLM->>LLM: 基于搜索结果生成回答
+    LLM-->>API: result text
 
-    Note over PG: ═══ 输出安全检查 ═══
-    PG->>PG: 检查输出无敏感信息 ✅
-    PG-->>IR: 安全输出
+    API->>PG: checkOutput(result, { sanitized:false })
+    PG-->>API: { safe:true }
+    API-->>User: 200 JSON { message, intent:{ category:'CLOUD', ... } }
 
-    IR->>AL: 审计: 云端执行完成
-    IR->>TDB: 事件: ohttp/request-sent
-    TDB->>TDB: 检测: 云端请求计数正常 ✅
-
-    IR-->>User: 📱 显示AI新闻摘要
-
-    Note over User,TDB: ☁️ 通过 OHTTP 通信<br/>Relay 不知道用户身份<br/>Target 不知道请求来源设备
+    Note over User,OH: ☁️ 通过 OHTTP 通信<br/>Relay 不知道用户身份<br/>Target 不知道请求来源设备
 ```
 
 ---
@@ -4598,141 +4219,103 @@ sequenceDiagram
 sequenceDiagram
     autonumber
     actor User as 👤 用户
+    participant API as http-api
     participant PG as prompt-guard
     participant IR as intent-router
     participant PP as privacy-policy
-    participant MR as model-router
     participant SP as sanitizer-pipeline
-    participant CLP as cloud-llm-provider
+    participant LLM as ctx.llm<br/>(cloud-deepseek-v4 adapter)
     participant WS as web-search
-    participant LT as local-tools
-    participant LS as local-storage
-    participant TCM as tcm
-    participant SB as secure-bridge
-    participant OH as ohttp-gateway
     participant AL as audit-log
 
-    User->>PG: ⌨️ "帮我查一下张三的公司最近有什么动态"
+    User->>API: POST /v1/chat { message:"帮我查一下张三的公司最近有什么动态", sessionId }
 
-    Note over PG: ═══ 安全防护 ═══
-    PG->>PG: 输入检测 ✅
-    PG->>PP: 数据分类
-    PP-->>PG: 包含"个人身份信息"(secret级)
-    PG->>PG: secret 级数据 → 需要脱敏后才能出端
+    API->>PG: checkInput(message)
+    PG-->>API: { safe:true }
+    API->>IR: classify(message, { sessionId })
+    IR->>PP: matchRouting
+    PP-->>IR: 命中"姓名/公司" → SANITIZED
+    IR-->>API: { category:'SANITIZED', targetRealm:'sanitized', requiresSanitization:true }
 
-    Note over IR: ═══ 意图路由 ═══
-    PG-->>IR: 安全输入(标记含敏感数据)
-    IR->>PP: 获取路由规则
-    PP-->>IR: "查一下...的...公司" → SANITIZED (priority=800)
-    IR->>MR: selectModel(SANITIZED, public)
-    MR-->>IR: deepseek-chat
+    Note over API: isLocal=false → 进入 sanitize
 
-    Note over SP: ═══ 脱敏阶段 ═══
-    IR->>SP: sanitize(text)
-    SP->>PP: 获取脱敏规则
-    PP-->>SP: sanitizationRules (6条)
+    API->>SP: sanitize(message, { sessionId })
+    SP->>PP: getSanitizationRules()
+    PP-->>SP: sanitizationRules (6 条)
+    SP->>SP: 执行脱敏管线:<br/>① "张三" → "[NAME_1]"<br/>② 保留公司名为占位符 (规则未匹配时不脱敏)
+    SP->>AL: 审计: sanitizer.sanitized<br/>{replacements:1, sessionId}
+    SP-->>API: { sanitizedText:"帮我查一下[NAME_1]的公司...", wasSanitized:true }
 
-    SP->>LT: 查询本地通讯录<br/>获取"张三"的完整信息
-    LT->>LS: SELECT * FROM contacts<br/>WHERE name='张三'
-    LS->>TCM: 获取存储密钥
-    TCM-->>LS: AES-256 密钥
-    LS-->>LT: 解密后的联系人数据
-    LT-->>SP: {name:"张三", phone:"138xxxx5678",<br/>company:"XX科技有限公司"}
+    API->>LLM: stream({ provider:'cloud-deepseek-v4', messages:[sanitizedText] })
+    LLM->>WS: tool_call: web_search<br/>{query:"[NAME_1]的公司 最新动态"}
+    WS-->>LLM: 搜索结果
+    LLM->>LLM: 生成回答<br/>"XX 科技最近..."
+    LLM-->>API: sanitized-result text
 
-    SP->>SP: 执行脱敏管线:<br/>① name: "张三" → "[用户A]"<br/>② phone: "138xxxx5678" → "[手机号1]"<br/>③ 构建会话映射
+    API->>SP: desanitize(sanitized-result, sessionId)
+    SP->>SP: 还原 "[NAME_1]" → "张三"
+    SP-->>API: restored text
 
-    SP->>AL: 审计: 脱敏完成<br/>{replacements:2, types:[name,phone]}
-    SP-->>IR: sanitizedText="帮我查一下[用户A]的公司..."<br/>sessionId="sess_abc123"
+    API->>PG: checkOutput(restored, { sanitized:wasSanitized })
+    Note over PG: wasSanitized=true<br/>防止 desanitize 后的 PII 被误 mask
+    PG-->>API: { safe:true }
 
-    Note over CLP,WS: ═══ SANITIZED Realm 执行 ═══
-    IR->>CLP: chat(messages, {sanitized:true})
-    CLP->>SB: sendCloudRequest({dataLevel:public, sanitized:true})
-    SB->>OH: OHTTP 请求
-    OH-->>SB: 响应
-    SB-->>CLP: 响应
+    API-->>User: 200 JSON { message:"XX 科技最近发布了...", intent:{ category:'SANITIZED', ... } }
 
-    CLP->>WS: tool_call: web_search<br/>{query:"[用户A]的公司 最新动态"}
-    WS->>SB: OHTTP 搜索
-    SB-->>WS: 搜索结果
-    WS-->>CLP: [{title:"XX科技...", snippet:"..."}]
-
-    CLP->>CLP: 生成回答<br/>"XX科技有限公司最近..."
-    CLP-->>SP: 响应文本
-
-    Note over SP: ═══ 反向还原阶段 ═══
-    SP->>SP: desanitize(response, sessionId)<br/>"[用户A]" → "张三"<br/>(从会话映射中还原)
-    SP-->>PG: 还原后的响应
-
-    Note over PG: ═══ 输出安全检查 ═══
-    PG->>PG: 检查输出<br/>无额外敏感信息泄露 ✅
-    PG-->>IR: 安全输出
-
-    IR->>AL: 审计: 脱敏查询完成
-    IR-->>User: 📱 "XX科技有限公司最近发布了...<br/>（张三所在公司）"
-
-    Note over User,AL: 🛡️ 云端仅看到"[用户A]"<br/>真实身份通过 OHTTP 进一步保护<br/>存储数据 AES-256 加密
+    Note over User,AL: 🛡️ 云端仅看到 "[NAME_1]"<br/>OHTTP 进一步隔离身份与内容
 ```
 
 ---
 
 ### 6.5 场景4：威胁检测与自动响应序列图
 
-> 示例：短时间内大量云端请求触发威胁检测
+> 示例：短时间内大量云端请求触发威胁检测（http-api 入口被 td-bus 阻断）
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor User as 👤 用户
-    participant IR as intent-router
-    participant CLP as cloud-llm-provider
-    participant SB as secure-bridge
-    participant OH as ohttp-gateway
+    participant API as http-api<br/>(handleChat)
     participant TDB as td-bus
+    participant IR as intent-router
+    participant LLM as ctx.llm
     participant AL as audit-log
 
     Note over User,TDB: ═══ 正常请求阶段 ═══
-    User->>IR: 查询1
-    IR->>CLP: 云端请求
-    CLP->>SB: sendCloudRequest
-    SB->>OH: OHTTP
-    OH-->>SB: 响应
-    SB-->>CLP: 响应
-    CLP-->>IR: 结果
-    IR->>IR: ctx.event.emit('ohttp/request-sent')
+    User->>API: POST /v1/chat { message:"查询1", sessionId }
+    API->>TDB: shouldBlock()
+    TDB-->>API: ok
+    API->>IR: classify
+    IR-->>API: CLOUD
+    API->>LLM: stream
+    LLM-->>API: result
+    API-->>User: 200
     Note over TDB: 检测: count=1/20 ✅
 
     Note over User,TDB: ═══ 异常请求阶段 ═══
     loop 连续 20+ 次云端请求
-        User->>IR: 查询N
-        IR->>CLP: 云端请求
-        CLP->>SB: sendCloudRequest
-        SB->>OH: OHTTP
-        OH-->>SB: 响应
-        IR->>IR: ctx.event.emit('ohttp/request-sent')
-        Note over TDB: 检测: count递增...
+        User->>API: POST /v1/chat { message:"查询N" }
+        API->>TDB: shouldBlock()
+        TDB-->>API: ok
+        API->>IR: classify
+        API->>LLM: stream
+        LLM-->>API: result
+        API-->>User: 200
+        Note over TDB: 检测: count 递增...
     end
 
     Note over TDB: ═══ 威胁触发 ═══
-    TDB->>TDB: count > 20 in 60s<br/>触发: frequent-cloud-requests<br/>severity: HIGH
-
-    TDB->>AL: ⚠️ 审计: 威胁检测<br/>{rule:frequent-cloud-requests,<br/>severity:high}
-
-    TDB->>TDB: 执行自动响应:<br/>① block-cloud<br/>② notify-user
-
-    TDB->>TDB: ctx.event.emit('td-bus/block-cloud-requests')
-    TDB->>TDB: ctx.event.emit('td-bus/user-notification')
+    TDB->>TDB: count > 20 in 60s<br/>rule: frequent-cloud-requests<br/>severity: HIGH
+    TDB->>AL: ⚠️ 审计: td-bus.threat-detected<br/>{severity:high}
+    TDB->>TDB: 状态: block-cloud=true
 
     Note over User,TDB: ═══ 阻断阶段 ═══
-    User->>IR: 新查询
-    IR->>CLP: 云端请求
-    CLP->>SB: sendCloudRequest
-    SB->>SB: ❌ 云端请求已被阻断
-    SB-->>CLP: Error: cloud blocked
-    CLP-->>IR: Error
+    User->>API: POST /v1/chat { message:"新查询", sessionId }
+    API->>TDB: shouldBlock()
+    TDB-->>API: { block:true, reason:"frequent-cloud-requests" }
+    API-->>User: 503 threat-block<br/>{ kind:"threat-block", reason:"..." }
 
-    IR-->>User: 📱 "检测到异常请求模式，<br/>云端通信已临时阻断。<br/>请稍后重试或使用本地功能。"
-
-    Note over User,TDB: 🛡️ 威胁检测总线自动保护<br/>无需用户干预
+    Note over User,TDB: 🛡️ td-bus 在 http-api 入口处 503 短路<br/>无需穿透到 LLM 调用
 ```
 
 ---
@@ -5085,16 +4668,16 @@ $ curl -X POST http://127.0.0.1:8080/v1/chat \
 
 **目标**：`prompt-guard` 真实实现：拒绝恶意 prompt，过滤输出 PII。
 
-**任务**：
+**任务**（v6 修订：状态标注对齐当前代码实装）：
 
-- [ ] 填实 `prompt-guard`：
-  - `checkInput`：正则匹配 5 类攻击模式（忽略指令、系统提示提取、角色覆盖、数据外传、批量导出）
-  - `checkOutput`：基于 `privacy-policy.getSanitizationRules()` 匹配 PII 模式（手机、邮箱、身份证、银行卡）自动 redact
-  - 注册 `agent/pre-step` waterfall listener 返回 `PreStepDecision`（命中恶意规则返回 `{ kind: 'reject' }`）
-  - 注册 `llm/stream` waterfall listener 过滤 chunk 中的 PII
-- [ ] 单元测试：5 类恶意 prompt 全部拒绝；输出含手机号自动 redact
+- [x] 填实 `prompt-guard`：
+  - [x] `checkInput`：正则匹配 5 类攻击模式（忽略指令、系统提示提取、角色覆盖、数据外传、批量导出）
+  - [x] `checkOutput(text, { sanitized })`：基于 `privacy-policy.getSanitizationRules()` 匹配 PII 模式（手机、邮箱、身份证、银行卡）自动 redact；`sanitized` 参数传 `wasSanitized` 防止 desanitize 后被二次 mask
+  - [x] ~~注册 `agent/pre-step` waterfall listener 返回 `PreStepDecision`~~ → **实装未订阅 Cordis 事件**；安全拦截改由 `http-api.handleChat` 在调用 prompt-guard 时同步触发（见 § 4.1 真实管道）
+  - [x] ~~注册 `llm/stream` waterfall listener 过滤 chunk 中的 PII~~ → 同上，实装在 http-api 输出检查点 `checkOutput()` 调用
+- [x] 单元测试：5 类恶意 prompt 全部拒绝；输出含手机号自动 redact
 
-**注意**：waterfall listener 应返回决策对象，不 throw（v6 § 11.2 (6)）。
+**注意**：waterfall listener 应返回决策对象，不 throw（v6 § 11.2 (6)）。但当前实装走 http-api 直调路径（决策对象 `{ status:400, kind:'unsafe-input', reason }`），不在事件层。
 
 **依赖**：`privacy-policy`（仅 `getSanitizationRules()` 方法）。
 
@@ -5102,14 +4685,26 @@ $ curl -X POST http://127.0.0.1:8080/v1/chat \
 
 **目标**：实现 LOCAL / CLOUD / SANITIZED 三类 realm 路由 + SANITIZED 脱敏 + 反向还原。
 
-**任务**：
+**任务**（v6 修订：状态标注对齐当前代码实装）：
 
-- [ ] 填实 `intent-router`（完整版）：
-  - 规则匹配（来自 `privacy-policy.getRoutingRules()`）
-  - 低置信度时调用本地小模型二次分类
-  - 返回 `{ category, confidence, reasoning, targetRealm }`
-- [ ] 填实 `sanitizer-pipeline`：
-  - `sanitize(text)`：按 `privacy-policy.getSanitizationRules()` 替换为 `[用户A]` 等占位符，返回 `{ sanitizedText, replacements, sessionId }`
+- [x] 填实 `intent-router`（完整版，基于 `src/dsh-adapter/intent-router.ts`）：
+  - [x] 隐私策略 pre-check：`policy.matchRouting(text)` → REJECT 短路（不调 LLM）
+  - [x] LLM-first 路径：`classifyWithLlm()` → `ctx.llm.stream({ provider, model, signal })`，**分类前 sanitize**（当 `modelRouter.resolve(...).realm === 'CLOUD'`）
+  - [x] `modelRouter.resolve()` 懒查（intent-router 在 model-router 之前 boot）
+  - [x] 三档解析：JSON.parse / fence extract / regex 双命中（必须 category+confidence 都拿到）
+  - [x] 置信度门槛（`Schema.number().min(0).max(1)`，`18d247d` 修复）；低于门槛 → `classifyWithRules` fallback
+  - [x] AbortController 限时（默认 4000ms）
+  - [x] `parseFailure` 计数器（与 `llmError` 分离，`c7b5daa`）
+  - [x] `sanitizeError` 审计 level=`security`（P1 hardening）
+  - [x] `getStats()` 含 13 计数 + `confidenceHistogram` 10-bucket × `{accepted, rejected}`（G9）
+  - [x] `redactPreview()` 经 `ctx.piiUtils.redactString` 防御纵深
+  - [x] `fallbackKeywords` 可由 `DSH_EDGE_INTENT_FALLBACK_KEYWORDS` env 覆写
+  - [x] 返回 `{ category, confidence, targetRealm, rationale, dataLevel, requiresSanitization }`
+- [x] 填实 `sanitizer-pipeline`：
+  - [x] `sanitize(text, { sessionId })`：按 `privacy-policy.getSanitizationRules()` 替换为 `[<PII_TYPE>_<counter>]` 占位符，返回 `{ sanitizedText, replacements, sessionId }`
+  - [x] `desanitize(text, sessionId)`：异步反向还原（整块响应）
+  - [x] `desanitizeSync(text, sessionId)`：**同步**反向还原（流式响应 `handleChatStream` 逐 chunk 还原用）
+  - [x] `purge(sessionId)`：由 `http-api.handleDeleteSession` 调用，删除会话映射
   - `desanitize(text, sessionId)`：从会话映射还原
 - [ ] `model-router` 升级：根据 `targetRealm` 选 provider（LOCAL→本地 mock/CLOUD→云端/SANITIZED→云端+脱敏）
 - [ ] 单元测试 + E2E：「查张三的公司」→ SANITIZED → 云端看到 `[用户A]` → 还原
@@ -5162,13 +4757,17 @@ $ curl -X POST http://127.0.0.1:8080/v1/chat \
 
 **目标**：检测异常行为模式，自动响应。
 
-**任务**：
+**任务**（v6 修订：状态标注对齐当前代码实装）：
 
-- [ ] 填实 `td-bus`：
-  - 检测规则（count_gt / equals / contains）
-  - 响应动作（block-cloud / kill-session / notify-user / lockdown）
-- [ ] 订阅关键事件（`ohttp/request-sent`、`tools/realm-violation`、`policy/tamper-detected`）
-- [ ] `secure-bridge` 订阅 `td-bus/block-cloud-requests` 实现自动阻断
+- [x] 填实 `td-bus`（基于 `src/dsh-adapter/td-bus.ts`）：
+  - [x] 检测规则：`count_gt` / `equals` / `contains` / `time-window`
+  - [x] 响应动作：`block-cloud` / `kill-session` / `notify-user` / `lockdown`
+  - [x] `recordCloudRequest()` 记录每次云端请求
+  - [x] `shouldBlock()` 检查当前是否处于阻断状态
+- [x] 关键事件接入点（http-api 入口，非订阅模式）：
+  - [x] http-api `handleChat` 入口调 `tdBus.shouldBlock()` → **503 threat-block** 短路（这是当前实现；不是订阅 `ohttp/request-sent`）
+  - [x] ~~`tools/realm-violation`、`policy/tamper-detected` 订阅~~ → **实装未订阅**；策略篡改检测为后续迭代（见 § 1.6.7 `[ ]`）
+- [x] http-api 在 td-bus 返回 `{ block:true }` 时直接返回 503（无需穿透到 secure-bridge）
 
 ### 8.14 A7：公网搜索
 
@@ -5291,11 +4890,11 @@ A 段互相独立，按需取用
 | M4 | LAN 性能 bench（可选） | L3 | ❌ | 与 DSH 无关 |
 | **M5** | `http-api` 实现 REST + SSE | L1 | ❌ | 通过 `ctx.agents.create()` 触发 |
 | M5 | `cordis.yml` 中 `disabled: dsh-web-app` | L2 | ❌ | 行级 `disabled: true`（Loader 真实字段） |
-| **A1** | `prompt-guard` 5 类攻击拦截 + PII redact | L1 | ❌ | waterfall listener 返回决策对象 |
-| A1 | 注册 `agent/pre-step` waterfall | L1 | ❌ | 不修改 DSH 事件分发器 |
-| A1 | 注册 `llm/stream` waterfall | L1 | ❌ | 不修改 DSH 事件分发器 |
-| **A2** | `intent-router` 完整版（规则 + 模型 fallback） | L1 | ❌ | |
-| A2 | `sanitizer-pipeline` 前向脱敏 + 反向还原 | L1 | ❌ | |
+| **A1** ✅ | `prompt-guard` 5 类攻击拦截 + PII redact | L1 | ❌ | checkInput/checkOutput 通过 http-api 直调（不订阅 Cordis 事件） |
+| A1 ✅ | ~~注册 `agent/pre-step` waterfall~~ | — | — | **实装未订阅**；改为 http-api `handleChat` 同步调用 `promptGuard.checkInput()` |
+| A1 ✅ | ~~注册 `llm/stream` waterfall~~ | — | — | **实装未订阅**；输出过滤在 http-api 输出检查点调用 `checkOutput()` |
+| **A2** ✅ | `intent-router` 完整版（privacy-policy pre-check + LLM-first + rules fallback） | L1 | ❌ | REJECT 短路 / confidenceThreshold=0.6 / modelRouter 懒查 / 三档解析 |
+| A2 ✅ | `sanitizer-pipeline` 前向脱敏 + 反向还原 | L1 | ❌ | 含 `desanitizeSync`（流式）+ `purge(sessionId)` |
 | **A3** | `tcm` simulated 后端 | L1 | ❌ | `crypto.subtle` / `node:crypto` 封装在插件内 |
 | A3 | `local-storage` / `sessions` / `audit-log` 升级加密 | L1 | ❌ | 通过 `ctx.tcm.encrypt/decrypt` |
 | A3 | SQLite dump 验证 | L3 | ❌ | 与 DSH 无关 |
@@ -5305,8 +4904,8 @@ A 段互相独立，按需取用
 | A4 | tcpdump 抓包 | L3 | ❌ | |
 | **A5** | `attestation` token 签发 | L1 | ❌ | 通过 `ctx.tcm.sign()` |
 | A5 | 部署 mock verify 服务 | L3 | ❌ | |
-| **A6** | `td-bus` 检测 + 响应 | L1 | ❌ | 内部 `ctx.event.on(...)` |
-| A6 | 订阅 `td-bus/block-cloud-requests` | L1 | ❌ | |
+| **A6** ✅ | `td-bus` 检测 + 响应 | L1 | ❌ | recordCloudRequest / shouldBlock 由 http-api 入口同步调用 |
+| A6 ✅ | 503 threat-block 短路 | L1 | ❌ | http-api `handleChat` 在 tdBus.shouldBlock=true 时直接返回 503 |
 | **A7** | `web-search` 真接入 | L1 | ❌ | `ctx.secure-bridge.sendCloudRequest` |
 | **A8** | `voice-input` 接 Whisper-tiny | L1 | ❌ | Whisper binding 在插件内 import |
 | A8 | 转写结果接 `prompt-guard` 入口 | L1 | ❌ | 在应用层组装 |
@@ -5385,146 +4984,181 @@ git diff --shortstat HEAD~1 HEAD
 ### 8.23 HTTP API 服务插件（v6 § 8.19 合并至此）
 
 > 本节保留 v6 § 8.19 关于 `http-api` 的设计细节，作为 M5 阶段的实现参考。**M5 即 http-api 阶段**，对应 DSH 不内置对外 HTTP API service 的现实。
+>
+> **v6 修订**：本节按当前 `src/dsh-adapter/http-api.ts` 实装重写——鉴权模型（单一 bearerToken）、路由表（实际只有 7 条）、端到端管道（决策对象而非 throw）、provider/model 硬编码点（实现侧限制）。
 
 #### 8.23.1 插件定位
 
 | 维度 | http-api 插件 |
 |---|---|
 | **位置** | L1 插件代码（`src/dsh-adapter/http-api.ts`） |
-| **职责** | 把 DSH Agent Loop 包装成结构化 HTTP API，让外部程序可调用 |
-| **与 DSH Web Profile 关系** | 不冲突。Web Profile 监听 3080 端口（浏览器 UI），http-api 监听独立端口（如 8080）；通过 cordis.yml 中行级 `disabled: dsh-web-app` 即可只启用 API |
-| **与 Agent Loop 关系** | 通过 `ctx.agents.create()` + `agent.followup(userMsg)` 触发 DSH 内置 Agent Loop；**不替换** |
-| **鉴权** | API Key（env `EDGE_API_KEY`）+ 可选 OAuth；A5 阶段接入 `attestation` 签发 token |
-| **审计** | 每个请求都写 `audit-log`，可追溯 |
+| **职责** | 把 DSH Agent Loop 包装成结构化 HTTP API，让外部程序可调用；**唯一对外入口**，所有安全拦截（prompt-guard / intent-router / sanitizer / td-bus）都在此入口串联 |
+| **与 DSH Web Profile 关系** | 不冲突。Web Profile 监听 3080 端口（浏览器 UI），http-api 监听独立端口（默认 `21017`）；通过 cordis.yml 中行级 `disabled: dsh-web-app` 即可只启用 API |
+| **与 Agent Loop 关系** | 通过 `ctx.agents.create({ ... })` 拿到 `Agent` + `AgentHandle` 后 `handle.followup(userMsg)` 触发 DSH 内置 Agent Loop；**不替换** |
+| **鉴权** | 单一 `bearerToken`（config 必填，env 注入）；`requireAttestation` 开关（默认 true，attestation 阶段接入） |
+| **审计** | 每个请求都写 `audit-log`（kind: `http.chat.*` / `http.session.*` / `http.attest.*`），可追溯 |
+| **Session 管理** | 进程内 `Map<sessionId, { agent, handle, lastAccessedAt }>`，LRU 上限 `maxActiveSessions`（默认 100），`sessionIdleTimeoutMs`（默认 30 min）后清理 |
 
 #### 8.23.2 接口定义
 
 ```typescript
-interface HttpApiConfig {
-  port: number          // 与 DSH Web Profile 的 3080 区分
-  host: string          // 默认 '127.0.0.1'，对外暴露设为 '0.0.0.0'
-  apiKeys: string[]
-  corsOrigins: string[]
-  maxBodySize: string   // 默认 '1mb'
-  rateLimitPerMinute: number
-  tls?: {
-    cert: string
-    key: string
-    ca?: string         // mTLS 客户端 CA
-  }
-  sessionCookieName: string
+export const name = 'http-api'
+
+export const inject = ['agents', 'intentRouter', 'promptGuard', 'auditLog', 'sanitizer', 'tdBus'] as const
+
+export interface Config {
+  host: string                          // 默认 '127.0.0.1'
+  port: number                          // 默认 21017（与 Web Profile 3080 区分）
+  bearerToken?: string                  // 必填（仅 env 注入）
+  requireAttestation: boolean           // 默认 true
+  sessionIdleTimeoutMs: number          // 默认 30 * 60 * 1000（30 min）；0 禁用
+  maxActiveSessions: number             // 默认 100；0 不限
 }
 
-interface HttpApiService {
+export const Config: Schema<Config> = Schema.object({
+  host: Schema.string().default('127.0.0.1'),
+  port: Schema.natural().default(21017),
+  bearerToken: Schema.string(),
+  requireAttestation: Schema.boolean().default(true),
+  sessionIdleTimeoutMs: Schema.natural().default(30 * 60 * 1000),
+  maxActiveSessions: Schema.natural().default(100),
+})
+
+export interface HttpApiService {
   start(): Promise<void>
   stop(): Promise<void>
-  getStatus(): { running: boolean; port: number; uptime: number }
+  isRunning(): boolean
+  endpoint(): string
 }
 ```
 
-#### 8.23.3 REST API 设计
+#### 8.23.3 REST API 设计（实装 7 条）
 
 | Method | Path | 用途 | 鉴权 |
 |---|---|---|---|
-| POST | `/v1/chat` | 主聊天入口（同步） | API Key / Token |
-| POST | `/v1/chat/stream` | 流式聊天（SSE） | API Key / Token |
-| GET | `/v1/sessions` | 列出会话 | API Key |
-| GET | `/v1/sessions/:id` | 获取会话详情 | API Key + 会话所有权 |
-| DELETE | `/v1/sessions/:id` | 删除会话 | API Key + 会话所有权 |
-| POST | `/v1/attest` | 申请远程证明 token | API Key |
-| GET | `/v1/policy` | 获取当前隐私策略（脱敏后） | API Key |
-| POST | `/v1/policy/reload` | 触发策略热更新（需要 admin 权限） | Admin Token |
-| GET | `/v1/health` | 健康检查 | 无 |
-| GET | `/v1/stats` | 统计信息（请求数、各 realm 调用次数） | Admin Token |
-| GET | `/v1/openapi.json` | OpenAPI 规范 | 无 |
+| GET | `/v1/health` | 健康检查 | 无（公开） |
+| GET | `/v1/openapi.json` | OpenAPI 规范（auto-generated） | 无（公开） |
+| POST | `/v1/chat` | 主聊天入口（同步） | Bearer Token |
+| POST | `/v1/chat/stream` | 流式聊天（SSE） | Bearer Token |
+| GET | `/v1/sessions` | 列出当前进程内 active 会话 | Bearer Token |
+| GET | `/v1/sessions/:id` | 获取会话详情（messages + intent history） | Bearer Token |
+| DELETE | `/v1/sessions/:id` | 删除会话 + `sanitizer.purge(id)` | Bearer Token |
 
-#### 8.23.4 核心实现
+**未实装的接口**（v6 初稿列了但代码无对应 handler）：
+- ~~`POST /v1/attest`~~ → attestation 阶段接入；当前路由 404
+- ~~`GET /v1/policy`~~ → 策略查询接口（policy-admin 阶段）
+- ~~`POST /v1/policy/reload`~~ → 触发热更新（当前是 mtime 轮询自动触发，无手动 reload 接口）
+- ~~`GET /v1/stats`~~ → 统计信息（已通过 `intentRouter.getStats()` 等局部接口暴露）
+
+#### 8.23.4 核心实现（基于 `src/dsh-adapter/http-api.ts`）
 
 ```typescript
-// src/dsh-adapter/http-api.ts
-import express from 'express'
-import type { Context } from '@deepseek-ai/cordis'
-import type { HttpApiConfig, HttpApiService } from './types.js'
+// apply() — http-api.ts:734-746
+export async function apply(ctx: any, config: Config): Promise<() => Promise<void>> {
+  // 软依赖：tdBus 可缺失（td-bus 未挂载时不阻断）
+  const agents      = ctx.get('agents')
+  const promptGuard = ctx.get('promptGuard')
+  const auditLog    = ctx.get('auditLog')
+  const sanitizer   = ctx.get('sanitizer')
+  const tdBus       = ctx.get?.('tdBus') ?? ctx.tdBus
 
-export const name = 'http-api'
-
-export const inject = [
-  'model-router',     // 注入统一 llm service
-  'sessions',
-  'audit-log',
-  'privacy-policy',
-  'attestation',      // A5 阶段才有；M5 阶段可移除
-]
-
-export const Config: Schema<HttpApiConfig> = Schema.object({
-  port: Schema.number().default(8080),
-  host: Schema.string().default('127.0.0.1'),
-  apiKeys: Schema.array(Schema.string()).default([]),
-  corsOrigins: Schema.array(Schema.string()).default([]),
-  maxBodySize: Schema.string().default('1mb'),
-  rateLimitPerMinute: Schema.number().default(60),
-  tls: Schema.object({}).optional(),
-  sessionCookieName: Schema.string().default('edge_session'),
-})
-
-export async function apply(ctx: Context, config: HttpApiConfig) {
-  // ... (同 v6 § 8.19.4，差异：Agent Loop 入口改用 ctx.agents)
-  // const agent = await ctx.agents.create({ ... })
-  // const result = await agent.followup(message)
-  // 流式：ctx.event.on('assistant/chunk', ...) 转发 SSE
-
-  return async () => {
-    // dispose
-  }
+  const service = new HttpApiServiceImpl(ctx, config, agents, promptGuard, auditLog, sanitizer, tdBus)
+  await service.start()
+  return async () => { await service.stop() }
 }
 ```
 
-**v6 修正**：去掉自定义 `runAgentLoop` —— DSH 无此函数。改用 `ctx.agents.create()` + `agent.followup(userMsg)`；流式订阅 `session/event` / `assistant/chunk`。
+**端到端 `handleChat` 管道**（http-api.ts:218-402）：
+
+```typescript
+private async handleChat(req, res, reqId, start) {
+  // 1. bearer-auth（在 handleRequest 顶层，401 短路）
+
+  // 2. td-bus 阻断检查
+  if (this.tdBus) {
+    await this.tdBus.recordCloudRequest({ reqId, sessionId, kind:'chat' })
+    const block = await this.tdBus.shouldBlock()
+    if (block?.block) return json(res, 503, { kind:'threat-block', reason: block.reason })
+  }
+
+  // 3. prompt-guard 输入检查
+  const inputCheck = await this.promptGuard.checkInput(message)
+  if (!inputCheck.safe) return json(res, 400, { kind:'unsafe-input', reason: inputCheck.reason })
+
+  // 4. intent-router 分类
+  const intent = await this.intentRouter.classify(message, { sessionId })
+  if (intent.category === 'REJECT') return json(res, 403, { kind:'reject', reason: intent.rationale })
+
+  // 5. provider/model 硬编码（**未**走 modelRouter.resolve()——实现侧限制）
+  const isLocal = intent.category === 'LOCAL'
+  const provider = isLocal ? 'local-qwen3-4b' : 'cloud-deepseek-v4'
+  const model    = isLocal ? 'qwen3-4b'        : 'deepseek-chat'
+
+  // 6. CLOUD/SANITIZED → sanitize（fail-open）
+  let wasSanitized = false, messageToSend = message
+  if (!isLocal && this.sanitizer) {
+    try {
+      const r = await this.sanitizer.sanitize(message, { sessionId })
+      messageToSend = r.sanitizedText
+      wasSanitized = r.replacements.length > 0
+    } catch (err) {
+      this.audit('error', 'http.chat.sanitize.error', { reqId, sessionId, error: String(err) })
+      // 失败仍继续（fail-open）
+    }
+  }
+
+  // 7. Agent Loop
+  const userMessage = createUserMessage({ content:[{ type:'text', text: messageToSend }], source:{ kind:'user' } })
+  let result = await handle.followup(userMessage)
+
+  // 8. CLOUD/SANITIZED → desanitize
+  if (!isLocal && this.sanitizer) result = await this.sanitizer.desanitize(result, sessionId)
+
+  // 9. prompt-guard 输出检查（传 wasSanitized 防止 desanitize 后被误 mask）
+  const outputCheck = await this.promptGuard.checkOutput(result, { sanitized: wasSanitized })
+  if (outputCheck.redactedText) result = outputCheck.redactedText
+
+  return json(res, 200, { kind:'chat', message: result, intent })
+}
+```
+
+**`handleChatStream` 同构**（http-api.ts:404-551）：
+- SSE `data: { type:'intent', intent:{...} }` 首条 → 客户端早返回分类结果
+- 后续 chunks：`textToSend = this.sanitizer.desanitizeSync(chunk.text, sessionId)` ——**同步**反向还原（不能 await）
+- 首条 `data: { type:'done' }` 结束
+
+**`handleDeleteSession`**（http-api.ts:552-?）：
+- 调 `await this.sanitizer.purge(id)` —— **关键**：不 purge 会导致 session 映射泄漏到下一会话
+- LRU eviction 超 `maxActiveSessions` 时同样调 `purge(id)`
 
 #### 8.23.5 配置示例
 
 ```yaml
 http-api:
-  port: 8080                       # 与 DSH Web Profile 的 3080 区分
-  host: 0.0.0.0                    # 对外暴露；本机测试用 127.0.0.1
-  apiKeys:
-    - !!js process.env.EDGE_API_KEY
-  corsOrigins:
-    - https://myapp.example.com
-  maxBodySize: 2mb
-  rateLimitPerMinute: 60
-  tls:                             # 生产环境启用 HTTPS / mTLS
-    cert: /etc/edge/cert.pem
-    key: /etc/edge/key.pem
-    ca: /etc/edge/client-ca.pem    # mTLS：仅信任此 CA 签发的客户端证书
-  sessionCookieName: edge_session
+  port: 21017
+  host: 127.0.0.1
+  bearerToken: !!js process.env.EDGE_API_KEY      # 必填，仅 env 注入
+  requireAttestation: true                         # A5 attestation 阶段接入
+  sessionIdleTimeoutMs: 1800000                    # 30 min
+  maxActiveSessions: 100
 ```
 
 #### 8.23.6 cordis.yml 挂载
 
-**场景 A：纯 API 服务（推荐用于生产）**
-
 ```yaml
 plugins:
   - id: dsh-web-app
-    disabled: true                  # 禁用 DSH Web Profile 的 3080 端口
+    disabled: true                                 # 禁用 DSH Web Profile 的 3080
 
   http-api:
-    inject: [model-router, sessions, audit-log, privacy-policy]
-    config: { port: 8080, host: '127.0.0.1', apiKeys: [!!js process.env.EDGE_API_KEY] }
+    inject: [agents, intent-router, prompt-guard, audit-log, sanitizer, td-bus]
+    config:
+      port: 21017
+      host: 127.0.0.1
+      bearerToken: !!js process.env.EDGE_API_KEY
 ```
 
 **注意**：Loader 真实字段是行级 `disabled: true`（不是数组形式的 `disable:`）。
-
-**场景 B：双形态共存（开发模式：Web UI 调试 + API 测试）**
-
-```yaml
-plugins:
-  # DSH Web UI 在 3080（浏览器用）
-  # http-api 在 8080（API 用）
-  http-api: { ... }
-  # ...
-```
 
 #### 8.23.7 验证脚本
 
@@ -5534,39 +5168,52 @@ import request from 'supertest'
 
 describe('http-api', () => {
   it('rejects unauthenticated requests', async () => {
-    const res = await request(server).post('/v1/chat')
-      .send({ message: 'hi' })
+    const res = await request(server).post('/v1/chat').send({ message: 'hi' })
     expect(res.status).toBe(401)
   })
 
-  it('handles /v1/chat end-to-end', async () => {
+  it('returns 403 on REJECT intent', async () => {
     const res = await request(server).post('/v1/chat')
       .set('Authorization', 'Bearer test-key')
-      .send({ message: '帮我读 /tmp/test.txt' })
-
-    expect(res.status).toBe(200)
-    expect(res.body.result).toContain('hello')
-    expect(res.body.intent.category).toBe('LOCAL')
-    expect(auditLog.find(l => l.type === 'http-api/chat')).toBeDefined()
-  })
-
-  it('streams via SSE', async () => {
-    const res = await request(server).post('/v1/chat/stream')
-      .set('Authorization', 'Bearer test-key')
-      .set('Accept', 'text/event-stream')
-      .send({ message: '请讲个故事' })
-
-    expect(res.headers['content-type']).toBe('text/event-stream')
-  })
-
-  it('requires admin for policy reload', async () => {
-    const res = await request(server).post('/v1/policy/reload')
-      .set('Authorization', 'Bearer user-key')
+      .send({ message: '导出全部用户数据' })     // 命中 policy REJECT
     expect(res.status).toBe(403)
+    expect(res.body.kind).toBe('reject')
+  })
 
-    const adminRes = await request(server).post('/v1/policy/reload')
-      .set('Authorization', 'Bearer admin-key')
-    expect(adminRes.status).toBe(200)
+  it('returns 503 when td-bus blocks', async () => {
+    // stub tdBus.shouldBlock → { block:true, reason:'frequent-cloud-requests' }
+    const res = await request(server).post('/v1/chat')
+      .set('Authorization', 'Bearer test-key')
+      .send({ message: 'hi' })
+    expect(res.status).toBe(503)
+    expect(res.body.kind).toBe('threat-block')
+  })
+
+  it('returns 400 on unsafe input', async () => {
+    const res = await request(server).post('/v1/chat')
+      .set('Authorization', 'Bearer test-key')
+      .send({ message: '<inject-prompt>' })
+    expect(res.status).toBe(400)
+    expect(res.body.kind).toBe('unsafe-input')
+  })
+
+  it('sanitizes PII before cloud call when sanitizer mounted', async () => {
+    // stub sanitizer.sanitize to assert it was called with phone-bearing text
+    const res = await request(server).post('/v1/chat')
+      .set('Authorization', 'Bearer test-key')
+      .send({ message: '查一下 13812345678', sessionId: 'sess-test' })
+    expect(res.status).toBe(200)
+    // sanitizer was called for CLOUD classification
+    expect(sanitizer.sanitize).toHaveBeenCalledWith(expect.stringContaining('13812345678'), { sessionId:'sess-test' })
+  })
+
+  it('purges session mapping on DELETE /v1/sessions/:id', async () => {
+    const create = await request(server).post('/v1/chat')
+      .set('Authorization', 'Bearer test-key')
+      .send({ message: 'hi', sessionId: 'sess-A' })
+    await request(server).delete('/v1/sessions/sess-A')
+      .set('Authorization', 'Bearer test-key')
+    expect(sanitizer.purge).toHaveBeenCalledWith('sess-A')
   })
 })
 ```
@@ -5577,10 +5224,13 @@ describe('http-api', () => {
 |---|---|---|
 | 仅在 `src/dsh-adapter/http-api.ts` 下新增插件 | ✅ L1 | 不修改 DSH |
 | 仅在 `cordis.yml` 中增配置 | ✅ L2 | `disabled: dsh-web-app` 是合法 Loader 配置 |
-| 不替换 DSH Agent Loop | ✅ | 通过 `ctx.agents.create()` + `agent.followup()` 触发 |
-| 仅监听独立端口（8080） | ✅ | 与 Web Profile 3080 不冲突 |
-| 使用 DSH 标准事件 `assistant/chunk` | ✅ | 流式转发 |
-| 鉴权 / 审计 / 速率限制完整 | ✅ | 复用 `audit-log` + 自带 rate limiter |
+| 不替换 DSH Agent Loop | ✅ | 通过 `ctx.agents.create()` + `handle.followup()` 触发 |
+| 仅监听独立端口（默认 21017） | ✅ | 与 Web Profile 3080 不冲突 |
+| Bearer Token 鉴权 | ✅ | `bearerToken` 配置项 + `Authorization: Bearer` header 校验 |
+| 审计 / Session 清理 / LRU 完整 | ✅ | 复用 `audit-log`；`setInterval` 清理过期 session；`maxActiveSessions` LRU |
+| **决策对象替代 throw** | ✅ | 403 reject / 503 threat-block / 400 unsafe-input 均返回 JSON decision |
+| **sanitize / desanitize 接缝** | ✅ | CLOUD/SANITIZED 才走；fail-open；`wasSanitized` flag 传 `checkOutput` |
+| **provider/model 硬编码** | ⚠️ 实现侧限制 | 当前未走 `modelRouter.resolve()`；记录在 `src/dsh-adapter/http-api.ts:handleChat`；后续阶段替换 |
 | `git diff dsh/` 应为空 | ✅ | 完全合规 |
 
 
@@ -5685,12 +5335,33 @@ describe('http-api', () => {
 - Whisper / llama.cpp / OHTTP / TEE SDK 通过对应插件封装调用，DSH 进程不直接依赖 native 模块。
 - native addon（如 `dsh-tool-call-timeout-policy`）的封装约定沿用 `packages/core/tools/src/index.ts:235-247` 的 `ToolDefinition.execute(args, exec)` + `signal` 模式。
 
-### 11.5 已识别的开放问题（v6.0 仍未定）
+### 11.5 已识别的开放问题（v6.0 → 2026-08-23 状态）
+
+> v6 初稿（2026-08-16）列出的开放问题在 2026-08-23 代码实装下分两类：**已关闭**（实装完成）和**仍开放**（后续阶段处理）。
+
+#### 已关闭（2026-08-23）
+
+| 问题 | 关闭时间 / 提交 / 文件 |
+|---|---|
+| REJECT 意图拦截未实现 | **closed** — `intent-router.classify()` 引入隐私策略 pre-check + fallback rules 双 REJECT 路径（http-api.ts:218-402 → 403 short-circuit） |
+| `sanitizer-pipeline` 缺同步反脱敏入口 | **closed** — 新增 `desanitizeSync(text, sessionId)`（sanitizer-pipeline.ts:??），供 `handleChatStream` 逐 chunk 还原 |
+| `sanitizer-pipeline` 缺 `purge()` | **closed** — 新增 `purge(sessionId)`（sanitizer-pipeline.ts:??），由 http-api `handleDeleteSession` 调用 |
+| `tools.enableToolIsolation` 配置未生效 | **closed** — G8（commit `b39d21f`）把 `enableToolIsolation` 真接入 `filterTools(intent)` / `isToolAllowed(name, intent)` |
+| `intent-router.confidenceThreshold` Schemastery 拒绝 0.6 | **closed** — commit `18d247d` 把 schema 从 `Schema.natural()` 改为 `Schema.number().min(0).max(1)` |
+| `intent-router` 解析失败与 LLM 错误混计数 | **closed** — P1 hardening（commit `c7b5daa`）拆分 `parseFailure` 与 `llmError` |
+| `intent-router` `sanitizeError` 审计级别不够 | **closed** — 同上 commit 改 `level='security'`（SIEM 可见） |
+| intent-router 缺置信度分布可观测性 | **closed** — G9（commit `b4e5810`）在 `getStats()` 加入 `confidenceHistogram` 10-bucket × `{accepted, rejected}` |
+| `http-api` 缺 threat-block 阻断 | **closed** — `td-bus.shouldBlock()` 在 `handleChat` 入口 503 短路 |
+| `http-api` 缺会话映射清理 | **closed** — `handleDeleteSession` 调 `sanitizer.purge(id)`；LRU eviction 同步清理 |
+
+#### 仍开放（后续阶段）
 
 | 问题 | 影响 | 建议下一步 |
 |---|---|---|
-| Whisper / llama.cpp native binding 在 arm64 RK3588 上的打包 | 体积、依赖链、冷启动延迟 | S11 / S5 阶段做 bench，必要时用 WASM 替代或预编译 `.node` artifact |
-| OHTTP Relay 部署：DSH 内置示例无 OHTTP 拓扑，需自建 | S7 阶段受外部依赖阻塞 | 提供 docker-compose 模板（含 relay + target mock）放在 `examples/ohttp-topology/` |
-| TEE 后端在裸机 RK3588 上的 TrustZone 接入 | simulated 后端仅供开发 | S2 / S10 阶段标注"在真实硬件上验证"里程碑 |
-| `ctx.llm.registerAdapter` 启动顺序：adapter 注册必须在 agent 创建前完成 | S5 阶段 | cordis.yml 顶层按 Loader 依赖声明排序（Loader 自动满足），但若需手工指定用 `entry.disabled: !!js <gate>` 控制 |
-| 多 realm 隔离下 `agent-presets` 外的同名 service 路由 | host plane 与 preset 子树 | 沿用 `packages/preset/agent-presets/src/mount.ts:178-265` 的 `leakedServices` 校验 |
+| 隐私策略文件**篡改检测**（签名验证） | 当前仅 mtime 轮询热加载；攻击者改盘后可被加载 | A2.5 阶段：策略文件 HMAC 签名，启动时校验 + 轮询时增量校验 |
+| TEE 后端在裸机 RK3588 上的 TrustZone 接入 | `tcm` 当前 simulated 后端（`crypto.subtle` / `node:crypto`） | A3 阶段：real-mode 接口预留，simulated 完整覆盖 dev/CI |
+| Whisper / llama.cpp native binding 在 arm64 RK3588 上的打包 | 体积、依赖链、冷启动延迟 | A8 阶段做 bench；必要时 WASM 替代或预编译 `.node` artifact |
+| OHTTP Relay 部署：DSH 内置示例无 OHTTP 拓扑，需自建 | A4 阶段受外部依赖阻塞 | 提供 docker-compose 模板（含 relay + target mock）放在 `examples/ohttp-topology/` |
+| `http-api` 的 `provider/model` 硬编码点 | `handleChat` / `handleChatStream` 不走 `modelRouter.resolve()` | 中期：抽象 `route(intent)` 函数注入；远期：策略驱动 |
+| `prompt-guard` 缺输出 PII 自动 redact 的独立开关 | `checkOutput` 当前依赖 `redactedText` 字段；策略为 `block/warn/sanitize` 三档但 `sanitize` 行为未实现 | A1.5 阶段：补全 `sanitize` 路径（独立脱敏 vs 走 sanitizer-pipeline 复用） |
+| 安全管线仅在 http-api 进程内生效 | 绕过 http-api 直调 `ctx.agents.followup()` 不享受任何拦截 | 若启用 web UI / CLI 直调 Agent Loop，需把整条管线复制一份到工具调用入口（v6.0 §4.1 修订已注明） |
