@@ -779,6 +779,92 @@ private redactPreview(text: string): string | null {
 
 ---
 
+### 7.14 http-api 消费 REJECT verdict + intent-router 可配置 fallbackKeywords（2026-08-23）
+
+§7.12 解锁了 intent-router 的 REJECT 路径（之前被 silently filter 掉），但只到 router 边界——下游消费者必须各自识别 REJECT 并 short-circuit，否则 LLM 仍会被调用，REJECT 变成"白费一次 LLM 调用"。同时发现 fallback LOCAL-keyword 列表硬编码为 EN+CN，JA / KO / ES 部署无法在不修改源码的前提下扩展词表。本节补齐这两个洞。
+
+#### 7.14.1 http-api 消费 REJECT → 403 短路
+
+`src/dsh-adapter/http-api.ts` 在 `handleChat()` 和 `handleChatStream()` 各加一段 REJECT short-circuit（在 sanitize / ensureSession 之前）：
+
+```ts
+// src/dsh-adapter/http-api.ts:283 (handleChat)
+if (intent.category === 'REJECT') {
+  const reason = (intent as any).rationale || 'policy-rule:reject'
+  this.audit('warn', 'http.chat.rejected', { reqId, sessionId, reason, confidence: intent.confidence })
+  this.accessLog(reqId, 'POST', '/v1/chat', 403, Date.now() - start, `reject:${reason}`)
+  res.writeHead(403, { 'Content-Type': 'application/json' })
+  res.end(JSON.stringify({
+    error: 'Request rejected by policy',
+    reason,
+    confidence: intent.confidence,
+  }))
+  return
+}
+```
+
+`handleChatStream()` 同等结构（line ~449），audit kind `http.chat.stream.rejected`。
+
+**关键修复**：原本 `let intent = { category: 'CLOUD' as const, ... }` 的类型缩窄让 `intent.category === 'REJECT'` 永远为 false（TS error `TS2367`）。改为 `let intent: any = { category: 'CLOUD', ... }`，REJECT 比较编译通过。同时清理 `as string` 冗余 cast。
+
+**契约（v6 §2.15 + §4.3）**：
+| 状态 | 行为 |
+|---|---|
+| `intent.category === 'REJECT'` | 立即 403 + `{ error, reason, confidence }`，跳过 LLM 调用、跳过 sanitization、跳过 session 创建 |
+| 其他 category | 进入原有路由（LOCAL → local LLM / CLOUD → sanitization + cloud LLM / SANITIZED → sanitization → cloud LLM） |
+
+**audit 留痕**：rejected 在 `intent-router` 边界已记录 `intent.rules.rejected`（security 级），http-api 又记 `http.chat.rejected`（warn 级）。两层 trace 便于 SIEM 关联：router 层记规则匹配、http-api 层记 决策被 consumer 执行。
+
+#### 7.14.2 intent-router 可配置 fallbackKeywords
+
+`Config` 增加可选字段 `fallbackKeywords?: string[]`，构造时：
+
+```ts
+// src/dsh-adapter/intent-router.ts:131-136
+this.fallbackKeywords = (config.fallbackKeywords && config.fallbackKeywords.length > 0)
+  ? config.fallbackKeywords
+  : LOCAL_KEYWORDS_DEFAULT
+```
+
+`LOCAL_KEYWORDS_DEFAULT`（原 `LOCAL_KEYWORDS`）保持 EN + CN 内置。空数组 / 未配置 → 用默认；非空数组 → 完全替换内置（不追加）。
+
+**环境变量**：`DSH_EDGE_INTENT_FALLBACK_KEYWORDS`（逗号分隔），通过 `profiles/dsh-edge-agent/cordis.patch.yml` + `cordis.yml` 绑定：
+
+```yaml
+config:
+  ...
+  fallbackKeywords: !!js (process.env.DSH_EDGE_INTENT_FALLBACK_KEYWORDS ?? '').split(',').filter(Boolean)
+```
+
+部署示例：`DSH_EDGE_INTENT_FALLBACK_KEYWORDS="ファイル,読み込み,書き込み" pnpm dsh ...` 即让 JA 部署走 JA 词表，不动源码。
+
+**边界设计**：replace 而非 append。理由：内置 EN+CN 词表对纯 JA 部署是噪声（JA 文本几乎不会匹配），追加反而引入 false-positive 风险。
+
+#### 7.14.3 测试覆盖
+
+新增 6 个测试用例：
+
+| 用例 | 文件 | 验证 |
+|---|---|---|
+| POST /v1/chat 收到 REJECT → 403 | `http-api-reject.test.ts` | status=403, body=JSON{error,reason,confidence}; agents.create 未被调用（llmCallCount=0）; sanitizer 未被调用（sanitizeCallCount=0）; audit `http.chat.rejected` 落地 |
+| POST /v1/chat/stream 收到 REJECT → 403 | 同上 | 同上 + audit `http.chat.stream.rejected` |
+| POST /v1/chat 收到 CLOUD → 不短路 | 同上 | status !== 403，证明 REJECT guard 不会误伤正常请求 |
+| fallbackKeywords=[] 走内置 EN+CN | `intent-router.test.ts` | `'please file something'` → LOCAL（命中内置 'file'）|
+| fallbackKeywords=JA-only 替换内置 | 同上 | `'ファイルを読み込んで'` → LOCAL；`'please file something'` → CLOUD（EN 'file' 不在 JA 列表，证明 replace 而非 append）|
+| fallbackKeywords=CN-only | 同上 | `'帮我读取文件内容'` → LOCAL；`'read the value'` → CLOUD |
+
+**调试过程中的一个非显然 bug**：
+
+| Bug | 原因 | 修复 |
+|---|---|---|
+| `tests/unit/http-api-reject.test.ts` 早期 3 个测试全失败：状态 0、body undefined | `const { res, status, body } = mockRes()` 把 cap 的 status / body 在调用瞬间 destructured 出来，但 handleRequest 在 await 期间才异步写入；destructured 的 `status` / `body` 是 snapshot，不会随 cap 变化 | mockRes 返回 `{ res, cap }`，测试在 await 之后读 `cap.status` / `cap.body` |
+
+这是 TS 测试 fixture 设计的常见陷阱：mock 持有可变状态时，调用方必须保留对容器对象的引用，而不是其字段的快照。
+
+**总计**：289 个单测全过（+6 new），http-api-reject.test.ts（3 用例）+ intent-router.test.ts 增加 3 用例，verify:build 4 关全过，compile 零错。
+
+---
+
 ## 八、关键发现
 
 1. **M 段代码"裸奔"时代结束** — Phase 2-4 为 M 段补齐了基础安全能力：PII 脱敏、审计日志轮转、会话管理、CLOUD 端到端脱敏。

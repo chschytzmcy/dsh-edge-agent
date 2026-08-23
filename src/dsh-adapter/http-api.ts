@@ -266,7 +266,7 @@ export class HttpApiServiceImpl extends Service {
     }
 
     // Classify intent using intent-router
-    let intent = { category: 'CLOUD' as const, confidence: 0, targetRealm: 'cloud', rationale: 'no-classifier' }
+    let intent: any = { category: 'CLOUD', confidence: 0, targetRealm: 'cloud', rationale: 'no-classifier' }
     if (this.intentRouter) {
       try {
         intent = await this.intentRouter.classify(message)
@@ -275,8 +275,26 @@ export class HttpApiServiceImpl extends Service {
       }
     }
 
+    // Contract: REJECT verdict from intent-router is a hard block. The router
+    // already audited `intent.rules.rejected` at security level; here we
+    // translate to a 403 response and short-circuit before any LLM call or
+    // sanitization. Aligns with design-v6 §2.15 and §4.3 waterfall semantics
+    // — REJECT bypasses the agent loop entirely.
+    if (intent.category === 'REJECT') {
+      const reason = (intent as any).rationale || 'policy-rule:reject'
+      this.audit('warn', 'http.chat.rejected', { reqId, sessionId, reason, confidence: intent.confidence })
+      this.accessLog(reqId, 'POST', '/v1/chat', 403, Date.now() - start, `reject:${reason}`)
+      res.writeHead(403, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({
+        error: 'Request rejected by policy',
+        reason,
+        confidence: intent.confidence,
+      }))
+      return
+    }
+
     // Select provider/model based on intent
-    const isLocal = (intent.category as string) === 'LOCAL'
+    const isLocal = intent.category === 'LOCAL'
     const provider = isLocal ? 'local-qwen3-4b' : 'cloud-deepseek-v4'
     const model = isLocal ? (process.env.DSH_EDGE_LOCAL_LLM_MODEL ?? 'qwen3-4b-instruct-2507') : 'deepseek-chat'
     this.audit('info', 'http.chat.route', { reqId, sessionId, intent: intent.category, provider, model, confidence: intent.confidence, rationale: intent.rationale })
@@ -416,7 +434,7 @@ export class HttpApiServiceImpl extends Service {
     }
 
     // Classify intent (same as handleChat) so SSE routes to the correct LLM
-    let intent = { category: 'CLOUD' as const, confidence: 0, targetRealm: 'cloud', rationale: 'no-classifier' }
+    let intent: any = { category: 'CLOUD', confidence: 0, targetRealm: 'cloud', rationale: 'no-classifier' }
     if (this.intentRouter) {
       try {
         intent = await this.intentRouter.classify(message)
@@ -425,7 +443,23 @@ export class HttpApiServiceImpl extends Service {
       }
     }
 
-    const isLocal = (intent.category as string) === 'LOCAL'
+    // REJECT short-circuit (same contract as handleChat): write SSE-shaped
+    // error event + 403, no LLM call, no sanitization. Client SSE parsers
+    // expect an `error` event before the stream closes.
+    if (intent.category === 'REJECT') {
+      const reason = (intent as any).rationale || 'policy-rule:reject'
+      this.audit('warn', 'http.chat.stream.rejected', { reqId, sessionId, reason, confidence: intent.confidence })
+      this.accessLog(reqId, 'POST', '/v1/chat/stream', 403, Date.now() - start, `reject:${reason}`)
+      res.writeHead(403, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({
+        error: 'Request rejected by policy',
+        reason,
+        confidence: intent.confidence,
+      }))
+      return
+    }
+
+    const isLocal = intent.category === 'LOCAL'
     const provider = isLocal ? 'local-qwen3-4b' : 'cloud-deepseek-v4'
     const model = isLocal ? (process.env.DSH_EDGE_LOCAL_LLM_MODEL ?? 'qwen3-4b-instruct-2507') : 'deepseek-chat'
     this.audit('info', 'http.chat.stream.route', { reqId, sessionId, intent: intent.category, provider, model })

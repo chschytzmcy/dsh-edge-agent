@@ -47,6 +47,12 @@ export interface Config {
    *  env DSH_EDGE_INTENT_MAX_INPUT overrides. Defense-in-depth against
    *  pathologically long prompts overwhelming qwen3-4b. */
   maxInputLength?: number
+  /** Last-resort LOCAL-keyword list used only when privacy-policy is absent
+   *  or has no matching rule. Default ships EN + CN. Override via env
+   *  DSH_EDGE_INTENT_FALLBACK_KEYWORDS (comma-separated) to add JA / KO /
+   *  ES / domain-specific terms without editing source. Replaces the
+   *  built-in list entirely when set. */
+  fallbackKeywords?: string[]
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -58,6 +64,7 @@ export const Config: Schema<Config> = Schema.object({
   llmTimeoutMs: Schema.natural().default(4000),
   recentMessagesLimit: Schema.natural().default(3),
   maxInputLength: Schema.natural().default(2000),
+  fallbackKeywords: Schema.array(Schema.string()).default([] as string[]),
 })
 
 export interface Intent {
@@ -76,8 +83,10 @@ export interface IntentRouterService {
   getStats(): IntentRouterStats
 }
 
-/** Keywords that strongly suggest LOCAL realm. */
-const LOCAL_KEYWORDS = [
+/** Built-in last-resort LOCAL keyword list (EN + CN). Used only when
+ *  privacy-policy is absent / empty AND `config.fallbackKeywords` is unset.
+ *  Users override via env `DSH_EDGE_INTENT_FALLBACK_KEYWORDS` (comma-sep). */
+const LOCAL_KEYWORDS_DEFAULT: readonly string[] = [
   '文件', '读', '写', '删除', '创建', '计算', '加减乘除',
   '本地', '设备', '系统', '磁盘', '目录', '文件夹',
   'file', 'read', 'write', 'delete', 'calculate', 'compute',
@@ -92,6 +101,7 @@ export class IntentRouterServiceImpl extends Service {
   private readonly llmTimeoutMs: number
   private readonly recentMessagesLimit: number
   private readonly maxInputLength: number
+  private readonly fallbackKeywords: readonly string[]
   private readonly llm: any
   private readonly auditLog: AuditLike | undefined
   private readonly stats: IntentRouterStats = {
@@ -119,6 +129,11 @@ export class IntentRouterServiceImpl extends Service {
     this.llmTimeoutMs = config.llmTimeoutMs ?? 4000
     this.recentMessagesLimit = config.recentMessagesLimit ?? 3
     this.maxInputLength = config.maxInputLength ?? 2000
+    // Empty array → use built-in EN+CN default. Non-empty → use as-is so
+    // users can fully replace the list (e.g. JA-only deployment).
+    this.fallbackKeywords = (config.fallbackKeywords && config.fallbackKeywords.length > 0)
+      ? config.fallbackKeywords
+      : LOCAL_KEYWORDS_DEFAULT
     this.llm = (ctx as any).llm
     this.auditLog = auditLog
   }
@@ -503,10 +518,10 @@ Respond ONLY with a single JSON object — no prose, no Markdown:
       }
     }
 
-    // Fallback: hardcoded LOCAL_KEYWORDS (kept for deployments without
-    // privacy-policy, or with empty routingRules).
+    // Fallback: configurable keyword list (defaults to built-in EN + CN).
+    // Used only when privacy-policy is absent / has no matching rule.
     const lower = text.toLowerCase()
-    const matched = LOCAL_KEYWORDS.find((kw) => lower.includes(kw.toLowerCase()))
+    const matched = this.fallbackKeywords.find((kw) => lower.includes(kw.toLowerCase()))
 
     if (matched !== undefined) {
       this.audit('debug', 'intent.rules.hit', { source: 'fallback-keyword', matchedKeyword: matched })

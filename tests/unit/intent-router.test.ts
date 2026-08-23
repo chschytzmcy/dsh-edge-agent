@@ -1069,4 +1069,70 @@ describe('intent-router', () => {
     assert.ok(unclear)
     assert.equal(unclear.payload.responsePreview, null)
   })
+
+  // ── §7.14 Configurable fallbackKeywords ────────────────────────────────────
+  // The fallback keyword list (used only when privacy-policy is absent / has
+  // no matching rule) was previously a hardcoded EN+CN constant. Some
+  // deployments need JA / KO / ES / domain terms without editing source. The
+  // Config field `fallbackKeywords` replaces the built-in list entirely when
+  // non-empty; an empty array (default) means "use the built-in".
+
+  it('uses built-in EN+CN keywords when fallbackKeywords config is empty', async () => {
+    // No LLM, no privacy-policy → falls all the way to fallback keyword list.
+    // 'file' is in the built-in list (EN branch) and matches via .toLowerCase()
+    // — proves the built-in list is the active set when config.fallbackKeywords
+    // is [] (the Schemastery default).
+    const mockCtx = { reflect: { provide: () => {} }, llm: null } as any
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b',
+      confidenceThreshold: 0.6,
+      fallbackKeywords: [],   // empty → built-in EN+CN
+    })
+    const intent = await service.classify('please file something')
+    assert.equal(intent.category, 'LOCAL')
+    assert.match(intent.rationale, /rule-keyword-match/u)
+  })
+
+  it('replaces built-in list with custom keywords when fallbackKeywords is set', async () => {
+    // Custom JA-only list — must match the JA token. Crucially, an EN-only
+    // token ('file') is in the built-in list but NOT in the custom list, so
+    // a hit on 'file' would only happen with the built-in list — confirming
+    // the custom list fully replaces (not appends to) the built-in.
+    const mockCtx = { reflect: { provide: () => {} }, llm: null } as any
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b',
+      confidenceThreshold: 0.6,
+      fallbackKeywords: ['ファイル', '読み込み', '書き込み'],   // JA-only
+    })
+    const jaHit = await service.classify('ファイルを読み込んで')
+    assert.equal(jaHit.category, 'LOCAL')
+    assert.match(jaHit.rationale, /rule-keyword-match/u)
+
+    // The EN 'file' is in the BUILT-IN list but not in the custom JA list —
+    // so it must NOT match under the custom config (it would match under the
+    // default config). This proves `fallbackKeywords` REPLACES, not APPENDS.
+    const enMiss = await service.classify('please file something')
+    assert.equal(enMiss.category, 'CLOUD', 'EN token must miss under JA-only list')
+    assert.match(enMiss.rationale, /default:/u)
+  })
+
+  it('keyword replacement preserves matches across mixed locales (CN still works)', async () => {
+    // Custom list: CN-only terms. Verifies the replace-not-append semantics
+    // work in both directions: CN term still hits, EN term misses.
+    const mockCtx = { reflect: { provide: () => {} }, llm: null } as any
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b',
+      confidenceThreshold: 0.6,
+      fallbackKeywords: ['文件', '本地'],   // CN-only
+    })
+    const cnHit = await service.classify('帮我读取文件内容')
+    assert.equal(cnHit.category, 'LOCAL')
+
+    // 'read' is in the BUILT-IN list (EN), not in our CN-only list.
+    const enMiss = await service.classify('read the value')
+    assert.equal(enMiss.category, 'CLOUD')
+  })
 })
