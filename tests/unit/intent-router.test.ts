@@ -376,4 +376,107 @@ describe('intent-router', () => {
     const ctxEntries = audit.entries.filter((e: any) => e.kind === 'intent.llm.context')
     assert.equal(ctxEntries.length, 0)
   })
+
+  // ─── privacy-policy routing ─────────────────────────────────────────────
+
+  it('uses privacy-policy matchRouting when mounted (LOCAL)', async () => {
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: null,
+      privacyPolicy: {
+        matchRouting: (_text: string) => ({
+          pattern: '(本地|local)',
+          realm: 'LOCAL',
+          confidence: 0.85,
+          rationale: 'policy-matched-local',
+        }),
+      },
+    } as any
+    const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b',
+      confidenceThreshold: 0.6,
+    }, audit as any)
+
+    const intent = await service.classify('本地操作')
+    assert.equal(intent.category, 'LOCAL')
+    assert.equal(intent.confidence, 0.85)
+    assert.equal(intent.targetRealm, 'local')
+    assert.equal(intent.rationale, 'policy-matched-local')
+    const hit = audit.entries.find((e: any) => e.kind === 'intent.rules.hit')
+    assert.ok(hit)
+    assert.equal(hit.payload.source, 'privacy-policy')
+    assert.equal(hit.payload.realm, 'LOCAL')
+  })
+
+  it('uses privacy-policy matchRouting when mounted (SANITIZED)', async () => {
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: null,
+      privacyPolicy: {
+        matchRouting: (_text: string) => ({
+          pattern: '(密码|password|secret)',
+          realm: 'SANITIZED',
+          confidence: 0.9,
+          rationale: 'policy-matched-sanitized',
+        }),
+      },
+    } as any
+    const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b',
+      confidenceThreshold: 0.6,
+    }, audit as any)
+
+    const intent = await service.classify('my password is foo')
+    assert.equal(intent.category, 'SANITIZED')
+    assert.equal(intent.confidence, 0.9)
+    assert.equal(intent.targetRealm, 'sanitized')
+    assert.equal(intent.requiresSanitization, true)
+    assert.equal(intent.rationale, 'policy-matched-sanitized')
+  })
+
+  it('falls back to hardcoded keywords when privacyPolicy is absent', async () => {
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: null,
+      // no privacyPolicy
+    } as any
+    const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b',
+      confidenceThreshold: 0.6,
+    }, audit as any)
+
+    const intent = await service.classify('帮我读取文件内容')
+    assert.equal(intent.category, 'LOCAL')
+    assert.equal(intent.targetRealm, 'local')
+    assert.match(intent.rationale, /rule-keyword-match/u)
+    const hit = audit.entries.find((e: any) => e.kind === 'intent.rules.hit')
+    assert.ok(hit)
+    assert.equal(hit.payload.source, 'fallback-keyword')
+  })
+
+  it('falls back when privacyPolicy.matchRouting throws', async () => {
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: null,
+      privacyPolicy: { matchRouting: () => { throw new Error('boom') } },
+    } as any
+    const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b',
+      confidenceThreshold: 0.6,
+    }, audit as any)
+
+    const intent = await service.classify('帮我读文件')
+    assert.equal(intent.category, 'LOCAL')
+    assert.match(intent.rationale, /rule-keyword-match/u)
+    const errEntry = audit.entries.find((e: any) => e.kind === 'intent.policy.error')
+    assert.ok(errEntry)
+  })
 })

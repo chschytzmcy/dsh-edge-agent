@@ -489,6 +489,69 @@ const historyBlock = (() => {
 
 ---
 
+### 7.10 intent-router 接进 privacy-policy 路由规则（2026-08-23）
+
+**背景**：`intent-router.classifyWithRules()` 之前用的是**硬编码**的 17 个 `LOCAL_KEYWORDS`，与 `privacy-policy` 完全脱钩。结果：
+- 路由规则不可热更新（privacy-policy 本来就支持 hot reload）
+- `SANITIZED` category 在 schema 里允许但**永远不会被采用**（硬编码只返回 LOCAL/CLOUD）
+- v6 §2.15 设计明确要求 `ctx['privacy-policy'].getRoutingRules()` 动态规则
+
+**实现**（`src/dsh-adapter/intent-router.ts:classifyWithRules`）：
+
+```ts
+const policy = (this.ctx as any).privacyPolicy
+let matchedRule = null
+try {
+  const r = policy?.matchRouting?.(text)
+  if (r && (r.realm === 'LOCAL' || r.realm === 'CLOUD' || r.realm === 'SANITIZED')) {
+    matchedRule = r
+  }
+} catch (err) { this.audit('warn', 'intent.policy.error', {...}) }
+
+if (matchedRule) {
+  const realm = matchedRule.realm
+  const targetRealm = realm === 'LOCAL' ? 'local' : realm === 'SANITIZED' ? 'sanitized' : 'cloud'
+  return { category: realm, confidence: matchedRule.confidence, targetRealm,
+           rationale: matchedRule.rationale, requiresSanitization: realm === 'SANITIZED', ... }
+}
+
+// 兜底：硬编码 LOCAL_KEYWORDS（无 privacy-policy 或空 routingRules 时）
+```
+
+**关键点**：
+- 不动 `inject`（保持 `['llm', 'auditLog']`），软依赖 late-bind
+- privacy-policy 缺失 / matchRouting 抛错 / 无匹配规则 → 回退硬编码（fail-open，向后兼容）
+- `realm: 'REJECT'` 被过滤（prompt-guard 已在 L0 拦截，重复处理）
+- **首次解锁 `SANITIZED` realm 派发**——policy.json 里写 `realm: 'SANITIZED'` 的规则现在会真正进入路由决策，且 `requiresSanitization: true` 让 http-api / sanitizer 知道要脱敏
+
+**新 audit kind**：
+| kind | level | 触发 |
+|---|---|---|
+| `intent.rules.hit` (扩展) | debug | 新增 `payload.source: 'privacy-policy' \| 'fallback-keyword'` 区分来源 |
+| `intent.policy.error` | warn | matchRouting 抛错（不影响主链路）|
+
+**典型用法**：
+```jsonc
+// profiles/dsh-edge-agent/privacy-policy.json
+{
+  "routingRules": [
+    { "pattern": "(本地|local|文件|file)", "realm": "LOCAL",      "confidence": 0.85, "rationale": "local-ops" },
+    { "pattern": "(密码|password|secret)", "realm": "SANITIZED", "confidence": 0.9,  "rationale": "sensitive-payload" }
+  ]
+}
+```
+改 policy.json → privacy-policy hot reload → 下次 classify 立即生效，无需重启 agent。
+
+**4 个新单测**：
+1. privacy-policy LOCAL 规则命中 → category=LOCAL, confidence=0.85, rationale=policy-matched-local, audit source=`privacy-policy`
+2. privacy-policy SANITIZED 规则命中 → category=SANITIZED, targetRealm=`sanitized`, requiresSanitization=true
+3. privacy-policy 缺失 → 兜底硬编码 LOCAL_KEYWORDS，audit source=`fallback-keyword`
+4. privacy-policy.matchRouting 抛错 → 兜底 + audit `intent.policy.error`
+
+**总计**：264 个单测全过，verify:build 4 关全过，compile 零错。
+
+---
+
 ---
 
 ## 八、关键发现

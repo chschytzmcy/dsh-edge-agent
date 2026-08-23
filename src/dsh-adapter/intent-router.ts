@@ -272,11 +272,49 @@ Respond ONLY with a single JSON object — no prose, no Markdown:
   }
 
   private classifyWithRules(text: string): Intent {
+    // Phase: try privacy-policy routing rules first (hot-reloadable, richer
+    // semantics: LOCAL/CLOUD/SANITIZED/REJECT with per-rule confidence +
+    // rationale). Soft dep: missing or throwing matchRouting falls through
+    // to the hardcoded keyword list (fail-open). The hardcoded list is the
+    // last resort — even if privacy-policy is mounted but has zero rules,
+    // we still try the local keyword fallback.
+    const policy = (this.ctx as any).privacyPolicy
+    let matchedRule: { pattern: string; realm: string; confidence: number; rationale: string } | null = null
+    try {
+      const r = policy?.matchRouting?.(text)
+      if (r && (r.realm === 'LOCAL' || r.realm === 'CLOUD' || r.realm === 'SANITIZED')) {
+        matchedRule = r
+      }
+    } catch (err: any) {
+      this.audit('warn', 'intent.policy.error', { error: err?.message ?? String(err) })
+    }
+
+    if (matchedRule) {
+      const realm = matchedRule.realm
+      const targetRealm = realm === 'LOCAL' ? 'local' : realm === 'SANITIZED' ? 'sanitized' : 'cloud'
+      this.audit('debug', 'intent.rules.hit', {
+        source: 'privacy-policy',
+        pattern: matchedRule.pattern,
+        realm,
+        confidence: matchedRule.confidence,
+      })
+      return {
+        category: realm as Intent['category'],
+        confidence: matchedRule.confidence,
+        targetRealm,
+        rationale: matchedRule.rationale || `policy-rule:${realm.toLowerCase()}`,
+        dataLevel: 'public',
+        requiresSanitization: realm === 'SANITIZED',
+      }
+    }
+
+    // Fallback: hardcoded LOCAL_KEYWORDS (kept for deployments without
+    // privacy-policy, or with empty routingRules).
     const lower = text.toLowerCase()
     const matched = LOCAL_KEYWORDS.find((kw) => lower.includes(kw.toLowerCase()))
 
     if (matched !== undefined) {
-      this.audit('debug', 'intent.rules.hit', { matchedKeyword: matched })
+      this.audit('debug', 'intent.rules.hit', { source: 'fallback-keyword', matchedKeyword: matched })
       return {
         category: 'LOCAL',
         confidence: 0.7,
