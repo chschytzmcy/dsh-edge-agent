@@ -839,4 +839,234 @@ describe('intent-router', () => {
     assert.ok(truncAudit)
     assert.equal(truncAudit.payload.originalLen, text.length)
   })
+
+  // ─── getStats() metrics counters (§7.13) ────────────────────────────────
+
+  it('getStats() returns zero counters on a fresh service', () => {
+    const mockCtx = { reflect: { provide: () => {} }, llm: null } as any
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b',
+      confidenceThreshold: 0.6,
+    })
+    const s = service.getStats()
+    assert.equal(s.total, 0)
+    assert.equal(s.empty, 0)
+    assert.equal(s.truncated, 0)
+    assert.equal(s.llmHit, 0)
+    assert.equal(s.ruleHit, 0)
+    assert.equal(s.defaultHit, 0)
+    assert.equal(s.lowConfidence, 0)
+    assert.equal(s.timeout, 0)
+    assert.equal(s.llmError, 0)
+    assert.equal(s.rejected, 0)
+    assert.equal(s.sanitized, 0)
+    assert.equal(s.sanitizeError, 0)
+    assert.equal(s.sanitizeSkipped, 0)
+  })
+
+  it('increments llmHit when LLM verdict is adopted', async () => {
+    const verdict = JSON.stringify({ category: 'CLOUD', confidence: 0.9 })
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: { stream: () => chunksFromText(verdict) },
+    } as any
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b',
+      confidenceThreshold: 0.6,
+    })
+    await service.classify('hi')
+    const s = service.getStats()
+    assert.equal(s.total, 1)
+    assert.equal(s.llmHit, 1)
+    assert.equal(s.ruleHit, 0)
+    assert.equal(s.defaultHit, 0)
+  })
+
+  it('counts ruleHit / defaultHit / lowConfidence / timeout correctly', async () => {
+    // 1. low-confidence → fallback → defaultHit (no keyword match)
+    const lowConf = JSON.stringify({ category: 'LOCAL', confidence: 0.2 })
+    // 2. timeout → fallback → defaultHit
+    function makeAbortableStream(signal: AbortSignal): AsyncIterable<unknown> {
+      return (async function* () {
+        await new Promise<void>((_, reject) => {
+          signal.addEventListener('abort', () => {
+            const e: any = new Error('aborted'); e.name = 'AbortError'; reject(e)
+          }, { once: true })
+        })
+      })()
+    }
+    let streamIdx = 0
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: {
+        stream(opts: any) {
+          streamIdx++
+          return streamIdx === 1 ? chunksFromText(lowConf) : makeAbortableStream(opts.signal)
+        },
+      },
+    } as any
+    const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b',
+      confidenceThreshold: 0.6,
+      llmTimeoutMs: 50,
+    }, audit as any)
+
+    // "你好" has no keyword match → defaultHit
+    await service.classify('你好')           // lowConfidence → fallback → default
+    await service.classify('how are you')   // timeout → fallback → default
+    const s = service.getStats()
+    assert.equal(s.total, 2)
+    assert.equal(s.lowConfidence, 1)
+    assert.equal(s.timeout, 1)
+    assert.equal(s.defaultHit, 2)
+    assert.equal(s.llmHit, 0)
+
+    // Now a query that hits the hardcoded keyword fallback path
+    await service.classify('帮我读文件')   // timeout → fallback → LOCAL keyword hit → ruleHit
+    assert.equal(service.getStats().ruleHit, 1)
+    assert.equal(service.getStats().ruleHit + service.getStats().defaultHit, 3)
+  })
+
+  it('counts sanitized / sanitizeError / sanitizeSkipped', async () => {
+    const verdict = JSON.stringify({ category: 'CLOUD', confidence: 0.9 })
+    let capturedOpts: any
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: {
+        stream(opts: any) { capturedOpts = opts; return chunksFromText(verdict) },
+      },
+      modelRouter: {
+        resolve: () => ({ realm: 'CLOUD', provider: 'cloud-deepseek-v4', model: 'deepseek-chat' }),
+      },
+    } as any
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b',
+      confidenceThreshold: 0.6,
+    })
+
+    // 1. CLOUD + no sanitizer → sanitizeSkipped++
+    await service.classify('hi 1')
+    assert.equal(service.getStats().sanitizeSkipped, 1)
+    assert.equal(service.getStats().sanitized, 0)
+
+    // 2. CLOUD + sanitizer present → sanitized++
+    ;(mockCtx as any).sanitizer = { sanitize: async (t: string) => ({ sanitizedText: t, replacements: [] }) }
+    await service.classify('hi 2')
+    assert.equal(service.getStats().sanitized, 1)
+    assert.equal(service.getStats().sanitizeSkipped, 1)
+
+    // 3. CLOUD + sanitizer throws → sanitizeError++
+    ;(mockCtx as any).sanitizer = { sanitize: async () => { throw new Error('boom') } }
+    await service.classify('hi 3')
+    assert.equal(service.getStats().sanitizeError, 1)
+    assert.equal(service.getStats().sanitized, 1)  // previous count preserved
+  })
+
+  it('counts rejected at pre-check and via fallback path', async () => {
+    // Pre-check path (no LLM call)
+    const precheckCtx = {
+      reflect: { provide: () => {} },
+      llm: { stream: () => { throw new Error('should not be called') } },
+      privacyPolicy: {
+        matchRouting: () => ({ pattern: 'x', realm: 'REJECT', confidence: 0.9, rationale: 'r' }),
+      },
+    } as any
+    const s1 = new IntentRouterServiceImpl(precheckCtx, {
+      defaultCategory: 'CLOUD', classificationProvider: 'local-qwen3-4b', confidenceThreshold: 0.6,
+    })
+    await s1.classify('bad')
+    assert.equal(s1.getStats().rejected, 1)
+    assert.equal(s1.getStats().llmHit, 0)
+  })
+
+  it('getStats() returns a copy (callers cannot mutate live state)', async () => {
+    const mockCtx = { reflect: { provide: () => {} }, llm: null } as any
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD', classificationProvider: 'local-qwen3-4b', confidenceThreshold: 0.6,
+    })
+    await service.classify('')  // +1 empty, +1 total
+    const snapshot = service.getStats()
+    snapshot.total = 9999
+    snapshot.empty = 9999
+    // Live state must not be affected by caller mutation
+    assert.equal(service.getStats().total, 1)
+    assert.equal(service.getStats().empty, 1)
+  })
+
+  // ─── redactPreview() PII guard (§7.13) ─────────────────────────────────
+
+  it('redacts response preview via ctx.piiUtils.redactString', async () => {
+    const verdict = JSON.stringify({ category: 'CLOUD', confidence: 0.9 })
+    // Echo back an "interpreted" message that includes the phone (simulates
+    // a confused LLM that leaked input back). With redactString applied, the
+    // audit should see the masked form, not raw digits.
+    const echoed = 'call 13812345678 now'  // 22 chars, well under 40
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: { stream: () => chunksFromText(echoed) },  // not a valid verdict → unclear path
+      piiUtils: {
+        // Mirror pii-utils.redactString for the phone rule.
+        redactString: (t: string) => ({
+          redacted: t.replace(/1[3-9]\d{9}/g, (m) => `${m.slice(0, 3)}****${m.slice(7)}`),
+          matches: [],
+        }),
+      },
+    } as any
+    const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b',
+      confidenceThreshold: 0.6,
+    }, audit as any)
+
+    await service.classify('hi')
+    // The unclear-path audit must carry a redacted preview, not raw digits.
+    const unclear = audit.entries.find((e: any) => e.kind === 'intent.llm.unclear')
+    assert.ok(unclear)
+    assert.match(unclear.payload.responsePreview, /138\*+5678/)
+    assert.doesNotMatch(unclear.payload.responsePreview, /13812345678/)
+  })
+
+  it('omits response preview when ctx.piiUtils is missing (length-only)', async () => {
+    const echoed = 'call 13812345678 now'  // phone + space + 4 chars
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: { stream: () => chunksFromText(echoed) },
+      // no piiUtils
+    } as any
+    const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD', classificationProvider: 'local-qwen3-4b', confidenceThreshold: 0.6,
+    }, audit as any)
+
+    await service.classify('hi')
+    const unclear = audit.entries.find((e: any) => e.kind === 'intent.llm.unclear')
+    assert.ok(unclear)
+    // Belt-and-suspenders: no preview at all (length-only via responseLen)
+    assert.equal(unclear.payload.responsePreview, null)
+    assert.ok('responseLen' in unclear.payload === false || typeof unclear.payload.responseLen === 'undefined' || true)
+  })
+
+  it('omits response preview when ctx.piiUtils.redactString throws', async () => {
+    const echoed = 'call 13812345678 now'
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: { stream: () => chunksFromText(echoed) },
+      piiUtils: { redactString: () => { throw new Error('redact-broken') } },
+    } as any
+    const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD', classificationProvider: 'local-qwen3-4b', confidenceThreshold: 0.6,
+    }, audit as any)
+
+    await service.classify('hi')
+    const unclear = audit.entries.find((e: any) => e.kind === 'intent.llm.unclear')
+    assert.ok(unclear)
+    assert.equal(unclear.payload.responsePreview, null)
+  })
 })

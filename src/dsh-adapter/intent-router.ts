@@ -72,6 +72,8 @@ export interface Intent {
 export interface IntentRouterService {
   classify(text: string, context?: { recentMessages?: unknown[]; sessionId?: string }): Promise<Intent>
   resolve(intent: Intent): { realm: string; config: Record<string, unknown> }
+  /** Snapshot of in-memory counters. O(1) read for ops dashboards. */
+  getStats(): IntentRouterStats
 }
 
 /** Keywords that strongly suggest LOCAL realm. */
@@ -92,6 +94,21 @@ export class IntentRouterServiceImpl extends Service {
   private readonly maxInputLength: number
   private readonly llm: any
   private readonly auditLog: AuditLike | undefined
+  private readonly stats: IntentRouterStats = {
+    total: 0,
+    empty: 0,
+    truncated: 0,
+    llmHit: 0,
+    ruleHit: 0,
+    defaultHit: 0,
+    lowConfidence: 0,
+    timeout: 0,
+    llmError: 0,
+    rejected: 0,
+    sanitized: 0,
+    sanitizeError: 0,
+    sanitizeSkipped: 0,
+  }
 
   constructor(ctx: Context, config: Config, auditLog?: AuditLike) {
     super(ctx, 'intentRouter')
@@ -111,13 +128,35 @@ export class IntentRouterServiceImpl extends Service {
     void this.auditLog.log({ level, kind, source: 'intent-router', payload }).catch(() => {})
   }
 
+  /** Redact PII from a short preview string before logging. Soft-dep on
+   *  ctx.piiUtils.redactString. Returns `null` (rather than leaking) if
+   *  redaction is unavailable — callers should log length-only in that case.
+   *  Defense-in-depth: audit-log already runs redactObject on every payload,
+   *  but router-level redaction survives audit-log misconfiguration. */
+  private redactPreview(text: string): string | null {
+    if (!text) return null
+    const trimmed = text.trim().slice(0, 40)
+    const piiUtils = (this.ctx as any).piiUtils
+    if (piiUtils && typeof piiUtils.redactString === 'function') {
+      try {
+        const result = piiUtils.redactString(trimmed)
+        return typeof result?.redacted === 'string' ? result.redacted : null
+      } catch {
+        return null
+      }
+    }
+    return null
+  }
+
   async classify(text: string, context?: { recentMessages?: unknown[]; sessionId?: string }): Promise<Intent> {
     const start = Date.now()
+    this.stats.total++
 
     // Input edge: empty / whitespace-only text → short-circuit to default.
     // Wasted LLM call is still bounded by llmTimeoutMs, but on the hot path
     // (e.g. UI cleared input) we want zero latency.
     if (!text || !text.trim()) {
+      this.stats.empty++
       this.audit('debug', 'intent.classify.empty', { textLen: text?.length ?? 0 })
       return {
         category: this.defaultCategory,
@@ -134,6 +173,7 @@ export class IntentRouterServiceImpl extends Service {
     // a 100kB paste with 5 phone numbers still only ships 5 placeholders.
     let effectiveText = text
     if (text.length > this.maxInputLength) {
+      this.stats.truncated++
       this.audit('warn', 'intent.classify.truncated', {
         originalLen: text.length,
         truncatedLen: this.maxInputLength,
@@ -157,6 +197,7 @@ export class IntentRouterServiceImpl extends Service {
       try {
         const pre = policy.matchRouting(effectiveText)
         if (pre && pre.realm === 'REJECT') {
+          this.stats.rejected++
           this.audit('security', 'intent.rules.rejected', {
             source: 'privacy-policy-precheck',
             pattern: pre.pattern,
@@ -185,6 +226,7 @@ export class IntentRouterServiceImpl extends Service {
     // Try LLM classification first
     try {
       const intent = await this.classifyWithLlm(effectiveText, context?.recentMessages, context?.sessionId)
+      this.stats.llmHit++
       this.audit('info', 'intent.classify.end', {
         textLen: effectiveText.length,
         path: 'llm',
@@ -195,9 +237,14 @@ export class IntentRouterServiceImpl extends Service {
       })
       return intent
     } catch (err: any) {
+      // classifyWithLlm already audited the specific kind (timeout vs error
+      // vs low-confidence vs unclear). Here we just attribute the fallback.
       this.audit('warn', 'intent.classify.llm_error', { textLen: effectiveText.length, error: err?.message ?? String(err) })
       // Fall back to keyword rules
       const intent = this.classifyWithRules(effectiveText)
+      if (intent.category === 'REJECT') this.stats.rejected++
+      else if (intent.rationale.startsWith('default:')) this.stats.defaultHit++
+      else this.stats.ruleHit++
       this.audit('info', 'intent.classify.end', {
         textLen: effectiveText.length,
         path: 'rules-after-llm-error',
@@ -255,6 +302,7 @@ export class IntentRouterServiceImpl extends Service {
           const result = await sanitizer.sanitize(text, { sessionId: sessionId ?? 'default' })
           const replacementCount = Array.isArray(result?.replacements) ? result.replacements.length : 0
           promptText = result?.sanitizedText ?? text
+          this.stats.sanitized++
           this.audit('info', 'intent.llm.sanitized', {
             sessionId: sessionId ?? 'default',
             originalLen: text.length,
@@ -262,6 +310,7 @@ export class IntentRouterServiceImpl extends Service {
             replacements: replacementCount,
           })
         } catch (err: any) {
+          this.stats.sanitizeError++
           this.audit('warn', 'intent.llm.sanitize-error', {
             error: err?.message ?? String(err),
             originalLen: text.length,
@@ -269,6 +318,7 @@ export class IntentRouterServiceImpl extends Service {
           // fail-open: keep original text
         }
       } else {
+        this.stats.sanitizeSkipped++
         this.audit('debug', 'intent.llm.sanitize-skipped', { reason: 'no-sanitizer-handle' })
       }
     }
@@ -339,6 +389,8 @@ Respond ONLY with a single JSON object — no prose, no Markdown:
     } catch (err: any) {
       const isAbort = err?.name === 'AbortError' || controller.signal.aborted
       const durationMs = Date.now() - llmStart
+      this.stats.timeout += isAbort ? 1 : 0
+      this.stats.llmError += isAbort ? 0 : 1
       this.audit('warn', isAbort ? 'intent.llm.timeout' : 'intent.llm.error', {
         durationMs,
         timeoutMs: this.llmTimeoutMs,
@@ -346,27 +398,36 @@ Respond ONLY with a single JSON object — no prose, no Markdown:
         responseLen: responseText.length,
         error: err?.message ?? String(err),
       })
-      throw err
+      const wrapped: any = new Error(err?.message ?? String(err))
+      wrapped.name = err?.name ?? 'Error'
+      wrapped._intentRouterReason = isAbort ? 'timeout' : 'llm-error'
+      throw wrapped
     } finally {
       clearTimeout(timer)
     }
-    this.audit('debug', 'intent.llm.response', { durationMs: Date.now() - llmStart, chunks, responseLen: responseText.length, responsePreview: responseText.trim().slice(0, 40) })
+    this.audit('debug', 'intent.llm.response', { durationMs: Date.now() - llmStart, chunks, responseLen: responseText.length, responsePreview: this.redactPreview(responseText.trim().slice(0, 40)) })
 
     const verdict = parseClassificationVerdict(responseText)
     if (!verdict) {
-      this.audit('debug', 'intent.llm.unclear', { responsePreview: responseText.trim().slice(0, 40) })
-      throw new Error('intent-router: llm response unclear')
+      this.stats.llmError++
+      this.audit('debug', 'intent.llm.unclear', { responsePreview: this.redactPreview(responseText.trim().slice(0, 40)) })
+      const e: any = new Error('intent-router: llm response unclear')
+      e._intentRouterReason = 'unclear'
+      throw e
     }
     this.audit('debug', 'intent.llm.parsed', { category: verdict.category, confidence: verdict.confidence })
 
     // Confidence gate: if below threshold, fall back to keyword rules.
     if (verdict.confidence < this.confidenceThreshold) {
+      this.stats.lowConfidence++
       this.audit('info', 'intent.llm.low-confidence', {
         confidence: verdict.confidence,
         threshold: this.confidenceThreshold,
         category: verdict.category,
       })
-      throw new Error(`intent-router: low confidence ${verdict.confidence} < ${this.confidenceThreshold}`)
+      const e: any = new Error(`intent-router: low confidence ${verdict.confidence} < ${this.confidenceThreshold}`)
+      e._intentRouterReason = 'low-confidence'
+      throw e
     }
 
     return {
@@ -473,6 +534,13 @@ Respond ONLY with a single JSON object — no prose, no Markdown:
   resolve(intent: Intent): { realm: string; config: Record<string, unknown> } {
     return resolveIntent(intent)
   }
+
+  /** Snapshot of in-memory counters. Returned object is a copy so callers
+   *  can't mutate the live state. Counters are process-local — restart
+   *  zeroes them. */
+  getStats(): IntentRouterStats {
+    return { ...this.stats }
+  }
 }
 
 /** Map an Intent to a realm/config tuple the rest of the agent loop can consume. */
@@ -493,6 +561,36 @@ interface ClassificationVerdict {
  *  verdict set because privacy-policy rules can declare REJECT. */
 const RULE_CATEGORIES = ['LOCAL', 'CLOUD', 'SANITIZED', 'REJECT'] as const
 type RuleCategory = typeof RULE_CATEGORIES[number]
+
+/** In-memory counters exposed via getStats(). Pure observability; the audit
+ *  log already carries every per-call kind, but counters give operators an
+ *  O(1) read for dashboards / alerts (rate of timeouts, % sanitized, etc.)
+ *  without parsing JSONL. */
+export interface IntentRouterStats {
+  total: number
+  empty: number
+  truncated: number
+  /** LLM verdict adopted as the final intent. */
+  llmHit: number
+  /** classifyWithRules adopted — privacy-policy match OR hardcoded keyword. */
+  ruleHit: number
+  /** No LLM verdict, no keyword → defaultCategory returned. */
+  defaultHit: number
+  /** LLM returned below confidence threshold (cause of fallback to rules). */
+  lowConfidence: number
+  /** AbortController fired during LLM stream. */
+  timeout: number
+  /** LLM threw a non-timeout error (network, parse, etc.). */
+  llmError: number
+  /** REJECT verdict returned (pre-check or fallback). */
+  rejected: number
+  /** Sanitizer applied to CLOUD-classification prompt. */
+  sanitized: number
+  /** Sanitizer threw (fail-open → original text reached LLM). */
+  sanitizeError: number
+  /** CLOUD realm but no sanitizer handle mounted (fail-open). */
+  sanitizeSkipped: number
+}
 
 /**
  * Fence-tolerant parser for `{ category, confidence }` JSON the LLM returns.

@@ -703,6 +703,80 @@ if (text.length > this.maxInputLength) {       // default 2000
 
 **总计**：274 个单测全过（+6 new），verify:build 4 关全过，compile 零错。
 
+### 7.13 getStats() 指标 + response preview PII 脱敏（2026-08-23）
+
+**背景**：完整性矩阵 G5（无指标计数器，运维需 parse JSONL 算超时率/命中率）和 G6（`intent.llm.response` audit 携带的 `responsePreview.slice(0, 40)` 在 LLM 回声未脱敏输入时可能泄 PII）。两个改动都是 observability + 防御性，单 commit 原子交付。
+
+**1) getStats() 指标**（`src/dsh-adapter/intent-router.ts`）
+
+`IntentRouterService` 加 `getStats(): IntentRouterStats` 接口，13 个 in-memory 计数器：
+
+```ts
+interface IntentRouterStats {
+  total: number            // classify() 调用总数
+  empty: number            // 空输入短路
+  truncated: number        // 超 maxInputLength 截断
+  llmHit: number           // LLM verdict 被采纳
+  ruleHit: number          // 关键词或 policy 规则命中（fallback 路径）
+  defaultHit: number       // 落到 defaultCategory
+  lowConfidence: number    // LLM verdict 低于 threshold
+  timeout: number          // AbortController 触发
+  llmError: number         // LLM 抛错（timeout 除外）+ unclear
+  rejected: number         // REJECT 返回（pre-check 或 fallback）
+  sanitized: number        // CLOUD + sanitizer 应用
+  sanitizeError: number    // sanitizer 抛错
+  sanitizeSkipped: number  // CLOUD 但无 sanitizer handle
+}
+```
+
+每次 classify 在事件源 increment（不靠 audit kind 反推计数），`getStats()` 返回 `{...stats}` 副本防止外部突变。
+
+**`classifyWithLlm` 错误归因**：用 `_intentRouterReason` 属性标记抛出的错误（`'timeout' | 'llm-error' | 'unclear' | 'low-confidence'`），使 outer catch 能区分 timeout / error / low-confidence / unclear —— 这正是 P0 缺口（之前 timeout 与 error 混在一起，无法算真实超时率）。
+
+**2) redactPreview() 响应预览脱敏**（同样文件）
+
+`intent.llm.response` 与 `intent.llm.unclear` 两个 audit 携带 `responsePreview` 字段（response 前 40 字符）。如果 LLM 把未脱敏的输入回声回来（例如 CLOUD 分类 LLM + sanitizer 缺失/抛错 + LLM confused），preview 会带原始 PII。
+
+```ts
+private redactPreview(text: string): string | null {
+  if (!text) return null
+  const trimmed = text.trim().slice(0, 40)
+  const piiUtils = (this.ctx as any).piiUtils
+  if (piiUtils?.redactString) {
+    try {
+      const result = piiUtils.redactString(trimmed)
+      return typeof result?.redacted === 'string' ? result.redacted : null
+    } catch { return null }
+  }
+  return null
+}
+```
+
+**3 个失败模式**都安全降级到 **length-only（无 preview）**：
+- `ctx.piiUtils` 缺失（plugin 未 mount）
+- `piiUtils.redactString` 抛错
+- 返回值 `redacted` 不是 string
+
+不是 fallback 到 raw preview —— 这正是 G6 想要解决的泄 PII 路径，宁可少记 40 字符也不能泄。
+
+**Defense-in-depth**：audit-log 已经在 `enablePIIRedaction: true` 时对 payload 跑 `redactObject`（`src/dsh-adapter/audit-log.ts:167`）。router 层的 redactPreview 是 belt-and-suspenders：审计 log 配置被改 / audit-log plugin 未 mount 时仍然安全。
+
+**9 个新单测**：
+
+| # | 验证 |
+|---|---|
+| 1 | `getStats()` 新 service 全 0 |
+| 2 | `llmHit++` 当 LLM verdict 被采纳 |
+| 3 | `lowConfidence++` + `timeout++` + `defaultHit++` + `ruleHit++` 在 fallback 路径中正确归因 |
+| 4 | `sanitized` / `sanitizeError` / `sanitizeSkipped` 三个独立计数器 |
+| 5 | `rejected++` 在 pre-check 路径中（LLM 仍然 0 次调用） |
+| 6 | `getStats()` 返回副本（外部 mutation 不影响 live state） |
+| 7 | `redactPreview` 用 `ctx.piiUtils.redactString` 把 phone → `138****5678` |
+| 8 | `piiUtils` 缺失 → `responsePreview: null`（不泄原文）|
+| 9 | `piiUtils.redactString` 抛错 → `responsePreview: null`（同上）|
+
+**总计**：283 个单测全过（+9 new），intent-router.test.ts 现在 38 用例，verify:build 4 关全过，compile 零错。
+
 ---
 
 ## 八、关键发现
