@@ -48,6 +48,7 @@ dsh-edge-agent 通过**环境变量**和 `cordis.yml` 进行配置。所有环�
 | `DSH_EDGE_DEFAULT_DATA_LEVEL` | `sanitized` | 默认数据级别（`public` / `sanitized` / `internal`） |
 | `DSH_EDGE_ROUTER_LLM_FALLBACK` | `true` | 当规则匹配置信度低时是否使用 LLM 兜底 |
 | `DSH_EDGE_ROUTER_THRESHOLD` | `0.6` | 规则匹配置信度阈值 |
+| `DSH_EDGE_INTENT_CONFIDENCE_THRESHOLD` | `0.6` | LLM 分类置信度门槛；低于此值降级到 keyword 规则 |
 | `DSH_EDGE_GUARD_MODEL` | `false` | 是否启用 prompt-guard 模型辅助检测 |
 | `DSH_EDGE_GUARD_MODEL_PROVIDER` | `local-qwen3-4b` | 模型辅助检测 provider route |
 | `DSH_EDGE_GUARD_MODEL_MODEL` | `qwen3-4b` | 模型辅助检测 model id |

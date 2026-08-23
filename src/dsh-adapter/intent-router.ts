@@ -30,6 +30,10 @@ export interface Config {
   classificationProvider: string
   /** Model id passed alongside `classificationProvider`. */
   classificationModel: string
+  /** Minimum confidence the LLM must express to be trusted.
+   *  Below this value, the router falls back to keyword rules
+   *  (fail-open, not REJECT — see Phase B plan). */
+  confidenceThreshold: number
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -37,6 +41,7 @@ export const Config: Schema<Config> = Schema.object({
     .default('CLOUD'),
   classificationProvider: Schema.string().default('local-qwen3-4b'),
   classificationModel: Schema.string().default('qwen3-4b'),
+  confidenceThreshold: Schema.natural().default(0.6),
 })
 
 export interface Intent {
@@ -65,6 +70,7 @@ export class IntentRouterServiceImpl extends Service {
   private readonly defaultCategory: Intent['category']
   private readonly classificationProvider: string
   private readonly classificationModel: string
+  private readonly confidenceThreshold: number
   private readonly llm: any
   private readonly auditLog: AuditLike | undefined
 
@@ -73,6 +79,7 @@ export class IntentRouterServiceImpl extends Service {
     this.defaultCategory = config.defaultCategory
     this.classificationProvider = config.classificationProvider
     this.classificationModel = config.classificationModel
+    this.confidenceThreshold = config.confidenceThreshold
     this.llm = (ctx as any).llm
     this.auditLog = auditLog
   }
@@ -121,15 +128,17 @@ export class IntentRouterServiceImpl extends Service {
       throw new Error('intent-router: no llm handle')
     }
 
+    // Phase B: ask for structured JSON output with explicit confidence.
+    // Below the configured threshold we fall back to keyword rules
+    // (fail-open; we do NOT reject — see plan Phase B).
     const prompt = `判断以下用户请求属于哪类：
 - LOCAL：本地文件操作、设备控制、数学计算、系统管理
 - CLOUD：知识问答、聊天、创意写作、需要联网的任务
 
-只回答 LOCAL 或 CLOUD，不要其他内容。
+Respond ONLY with a single JSON object — no prose, no Markdown:
+{ "category": "LOCAL"|"CLOUD", "confidence": <0.0-1.0> }
 
-用户请求：${text}
-
-类别：`
+用户请求：${text}`
 
     const userMessage = createUserMessage({
       content: [{ type: 'text', text: prompt }],
@@ -158,30 +167,31 @@ export class IntentRouterServiceImpl extends Service {
     }
     this.audit('debug', 'intent.llm.response', { durationMs: Date.now() - llmStart, chunks, responseLen: responseText.length, responsePreview: responseText.trim().slice(0, 40) })
 
-    const normalized = responseText.trim().toUpperCase()
-    if (normalized.includes('LOCAL')) {
-      return {
-        category: 'LOCAL',
-        confidence: 0.85,
-        targetRealm: 'local',
-        rationale: 'llm-classified:local',
-        dataLevel: 'public',
-        requiresSanitization: false,
-      }
-    } else if (normalized.includes('CLOUD')) {
-      return {
-        category: 'CLOUD',
-        confidence: 0.85,
-        targetRealm: 'cloud',
-        rationale: 'llm-classified:cloud',
-        dataLevel: 'public',
-        requiresSanitization: false,
-      }
+    const verdict = parseClassificationVerdict(responseText)
+    if (!verdict) {
+      this.audit('debug', 'intent.llm.unclear', { responsePreview: responseText.trim().slice(0, 40) })
+      throw new Error('intent-router: llm response unclear')
+    }
+    this.audit('debug', 'intent.llm.parsed', { category: verdict.category, confidence: verdict.confidence })
+
+    // Confidence gate: if below threshold, fall back to keyword rules.
+    if (verdict.confidence < this.confidenceThreshold) {
+      this.audit('info', 'intent.llm.low-confidence', {
+        confidence: verdict.confidence,
+        threshold: this.confidenceThreshold,
+        category: verdict.category,
+      })
+      throw new Error(`intent-router: low confidence ${verdict.confidence} < ${this.confidenceThreshold}`)
     }
 
-    // LLM responded but unclear, fall back to rules
-    this.audit('debug', 'intent.llm.unclear', { responsePreview: normalized.slice(0, 40) })
-    throw new Error('intent-router: llm response unclear')
+    return {
+      category: verdict.category,
+      confidence: verdict.confidence,
+      targetRealm: verdict.category === 'LOCAL' ? 'local' : 'cloud',
+      rationale: `llm-classified:${verdict.category.toLowerCase()}`,
+      dataLevel: 'public',
+      requiresSanitization: false,
+    }
   }
 
   private classifyWithRules(text: string): Intent {
@@ -222,6 +232,61 @@ export function resolveIntent(intent: Intent): { realm: string; config: Record<s
     realm: intent.targetRealm,
     config: { intentCategory: intent.category },
   }
+}
+
+/** Parsed shape of the LLM's classification response. */
+interface ClassificationVerdict {
+  category: 'LOCAL' | 'CLOUD'
+  confidence: number
+}
+
+/**
+ * Fence-tolerant parser for `{ category, confidence }` JSON the LLM returns.
+ * Falls back to: extract the first {...} block → regex token match for
+ * `category` + a best-effort confidence float from the surrounding text.
+ */
+function parseClassificationVerdict(raw: string): ClassificationVerdict | null {
+  if (!raw.length) return null
+  const cleaned = raw.replace(/^```(?:json)?/iu, '').replace(/```$/u, '').trim()
+
+  // Tier 1: direct JSON parse
+  try {
+    return coerceClassification(JSON.parse(cleaned))
+  } catch {
+    /* fall through */
+  }
+  // Tier 2: extract first {...} block
+  const fence = cleaned.match(/\{[\s\S]*\}/u)
+  if (fence) {
+    try {
+      return coerceClassification(JSON.parse(fence[0]))
+    } catch {
+      /* fall through */
+    }
+  }
+  // Tier 3: regex token fallback (category-only, confidence default 0.5)
+  const categoryMatch = /["']?category["']?\s*[:=]\s*["']?(LOCAL|CLOUD)["']?/iu.exec(cleaned)
+  if (categoryMatch) {
+    const confidenceMatch = /["']?confidence["']?\s*[:=]\s*([0-9.]+)/iu.exec(cleaned)
+    const conf = confidenceMatch ? Number(confidenceMatch[1]) : 0.5
+    return {
+      category: categoryMatch[1].toUpperCase() as 'LOCAL' | 'CLOUD',
+      confidence: Number.isFinite(conf) ? Math.max(0, Math.min(1, conf)) : 0.5,
+    }
+  }
+  return null
+}
+
+function coerceClassification(obj: unknown): ClassificationVerdict | null {
+  if (!obj || typeof obj !== 'object') return null
+  const o = obj as Record<string, unknown>
+  const cat = typeof o.category === 'string' ? o.category.toUpperCase() : ''
+  if (cat !== 'LOCAL' && cat !== 'CLOUD') return null
+  const confRaw = typeof o.confidence === 'number'
+    ? o.confidence
+    : typeof o.confidence === 'string' ? Number(o.confidence) : NaN
+  const conf = Number.isFinite(confRaw) ? Math.max(0, Math.min(1, confRaw)) : 0.5
+  return { category: cat as 'LOCAL' | 'CLOUD', confidence: conf }
 }
 
 declare module '@deepseek-ai/cordis' {

@@ -48,6 +48,7 @@
 | `DSH_EDGE_DEFAULT_DATA_LEVEL` | `sanitized` | Default data level (`public` / `sanitized` / `internal`) |
 | `DSH_EDGE_ROUTER_LLM_FALLBACK` | `true` | Fall back to LLM classifier on low rule confidence |
 | `DSH_EDGE_ROUTER_THRESHOLD` | `0.6` | Rule match confidence threshold |
+| `DSH_EDGE_INTENT_CONFIDENCE_THRESHOLD` | `0.6` | LLM classification confidence gate; below this value falls back to keyword rules |
 | `DSH_EDGE_GUARD_MODEL` | `false` | Enable model-assisted prompt-guard detection |
 | `DSH_EDGE_GUARD_MODEL_PROVIDER` | `local-qwen3-4b` | Provider route for the model-assisted tier |
 | `DSH_EDGE_GUARD_MODEL_MODEL` | `qwen3-4b` | Model id for the model-assisted tier |

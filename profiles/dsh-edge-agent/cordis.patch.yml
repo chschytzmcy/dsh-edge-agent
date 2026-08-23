@@ -188,6 +188,7 @@
         defaultCategory: CLOUD
         classificationProvider: !!js process.env.DSH_EDGE_INTENT_PROVIDER ?? 'local-qwen3-4b'
         classificationModel: !!js process.env.DSH_EDGE_INTENT_MODEL ?? 'qwen3-4b'
+        confidenceThreshold: !!js parseFloat(process.env.DSH_EDGE_INTENT_CONFIDENCE_THRESHOLD ?? '0.6')
 
     # NOTE: id renamed from `tools` to avoid colliding with dsh-base.
     - id: edge-tools-registry
