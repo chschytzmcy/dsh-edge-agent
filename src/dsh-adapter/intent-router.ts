@@ -34,6 +34,14 @@ export interface Config {
    *  Below this value, the router falls back to keyword rules
    *  (fail-open, not REJECT — see Phase B plan). */
   confidenceThreshold: number
+  /** Hard cap on a single classify() LLM call. The AbortController fires
+   *  this many ms after the stream starts; on timeout the call throws
+   *  and the caller falls through to the keyword/default path (fail-open).
+   *  Default 4000ms; env DSH_EDGE_INTENT_LLM_TIMEOUT_MS overrides. */
+  llmTimeoutMs?: number
+  /** Max number of recent messages to embed as multi-turn context.
+   *  0 disables context. Default 3. */
+  recentMessagesLimit?: number
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -42,6 +50,8 @@ export const Config: Schema<Config> = Schema.object({
   classificationProvider: Schema.string().default('local-qwen3-4b'),
   classificationModel: Schema.string().default('qwen3-4b'),
   confidenceThreshold: Schema.natural().default(0.6),
+  llmTimeoutMs: Schema.natural().default(4000),
+  recentMessagesLimit: Schema.natural().default(3),
 })
 
 export interface Intent {
@@ -71,6 +81,8 @@ export class IntentRouterServiceImpl extends Service {
   private readonly classificationProvider: string
   private readonly classificationModel: string
   private readonly confidenceThreshold: number
+  private readonly llmTimeoutMs: number
+  private readonly recentMessagesLimit: number
   private readonly llm: any
   private readonly auditLog: AuditLike | undefined
 
@@ -80,6 +92,8 @@ export class IntentRouterServiceImpl extends Service {
     this.classificationProvider = config.classificationProvider
     this.classificationModel = config.classificationModel
     this.confidenceThreshold = config.confidenceThreshold
+    this.llmTimeoutMs = config.llmTimeoutMs ?? 4000
+    this.recentMessagesLimit = config.recentMessagesLimit ?? 3
     this.llm = (ctx as any).llm
     this.auditLog = auditLog
   }
@@ -96,7 +110,7 @@ export class IntentRouterServiceImpl extends Service {
 
     // Try LLM classification first
     try {
-      const intent = await this.classifyWithLlm(text)
+      const intent = await this.classifyWithLlm(text, context?.recentMessages)
       this.audit('info', 'intent.classify.end', {
         textLen: text.length,
         path: 'llm',
@@ -122,10 +136,32 @@ export class IntentRouterServiceImpl extends Service {
     }
   }
 
-  private async classifyWithLlm(text: string): Promise<Intent> {
+  private async classifyWithLlm(text: string, recentMessages?: unknown[]): Promise<Intent> {
     if (!this.llm) {
       this.audit('debug', 'intent.llm.skipped', { reason: 'no-llm-handle' })
       throw new Error('intent-router: no llm handle')
+    }
+
+    // Multi-turn context: best-effort extract text from each message and
+    // append a "history" block before the current query. Caps at
+    // recentMessagesLimit (default 3) and per-message length to bound prompt size.
+    const historyBlock = (() => {
+      if (!this.recentMessagesLimit || !recentMessages?.length) return ''
+      const tail = recentMessages.slice(-this.recentMessagesLimit)
+      const lines: string[] = []
+      for (const m of tail) {
+        const text = extractMessageText(m).slice(0, 200)
+        const role = (m as any)?.role ?? (m as any)?.source?.kind ?? '?'
+        if (text) lines.push(`${role}: ${text}`)
+      }
+      if (!lines.length) return ''
+      return `\n最近对话上下文（仅参考，不要分类历史消息本身）：\n${lines.join('\n')}\n`
+    })()
+    if (recentMessages?.length) {
+      this.audit('debug', 'intent.llm.context', {
+        received: recentMessages.length,
+        embedded: Math.min(recentMessages.length, this.recentMessagesLimit),
+      })
     }
 
     // Phase B: ask for structured JSON output with explicit confidence.
@@ -134,7 +170,7 @@ export class IntentRouterServiceImpl extends Service {
     const prompt = `判断以下用户请求属于哪类：
 - LOCAL：本地文件操作、设备控制、数学计算、系统管理
 - CLOUD：知识问答、聊天、创意写作、需要联网的任务
-
+${historyBlock}
 Respond ONLY with a single JSON object — no prose, no Markdown:
 { "category": "LOCAL"|"CLOUD", "confidence": <0.0-1.0> }
 
@@ -172,11 +208,18 @@ Respond ONLY with a single JSON object — no prose, no Markdown:
       modelRouterMounted: Boolean(modelRouter),
     })
 
+    // Hard timeout via signal — prevents llama.cpp / qwen3-4b hangs from
+    // blocking the http-api main thread. On AbortError we throw and the
+    // outer classify() falls through to the keyword/default path (fail-open).
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), this.llmTimeoutMs)
+
     try {
       const stream = this.llm.stream({
         provider,
         model,
         messages: [userMessage],
+        signal: controller.signal,
       })
 
       for await (const chunk of stream) {
@@ -186,8 +229,18 @@ Respond ONLY with a single JSON object — no prose, no Markdown:
         }
       }
     } catch (err: any) {
-      this.audit('warn', 'intent.llm.error', { durationMs: Date.now() - llmStart, error: err?.message ?? String(err) })
+      const isAbort = err?.name === 'AbortError' || controller.signal.aborted
+      const durationMs = Date.now() - llmStart
+      this.audit('warn', isAbort ? 'intent.llm.timeout' : 'intent.llm.error', {
+        durationMs,
+        timeoutMs: this.llmTimeoutMs,
+        chunks,
+        responseLen: responseText.length,
+        error: err?.message ?? String(err),
+      })
       throw err
+    } finally {
+      clearTimeout(timer)
     }
     this.audit('debug', 'intent.llm.response', { durationMs: Date.now() - llmStart, chunks, responseLen: responseText.length, responsePreview: responseText.trim().slice(0, 40) })
 
@@ -311,6 +364,24 @@ function coerceClassification(obj: unknown): ClassificationVerdict | null {
     : typeof o.confidence === 'string' ? Number(o.confidence) : NaN
   const conf = Number.isFinite(confRaw) ? Math.max(0, Math.min(1, confRaw)) : 0.5
   return { category: cat as 'LOCAL' | 'CLOUD', confidence: conf }
+}
+
+/** Best-effort extract a text payload from a recent-message object.
+ *  Handles dsh-llm's `{content: [{type:'text', text}]}`, plain `{text}`,
+ *  `{message: string}`, or anything stringifiable. Returns '' on failure. */
+function extractMessageText(m: unknown): string {
+  if (typeof m === 'string') return m
+  if (!m || typeof m !== 'object') return ''
+  const o = m as Record<string, unknown>
+  if (typeof o.text === 'string') return o.text
+  if (typeof o.message === 'string') return o.message
+  if (Array.isArray(o.content)) {
+    const parts = o.content
+      .map((p) => (p && typeof p === 'object' && typeof (p as any).text === 'string' ? (p as any).text : ''))
+      .filter(Boolean)
+    if (parts.length) return parts.join(' ')
+  }
+  return ''
 }
 
 declare module '@deepseek-ai/cordis' {

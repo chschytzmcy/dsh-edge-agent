@@ -239,4 +239,141 @@ describe('intent-router', () => {
     assert.equal(routeEntry.payload.modelRouterMounted, true)
     assert.equal(routeEntry.payload.resolvedProvider, 'local-qwen3-4b')
   })
+
+  // ─── timeout + multi-turn context ──────────────────────────────────────
+
+  it('aborts LLM stream after llmTimeoutMs and falls open', async () => {
+    // Fake stream that respects AbortSignal: yields nothing, exits cleanly
+    // when signal.aborted flips. Mimics a well-behaved local-llm-adapter.
+    function makeAbortableStream(signal: AbortSignal): AsyncIterable<unknown> {
+      return (async function* () {
+        // Wait until aborted OR throw to surface the abort as an error.
+        await new Promise<void>((resolve, reject) => {
+          if (signal.aborted) {
+            const e: any = new Error('aborted')
+            e.name = 'AbortError'
+            return reject(e)
+          }
+          signal.addEventListener('abort', () => {
+            const e: any = new Error('aborted')
+            e.name = 'AbortError'
+            reject(e)
+          }, { once: true })
+        })
+      })()
+    }
+    let capturedSignal: AbortSignal | undefined
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: {
+        stream(opts: any) {
+          capturedSignal = opts.signal
+          return makeAbortableStream(opts.signal)
+        },
+      },
+    } as any
+    const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b',
+      confidenceThreshold: 0.6,
+      llmTimeoutMs: 50,   // 50ms timeout for the test
+    }, audit as any)
+
+    const intent = await service.classify('你好')
+    // Falls back to default CLOUD (no LLM verdict, no keyword hit)
+    assert.equal(intent.category, 'CLOUD')
+    assert.match(intent.rationale, /default:cloud/u)
+    // AbortSignal was wired in
+    assert.ok(capturedSignal, 'AbortSignal should be passed to llm.stream')
+    assert.equal(capturedSignal.aborted, true)
+    // Audit entry should mention timeout
+    const timeoutEntry = audit.entries.find((e: any) => e.kind === 'intent.llm.timeout')
+    assert.ok(timeoutEntry, 'intent.llm.timeout audit kind should be present')
+    assert.equal(timeoutEntry.payload.timeoutMs, 50)
+  })
+
+  it('passes AbortSignal into llm.stream options', async () => {
+    let capturedOpts: any
+    const verdict = JSON.stringify({ category: 'CLOUD', confidence: 0.9 })
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: {
+        stream(opts: any) {
+          capturedOpts = opts
+          return chunksFromText(verdict)
+        },
+      },
+    } as any
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b',
+      confidenceThreshold: 0.6,
+      llmTimeoutMs: 4000,
+    })
+
+    await service.classify('hi')
+    assert.ok(capturedOpts.signal, 'signal should be passed to llm.stream')
+    assert.ok(capturedOpts.signal instanceof AbortSignal)
+  })
+
+  it('embeds recentMessages into prompt when provided', async () => {
+    let capturedOpts: any
+    const verdict = JSON.stringify({ category: 'CLOUD', confidence: 0.9 })
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: {
+        stream(opts: any) {
+          capturedOpts = opts
+          return chunksFromText(verdict)
+        },
+      },
+    } as any
+    const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b',
+      confidenceThreshold: 0.6,
+    }, audit as any)
+
+    const history = [
+      { role: 'user', content: [{ type: 'text', text: '读文件' }] },
+      { role: 'assistant', content: [{ type: 'text', text: '好的' }] },
+    ]
+    await service.classify('帮我重命名', { recentMessages: history })
+    const promptText = capturedOpts.messages[0].content[0].text
+    assert.match(promptText, /最近对话上下文/)
+    assert.match(promptText, /user: 读文件/)
+    assert.match(promptText, /assistant: 好的/)
+    const ctxEntry = audit.entries.find((e: any) => e.kind === 'intent.llm.context')
+    assert.ok(ctxEntry)
+    assert.equal(ctxEntry.payload.received, 2)
+    assert.equal(ctxEntry.payload.embedded, 2)
+  })
+
+  it('omits context block when recentMessages is empty', async () => {
+    let capturedOpts: any
+    const verdict = JSON.stringify({ category: 'CLOUD', confidence: 0.9 })
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: {
+        stream(opts: any) {
+          capturedOpts = opts
+          return chunksFromText(verdict)
+        },
+      },
+    } as any
+    const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b',
+      confidenceThreshold: 0.6,
+    }, audit as any)
+
+    await service.classify('hi', { recentMessages: [] })
+    const promptText = capturedOpts.messages[0].content[0].text
+    assert.doesNotMatch(promptText, /最近对话上下文/)
+    const ctxEntries = audit.entries.filter((e: any) => e.kind === 'intent.llm.context')
+    assert.equal(ctxEntries.length, 0)
+  })
 })

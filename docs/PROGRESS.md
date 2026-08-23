@@ -426,6 +426,69 @@ this.audit('debug', 'intent.llm.route', {
 
 ---
 
+### 7.9 intent-router 加超时控制 + 多轮上下文（2026-08-23）
+
+**背景**：L1 intent-router 完整性分析指出 **2 个 P0 级缺口**：
+1. 🔴 **超时控制缺失**——LLM 调用没有 AbortController，遇到 llama.cpp 挂死 / qwen3-4b OOM / 网络不通时，http-api `/v1/chat` 会**无限等下去**，阻塞主链路
+2. 🟡 **多轮上下文被忽略**——`classify(text, context?)` 接口接受 `recentMessages`，但 LLM prompt 只含当前 query，多轮 query 分类质量退化
+
+**实现**（`src/dsh-adapter/intent-router.ts`）：
+
+**超时控制**（与 prompt-guard LLM 路径同构）：
+```ts
+const controller = new AbortController()
+const timer = setTimeout(() => controller.abort(), this.llmTimeoutMs)
+try {
+  const stream = this.llm.stream({ provider, model, messages: [userMessage], signal: controller.signal })
+  for await (const chunk of stream) { ... }
+} catch (err: any) {
+  const isAbort = err?.name === 'AbortError' || controller.signal.aborted
+  this.audit('warn', isAbort ? 'intent.llm.timeout' : 'intent.llm.error', { ... })
+  throw err   // outer classify() catches → falls through to keyword/default path
+} finally {
+  clearTimeout(timer)
+}
+```
+
+**多轮上下文**（无 `createSystemMessage` helper，借鉴 prompt-guard 同样做法 — 直接拼进 user prompt 文本）：
+```ts
+const historyBlock = (() => {
+  if (!this.recentMessagesLimit || !recentMessages?.length) return ''
+  const tail = recentMessages.slice(-this.recentMessagesLimit)
+  const lines = tail.map(m => `${(m as any).role ?? '?'}: ${extractMessageText(m).slice(0, 200)}`)
+  return `\n最近对话上下文（仅参考，不要分类历史消息本身）：\n${lines.join('\n')}\n`
+})()
+```
+
+`extractMessageText(m)` 兼容 dsh-llm `{content: [{type:'text', text}]}` / `{text}` / `{message}` / 字符串 / 任意可序列化形态。
+
+**Config 字段**（`Config` schema + 默认值）：
+| 字段 | 默认 | env |
+|---|---|---|
+| `llmTimeoutMs` | `4000` | `DSH_EDGE_INTENT_LLM_TIMEOUT_MS` |
+| `recentMessagesLimit` | `3` | `DSH_EDGE_INTENT_RECENT_LIMIT` |
+
+**新 audit kind**：
+| kind | level | 触发 |
+|---|---|---|
+| `intent.llm.timeout` | warn | AbortController 触发（`err.name === 'AbortError'` 或 `signal.aborted`）|
+| `intent.llm.context` | debug | `recentMessages` 非空时记 received + embedded 数 |
+
+**失败模式**：
+- LLM 永不响应 → 4 s 后 AbortError → outer classify() catch → `classifyWithRules()` → keyword 兜底
+- `recentMessages` 为 undefined / [] → 不嵌入 context block，不发 `intent.llm.context` audit
+- `recentMessages` 含无法解析的 message → `extractMessageText` 返回 '' → 该行被跳过
+
+**4 个新单测**：
+1. **超时触发**：挂死流 + 50ms timeout → classify 返回 default CLOUD + audit `intent.llm.timeout` + `signal.aborted=true`
+2. **signal 注入**：正常流 + 检查 `opts.signal instanceof AbortSignal === true`
+3. **context 嵌入**：传 2 条 recentMessages → prompt 含"最近对话上下文" + audit `embedded: 2`
+4. **空 context 不写**：传 `recentMessages: []` → prompt 不含 context 块 + 无 `intent.llm.context` audit
+
+**总计**：260 个单测全过，verify:build 4 关全过，compile 零错。
+
+---
+
 ---
 
 ## 八、关键发现
