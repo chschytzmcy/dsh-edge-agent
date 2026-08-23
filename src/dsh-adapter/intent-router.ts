@@ -119,6 +119,11 @@ export class IntentRouterServiceImpl extends Service {
     lowConfidence: 0,
     timeout: 0,
     llmError: 0,
+    /** P1: LLM stream returned text that parseClassificationVerdict could
+     *  not turn into a verdict (all three tiers failed). Distinct from
+     *  `llmError` (network / timeout) so operators can see the parse
+     *  health of the LLM independently from the transport health. */
+    parseFailure: 0,
     rejected: 0,
     sanitized: 0,
     sanitizeError: 0,
@@ -337,7 +342,10 @@ export class IntentRouterServiceImpl extends Service {
           })
         } catch (err: any) {
           this.stats.sanitizeError++
-          this.audit('warn', 'intent.llm.sanitize-error', {
+          // SECURITY-level: PII failed to be stripped from text that the
+          // router will now forward to a CLOUD LLM (fail-open below).
+          // SIEM must surface this; `warn` is too easy to ignore.
+          this.audit('security', 'intent.llm.sanitize-error', {
             error: err?.message ?? String(err),
             originalLen: text.length,
           })
@@ -435,6 +443,10 @@ Respond ONLY with a single JSON object — no prose, no Markdown:
 
     const verdict = parseClassificationVerdict(responseText)
     if (!verdict) {
+      // P1: count parse failures separately from transport/timeout errors
+      // so the dashboard's parse health can be read independently of
+      // network health.
+      this.stats.parseFailure++
       this.stats.llmError++
       this.audit('debug', 'intent.llm.unclear', { responsePreview: this.redactPreview(responseText.trim().slice(0, 40)) })
       const e: any = new Error('intent-router: llm response unclear')
@@ -630,6 +642,13 @@ export interface IntentRouterStats {
   timeout: number
   /** LLM threw a non-timeout error (network, parse, etc.). */
   llmError: number
+  /** P1: LLM stream returned text that parseClassificationVerdict could
+   *  not turn into a verdict (all three tiers failed). Distinct from
+   *  `llmError` (network / timeout) — the LLM DID respond, the response
+   *  just wasn't structured. Operators can compare
+   *  `parseFailure / (llmHit + lowConfidence + parseFailure + llmError)`
+   *  to gauge parse health. */
+  parseFailure: number
   /** REJECT verdict returned (pre-check or fallback). */
   rejected: number
   /** Sanitizer applied to CLOUD-classification prompt. */
@@ -669,11 +688,20 @@ function parseClassificationVerdict(raw: string): ClassificationVerdict | null {
       /* fall through */
     }
   }
-  // Tier 3: regex token fallback (category-only, confidence default 0.5)
+  // Tier 3: regex token fallback. Require BOTH category AND confidence
+  // extracted from the LLM's own emission. If only one is recoverable
+  // (e.g. the LLM wrote "category=LOCAL" with no confidence), return null
+  // so the outer classifyWithLlm can attribute the failure to the
+  // parseFailure counter and fall through to keyword rules — instead of
+  // returning a 0.5-confidence verdict that ALWAYS fails the 0.6
+  // confidence gate and wastes the LLM call.
   const categoryMatch = /["']?category["']?\s*[:=]\s*["']?(LOCAL|CLOUD)["']?/iu.exec(cleaned)
-  if (categoryMatch) {
-    const confidenceMatch = /["']?confidence["']?\s*[:=]\s*([0-9.]+)/iu.exec(cleaned)
-    const conf = confidenceMatch ? Number(confidenceMatch[1]) : 0.5
+  // `[:=]?` — separator is optional: qwen3-4b sometimes emits
+  // `confidence 0.8` (whitespace only), sometimes `confidence: 0.8`,
+  // sometimes `confidence=0.8`. All three should be recovered.
+  const confidenceMatch = /["']?confidence["']?\s*[:=]?\s*([0-9.]+)/iu.exec(cleaned)
+  if (categoryMatch && confidenceMatch) {
+    const conf = Number(confidenceMatch[1])
     return {
       category: categoryMatch[1].toUpperCase() as 'LOCAL' | 'CLOUD',
       confidence: Number.isFinite(conf) ? Math.max(0, Math.min(1, conf)) : 0.5,

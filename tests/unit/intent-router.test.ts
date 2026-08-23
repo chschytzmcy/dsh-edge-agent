@@ -1140,6 +1140,99 @@ describe('intent-router', () => {
     assert.ok(!fresh['99'], 'phantom bucket must not persist into live state')
   })
 
+  // ─── P0: Tier-3 regex parser requires BOTH fields (P0 fix) ────────────
+  // ─── P1: parseFailure counter separated from llmError (P1 fix) ────────
+  // ─── P0: sanitizeError audit level = 'security' (P0 fix) ──────────────
+
+  it('P0: regex parser returns null when only category is extracted (no confidence)', async () => {
+    // LLM emitted "category=LOCAL" with no confidence — old code returned
+    // a 0.5-confidence verdict that ALWAYS failed the 0.6 gate, wasting the
+    // LLM call. New code returns null so the outer path attributes the
+    // failure to parseFailure and falls through to keyword rules.
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: { stream: () => chunksFromText('category=LOCAL') },
+    } as any
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD', classificationProvider: 'local-qwen3-4b', confidenceThreshold: 0.6,
+    })
+    const intent = await service.classify('something arbitrary')
+    // No keyword match → defaultCategory
+    assert.equal(intent.category, 'CLOUD')
+    assert.match(intent.rationale, /default:cloud/u)
+    const stats = service.getStats()
+    assert.equal(stats.parseFailure, 1, 'parseFailure should bump on unparseable regex-tier response')
+    assert.equal(stats.llmError, 1, 'llmError stays the umbrella for non-adopted LLM calls')
+  })
+
+  it('P0: regex parser adopts verdict when BOTH category AND confidence extracted', async () => {
+    // LLM emitted "category=CLOUD, confidence 0.8" — neither JSON nor
+    // brace-block, but regex grabs both fields. Old code returned
+    // conf=0.5 (waste); new code returns the extracted 0.8.
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: { stream: () => chunksFromText('I think category=CLOUD, confidence 0.8') },
+    } as any
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'LOCAL', classificationProvider: 'local-qwen3-4b', confidenceThreshold: 0.6,
+    })
+    const intent = await service.classify('something arbitrary')
+    assert.equal(intent.category, 'CLOUD')
+    assert.equal(intent.confidence, 0.8)
+    const stats = service.getStats()
+    assert.equal(stats.llmHit, 1)
+    assert.equal(stats.parseFailure, 0, 'parseFailure should NOT bump when regex succeeded')
+  })
+
+  it('P0: sanitizeError audit carries level="security" (SIEM must see it)', async () => {
+    const verdict = JSON.stringify({ category: 'CLOUD', confidence: 0.9 })
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: {
+        stream(opts: any) { return chunksFromText(verdict) },
+      },
+      modelRouter: {
+        resolve: () => ({ realm: 'CLOUD', provider: 'cloud-deepseek-v4', model: 'deepseek-chat' }),
+      },
+      sanitizer: { sanitize: async () => { throw new Error('boom') } },
+    } as any
+    const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD', classificationProvider: 'local-qwen3-4b', confidenceThreshold: 0.6,
+    }, audit as any)
+    await service.classify('查一下 13812345678')
+    const errEntry = audit.entries.find((e: any) => e.kind === 'intent.llm.sanitize-error')
+    assert.ok(errEntry)
+    // Old code was 'warn' which SIEM rules often filter out — bumped to
+    // 'security' so PII-via-failed-sanitizer events surface in alerting.
+    assert.equal(errEntry.level, 'security')
+  })
+
+  it('P1: parseFailure counter starts at 0 and increments per unparseable response', async () => {
+    const service = new IntentRouterServiceImpl({
+      reflect: { provide: () => {} },
+      llm: { stream: () => chunksFromText('nonsense') },
+    } as any, {
+      defaultCategory: 'CLOUD', classificationProvider: 'local-qwen3-4b', confidenceThreshold: 0.6,
+    })
+    assert.equal(service.getStats().parseFailure, 0, 'fresh service has parseFailure=0')
+    await service.classify('hi')
+    assert.equal(service.getStats().parseFailure, 1)
+    await service.classify('hello')
+    assert.equal(service.getStats().parseFailure, 2)
+    // Successful verdicts must NOT bump parseFailure
+    const goodMock = {
+      reflect: { provide: () => {} },
+      llm: { stream: () => chunksFromText(JSON.stringify({ category: 'CLOUD', confidence: 0.9 })) },
+    } as any
+    const goodService = new IntentRouterServiceImpl(goodMock, {
+      defaultCategory: 'CLOUD', classificationProvider: 'local-qwen3-4b', confidenceThreshold: 0.6,
+    })
+    await goodService.classify('hi')
+    assert.equal(goodService.getStats().parseFailure, 0)
+    assert.equal(goodService.getStats().llmHit, 1)
+  })
+
   // ─── redactPreview() PII guard (§7.13) ─────────────────────────────────
 
   it('redacts response preview via ctx.piiUtils.redactString', async () => {
