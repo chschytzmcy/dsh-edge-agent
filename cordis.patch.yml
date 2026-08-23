@@ -53,53 +53,51 @@
     mode: !!js "process.platform === 'win32' ? 'danger-full-access' : (process.env.DSH_EDGE_PERMISSION_MODE ?? 'workspace-write')"
     workspaceRoot: !!js process.cwd()
 
-# ── edge-agent rows ──────────────────────────────────────────────────────
+# ── edge-agent rows (top-level overrides — disable until each lands) ────
 
-- insert:
+# Plugin-interop anchor (Community Consensus v0.15): the unified grant
+# store, runtime generation id, and Host Descriptor live here. Mounted
+# ahead of any third-party plugin row in this profile.
+# M4: kept disabled — lands with S5.
+- id: plugin-host
+  disabled: true
 
-    # Plugin-interop anchor (Community Consensus v0.15): the unified grant
-    # store, runtime generation id, and Host Descriptor live here. Mounted
-    # ahead of any third-party plugin row in this profile.
-    # M4: kept disabled — lands with S5.
-    - id: plugin-host
-      disabled: true
+# Threat detection bus: subscribes to high-volume events and raises a
+# quarantine action when patterns indicate abuse. Mounted before any
+# plugin that emits to audit-log at high volume.
+# M4: kept disabled — lands with S6.
+- id: td-bus
+  disabled: true
 
-    # Threat detection bus: subscribes to high-volume events and raises a
-    # quarantine action when patterns indicate abuse. Mounted before any
-    # plugin that emits to audit-log at high volume.
-    # M4: kept disabled — lands with S6.
-    - id: td-bus
-      disabled: true
+# Forward/reverse PII sanitization. The cloud realm is never raw text.
+# M4: kept disabled — lands with S7.
+- id: sanitizer-pipeline
+  disabled: true
 
-    # Forward/reverse PII sanitization. The cloud realm is never raw text.
-    # M4: kept disabled — lands with S7.
-    - id: sanitizer-pipeline
-      disabled: true
+# OHTTP gateway: HPKE ciphertext to a relay that cannot link identity
+# to content. The single outbound channel that the secure-bridge rides
+# on top of.
+# M4: kept disabled — lands with S9.
+- id: ohttp-gateway
+  disabled: true
 
-    # OHTTP gateway: HPKE ciphertext to a relay that cannot link identity
-    # to content. The single outbound channel that the secure-bridge rides
-    # on top of.
-    # M4: kept disabled — lands with S9.
-    - id: ohttp-gateway
-      disabled: true
+# Outbound cloud channel. Cloud-llm-adapter routes through this.
+# M4: kept disabled — lands with S9.
+- id: secure-bridge
+  disabled: true
 
-    # Outbound cloud channel. Cloud-llm-adapter routes through this.
-    # M4: kept disabled — lands with S9.
-    - id: secure-bridge
-      disabled: true
+# TEE attestation token generation + verification. Used by the cloud
+# to confirm the device it is talking to is running a known TCB.
+# M4: kept disabled — lands with S10.
+- id: attestation
+  disabled: true
 
-    # TEE attestation token generation + verification. Used by the cloud
-    # to confirm the device it is talking to is running a known TCB.
-    # M4: kept disabled — lands with S10.
-    - id: attestation
-      disabled: true
+# The main aggregator plugin. Mounts every sub-plugin in boot order
+# and registers the model-facing `services` namespace.
+# M4: kept disabled — aggregator lands with S4 wrap-up.
+- id: dsh-edge-agent
+  disabled: true
 
-    # The main aggregator plugin. Mounts every sub-plugin in boot order
-    # and registers the model-facing `services` namespace.
-    # M4: kept disabled — aggregator lands with S4 wrap-up.
-    - id: dsh-edge-agent
-      disabled: true
-
-    # Optional S13 plugin: HTTP API for external consumers (mobile apps).
-    # Enabled by default; the server starts on the configured port.
-    # NOTE: http-api is defined in profiles/dsh-edge-agent/cordis.patch.yml
+# Optional S13 plugin: HTTP API for external consumers (mobile apps).
+# Enabled by default; the server starts on the configured port.
+# NOTE: http-api is defined in profiles/dsh-edge-agent/cordis.patch.yml

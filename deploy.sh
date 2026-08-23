@@ -14,7 +14,8 @@
 #   3. 本地构建和打包（make package）
 #   4. 传输部署包到目标设备
 #   5. 解压并安装项目依赖
-#   6. 配置环境并启动服务
+#   6. 同步到 DSH profile home（dsh 真正加载的 ~/.dsh/profiles/<name>/）
+#   7. 配置环境并启动服务
 
 set -e
 
@@ -55,7 +56,7 @@ echo "部署路径: $REMOTE_PATH"
 echo ""
 
 # Step 1: 测试 SSH 连接
-echo -e "${BLUE}[1/6] 测试 SSH 连接...${NC}"
+echo -e "${BLUE}[1/7] 测试 SSH 连接...${NC}"
 if ! ssh $SSH_OPTS "$TARGET" "echo 'SSH 连接成功'" 2>/dev/null; then
     echo -e "${RED}错误: 无法连接到 $TARGET${NC}"
     exit 1
@@ -64,7 +65,7 @@ echo -e "${GREEN}✓ SSH 连接正常${NC}"
 echo ""
 
 # Step 2: 在目标设备上安装系统依赖
-echo -e "${BLUE}[2/6] 在目标设备上安装系统依赖...${NC}"
+echo -e "${BLUE}[2/7] 在目标设备上安装系统依赖...${NC}"
 ssh $SSH_OPTS "$TARGET" bash <<'REMOTE_SCRIPT'
 set -e
 
@@ -104,19 +105,19 @@ echo -e "${GREEN}✓ 系统依赖安装完成${NC}"
 echo ""
 
 # Step 3: 本地构建和打包
-echo -e "${BLUE}[3/6] 本地构建和打包...${NC}"
+echo -e "${BLUE}[3/7] 本地构建和打包...${NC}"
 make package
 echo -e "${GREEN}✓ 打包完成${NC}"
 echo ""
 
 # Step 4: 传输到目标设备
-echo -e "${BLUE}[4/6] 传输部署包到目标设备...${NC}"
+echo -e "${BLUE}[4/7] 传输部署包到目标设备...${NC}"
 scp -P $SSH_PORT -o StrictHostKeyChecking=no "$PACKAGE_NAME" "$TARGET:/tmp/"
 echo -e "${GREEN}✓ 传输完成${NC}"
 echo ""
 
 # Step 5: 解压并安装项目依赖
-echo -e "${BLUE}[5/6] 解压并安装项目依赖...${NC}"
+echo -e "${BLUE}[5/7] 解压并安装项目依赖...${NC}"
 ssh $SSH_OPTS "$TARGET" bash <<REMOTE_SCRIPT
 set -e
 
@@ -142,8 +143,51 @@ REMOTE_SCRIPT
 echo -e "${GREEN}✓ 项目安装完成${NC}"
 echo ""
 
-# Step 6: 配置环境并启动
-echo -e "${BLUE}[6/6] 配置环境并启动服务...${NC}"
+# Step 6: 同步到 DSH profile home（DSH 实际从这里加载）
+#
+# 为什么需要这一步：DSH 不会从 \$REMOTE_PATH（解压目录）读配置，
+# 它从 \$DSH_HOME/profiles/<name>/ 加载。deploy.sh 只把代码放到
+# 解压目录是不够的；必须把编译产物、profile patch、.env 同步到
+# ~/.dsh/profiles/dsh-edge-agent/，并确保嵌套包已通过
+# `dsh plugin add` 初始化。
+echo -e "${BLUE}[6/7] 同步到 DSH profile home...${NC}"
+ssh $SSH_OPTS "$TARGET" bash <<REMOTE_SCRIPT
+set -e
+
+PROFILE="dsh-edge-agent"
+DSH_HOME="\${DSH_HOME:-\$HOME/.dsh}"
+PROFILE_DIR="\$DSH_HOME/profiles/\$PROFILE"
+NESTED_PKG="\$PROFILE_DIR/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent"
+
+# 首次部署：profile 还没初始化时，调用 dsh plugin add
+# 后续部署：跳过（pnpm 会重复跑依赖树，浪费时间）
+if [ ! -d "\$NESTED_PKG/lib" ]; then
+    echo "  -> dsh plugin add (bootstrap profile + nested package)"
+    dsh plugin --profile "\$PROFILE" add @deepseek-harness-edge-agent/dsh-edge-agent
+fi
+
+# 把编译产物同步到 DSH profile 的嵌套包
+mkdir -p "\$PROFILE_DIR"
+rsync -a --delete "$REMOTE_PATH/lib/" "\$NESTED_PKG/lib/"
+
+# 同步 profile 自己的 patch 文件（含 http-api 等核心插件挂载）
+if [ -f "$REMOTE_PATH/profiles/\$PROFILE/cordis.patch.yml" ]; then
+    cp "$REMOTE_PATH/profiles/\$PROFILE/cordis.patch.yml" "\$PROFILE_DIR/cordis.patch.yml"
+fi
+
+# 同步 .env（业务变量 + API key），让 profile home 也有
+if [ -f "$REMOTE_PATH/.env" ]; then
+    cp "$REMOTE_PATH/.env" "\$PROFILE_DIR/.env"
+fi
+
+echo "✓ 已同步到 \$PROFILE_DIR"
+REMOTE_SCRIPT
+
+echo -e "${GREEN}✓ DSH profile 同步完成${NC}"
+echo ""
+
+# Step 7: 配置环境并启动
+echo -e "${BLUE}[7/7] 配置环境并启动服务...${NC}"
 ssh $SSH_OPTS "$TARGET" bash <<REMOTE_SCRIPT
 cd $REMOTE_PATH
 

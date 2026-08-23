@@ -142,6 +142,22 @@
 - id: command-compact
   disabled: true
 - insert:
+    # tcm: prompt-guard injects this; must mount first
+    - id: tcm
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/tcm'
+      config:
+        teeType: !!js process.env.DSH_EDGE_TEE_TYPE ?? 'simulated'
+        keyStorePath: !!js (process.env.DSH_EDGE_STORAGE_ROOT ?? (process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent') + '/tcm-keys.json'
+
+    # td-bus: http-api injects this; must mount before http-api
+    - id: td-bus
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/td-bus'
+      inject: [auditLog, privacyPolicy]
+      config:
+        quarantineAction: log
+        patternWindowMs: 60000
+        patternThreshold: 8
+
     - id: http-api
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/http-api'
       inject: [agents, intentRouter, promptGuard, auditLog, sanitizer]
