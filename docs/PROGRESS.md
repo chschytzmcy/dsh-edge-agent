@@ -965,6 +965,108 @@ REJECT 一律不可见：被策略拒绝的请求连工具都不该看到（避�
 
 ---
 
+### 7.16 intent-router 加 confidence histogram：可观测的 LLM 置信度分布（G9，2026-08-23）
+
+**背景**：§7.13 给 intent-router 加了 13 个 counter（`getStats()`），但**没有任何关于 LLM 置信度分布的信息**。`confidenceThreshold` 默认 0.6，但运维只能从 `lowConfidence` 总数推断阈值切得对不对——看不到 LLM 实际返回的置信度聚集在哪里。qwen3-4b 在某些场景可能普遍 0.85（阈值松），在某些可能普遍 0.45（阈值过严），但今天完全不可见。本节把每个解析成功的 verdict 按 10 桶直方图记录下来，让运维能直接看分布。
+
+#### 7.16.1 设计
+
+**IntentRouterStats 新增字段**：
+
+```ts
+confidenceHistogram: { [bucket: string]: { accepted: number; rejected: number } }
+```
+
+**桶索引**：`Math.floor(confidence * 10)` 钳到 [0,9]。`conf=0.0 → '0'`、`conf=0.95 → '9'`、`conf=1.0 → '9'`（clamp 进来；不 clamp 会留下 `'10'` 孤儿桶 + 丢掉 1.0）。
+
+**accepted vs rejected 分裂**：
+- `verdict.confidence >= confidenceThreshold` → `cell.accepted++`（LLM 裁决被采纳）
+- `verdict.confidence <  confidenceThreshold` → `cell.rejected++`（低置信度，throw 落入 keyword 兜底）
+
+**不计入直方图**：timeout / llmError / unclear（parseClassificationVerdict 返回 null）—— 这三类**没有置信度可以归桶**。它们各自的 counter（`timeout` / `llmError`）已经覆盖。
+
+#### 7.16.2 为什么 accepted / rejected 要分裂
+
+如果只看每桶总数，运维无法判断阈值切得对不对。举例：
+- 直方图 `[bucket 7: 100, bucket 9: 50]` — 阈值 0.6 时全部 accepted。看起来 0.6 太松？
+- 直方图 `[bucket 5: 100, bucket 6: 50]` — 阈值 0.6 时 bucket 5 全部 rejected、bucket 6 全部 accepted。**说明阈值正好切在桶边界**，需要细看是 0.5 还是 0.6 更合适。
+- 直方图 `[bucket 3: 80, bucket 7: 20]` — 阈值 0.6 时 bucket 3 全部 rejected、bucket 7 全部 accepted。**说明 LLM 在两端抖动**，阈值应在 3-7 之间试。
+
+accepted/rejected 分裂把"阈值切在哪"这件事从直方图本身读出来，无需额外计算。
+
+#### 7.16.3 实现
+
+**`src/dsh-adapter/intent-router.ts`** 三处改动：
+
+1. **stats 初值增加空直方图**
+
+```ts
+private readonly stats: IntentRouterStats = {
+  ...,
+  confidenceHistogram: {},
+}
+```
+
+2. **classifyWithLlm 解析 verdict 后立即记录**
+
+```ts
+this.audit('debug', 'intent.llm.parsed', { category: verdict.category, confidence: verdict.confidence })
+
+// G9: 直方图分桶
+{
+  const bucket = Math.min(9, Math.max(0, Math.floor(verdict.confidence * 10)))
+  const key = String(bucket)
+  const cell = this.stats.confidenceHistogram[key]
+    ?? (this.stats.confidenceHistogram[key] = { accepted: 0, rejected: 0 })
+  if (verdict.confidence >= this.confidenceThreshold) cell.accepted++
+  else cell.rejected++
+}
+
+if (verdict.confidence < this.confidenceThreshold) { /* 低置信度 throw... */ }
+```
+
+3. **getStats() 深拷贝直方图**
+
+```ts
+getStats(): IntentRouterStats {
+  const hist: IntentRouterStats['confidenceHistogram'] = {}
+  for (const k of Object.keys(this.stats.confidenceHistogram)) {
+    const cell = this.stats.confidenceHistogram[k]
+    hist[k] = { accepted: cell.accepted, rejected: cell.rejected }
+  }
+  return { ...this.stats, confidenceHistogram: hist }
+}
+```
+
+#### 7.16.4 为什么不直接返回 `this.stats`
+
+`{ ...this.stats }` 是浅拷贝——`confidenceHistogram` 是引用，调用方改 `snapshot.confidenceHistogram['8'].accepted = 9999` 会污染实时状态。`getStats()` 现在显式深拷贝直方图（已有测试覆盖 top-level field 浅拷贝的 mutation 隔离，新增测试覆盖 nested cell 的 mutation 隔离）。
+
+#### 7.16.5 留给后续
+
+- **per-category 直方图**：现在一桶合并 LOCAL + CLOUD。qwen3-4b 可能对 LOCAL 更有信心（短词、关键词触发）而对 CLOUD 更不确定（知识问答）。拆分可以让运维针对性调阈值。
+- **周期性 audit kind**：现在直方图只在调用方拉 `getStats()` 时可见。可以每 N 次 classify 触发一次 `intent.stats.calibration` audit kind，运维无需主动轮询就能在 audit log 看趋势。
+- **建议阈值启发**：基于直方图的 suggested threshold（最小化 rejected 但最大化 accepted）。需要 ground truth，目前没法做。
+
+#### 7.16.6 测试覆盖（8 new cases in `tests/unit/intent-router.test.ts`）
+
+| # | 用例 | 验证 |
+|---|---|---|
+| 1 | fresh service 空直方图 | `getStats().confidenceHistogram === {}` |
+| 2 | conf=0.9 ≥ threshold → accepted | bucket '9' accepted=1, rejected=0 |
+| 3 | conf=0.3 < threshold → rejected | bucket '3' rejected=1, accepted=0 |
+| 4 | 多 verdict 分布到 5 桶 | verdicts [0.0, 0.15, 0.55, 0.7, 0.95] → buckets [0r, 1r, 5r, 7a, 9a] |
+| 5 | conf=1.0 clamp 到 bucket 9 | bucket '10' 不存在；bucket '9' 收到 conf=1.0 |
+| 6 | timeout 不污染直方图 | `stats.timeout=1`，`confidenceHistogram={}` |
+| 7 | unclear response 不污染直方图 | `stats.llmError=1`，`confidenceHistogram={}` |
+| 8 | getStats() 深拷贝直方图 | mutate `snapshot.confidenceHistogram['8']`、`['99']` 后 fresh getStats 不变 |
+
+**调试踩坑**：第一版用 `String(Math.floor(c * 10))` 没加 clamp，conf=1.0 时落到 `'10'` 桶。**测试 5** 专门捕获这个边界。
+
+**总计**：306 个单测全过（+8 new），intent-router.test.ts 现在 46 用例，verify:build 4 关全过，compile 零错。
+
+---
+
 ## 八、关键发现
 
 1. **M 段代码"裸奔"时代结束** — Phase 2-4 为 M 段补齐了基础安全能力：PII 脱敏、审计日志轮转、会话管理、CLOUD 端到端脱敏。

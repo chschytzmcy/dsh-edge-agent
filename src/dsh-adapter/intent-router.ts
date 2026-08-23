@@ -118,6 +118,12 @@ export class IntentRouterServiceImpl extends Service {
     sanitized: 0,
     sanitizeError: 0,
     sanitizeSkipped: 0,
+    /** G9: 10-bucket histogram of LLM confidence values × (accepted | rejected).
+     *  Bucket key is `Math.floor(c * 10)` clamped to [0,9]; `conf=0.0` → '0',
+     *  `conf=1.0` → '9' (last bucket inclusive). Empty until first
+     *  `parseClassificationVerdict` succeeds. Timeouts / errors / unclear
+     *  responses are NOT recorded (no confidence to bucket). */
+    confidenceHistogram: {},
   }
 
   constructor(ctx: Context, config: Config, auditLog?: AuditLike) {
@@ -432,6 +438,21 @@ Respond ONLY with a single JSON object — no prose, no Markdown:
     }
     this.audit('debug', 'intent.llm.parsed', { category: verdict.category, confidence: verdict.confidence })
 
+    // G9: confidence histogram — record every parsed verdict (whether it
+    // crosses the threshold or not) so operators can see the LLM's
+    // distribution and tune `confidenceThreshold` accordingly. Accepted vs
+    // rejected split per bucket tells you exactly where the threshold cuts
+    // the distribution. Confidences are pre-clamped to [0,1] by
+    // coerceClassification, so Math.floor(c*10) yields 0..9 (1.0 clamped).
+    {
+      const bucket = Math.min(9, Math.max(0, Math.floor(verdict.confidence * 10)))
+      const key = String(bucket)
+      const cell = this.stats.confidenceHistogram[key]
+        ?? (this.stats.confidenceHistogram[key] = { accepted: 0, rejected: 0 })
+      if (verdict.confidence >= this.confidenceThreshold) cell.accepted++
+      else cell.rejected++
+    }
+
     // Confidence gate: if below threshold, fall back to keyword rules.
     if (verdict.confidence < this.confidenceThreshold) {
       this.stats.lowConfidence++
@@ -554,7 +575,14 @@ Respond ONLY with a single JSON object — no prose, no Markdown:
    *  can't mutate the live state. Counters are process-local — restart
    *  zeroes them. */
   getStats(): IntentRouterStats {
-    return { ...this.stats }
+    // G9: deep-copy the histogram too — its nested {accepted, rejected}
+    // cells would otherwise be live references into `this.stats`.
+    const hist: IntentRouterStats['confidenceHistogram'] = {}
+    for (const k of Object.keys(this.stats.confidenceHistogram)) {
+      const cell = this.stats.confidenceHistogram[k]
+      hist[k] = { accepted: cell.accepted, rejected: cell.rejected }
+    }
+    return { ...this.stats, confidenceHistogram: hist }
   }
 }
 
@@ -605,6 +633,11 @@ export interface IntentRouterStats {
   sanitizeError: number
   /** CLOUD realm but no sanitizer handle mounted (fail-open). */
   sanitizeSkipped: number
+  /** G9: 10-bucket histogram of LLM confidence values × (accepted | rejected).
+   *  Bucket key is `String(Math.floor(c * 10))` clamped to [0,9]. Use
+   *  `getStats()` to obtain a deep copy. Empty until the first parsed
+   *  verdict — timeouts / errors / unclear responses are not recorded. */
+  confidenceHistogram: { [bucket: string]: { accepted: number; rejected: number } }
 }
 
 /**

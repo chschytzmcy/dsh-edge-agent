@@ -998,6 +998,148 @@ describe('intent-router', () => {
     assert.equal(service.getStats().empty, 1)
   })
 
+  // ── G9: confidence histogram in getStats() ─────────────────────────────────
+  // Operators tuning `confidenceThreshold` need to see the LLM's actual
+  // confidence distribution. G9 buckets every parsed verdict into one of 10
+  // buckets (0..9) and splits each bucket into accepted (>= threshold) and
+  // rejected (< threshold, fell back to rules). Timeouts / errors / unclear
+  // responses have no confidence to bucket and are NOT recorded.
+
+  it('fresh service has empty confidenceHistogram', () => {
+    const service = new IntentRouterServiceImpl({ reflect: { provide: () => {} }, llm: null } as any, {
+      defaultCategory: 'CLOUD', classificationProvider: 'local-qwen3-4b', confidenceThreshold: 0.6,
+    })
+    const stats = service.getStats()
+    assert.deepEqual(stats.confidenceHistogram, {})
+  })
+
+  it('confidenceHistogram records accepted when verdict.confidence >= threshold', async () => {
+    const verdict = JSON.stringify({ category: 'CLOUD', confidence: 0.9 })  // bucket 9
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: { stream: () => chunksFromText(verdict) },
+    } as any
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD', classificationProvider: 'local-qwen3-4b', confidenceThreshold: 0.6,
+    })
+    await service.classify('hi')
+    const stats = service.getStats()
+    // Bucket index = Math.floor(0.9 * 10) = 9
+    assert.ok(stats.confidenceHistogram['9'])
+    assert.equal(stats.confidenceHistogram['9'].accepted, 1)
+    assert.equal(stats.confidenceHistogram['9'].rejected, 0)
+  })
+
+  it('confidenceHistogram records rejected when verdict.confidence < threshold', async () => {
+    const verdict = JSON.stringify({ category: 'CLOUD', confidence: 0.3 })  // bucket 3
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: { stream: () => chunksFromText(verdict) },
+    } as any
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD', classificationProvider: 'local-qwen3-4b', confidenceThreshold: 0.6,
+    })
+    await service.classify('hi')
+    const stats = service.getStats()
+    // 0.3 < 0.6 → lowConfidence fallback path; bucket still recorded as rejected
+    assert.equal(stats.confidenceHistogram['3'].accepted, 0)
+    assert.equal(stats.confidenceHistogram['3'].rejected, 1)
+  })
+
+  it('confidenceHistogram distributes across buckets for multiple verdicts', async () => {
+    const verdicts = [0.0, 0.15, 0.55, 0.7, 0.95]   // buckets 0, 1, 5, 7, 9
+    let idx = 0
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: {
+        stream: () => {
+          const v = verdicts[idx++ % verdicts.length]
+          return chunksFromText(JSON.stringify({ category: 'CLOUD', confidence: v }))
+        },
+      },
+    } as any
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD', classificationProvider: 'local-qwen3-4b', confidenceThreshold: 0.6,
+    })
+    for (let i = 0; i < verdicts.length; i++) await service.classify('hi')
+    const h = service.getStats().confidenceHistogram
+    assert.equal(h['0'].rejected, 1)   // 0.0 → bucket 0, < 0.6
+    assert.equal(h['1'].rejected, 1)   // 0.15 → bucket 1
+    assert.equal(h['5'].rejected, 1)   // 0.55 → bucket 5
+    assert.equal(h['7'].accepted, 1)   // 0.7  → bucket 7, >= 0.6
+    assert.equal(h['9'].accepted, 1)   // 0.95 → bucket 9
+  })
+
+  it('confidence=1.0 clamps into bucket 9 (last bucket inclusive)', async () => {
+    const verdict = JSON.stringify({ category: 'CLOUD', confidence: 1.0 })
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: { stream: () => chunksFromText(verdict) },
+    } as any
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD', classificationProvider: 'local-qwen3-4b', confidenceThreshold: 0.6,
+    })
+    await service.classify('hi')
+    // Without the clamp, Math.floor(1.0 * 10) = 10, which would create a
+    // spurious '10' bucket and orphan bucket 9.
+    const h = service.getStats().confidenceHistogram
+    assert.ok(h['9'], 'bucket 9 must contain conf=1.0')
+    assert.ok(!h['10'], 'bucket 10 must NOT exist')
+  })
+
+  it('timeout does NOT pollute confidenceHistogram (no confidence to bucket)', async () => {
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: {
+        stream: async function* () { throw Object.assign(new Error('aborted'), { name: 'AbortError' }) },
+      },
+    } as any
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD', classificationProvider: 'local-qwen3-4b',
+      confidenceThreshold: 0.6, llmTimeoutMs: 50,
+    })
+    await service.classify('hi')
+    const stats = service.getStats()
+    assert.equal(stats.timeout, 1)
+    assert.deepEqual(stats.confidenceHistogram, {})
+  })
+
+  it('unclear response does NOT pollute confidenceHistogram (parse failed)', async () => {
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: { stream: () => chunksFromText('not json at all') },
+    } as any
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD', classificationProvider: 'local-qwen3-4b', confidenceThreshold: 0.6,
+    })
+    await service.classify('hi')
+    const stats = service.getStats()
+    assert.equal(stats.llmError, 1)
+    assert.deepEqual(stats.confidenceHistogram, {})
+  })
+
+  it('getStats() deep-copies confidenceHistogram (mutating snapshot cells is safe)', async () => {
+    const verdict = JSON.stringify({ category: 'CLOUD', confidence: 0.8 })
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: { stream: () => chunksFromText(verdict) },
+    } as any
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD', classificationProvider: 'local-qwen3-4b', confidenceThreshold: 0.6,
+    })
+    await service.classify('hi')
+    const snap = service.getStats()
+    // Mutate the returned histogram aggressively
+    snap.confidenceHistogram['8'].accepted = 9999
+    snap.confidenceHistogram['8'].rejected = 9999
+    snap.confidenceHistogram['99'] = { accepted: 9999, rejected: 9999 }
+    // Live state must be untouched
+    const fresh = service.getStats().confidenceHistogram
+    assert.equal(fresh['8'].accepted, 1)
+    assert.equal(fresh['8'].rejected, 0)
+    assert.ok(!fresh['99'], 'phantom bucket must not persist into live state')
+  })
+
   // ─── redactPreview() PII guard (§7.13) ─────────────────────────────────
 
   it('redacts response preview via ctx.piiUtils.redactString', async () => {
