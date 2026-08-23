@@ -148,10 +148,34 @@ Respond ONLY with a single JSON object — no prose, no Markdown:
     const llmStart = Date.now()
     let responseText = ''
     let chunks = 0
+
+    // NEW: route the classification LLM call through model-router if mounted.
+    // Lazy-lookup on every call (not cached) because root cordis.yml declares
+    // intent-router BEFORE model-router — the service may not exist at the
+    // first classify() but will by the next one. Soft dependency: missing or
+    // throwing modelRouter falls back to config values (fail-open).
+    // ⚠️ classificationProvider MUST be a provider route id (with 'local-' /
+    // 'cloud-' prefix); bare model ids resolve to realm: 'CLOUD' (see
+    // model-router.ts:103). Current default 'local-qwen3-4b' is fine.
+    const modelRouter = (this.ctx as any).modelRouter
+    const resolved = (() => {
+      try { return modelRouter?.resolve?.(this.classificationProvider) }
+      catch { return undefined }
+    })()
+    const provider = resolved?.provider ?? this.classificationProvider
+    const model = resolved?.model ?? this.classificationModel
+    this.audit('debug', 'intent.llm.route', {
+      configured: this.classificationProvider,
+      resolvedRealm: resolved?.realm,
+      resolvedProvider: provider,
+      resolvedModel: model,
+      modelRouterMounted: Boolean(modelRouter),
+    })
+
     try {
       const stream = this.llm.stream({
-        provider: this.classificationProvider,
-        model: this.classificationModel,
+        provider,
+        model,
         messages: [userMessage],
       })
 

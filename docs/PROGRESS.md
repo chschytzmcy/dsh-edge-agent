@@ -374,6 +374,60 @@ http-api:
 
 ---
 
+### 7.8 model-router 接进 intent-router（v6 §2.15，2026-08-23）
+
+**背景**：`intent-router.classifyWithLlm()` 之前**完全绕过** `model-router`，直接用 `config.classificationProvider` + `config.classificationModel`（写死 `'local-qwen3-4b'` / `'qwen3-4b'`）调 `ctx.llm.stream()`。model-router 插件存在并提供 `resolve(modelId): {realm, provider, model}`，但**生产环境零调用**。改 routing model 必须改 yml + 重启；路由表（localModels / cloudModels）对分类调用无约束力。v6 §2.15 设计明确要求 intent-router 通过 model-router 选 model。
+
+**实现**（`src/dsh-adapter/intent-router.ts:151-173`）：在 `classifyWithLlm()` 内每次调用前**懒查** `ctx.modelRouter`（不缓存）：
+
+```ts
+const modelRouter = (this.ctx as any).modelRouter
+const resolved = (() => {
+  try { return modelRouter?.resolve?.(this.classificationProvider) }
+  catch { return undefined }
+})()
+const provider = resolved?.provider ?? this.classificationProvider
+const model = resolved?.model ?? this.classificationModel
+this.audit('debug', 'intent.llm.route', {
+  configured: this.classificationProvider,
+  resolvedRealm: resolved?.realm,
+  resolvedProvider: provider,
+  resolvedModel: model,
+  modelRouterMounted: Boolean(modelRouter),
+})
+```
+
+**为什么懒查（每次 classify 都重读 ctx）**：
+
+根 `cordis.yml` 把 `intent-router`（line 184）排在 `model-router`（line 193）**之前**；patch yml 相反。如果在 `apply()` 阶段一次绑定，根 yml 部署会拿到 `undefined`。懒查覆盖两种 boot order。
+
+**软依赖策略**（与 http-api 取 tdBus 同模式）：
+- 不动 `inject`（保持 `['llm', 'auditLog']`）
+- 不动 Config schema
+- 不动构造函数签名（零侵入，7 个既有测试 + 1 个生产调用点全部无需改）
+- modelRouter 缺失 → 用 config 值（向后兼容）
+- `resolve()` 抛错 → try/catch 吞掉，回退 config（fail-open）
+
+**⚠️ Sharp edge — `classificationProvider` 必须用 provider route id**：
+
+`resolveRoute('qwen3-4b')` 返回 `{realm: 'CLOUD'}`（无 `local-` 前缀 → 落 CLOUD 分支，model-router.ts:103）。当前配置 `local-qwen3-4b` OK；若用户改成裸 `qwen3-4b` 会被悄悄翻成 CLOUD realm。**始终用 `local-xxx` / `cloud-xxx` 形式的 route id，不要用裸 model id。**
+
+**新 audit kind**：
+| kind | level | 触发 |
+|---|---|---|
+| `intent.llm.route` | debug | 每次 classifyWithLlm 都记：configured vs resolved provider/model + modelRouter 是否挂载 |
+
+**3 个新单测**：
+1. modelRouter 存在 + 返回 CLOUD 路由 → 用 resolved 值调 LLM，audit `modelRouterMounted: true`
+2. modelRouter 缺失 → 用 config 值调 LLM，audit `modelRouterMounted: false`
+3. modelRouter.resolve 抛错 → fail-open 回退 config，audit `modelRouterMounted: true` 但 `resolvedProvider` 是 config 值
+
+**总计**：256 个单测全过，verify:build 4 关全过，compile 零错。
+
+---
+
+---
+
 ## 八、关键发现
 
 1. **M 段代码"裸奔"时代结束** — Phase 2-4 为 M 段补齐了基础安全能力：PII 脱敏、审计日志轮转、会话管理、CLOUD 端到端脱敏。

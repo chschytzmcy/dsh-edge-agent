@@ -149,4 +149,94 @@ describe('intent-router', () => {
     assert.equal(intent.category, 'CLOUD')
     assert.match(intent.rationale, /default:cloud/u)
   })
+
+  // ─── model-router integration (v6 §2.15) ───────────────────────────────
+
+  it('routes classification call through model-router when mounted', async () => {
+    const verdict = JSON.stringify({ category: 'CLOUD', confidence: 0.9 })
+    const captured: { input?: string; opts?: any } = {}
+    const fakeMr = {
+      resolve: (m: string) => {
+        captured.input = m
+        return { realm: 'CLOUD', provider: 'cloud-deepseek-v4', model: 'deepseek-chat' }
+      },
+    }
+    let capturedOpts: any
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: {
+        stream(opts: any) { capturedOpts = opts; return chunksFromText(verdict) },
+      },
+      modelRouter: fakeMr,
+    } as any
+    const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b',
+      confidenceThreshold: 0.6,
+    }, audit as any)
+
+    await service.classify('hi')
+    assert.equal(captured.input, 'local-qwen3-4b')
+    assert.equal(capturedOpts.provider, 'cloud-deepseek-v4')
+    assert.equal(capturedOpts.model, 'deepseek-chat')
+    const routeEntry = audit.entries.find((e: any) => e.kind === 'intent.llm.route')
+    assert.ok(routeEntry, 'intent.llm.route audit kind should be present')
+    assert.equal(routeEntry.payload.modelRouterMounted, true)
+    assert.equal(routeEntry.payload.resolvedProvider, 'cloud-deepseek-v4')
+  })
+
+  it('falls back to config values when modelRouter is absent', async () => {
+    const verdict = JSON.stringify({ category: 'CLOUD', confidence: 0.9 })
+    let capturedOpts: any
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: {
+        stream(opts: any) { capturedOpts = opts; return chunksFromText(verdict) },
+      },
+      // no modelRouter key
+    } as any
+    const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b',
+      classificationModel: 'qwen3-4b',
+      confidenceThreshold: 0.6,
+    }, audit as any)
+
+    await service.classify('hi')
+    assert.equal(capturedOpts.provider, 'local-qwen3-4b')
+    assert.equal(capturedOpts.model, 'qwen3-4b')
+    const routeEntry = audit.entries.find((e: any) => e.kind === 'intent.llm.route')
+    assert.ok(routeEntry)
+    assert.equal(routeEntry.payload.modelRouterMounted, false)
+  })
+
+  it('fails open to config values when modelRouter.resolve throws', async () => {
+    const verdict = JSON.stringify({ category: 'CLOUD', confidence: 0.9 })
+    let capturedOpts: any
+    const fakeMr = { resolve: () => { throw new Error('boom') } }
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: {
+        stream(opts: any) { capturedOpts = opts; return chunksFromText(verdict) },
+      },
+      modelRouter: fakeMr,
+    } as any
+    const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b',
+      classificationModel: 'qwen3-4b',
+      confidenceThreshold: 0.6,
+    }, audit as any)
+
+    await service.classify('hi')
+    assert.equal(capturedOpts.provider, 'local-qwen3-4b')
+    assert.equal(capturedOpts.model, 'qwen3-4b')
+    const routeEntry = audit.entries.find((e: any) => e.kind === 'intent.llm.route')
+    assert.ok(routeEntry)
+    assert.equal(routeEntry.payload.modelRouterMounted, true)
+    assert.equal(routeEntry.payload.resolvedProvider, 'local-qwen3-4b')
+  })
 })
