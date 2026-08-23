@@ -171,10 +171,14 @@
 # Input/output safety scanning. MVP: checkInput only with 4 default rules.
 - id: prompt-guard
   name: '@deepseek-harness-edge-agent/dsh-edge-agent/prompt-guard'
-  inject: [tcm, privacyPolicy, auditLog]
+  inject: [tcm, privacyPolicy, auditLog, llm]
   config:
     rules: []
     enableModelDetection: !!js process.env.DSH_EDGE_GUARD_MODEL === 'true'
+    modelDetectionProvider: !!js process.env.DSH_EDGE_GUARD_MODEL_PROVIDER ?? 'local-qwen3-4b'
+    modelDetectionModel: !!js process.env.DSH_EDGE_GUARD_MODEL_MODEL ?? 'qwen3-4b'
+    modelDetectionTimeoutMs: !!js parseInt(process.env.DSH_EDGE_GUARD_MODEL_TIMEOUT_MS ?? '4000', 10)
+    modelDetectionMaxInputLength: !!js parseInt(process.env.DSH_EDGE_GUARD_MODEL_MAX_INPUT ?? '2000', 10)
 
 # Intent classification → routing decision.
 - id: intent-router

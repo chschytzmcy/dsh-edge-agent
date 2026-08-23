@@ -1,0 +1,72 @@
+{
+  "version": "1.0.0",
+  "routingRules": [
+    {
+      "pattern": "(本地|local|文件|file|计算|calculate|读取|写入)",
+      "realm": "LOCAL",
+      "confidence": 0.8,
+      "rationale": "Local operations stay on device"
+    },
+    {
+      "pattern": "(密码|password|secret|密钥|private.?key|token)",
+      "realm": "LOCAL",
+      "confidence": 0.9,
+      "rationale": "Sensitive credentials must not leave device"
+    },
+    {
+      "pattern": "(身份证号|id.?card|银行卡|bank.?card|信用卡|credit.?card)",
+      "realm": "LOCAL",
+      "confidence": 0.95,
+      "rationale": "Financial/identity PII must stay local"
+    },
+    {
+      "pattern": "(翻译|translate|summarize|summary|explain|为什么|what is|how to)",
+      "realm": "CLOUD",
+      "confidence": 0.7,
+      "rationale": "Knowledge/translation tasks can use cloud LLM"
+    }
+  ],
+  "sanitizationRules": [
+    {
+      "pattern": "1[3-9]\\d{9}",
+      "replacement": "[PHONE]",
+      "dataClass": "confidential",
+      "piiType": "phone"
+    },
+    {
+      "pattern": "[1-9]\\d{5}(19|20)\\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\\d|3[01])\\d{3}[\\dXx]",
+      "replacement": "[ID_CARD]",
+      "dataClass": "secret",
+      "piiType": "id-card"
+    },
+    {
+      "pattern": "\\d{16,19}",
+      "replacement": "[BANK_CARD]",
+      "dataClass": "secret",
+      "piiType": "bank-card"
+    },
+    {
+      "pattern": "[\\w.-]+@[\\w.-]+\\.\\w+",
+      "replacement": "[EMAIL]",
+      "dataClass": "confidential",
+      "piiType": "email"
+    },
+    {
+      "pattern": "(sk-[a-zA-Z0-9]{20,}|key-[a-zA-Z0-9]{16,}|api[_-]?key[_-]?[a-zA-Z0-9]{16,})",
+      "replacement": "[API_KEY]",
+      "dataClass": "secret",
+      "piiType": "api-key"
+    }
+  ],
+  "dataClassifications": [
+    { "class": "public", "defaultRealm": "CLOUD", "ttlSeconds": 3600 },
+    { "class": "internal", "defaultRealm": "SANITIZED", "ttlSeconds": 1800 },
+    { "class": "confidential", "defaultRealm": "SANITIZED", "ttlSeconds": 900 },
+    { "class": "secret", "defaultRealm": "LOCAL", "ttlSeconds": 300 }
+  ],
+  "globalConstraints": {
+    "maxCloudRequestsPerMinute": 20,
+    "requireAttestation": false,
+    "blockIfTcbCompromised": true
+  }
+}

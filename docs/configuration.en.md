@@ -49,6 +49,10 @@
 | `DSH_EDGE_ROUTER_LLM_FALLBACK` | `true` | Fall back to LLM classifier on low rule confidence |
 | `DSH_EDGE_ROUTER_THRESHOLD` | `0.6` | Rule match confidence threshold |
 | `DSH_EDGE_GUARD_MODEL` | `false` | Enable model-assisted prompt-guard detection |
+| `DSH_EDGE_GUARD_MODEL_PROVIDER` | `local-qwen3-4b` | Provider route for the model-assisted tier |
+| `DSH_EDGE_GUARD_MODEL_MODEL` | `qwen3-4b` | Model id for the model-assisted tier |
+| `DSH_EDGE_GUARD_MODEL_TIMEOUT_MS` | `4000` | Per-call timeout in ms for the model-assisted tier |
+| `DSH_EDGE_GUARD_MODEL_MAX_INPUT` | `2000` | Skip the model tier when input exceeds this many chars (fail-open) |
 
 ## 🤖 Model Configuration
 

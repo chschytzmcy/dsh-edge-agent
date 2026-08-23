@@ -32,8 +32,6 @@
   disabled: true
 - id: td-bus
   disabled: true
-- id: sanitizer-pipeline
-  disabled: true
 - id: ohttp-gateway
   disabled: true
 - id: secure-bridge
@@ -148,7 +146,7 @@
 - insert:
     - id: http-api
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/http-api'
-      inject: [agents, intentRouter, promptGuard, auditLog]
+      inject: [agents, intentRouter, promptGuard, auditLog, sanitizer]
       config:
         host: !!js process.env.DSH_EDGE_HTTP_HOST ?? '127.0.0.1'
         port: !!js parseInt(process.env.DSH_EDGE_HTTP_PORT ?? '21017', 10)
@@ -226,10 +224,31 @@
     # ── A1 端侧隐私安全防护 ─────────────────────────────────────────────────
     - id: prompt-guard
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/prompt-guard'
-      inject: [auditLog]
+      inject: [auditLog, llm]
       config:
         maxInputLength: 10000
         maxRequestsPerMinute: 20
         enablePIIRedaction: true
         enableInjectionDetection: true
         enableRateLimit: true
+        enableModelDetection: !!js process.env.DSH_EDGE_GUARD_MODEL === 'true'
+        modelDetectionProvider: !!js process.env.DSH_EDGE_GUARD_MODEL_PROVIDER ?? 'local-qwen3-4b'
+        modelDetectionModel: !!js process.env.DSH_EDGE_GUARD_MODEL_MODEL ?? 'qwen3-4b'
+        modelDetectionTimeoutMs: !!js parseInt(process.env.DSH_EDGE_GUARD_MODEL_TIMEOUT_MS ?? '4000', 10)
+        modelDetectionMaxInputLength: !!js parseInt(process.env.DSH_EDGE_GUARD_MODEL_MAX_INPUT ?? '2000', 10)
+
+    # ── Phase 4: 隐私策略引擎 + 脱敏管线 ──────────────────────────────────
+    - id: privacy-policy
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/privacy-policy'
+      inject: [auditLog]
+      config:
+        policyPath: !!js (process.env.DSH_EDGE_PRIVACY_POLICY_PATH ?? (process.cwd() + '/profiles/dsh-edge-agent/privacy-policy.json'))
+        hotReload: true
+        watchIntervalMs: 5000
+
+    - id: sanitizer-pipeline
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/sanitizer-pipeline'
+      inject: [privacyPolicy, auditLog]
+      config:
+        enableAutoDetection: true
+        maxReplacementsPerSession: 1024

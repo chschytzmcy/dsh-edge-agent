@@ -18,7 +18,7 @@ import type { SessionEvent } from '@deepseek-ai/dsh-session'
 
 export const name = 'http-api'
 
-export const inject = ['agents', 'intentRouter', 'promptGuard', 'auditLog'] as const
+export const inject = ['agents', 'intentRouter', 'promptGuard', 'auditLog', 'sanitizer'] as const
 
 export interface Config {
   host: string
@@ -69,6 +69,7 @@ export class HttpApiServiceImpl extends Service {
     private agents: any,
     private promptGuard: any,
     private auditLog: any,
+    private sanitizer: any,
   ) {
     super(cordisCtx, 'httpApi')
   }
@@ -258,6 +259,27 @@ export class HttpApiServiceImpl extends Service {
     const provider = isLocal ? 'local-qwen3-4b' : 'cloud-deepseek-v4'
     const model = isLocal ? (process.env.DSH_EDGE_LOCAL_LLM_MODEL ?? 'qwen3-4b-instruct-2507') : 'deepseek-chat'
     this.audit('info', 'http.chat.route', { reqId, sessionId, intent: intent.category, provider, model, confidence: intent.confidence, rationale: intent.rationale })
+
+    // Phase 4: Sanitize input for CLOUD requests
+    let messageToSend = message
+    let sanitizationInfo: { replacements: number } | undefined
+    if (!isLocal && this.sanitizer) {
+      try {
+        const sanitizationResult = await this.sanitizer.sanitize(message, { sessionId })
+        messageToSend = sanitizationResult.sanitizedText
+        if (sanitizationResult.replacements.length > 0) {
+          sanitizationInfo = { replacements: sanitizationResult.replacements.length }
+          this.audit('info', 'http.chat.sanitized', {
+            reqId,
+            sessionId,
+            replacementCount: sanitizationResult.replacements.length,
+          })
+        }
+      } catch (err: any) {
+        this.audit('error', 'http.chat.sanitize.error', { reqId, sessionId, error: err.message })
+      }
+    }
+
     const record = await this.ensureSession(sessionId, provider, model)
 
     // Wait for turn completion by subscribing to session/event
@@ -283,7 +305,7 @@ export class HttpApiServiceImpl extends Service {
     })
 
     const userMessage = createUserMessage({
-      content: [{ type: 'text', text: message }],
+      content: [{ type: 'text', text: messageToSend }],
       source: { kind: 'user' },
     })
 
@@ -292,11 +314,24 @@ export class HttpApiServiceImpl extends Service {
 
     let result = await turnEnd
 
+    // Phase 4: Desanitize output for CLOUD requests
+    if (!isLocal && this.sanitizer && sanitizationInfo) {
+      try {
+        result = await this.sanitizer.desanitize(result, sessionId)
+        this.audit('debug', 'http.chat.desanitized', { reqId, sessionId })
+      } catch (err: any) {
+        this.audit('error', 'http.chat.desanitize.error', { reqId, sessionId, error: err.message })
+      }
+    }
+
     // Output security check (PII redaction)
+    // Pass sanitized=true when sanitizer-pipeline managed this session,
+    // so prompt-guard skips its own masking and doesn't undo the desanitize above.
     let redactedInfo: Array<{ type: string; masked: string }> | undefined
     if (this.promptGuard && result) {
       try {
-        const outputCheck = await this.promptGuard.checkOutput(result)
+        const wasSanitized = !!sanitizationInfo
+        const outputCheck = await this.promptGuard.checkOutput(result, { sanitized: wasSanitized })
         result = outputCheck.filtered
         if (outputCheck.redacted.length > 0) {
           redactedInfo = outputCheck.redacted
@@ -373,6 +408,27 @@ export class HttpApiServiceImpl extends Service {
     const provider = isLocal ? 'local-qwen3-4b' : 'cloud-deepseek-v4'
     const model = isLocal ? (process.env.DSH_EDGE_LOCAL_LLM_MODEL ?? 'qwen3-4b-instruct-2507') : 'deepseek-chat'
     this.audit('info', 'http.chat.stream.route', { reqId, sessionId, intent: intent.category, provider, model })
+
+    // Phase 4: Sanitize input for CLOUD requests
+    let messageToSend = message
+    let didSanitize = false
+    if (!isLocal && this.sanitizer) {
+      try {
+        const sanitizationResult = await this.sanitizer.sanitize(message, { sessionId })
+        messageToSend = sanitizationResult.sanitizedText
+        if (sanitizationResult.replacements.length > 0) {
+          didSanitize = true
+          this.audit('info', 'http.chat.stream.sanitized', {
+            reqId,
+            sessionId,
+            replacementCount: sanitizationResult.replacements.length,
+          })
+        }
+      } catch (err: any) {
+        this.audit('error', 'http.chat.stream.sanitize.error', { reqId, sessionId, error: err.message })
+      }
+    }
+
     const record = await this.ensureSession(sessionId, provider, model)
 
     res.writeHead(200, {
@@ -389,7 +445,16 @@ export class HttpApiServiceImpl extends Service {
       if (event.type === 'assistant/chunk') {
         const chunk = (event as any).data.chunk
         if (chunk.type === 'text-delta') {
-          res.write(`data: ${JSON.stringify({ type: 'text', text: chunk.text })}\n\n`)
+          // Phase 4: Desanitize streamed text for CLOUD requests
+          let textToSend = chunk.text
+          if (!isLocal && this.sanitizer && didSanitize) {
+            try {
+              textToSend = this.sanitizer.desanitizeSync(chunk.text, sessionId)
+            } catch {
+              // If desanitize fails, send original text
+            }
+          }
+          res.write(`data: ${JSON.stringify({ type: 'text', text: textToSend })}\n\n`)
         }
       } else if (event.type === 'turn/end') {
         res.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`)
@@ -401,7 +466,7 @@ export class HttpApiServiceImpl extends Service {
     })
 
     const userMessage = createUserMessage({
-      content: [{ type: 'text', text: message }],
+      content: [{ type: 'text', text: messageToSend }],
       source: { kind: 'user' },
     })
     record.agent.followup(userMessage)
@@ -438,6 +503,14 @@ export class HttpApiServiceImpl extends Service {
     }
     await record.handle.dispose()
     this.sessions.delete(id)
+    // Phase 4: Purge sanitizer mappings for deleted session
+    if (this.sanitizer) {
+      try {
+        await this.sanitizer.purge(id)
+      } catch (err: any) {
+        this.audit('error', 'session.delete.sanitizer-purge.error', { sessionId: id, error: err.message })
+      }
+    }
     this.audit('info', 'session.deleted', { sessionId: id })
     res.writeHead(204)
     res.end()
@@ -607,8 +680,9 @@ export async function apply(ctx: any, config: Config): Promise<() => Promise<voi
   const agents = ctx.get('agents')
   const promptGuard = ctx.get('promptGuard')
   const auditLog = ctx.get('auditLog')
-  console.log(`[http-api] apply() - promptGuard: ${!!promptGuard}, auditLog: ${!!auditLog}`)
-  const service = new HttpApiServiceImpl(ctx, config, agents, promptGuard, auditLog)
+  const sanitizer = ctx.get('sanitizer')
+  console.log(`[http-api] apply() - promptGuard: ${!!promptGuard}, auditLog: ${!!auditLog}, sanitizer: ${!!sanitizer}`)
+  const service = new HttpApiServiceImpl(ctx, config, agents, promptGuard, auditLog, sanitizer)
   await service.start()
   return async () => {
     await service.stop()
