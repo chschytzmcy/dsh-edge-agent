@@ -86,5 +86,8 @@ export * from './attestation.js'
 export * from './td-bus.js'
 export * from './voice-input.js'
 export * from './plugin-host.js'
-export * from './http-api.js'
+// http-api re-exports: skip `resolveRoute` — it collides with the canonical
+// `resolveRoute` from model-router.js (TS2308). http-api's local copy is only
+// exported for unit tests; consumers should use model-router's version.
+export { name as httpApiName, inject as httpApiInject, Config as HttpApiConfig, HttpApiService, HttpApiServiceImpl, apply as httpApiApply } from './http-api.js'
 export * from './llm-adapters.js'

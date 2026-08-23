@@ -669,7 +669,7 @@ export interface IntentRouterStats {
  * Falls back to: extract the first {...} block → regex token match for
  * `category` + a best-effort confidence float from the surrounding text.
  */
-function parseClassificationVerdict(raw: string): ClassificationVerdict | null {
+export function parseClassificationVerdict(raw: string): ClassificationVerdict | null {
   if (!raw.length) return null
   const cleaned = raw.replace(/^```(?:json)?/iu, '').replace(/```$/u, '').trim()
 
@@ -710,7 +710,7 @@ function parseClassificationVerdict(raw: string): ClassificationVerdict | null {
   return null
 }
 
-function coerceClassification(obj: unknown): ClassificationVerdict | null {
+export function coerceClassification(obj: unknown): ClassificationVerdict | null {
   if (!obj || typeof obj !== 'object') return null
   const o = obj as Record<string, unknown>
   const cat = typeof o.category === 'string' ? o.category.toUpperCase() : ''
@@ -725,7 +725,7 @@ function coerceClassification(obj: unknown): ClassificationVerdict | null {
 /** Best-effort extract a text payload from a recent-message object.
  *  Handles dsh-llm's `{content: [{type:'text', text}]}`, plain `{text}`,
  *  `{message: string}`, or anything stringifiable. Returns '' on failure. */
-function extractMessageText(m: unknown): string {
+export function extractMessageText(m: unknown): string {
   if (typeof m === 'string') return m
   if (!m || typeof m !== 'object') return ''
   const o = m as Record<string, unknown>

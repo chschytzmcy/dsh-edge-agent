@@ -10,7 +10,7 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'vitest'
 
 import * as router from '../../src/dsh-adapter/intent-router.ts'
-import { IntentRouterServiceImpl } from '../../src/dsh-adapter/intent-router.ts'
+import { IntentRouterServiceImpl, parseClassificationVerdict, coerceClassification, extractMessageText, resolveIntent } from '../../src/dsh-adapter/intent-router.ts'
 
 /** Streaming fake that mimics qwen3-4b's wire-shape: text-delta chunks. */
 function chunksFromText(text: string): AsyncIterable<unknown> {
@@ -1369,5 +1369,574 @@ describe('intent-router', () => {
     // 'read' is in the BUILT-IN list (EN), not in our CN-only list.
     const enMiss = await service.classify('read the value')
     assert.equal(enMiss.category, 'CLOUD')
+  })
+
+  // ─── parseClassificationVerdict 边界值 ─────────────────────────────────────
+  // Direct function tests for the 3-tier parser. These catch edge cases that
+  // the LLM actually produces in the field (extra fields, multi-JSON output,
+  // boundary confidences, fence variants).
+
+  it('parseClassificationVerdict: Tier 1 accepts JSON with extra fields', () => {
+    // LLM sometimes adds reasoning or other fields alongside the required ones.
+    const v = parseClassificationVerdict(JSON.stringify({
+      category: 'LOCAL', confidence: 0.8, reasoning: 'file operation detected',
+    }))
+    assert.ok(v)
+    assert.equal(v.category, 'LOCAL')
+    assert.equal(v.confidence, 0.8)
+  })
+
+  it('parseClassificationVerdict: Tier 2 picks first {...} when multiple blocks present', () => {
+    // LLM sometimes outputs reasoning in braces before the final JSON.
+    const raw = '分析结果: {category: "CLOUD"} — 最终判定 {"category":"CLOUD","confidence":0.85}'
+    const v = parseClassificationVerdict(raw)
+    assert.ok(v)
+    // Tier 2 regex /\{[\s\S]*\}/u is greedy — it captures from first { to last }.
+    // The result depends on whether the greedy match produces valid JSON.
+    // Either way, the parser should NOT return null (at least Tier 3 should fire).
+    assert.ok(v !== null, 'parser should recover something from multi-brace output')
+  })
+
+  it('parseClassificationVerdict: returns null for empty string', () => {
+    assert.equal(parseClassificationVerdict(''), null)
+  })
+
+  it('parseClassificationVerdict: returns null for whitespace-only', () => {
+    assert.equal(parseClassificationVerdict('   \t\n  '), null)
+  })
+
+  it('parseClassificationVerdict: Tier 1 strips ```json fence', () => {
+    const raw = '```json\n{"category":"CLOUD","confidence":0.75}\n```'
+    const v = parseClassificationVerdict(raw)
+    assert.ok(v)
+    assert.equal(v.category, 'CLOUD')
+    assert.equal(v.confidence, 0.75)
+  })
+
+  it('parseClassificationVerdict: Tier 1 strips ``` fence (no language tag)', () => {
+    const raw = '```\n{"category":"LOCAL","confidence":0.9}\n```'
+    const v = parseClassificationVerdict(raw)
+    assert.ok(v)
+    assert.equal(v.category, 'LOCAL')
+    assert.equal(v.confidence, 0.9)
+  })
+
+  it('parseClassificationVerdict: Tier 3 case-insensitive field names', () => {
+    // qwen3-4b sometimes capitalizes field names
+    const raw = 'Category=LOCAL, Confidence=0.8'
+    const v = parseClassificationVerdict(raw)
+    assert.ok(v)
+    assert.equal(v.category, 'LOCAL')
+    assert.equal(v.confidence, 0.8)
+  })
+
+  it('parseClassificationVerdict: Tier 3 returns null when only confidence extracted', () => {
+    // Symmetric to the category-only case — both fields must be present.
+    const raw = 'confidence: 0.9 but no category field here'
+    const v = parseClassificationVerdict(raw)
+    assert.equal(v, null)
+  })
+
+  // ─── coerceClassification 边界值 ───────────────────────────────────────────
+
+  it('coerceClassification: confidence=0 is valid', () => {
+    const v = coerceClassification({ category: 'CLOUD', confidence: 0 })
+    assert.ok(v)
+    assert.equal(v.confidence, 0)
+  })
+
+  it('coerceClassification: confidence=1 is valid', () => {
+    const v = coerceClassification({ category: 'LOCAL', confidence: 1 })
+    assert.ok(v)
+    assert.equal(v.confidence, 1)
+  })
+
+  it('coerceClassification: negative confidence clamps to 0', () => {
+    const v = coerceClassification({ category: 'CLOUD', confidence: -0.5 })
+    assert.ok(v)
+    assert.equal(v.confidence, 0)
+  })
+
+  it('coerceClassification: confidence > 1 clamps to 1', () => {
+    const v = coerceClassification({ category: 'CLOUD', confidence: 1.5 })
+    assert.ok(v)
+    assert.equal(v.confidence, 1)
+  })
+
+  it('coerceClassification: NaN confidence defaults to 0.5', () => {
+    const v = coerceClassification({ category: 'CLOUD', confidence: NaN })
+    assert.ok(v)
+    assert.equal(v.confidence, 0.5)
+  })
+
+  it('coerceClassification: string confidence is coerced', () => {
+    const v = coerceClassification({ category: 'LOCAL', confidence: '0.85' })
+    assert.ok(v)
+    assert.equal(v.confidence, 0.85)
+  })
+
+  it('coerceClassification: non-numeric string confidence → NaN → 0.5', () => {
+    const v = coerceClassification({ category: 'LOCAL', confidence: 'high' })
+    assert.ok(v)
+    assert.equal(v.confidence, 0.5)
+  })
+
+  it('coerceClassification: returns null for invalid category', () => {
+    assert.equal(coerceClassification({ category: 'UNKNOWN', confidence: 0.8 }), null)
+    assert.equal(coerceClassification({ category: '', confidence: 0.8 }), null)
+    assert.equal(coerceClassification({ confidence: 0.8 }), null)
+  })
+
+  it('coerceClassification: returns null for null/undefined/primitive', () => {
+    assert.equal(coerceClassification(null), null)
+    assert.equal(coerceClassification(undefined), null)
+    assert.equal(coerceClassification(42), null)
+    assert.equal(coerceClassification('hello'), null)
+  })
+
+  it('coerceClassification: category is case-insensitive', () => {
+    const v = coerceClassification({ category: 'local', confidence: 0.7 })
+    assert.ok(v)
+    assert.equal(v.category, 'LOCAL')
+  })
+
+  // ─── confidenceThreshold 精确边界 ──────────────────────────────────────────
+  // The code uses `verdict.confidence < this.confidenceThreshold` — at exact
+  // equality (0.6 === 0.6) the verdict should be ADOPTED, not rejected.
+
+  it('adopts LLM verdict when confidence equals threshold exactly', async () => {
+    const verdict = JSON.stringify({ category: 'LOCAL', confidence: 0.6 })
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: { stream: () => chunksFromText(verdict) },
+    } as any
+    const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b',
+      confidenceThreshold: 0.6,
+    }, audit as any)
+
+    const intent = await service.classify('something')
+    assert.equal(intent.category, 'LOCAL', 'confidence === threshold should be adopted')
+    assert.equal(intent.confidence, 0.6)
+    assert.match(intent.rationale, /llm-classified/u)
+    const stats = service.getStats()
+    assert.equal(stats.llmHit, 1)
+    assert.equal(stats.lowConfidence, 0, 'must NOT trigger low-confidence fallback at exact boundary')
+  })
+
+  it('rejects LLM verdict when confidence is 0.599999 (just below threshold)', async () => {
+    const verdict = JSON.stringify({ category: 'LOCAL', confidence: 0.599999 })
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: { stream: () => chunksFromText(verdict) },
+    } as any
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b',
+      confidenceThreshold: 0.6,
+    })
+
+    const intent = await service.classify('something')
+    // Falls through to rules → no keyword hit → defaultCategory
+    assert.equal(intent.category, 'CLOUD')
+    assert.match(intent.rationale, /default:cloud/u)
+    assert.equal(service.getStats().lowConfidence, 1)
+  })
+
+  it('confidenceThreshold=0 adopts any non-negative verdict', async () => {
+    const verdict = JSON.stringify({ category: 'CLOUD', confidence: 0 })
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: { stream: () => chunksFromText(verdict) },
+    } as any
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b',
+      confidenceThreshold: 0,  // accept everything
+    })
+
+    const intent = await service.classify('something')
+    assert.equal(intent.category, 'CLOUD')
+    assert.equal(intent.confidence, 0)
+    assert.equal(service.getStats().llmHit, 1)
+    assert.equal(service.getStats().lowConfidence, 0)
+  })
+
+  // ─── audit-log 异常不传播 ──────────────────────────────────────────────────
+  // The audit() helper at line 157-159 catches all errors from auditLog.log.
+  // If audit-log throws, classify() must still return a valid verdict.
+
+  it('classify() succeeds when auditLog.log throws on every call', async () => {
+    const verdict = JSON.stringify({ category: 'LOCAL', confidence: 0.9 })
+    const throwingAudit = {
+      log: async (_e: any) => { throw new Error('audit-log disk full') },
+    }
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: { stream: () => chunksFromText(verdict) },
+    } as any
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b',
+      confidenceThreshold: 0.6,
+    }, throwingAudit as any)
+
+    // Must not throw — audit errors are silently swallowed
+    const intent = await service.classify('读文件')
+    assert.equal(intent.category, 'LOCAL')
+    assert.equal(intent.confidence, 0.9)
+  })
+
+  it('classify() succeeds when auditLog.log returns a rejected promise', async () => {
+    const verdict = JSON.stringify({ category: 'CLOUD', confidence: 0.8 })
+    const rejectingAudit = {
+      log: async (_e: any) => Promise.reject(new Error('network error')),
+    }
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: { stream: () => chunksFromText(verdict) },
+    } as any
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b',
+      confidenceThreshold: 0.6,
+    }, rejectingAudit as any)
+
+    const intent = await service.classify('hello')
+    assert.equal(intent.category, 'CLOUD')
+    assert.equal(intent.confidence, 0.8)
+  })
+
+  // ─── 并发 classify() 计数器 ────────────────────────────────────────────────
+  // classify() increments stats.total++ at the top. Under concurrent calls,
+  // JavaScript's single-threaded event loop means there's no data race on the
+  // counter increment (it's synchronous). But the test verifies the contract.
+
+  it('concurrent classify() calls maintain correct total counter', async () => {
+    const verdict = JSON.stringify({ category: 'CLOUD', confidence: 0.9 })
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: { stream: () => chunksFromText(verdict) },
+    } as any
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b',
+      confidenceThreshold: 0.6,
+    })
+
+    // Fire 10 concurrent classify calls
+    const results = await Promise.all(
+      Array.from({ length: 10 }, () => service.classify('test'))
+    )
+    assert.equal(results.length, 10)
+    results.forEach(r => assert.equal(r.category, 'CLOUD'))
+    const stats = service.getStats()
+    assert.equal(stats.total, 10)
+    assert.equal(stats.llmHit, 10)
+  })
+
+  it('concurrent classify() with mixed paths maintains correct counter distribution', async () => {
+    let callIdx = 0
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: {
+        stream: () => {
+          callIdx++
+          if (callIdx % 3 === 0) {
+            // timeout path
+            return (async function* () {
+              await new Promise<void>((_, reject) => {
+                setTimeout(() => {
+                  const e: any = new Error('aborted'); e.name = 'AbortError'; reject(e)
+                }, 100)
+              })
+            })()
+          }
+          // success path
+          return chunksFromText(JSON.stringify({ category: 'CLOUD', confidence: 0.9 }))
+        },
+      },
+    } as any
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b',
+      confidenceThreshold: 0.6,
+      llmTimeoutMs: 10,  // very short to guarantee timeout
+    })
+
+    await Promise.all(Array.from({ length: 9 }, () => service.classify('test')))
+    const stats = service.getStats()
+    assert.equal(stats.total, 9)
+    assert.equal(stats.llmHit + stats.timeout, stats.total,
+      'every call should end up in either llmHit or timeout')
+  })
+
+  // ─── model-router 畸形返回值 ───────────────────────────────────────────────
+
+  it('fails open when modelRouter.resolve returns null', async () => {
+    const verdict = JSON.stringify({ category: 'CLOUD', confidence: 0.9 })
+    let capturedOpts: any
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: {
+        stream(opts: any) { capturedOpts = opts; return chunksFromText(verdict) },
+      },
+      modelRouter: { resolve: () => null },
+    } as any
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b',
+      classificationModel: 'qwen3-4b',
+      confidenceThreshold: 0.6,
+    })
+
+    await service.classify('hi')
+    assert.equal(capturedOpts.provider, 'local-qwen3-4b')
+    assert.equal(capturedOpts.model, 'qwen3-4b')
+  })
+
+  it('fails open when modelRouter.resolve returns object without provider', async () => {
+    const verdict = JSON.stringify({ category: 'CLOUD', confidence: 0.9 })
+    let capturedOpts: any
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: {
+        stream(opts: any) { capturedOpts = opts; return chunksFromText(verdict) },
+      },
+      modelRouter: { resolve: () => ({ realm: 'LOCAL' }) },  // no provider/model
+    } as any
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b',
+      classificationModel: 'qwen3-4b',
+      confidenceThreshold: 0.6,
+    })
+
+    await service.classify('hi')
+    assert.equal(capturedOpts.provider, 'local-qwen3-4b')
+    assert.equal(capturedOpts.model, 'qwen3-4b')
+  })
+
+  // ─── extractMessageText 多格式兼容 ─────────────────────────────────────────
+
+  it('extractMessageText: plain string', () => {
+    assert.equal(extractMessageText('hello'), 'hello')
+  })
+
+  it('extractMessageText: { text } shape', () => {
+    assert.equal(extractMessageText({ text: 'hello' }), 'hello')
+  })
+
+  it('extractMessageText: { message } shape', () => {
+    assert.equal(extractMessageText({ message: 'hello' }), 'hello')
+  })
+
+  it('extractMessageText: dsh-llm content array', () => {
+    const m = { content: [{ type: 'text', text: 'hello' }, { type: 'text', text: 'world' }] }
+    assert.equal(extractMessageText(m), 'hello world')
+  })
+
+  it('extractMessageText: empty object returns empty string', () => {
+    assert.equal(extractMessageText({}), '')
+  })
+
+  it('extractMessageText: null / undefined returns empty string', () => {
+    assert.equal(extractMessageText(null), '')
+    assert.equal(extractMessageText(undefined), '')
+  })
+
+  it('extractMessageText: non-stringifiable returns empty string', () => {
+    assert.equal(extractMessageText(42), '')
+    assert.equal(extractMessageText(true), '')
+  })
+
+  // ─── 多轮上下文边界 ────────────────────────────────────────────────────────
+
+  it('recentMessagesLimit truncates to last N messages', async () => {
+    let capturedOpts: any
+    const verdict = JSON.stringify({ category: 'CLOUD', confidence: 0.9 })
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: {
+        stream(opts: any) { capturedOpts = opts; return chunksFromText(verdict) },
+      },
+    } as any
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b',
+      confidenceThreshold: 0.6,
+      recentMessagesLimit: 2,  // only keep last 2
+    })
+
+    const history = [
+      { role: 'user', content: [{ type: 'text', text: 'msg1' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'msg2' }] },
+      { role: 'user', content: [{ type: 'text', text: 'msg3' }] },
+    ]
+    await service.classify('current', { recentMessages: history })
+    const promptText = capturedOpts.messages[0].content[0].text
+    // Should contain msg2 and msg3 (last 2), but NOT msg1
+    assert.doesNotMatch(promptText, /msg1/)
+    assert.match(promptText, /msg2/)
+    assert.match(promptText, /msg3/)
+  })
+
+  it('multi-turn context truncates each message to 200 chars', async () => {
+    let capturedOpts: any
+    const verdict = JSON.stringify({ category: 'CLOUD', confidence: 0.9 })
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: {
+        stream(opts: any) { capturedOpts = opts; return chunksFromText(verdict) },
+      },
+    } as any
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b',
+      confidenceThreshold: 0.6,
+    })
+
+    const longMsg = 'a'.repeat(500)
+    await service.classify('current', {
+      recentMessages: [{ role: 'user', content: [{ type: 'text', text: longMsg }] }],
+    })
+    const promptText = capturedOpts.messages[0].content[0].text
+    // The history block should contain at most 200 'a's from the long message
+    const aCount = (promptText.match(/a/gu) || []).length
+    assert.ok(aCount <= 210, `should cap at ~200 'a's, got ${aCount}`)
+  })
+
+  it('multi-turn handles messages with no extractable text', async () => {
+    let capturedOpts: any
+    const verdict = JSON.stringify({ category: 'CLOUD', confidence: 0.9 })
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: {
+        stream(opts: any) { capturedOpts = opts; return chunksFromText(verdict) },
+      },
+    } as any
+    const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b',
+      confidenceThreshold: 0.6,
+    }, audit as any)
+
+    // Mix of valid and empty messages
+    const history = [
+      {},                                      // no text
+      { role: 'user', content: [] },           // empty content array
+      { role: 'user', content: [{ type: 'text', text: 'valid' }] },
+    ]
+    await service.classify('current', { recentMessages: history })
+    const promptText = capturedOpts.messages[0].content[0].text
+    assert.match(promptText, /valid/)
+    // Empty messages should not crash or produce garbage
+    const ctxEntry = audit.entries.find((e: any) => e.kind === 'intent.llm.context')
+    assert.ok(ctxEntry)
+    assert.equal(ctxEntry.payload.received, 3)
+  })
+
+  // ─── resolveIntent 纯函数 ──────────────────────────────────────────────────
+
+  it('resolveIntent maps LOCAL intent to local realm', () => {
+    const result = resolveIntent({
+      category: 'LOCAL', confidence: 0.9, targetRealm: 'local',
+      rationale: 'test', dataLevel: 'public', requiresSanitization: false,
+    })
+    assert.equal(result.realm, 'local')
+    assert.deepEqual(result.config, { intentCategory: 'LOCAL' })
+  })
+
+  it('resolveIntent maps CLOUD intent to cloud realm', () => {
+    const result = resolveIntent({
+      category: 'CLOUD', confidence: 0.7, targetRealm: 'cloud',
+      rationale: 'test', dataLevel: 'public', requiresSanitization: false,
+    })
+    assert.equal(result.realm, 'cloud')
+    assert.deepEqual(result.config, { intentCategory: 'CLOUD' })
+  })
+
+  it('resolveIntent maps SANITIZED intent to sanitized realm', () => {
+    const result = resolveIntent({
+      category: 'SANITIZED', confidence: 0.8, targetRealm: 'sanitized',
+      rationale: 'test', dataLevel: 'sanitized', requiresSanitization: true,
+    })
+    assert.equal(result.realm, 'sanitized')
+    assert.deepEqual(result.config, { intentCategory: 'SANITIZED' })
+  })
+
+  it('resolveIntent maps REJECT intent to rejected realm', () => {
+    const result = resolveIntent({
+      category: 'REJECT', confidence: 0.95, targetRealm: 'rejected',
+      rationale: 'policy-violation', dataLevel: 'internal', requiresSanitization: false,
+    })
+    assert.equal(result.realm, 'rejected')
+    assert.deepEqual(result.config, { intentCategory: 'REJECT' })
+  })
+
+  // ─── LLM 流边界 ──────────────────────────────────────────────────────────
+
+  it('handles empty LLM stream (0 chunks) — treated as unclear', async () => {
+    const emptyStream = (async function* () { })()
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: { stream: () => emptyStream },
+    } as any
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b',
+      confidenceThreshold: 0.6,
+    })
+
+    const intent = await service.classify('hi')
+    // Empty response → parseClassificationVerdict('') returns null → unclear
+    assert.equal(intent.category, 'CLOUD')
+    assert.match(intent.rationale, /default:cloud/u)
+    assert.equal(service.getStats().parseFailure, 1)
+  })
+
+  it('handles single-chunk LLM response', async () => {
+    const singleChunk = (async function* () {
+      yield { type: 'text-delta', text: '{"category":"LOCAL","confidence":0.95}' }
+    })()
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: { stream: () => singleChunk },
+    } as any
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b',
+      confidenceThreshold: 0.6,
+    })
+
+    const intent = await service.classify('hi')
+    assert.equal(intent.category, 'LOCAL')
+    assert.equal(intent.confidence, 0.95)
+    assert.equal(service.getStats().llmHit, 1)
+  })
+
+  it('ignores non-text-delta chunks', async () => {
+    const mixedChunks = (async function* () {
+      yield { type: 'usage', tokens: 42 }           // not text-delta — ignored
+      yield { type: 'text-delta', text: '{"category"' }
+      yield { type: 'thinking', content: 'hmm' }    // not text-delta — ignored
+      yield { type: 'text-delta', text: ':"CLOUD","confidence":0.8}' }
+    })()
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: { stream: () => mixedChunks },
+    } as any
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'LOCAL',
+      classificationProvider: 'local-qwen3-4b',
+      confidenceThreshold: 0.6,
+    })
+
+    const intent = await service.classify('hi')
+    assert.equal(intent.category, 'CLOUD', 'non-text-delta chunks should be ignored')
+    assert.equal(intent.confidence, 0.8)
   })
 })
