@@ -60,7 +60,12 @@ export const Config: Schema<Config> = Schema.object({
     .default('CLOUD'),
   classificationProvider: Schema.string().default('local-qwen3-4b'),
   classificationModel: Schema.string().default('qwen3-4b'),
-  confidenceThreshold: Schema.natural().default(0.6),
+  // confidenceThreshold is a 0..1 probability, NOT an integer. Pre-fix used
+  // Schema.natural() which validates as "integer multiple of 1" — runtime
+  // values like 0.6 (the actual default and the DSH_EDGE_INTENT_CONFIDENCE_
+  // THRESHOLD env value) were rejected at loader stage:
+  //   $.confidenceThreshold expected number multiple of 1 but got 0.6
+  confidenceThreshold: Schema.number().min(0).max(1).default(0.6),
   llmTimeoutMs: Schema.natural().default(4000),
   recentMessagesLimit: Schema.natural().default(3),
   maxInputLength: Schema.natural().default(2000),
