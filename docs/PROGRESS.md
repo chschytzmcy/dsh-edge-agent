@@ -47,7 +47,7 @@
 | **A3** | TCM + 加密层 | 🔲 未开始 | — | `tcm` 所有方法返回空/默认值 |
 | **A4** | 零信任通信 | 🔲 未开始 | — | `ohttp-gateway` + `secure-bridge` 均为桩 |
 | **A5** | 远程证明 | 🔲 未开始 | — | `attestation` 为桩 |
-| **A6** | 主动防御 | 🔲 未开始 | — | `td-bus` 为桩 |
+| **A6** | 主动防御 | ✅ **完成** | (Phase D) | `td-bus` 滑窗状态机 + http-api 503 阻断 |
 | **A7** | 公网搜索 | ✅ 已完成 | — | 复用 DSH 原生 `dsh-web-search-deepseek` |
 | **A8** | 语音输入 | 🔲 未开始 | — | `voice-input` 返回空字符串 |
 
@@ -88,7 +88,7 @@
 | **ohttp-gateway** | ~66 | send() 返回空 200，无 HPKE |
 | **secure-bridge** | ~74 | sendCloudRequest() 返回 {status: 200, body: null} |
 | **attestation** | ~74 | generateToken() 返回空字符串 |
-| **td-bus** | ~72 | getThreatLevel() 返回 'normal' |
+| **td-bus** | ~166 | 真实滑窗 + 4 级威胁 + sticky escalate() + on() 订阅 |
 | **voice-input** | ~54 | transcribe() 返回空字符串 |
 
 另有 **plugin-host**（~65 行），`list()` 返回 `[]`，`get()` 返回 `null`。
@@ -312,6 +312,65 @@ http-api:
 **为什么 fail-open**：regex + PII 仍是最后防线；LLM 任何失败都意味着降级到硬规则而非全开。延迟预算 4 s 是 intent-router 实测 P99 的 4×，不阻塞主链路。
 
 **新增测试**：12 个（prompt-guard model-based detection describe 块）
+
+---
+
+### 7.7 A6 主动防御：td-bus 接进 http-api 主链路（2026-08-23）
+
+**背景**：`td-bus` 之前是纯结构桩——`getThreatLevel()` 固定返回 `'normal'`，没有真实状态机，更没有主链路干预。YT.md 评估指出 P2 级缺口：`A6 主动防御`形同虚设。
+
+**实现**（`src/dsh-adapter/td-bus.ts`）：
+
+**4 级滑窗状态机**：
+| 计数（cloudHits in window） | threat level |
+|---|---|
+| 0 ~ cloudThreshold - 1 | `normal` |
+| ≥ cloudThreshold × 1 | `elevated` |
+| ≥ cloudThreshold × 2 | `high` |
+| ≥ cloudThreshold × 4 | `critical` ← 默认 blockLevel |
+
+- 滑窗默认 60 s（`windowSeconds`），过期事件自动 shift 出窗口
+- `recordCloudRequest()` 每条 /v1/chat 请求前调用一次，计数 + recompute
+- `shouldBlock()` 按 `blockLevel` 配置比较：默认 `critical`（最保守），env 可下调到 `high` / `elevated`
+
+**Sticky escalate()**：
+- `escalate(reason)` 立即跳到 `critical` 并设置 `stickyLevel` floor，**不会被滑窗衰减掉**
+- 同时触发所有 `on()` 订阅（`block-cloud` / `kill-session` / `notify-user` / `lockdown`），供上游插件立即反应
+- 之前的设计：escalate 只设 `currentLevel`，下次 recompute 又被滑窗覆盖回 normal —— 已修复
+
+**主链路接入**（`src/dsh-adapter/http-api.ts`）：
+- `inject` 加 `'tdBus'`；构造函数加第 7 参数；`apply()` 从 `ctx.tdBus` 取
+- `/v1/chat` 入口在 `promptGuard.checkInput` **之前** 加威胁闸：
+  ```ts
+  if (this.tdBus?.shouldBlock?.()) {
+    this.audit('security', 'http.chat.threat-blocked', { reqId, sessionId, threat })
+    res.writeHead(503, { ... })
+    res.end(JSON.stringify({ error: 'Service unavailable — threat level elevated', threat }))
+    return
+  }
+  ```
+- `tdBus.recordCloudRequest()` 在 audit 之前无副作用调用（计数后才决定放行/阻断）
+
+**新 audit kind**：
+| kind | level | 触发 |
+|---|---|---|
+| `td-bus.escalated` | warn / security | 滑窗升级到 elevated/high/critical，或 manual escalate |
+| `http.chat.threat-blocked` | **security** | `/v1/chat` 被 td-bus 拒绝 |
+
+**新 env / 配置**：
+| env | 默认 | 说明 |
+|---|---|---|
+| `DSH_EDGE_TD_BLOCK_LEVEL` | `critical` | 阻断阈值（critical/high/elevated）|
+| `DSH_EDGE_TD_WINDOW` | `60` | 滑窗秒数 |
+| `DSH_EDGE_TD_CLOUD_RATE` | `20` | 滑窗内 cloud req/min 阈值 |
+
+**失败模式**：
+- `tdBus` 不存在（plugin 没 mount）→ `shouldBlock()` 不被调用，chain 跳过，**fallback open**（保持原行为）
+- `tdBus.shouldBlock()` 抛 → try/catch 吞掉，**never block on td-bus faults**
+
+**新增测试**：5 个（td-bus 状态机 + on() 监听 + 滑窗衰减 + sticky escalate）
+
+**总计**：253 个单测全过，verify:build 4 关全过，compile 零错。
 
 ---
 

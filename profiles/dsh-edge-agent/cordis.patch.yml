@@ -30,8 +30,6 @@
 
 - id: plugin-host
   disabled: true
-- id: td-bus
-  disabled: true
 - id: ohttp-gateway
   disabled: true
 - id: secure-bridge

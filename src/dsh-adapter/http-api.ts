@@ -18,7 +18,7 @@ import type { SessionEvent } from '@deepseek-ai/dsh-session'
 
 export const name = 'http-api'
 
-export const inject = ['agents', 'intentRouter', 'promptGuard', 'auditLog', 'sanitizer'] as const
+export const inject = ['agents', 'intentRouter', 'promptGuard', 'auditLog', 'sanitizer', 'tdBus'] as const
 
 export interface Config {
   host: string
@@ -61,6 +61,7 @@ export class HttpApiServiceImpl extends Service {
   private readonly sessions = new Map<string, SessionRecord>()
   private running = false
   private intentRouter: any
+  private tdBus: any
   private cleanupTimer: ReturnType<typeof setInterval> | undefined
 
   constructor(
@@ -70,8 +71,10 @@ export class HttpApiServiceImpl extends Service {
     private promptGuard: any,
     private auditLog: any,
     private sanitizer: any,
+    tdBus?: any,
   ) {
     super(cordisCtx, 'httpApi')
+    this.tdBus = tdBus
   }
 
   /** Emit an audit-log entry (silent no-op if missing or wrong API). */
@@ -224,6 +227,24 @@ export class HttpApiServiceImpl extends Service {
 
     const sessionId = requestedSessionId ?? randomUUID()
     this.audit('info', 'http.chat.start', { reqId, sessionId, messageLen: message.length, messagePreview: message.slice(0, 80) })
+
+    // Phase D: td-bus threat gate (blockLevel default: critical)
+    if (this.tdBus) {
+      // Feed each request into td-bus so it can recompute threat level.
+      // CLOUD-bound requests count heavier; LOCAL ones count lightly.
+      // For Phase D we feed all requests equally — refinement can come later.
+      try { this.tdBus.recordCloudRequest() } catch { /* never block on td-bus faults */ }
+
+      if (typeof this.tdBus.shouldBlock === 'function' && this.tdBus.shouldBlock()) {
+        const threat = typeof this.tdBus.getThreatLevel === 'function'
+          ? this.tdBus.getThreatLevel() : 'critical'
+        this.audit('security', 'http.chat.threat-blocked', { reqId, sessionId, threat })
+        this.accessLog(reqId, 'POST', '/v1/chat', 503, Date.now() - start, 'threat-blocked')
+        res.writeHead(503, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Service unavailable — threat level elevated', threat }))
+        return
+      }
+    }
 
     // Input security check
     if (this.promptGuard) {
@@ -681,8 +702,9 @@ export async function apply(ctx: any, config: Config): Promise<() => Promise<voi
   const promptGuard = ctx.get('promptGuard')
   const auditLog = ctx.get('auditLog')
   const sanitizer = ctx.get('sanitizer')
-  console.log(`[http-api] apply() - promptGuard: ${!!promptGuard}, auditLog: ${!!auditLog}, sanitizer: ${!!sanitizer}`)
-  const service = new HttpApiServiceImpl(ctx, config, agents, promptGuard, auditLog, sanitizer)
+  const tdBus = ctx.get?.('tdBus') ?? (ctx as any).tdBus
+  console.log(`[http-api] apply() - promptGuard: ${!!promptGuard}, auditLog: ${!!auditLog}, sanitizer: ${!!sanitizer}, tdBus: ${!!tdBus}`)
+  const service = new HttpApiServiceImpl(ctx, config, agents, promptGuard, auditLog, sanitizer, tdBus)
   await service.start()
   return async () => {
     await service.stop()

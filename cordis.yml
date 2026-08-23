@@ -255,7 +255,8 @@
     nonceTtlSeconds: !!js parseInt(process.env.DSH_EDGE_ATTEST_NONCE_TTL ?? '60', 10)
 
 # Threat detection bus. Subscribes to high-volume events and raises a
-# quarantine action when patterns indicate abuse.
+# quarantine action when patterns indicate abuse. Phase D: real state
+# machine; http-api reads getThreatLevel() and blocks at blockLevel.
 - id: td-bus
   name: '@deepseek-harness-edge-agent/dsh-edge-agent/td-bus'
   inject: [auditLog, privacyPolicy]
@@ -265,6 +266,7 @@
       cloudRequestsPerMinute: !!js parseInt(process.env.DSH_EDGE_TD_CLOUD_RATE ?? '20', 10)
       failedSanitizationStreak: !!js parseInt(process.env.DSH_EDGE_TD_SAN ?? '3', 10)
       permissionDeniedStreak: !!js parseInt(process.env.DSH_EDGE_TD_PERM ?? '5', 10)
+    blockLevel: !!js process.env.DSH_EDGE_TD_BLOCK_LEVEL ?? 'critical'
 
 # Voice input (Whisper-tiny). MVP off by default.
 - id: voice-input
