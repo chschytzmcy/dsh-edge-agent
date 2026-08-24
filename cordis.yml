@@ -174,7 +174,7 @@
   inject: [tcm, privacyPolicy, auditLog, llm]
   config:
     rules: []
-    enableModelDetection: !!js process.env.DSH_EDGE_GUARD_MODEL === 'true'
+    enableModelDetection: !!js process.env.DSH_EDGE_GUARD_MODEL !== 'false'
     modelDetectionProvider: !!js process.env.DSH_EDGE_GUARD_MODEL_PROVIDER ?? 'local-qwen3-4b'
     modelDetectionModel: !!js process.env.DSH_EDGE_GUARD_MODEL_MODEL ?? 'qwen3-4b'
     modelDetectionTimeoutMs: !!js parseInt(process.env.DSH_EDGE_GUARD_MODEL_TIMEOUT_MS ?? '4000', 10)
