@@ -102,7 +102,7 @@ intent-router 是 dsh-edge-agent 的"安检 + 分流"插件：每条用户消息
 
 # 第一章 prompt-guard 输入防护
 
-> 核心实现：`src/dsh-adapter/prompt-guard.ts`（~700 行）。测试：`tests/unit/prompt-guard.test.ts`（72 用例）。
+> 核心实现：`src/dsh-adapter/prompt-guard.ts`（~700 行）。测试：`tests/unit/prompt-guard.test.ts`（75 用例）。
 
 ## 1.1 定位与职责
 
@@ -281,10 +281,11 @@ if (!result.safe) {
   return  // 不进 intent-router，零 token 消耗
 }
 
-// warn → 放行（result.safe === true），但审计日志记录了 warnPatterns
-if (result.warnPatterns?.length) {
-  audit('http.input.warned', { patterns: result.warnPatterns })
-}
+// warn → 放行（result.safe === true）。
+// 注意：warn-tier 命中不写入 InputCheckResult（接口只有 injectionPatterns 字段
+// 承载 block 命中）。warn 信息通过 prompt-guard 内部的 audit('input.injection.
+// warned', ...) 事件传递，http-api 这层无需读取——结果保持 safe=true 即可继续。
+// 参见 prompt-guard.ts:331-338 的 warn-hit audit 调用。
 
 // sanitize → 替换原始文本后继续
 const textToClassify = result.sanitizedText ?? text
@@ -344,7 +345,7 @@ function parseSafetyResponse(raw: string): SafetyVerdict | null {
 
 ### e2e 验证结果
 
-本地 LLM（Qwen3-4B-Instruct @ 192.168.1.121:11017）模型检测实测：
+本地 LLM（Qwen3-4B-Instruct @ `local-qwen3-4b` provider）模型检测实测：
 
 | 输入 | HTTP | 检测到的威胁 |
 |------|------|-------------|
@@ -401,7 +402,7 @@ function parseSafetyResponse(raw: string): SafetyVerdict | null {
 
 ## 1.8 测试覆盖
 
-**单元测试** `tests/unit/prompt-guard.test.ts`（72 用例）：
+**单元测试** `tests/unit/prompt-guard.test.ts`（75 用例）：
 - ✅ 长度检查边界
 - ✅ 全局/Session 频率限制
 - ✅ 15 条注入模式（block/warn/sanitize）
@@ -786,7 +787,7 @@ if (!skipModelDetection) {
 
 # 第三章 LLM 分类（intent-router）
 
-> 基于 `main` 分支代码（2026-08-24 校准，含真实环境 e2e 验证）。核心实现：`src/dsh-adapter/intent-router.ts`（~770 行）。测试：`tests/unit/intent-router.test.ts`（98 用例）。
+> 基于 `main` 分支代码（2026-08-24 校准，含真实环境 e2e 验证）。核心实现：`src/dsh-adapter/intent-router.ts`（~770 行）。测试：`tests/unit/intent-router.test.ts`（97 用例）。
 
 ## 3.1 定位与职责
 
@@ -1300,7 +1301,7 @@ file, read, write, delete, calculate, compute, local, device, disk, directory, f
 
 ### 3.15.1 单元测试
 
-**单元测试** `tests/unit/intent-router.test.ts`（98 用例，~1940 行）：
+**单元测试** `tests/unit/intent-router.test.ts`（97 用例，~1940 行）：
 
 | 类别 | 用例数 | 覆盖内容 |
 |------|-------|---------|
