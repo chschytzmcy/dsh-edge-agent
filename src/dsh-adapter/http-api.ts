@@ -56,9 +56,36 @@ interface SessionRecord {
   lastAccessedAt: number
 }
 
+/** Multi-turn context ring buffer for a session. Kept in a separate Map
+ *  (NOT on SessionRecord) because the buffer must accept pushes BEFORE
+ *  `ensureSession()` has constructed the record — the very first turn
+ *  pushes its user message before any agent exists, otherwise the first
+ *  user entry would silently drop and follow-up turns would see only
+ *  the prior assistant reply (no leading user) — breaking the user/
+ *  assistant alternation the router relies on for disambiguation.
+ *  Length cap = MAX_RECENT_MESSAGES_PER_SESSION (6 = 3 pairs by default);
+ *  older entries are evicted FIFO. Best-effort: on agent-loop failure the
+ *  assistant entry may be missing. */
+
+interface RecentMessage {
+  role: 'user' | 'assistant'
+  text: string
+  ts: number
+}
+
+/** Max entries retained in SessionRecord.recentMessages. Must stay in sync
+ *  with `intent-router.recentMessagesLimit` × 2 (the router reads the last
+ *  `recentMessagesLimit` entries, so 3 pairs = 6 entries covers 3 user
+ *  turns with their assistant responses). */
+const MAX_RECENT_MESSAGES_PER_SESSION = 6
+
 export class HttpApiServiceImpl extends Service {
   private server: Server | undefined
   private readonly sessions = new Map<string, SessionRecord>()
+  /** Per-session ring buffer for multi-turn context. See RecentMessage for
+   *  schema. Lives outside `sessions` so pushRecentMessage can accept writes
+   *  before ensureSession() finishes (first-turn user message). */
+  private readonly sessionBuffers = new Map<string, RecentMessage[]>()
   private running = false
   private intentRouter: any
   private tdBus: any
@@ -88,6 +115,44 @@ export class HttpApiServiceImpl extends Service {
   /** One-line access log to stdout (visible in /tmp/dsh.log). */
   private accessLog(reqId: string, method: string, path: string, status: number, durationMs: number, extra?: string): void {
     console.log(`[http-api][${reqId}] ${method} ${path} ${status} ${durationMs}ms${extra ? ' ' + extra : ''}`)
+  }
+
+  /** Append a recent-message entry to the session's ring buffer. Evicts
+   *  oldest entries when the buffer exceeds MAX_RECENT_MESSAGES_PER_SESSION.
+   *  Trims text to 200 chars to bound prompt size (intent-router further
+   *  truncates per-message inside the historyBlock). Always accepts the
+   *  push — the buffer map is independent of SessionRecord, so it can be
+   *  written to before ensureSession() finishes (first-turn user message)
+   *  or after handleDeleteSession() drops the session (orphan cleanup
+   *  happens on the next sweep). */
+  private pushRecentMessage(sessionId: string, role: 'user' | 'assistant', text: string): void {
+    const trimmed = text.trim().slice(0, 200)
+    if (!trimmed) return
+    let buf = this.sessionBuffers.get(sessionId)
+    if (!buf) {
+      buf = []
+      this.sessionBuffers.set(sessionId, buf)
+    }
+    buf.push({ role, text: trimmed, ts: Date.now() })
+    while (buf.length > MAX_RECENT_MESSAGES_PER_SESSION) {
+      buf.shift()
+    }
+  }
+
+  /** Read a snapshot of the session's recent-message ring buffer.
+   *  Returns [] if the session has no history yet. The caller MUST take
+   *  this snapshot BEFORE pushing the current user message — the router
+   *  embeds the snapshot as the "history" block and appends the current
+   *  query itself. */
+  private getPriorRecentMessages(sessionId: string): RecentMessage[] {
+    const buf = this.sessionBuffers.get(sessionId)
+    return buf ? buf.slice() : []
+  }
+
+  /** Drop the buffer for a session. Called from handleDeleteSession,
+   *  cleanupExpiredSessions, evictLeastRecentSession, and stop(). */
+  private dropSessionBuffer(sessionId: string): void {
+    this.sessionBuffers.delete(sessionId)
   }
 
   /**
@@ -155,6 +220,7 @@ export class HttpApiServiceImpl extends Service {
         record.handle.dispose().catch(() => {})
       }
       this.sessions.clear()
+      this.sessionBuffers.clear()
     })
     this.running = false
     this.audit('info', 'http.stopped', {})
@@ -284,11 +350,21 @@ export class HttpApiServiceImpl extends Service {
       }
     }
 
+    // Snapshot the per-session history BEFORE pushing the current user message,
+    // then push. The router embeds the snapshot as the "history" block and
+    // appends the current query itself — passing the buffer that already
+    // contains the current turn would cause prompt duplication.
+    const priorMessages = this.getPriorRecentMessages(sessionId)
+    this.pushRecentMessage(sessionId, 'user', message)
+
     // Classify intent using intent-router
     let intent: any = { category: 'CLOUD', confidence: 0, targetRealm: 'cloud', rationale: 'no-classifier' }
     if (this.intentRouter) {
       try {
-        intent = await this.intentRouter.classify(message)
+        intent = await this.intentRouter.classify(message, {
+          recentMessages: priorMessages,
+          sessionId,
+        })
       } catch (err: any) {
         // Intent classification failed, use default
       }
@@ -357,6 +433,12 @@ export class HttpApiServiceImpl extends Service {
                 .map((b: any) => b.text)
                 .join('')
             : ''
+
+          // Append assistant reply to the multi-turn ring buffer so the
+          // NEXT classify() in this session can see it as prior context.
+          // Best-effort: if the buffer is already evicted (session gone),
+          // pushRecentMessage is a no-op.
+          if (text) this.pushRecentMessage(sessionId, 'assistant', text)
 
           dispose()
           resolve(text)
@@ -454,11 +536,20 @@ export class HttpApiServiceImpl extends Service {
       }
     }
 
+    // Snapshot per-session history BEFORE pushing the current user message;
+    // router embeds the snapshot as the "history" block and appends the
+    // current query itself. (See handleChat for full rationale.)
+    const streamPriorMessages = this.getPriorRecentMessages(sessionId)
+    this.pushRecentMessage(sessionId, 'user', message)
+
     // Classify intent (same as handleChat) so SSE routes to the correct LLM
     let intent: any = { category: 'CLOUD', confidence: 0, targetRealm: 'cloud', rationale: 'no-classifier' }
     if (this.intentRouter) {
       try {
-        intent = await this.intentRouter.classify(message)
+        intent = await this.intentRouter.classify(message, {
+          recentMessages: streamPriorMessages,
+          sessionId,
+        })
       } catch (err: any) {
         // Intent classification failed, use default
       }
@@ -533,6 +624,21 @@ export class HttpApiServiceImpl extends Service {
           res.write(`data: ${JSON.stringify({ type: 'text', text: textToSend })}\n\n`)
         }
       } else if (event.type === 'turn/end') {
+        // Pull the assembled assistant text from session.events to feed
+        // the multi-turn ring buffer (mirrors handleChat). Best-effort:
+        // skip push if the agent never produced an assistant/message
+        // (e.g. tool-only turn).
+        const lastAssistant = record.agent.session.events
+          .filter((e: any) => e.type === 'assistant/message')
+          .pop()
+        const assistantText = lastAssistant
+          ? (lastAssistant as any).data.message.content
+              .filter((b: any) => b.type === 'text')
+              .map((b: any) => b.text)
+              .join('')
+          : ''
+        if (assistantText) this.pushRecentMessage(sessionId, 'assistant', assistantText)
+
         res.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`)
         const duration = Date.now() - start
         this.audit('info', 'http.chat.stream.end', { reqId, sessionId, provider, model, durationMs: duration })
@@ -579,6 +685,7 @@ export class HttpApiServiceImpl extends Service {
     }
     await record.handle.dispose()
     this.sessions.delete(id)
+    this.dropSessionBuffer(id)
     // Phase 4: Purge sanitizer mappings for deleted session
     if (this.sanitizer) {
       try {
@@ -610,7 +717,13 @@ export class HttpApiServiceImpl extends Service {
       })
       console.log(`[http-api] Agent created successfully`)
       const now = Date.now()
-      record = { agent: handle.agent, handle, createdAt: now, lastAccessedAt: now }
+      record = {
+        agent: handle.agent,
+        handle,
+        createdAt: now,
+        lastAccessedAt: now,
+        recentMessages: [],
+      }
       this.sessions.set(sessionId, record)
       this.audit('info', 'session.created', { sessionId, provider, model, totalSessions: this.sessions.size })
     } else {
@@ -641,6 +754,7 @@ export class HttpApiServiceImpl extends Service {
       if (record) {
         record.handle.dispose().catch(() => {})
         this.sessions.delete(id)
+        this.dropSessionBuffer(id)
         this.audit('info', 'session.expired', { sessionId: id, idleMs: now - record.lastAccessedAt })
       }
     }
@@ -668,6 +782,7 @@ export class HttpApiServiceImpl extends Service {
       if (record) {
         await record.handle.dispose()
         this.sessions.delete(oldest.id)
+        this.dropSessionBuffer(oldest.id)
         this.audit('info', 'session.evicted', {
           sessionId: oldest.id,
           reason: 'max-active-sessions-reached',
@@ -764,7 +879,7 @@ export function resolveRoute(
   const fallbackModel = isLocal
     ? (process.env.DSH_EDGE_LOCAL_LLM_MODEL ?? 'qwen3-4b-instruct-2507')
     : 'deepseek-chat'
-  const mr = ctx?.modelRouter
+  const mr = typeof ctx?.get === 'function' ? (() => { try { return ctx.get('modelRouter') } catch { return undefined } })() : ctx?.modelRouter
   if (mr && typeof mr.resolve === 'function') {
     try {
       const r = mr.resolve(preferred)
@@ -783,7 +898,7 @@ export async function apply(ctx: any, config: Config): Promise<() => Promise<voi
   const promptGuard = ctx.get('promptGuard')
   const auditLog = ctx.get('auditLog')
   const sanitizer = ctx.get('sanitizer')
-  const tdBus = ctx.get?.('tdBus') ?? (ctx as any).tdBus
+  const tdBus = ctx.get?.('tdBus')
   console.log(`[http-api] apply() - promptGuard: ${!!promptGuard}, auditLog: ${!!auditLog}, sanitizer: ${!!sanitizer}, tdBus: ${!!tdBus}`)
   const service = new HttpApiServiceImpl(ctx, config, agents, promptGuard, auditLog, sanitizer, tdBus)
   await service.start()
