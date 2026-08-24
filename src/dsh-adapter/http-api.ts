@@ -323,7 +323,7 @@ export class HttpApiServiceImpl extends Service {
       if (typeof this.tdBus.shouldBlock === 'function' && this.tdBus.shouldBlock()) {
         const threat = typeof this.tdBus.getThreatLevel === 'function'
           ? this.tdBus.getThreatLevel() : 'critical'
-        this.audit('security', 'http.chat.threat-blocked', { reqId, sessionId, threat })
+        this.audit('security', 'http.chat.threat-blocked', { reqId, sessionId, threat, endpoint: '/v1/chat' })
         this.accessLog(reqId, 'POST', '/v1/chat', 503, Date.now() - start, 'threat-blocked')
         res.writeHead(503, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ error: 'Service unavailable — threat level elevated', threat }))
@@ -516,6 +516,22 @@ export class HttpApiServiceImpl extends Service {
 
     const sessionId = requestedSessionId ?? randomUUID()
     this.audit('info', 'http.chat.stream.start', { reqId, sessionId, messageLen: message.length })
+
+    // Phase D: td-bus threat gate — mirrors handleChat() so the streaming
+    // endpoint is also covered by the elevated-rate short-circuit. SSE clients
+    // would otherwise sidestep the /v1/chat 503 path entirely.
+    if (this.tdBus) {
+      try { this.tdBus.recordCloudRequest() } catch { /* never block on td-bus faults */ }
+      if (typeof this.tdBus.shouldBlock === 'function' && this.tdBus.shouldBlock()) {
+        const threat = typeof this.tdBus.getThreatLevel === 'function'
+          ? this.tdBus.getThreatLevel() : 'critical'
+        this.audit('security', 'http.chat.threat-blocked', { reqId, sessionId, threat, endpoint: '/v1/chat/stream' })
+        this.accessLog(reqId, 'POST', '/v1/chat/stream', 503, Date.now() - start, 'threat-blocked')
+        res.writeHead(503, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Service unavailable — threat level elevated', threat }))
+        return
+      }
+    }
 
     // Input security check
     if (this.promptGuard) {

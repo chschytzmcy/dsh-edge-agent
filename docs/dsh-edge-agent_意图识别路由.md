@@ -1532,7 +1532,7 @@ intent-router
 |--------|------|
 | **http-api** | 每条消息先经 prompt-guard（HTTP 400），再调用 `classify()`；REJECT 意图 → HTTP 403 short-circuit；Intent 作为 SSE 首帧 (`type: "intent"`) 返回 |
 | **tools** | `filterTools(intent)` / `isToolAllowed(name, intent)` 实现 realm 级别的工具隔离（REJECT → 空工具列表） |
-| **td-bus** | 威胁检测总线（Phase D 已接入 http-api 主链路）：每次 chat 调 `recordCloudRequest()`，触发 critical 级威胁时短路 HTTP 503；目前仅 `POST /v1/chat` 入口接入，`/v1/chat/stream` 尚未接入 |
+| **td-bus** | 威胁检测总线（Phase D 已接入 http-api 主链路）：每次 chat 调 `recordCloudRequest()`，触发 critical 级威胁时短路 HTTP 503；`/v1/chat` 与 `/v1/chat/stream` 均已接入 |
 | **plugin boot** | 第 15 步启动（19 个插件拓扑排序），inject `llm, auditLog`；其他服务走 `softService()` |
 
 ### 可观测性
@@ -1656,11 +1656,10 @@ intent-router
 
 intent-router = **"前置威胁门禁 + 三层防御 + LLM 分类 + 规则兜底"五层防御**：
 
--1. **td-bus 威胁门禁**（前置层，Phase D 已接入）：http-api `POST /v1/chat` 入口在 prompt-guard **之前**先调用 `tdBus.recordCloudRequest()` 累计滑动窗口内的 CLOUD 请求数，并用 `shouldBlock()` 判定威胁等级：
+-1. **td-bus 威胁门禁**（前置层，Phase D 已接入）：http-api `POST /v1/chat` 与 `POST /v1/chat/stream` 入口都在 prompt-guard **之前**先调用 `tdBus.recordCloudRequest()` 累计滑动窗口内的 CLOUD 请求数，并用 `shouldBlock()` 判定威胁等级：
    - 威胁等级驱动：≥20/min → elevated；≥40/min → high；≥80/min → critical（默认 blockLevel）
    - 威胁 ≥ blockLevel → **HTTP 503** 直接短路（零 token 消耗，不进 prompt-guard）
-   - 审计 `http.chat.threat-blocked`（security 级）
-   - 当前仅 `POST /v1/chat` 接入，`/v1/chat/stream` 尚未接入（待办）
+   - 审计 `http.chat.threat-blocked`（security 级，`endpoint` 字段区分 `/v1/chat` 与 `/v1/chat/stream`）
 0. **prompt-guard 输入防护**（第一层）：http-api 层在调用 intent-router 之前，先用 prompt-guard 拦截高危输入：
    - 正则模式库（15 条）：拦截已知注入/提词/越狱模式
    - 频率限制：全局 + session 级 QPM 防护
@@ -1772,10 +1771,9 @@ done
 
 **历史状态**：早期 td-bus 独立运行，仅 http-api 入口调 `shouldBlock()` 做 503 短路。
 
-**当前状态**：已接入 http-api `POST /v1/chat` 主链路。`recordCloudRequest()` 在每次 chat 入口调用，`shouldBlock()` 判定威胁 ≥ blockLevel（默认 critical = ≥80 req/min）时短路返回 HTTP 503，不进 prompt-guard。审计 `http.chat.threat-blocked`（security 级）。
+**当前状态**：已接入 http-api `POST /v1/chat` 主链路。`recordCloudRequest()` 在每次 chat 入口调用，`shouldBlock()` 判定威胁 ≥ blockLevel（默认 critical = ≥80 req/min）时短路返回 HTTP 503，不进 prompt-guard。审计 `http.chat.threat-blocked`（security 级，`endpoint` 字段区分 `/v1/chat` vs `/v1/chat/stream`）。
 
 **剩余优化**：
-- `/v1/chat/stream` 入口尚未接入 td-bus 短路（目前只对 `/v1/chat` 生效）
 - intent-router 分类阶段尚未读取威胁等级做策略收紧（如高威胁时降级到 fail-closed、强制 LOCAL-only）
 
 ### 5. 规则热更新（addInputRule）
