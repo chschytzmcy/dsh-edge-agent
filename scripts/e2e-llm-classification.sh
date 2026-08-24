@@ -21,7 +21,10 @@
 #   KEEP_SERVER_RUNNING   - 测试后保持服务器运行 (set to "true")
 #   SKIP_BUILD            - 跳过编译 (set to "true")
 
-set -euo pipefail
+# 注：故意不用 `set -e`——assert_intent_fields / 审计组 inline 测试在失败时
+# `return 1`，在 `set -e` 下会立刻终止脚本，跳过剩余 16 个用例。
+# 失败计数由 TESTS_FAILED 跟踪，print_summary 汇总。
+set -uo pipefail
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -56,9 +59,11 @@ cleanup() {
 trap cleanup EXIT
 
 # ─── 发送聊天请求，返回 HTTP 状态码和响应体 ─────────────────────────────
+# 默认 curl 超时 90s：覆盖 local-qwen3-4b 推理最长 ~48s + 安全余量（2026-08-24
+# 第三轮校准：原 60s 在第二组数学计算测试中触发 exit=28，提前终止）。
 send_chat() {
     local message="$1"
-    local timeout="${2:-60}"
+    local timeout="${2:-90}"
 
     local response
     local status_code

@@ -738,7 +738,6 @@ export class HttpApiServiceImpl extends Service {
         handle,
         createdAt: now,
         lastAccessedAt: now,
-        recentMessages: [],
       }
       this.sessions.set(sessionId, record)
       this.audit('info', 'session.created', { sessionId, provider, model, totalSessions: this.sessions.size })
@@ -746,7 +745,7 @@ export class HttpApiServiceImpl extends Service {
       // Update last accessed time
       record.lastAccessedAt = Date.now()
     }
-    return record
+    return record!
   }
 
   /**
