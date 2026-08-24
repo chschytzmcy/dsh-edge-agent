@@ -2011,6 +2011,65 @@ describe('intent-router', () => {
     assert.match(errEntry.payload.error, /regex-boom/)
   })
 
+  // ─── Audit preview redaction (defense-in-depth)─────────────────────────────
+  // intent.classify.start used to log the first 80 chars of raw user input.
+  // If audit-log's own enablePIIRedaction is disabled, PII would leak to disk.
+  // Now textPreview goes through redactPreview (which uses piiUtils.redactString).
+
+  it('intent.classify.start preview is redacted (no raw PII even if piiUtils is present)', async () => {
+    const verdict = JSON.stringify({ category: 'CLOUD', confidence: 0.9 })
+    const piiUtils = {
+      redactString: (text: string) => ({
+        redacted: text.replace(/1[3-9]\d{9}/gu, '[REDACTED]'),
+        matches: [],
+      }),
+    }
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: { stream: () => chunksFromText(verdict) },
+      piiUtils,
+    } as any
+    const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b',
+      confidenceThreshold: 0.6,
+    }, audit as any)
+
+    await service.classify('手机号13812345678请帮我查运营商')
+    const startEntry = audit.entries.find((e: any) => e.kind === 'intent.classify.start')
+    assert.ok(startEntry, 'intent.classify.start audit should fire')
+    // Preview must NOT contain the raw phone number
+    assert.doesNotMatch(startEntry.payload.textPreview, /13812345678/u,
+      'textPreview must not contain raw PII')
+    // Preview should contain the redacted placeholder
+    assert.match(startEntry.payload.textPreview, /\[REDACTED\]/u,
+      'textPreview should contain redaction placeholder')
+  })
+
+  it('intent.classify.start preview falls back to length-only when piiUtils unavailable', async () => {
+    const verdict = JSON.stringify({ category: 'CLOUD', confidence: 0.9 })
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: { stream: () => chunksFromText(verdict) },
+      // NO piiUtils
+    } as any
+    const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b',
+      confidenceThreshold: 0.6,
+    }, audit as any)
+
+    await service.classify('手机号13812345678请帮我查运营商')
+    const startEntry = audit.entries.find((e: any) => e.kind === 'intent.classify.start')
+    assert.ok(startEntry)
+    // Without piiUtils, textPreview is `[len=N]` — no PII leak
+    assert.match(startEntry.payload.textPreview, /^\[len=\d+\]$/u,
+      'textPreview without piiUtils should fall back to length-only')
+    assert.doesNotMatch(startEntry.payload.textPreview, /13812345678/u)
+  })
+
   // ─── resolveIntent 纯函数 ──────────────────────────────────────────────────
 
   it('resolveIntent maps LOCAL intent to local realm', () => {

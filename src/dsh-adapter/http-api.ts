@@ -15,6 +15,7 @@ import { SessionId } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { AgentHandle } from '@deepseek-ai/dsh-agent'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import { redactString } from './pii-utils.js'
 
 export const name = 'http-api'
 
@@ -311,7 +312,11 @@ export class HttpApiServiceImpl extends Service {
     }
 
     const sessionId = requestedSessionId ?? randomUUID()
-    this.audit('info', 'http.chat.start', { reqId, sessionId, messageLen: message.length, messagePreview: message.slice(0, 80) })
+    // Defense-in-depth: redact PII from the audit preview. audit-log's own
+    // enablePIIRedaction also redacts, but this survives misconfiguration of
+    // that setting. redactString is synchronous and cheap. (2026-08-24 fix)
+    const messagePreview = redactString(message.slice(0, 80)).redacted
+    this.audit('info', 'http.chat.start', { reqId, sessionId, messageLen: message.length, messagePreview })
 
     // Phase D: td-bus threat gate (blockLevel default: critical)
     if (this.tdBus) {

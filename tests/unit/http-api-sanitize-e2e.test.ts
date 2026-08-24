@@ -510,4 +510,30 @@ describe('http-api E2E sanitization flow', () => {
     const sEntry2 = audit.entries.find((e: any) => e.kind === 'http.chat.sanitized')
     assert.equal(sEntry2, undefined, 'http.chat.sanitized should NOT fire when no replacements')
   })
+
+  // ── Audit preview redaction (defense-in-depth 2026-08-24) ─────────────────
+  // http.chat.start used to log the first 80 chars of raw user input.
+  // Now messagePreview goes through redactString from pii-utils.
+
+  it('audit: http.chat.start preview is redacted (no raw PII in audit)', async () => {
+    const sanitizer = makeFakeSanitizer()
+    const { svc } = buildService({
+      intentCategory: 'CLOUD',
+      sanitizer,
+      agentReply: 'ok',
+    })
+    const req = mockReq({ message: '手机号13812345678请帮我查' })
+    const { res } = mockRes()
+
+    await (svc as any).handleRequest(req, res)
+
+    const startEntry = audit.entries.find((e: any) => e.kind === 'http.chat.start')
+    assert.ok(startEntry, 'http.chat.start audit should fire')
+    // Preview must NOT contain the raw phone number
+    assert.doesNotMatch(startEntry.payload.messagePreview, /13812345678/u,
+      'messagePreview must not contain raw PII')
+    // Preview should contain the redacted form
+    assert.match(startEntry.payload.messagePreview, /\*{4,}/u,
+      'pii-utils masks PII with asterisks (e.g. 138****5678)')
+  })
 })

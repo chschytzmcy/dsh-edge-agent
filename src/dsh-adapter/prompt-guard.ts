@@ -309,7 +309,7 @@ export class PromptGuardServiceImpl extends Service implements PromptGuardServic
         sanitizedText = rewritten
         if (!sanitizedRuleNames.includes(name)) sanitizedRuleNames.push(name)
         await this.audit('info', 'guard.rule.sanitized', {
-          sessionId, ruleName: name, preview: text.slice(0, 100),
+          sessionId, ruleName: name, preview: redactString(text.slice(0, 100)).redacted,
         })
       }
 
@@ -318,7 +318,7 @@ export class PromptGuardServiceImpl extends Service implements PromptGuardServic
         await this.audit('security', 'input.injection', {
           sessionId,
           patterns: blockHits,
-          preview: text.slice(0, 100),
+          preview: redactString(text.slice(0, 100)).redacted,
         })
         return {
           safe: false,
@@ -333,7 +333,7 @@ export class PromptGuardServiceImpl extends Service implements PromptGuardServic
         await this.audit('warn', 'input.injection.warned', {
           sessionId,
           patterns: warnHits.map(h => h.name),
-          preview: text.slice(0, 100),
+          preview: redactString(text.slice(0, 100)).redacted,
         })
       }
 
@@ -511,7 +511,7 @@ export class PromptGuardServiceImpl extends Service implements PromptGuardServic
       provider: cfg.modelDetectionProvider,
       model: cfg.modelDetectionModel,
       timeoutMs: cfg.modelDetectionTimeoutMs,
-      textPreview: text.slice(0, 60),
+      textPreview: redactString(text.slice(0, 60)).redacted,
     })
 
     let responseText = ''

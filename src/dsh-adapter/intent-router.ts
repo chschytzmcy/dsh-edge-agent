@@ -269,7 +269,7 @@ export class IntentRouterServiceImpl extends Service {
       }
     }
 
-    const textPreview = effectiveText.slice(0, 80)
+    const textPreview = this.redactPreview(effectiveText) ?? `[len=${effectiveText.length}]`
     this.audit('info', 'intent.classify.start', { textLen: effectiveText.length, textPreview, classifier: this.classificationProvider, model: this.classificationModel })
 
     // Try LLM classification first
