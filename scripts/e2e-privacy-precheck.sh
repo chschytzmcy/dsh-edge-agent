@@ -13,7 +13,10 @@
 #   KEEP_SERVER_RUNNING   - 测试后保持服务器运行 (set to "true")
 #   SKIP_BUILD            - 跳过编译 (set to "true")
 
-set -euo pipefail
+# 注：故意不用 `set -e`——assert_status 在失败时 `return 1`，在 `set -e` 下
+# 会立刻终止脚本，跳过剩余 16 用例。失败计数由 TESTS_FAILED 跟踪，
+# print_summary 汇总。
+set -uo pipefail
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -47,7 +50,9 @@ trap cleanup EXIT
 # ─── 发送聊天请求，返回 HTTP 状态码和响应体 ─────────────────────────────
 send_chat() {
     local message="$1"
-    local timeout="${2:-10}"
+    # 默认 90s：覆盖 local-qwen3-4b 流式分类最长 ~47s + 余量；HTTP 000 即 curl
+    # 超时（exit=28），会被 assert_status 计为 FAIL。
+    local timeout="${2:-90}"
 
     local response
     local status_code
