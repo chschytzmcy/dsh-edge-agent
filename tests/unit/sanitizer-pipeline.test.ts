@@ -385,3 +385,128 @@ describe('sanitizer-pipeline apply', () => {
     await dispose()
   })
 })
+
+// ─── P1 (2026-08-24): additional PII patterns — IP / MAC / passport / license ──
+// These rules were added to the shipped policy (v1.2.0). Tests below use an
+// extended fixture to verify regex correctness end-to-end through the pipeline.
+
+const EXTENDED_POLICY: PrivacyPolicy = {
+  version: '1.2.0',
+  routingRules: [],
+  sanitizationRules: [
+    { pattern: '1[3-9]\\d{9}', replacement: '[PHONE]', dataClass: 'confidential', piiType: 'phone' },
+    { pattern: '[\\w.-]+@[\\w.-]+\\.\\w+', replacement: '[EMAIL]', dataClass: 'confidential', piiType: 'email' },
+    { pattern: '\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b', replacement: '[IP]', dataClass: 'confidential', piiType: 'ip-address' },
+    { pattern: '([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}', replacement: '[MAC]', dataClass: 'confidential', piiType: 'mac-address' },
+    { pattern: '(E[0-9A-Z]\\d{7}|G\\d{8})', replacement: '[PASSPORT]', dataClass: 'secret', piiType: 'passport' },
+    { pattern: '[京津沪渝冀豫云辽黑湘皖鲁新苏浙赣鄂桂甘晋蒙陕吉闽贵粤川青藏琼][A-Z][A-HJ-NP-Z0-9]{5}', replacement: '[PLATE]', dataClass: 'confidential', piiType: 'license-plate' },
+  ],
+  dataClassifications: [],
+  globalConstraints: { maxCloudRequestsPerMinute: 20, requireAttestation: false, blockIfTcbCompromised: true },
+}
+
+function createExtendedPolicyService(): PrivacyPolicyServiceImpl {
+  const policyPath = join(root, 'policy-ext.json')
+  writeFileSync(policyPath, JSON.stringify(EXTENDED_POLICY, null, 2), 'utf-8')
+  const svc = new PrivacyPolicyServiceImpl(fakeCtx() as never, {
+    policyPath, hotReload: false, watchIntervalMs: 5000,
+  }, fakeAuditLog())
+  return svc
+}
+
+describe('sanitizer-pipeline P1 PII patterns (v1.2.0)', () => {
+  it('replaces IPv4 addresses', async () => {
+    const policy = createExtendedPolicyService()
+    await policy.reload()
+    const audit = fakeAuditLog()
+    const svc = new SanitizerServiceImpl(fakeCtx() as never, {
+      enableAutoDetection: true, maxReplacementsPerSession: 1024,
+    }, policy, audit)
+
+    const r = await svc.sanitize('服务器 IP 是 192.168.1.100', { sessionId: 'ip-1' })
+    assert.match(r.sanitizedText, /\[IP-ADDRESS_1\]/u)
+    assert.doesNotMatch(r.sanitizedText, /192\.168\.1\.100/u)
+    assert.equal(r.replacements.length, 1)
+    assert.equal(r.replacements[0].piiType, 'ip-address')
+  })
+
+  it('replaces MAC addresses (colon and hyphen forms)', async () => {
+    const policy = createExtendedPolicyService()
+    await policy.reload()
+    const svc = new SanitizerServiceImpl(fakeCtx() as never, {
+      enableAutoDetection: true, maxReplacementsPerSession: 1024,
+    }, policy, fakeAuditLog())
+
+    const r1 = await svc.sanitize('设备 MAC: 00:1A:2B:3C:4D:5E', { sessionId: 'mac-1' })
+    assert.match(r1.sanitizedText, /\[MAC-ADDRESS_1\]/u)
+    assert.doesNotMatch(r1.sanitizedText, /00:1A:2B:3C:4D:5E/u)
+
+    const r2 = await svc.sanitize('hyphen form: 00-1A-2B-3C-4D-5E', { sessionId: 'mac-2' })
+    assert.match(r2.sanitizedText, /\[MAC-ADDRESS_1\]/u)
+  })
+
+  it('replaces Chinese passport numbers (E/G prefix)', async () => {
+    const policy = createExtendedPolicyService()
+    await policy.reload()
+    const svc = new SanitizerServiceImpl(fakeCtx() as never, {
+      enableAutoDetection: true, maxReplacementsPerSession: 1024,
+    }, policy, fakeAuditLog())
+
+    // New E-series passport: E + letter/digit + 7 digits
+    const r1 = await svc.sanitize('护照号 EA1234567', { sessionId: 'pass-1' })
+    assert.match(r1.sanitizedText, /\[PASSPORT_1\]/u)
+    assert.doesNotMatch(r1.sanitizedText, /EA1234567/u)
+
+    // Old G-series passport: G + 8 digits
+    const r2 = await svc.sanitize('旧护照 G12345678', { sessionId: 'pass-2' })
+    assert.match(r2.sanitizedText, /\[PASSPORT_1\]/u)
+  })
+
+  it('replaces Chinese license plates', async () => {
+    const policy = createExtendedPolicyService()
+    await policy.reload()
+    const svc = new SanitizerServiceImpl(fakeCtx() as never, {
+      enableAutoDetection: true, maxReplacementsPerSession: 1024,
+    }, policy, fakeAuditLog())
+
+    // Beijing plate: 京 + letter + 5 alphanum
+    const r = await svc.sanitize('我的车牌是京A12345', { sessionId: 'plate-1' })
+    assert.match(r.sanitizedText, /\[LICENSE-PLATE_1\]/u)
+    assert.doesNotMatch(r.sanitizedText, /京A12345/u)
+  })
+
+  it('handles all PII types in one message', async () => {
+    const policy = createExtendedPolicyService()
+    await policy.reload()
+    const svc = new SanitizerServiceImpl(fakeCtx() as never, {
+      enableAutoDetection: true, maxReplacementsPerSession: 1024,
+    }, policy, fakeAuditLog())
+
+    const text = '手机号13812345678 邮箱a@b.com IP 10.0.0.1 车牌京A12345'
+    const r = await svc.sanitize(text, { sessionId: 'multi-1' })
+    assert.doesNotMatch(r.sanitizedText, /13812345678/u)
+    assert.doesNotMatch(r.sanitizedText, /a@b\.com/u)
+    assert.doesNotMatch(r.sanitizedText, /10\.0\.0\.1/u)
+    assert.doesNotMatch(r.sanitizedText, /京A12345/u)
+    assert.equal(r.replacements.length, 4)
+    const piiTypes = r.replacements.map((rep: any) => rep.piiType).sort()
+    assert.deepEqual(piiTypes, ['email', 'ip-address', 'license-plate', 'phone'])
+  })
+
+  it('does not match non-IP patterns (e.g., version strings)', async () => {
+    const policy = createExtendedPolicyService()
+    await policy.reload()
+    const svc = new SanitizerServiceImpl(fakeCtx() as never, {
+      enableAutoDetection: true, maxReplacementsPerSession: 1024,
+    }, policy, fakeAuditLog())
+
+    // Note: the simple IP regex WILL match version-like strings. This is
+    // an accepted trade-off (low FP in chat contexts). Test documents
+    // behavior: any N.N.N.N with 1-3 digit groups is treated as IP.
+    const r = await svc.sanitize('node v18.17.0', { sessionId: 'ver-1' })
+    // The regex \b(?:\d{1,3}\.){3}\d{1,3}\b DOES match 18.17.0 — only 3 dots
+    // needed, but v18.17.0 only has 2 dots → NO match
+    assert.equal(r.replacements.length, 0, 'version string should NOT match IP regex (only 2 dots)')
+    assert.equal(r.sanitizedText, 'node v18.17.0')
+  })
+})

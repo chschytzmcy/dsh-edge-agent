@@ -109,7 +109,7 @@ declare module '@deepseek-ai/cordis' {
  * Default policy used when no policy file exists or loading fails.
  */
 const DEFAULT_POLICY: PrivacyPolicy = {
-  version: '1.1.0',
+  version: '1.2.0',
   routingRules: [
     // REJECT rules — must come first (first-match-wins)
     // Only business-dangerous operations; attack patterns handled by prompt-guard
@@ -145,6 +145,31 @@ const DEFAULT_POLICY: PrivacyPolicy = {
       replacement: '[EMAIL_$&]',
       dataClass: 'confidential',
       piiType: 'email',
+    },
+    // P1 (2026-08-24): IP / MAC / passport / license plate — low FP, high-value
+    {
+      pattern: '\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b',
+      replacement: '[IP_$&]',
+      dataClass: 'confidential',
+      piiType: 'ip-address',
+    },
+    {
+      pattern: '([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}',
+      replacement: '[MAC_$&]',
+      dataClass: 'confidential',
+      piiType: 'mac-address',
+    },
+    {
+      pattern: '(E[0-9A-Z]\\d{7}|G\\d{8})',
+      replacement: '[PASSPORT_$&]',
+      dataClass: 'secret',
+      piiType: 'passport',
+    },
+    {
+      pattern: '[京津沪渝冀豫云辽黑湘皖鲁新苏浙赣鄂桂甘晋蒙陕吉闽贵粤川青藏琼][A-Z][A-HJ-NP-Z0-9]{5}',
+      replacement: '[PLATE_$&]',
+      dataClass: 'confidential',
+      piiType: 'license-plate',
     },
   ],
   dataClassifications: [
