@@ -109,8 +109,23 @@ declare module '@deepseek-ai/cordis' {
  * Default policy used when no policy file exists or loading fails.
  */
 const DEFAULT_POLICY: PrivacyPolicy = {
-  version: '1.0.0',
+  version: '1.1.0',
   routingRules: [
+    // REJECT rules — must come first (first-match-wins)
+    // Only business-dangerous operations; attack patterns handled by prompt-guard
+    {
+      pattern: '(导出|删除|清空|格式化).*(数据库|系统|磁盘|全部数据)',
+      realm: 'REJECT',
+      confidence: 0.9,
+      rationale: 'Dangerous system operation',
+    },
+    {
+      pattern: '(drop\\s+table|rm\\s+-rf|format\\s+[a-z]:|del\\s+/[fs])',
+      realm: 'REJECT',
+      confidence: 0.95,
+      rationale: 'Destructive command pattern',
+    },
+    // LOCAL rules
     {
       pattern: '(本地|local|文件|file|计算|calculate)',
       realm: 'LOCAL',

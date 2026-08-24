@@ -154,6 +154,24 @@ export class IntentRouterServiceImpl extends Service {
     this.auditLog = auditLog
   }
 
+  /**
+   * Soft service lookup that works in both Cordis (runtime) and unit tests (bare mock).
+   *
+   * Cordis context: `ctx.get(name)` is available — use it. Throws when the
+   * service is not in the `inject` list, so `get` acts as the gate.
+   * Bare mock context (tests): `ctx.get` is undefined — fall back to direct
+   * property access `ctx[name]`, which is how tests wire fake services.
+   *
+   * Either way, a missing service returns `undefined` rather than throwing.
+   */
+  private softService<T = any>(name: string): T | undefined {
+    const c = this.ctx as any
+    if (typeof c?.get === 'function') {
+      try { return c.get(name) } catch { return undefined }
+    }
+    return c?.[name] ?? undefined
+  }
+
   private audit(level: 'debug' | 'info' | 'warn' | 'error' | 'security', kind: string, payload: Record<string, unknown>): void {
     if (!this.auditLog) return
     void this.auditLog.log({ level, kind, source: 'intent-router', payload }).catch(() => {})
@@ -167,7 +185,7 @@ export class IntentRouterServiceImpl extends Service {
   private redactPreview(text: string): string | null {
     if (!text) return null
     const trimmed = text.trim().slice(0, 40)
-    const piiUtils = (this.ctx as any).piiUtils
+    const piiUtils = this.softService('piiUtils')
     if (piiUtils && typeof piiUtils.redactString === 'function') {
       try {
         const result = piiUtils.redactString(trimmed)
@@ -223,7 +241,7 @@ export class IntentRouterServiceImpl extends Service {
     //      llama.cpp hang) — REJECT must survive LLM outage. The fallback
     //      path inside classifyWithLlm → catch → classifyWithRules still
     //      re-runs matchRouting, so REJECT is also covered post-LLM-failure.
-    const policy = (this.ctx as any).privacyPolicy
+    const policy = this.softService('privacyPolicy')
     if (policy && typeof policy.matchRouting === 'function') {
       try {
         const pre = policy.matchRouting(effectiveText)
@@ -302,7 +320,7 @@ export class IntentRouterServiceImpl extends Service {
     // ⚠️ classificationProvider MUST be a provider route id (with 'local-' /
     // 'cloud-' prefix); bare model ids resolve to realm: 'CLOUD' (see
     // model-router.ts:103). Current default 'local-qwen3-4b' is fine.
-    const modelRouter = (this.ctx as any).modelRouter
+    const modelRouter = this.softService('modelRouter')
     const resolved = (() => {
       try { return modelRouter?.resolve?.(this.classificationProvider) }
       catch { return undefined }
@@ -327,7 +345,7 @@ export class IntentRouterServiceImpl extends Service {
     let promptText = text
     const resolvedRealm = resolved?.realm
     if (resolvedRealm === 'CLOUD') {
-      const sanitizer = (this.ctx as any).sanitizer
+      const sanitizer = this.softService('sanitizer')
       if (sanitizer && typeof sanitizer.sanitize === 'function') {
         try {
           const result = await sanitizer.sanitize(text, { sessionId: sessionId ?? 'default' })
@@ -506,7 +524,7 @@ Respond ONLY with a single JSON object — no prose, no Markdown:
     // "blocked at router, no model call, consumer should map to 403 /
     // { kind: 'reject' } decision". audit kind `intent.rules.rejected` is
     // security-level so SIEM picks it up.
-    const policy = (this.ctx as any).privacyPolicy
+    const policy = this.softService('privacyPolicy')
     let matchedRule: { pattern: string; realm: RuleCategory; confidence: number; rationale: string } | null = null
     try {
       const r = policy?.matchRouting?.(text)

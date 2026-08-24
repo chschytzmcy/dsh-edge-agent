@@ -1,6 +1,18 @@
 {
-  "version": "1.0.0",
+  "version": "1.1.0",
   "routingRules": [
+    {
+      "pattern": "(导出|删除|清空|格式化).*(数据库|系统|磁盘|全部数据)",
+      "realm": "REJECT",
+      "confidence": 0.9,
+      "rationale": "Dangerous system operation"
+    },
+    {
+      "pattern": "(drop\\s+table|rm\\s+-rf|format\\s+[a-z]:|del\\s+/[fs])",
+      "realm": "REJECT",
+      "confidence": 0.95,
+      "rationale": "Destructive command pattern"
+    },
     {
       "pattern": "(本地|local|文件|file|计算|calculate|读取|写入)",
       "realm": "LOCAL",
@@ -61,7 +73,7 @@
   "dataClassifications": [
     { "class": "public", "defaultRealm": "CLOUD", "ttlSeconds": 3600 },
     { "class": "internal", "defaultRealm": "SANITIZED", "ttlSeconds": 1800 },
-    { "class": "confidential", "defaultRealm": "SANITIZED", "ttlSeconds": 900 },
+    { "class": "confidential", "defaultRealm": "LOCAL", "ttlSeconds": 900 },
     { "class": "secret", "defaultRealm": "LOCAL", "ttlSeconds": 300 }
   ],
   "globalConstraints": {
