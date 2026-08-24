@@ -608,62 +608,88 @@ run_tests() {
     echo ""
 }
 
+# ─── 定位审计日志文件 ───────────────────────────────────────────────
+# audit-log 插件（见 profiles/dsh-edge-agent/cordis.patch.yml:230-239）的
+# filename=audit.plain.jsonl + root=$DSH_EDGE_AUDIT_ROOT 或 ~/.dsh-edge-agent-m1/audit。
+# 这里按环境变量→默认值依次尝试，与插件内部行为对齐。
+find_audit_log() {
+    local root="${DSH_EDGE_AUDIT_ROOT:-}"
+    if [ -z "$root" ]; then
+        root="${USERPROFILE:-${HOME:-/home/$(id -un)}}/.dsh-edge-agent-m1/audit"
+    fi
+    local candidate="$root/audit.plain.jsonl"
+    if [ -f "$candidate" ]; then
+        echo "$candidate"
+        return 0
+    fi
+    # Fallback: mtime 在 dsh 启动之后的 audit.plain.jsonl
+    find "$(dirname "$root")" -name "audit.plain.jsonl" -newer /tmp/dsh-llm-classification-test.log 2>/dev/null | head -1
+}
+
 # ─── 检查审计日志 ─────────────────────────────────────────────────
+# 第七组：审计日志可观测性验证（3 个断言）
+#   7.1 审计日志文件存在且含本次测试条目
+#   7.2 intent.classify.start 事件数 ≥ 请求数（每条 chat 请求都应触发）
+#   7.3 intent.rules.rejected 事件存在（第三组 3 个 REJECT 用例至少 3 条）
 check_audit_log() {
     echo ""
-    echo "─── 审计日志验证 ───"
+    echo "─── 第七组：审计日志可观测性验证 ───"
     echo ""
 
-    # 查找 audit log 文件
-    local audit_dir
-    audit_dir=$(find /tmp -name "audit-*.log" -newer /tmp/dsh-llm-classification-test.log 2>/dev/null | head -1)
+    local audit_file
+    audit_file=$(find_audit_log)
 
-    if [ -z "$audit_dir" ]; then
-        audit_dir=$(find /home/etsme -name "audit-*.log" -newer /tmp/dsh-llm-classification-test.log 2>/dev/null | head -1)
+    if [ -z "$audit_file" ] || [ ! -f "$audit_file" ]; then
+        log_fail "审计日志: 未找到 audit.plain.jsonl（尝试路径: ~/.dsh-edge-agent-m1/audit/）"
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+        log_warn "审计日志: 跳过 7.2 / 7.3 断言（文件不存在）"
+        TESTS_SKIPPED=$((TESTS_SKIPPED + 2))
+        echo ""
+        return 1
     fi
+    log_info "审计日志文件: $audit_file"
 
-    if [ -n "$audit_dir" ] && [ -f "$audit_dir" ]; then
-        log_info "审计日志文件: $audit_dir"
+    # 7.1 文件存在
+    log_test "7.1 审计日志文件存在"
+    log_pass "7.1 审计日志文件存在 → $audit_file"
+    TESTS_PASSED=$((TESTS_PASSED + 1))
+    echo ""
 
-        # 检查 intent.classify.start 事件
-        local start_count
-        start_count=$(grep -c "intent.classify.start" "$audit_dir" 2>/dev/null || echo "0")
-        log_info "intent.classify.start 事件数: $start_count"
-
-        # 检查 intent.llm.classified 事件
-        local llm_count
-        llm_count=$(grep -c "intent.llm.classified\|intent.classify.end.*path.*llm" "$audit_dir" 2>/dev/null || echo "0")
-        log_info "LLM 分类成功事件数: $llm_count"
-
-        # 检查 intent.rules.rejected 事件
-        local reject_count
-        reject_count=$(grep -c "intent.rules.rejected" "$audit_dir" 2>/dev/null || echo "0")
-        log_info "intent.rules.rejected 事件数: $reject_count"
-
-        if [ "$start_count" -ge "1" ]; then
-            log_pass "审计日志: intent.classify.start 事件存在"
-            TESTS_PASSED=$((TESTS_PASSED + 1))
-        else
-            log_warn "审计日志: intent.classify.start 事件较少（可能格式不同）"
-        fi
-
-        if [ "$reject_count" -ge "1" ]; then
-            log_pass "审计日志: REJECT 事件存在"
-            TESTS_PASSED=$((TESTS_PASSED + 1))
-        else
-            log_warn "审计日志: 未找到 REJECT 事件（可能输出到 stdout）"
-        fi
+    # 7.2 intent.classify.start 事件（每个 chat 请求都应触发）
+    local start_count
+    start_count=$(grep -c '"kind":"intent.classify.start"' "$audit_file" 2>/dev/null || echo "0")
+    log_test "7.2 intent.classify.start 事件数 ≥ 请求数"
+    log_info "       intent.classify.start 事件数: $start_count"
+    if [ "$start_count" -ge 10 ]; then
+        log_pass "7.2 intent.classify.start 事件存在 ($start_count 条)"
+        TESTS_PASSED=$((TESTS_PASSED + 1))
     else
-        log_info "未找到审计日志文件，检查 dsh 服务器日志..."
-        if grep -q "intent.classify.start\|intent.llm.classified" /tmp/dsh-llm-classification-test.log 2>/dev/null; then
-            log_pass "dsh 日志中找到分类事件"
-            TESTS_PASSED=$((TESTS_PASSED + 1))
-            echo ""
-            echo "  最近的分类事件:"
-            grep -E "intent.classify|intent.llm" /tmp/dsh-llm-classification-test.log | tail -5 | sed 's/^/    /'
-        else
-            log_info "dsh 日志中未找到分类事件（可能审计输出格式不同）"
-        fi
+        log_fail "7.2 intent.classify.start 事件不足（期望 ≥10, 实际 $start_count）"
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+    fi
+    echo ""
+
+    # 7.3 intent.rules.rejected 事件（第三组 3 个 REJECT 用例 + 第三组之前若有重复，应至少 3 条）
+    local reject_count
+    reject_count=$(grep -c '"kind":"intent.rules.rejected"' "$audit_file" 2>/dev/null || echo "0")
+    log_test "7.3 intent.rules.rejected 事件存在"
+    log_info "       intent.rules.rejected 事件数: $reject_count"
+    if [ "$reject_count" -ge 3 ]; then
+        log_pass "7.3 intent.rules.rejected 事件存在 ($reject_count 条)"
+        TESTS_PASSED=$((TESTS_PASSED + 1))
+    else
+        log_fail "7.3 intent.rules.rejected 事件不足（期望 ≥3, 实际 $reject_count）"
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+    fi
+    echo ""
+
+    # 补充信息：intent.classify.end 路径统计（不计入 pass/fail）
+    local end_llm end_rules
+    end_llm=$(grep -c '"kind":"intent.classify.end"' "$audit_file" 2>/dev/null || echo "0")
+    log_info "intent.classify.end 事件数: $end_llm"
+    if [ "$end_llm" -gt 0 ]; then
+        log_info "  path=llm 数: $(grep '"kind":"intent.classify.end"' "$audit_file" | grep -o '"path":"[^"]*"' | grep -c '"path":"llm"')"
+        log_info "  path=rules-after-llm-error 数: $(grep '"kind":"intent.classify.end"' "$audit_file" | grep -o '"path":"[^"]*"' | grep -c '"path":"rules-after-llm-error"')"
     fi
     echo ""
 }
