@@ -105,7 +105,7 @@
 
 本设计的所有能力**不是一次性实现**的，而是按照"**先跑起来 → 再加防护 → 最后上硬件**"的策略，分阶段渐进式落地。
 
-#### 1.6.1 当前状态（2026-08-23）
+#### 1.6.1 当前状态（2026-08-24）
 
 **已完成**：
 
@@ -114,7 +114,7 @@
 | M1 | 基础对话 + HTTP API | `http-api` | ✅ 完整（含 REJECT 403、threat-block 503、`/v1/chat` + `/v1/chat/stream`） |
 | M2 | 本地 LLM 接入 | `local-llm-adapter` | ✅ 完整 |
 | M3 | 云端 LLM 接入 | `cloud-llm-adapter` | ✅ 完整 |
-| M4 | 意图路由 | `intent-router`, `model-router` | ✅ 完整（含 REJECT 短路、confidence histogram、LLM-first 顺序、`parseFailure` 计数） |
+| M4 | 意图路由 | `intent-router`, `model-router` | ✅ 完整（含三层防御 prompt-guard 正则→400 + prompt-guard 本地 LLM 模型检测→400 + privacy-policy REJECT→403、confidence histogram、LLM-first 顺序、`parseFailure` 计数、`softService()` 软依赖）；**真实环境 e2e 验证 17/17 通过** |
 | A1-simplified | 端侧隐私安全（简化版） | `prompt-guard` | ✅ PII 脱敏 + 注入检测 + 频率限制；已并入 Phase 4 |
 | A1-audit | 审计日志增强 | `audit-log` | ✅ PII 脱敏 + 日志轮转 |
 | A1-session | 会话安全增强 | `http-api` | ✅ 过期清理 + 访问审计 + LRU 淘汰 |
@@ -130,6 +130,7 @@
 - ✅ 注入检测拦截（≥3 种模式，规则可配置 `action: block | warn | sanitize`）
 - ✅ PII 脱敏（手机号、邮箱、身份证、银行卡、API Key）
 - ✅ `intent-router` REJECT 命中 → http-api 403 短路（`intent.rules.rejected` 安全级审计）
+- ✅ **隐私预检三层防御 e2e 验证**（2026-08-24）：12 个恶意请求全拦截（3 个 prompt-guard 正则 HTTP 400 + 9 个 privacy-policy HTTP 403），5 个正常请求不误拦（HTTP 200，正确分类 LOCAL/CLOUD）。prompt-guard 模型辅助检测默认开启（local-qwen3-4b，fail-open）。详见 `docs/dsh-edge-agent_意图识别路由.md` "真实环境 e2e 验证" 章节
 - ✅ `td-bus.shouldBlock()` 命中 → http-api 503 短路（`http.chat.threat-blocked` 审计）
 - ✅ CLOUD 路径 sanitize → LLM → desanitize（或流式 `desanitizeSync`）端到端
 - ✅ Privacy-policy `matchRouting` 命中走规则，未命中走 LLM，再 fallback 关键词 → `defaultCategory`
@@ -235,9 +236,12 @@
   - [x] intent-router 主体能力已独立实现
   - [x] 从 privacy-policy `matchRouting()` 拉取规则（hybrid：`pre-check` 命中 REJECT 短路 + fallback 路径命中返回 verdict）
   - [x] REJECT 意图拦截（intent-router `matchRouting` pre-check + http-api 403 short-circuit）
+  - [x] shipped `privacy-policy.json` 含 2 条 REJECT 规则（危险操作、破坏性命令）+ `DEFAULT_POLICY` 含 2 条基础 REJECT 回退（**2026-08-24 优化**：移除重复攻击模式规则，由 prompt-guard 统一处理）
+  - [x] **真实环境 e2e 验证通过**（2026-08-24）：12 个恶意请求全拦截 + 5 个正常请求不误拦，三层防御（prompt-guard 正则 HTTP 400 拦截攻击模式 + prompt-guard 模型 HTTP 400 拦截复杂攻击 + privacy-policy HTTP 403 拦截业务危险操作）
 - [x] **prompt-guard 联动**
   - [x] prompt-guard 已独立实现 PII 检测与注入防护
   - [x] 从 privacy-policy `classifyData()` 拉脱敏 / 分类规则（`secret` 级一票否决）
+  - [x] **三层防御第一层**：http-api 调用 intent-router 之前先经 prompt-guard 正则模式库（命中 → HTTP 400），再经本地 qwen3-4b 模型辅助检测（fail-open，捕捉正则漏报的复杂攻击）
 - [x] **sanitizer-pipeline 完整实现**
   - [x] 正向脱敏（PII → 占位符，格式 `[<PII_TYPE>_<counter>]`，如 `[PHONE_1]`、`[EMAIL_2]`）
   - [x] 反向还原（占位符 → PII），含异步 `desanitize` 与同步 `desanitizeSync`
@@ -1438,13 +1442,14 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
 
 #### checkInput 实际流水线
 ```
-1. 长度截断（maxInputLength）
+1. 长度检查（> maxInputLength → block）
 2. 速率限制（per-session + 全局；超限返回 safe=false, riskLevel=high）
-3. PII 检测（pii-utils, 5 类：phone/id-card/bank-card/email/api-key）
-4. 注入正则（遍历 rules[]，命中按 action 收威胁）
-5. privacy-policy.classifyData()；最高级 ≥ secret → 输入 block（a secret 一票否决）
-6. （可选）enableModelDetection → 调 ctx.llm.stream() 走 qwen3-4b 二次分类
-最终：hasBlock → safe:false, riskLevel=high（http-api 转 400 + 输入拦截）
+3. 注入正则（遍历 rules[]，命中按 action 分级：block/warn/sanitize）
+4. privacy-policy.classifyData()；最高级 ≥ secret → 输入 block（secret 一票否决）
+5. 模型辅助检测（默认开启）→ 调 ctx.llm.stream() 走 local-qwen3-4b 语义安全分类
+   - fail-open：超时/报错/解析失败 → 不阻断，依赖前序正则+PII 判定
+   - 仅 explicit safe:false → block（riskLevel=high）
+最终：任一阶段 safe:false → HTTP 400 + 输入拦截
 ```
 
 #### checkOutput 实际流水线
@@ -1473,7 +1478,7 @@ prompt-guard:
       pattern: "你现在(是|扮演|假装是)"
       action: "warn"
     # …可继续追加任意条；每个 action 独立审计
-  enableModelDetection: false     # 默认 false，开启则需要 llm 跑小模型
+  enableModelDetection: true        # 默认 true，使用 local-qwen3-4b 做语义安全分类（fail-open）
   modelDetectionProvider: "local-qwen3-4b"
   modelDetectionModel: "qwen3-4b"
   modelDetectionTimeoutMs: 4000
@@ -2781,6 +2786,8 @@ cloud-llm-provider:
 按 `ctx.llm` 输出与 policy 双源 `matchRouting` 把用户请求路由到 LOCAL / CLOUD / SANITIZED / REJECT 四类 realm，并把意图作为后续 agent loop 的入口参数。v0.1.0 关键 trade-off：
 
 - **LLM-first → rules fallback**（不是「rules → LLM」瀑布）。低置信度时 fallback 到 keyword rules（**fail-open**，不是 fail-closed）。
+- **三层防御纵深**（职责分离）：http-api 调用 intent-router 之前先经 prompt-guard 正则模式库（攻击模式 → HTTP 400）+ 本地 qwen3-4b 模型辅助检测（复杂攻击，fail-open）；intent-router 自身的 privacy-policy REJECT 规则（业务危险操作 → HTTP 403）。三层各司其职：prompt-guard 专注攻击模式（注入/提词/越狱/角色覆盖/数据外传），privacy-policy REJECT 专注业务危险操作（破坏性命令/数据库删除）。
+- **`softService()` 软依赖**：对 privacyPolicy / modelRouter / sanitizer / piiUtils 采用 dual-mode 查找——Cordis 运行时用 `ctx.get()`（不在 inject 中时返回 undefined 而非 throw），单元测试裸 mock 用直接属性访问。保证在缺失或 mock 场景下均不崩溃。
 - **配置 schema 浮点化**：`confidenceThreshold` 是 0..1 浮点（`Schema.number().min(0).max(1)`），由 commit `18d247d` 修复 `Schema.natural()` 拒绝 `0.6` 的 bug。
 - **隐私侧额外防线**：分类 LLM 解析到 realm=CLOUD 时，先 `sanitizer.sanitize()` 再喂 LLM——**分类请求也带 PII 不出端**。
 
@@ -2790,7 +2797,7 @@ name: intent-router
 type: middleware
 inject:
   - llm
-  - audit-log          # privacy-policy / model-router / sanitizer 走 ctx.get 懒查（不在 inject）
+  - audit-log          # privacy-policy / model-router / sanitizer / piiUtils 走 softService() 懒查（不在 inject）
 ```
 
 #### 接口定义
@@ -2818,7 +2825,7 @@ export interface Intent {
 export interface IntentRouterService {
   classify(text: string, context?: { recentMessages?: unknown[]; sessionId?: string }): Promise<Intent>
   resolve(intent: Intent): { realm: string; config: Record<string, unknown> }
-  /** G9: 13 个计数器 + 10-bucket confidenceHistogram */
+  /** G9: 15 个计数器 + 10-bucket confidenceHistogram */
   getStats(): IntentRouterStats
 }
 ```
@@ -2835,7 +2842,7 @@ classify(text, context):
        │                            → 返回 category=REJECT（短路；不调 LLM）
        └─ 其它 or 未命中           → 继续
   4. LLM-first try (classifyWithLlm):
-       modelRouter = ctx.get('modelRouter')（懒查，因为 intent-router boot 在 model-router 之前）
+       modelRouter = softService('modelRouter')（dual-mode 懒查，兼容 Cordis 运行时与单元测试 mock）
        resolved    = modelRouter.resolve(classificationProvider)
                        // 警告：必须是带 local- / cloud- 前缀的路由 id；
                        //       裸 model id 会被 model-router 落到 realm=CLOUD。
@@ -2910,17 +2917,43 @@ interface IntentRouterStats {
   parseFailure: number;          // P1：与 llmError 独立计数
   rejected: number;
   sanitized: number; sanitizeError: number; sanitizeSkipped: number;
+  // 以上共 15 个独立计数字段，加上下方的 confidenceHistogram
   /** G9: 10-bucket histogram × {accepted, rejected} */
   confidenceHistogram: { [bucket: '0'..'9']: { accepted: number; rejected: number } }
 }
 ```
+
+#### 实装总结与下游集成
+
+intent-router 的实装定位是 **"三层防御 + LLM 分类 + 规则兜底"四层路由**，核心实现在 `src/dsh-adapter/intent-router.ts`（~760 行），配套测试 `tests/unit/intent-router.test.ts`（~1940 行）+ `tests/unit/privacy-precheck.test.ts`（22 行）+ `tests/unit/prompt-guard.test.ts`（72 行）+ `scripts/e2e-privacy-precheck.sh`（17 e2e 用例）。
+
+**下游集成**：
+
+| 消费者 | 用法 |
+|--------|------|
+| `http-api` | 每条消息先经 prompt-guard（HTTP 400），再调用 `classify()`；REJECT 意图 → HTTP 403 short-circuit；Intent 作为 SSE 首帧 (`type: "intent"`) 返回 |
+| `tools` | `filterTools(intent)` / `isToolAllowed(name, intent)` 实现 realm 级别工具隔离（REJECT → 空工具列表） |
+| `td-bus` | 威胁检测总线消费 Intent 进行异常行为分析（规划中，尚未接入主链路） |
+| plugin boot | 第 15 步启动（19 个插件拓扑排序），inject `llm, auditLog`；其他服务走 `softService()` |
+
+**软依赖架构**：intent-router 对辅助服务采用 `softService()` dual-mode 查找（Cordis 运行时 `ctx.get()` / 裸 mock 直接属性），缺失时 fail-open 不阻断主流程：
+- `llm` — 必须（无 LLM 则直接走规则兜底）
+- `auditLog` — 可选（缺失时静默跳过审计）
+- `privacyPolicy` — 可选（matchRouting 缺失时跳过预检和规则匹配）
+- `modelRouter` — 可选（resolve 缺失时用 config 默认值）
+- `sanitizer` — 可选（缺失时 CLOUD 分类不脱敏，fail-open）
+- `piiUtils` — 可选（redactString 缺失时审计日志不记录文本预览）
+
+> 完整实装解析（含分类流程图、层间流转规则、Intent 接口、下游集成、可观测性、配置参数、测试覆盖、真实环境 e2e 验证、部署注意事项、后续优化项）见 [`docs/dsh-edge-agent_意图识别路由.md`](./dsh-edge-agent_意图识别路由.md)。
 
 #### 设计意图 vs 实现的差异
 | 维度 | 原 v6 设计 | 当前实现 | 原因 |
 |---|---|---|---|
 | 顺序 | rules → LLM → confidence | **LLM-first → rules fallback** | qwen3-4b 在规则路径下经常被强力 regex 反向劫持；先让 LLM 拿 verdict，规则只做兜底更稳 |
 | 低置信度 | fail-closed → REJECT | **fail-open → rules/defaultCategory** | qwen3-4b 置信度抖动较大；REJECT 误拒率不可接受 |
-| `inject` | `['llm','privacy-policy','model-router','prompt-guard','audit-log','config']` | **`['llm','auditLog']`**（其它懒查） | v6 §7 明确规定 inject 不列 `config`；privacy-policy/model-router/sanitizer 在 intent-router 之后 boot，必须懒查 |
+| 输入防护 | 单层 | **三层防御**：prompt-guard 正则（零 token）+ prompt-guard 本地 LLM（fail-open）+ privacy-policy REJECT（零 token） | 纵深防御，即使一层漏过另一层仍可阻断 |
+| `inject` | `['llm','privacy-policy','model-router','prompt-guard','audit-log','config']` | **`['llm','auditLog']`**（其它走 `softService()` 懒查） | v6 §7 明确规定 inject 不列 `config`；privacy-policy/model-router/sanitizer 在 intent-router 之后 boot，必须懒查 |
+| 软依赖访问 | `ctx.xxx` 直接访问 | **`softService(name)`** dual-mode：Cordis `ctx.get()` / mock 直接属性 | Cordis `ctx.xxx` 对非 inject 服务会 throw；`softService()` 兼容运行时和单元测试 |
 | `ctx.llm.chat()` | 直接调用 | **`ctx.llm.stream({ signal })`** | v6 §11.2 row 4；DSH `LlmAdapter { stream }` |
 | REJECT 来源 | 仅 prompt-guard | **policy pre-check + fallback rule 两条路径** | LLM 分类只产出 LOCAL/CLOUD；REJECT 必经 policy 规则 |
 | SANITIZED | LLM verdict | **仅 policy 规则命中** | LLM prompt 模版里不写 SANITIZED 选项 |
@@ -3968,8 +4001,8 @@ graph TB
     end
 
     subgraph 安全防护层
-        PG["prompt-guard 插件<br/>────────────<br/>输入攻击检测<br/>输出泄露过滤<br/>模型辅助判断"]
-        PP["privacy-policy 插件<br/>────────────<br/>策略引擎(热更新)<br/>数据分类<br/>全局约束"]
+        PG["prompt-guard 插件<br/>────────────<br/>输入攻击检测(→HTTP 400)<br/>输出泄露过滤<br/>模型辅助判断"]
+        PP["privacy-policy 插件<br/>────────────<br/>策略引擎(热更新, REJECT→HTTP 403)<br/>数据分类<br/>全局约束"]
     end
 
     subgraph 输入处理层
@@ -3977,7 +4010,7 @@ graph TB
     end
 
     subgraph 路由决策层
-        IR["intent-router 插件<br/>────────────────<br/>① 策略规则匹配<br/>② 模型意图分类<br/>③ 置信度校验"]
+        IR["intent-router 插件<br/>────────────────<br/>① 策略REJECT预检<br/>② 模型意图分类<br/>③ 置信度校验<br/>④ softService()软依赖"]
         MR["model-router 插件<br/>────────────────<br/>多模型智能选择<br/>健康检查<br/>数据级别约束"]
     end
 
@@ -5335,15 +5368,15 @@ describe('http-api', () => {
 - Whisper / llama.cpp / OHTTP / TEE SDK 通过对应插件封装调用，DSH 进程不直接依赖 native 模块。
 - native addon（如 `dsh-tool-call-timeout-policy`）的封装约定沿用 `packages/core/tools/src/index.ts:235-247` 的 `ToolDefinition.execute(args, exec)` + `signal` 模式。
 
-### 11.5 已识别的开放问题（v6.0 → 2026-08-23 状态）
+### 11.5 已识别的开放问题（v6.0 → 2026-08-24 状态）
 
-> v6 初稿（2026-08-16）列出的开放问题在 2026-08-23 代码实装下分两类：**已关闭**（实装完成）和**仍开放**（后续阶段处理）。
+> v6 初稿（2026-08-16）列出的开放问题在 2026-08-24 代码实装下分两类：**已关闭**（实装完成）和**仍开放**（后续阶段处理）。
 
-#### 已关闭（2026-08-23）
+#### 已关闭（2026-08-24）
 
 | 问题 | 关闭时间 / 提交 / 文件 |
 |---|---|
-| REJECT 意图拦截未实现 | **closed** — `intent-router.classify()` 引入隐私策略 pre-check + fallback rules 双 REJECT 路径（http-api.ts:218-402 → 403 short-circuit） |
+| REJECT 意图拦截未实现 | **closed** — `intent-router.classify()` 引入隐私策略 pre-check + fallback rules 双 REJECT 路径（http-api.ts:218-402 → 403 short-circuit）；shipped `privacy-policy.json` 含 2 条 REJECT 规则（业务危险操作）；**真实环境 e2e 验证 17/17 通过**（2026-08-24，三层防御：prompt-guard 正则 HTTP 400 拦截攻击模式 + prompt-guard 模型 HTTP 400 拦截复杂攻击 + privacy-policy HTTP 403 拦截业务危险操作） |
 | `sanitizer-pipeline` 缺同步反脱敏入口 | **closed** — 新增 `desanitizeSync(text, sessionId)`（sanitizer-pipeline.ts:??），供 `handleChatStream` 逐 chunk 还原 |
 | `sanitizer-pipeline` 缺 `purge()` | **closed** — 新增 `purge(sessionId)`（sanitizer-pipeline.ts:??），由 http-api `handleDeleteSession` 调用 |
 | `tools.enableToolIsolation` 配置未生效 | **closed** — G8（commit `b39d21f`）把 `enableToolIsolation` 真接入 `filterTools(intent)` / `isToolAllowed(name, intent)` |
