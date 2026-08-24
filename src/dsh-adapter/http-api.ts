@@ -392,29 +392,47 @@ export class HttpApiServiceImpl extends Service {
     // fallback; modelRouter (registered later in boot order) takes
     // precedence via lazy lookup so http-api doesn't need an inject dep.
     const isLocal = intent.category === 'LOCAL'
-    const route = this.resolveRoute(isLocal)
-    const { provider, model } = route
-    this.audit('info', 'http.chat.route', { reqId, sessionId, intent: intent.category, provider, model, resolved: route.resolved, confidence: intent.confidence, rationale: intent.rationale })
+    // effectiveIsLocal/effectiveRoute may be flipped to LOCAL below when
+    // sanitization is required but unavailable — "脱不了敏就不上云".
+    let effectiveIsLocal = isLocal
+    let effectiveRoute = this.resolveRoute(isLocal)
+    this.audit('info', 'http.chat.route', { reqId, sessionId, intent: intent.category, provider: effectiveRoute.provider, model: effectiveRoute.model, resolved: effectiveRoute.resolved, confidence: intent.confidence, rationale: intent.rationale })
 
-    // Phase 4: Sanitize input for CLOUD requests
+    // Phase 4: Sanitize input for CLOUD requests.
+    // Policy: if sanitizer is unavailable or throws, DOWNGRADE to LOCAL
+    // instead of sending raw (potentially PII-containing) text to the cloud.
+    // "脱不了敏就不上云" — audit at security level so SIEM picks it up.
     let messageToSend = message
     let sanitizationInfo: { replacements: number } | undefined
-    if (!isLocal && this.sanitizer) {
-      try {
-        const sanitizationResult = await this.sanitizer.sanitize(message, { sessionId })
-        messageToSend = sanitizationResult.sanitizedText
-        if (sanitizationResult.replacements.length > 0) {
-          sanitizationInfo = { replacements: sanitizationResult.replacements.length }
-          this.audit('info', 'http.chat.sanitized', {
-            reqId,
-            sessionId,
-            replacementCount: sanitizationResult.replacements.length,
+    if (!isLocal) {
+      if (!this.sanitizer) {
+        this.audit('security', 'http.chat.sanitize.unavailable', {
+          reqId, sessionId, originalIntent: intent.category,
+        })
+        effectiveIsLocal = true
+        effectiveRoute = this.resolveRoute(true)
+      } else {
+        try {
+          const sanitizationResult = await this.sanitizer.sanitize(message, { sessionId })
+          messageToSend = sanitizationResult.sanitizedText
+          if (sanitizationResult.replacements.length > 0) {
+            sanitizationInfo = { replacements: sanitizationResult.replacements.length }
+            this.audit('info', 'http.chat.sanitized', {
+              reqId,
+              sessionId,
+              replacementCount: sanitizationResult.replacements.length,
+            })
+          }
+        } catch (err: any) {
+          this.audit('security', 'http.chat.sanitize.failed', {
+            reqId, sessionId, error: err.message, originalIntent: intent.category,
           })
+          effectiveIsLocal = true
+          effectiveRoute = this.resolveRoute(true)
         }
-      } catch (err: any) {
-        this.audit('error', 'http.chat.sanitize.error', { reqId, sessionId, error: err.message })
       }
     }
+    const { provider, model } = effectiveRoute
 
     const record = await this.ensureSession(sessionId, provider, model)
 
@@ -457,7 +475,9 @@ export class HttpApiServiceImpl extends Service {
     let result = await turnEnd
 
     // Phase 4: Desanitize output for CLOUD requests
-    if (!isLocal && this.sanitizer && sanitizationInfo) {
+    // Use effectiveIsLocal — if we downgraded to LOCAL, no sanitization was
+    // applied, so desanitization must also be skipped.
+    if (!effectiveIsLocal && this.sanitizer && sanitizationInfo) {
       try {
         result = await this.sanitizer.desanitize(result, sessionId)
         this.audit('debug', 'http.chat.desanitized', { reqId, sessionId })
@@ -484,8 +504,13 @@ export class HttpApiServiceImpl extends Service {
     }
 
     const duration = Date.now() - start
-    this.audit('info', 'http.chat.end', { reqId, sessionId, provider, model, durationMs: duration, resultLen: result.length })
-    this.accessLog(reqId, 'POST', '/v1/chat', 200, duration, `${provider}/${model} intent=${intent.category}`)
+    // Build the response intent — if sanitization failed and we downgraded
+    // to LOCAL, reflect the effective category so the caller sees the truth.
+    const responseIntent = effectiveIsLocal && !isLocal
+      ? { ...intent, category: 'LOCAL', targetRealm: 'local', rationale: `${intent.rationale}:sanitized-fallback` }
+      : intent
+    this.audit('info', 'http.chat.end', { reqId, sessionId, provider, model, durationMs: duration, resultLen: result.length, downgraded: effectiveIsLocal && !isLocal })
+    this.accessLog(reqId, 'POST', '/v1/chat', 200, duration, `${provider}/${model} intent=${responseIntent.category}${effectiveIsLocal && !isLocal ? '(downgraded)' : ''}`)
 
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(
@@ -493,10 +518,10 @@ export class HttpApiServiceImpl extends Service {
         sessionId,
         result,
         intent: {
-          category: intent.category,
-          targetRealm: intent.targetRealm,
-          confidence: intent.confidence,
-          rationale: intent.rationale,
+          category: responseIntent.category,
+          targetRealm: responseIntent.targetRealm,
+          confidence: responseIntent.confidence,
+          rationale: responseIntent.rationale,
         },
         duration,
         ...(redactedInfo && { redacted: redactedInfo }),
@@ -588,29 +613,46 @@ export class HttpApiServiceImpl extends Service {
     }
 
     const isLocal = intent.category === 'LOCAL'
-    const route = this.resolveRoute(isLocal)
-    const { provider, model } = route
-    this.audit('info', 'http.chat.stream.route', { reqId, sessionId, intent: intent.category, provider, model, resolved: route.resolved })
+    // effectiveIsLocal/effectiveRoute may be flipped to LOCAL below when
+    // sanitization is required but unavailable — "脱不了敏就不上云".
+    let effectiveIsLocal = isLocal
+    let effectiveRoute = this.resolveRoute(isLocal)
+    this.audit('info', 'http.chat.stream.route', { reqId, sessionId, intent: intent.category, provider: effectiveRoute.provider, model: effectiveRoute.model, resolved: effectiveRoute.resolved })
 
-    // Phase 4: Sanitize input for CLOUD requests
+    // Phase 4: Sanitize input for CLOUD requests.
+    // Policy: if sanitizer is unavailable or throws, DOWNGRADE to LOCAL
+    // instead of sending raw (potentially PII-containing) text to the cloud.
     let messageToSend = message
     let didSanitize = false
-    if (!isLocal && this.sanitizer) {
-      try {
-        const sanitizationResult = await this.sanitizer.sanitize(message, { sessionId })
-        messageToSend = sanitizationResult.sanitizedText
-        if (sanitizationResult.replacements.length > 0) {
-          didSanitize = true
-          this.audit('info', 'http.chat.stream.sanitized', {
-            reqId,
-            sessionId,
-            replacementCount: sanitizationResult.replacements.length,
+    if (!isLocal) {
+      if (!this.sanitizer) {
+        this.audit('security', 'http.chat.stream.sanitize.unavailable', {
+          reqId, sessionId, originalIntent: intent.category,
+        })
+        effectiveIsLocal = true
+        effectiveRoute = this.resolveRoute(true)
+      } else {
+        try {
+          const sanitizationResult = await this.sanitizer.sanitize(message, { sessionId })
+          messageToSend = sanitizationResult.sanitizedText
+          if (sanitizationResult.replacements.length > 0) {
+            didSanitize = true
+            this.audit('info', 'http.chat.stream.sanitized', {
+              reqId,
+              sessionId,
+              replacementCount: sanitizationResult.replacements.length,
+            })
+          }
+        } catch (err: any) {
+          this.audit('security', 'http.chat.stream.sanitize.failed', {
+            reqId, sessionId, error: err.message, originalIntent: intent.category,
           })
+          effectiveIsLocal = true
+          effectiveRoute = this.resolveRoute(true)
         }
-      } catch (err: any) {
-        this.audit('error', 'http.chat.stream.sanitize.error', { reqId, sessionId, error: err.message })
       }
     }
+    const { provider, model } = effectiveRoute
 
     const record = await this.ensureSession(sessionId, provider, model)
 
@@ -619,18 +661,25 @@ export class HttpApiServiceImpl extends Service {
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive',
     })
-    this.accessLog(reqId, 'POST', '/v1/chat/stream', 200, Date.now() - start, `${provider}/${model} intent=${intent.category}`)
+    this.accessLog(reqId, 'POST', '/v1/chat/stream', 200, Date.now() - start, `${provider}/${model} intent=${effectiveIsLocal && !isLocal ? 'LOCAL(downgraded)' : intent.category}`)
+
+    // Build the effective intent for SSE — if sanitization failed and we
+    // downgraded to LOCAL, reflect the effective category.
+    const streamResponseIntent = effectiveIsLocal && !isLocal
+      ? { ...intent, category: 'LOCAL', targetRealm: 'local', rationale: `${intent.rationale}:sanitized-fallback` }
+      : intent
 
     // Emit intent first so client knows the routing decision
-    res.write(`data: ${JSON.stringify({ type: 'intent', intent: { category: intent.category, targetRealm: intent.targetRealm, confidence: intent.confidence, rationale: intent.rationale } })}\n\n`)
+    res.write(`data: ${JSON.stringify({ type: 'intent', intent: { category: streamResponseIntent.category, targetRealm: streamResponseIntent.targetRealm, confidence: streamResponseIntent.confidence, rationale: streamResponseIntent.rationale } })}\n\n`)
 
     const dispose = this.cordisCtx.on('session/event', (_session: any, event: SessionEvent) => {
       if (event.type === 'assistant/chunk') {
         const chunk = (event as any).data.chunk
         if (chunk.type === 'text-delta') {
           // Phase 4: Desanitize streamed text for CLOUD requests
+          // Use effectiveIsLocal — if downgraded, no sanitization was applied.
           let textToSend = chunk.text
-          if (!isLocal && this.sanitizer && didSanitize) {
+          if (!effectiveIsLocal && this.sanitizer && didSanitize) {
             try {
               textToSend = this.sanitizer.desanitizeSync(chunk.text, sessionId)
             } catch {
@@ -657,7 +706,7 @@ export class HttpApiServiceImpl extends Service {
 
         res.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`)
         const duration = Date.now() - start
-        this.audit('info', 'http.chat.stream.end', { reqId, sessionId, provider, model, durationMs: duration })
+        this.audit('info', 'http.chat.stream.end', { reqId, sessionId, provider, model, durationMs: duration, downgraded: effectiveIsLocal && !isLocal })
         dispose()
         res.end()
       }

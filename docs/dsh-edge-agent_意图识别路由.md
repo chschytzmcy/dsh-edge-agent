@@ -10,7 +10,7 @@
 - [[第一章] prompt-guard 输入防护](#第一章-prompt-guard-输入防护)
 - [[第二章] 隐私策略预检（privacy-policy）](#第二章隐私策略预检privacy-policy)
 - [[第三章] LLM 分类（intent-router）](#第三章-llm-分类intent-router)
-- [第四章] 规则兜底（待补充）
+- [[第四章] 规则兜底（classifyWithRules）](#第四章-规则兜底classifywithrules)
 - [层间流转规则](#层间流转规则)
 - [Realm 映射（意图 → 处理域）](#realm-映射意图--处理域)
 - [Intent 接口](#intent-接口)
@@ -21,7 +21,7 @@
 
 ## 一句话概括
 
-intent-router 是 dsh-edge-agent 的"安检 + 分流"插件：每条用户消息进来，先经 prompt-guard 三层防护（正则模式库零 token 拦截已知高危模式 + 本地 qwen3-4b 模型辅助检测复杂攻击 + PII 数据分类，HTTP 400），再经隐私策略预检（业务危险操作如破坏性命令、数据库删除等零 token 直接拦截，HTTP 403），再由本地 qwen3-4b 流式分类作为主决策（CLOUD 前自动脱敏 PII，0.6 置信度门控，三级容错解析），LLM 失败时降级到 privacy-policy 规则 + 内置关键词兜底。分类结果 Intent 驱动 http-api 路由、tools 工具隔离、审计日志全链路可观测。
+intent-router 是 dsh-edge-agent 的"安检 + 分流"插件：每条用户消息进来，先经 prompt-guard 三层防护（正则模式库零 token 拦截已知高危模式 + 本地 qwen3-4b 模型辅助检测复杂攻击 + PII 数据分类，HTTP 400），再经隐私策略预检（业务危险操作如破坏性命令、数据库删除等零 token 直接拦截，HTTP 403），再由本地 qwen3-4b 流式分类作为主决策（CLOUD 前自动脱敏 PII，0.6 置信度门控，三级容错解析），LLM 失败时降级到 privacy-policy 规则 + 内置关键词兜底。**CLOUD 路径 sanitizer 不可用/失败时 fail-closed 降级到规则兜底（脱不了敏就不上云）**。分类结果 Intent 驱动 http-api 路由、tools 工具隔离、审计日志全链路可观测。
 
 **职责分离原则**（2026-08-24 优化）：
 - **prompt-guard** 专注**攻击模式检测**：注入、提词、越狱、角色覆盖、数据外传等安全威胁（正则 + LLM 语义）
@@ -76,7 +76,8 @@ intent-router 是 dsh-edge-agent 的"安检 + 分流"插件：每条用户消息
   ▼
 [2] LLM 分类  ←── local-qwen3-4b（流式 stream，4s AbortController 硬超时）
   ├── CLOUD realm 时 → sanitizer.sanitize() 脱敏 PII 后再发 prompt
-  │   └── 审计 intent.llm.sanitized / intent.llm.sanitize-error（security 级别）
+  │   ├── sanitizer 不可用/失败 → fail-closed throw → 降级到 [3]（脱不了敏就不上云，2026-08-24）
+  │   └── 审计 intent.llm.sanitized / intent.llm.sanitize-error / intent.llm.sanitize-unavailable（后两者 security 级别）
   ├── 嵌入多轮上下文（最近 recentMessagesLimit 条，默认 3，每条截 200 字）
   ├── Prompt："判断 LOCAL or CLOUD，Respond ONLY with JSON {category, confidence}"
   │
@@ -86,16 +87,16 @@ intent-router 是 dsh-edge-agent 的"安检 + 分流"插件：每条用户消息
   │   └── Tier 3: 正则提取 category + confidence 关键词（必须双命中）
   │
   ├── 置信度 ≥ 0.6 → ✅ 采纳 LLM 结果（审计 intent.classify.end, path=llm）
-  └── 置信度 < 0.6 → ❌ 抛异常 → 降级到 [3]
+  └── 置信度 < 0.6 / 超时 / 解析失败 / sanitize-error → ❌ 抛异常 → 降级到 [3]
       │
       ▼
-[3] 规则兜底  ←── classifyWithRules()
-  │   仅当 LLM 失败/超时/低置信度时才到达此路径
-  ├── privacy-policy.matchRouting() 规则匹配（复用预检同一个方法）
+[3] 规则兜底  ←── classifyWithRules()  ←── 详见 [第四章](#第四章-规则兜底classifywithrules)
+  │   LLM 失败/超时/低置信度/sanitize-error 时到达此路径
+  ├── Level 1: privacy-policy.matchRouting() 规则匹配（复用预检同一个方法）
   │   └── 支持 LOCAL / CLOUD / SANITIZED / REJECT 全类别
-  ├── 硬编码关键词匹配（中英文混合，可通过 fallbackKeywords 配置替换）
+  ├── Level 2: 硬编码关键词匹配（中英文混合，可通过 fallbackKeywords 配置替换）
   │   └── 默认：文件/读/写/删除/计算/本地/设备/file/read/write/delete...
-  └── 无匹配 → 返回 defaultCategory（默认 CLOUD，置信度 0.5）
+  └── Level 3: 无匹配 → 返回 defaultCategory（默认 CLOUD，置信度 0.5）
 ```
 
 ---
@@ -958,18 +959,31 @@ if (resolvedRealm === 'CLOUD') {
         error: err?.message,
         originalLen: text.length,
       })
-      // fail-open: 保留原始文本（接受 PII 风险）
+      // fail-closed (2026-08-24): 抛异常 → 外层 catch → classifyWithRules 兜底
+      // 脱不了敏就不上云：宁可降级到规则兜底，也不把原始 PII 发给云端 LLM
+      const e: any = new Error('intent-router: cloud sanitization failed')
+      e._intentRouterReason = 'sanitize-failed'
+      throw e
     }
   } else {
     this.stats.sanitizeSkipped++
+    this.audit('security', 'intent.llm.sanitize-unavailable', {
+      reason: 'no-sanitizer-handle',
+    })
+    // fail-closed (2026-08-24): sanitizer 不可用同样抛异常 → 规则兜底
+    const e: any = new Error('intent-router: cloud sanitization unavailable')
+    e._intentRouterReason = 'sanitize-unavailable'
+    throw e
   }
 }
 ```
 
-**关键安全设计**：
-- `sanitizeError` 审计级别为 `security`（不是 `warn`），确保 SIEM 能告警
-- fail-open：脱敏失败时保留原始文本（因为分类 LLM 本身可能就在本地，且后续 http-api 的云端调用还会再脱敏一次）
+**关键安全设计**（2026-08-24 优化）：
+- **fail-closed**：sanitizer 不可用或抛异常时**不发送原始文本到云端**，而是抛异常让外层 catch → 降级到 `classifyWithRules()` 规则兜底
+- 策略：**脱不了敏就不上云**——规则兜底路径中 privacy-policy 的 LOCAL 规则会优先匹配敏感内容，比 fail-open 发送原始 PII 到 CLOUD LLM 安全得多
+- 审计级别提升到 `security`（`intent.llm.sanitize-error` 与 `intent.llm.sanitize-unavailable`），确保 SIEM 能告警
 - LOCAL realm 跳过脱敏（本地 LLM 不需要）
+- http-api 层同样有对称的 fail-closed 降级（详见 [第四章 §4.2](#42-触发条件五个入口)）
 
 ## 3.6 多轮上下文嵌入
 
@@ -1244,8 +1258,8 @@ interface IntentRouterStats {
 | `intent.llm.unclear` | debug | 解析失败 |
 | `intent.llm.low-confidence` | info | 低置信度降级 |
 | `intent.llm.sanitized` | info | CLOUD 前脱敏成功 |
-| `intent.llm.sanitize-error` | **security** | CLOUD 前脱敏失败 |
-| `intent.llm.sanitize-skipped` | debug | CLOUD realm 但无 sanitizer |
+| `intent.llm.sanitize-error` | **security** | CLOUD 前脱敏失败（fail-closed → 规则兜底） |
+| `intent.llm.sanitize-unavailable` | **security** | CLOUD realm 但无 sanitizer（fail-closed → 规则兜底，2026-08-24 从 debug 升级到 security） |
 | `intent.llm.route` | debug | 模型路由解析 |
 | `intent.llm.skipped` | debug | LLM 句柄缺失 |
 | `intent.llm.context` | debug | 上下文嵌入 |
@@ -1468,6 +1482,466 @@ POST /v1/chat 400     0ms no-message
 
 ---
 
+# 第四章 规则兜底（classifyWithRules）
+
+> 基于 `main` 分支代码（2026-08-24 校准）。核心实现：`src/dsh-adapter/intent-router.ts:520-609`。测试：`tests/unit/intent-router.test.ts`（关键词兜底 + 隐私策略联动 + REJECT 路径共约 20 用例）。
+
+## 4.1 定位与职责
+
+`classifyWithRules()` 是意图路由的**最后防线**——只在 LLM 分类失败/低置信度时被调用。它是零 token、零延迟的确定性路径，与 LLM 路径形成「语义优先、规则兜底」的互补架构。
+
+**核心职责**：
+1. **privacy-policy 规则复用**：再次调用 `matchRouting()`，支持 LOCAL/CLOUD/SANITIZED/REJECT 全类别
+2. **内置关键词匹配**：中英双语 LOCAL 关键词作为 privacy-policy 的后备
+3. **默认分类**：兜底到 `defaultCategory`（默认 CLOUD），保证任何输入都有分类结果
+4. **REJECT 二次拦截**：LLM 失败时仍能拦截业务危险操作
+
+**在路由链中的位置**：
+
+```
+[2] LLM 分类
+  │   ├── 成功 + 置信度 ≥ 0.6 → ✅ 采纳（path=llm）
+  │   └── 失败/超时/低置信度/sanitize-error → ❌ 抛异常
+  │
+  ▼
+[3] 规则兜底 ← 本章内容
+  │   ├── Level 1: privacy-policy.matchRouting(text)
+  │   ├── Level 2: fallbackKeywords 关键词匹配
+  │   └── Level 3: defaultCategory
+  │
+  ▼
+返回 Intent → http-api 路由决策
+```
+
+**设计原则**：
+- **LLM-first，规则兜底**：LLM 准确率更高，规则做后备（不是「rules → LLM」瀑布）
+- **fail-open 可用性**：规则兜底保证任何输入都有分类结果，不会直接拒绝用户
+- **fail-closed 隐私**（2026-08-24 新增）：CLOUD 路径的 sanitizer 失败时，主动降级到规则兜底而非 fail-open 发送原始 PII 上云
+
+## 4.2 触发条件（五个入口）
+
+`classifyWithRules()` 在以下**五种**情况下被调用：
+
+| # | 触发场景 | 异常类型 | 审计 kind | 计数器 |
+|---|---------|---------|----------|--------|
+| 1 | LLM 流式调用超时（4s AbortController） | `AbortError` | `intent.llm.timeout` | `timeout++` |
+| 2 | LLM 网络/模型/解析错误 | 其他 `Error` | `intent.llm.error` | `llmError++` |
+| 3 | LLM 响应三级解析全部失败 | `parseClassificationVerdict` 返回 null | `intent.llm.unclear` | `parseFailure++` |
+| 4 | LLM 置信度 < 0.6 | 自定义 `Error` with `_intentRouterReason='low-confidence'` | `intent.llm.low-confidence` | `lowConfidence++` |
+| 5 | **CLOUD realm + sanitizer 不可用/失败**（2026-08-24 新增） | 自定义 `Error` with `_intentRouterReason='sanitize-failed'` 或 `'sanitize-unavailable'` | `intent.llm.sanitize-error` / `intent.llm.sanitize-unavailable` | `sanitizeError++` / `sanitizeSkipped++` |
+
+**入口 #5 的设计动机**（脱敏降级策略）：
+- 旧行为（fail-open）：sanitizer 失败时把原始文本发给分类 LLM（可能在云端）→ PII 泄漏风险
+- 新行为（fail-closed）：sanitizer 失败时**抛异常** → 外层 catch → `classifyWithRules()` → privacy-policy 的 LOCAL 规则优先匹配敏感内容，比 fail-open 上云安全得多
+- 策略口诀：**脱不了敏就不上云**
+
+**主 catch 块代码**（intent-router.ts:288-306）：
+
+```typescript
+} catch (err: any) {
+  // classifyWithLlm already audited the specific kind (timeout vs error
+  // vs low-confidence vs unclear vs sanitize-failed).
+  this.audit('warn', 'intent.classify.llm_error', {
+    textLen: effectiveText.length,
+    error: err?.message ?? String(err),
+  })
+  // Fall back to keyword rules
+  const intent = this.classifyWithRules(effectiveText)
+  if (intent.category === 'REJECT') this.stats.rejected++
+  else if (intent.rationale.startsWith('default:')) this.stats.defaultHit++
+  else this.stats.ruleHit++
+  this.audit('info', 'intent.classify.end', {
+    textLen: effectiveText.length,
+    path: 'rules-after-llm-error',
+    category: intent.category,
+    confidence: intent.confidence,
+    rationale: intent.rationale,
+    durationMs: Date.now() - start,
+  })
+  return intent
+}
+```
+
+## 4.3 三级降级流程
+
+```
+classifyWithRules(text)
+  │
+  ├─[Level 1] privacyPolicy.matchRouting(text)
+  │     │
+  │     │  softService('privacyPolicy') → 调用 matchRouting(text)
+  │     │  first-match-wins 语义，按 routingRules[] 数组顺序遍历
+  │     │
+  │     ├── 命中 REJECT → Intent {
+  │     │     category: 'REJECT',
+  │     │     confidence: rule.confidence,      // 0.9 / 0.95
+  │     │     targetRealm: 'rejected',
+  │     │     rationale: rule.rationale || 'policy-rule:reject',
+  │     │     dataLevel: 'internal',
+  │     │     requiresSanitization: false,
+  │     │   }
+  │     │   审计 intent.rules.rejected（security 级）
+  │     │
+  │     ├── 命中 LOCAL → Intent {
+  │     │     category: 'LOCAL',
+  │     │     confidence: rule.confidence,      // 0.8 / 0.9 / 0.95
+  │     │     targetRealm: 'local',
+  │     │     rationale: rule.rationale || 'policy-rule:local',
+  │     │     dataLevel: 'public',
+  │     │     requiresSanitization: false,
+  │     │   }
+  │     │   审计 intent.rules.hit（source='privacy-policy'）
+  │     │
+  │     ├── 命中 CLOUD → Intent {
+  │     │     category: 'CLOUD',
+  │     │     confidence: rule.confidence,      // 0.7
+  │     │     targetRealm: 'cloud',
+  │     │     rationale: rule.rationale || 'policy-rule:cloud',
+  │     │     dataLevel: 'public',
+  │     │     requiresSanitization: false,
+  │     │   }
+  │     │
+  │     ├── 命中 SANITIZED → Intent {
+  │     │     category: 'SANITIZED',
+  │     │     confidence: rule.confidence,
+  │     │     targetRealm: 'sanitized',
+  │     │     rationale: rule.rationale || 'policy-rule:sanitized',
+  │     │     dataLevel: 'sanitized',            // ← 唯一会产出 'sanitized' 的路径
+  │     │     requiresSanitization: true,         // ← 唯一会设为 true 的路径
+  │     │   }
+  │     │
+  │     ├── 无匹配 → 继续 Level 2
+  │     ├── privacy-policy 缺失（softService 返回 undefined）→ 继续 Level 2
+  │     └── matchRouting 抛异常 → audit('warn', 'intent.policy.error') → 继续 Level 2
+  │
+  ├─[Level 2] fallbackKeywords 关键词匹配
+  │     │
+  │     │  const lower = text.toLowerCase()
+  │     │  const matched = fallbackKeywords.find(kw => lower.includes(kw.toLowerCase()))
+  │     │
+  │     ├── 命中 → Intent {
+  │     │     category: 'LOCAL',                 // ← 关键词命中永远返回 LOCAL
+  │     │     confidence: 0.7,                    // ← 固定 0.7
+  │     │     targetRealm: 'local',
+  │     │     rationale: 'rule-keyword-match',
+  │     │     dataLevel: 'public',
+  │     │     requiresSanitization: false,
+  │     │   }
+  │     │   审计 intent.rules.hit（source='fallback-keyword', matchedKeyword=...）
+  │     │
+  │     └── 无命中 → 继续 Level 3
+  │
+  └─[Level 3] defaultCategory
+        │
+        └── Intent {
+              category: defaultCategory,          // 默认 'CLOUD'
+              confidence: 0.5,                     // 固定 0.5
+              targetRealm: defaultCategory === 'CLOUD' ? 'cloud' : 'local',
+              rationale: `default:${defaultCategory.toLowerCase()}`,
+              dataLevel: 'public',
+              requiresSanitization: false,
+            }
+            审计 intent.rules.miss（defaultCategory=...）
+```
+
+## 4.4 关键代码实现
+
+### Level 1: privacy-policy 规则复用
+
+```typescript
+// intent-router.ts:533-581
+const policy = this.softService('privacyPolicy')
+let matchedRule: { pattern: string; realm: RuleCategory; confidence: number; rationale: string } | null = null
+try {
+  const r = policy?.matchRouting?.(text)
+  if (r && (RULE_CATEGORIES as readonly string[]).includes(r.realm)) {
+    matchedRule = r as { pattern: string; realm: RuleCategory; confidence: number; rationale: string }
+  }
+} catch (err: any) {
+  this.audit('warn', 'intent.policy.error', { error: err?.message ?? String(err) })
+}
+
+if (matchedRule) {
+  const realm = matchedRule.realm
+  if (realm === 'REJECT') {
+    this.audit('security', 'intent.rules.rejected', {
+      source: 'privacy-policy',
+      pattern: matchedRule.pattern,
+      confidence: matchedRule.confidence,
+      rationale: matchedRule.rationale,
+      textLen: text.length,
+    })
+    return {
+      category: 'REJECT',
+      confidence: matchedRule.confidence,
+      targetRealm: 'rejected',
+      rationale: matchedRule.rationale || 'policy-rule:reject',
+      dataLevel: 'internal',
+      requiresSanitization: false,
+    }
+  }
+  const targetRealm = realm === 'LOCAL' ? 'local' : realm === 'SANITIZED' ? 'sanitized' : 'cloud'
+  this.audit('debug', 'intent.rules.hit', {
+    source: 'privacy-policy',
+    pattern: matchedRule.pattern,
+    realm,
+    confidence: matchedRule.confidence,
+  })
+  return {
+    category: realm,
+    confidence: matchedRule.confidence,
+    targetRealm,
+    rationale: matchedRule.rationale || `policy-rule:${realm.toLowerCase()}`,
+    dataLevel: realm === 'SANITIZED' ? 'sanitized' : 'public',
+    requiresSanitization: realm === 'SANITIZED',
+  }
+}
+```
+
+**设计要点**：
+- **复用同一个 `matchRouting()` 方法**：与 [1] 隐私预检调用同一个函数、同一套规则，保证规则语义一致
+- **RULE_CATEGORIES 白名单校验**：`['LOCAL', 'CLOUD', 'SANITIZED', 'REJECT']`，防止 privacy-policy 配置错误产出非法 category
+- **REJECT 二次拦截**：即使 LLM 失败，危险操作仍能被 privacy-policy REJECT 规则拦截
+- **SANITIZED 特殊处理**：`dataLevel: 'sanitized'` 和 `requiresSanitization: true` 只在 SANITIZED 规则命中时设置，下游 sanitizer-pipeline 据此触发脱敏
+- **softService() 软依赖**：privacy-policy 缺失时静默降级到 Level 2，不崩溃
+
+### Level 2: 内置关键词匹配
+
+```typescript
+// intent-router.ts:585-598
+const lower = text.toLowerCase()
+const matched = this.fallbackKeywords.find((kw) => lower.includes(kw.toLowerCase()))
+
+if (matched !== undefined) {
+  this.audit('debug', 'intent.rules.hit', { source: 'fallback-keyword', matchedKeyword: matched })
+  return {
+    category: 'LOCAL',
+    confidence: 0.7,
+    targetRealm: 'local',
+    rationale: 'rule-keyword-match',
+    dataLevel: 'public',
+    requiresSanitization: false,
+  }
+}
+```
+
+**设计要点**：
+- **只返回 LOCAL**：关键词列表只覆盖本地操作（文件/计算/设备等），不包含 CLOUD 关键词。这是因为「本地文件操作」的特征比「需要上云的开放域问题」更容易用关键词捕捉
+- **confidence 固定 0.7**：高于默认分类的 0.5，低于 LLM 成功的 ≥0.6 门控（实际 0.98+），反映「有一定把握但不如 LLM 确定」
+- **大小写不敏感**：`.toLowerCase()` 对输入和关键词都处理
+- **substring 匹配**：`includes()` 而非 `===`，所以「帮我读取文件内容」会匹配「读」或「文件」
+
+### Level 3: 默认分类
+
+```typescript
+// intent-router.ts:600-608
+this.audit('debug', 'intent.rules.miss', { defaultCategory: this.defaultCategory })
+return {
+  category: this.defaultCategory,
+  confidence: 0.5,
+  targetRealm: this.defaultCategory === 'CLOUD' ? 'cloud' : 'local',
+  rationale: `default:${this.defaultCategory.toLowerCase()}`,
+  dataLevel: 'public',
+  requiresSanitization: false,
+}
+```
+
+**设计要点**：
+- **confidence 0.5**：最低置信度，反映「没有任何证据，只能猜」
+- **默认 CLOUD**：权衡可用性和隐私后的选择（详见 §4.7）
+- **rationale 带 `default:` 前缀**：方便审计/运维区分「有规则命中」vs「无规则兜底」
+
+## 4.5 置信度分配策略
+
+三条路径产出不同置信度，形成清晰的可信度梯度：
+
+| 路径 | confidence | rationale | 可信度 |
+|------|-----------|-----------|--------|
+| privacy-policy 规则命中 | `rule.confidence`（0.7–0.95） | `policy-rule:<rationale>` | 高（规则明确） |
+| 关键词命中 | 0.7 | `rule-keyword-match` | 中（关键词可能误匹配） |
+| 默认分类 | 0.5 | `default:<category>` | 低（无证据猜测） |
+
+**与 LLM 路径的对比**：
+
+| 路径 | 典型 confidence | 说明 |
+|------|----------------|------|
+| LLM 成功 | 0.98–0.99 | 小模型高置信度（已观测值） |
+| 规则 Level 1 | 0.7–0.95 | 规则自带置信度 |
+| 规则 Level 2 | 0.7 | 关键词固定 |
+| 规则 Level 3 | 0.5 | 默认猜测 |
+
+**注意**：规则路径的 confidence 不会经过 `confidenceThreshold`（0.6）门控——门控只在 LLM 路径生效。规则直接产出最终 Intent，不再二次验证。
+
+## 4.6 REJECT 在兜底路径的行为
+
+`classifyWithRules()` Level 1 可以再次产出 `REJECT` Intent，形成「双保险」：
+
+```
+[1] 隐私预检（pre-check）
+  │   privacyPolicy.matchRouting(text)
+  │   └── 命中 REJECT → HTTP 403（短路，不进 LLM）
+  │
+  ▼
+[2] LLM 分类（可能失败）
+  │
+  ▼
+[3] 规则兜底 Level 1
+  │   privacyPolicy.matchRouting(text)  ← 再次调用
+  │   └── 命中 REJECT → Intent { category: 'REJECT' } → http-api 返回 HTTP 403
+```
+
+**为什么需要二次拦截？**
+- 理论上 [1] 已经拦截了 REJECT，正常不会到达 [3]
+- 但 [1] 的 `matchRouting()` 调用可能抛异常（正则编译错误、privacy-policy 热更新中间态等），此时 pre-check 是 fail-open 的（`intent.policy.precheck-error` 审计后穿透到 LLM）
+- LLM 失败后进入 [3]，再次调用 `matchRouting()`，如果此时 privacy-policy 已恢复，REJECT 仍能被拦截
+- **纵深防御**：不依赖单次调用的正确性
+
+## 4.7 默认分类 defaultCategory 的安全考量
+
+`defaultCategory` 默认 `CLOUD`，这是有意为之的设计选择：
+
+**为什么默认 CLOUD 而不是 LOCAL？**
+1. **可用性优先**：大部分用户请求（翻译、问答、聊天）需要上云。默认 LOCAL 会导致大量请求被误判为本地操作，用户体验严重下降
+2. **下游仍有防线**：即使默认 CLOUD，http-api 层在真正发送请求前还会再调 `sanitizer.sanitize()`，PII 仍会被脱敏
+3. **隐私 pre-check 已前置**：敏感内容（身份证、银行卡、API Key 等）在 [1] 隐私预检阶段就被 LOCAL 规则匹配，不会到达 default 路径
+4. **可配置**：用户可通过 `defaultCategory: 'LOCAL'` 切换到隐私优先模式（但会牺牲可用性）
+
+**默认 CLOUD 的风险**：
+- 如果 privacy-policy 规则覆盖不全（漏配某类敏感内容） + sanitizer 不可用 → PII 泄漏
+- **缓解措施**（2026-08-24 新增）：sanitize-downgrade 策略——sanitizer 失败时降级 LOCAL，不发送原始 PII 上云
+
+**配置示例**：
+
+```yaml
+# cordis.patch.yml
+- id: intent-router
+  config:
+    defaultCategory: LOCAL  # 隐私优先模式（牺牲部分 CLOUD 请求的可用性）
+```
+
+## 4.8 配置参数
+
+| 参数 | 环境变量 | 默认值 | 说明 |
+|------|----------|--------|------|
+| `fallbackKeywords` | `DSH_EDGE_INTENT_FALLBACK_KEYWORDS` | 内置 EN+CN 24 词 | Level 2 关键词列表。设置后**完全替换**内置列表（非追加），支持 JA/KO/ES 等本地化部署 |
+| `defaultCategory` | — | `CLOUD` | Level 3 默认分类（LOCAL / CLOUD / SANITIZED） |
+
+**内置关键词**（`LOCAL_KEYWORDS_DEFAULT`，24 个）：
+
+```
+中文（13）：文件、读、写、删除、创建、计算、加减乘除、本地、设备、系统、磁盘、目录、文件夹
+英文（11）：file、read、write、delete、calculate、compute、local、device、disk、directory、folder
+```
+
+**覆盖语义**：
+- 环境变量 `DSH_EDGE_INTENT_FALLBACK_KEYWORDS` 设置为逗号分隔字符串时，**完全替换**内置列表
+- 空字符串或未设置 → 使用内置列表
+- 典型场景：日文部署设置 `ファイル,読む,書く,...` 替换中英文列表
+
+## 4.9 审计事件
+
+| 事件 | 级别 | 触发条件 | 关键字段 |
+|------|------|---------|---------|
+| `intent.rules.hit` | debug | Level 1 命中 LOCAL/CLOUD/SANITIZED | `source='privacy-policy'`, `pattern`, `realm`, `confidence` |
+| `intent.rules.hit` | debug | Level 2 关键词命中 | `source='fallback-keyword'`, `matchedKeyword` |
+| `intent.rules.rejected` | **security** | Level 1 命中 REJECT（双保险） | `source='privacy-policy'`, `pattern`, `confidence`, `rationale`, `textLen` |
+| `intent.rules.miss` | debug | Level 3 默认分类 | `defaultCategory` |
+| `intent.policy.error` | warn | Level 1 matchRouting 抛异常 | `error` |
+| `intent.classify.llm_error` | warn | LLM 失败进入兜底 | `textLen`, `error` |
+| `intent.classify.end` | info | 兜底完成，返回最终 Intent | `path='rules-after-llm-error'`, `category`, `confidence`, `rationale`, `durationMs` |
+
+**SIEM 关注点**：
+- `intent.rules.rejected` 是 security 级，即使从兜底路径产出也必须告警
+- `intent.classify.llm_error` 频率异常可能表示 LLM 服务不稳定
+- `intent.rules.miss` 比例过高表示 privacy-policy 规则覆盖不足或关键词列表需要扩展
+
+## 4.10 计数器变化
+
+进入兜底路径后，主 catch 块根据返回的 Intent 更新计数器：
+
+```typescript
+if (intent.category === 'REJECT') this.stats.rejected++
+else if (intent.rationale.startsWith('default:')) this.stats.defaultHit++
+else this.stats.ruleHit++
+```
+
+| 计数器 | 何时 +1 | 说明 |
+|--------|--------|------|
+| `ruleHit` | Level 1 命中 LOCAL/CLOUD/SANITIZED 或 Level 2 关键词命中 | rationale 不以 `default:` 开头 |
+| `defaultHit` | Level 3 默认分类 | rationale 以 `default:` 开头 |
+| `rejected` | Level 1 命中 REJECT | category === 'REJECT' |
+
+**注意**：`ruleHit` 合并了 Level 1 和 Level 2 两种情况——计数器层面不区分。需要区分时通过审计日志的 `source` 字段（`privacy-policy` vs `fallback-keyword`）。
+
+## 4.11 测试覆盖
+
+**单元测试** `tests/unit/intent-router.test.ts` 中规则兜底相关用例：
+
+| 类别 | 用例数 | 覆盖内容 |
+|------|-------|---------|
+| 关键词兜底 | 4 | LOCAL 关键词命中、CLOUD 无命中、default 分类、sanitization 规则 |
+| privacy-policy 联动 | 4 | LOCAL 规则、SANITIZED 规则（dataLevel='sanitized'）、REJECT 规则、privacy-policy 缺失降级 |
+| REJECT 拦截 | 2 | pre-check 命中 + fallback 路径命中（双保险） |
+| 计数器 | 6 | ruleHit / defaultHit / rejected 在不同路径的正确累加 |
+| sanitize-downgrade（fail-closed） | 3 | CLOUD realm + sanitizer 不可用/失败 → throw → classifyWithRules 兜底 |
+
+**关键测试场景**：
+
+```typescript
+// SANITIZED 规则命中 → dataLevel='sanitized', requiresSanitization=true
+it('returns SANITIZED intent when policy routes to SANITIZED realm', async () => {
+  const mockCtx = {
+    reflect: { provide: () => {} },
+    llm: { stream: () => { throw new Error('should not reach LLM') } },
+    privacyPolicy: {
+      matchRouting: () => ({ realm: 'SANITIZED', confidence: 0.8, rationale: 'test', pattern: '.*' }),
+    },
+  }
+  // ...
+  assert.equal(intent.category, 'SANITIZED')
+  assert.equal(intent.dataLevel, 'sanitized')
+  assert.equal(intent.requiresSanitization, true)
+})
+
+// CLOUD realm + sanitizer unavailable → fail-closed → rules fallback
+it('falls back to rules when sanitizer is missing (CLOUD realm) — fail-closed', async () => {
+  const mockCtx = {
+    // ... modelRouter resolves to CLOUD realm, no sanitizer
+  }
+  // LLM never called — throws before reaching it
+  const intent = await service.classify('hi')
+  // Falls through to classifyWithRules
+  assert.ok(intent.rationale.startsWith('default:') || intent.rationale === 'rule-keyword-match' || ...)
+})
+```
+
+**新增** `tests/unit/http-api-sanitize-downgrade.test.ts`（6 用例）覆盖 http-api 层的对称降级：
+- CLOUD intent + sanitizer 不可用 → 降级 LOCAL
+- CLOUD intent + sanitizer 抛异常 → 降级 LOCAL
+- CLOUD intent + sanitizer 正常 → 不降级，保持 CLOUD
+- LOCAL intent → 不触发脱敏
+- `/v1/chat` 与 `/v1/chat/stream` 两端口对称测试
+
+## 4.12 设计权衡与优化建议
+
+### 当前权衡
+
+| 维度 | 选择 | 理由 | 潜在问题 |
+|------|------|------|---------|
+| 关键词只返 LOCAL | ✅ | 「本地操作」特征易捕捉，CLOUD 开放域难用关键词 | 漏掉「翻译成英语」（CLOUD 关键词） |
+| defaultCategory=CLOUD | ✅ | 可用性优先，下游 sanitizer 仍有防线 | 规则覆盖不全 + sanitizer 失败 → PII 泄漏风险（2026-08-24 已缓解） |
+| REJECT 双保险 | ✅ | 纵深防御，pre-check fail-open 时仍有二次拦截 | matchRouting 被调用两次（pre-check + fallback），性能微损 |
+| ruleHit 不区分 Level 1/2 | ⚠️ | 计数器简洁 | 运维无法 O(1) 看 Level 1 vs Level 2 命中比例 |
+
+### 优化建议
+
+1. **拆分 ruleHit 计数器**：`policyRuleHit` vs `keywordHit`，让运维能直接看 privacy-policy 规则命中率
+2. **CLOUD 关键词**：扩展 fallbackKeywords 支持 CLOUD 关键词（如 `translate`, `summarize`, `翻译`, `总结`），减少 default 路径比例
+3. **自适应 defaultCategory**：根据 session 历史动态调整——如果用户最近 10 条都是 LOCAL，新请求默认 LOCAL 更合理
+4. **规则热更新**：暴露 `addInputRule(rule)` / `removeInputRule(id)` 接口，支持运行时规则增删（见后续优化项 §5）
+
+---
+
 ## 层间流转规则
 
 | **阶段** | **判断结果** | **置信度** | **下一步** | **审计事件** |
@@ -1483,10 +1957,12 @@ POST /v1/chat 400     0ms no-message
 | [2] LLM 分类 | 超时（4s） | — | 降级到 [3] | `intent.llm.timeout` + `timeout++` |
 | [2] LLM 分类 | LLM 报错 | — | 降级到 [3] | `intent.llm.error` + `llmError++` |
 | [2] LLM 分类 | 置信度 < 0.6 | < 0.6 | 降级到 [3] | `intent.llm.low-confidence` + `lowConfidence++` |
+| [2] LLM 分类 | CLOUD realm + sanitizer 不可用/失败（2026-08-24） | — | 降级到 [3]（fail-closed，脱不了敏就不上云） | `intent.llm.sanitize-error` / `intent.llm.sanitize-unavailable`（security） + `sanitizeError++` / `sanitizeSkipped++` |
 | [2] LLM 分类 | 置信度 ≥ 0.6 | ≥ 0.6 | **采纳 LLM 结果** | `intent.classify.end`（path=llm） |
-| [3] 规则兜底 | privacy-policy 命中 | 规则置信度 | **返回规则结果** | `intent.rules.hit` |
-| [3] 规则兜底 | 关键词命中 | 0.7 | **返回 LOCAL** | `intent.rules.hit`（source=fallback-keyword） |
-| [3] 规则兜底 | 无匹配 | 0.5 | **返回 defaultCategory** | `intent.rules.miss` |
+| [3] 规则兜底 Level 1 | privacy-policy 命中 LOCAL/CLOUD/SANITIZED | 规则置信度 | **返回规则结果** | `intent.rules.hit`（source=privacy-policy） |
+| [3] 规则兜底 Level 1 | privacy-policy 命中 REJECT | 规则置信度 | **返回 REJECT（双保险）** | `intent.rules.rejected`（security） |
+| [3] 规则兜底 Level 2 | 关键词命中 | 0.7 | **返回 LOCAL** | `intent.rules.hit`（source=fallback-keyword） |
+| [3] 规则兜底 Level 3 | 无匹配 | 0.5 | **返回 defaultCategory** | `intent.rules.miss` |
 
 ## Realm 映射（意图 → 处理域）
 
@@ -1514,7 +1990,7 @@ interface Intent {
 
 ### 软依赖架构
 
-intent-router 对辅助服务采用 `softService()` dual-mode 查找，缺失时 fail-open 不阻断主流程：
+intent-router 对辅助服务采用 `softService()` dual-mode 查找。多数缺失时 fail-open 不阻断主流程，**唯独 sanitizer 例外**（CLOUD 下缺失/失败时 fail-closed → 规则兜底）：
 
 ```
 intent-router
@@ -1522,7 +1998,7 @@ intent-router
   ├── auditLog      (可选 — 缺失时静默跳过审计)
   ├── privacyPolicy (可选 — matchRouting 缺失时跳过预检和规则匹配)
   ├── modelRouter   (可选 — resolve 缺失时用 config 默认值)
-  ├── sanitizer     (可选 — 缺失时 CLOUD 分类不脱敏，fail-open)
+  ├── sanitizer     (可选 — CLOUD realm 下缺失/失败时 fail-closed 抛异常 → 规则兜底，脱不了敏就不上云)
   └── piiUtils      (可选 — redactString 缺失时审计日志不记录文本预览)
 ```
 
@@ -1555,8 +2031,8 @@ intent-router
 | `parseFailure` | LLM 响应解析失败（三级解析全部未命中） |
 | `rejected` | REJECT 返回（预检或兜底） |
 | `sanitized` | CLOUD 分类前 PII 脱敏成功 |
-| `sanitizeError` | 脱敏失败（fail-open，审计 security 级） |
-| `sanitizeSkipped` | CLOUD realm 但无 sanitizer |
+| `sanitizeError` | 脱敏失败（fail-closed → 规则兜底，审计 security 级） |
+| `sanitizeSkipped` | CLOUD realm 但无 sanitizer（fail-closed → 规则兜底） |
 
 **10 桶置信度直方图**（`confidenceHistogram`）：bucket key = `Math.floor(confidence * 10)`，每桶分 `accepted` / `rejected` 两列，用于调优 `confidenceThreshold`。
 
@@ -1669,8 +2145,8 @@ intent-router = **"前置威胁门禁 + 三层防御 + LLM 分类 + 规则兜底
    - **本地 LLM 模型辅助检测**（默认开启，qwen3-4b）：捕捉正则漏报的复杂攻击（间接注入、社会工程、同形字混淆、base64 编码等），fail-open 设计
    - 返回 **HTTP 400**
 1. **隐私策略预检**（第二层）：privacy-policy 的 REJECT 规则在 LLM 之前执行，专注**业务危险操作**（破坏性命令、数据库删除等），返回 **HTTP 403**（零 token 消耗直接拦截，当前 shipped 配置含 2 条 REJECT 规则，DEFAULT_POLICY 含 2 条基础 REJECT 规则作为回退保护）
-2. **LLM 分类**：**正常流程下非 REJECT 请求的唯一分类决策者**。本地 qwen3-4b 流式分类，CLOUD realm 前自动脱敏 PII，多轮上下文嵌入提升准确率，三级容错解析器适配小模型不稳定输出，4s 硬超时防挂起
-3. **规则兜底**：LLM 失败/低置信度时降级到 privacy-policy 规则（LOCAL/CLOUD 规则在此路径生效）→ 内置中英文关键词 → defaultCategory
+2. **LLM 分类**：**正常流程下非 REJECT 请求的唯一分类决策者**。本地 qwen3-4b 流式分类，CLOUD realm 前自动脱敏 PII（2026-08-24 改为 fail-closed：sanitizer 不可用/失败时抛异常降级到规则兜底，脱不了敏就不上云），多轮上下文嵌入提升准确率，三级容错解析器适配小模型不稳定输出，4s 硬超时防挂起
+3. **规则兜底**：LLM 失败/低置信度/sanitize-error 时降级到 privacy-policy 规则（LOCAL/CLOUD/SANITIZED/REJECT 全类别）→ 内置中英文关键词 → defaultCategory。与 [1] 隐私预检共享 `matchRouting()` 方法，REJECT 形成双保险
 
 **关键设计决策**：
 
@@ -1678,7 +2154,7 @@ intent-router = **"前置威胁门禁 + 三层防御 + LLM 分类 + 规则兜底
 - **三层防御纵深**：prompt-guard 正则（零 token）+ prompt-guard 本地 LLM 模型检测（捕捉复杂攻击）+ privacy-policy REJECT（零 token，业务危险操作）三层独立拦截
 - **前置威胁门禁**：td-bus 在 prompt-guard 之前做流量型异常短路（≥80 req/min 触发 HTTP 503），不依赖 prompt-guard 的语义判定，可作为独立层防御暴力/恶意流量
 - **模型辅助检测默认开启**：prompt-guard Stage 6 使用 `local-qwen3-4b` 做安全语义分类，捕捉正则无法覆盖的间接注入、社会工程、同形字混淆、base64 编码等复杂攻击。fail-open 设计——模型超时/报错/解析失败时不阻断，仅依赖前序正则+PII 判定
-- **fail-open 降级**：LLM 不确定时降级到规则而非直接拒绝，保证可用性（qwen3-4b 置信度抖动较大，fail-closed 误拒率不可接受）
+- **fail-open 降级，fail-closed 隐私**：LLM 不确定时降级到规则而非直接拒绝，保证可用性（qwen3-4b 置信度抖动较大，fail-closed 误拒率不可接受）；但 CLOUD 路径的 sanitizer 失败时采用 fail-closed——脱不了敏就不上云，抛异常降级到规则兜底（2026-08-24 优化）
 - **softService() 软依赖**：intent-router 对 privacyPolicy/modelRouter/sanitizer/piiUtils 采用 `softService()` 查找——Cordis 运行时用 `ctx.get()`（不在 inject 中时返回 undefined 而非 throw），单元测试裸 mock 用直接属性访问。保证在缺失或 mock 场景下均不崩溃
 - **全面可观测**：15 个计数器 + 置信度直方图 + 完整审计日志，运维友好
 

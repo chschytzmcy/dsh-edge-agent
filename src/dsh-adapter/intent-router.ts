@@ -338,10 +338,10 @@ export class IntentRouterServiceImpl extends Service {
     // NEW: sanitize user text BEFORE the LLM prompt when the classification
     // LLM lives in the CLOUD realm. This prevents PII (phone/id/bank/email/
     // api-key) from leaving the device just to ask "is this LOCAL or CLOUD".
-    // Mirrors http-api's pattern: `if (!isLocal && this.sanitizer) ...`.
-    // Soft dep: missing or throwing sanitizer → use original text (fail-open,
-    // accept PII risk on the classification call; the *real* cloud call
-    // through http-api is still sanitized downstream).
+    // Policy: if sanitizer is unavailable or throws, do NOT send raw text to
+    // the cloud LLM — throw so the outer classifyWithLlm catches and falls
+    // through to classifyWithRules (which can produce LOCAL via policy rules
+    // or keyword fallback). "脱不了敏就不上云".
     let promptText = text
     const resolvedRealm = resolved?.realm
     if (resolvedRealm === 'CLOUD') {
@@ -361,17 +361,23 @@ export class IntentRouterServiceImpl extends Service {
         } catch (err: any) {
           this.stats.sanitizeError++
           // SECURITY-level: PII failed to be stripped from text that the
-          // router will now forward to a CLOUD LLM (fail-open below).
-          // SIEM must surface this; `warn` is too easy to ignore.
+          // router would have forwarded to a CLOUD LLM. SIEM must surface.
           this.audit('security', 'intent.llm.sanitize-error', {
             error: err?.message ?? String(err),
             originalLen: text.length,
           })
-          // fail-open: keep original text
+          // Fail-closed: throw so classifyWithLlm catches → classifyWithRules
+          const e: any = new Error('intent-router: cloud sanitization failed')
+          e._intentRouterReason = 'sanitize-failed'
+          throw e
         }
       } else {
         this.stats.sanitizeSkipped++
-        this.audit('debug', 'intent.llm.sanitize-skipped', { reason: 'no-sanitizer-handle' })
+        this.audit('security', 'intent.llm.sanitize-unavailable', { reason: 'no-sanitizer-handle' })
+        // Fail-closed: throw so classifyWithLlm catches → classifyWithRules
+        const e: any = new Error('intent-router: cloud sanitization unavailable')
+        e._intentRouterReason = 'sanitize-unavailable'
+        throw e
       }
     }
 

@@ -168,6 +168,8 @@ describe('intent-router', () => {
         stream(opts: any) { capturedOpts = opts; return chunksFromText(verdict) },
       },
       modelRouter: fakeMr,
+      // sanitizer required: CLOUD realm must sanitize before LLM call
+      sanitizer: { sanitize: async (t: string) => ({ sanitizedText: t, replacements: [] }) },
     } as any
     const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
     const service = new IntentRouterServiceImpl(mockCtx, {
@@ -566,15 +568,14 @@ describe('intent-router', () => {
     assert.match(capturedPrompt, /13812345678/, 'original PII must reach LOCAL LLM unchanged')
   })
 
-  it('fails open to original text when sanitizer is missing (CLOUD realm)', async () => {
-    let capturedPrompt: string | undefined
-    const verdict = JSON.stringify({ category: 'CLOUD', confidence: 0.9 })
+  it('falls back to rules when sanitizer is missing (CLOUD realm) — fail-closed', async () => {
+    let llmCalled = false
     const mockCtx = {
       reflect: { provide: () => {} },
       llm: {
-        stream(opts: any) {
-          capturedPrompt = opts.messages[0].content[0].text
-          return chunksFromText(verdict)
+        stream(_opts: any) {
+          llmCalled = true
+          return chunksFromText(JSON.stringify({ category: 'CLOUD', confidence: 0.9 }))
         },
       },
       modelRouter: {
@@ -590,23 +591,26 @@ describe('intent-router', () => {
     }, audit as any)
 
     const originalText = '查一下 13812345678'
-    await service.classify(originalText)
-    assert.ok(capturedPrompt)
-    assert.match(capturedPrompt, /13812345678/, 'original text must reach LLM when sanitizer is missing')
-    const skipEntry = audit.entries.find((e: any) => e.kind === 'intent.llm.sanitize-skipped')
-    assert.ok(skipEntry)
-    assert.equal(skipEntry.payload.reason, 'no-sanitizer-handle')
+    const intent = await service.classify(originalText)
+    // classifyWithLlm must NOT call the LLM when sanitizer is unavailable
+    assert.equal(llmCalled, false, 'LLM must NOT be called when sanitizer is missing')
+    // classifyWithLlm throws → classifyWithRules → no keyword match → defaultCategory
+    assert.equal(intent.category, 'CLOUD')
+    assert.match(intent.rationale, /^default:/u)
+    // Audit: security-level sanitize-unavailable (renamed from debug sanitize-skipped)
+    const unavailEntry = audit.entries.find((e: any) => e.kind === 'intent.llm.sanitize-unavailable')
+    assert.ok(unavailEntry, 'intent.llm.sanitize-unavailable audit kind should be present')
+    assert.equal(unavailEntry.level, 'security')
   })
 
-  it('fails open to original text when sanitizer throws', async () => {
-    let capturedPrompt: string | undefined
-    const verdict = JSON.stringify({ category: 'CLOUD', confidence: 0.9 })
+  it('falls back to rules when sanitizer throws (CLOUD realm) — fail-closed', async () => {
+    let llmCalled = false
     const mockCtx = {
       reflect: { provide: () => {} },
       llm: {
-        stream(opts: any) {
-          capturedPrompt = opts.messages[0].content[0].text
-          return chunksFromText(verdict)
+        stream(_opts: any) {
+          llmCalled = true
+          return chunksFromText(JSON.stringify({ category: 'CLOUD', confidence: 0.9 }))
         },
       },
       modelRouter: {
@@ -622,11 +626,16 @@ describe('intent-router', () => {
     }, audit as any)
 
     const originalText = '查一下 13812345678'
-    await service.classify(originalText)
-    assert.ok(capturedPrompt)
-    assert.match(capturedPrompt, /13812345678/, 'original text must reach LLM when sanitizer throws')
+    const intent = await service.classify(originalText)
+    // classifyWithLlm must NOT call the LLM when sanitizer throws
+    assert.equal(llmCalled, false, 'LLM must NOT be called when sanitizer throws')
+    // classifyWithLlm throws → classifyWithRules → no keyword match → defaultCategory
+    assert.equal(intent.category, 'CLOUD')
+    assert.match(intent.rationale, /^default:/u)
+    // Audit: security-level sanitize-error still present
     const errEntry = audit.entries.find((e: any) => e.kind === 'intent.llm.sanitize-error')
-    assert.ok(errEntry)
+    assert.ok(errEntry, 'intent.llm.sanitize-error audit kind should be present')
+    assert.equal(errEntry.level, 'security')
     assert.match(errEntry.payload.error, /boom/u)
   })
 
@@ -931,7 +940,7 @@ describe('intent-router', () => {
     assert.equal(service.getStats().ruleHit + service.getStats().defaultHit, 3)
   })
 
-  it('counts sanitized / sanitizeError / sanitizeSkipped', async () => {
+  it('counts sanitized / sanitizeError / sanitizeSkipped (fail-closed: LLM skipped, rules used)', async () => {
     const verdict = JSON.stringify({ category: 'CLOUD', confidence: 0.9 })
     let capturedOpts: any
     const mockCtx = {
