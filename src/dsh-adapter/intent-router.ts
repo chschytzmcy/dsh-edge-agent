@@ -342,10 +342,16 @@ export class IntentRouterServiceImpl extends Service {
     // the cloud LLM — throw so the outer classifyWithLlm catches and falls
     // through to classifyWithRules (which can produce LOCAL via policy rules
     // or keyword fallback). "脱不了敏就不上云".
+    //
+    // Sanitizer is lifted to this scope (not block-scoped inside the if)
+    // so the multi-turn history builder below can reuse it — recentMessages
+    // may contain PII from earlier turns that must also be sanitized before
+    // reaching the cloud LLM. (2026-08-24 P0 fix)
     let promptText = text
     const resolvedRealm = resolved?.realm
+    let sanitizer: any
     if (resolvedRealm === 'CLOUD') {
-      const sanitizer = this.softService('sanitizer')
+      sanitizer = this.softService('sanitizer')
       if (sanitizer && typeof sanitizer.sanitize === 'function') {
         try {
           const result = await sanitizer.sanitize(text, { sessionId: sessionId ?? 'default' })
@@ -384,18 +390,53 @@ export class IntentRouterServiceImpl extends Service {
     // Multi-turn context: best-effort extract text from each message and
     // append a "history" block before the current query. Caps at
     // recentMessagesLimit (default 3) and per-message length to bound prompt size.
-    const historyBlock = (() => {
-      if (!this.recentMessagesLimit || !recentMessages?.length) return ''
+    //
+    // P0 (2026-08-24): when the classification LLM is in CLOUD realm, each
+    // history message must also be sanitized before inclusion. History may
+    // contain PII from earlier turns (user shared a phone number in turn 1,
+    // now asks a follow-up in turn 4) — sending raw history to the cloud
+    // LLM would leak PII just as much as sending the current message raw.
+    // Fail-closed per message: if sanitize throws for a history entry, that
+    // entry is OMITTED rather than sent raw. The current message was already
+    // fail-closed above if sanitizer is broken, so reaching here with
+    // resolvedRealm === 'CLOUD' implies sanitizer is present.
+    const historyLines: string[] = []
+    if (this.recentMessagesLimit && recentMessages?.length) {
       const tail = recentMessages.slice(-this.recentMessagesLimit)
-      const lines: string[] = []
+      let historySanitizedCount = 0
       for (const m of tail) {
-        const text = extractMessageText(m).slice(0, 200)
+        let msgText = extractMessageText(m).slice(0, 200)
+        if (!msgText) continue
         const role = (m as any)?.role ?? (m as any)?.source?.kind ?? '?'
-        if (text) lines.push(`${role}: ${text}`)
+        if (resolvedRealm === 'CLOUD' && sanitizer && typeof sanitizer.sanitize === 'function') {
+          try {
+            const r = await sanitizer.sanitize(msgText, { sessionId: sessionId ?? 'default' })
+            msgText = r?.sanitizedText ?? msgText
+            if (Array.isArray(r?.replacements) && r.replacements.length > 0) historySanitizedCount++
+          } catch (err: any) {
+            // Fail-closed for this history entry: omit rather than leak raw PII.
+            // The current message has already been sanitized (or we would have
+            // thrown above), so only this particular history entry is skipped.
+            this.audit('warn', 'intent.llm.history-sanitize-error', {
+              error: err?.message ?? String(err),
+              role,
+            })
+            continue
+          }
+        }
+        historyLines.push(`${role}: ${msgText}`)
       }
-      if (!lines.length) return ''
-      return `\n最近对话上下文（仅参考，不要分类历史消息本身）：\n${lines.join('\n')}\n`
-    })()
+      if (historySanitizedCount > 0) {
+        this.audit('info', 'intent.llm.history-sanitized', {
+          sessionId: sessionId ?? 'default',
+          sanitizedMessageCount: historySanitizedCount,
+          totalMessages: historyLines.length,
+        })
+      }
+    }
+    const historyBlock = historyLines.length > 0
+      ? `\n最近对话上下文（仅参考，不要分类历史消息本身）：\n${historyLines.join('\n')}\n`
+      : ''
     if (recentMessages?.length) {
       this.audit('debug', 'intent.llm.context', {
         received: recentMessages.length,

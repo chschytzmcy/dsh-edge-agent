@@ -1848,6 +1848,169 @@ describe('intent-router', () => {
     assert.equal(ctxEntry.payload.received, 3)
   })
 
+  // ─── 多轮上下文脱敏（P0 2026-08-24）────────────────────────────────────────
+  // When classification LLM is in CLOUD realm, recentMessages must also be
+  // sanitized before inclusion in the prompt. History may contain PII from
+  // earlier turns (user shared a phone in turn 1, asks follow-up in turn 4).
+
+  it('CLOUD realm: sanitizes PII in recentMessages before prompt', async () => {
+    let capturedPrompt: string | undefined
+    const verdict = JSON.stringify({ category: 'CLOUD', confidence: 0.9 })
+    let sanitizerCalls = 0
+    const fakeSanitizer = {
+      sanitize: async (text: string, _ctx?: { sessionId?: string }) => {
+        sanitizerCalls++
+        return {
+          sanitizedText: text.replace(/1[3-9]\d{9}/gu, '[PHONE_1]'),
+          replacements: text.match(/1[3-9]\d{9}/gu)?.map((m) => ({
+            placeholder: '[PHONE_1]', originalValue: m,
+          })) ?? [],
+        }
+      },
+    }
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: {
+        stream(opts: any) {
+          capturedPrompt = opts.messages[0].content[0].text
+          return chunksFromText(verdict)
+        },
+      },
+      modelRouter: {
+        resolve: () => ({ realm: 'CLOUD', provider: 'cloud-deepseek-v4', model: 'deepseek-chat' }),
+      },
+      sanitizer: fakeSanitizer,
+    } as any
+    const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b',
+      confidenceThreshold: 0.6,
+    }, audit as any)
+
+    const history = [
+      { role: 'user', content: [{ type: 'text', text: '我的手机号是13812345678' }] },
+      { role: 'assistant', content: [{ type: 'text', text: '好的，记住了' }] },
+    ]
+    await service.classify('帮我查一下这个号的运营商', { recentMessages: history, sessionId: 'sess-B' })
+
+    // Current message + 2 history messages = 3 sanitize calls
+    assert.equal(sanitizerCalls, 3, 'sanitizer should be called for current + each history message')
+    assert.ok(capturedPrompt)
+    // History PII must be replaced
+    assert.match(capturedPrompt, /\[PHONE_1\]/)
+    assert.doesNotMatch(capturedPrompt, /13812345678/, 'raw phone must not reach LLM prompt')
+    // History block structure preserved
+    assert.match(capturedPrompt, /最近对话上下文/)
+    assert.match(capturedPrompt, /user: 我的手机号是\[PHONE_1\]/)
+    assert.match(capturedPrompt, /assistant: 好的，记住了/)
+    // Audit: history-sanitized should fire (1 of the 2 history msgs had PII)
+    const histEntry = audit.entries.find((e: any) => e.kind === 'intent.llm.history-sanitized')
+    assert.ok(histEntry, 'intent.llm.history-sanitized audit should fire')
+    assert.equal(histEntry.payload.sanitizedMessageCount, 1)
+    assert.equal(histEntry.payload.sessionId, 'sess-B')
+  })
+
+  it('LOCAL realm: does NOT sanitize recentMessages (stays on device)', async () => {
+    let capturedPrompt: string | undefined
+    let sanitizerCalls = 0
+    const verdict = JSON.stringify({ category: 'LOCAL', confidence: 0.9 })
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: {
+        stream(opts: any) {
+          capturedPrompt = opts.messages[0].content[0].text
+          return chunksFromText(verdict)
+        },
+      },
+      // LOCAL realm — no modelRouter override, defaults to local-qwen3-4b
+      sanitizer: {
+        sanitize: async (text: string) => {
+          sanitizerCalls++
+          return { sanitizedText: text.replace(/1[3-9]\d{9}/gu, '[PHONE_1]'), replacements: [] }
+        },
+      },
+    } as any
+    const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'LOCAL',
+      classificationProvider: 'local-qwen3-4b',
+      confidenceThreshold: 0.6,
+    }, audit as any)
+
+    const history = [
+      { role: 'user', content: [{ type: 'text', text: '手机号13812345678' }] },
+    ]
+    await service.classify('帮我查一下这个号', { recentMessages: history })
+
+    // LOCAL realm: sanitizer must NOT be called at all (no cloud data path)
+    assert.equal(sanitizerCalls, 0, 'sanitizer must NOT be called for LOCAL realm')
+    assert.ok(capturedPrompt)
+    // History PII is kept raw (stays on device, no cloud exposure)
+    assert.match(capturedPrompt, /13812345678/)
+    assert.doesNotMatch(capturedPrompt, /\[PHONE_1\]/)
+  })
+
+  it('CLOUD realm: history message that fails sanitize is omitted (fail-closed)', async () => {
+    let capturedPrompt: string | undefined
+    const verdict = JSON.stringify({ category: 'CLOUD', confidence: 0.9 })
+    let sanitizeCallIndex = 0
+    const fakeSanitizer = {
+      sanitize: async (text: string) => {
+        sanitizeCallIndex++
+        // First call is for the current message (succeeds).
+        // Second call is for history[0] (succeeds).
+        // Third call is for history[1] (THROWS — simulates regex failure).
+        // Fourth call is for history[2] (succeeds).
+        if (sanitizeCallIndex === 3) {
+          throw new Error('regex-boom')
+        }
+        return {
+          sanitizedText: text.replace(/1[3-9]\d{9}/gu, '[PHONE_1]'),
+          replacements: [],
+        }
+      },
+    }
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: {
+        stream(opts: any) {
+          capturedPrompt = opts.messages[0].content[0].text
+          return chunksFromText(verdict)
+        },
+      },
+      modelRouter: {
+        resolve: () => ({ realm: 'CLOUD', provider: 'cloud-deepseek-v4', model: 'deepseek-chat' }),
+      },
+      sanitizer: fakeSanitizer,
+    } as any
+    const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-qwen3-4b',
+      confidenceThreshold: 0.6,
+    }, audit as any)
+
+    const history = [
+      { role: 'user', content: [{ type: 'text', text: '手机号13812345678' }] },     // sanitizes OK
+      { role: 'user', content: [{ type: 'text', text: '另一条带13900001111' }] },   // sanitize THROWS
+      { role: 'assistant', content: [{ type: 'text', text: '好的' }] },             // sanitizes OK
+    ]
+    await service.classify('帮我查运营商', { recentMessages: history })
+
+    assert.ok(capturedPrompt)
+    // history[1] was omitted — its text must not appear in prompt at all
+    assert.doesNotMatch(capturedPrompt, /另一条带/)
+    assert.doesNotMatch(capturedPrompt, /13900001111/)
+    // history[0] and history[2] are present
+    assert.match(capturedPrompt, /\[PHONE_1\]/)
+    assert.match(capturedPrompt, /assistant: 好的/)
+    // Audit: history-sanitize-error fired for the omitted message
+    const errEntry = audit.entries.find((e: any) => e.kind === 'intent.llm.history-sanitize-error')
+    assert.ok(errEntry, 'intent.llm.history-sanitize-error audit should fire')
+    assert.match(errEntry.payload.error, /regex-boom/)
+  })
+
   // ─── resolveIntent 纯函数 ──────────────────────────────────────────────────
 
   it('resolveIntent maps LOCAL intent to local realm', () => {
