@@ -181,7 +181,7 @@ start_server() {
         fi
 
         sleep 1
-        ((waited++))
+        waited=$((waited + 1))
     done
 
     log_fail "服务器启动超时 (${max_wait}s)"
@@ -333,20 +333,20 @@ check_audit_log() {
 
         if [ "$reject_count" -ge "1" ]; then
             log_pass "审计日志中存在 REJECT 事件"
-            ((TESTS_PASSED++))
+            TESTS_PASSED=$((TESTS_PASSED + 1))
             echo ""
             echo "  最近的 REJECT 审计事件:"
             grep "intent.rules.rejected" "$audit_dir" | tail -3 | sed 's/^/    /'
         else
             log_fail "审计日志中未找到 intent.rules.rejected 事件"
-            ((TESTS_FAILED++))
+            TESTS_FAILED=$((TESTS_FAILED + 1))
         fi
     else
         log_info "未找到审计日志文件（可能是默认配置未启用文件审计）"
         echo "  检查 dsh 服务器日志中的 REJECT 审计..."
         if grep -q "intent.rules.rejected" /tmp/dsh-privacy-test.log 2>/dev/null; then
             log_pass "dsh 日志中找到 intent.rules.rejected"
-            ((TESTS_PASSED++))
+            TESTS_PASSED=$((TESTS_PASSED + 1))
             grep "intent.rules.rejected" /tmp/dsh-privacy-test.log | tail -3 | sed 's/^/    /'
         else
             log_info "dsh 日志中未找到 intent.rules.rejected（可能审计输出到 stdout 格式不同）"

@@ -87,11 +87,11 @@ assert_blocked() {
         if [ -n "$reason" ]; then
             echo "       reason: $reason"
         fi
-        ((TESTS_PASSED++))
+        TESTS_PASSED=$((TESTS_PASSED + 1))
     else
         log_fail "$test_name → 期望 HTTP 400/403, 实际 HTTP $actual_status"
         echo "       响应: $(echo "$body" | head -c 300)"
-        ((TESTS_FAILED++))
+        TESTS_FAILED=$((TESTS_FAILED + 1))
     fi
     echo ""
 }
@@ -114,11 +114,11 @@ assert_pass() {
 
     if [ "$actual_status" = "200" ]; then
         log_pass "$test_name → HTTP 200 (passed)"
-        ((TESTS_PASSED++))
+        TESTS_PASSED=$((TESTS_PASSED + 1))
     else
         log_fail "$test_name → 期望 HTTP 200, 实际 HTTP $actual_status"
         echo "       响应: $(echo "$body" | head -c 300)"
-        ((TESTS_FAILED++))
+        TESTS_FAILED=$((TESTS_FAILED + 1))
     fi
     echo ""
 }
@@ -186,7 +186,7 @@ start_server() {
         fi
 
         sleep 1
-        ((waited++))
+        waited=$((waited + 1))
     done
 
     log_fail "服务器启动超时 (${max_wait}s)"
@@ -289,7 +289,7 @@ check_audit_log() {
 
         if [ "$unsafe_count" -ge "1" ]; then
             log_pass "模型检测确实拦截了部分请求"
-            ((TESTS_PASSED++))
+            TESTS_PASSED=$((TESTS_PASSED + 1))
             echo ""
             echo "  最近的 unsafe 审计事件:"
             grep "guard.model-detect.unsafe" /tmp/dsh-model-detect.log | tail -3 | sed 's/^/    /'
