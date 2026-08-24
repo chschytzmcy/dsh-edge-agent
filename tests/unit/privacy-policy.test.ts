@@ -70,6 +70,7 @@ const TEST_POLICY: PrivacyPolicy = {
   ],
   dataClassifications: [
     { class: 'public', defaultRealm: 'CLOUD', ttlSeconds: 3600 },
+    { class: 'internal', defaultRealm: 'SANITIZED', ttlSeconds: 1800 },
     { class: 'confidential', defaultRealm: 'LOCAL', ttlSeconds: 900 },
     { class: 'secret', defaultRealm: 'LOCAL', ttlSeconds: 300 },
   ],
@@ -277,7 +278,8 @@ describe('privacy-policy accessors', () => {
       policyPath, hotReload: false, watchIntervalMs: 5000,
     }, fakeAuditLog())
     await svc.reload()
-    assert.equal(svc.getClassifications().length, 3)
+    // 4 entries: public + internal + confidential + secret
+    assert.equal(svc.getClassifications().length, 4)
   })
 
   it('getConstraints returns global constraints', async () => {
