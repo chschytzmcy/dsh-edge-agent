@@ -116,7 +116,7 @@ afterEach(() => {
 describe('prompt-guard plugin', () => {
   it('exports the canonical plugin shape', () => {
     assert.equal(guard.name, 'prompt-guard')
-    assert.deepEqual([...guard.inject], ['tcm', 'privacyPolicy', 'auditLog', 'llm'])
+    assert.deepEqual([...guard.inject], ['privacyPolicy', 'auditLog', 'llm'])
     assert.equal(typeof guard.apply, 'function')
     assert.ok(guard.Config)
   })

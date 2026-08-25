@@ -22,7 +22,7 @@ import { PII_RULES, redactString } from './pii-utils.js'
 
 export const name = 'prompt-guard'
 
-export const inject = ['tcm', 'privacyPolicy', 'auditLog', 'llm'] as const
+export const inject = ['privacyPolicy', 'auditLog', 'llm'] as const
 
 /** Minimal interface our router needs from the audit-log service. */
 interface AuditLike {

@@ -2818,8 +2818,6 @@ export interface Intent {
   confidence: number
   targetRealm: string
   rationale: string
-  dataLevel: 'public' | 'sanitized' | 'internal'
-  requiresSanitization: boolean
 }
 
 export interface IntentRouterService {
@@ -2875,11 +2873,10 @@ classify(text, context):
          throw _intentRouterReason = 'low-confidence'
        G9: bucket = floor(verdict.confidence*10) clamp [0,9]
             confidenceHistogram[bucket].{accepted|rejected}++
-       return { category: verdict.category, confidence, targetRealm, rationale: 'llm-classified:<x>',
-                dataLevel: 'public', requiresSanitization: false }
+       return { category: verdict.category, confidence, targetRealm, rationale: 'llm-classified:<x>' }
   5. catch (llm err) → fallback classifyWithRules:
        policy.matchRouting(text)（再次；但 pre-check 已用过，这里再走 fallback 路径）
-       ├─ 命中 SANITIZED → requiresSanitization=true
+       ├─ 命中 SANITIZED → category=SANITIZED, targetRealm='sanitized'（调用方凭 category 自行走 sanitizer）
        ├─ 命中 REJECT    → stats.rejected++
        ├─ 命中 LOCAL/CLOUD → stats.ruleHit++
        └─ 未命中：

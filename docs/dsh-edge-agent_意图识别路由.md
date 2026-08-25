@@ -20,7 +20,7 @@
 
 ## 一句话概括
 
-intent-router 是 dsh-edge-agent 的"安检 + 分流"插件：每条用户消息进来，先经 prompt-guard 三层防护（正则模式库零 token 拦截已知高危模式 + 本地 qwen3-4b 模型辅助检测复杂攻击 + PII 数据分类，HTTP 400），再经隐私策略预检（业务危险操作如破坏性命令、数据库删除等零 token 直接拦截，HTTP 403），再由本地 qwen3-4b 流式分类作为主决策（CLOUD 前自动脱敏 PII，0.6 置信度门控，三级容错解析），LLM 失败时降级到 privacy-policy 规则 + 内置关键词兜底。**CLOUD 路径 sanitizer 不可用/失败时 fail-closed 降级到规则兜底（脱不了敏就不上云）**。分类结果 Intent 驱动 http-api 路由、tools 工具隔离、审计日志全链路可观测。
+intent-router 是 dsh-edge-agent 的"安检 + 分流"插件：每条用户消息进来，先经 prompt-guard **六阶段检查**（Stage 1 长度 / Stage 2-3 全局+session 频率 / Stage 4 注入正则模式库零 token 拦截已知高危模式 / Stage 5 PII 数据分类 secret 级一票否决 / Stage 6 本地 qwen3-4b 模型辅助检测复杂攻击，HTTP 400），再经隐私策略预检（业务危险操作如破坏性命令、数据库删除等零 token 直接拦截，HTTP 403），再由本地 qwen3-4b 流式分类作为主决策（CLOUD 前自动脱敏 PII，0.6 置信度门控，三级容错解析），LLM 失败时降级到 privacy-policy 规则 + 内置关键词兜底。**CLOUD 路径 sanitizer 不可用/失败时 fail-closed 降级到规则兜底（脱不了敏就不上云）**。分类结果 Intent 驱动 http-api 路由、tools 工具隔离、审计日志全链路可观测。
 
 ## 为什么需要意图路由
 
@@ -2182,6 +2182,32 @@ export const PII_RULES: PIIRule[] = [
 | `intent-router.ts` | `redactPreview()` 对审计日志的文本预览脱敏（`softService('piiUtils')`） |
 | `http-api.ts` | 同步审计预览脱敏 |
 | `prompt-guard.ts` | `checkOutput()` 当 session **未**被 sanitizer 管理时，作为输出安全网掩码 |
+
+### ⚠️ pii-utils 与 sanitizer-pipeline 规则范围差异（安全间隙说明）
+
+| 维度 | pii-utils（PII_RULES） | sanitizer-pipeline（privacy-policy sanitizationRules） |
+|------|----------------------|------------------------------------------------|
+| **规则数** | 5（phone / id-card / bank-card / email / api-key） | 9（+ ip-address / mac-address / passport / license-plate） |
+| **方向** | 不可逆掩码 | 可逆占位符（`[PHONE_1]` ↔ 原值） |
+| **典型调用方** | audit-log / local-storage / prompt-guard.checkOutput 兜底 | http-api / intent-router 进出云端的 PII 替换 |
+| **覆盖范围** | 仅 5 类基础 PII | 覆盖 9 类含 secret 级 PII |
+
+**安全含义**：
+
+- **正向脱敏（出云端）** 全程走 sanitizer-pipeline 9 条规则，IP/MAC/护照/车牌都会被替换为占位符——这条路径无间隙。
+- **反向输出安全网**（prompt-guard `checkOutput` 在 session **未**经 sanitizer 管理时调用的兜底分支、audit-log 写盘前的 `redactObject`）**只覆盖 5 类基础 PII**。理论上 IP/MAC/护照/车牌可能从这条出口路径泄漏到客户端或日志文件。
+
+**实际影响评估**：
+
+1. 主链路（`/v1/chat` + `/v1/chat/stream`）100% 走 sanitizer-pipeline，正向脱敏 + desanitize 已经处理全部 9 类 PII；prompt-guard 的输出兜底**仅在 sanitizer 不可用**时生效。
+2. LOCAL-only session（`isLocal === true`）不经 sanitizer，但本地 LLM 不外发数据——IP/MAC/护照/车牌的输出泄漏面只到 `audit-log`（已脱敏5 类）和客户端 UI。
+3. 已知折中：扩展 pii-utils 的 5→9 条规则需要额外加 4 条 mask 函数（IP → `192.168.*.*`、MAC → `AA:BB:CC:**:**:**`、护照 → `E********`、车牌 → `**A*1234`）。**当前优先级 P2**（取决于后续 Phase 5 客户端审计需求）。
+
+**修复方向**：
+
+- 选项 A：扩展 pii-utils 到 9 条规则，与 sanitizer 对齐（推荐，简单且对称）。
+- 选项 B：将 pii-utils 的 5 条规则下沉为 `core-rules`，sanitizer 的 4 条扩展规则作为 `extended-rules`，prompt-guard 兜底时合并调用。
+- 当前默认：维持现状，但在 audit-log 的 `output.pii-redacted` 审计事件中记录「仅识别 N 类 PII」的 hint，便于运维察觉规则漂移。
 
 ## 完整请求流中的 6 个脱敏调用点
 

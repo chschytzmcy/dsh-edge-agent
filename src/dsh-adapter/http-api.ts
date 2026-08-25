@@ -32,6 +32,12 @@ export interface Config {
   sessionIdleTimeoutMs: number
   /** Maximum active sessions. LRU eviction when exceeded. 0 = unlimited. */
   maxActiveSessions: number
+  /** Max JSON body bytes accepted by POST endpoints. Defense-in-depth against
+   *  malicious clients sending unbounded bodies (the old `readJsonBody`
+   *  appended every chunk into a single string with no upper bound, letting
+   *  a remote attacker OOM the edge agent). Default 1 MiB; set to 0 to
+   *  disable the cap (NOT recommended in production). */
+  maxRequestBodyBytes: number
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -41,6 +47,7 @@ export const Config: Schema<Config> = Schema.object({
   requireAttestation: Schema.boolean().default(true),
   sessionIdleTimeoutMs: Schema.natural().default(30 * 60 * 1000), // 30 min
   maxActiveSessions: Schema.natural().default(100),
+  maxRequestBodyBytes: Schema.natural().default(1024 * 1024), // 1 MiB
 })
 
 export interface HttpApiService {
@@ -862,17 +869,40 @@ export class HttpApiServiceImpl extends Service {
   }
 
   private async readJsonBody(req: IncomingMessage): Promise<any> {
+    // Defense-in-depth: cap the body size to avoid OOM from malicious clients
+    // sending unbounded bodies. Per-chunk byte counting stops the connection
+    // the moment the cap is breached, before `data` accumulates further.
+    const cap = this.config.maxRequestBodyBytes
     return new Promise((resolve, reject) => {
       let data = ''
-      req.on('data', (chunk) => (data += chunk))
+      let totalBytes = 0
+      let aborted = false
+      const abort = (err: Error): void => {
+        if (aborted) return
+        aborted = true
+        // best-effort: tear down the socket so the attacker can't keep streaming
+        try { req.destroy(err) } catch { /* ignore */ }
+        reject(err)
+      }
+      req.on('data', (chunk: Buffer | string) => {
+        if (aborted) return
+        const buf = typeof chunk === 'string' ? Buffer.byteLength(chunk, 'utf-8') : chunk.length
+        totalBytes += buf
+        if (cap > 0 && totalBytes > cap) {
+          abort(new Error(`request body exceeds maxRequestBodyBytes=${cap}`))
+          return
+        }
+        data += chunk
+      })
       req.on('end', () => {
+        if (aborted) return
         try {
           resolve(data ? JSON.parse(data) : {})
         } catch (err) {
           reject(err)
         }
       })
-      req.on('error', reject)
+      req.on('error', (err) => abort(err))
     })
   }
 
