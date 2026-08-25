@@ -127,7 +127,7 @@ const DEFAULT_POLICY: PrivacyPolicy = {
     },
     // LOCAL rules
     {
-      pattern: '(本地|local|文件|file|计算|calculate)',
+      pattern: '(本地|local|文件|file|计算|calculate|读取|写入)',
       realm: 'LOCAL',
       confidence: 0.8,
       rationale: 'Local operations stay on device',
@@ -170,6 +170,27 @@ const DEFAULT_POLICY: PrivacyPolicy = {
       replacement: '[PLATE_$&]',
       dataClass: 'confidential',
       piiType: 'license-plate',
+    },
+    // P1 (2026-08-24): secret-level PII — id-card / bank-card / api-key.
+    // Ensures DEFAULT_POLICY covers all 9 types so prompt-guard Stage 5
+    // blocks secret PII even when the policy file is missing.
+    {
+      pattern: '[1-9]\\d{5}(19|20)\\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\\d|3[01])\\d{3}[\\dXx]',
+      replacement: '[ID_CARD]',
+      dataClass: 'secret',
+      piiType: 'id-card',
+    },
+    {
+      pattern: '\\d{16,19}',
+      replacement: '[BANK_CARD]',
+      dataClass: 'secret',
+      piiType: 'bank-card',
+    },
+    {
+      pattern: '(sk-[a-zA-Z0-9]{20,}|key-[a-zA-Z0-9]{16,}|api[_-]?key[_-]?[a-zA-Z0-9]{16,})',
+      replacement: '[API_KEY]',
+      dataClass: 'secret',
+      piiType: 'api-key',
     },
   ],
   dataClassifications: [

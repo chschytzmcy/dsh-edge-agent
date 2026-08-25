@@ -3,7 +3,7 @@
  * - Canonical plugin shape (inject aligned with cordis.yml)
  * - Input length limit
  * - Rate limiting (session + global + cleanup)
- * - Injection detection (15 bilingual patterns + custom rules)  // verified against prompt-guard.ts DEFAULT_INJECTION_PATTERNS
+ * - Injection detection (16 bilingual patterns + custom rules)  // verified against prompt-guard.ts DEFAULT_INJECTION_PATTERNS
  * - PII data classification (privacy-policy integration: secret block, confidential flag)
  * - PII redaction (output, 5 types, sanitized context skip)
  * - Feature toggles

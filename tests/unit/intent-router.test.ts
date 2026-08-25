@@ -49,7 +49,6 @@ describe('intent-router', () => {
     const intent = await service.classify('帮我读取文件内容')
     assert.equal(intent.category, 'LOCAL')
     assert.equal(intent.targetRealm, 'local')
-    assert.equal(intent.requiresSanitization, false)
     assert.match(intent.rationale, /rule-keyword-match/u)
   })
 
@@ -77,18 +76,6 @@ describe('intent-router', () => {
     const intent = await service.classify('你好')
     assert.equal(intent.category, 'CLOUD')
     assert.match(intent.rationale, /default:cloud/u)
-  })
-
-  it('marks requiresSanitization=false (M3 has no sanitization layer)', async () => {
-    const mockCtx = { reflect: { provide: () => {} }, llm: null } as any
-    const service = new IntentRouterServiceImpl(mockCtx, {
-      defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
-      confidenceThreshold: 0.6,
-    })
-
-    const intent = await service.classify('what is the weather')
-    assert.equal(intent.requiresSanitization, false)
   })
 
   // ─── Phase B: confidence gate ───────────────────────────────────────────
@@ -436,7 +423,6 @@ describe('intent-router', () => {
     assert.equal(intent.category, 'SANITIZED')
     assert.equal(intent.confidence, 0.9)
     assert.equal(intent.targetRealm, 'sanitized')
-    assert.equal(intent.requiresSanitization, true)
     assert.equal(intent.rationale, 'policy-matched-sanitized')
   })
 
@@ -669,7 +655,6 @@ describe('intent-router', () => {
     assert.equal(intent.targetRealm, 'rejected')
     assert.equal(intent.confidence, 0.99)
     assert.equal(intent.rationale, 'bulk-export-blocked')
-    assert.equal(intent.requiresSanitization, false)
     // REJECT is a security event — must hit the security audit level so SIEM picks it up.
     const rejected = audit.entries.find((e: any) => e.kind === 'intent.rules.rejected')
     assert.ok(rejected, 'intent.rules.rejected audit kind should be present')
@@ -2075,7 +2060,7 @@ describe('intent-router', () => {
   it('resolveIntent maps LOCAL intent to local realm', () => {
     const result = resolveIntent({
       category: 'LOCAL', confidence: 0.9, targetRealm: 'local',
-      rationale: 'test', dataLevel: 'public', requiresSanitization: false,
+      rationale: 'test',
     })
     assert.equal(result.realm, 'local')
     assert.deepEqual(result.config, { intentCategory: 'LOCAL' })
@@ -2084,7 +2069,7 @@ describe('intent-router', () => {
   it('resolveIntent maps CLOUD intent to cloud realm', () => {
     const result = resolveIntent({
       category: 'CLOUD', confidence: 0.7, targetRealm: 'cloud',
-      rationale: 'test', dataLevel: 'public', requiresSanitization: false,
+      rationale: 'test',
     })
     assert.equal(result.realm, 'cloud')
     assert.deepEqual(result.config, { intentCategory: 'CLOUD' })
@@ -2093,7 +2078,7 @@ describe('intent-router', () => {
   it('resolveIntent maps SANITIZED intent to sanitized realm', () => {
     const result = resolveIntent({
       category: 'SANITIZED', confidence: 0.8, targetRealm: 'sanitized',
-      rationale: 'test', dataLevel: 'sanitized', requiresSanitization: true,
+      rationale: 'test',
     })
     assert.equal(result.realm, 'sanitized')
     assert.deepEqual(result.config, { intentCategory: 'SANITIZED' })
@@ -2102,7 +2087,7 @@ describe('intent-router', () => {
   it('resolveIntent maps REJECT intent to rejected realm', () => {
     const result = resolveIntent({
       category: 'REJECT', confidence: 0.95, targetRealm: 'rejected',
-      rationale: 'policy-violation', dataLevel: 'internal', requiresSanitization: false,
+      rationale: 'policy-violation',
     })
     assert.equal(result.realm, 'rejected')
     assert.deepEqual(result.config, { intentCategory: 'REJECT' })

@@ -77,8 +77,6 @@ export interface Intent {
   confidence: number
   targetRealm: string
   rationale: string
-  dataLevel: 'public' | 'sanitized' | 'internal'
-  requiresSanitization: boolean
 }
 
 export interface IntentRouterService {
@@ -212,8 +210,6 @@ export class IntentRouterServiceImpl extends Service {
         confidence: 0.5,
         targetRealm: this.defaultCategory === 'CLOUD' ? 'cloud' : this.defaultCategory === 'SANITIZED' ? 'sanitized' : 'local',
         rationale: 'empty-input',
-        dataLevel: 'public',
-        requiresSanitization: this.defaultCategory === 'SANITIZED',
       }
     }
 
@@ -259,8 +255,6 @@ export class IntentRouterServiceImpl extends Service {
             confidence: pre.confidence,
             targetRealm: 'rejected',
             rationale: pre.rationale || 'policy-rule:reject',
-            dataLevel: 'internal',
-            requiresSanitization: false,
           }
         }
       } catch (err: any) {
@@ -447,12 +441,23 @@ export class IntentRouterServiceImpl extends Service {
     // Phase B: ask for structured JSON output with explicit confidence.
     // Below the configured threshold we fall back to keyword rules
     // (fail-open; we do NOT reject — see plan Phase B).
+    //
+    // Confidence calibration (2026-08-25): qwen3-4b tends to always output
+    // 0.98-0.99 regardless of actual certainty, making the 0.6 gate
+    // ineffective. Adding explicit confidence semantics to the prompt so
+    // the model learns to differentiate clear vs ambiguous requests.
     const prompt = `判断以下用户请求属于哪类：
 - LOCAL：本地文件操作、设备控制、数学计算、系统管理
 - CLOUD：知识问答、聊天、创意写作、需要联网的任务
 ${historyBlock}
 Respond ONLY with a single JSON object — no prose, no Markdown:
 { "category": "LOCAL"|"CLOUD", "confidence": <0.0-1.0> }
+
+confidence 含义：
+- 1.0 = 非常确定（请求明确属于该类别，无歧义）
+- 0.7 = 较确定（请求大概率属于该类别，但有少许模糊）
+- 0.5 = 不确定（请求模糊，可能是 LOCAL 也可能是 CLOUD）
+- <0.5 = 完全不确定（无法判断类别）
 
 用户请求：${promptText}`
 
@@ -553,8 +558,6 @@ Respond ONLY with a single JSON object — no prose, no Markdown:
       confidence: verdict.confidence,
       targetRealm: verdict.category === 'LOCAL' ? 'local' : 'cloud',
       rationale: `llm-classified:${verdict.category.toLowerCase()}`,
-      dataLevel: 'public',
-      requiresSanitization: false,
     }
   }
 
@@ -597,8 +600,6 @@ Respond ONLY with a single JSON object — no prose, no Markdown:
           confidence: matchedRule.confidence,
           targetRealm: 'rejected',
           rationale: matchedRule.rationale || 'policy-rule:reject',
-          dataLevel: 'internal',
-          requiresSanitization: false,
         }
       }
       const targetRealm = realm === 'LOCAL' ? 'local' : realm === 'SANITIZED' ? 'sanitized' : 'cloud'
@@ -613,11 +614,6 @@ Respond ONLY with a single JSON object — no prose, no Markdown:
         confidence: matchedRule.confidence,
         targetRealm,
         rationale: matchedRule.rationale || `policy-rule:${realm.toLowerCase()}`,
-        // SANITIZED verdict carries a 'sanitized' data level so downstream
-        // consumers (sanitizer-pipeline, audit-log) know the payload was
-        // re-classified by policy, not the default public assumption.
-        dataLevel: realm === 'SANITIZED' ? 'sanitized' : 'public',
-        requiresSanitization: realm === 'SANITIZED',
       }
     }
 
@@ -633,8 +629,6 @@ Respond ONLY with a single JSON object — no prose, no Markdown:
         confidence: 0.7,
         targetRealm: 'local',
         rationale: 'rule-keyword-match',
-        dataLevel: 'public',
-        requiresSanitization: false,
       }
     }
 
@@ -644,8 +638,6 @@ Respond ONLY with a single JSON object — no prose, no Markdown:
       confidence: 0.5,
       targetRealm: this.defaultCategory === 'CLOUD' ? 'cloud' : 'local',
       rationale: `default:${this.defaultCategory.toLowerCase()}`,
-      dataLevel: 'public',
-      requiresSanitization: false,
     }
   }
 
@@ -718,9 +710,9 @@ export interface IntentRouterStats {
   rejected: number
   /** Sanitizer applied to CLOUD-classification prompt. */
   sanitized: number
-  /** Sanitizer threw (fail-open → original text reached LLM). */
+  /** Sanitizer threw (fail-closed → throws, falls back to classifyWithRules). */
   sanitizeError: number
-  /** CLOUD realm but no sanitizer handle mounted (fail-open). */
+  /** CLOUD realm but no sanitizer handle mounted (fail-closed → throws). */
   sanitizeSkipped: number
   /** G9: 10-bucket histogram of LLM confidence values × (accepted | rejected).
    *  Bucket key is `String(Math.floor(c * 10))` clamped to [0,9]. Use

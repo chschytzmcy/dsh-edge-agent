@@ -21,12 +21,10 @@ export const name = 'sanitizer-pipeline'
 export const inject = ['privacyPolicy', 'auditLog'] as const
 
 export interface Config {
-  enableAutoDetection: boolean
   maxReplacementsPerSession: number
 }
 
 export const Config: Schema<Config> = Schema.object({
-  enableAutoDetection: Schema.boolean().default(true),
   maxReplacementsPerSession: Schema.natural().default(1024),
 })
 
@@ -68,7 +66,6 @@ interface SessionMapping {
 export class SanitizerServiceImpl extends Service implements SanitizerService {
   private sessionMappings = new Map<string, SessionMapping>()
   private readonly maxReplacementsPerSession: number
-  private readonly enableAutoDetection: boolean
 
   constructor(
     ctx: any,
@@ -78,7 +75,6 @@ export class SanitizerServiceImpl extends Service implements SanitizerService {
   ) {
     super(ctx, 'sanitizer')
     this.maxReplacementsPerSession = config.maxReplacementsPerSession
-    this.enableAutoDetection = config.enableAutoDetection
   }
 
   /**

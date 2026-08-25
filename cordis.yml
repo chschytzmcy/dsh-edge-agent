@@ -185,8 +185,6 @@
   name: '@deepseek-harness-edge-agent/dsh-edge-agent/intent-router'
   inject: [llm, promptGuard, privacyPolicy, auditLog, sessions, localStorage]
   config:
-    enableLlmFallback: !!js process.env.DSH_EDGE_ROUTER_LLM_FALLBACK !== 'false'
-    ruleConfidenceThreshold: !!js parseFloat(process.env.DSH_EDGE_ROUTER_THRESHOLD ?? '0.6')
     confidenceThreshold: !!js parseFloat(process.env.DSH_EDGE_INTENT_CONFIDENCE_THRESHOLD ?? '0.6')
     llmTimeoutMs: !!js parseInt(process.env.DSH_EDGE_INTENT_LLM_TIMEOUT_MS ?? '4000', 10)
     recentMessagesLimit: !!js parseInt(process.env.DSH_EDGE_INTENT_RECENT_LIMIT ?? '3', 10)

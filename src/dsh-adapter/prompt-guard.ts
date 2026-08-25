@@ -4,7 +4,7 @@
  * 核心功能：
  * 1. PII 脱敏（手机号、身份证、银行卡、邮箱、API Key）
  * 2. 基础输入限制（长度、频率）
- * 3. 中英文注入检测（15+ 模式）
+ * 3. 中英文注入检测（16+ 模式）
  * 4. privacy-policy 联动：输入端数据分类检测（secret 级阻断）
  * 5. 与 sanitizer-pipeline 协调：输出端避免 desanitize→mask 矛盾
  * 6. 全局频率限制（防 sessionId 绕过）
@@ -92,12 +92,12 @@ interface InjectionPattern {
   rawPattern: string
 }
 
-/** Default bilingual injection patterns (15 rules), graded by severity.
+/** Default bilingual injection patterns (16 rules), graded by severity.
  *
  *  Phase C grading rationale:
- *   - `block` (高危攻击) — 明确指令覆盖 / 越狱 / 系统提示词提取 / 调试模式绕过
+ *   - `block` (高危攻击) — 明确指令覆盖 / 越狱 / 系统提示词提取 / 调试模式绕过 / 数据外传
  *   - `warn`  (可疑但非攻击) — 角色覆盖 / "假设你是" 等语法命中但用户无恶意
- *   - `sanitize` 暂未实现，schema 保留供未来扩展
+ *   - `sanitize` (可疑文本脱敏) — 已实现（regex 替换为 [REDACTED:<name>]），但默认规则中未启用，需通过 `rules` 配置自定义添加
  */
 const DEFAULT_INJECTION_PATTERNS: InjectionPattern[] = [
   // 英文 — 直接注入 (block: 明确指令覆盖)
@@ -127,6 +127,9 @@ const DEFAULT_INJECTION_PATTERNS: InjectionPattern[] = [
   // 注：与"无限制模式-zh"有"开发者模式"重叠，但本规则额外覆盖"调试模式"和
   // "diagnostic mode"，是更专门的攻击模式（攻击者尝试以调试名义获取系统提示）
   { name: 'bypass-developer-zh', rawPattern: '(开发者模式|调试模式|diagnostic\\s+mode)', pattern: /(开发者模式|调试模式|diagnostic\s+mode)/u, lang: 'zh', action: 'block' },
+
+  // 中文 — 数据外传 (block: 试图将数据发送到外部)
+  { name: 'data-exfiltration-zh', rawPattern: '(发送|上传|传输|外发).*(外部|外网|外部服务器|第三方)', pattern: /(发送|上传|传输|外发).*(外部|外网|外部服务器|第三方)/u, lang: 'zh', action: 'block' },
 ]
 
 export interface InputCheckResult {
