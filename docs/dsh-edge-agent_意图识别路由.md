@@ -8,8 +8,8 @@
 - [为什么需要意图路由](#为什么需要意图路由)
 - [分类流程总览](#分类流程总览)
 - [层间流转规则](#层间流转规则)
-- [[第一章] prompt-guard 输入防护](#第一章-prompt-guard-输入防护)
-- [第二章 隐私策略预检（privacy-policy）](#第二章隐私策略预检privacy-policy)
+- [第一章 输入防护（prompt-guard）](#第一章-输入防护prompt-guard)
+- [第二章 隐私策略预检（privacy-policy）](#第二章-隐私策略预检privacy-policy)
 - [第三章 LLM 分类（intent-router）](#第三章-llm-分类intent-router)
 - [第四章 规则兜底（classifyWithRules）](#第四章-规则兜底classifywithrules)
 - [脱敏能力架构](#脱敏能力架构)
@@ -53,7 +53,7 @@ intent-router 是 dsh-edge-agent 的"安检 + 分流"插件：每条用户消息
   └── 超长 → 截断至 maxInputLength（默认 2000）+ 审计 intent.classify.truncated
   │
   ▼
-[0.5] prompt-guard 输入防护  ←── 详见 [第一章](#第一章-prompt-guard-输入防护)
+[0.5] prompt-guard 输入防护  ←── 详见 [第一章](#第一章-输入防护prompt-guard)
   │   正则模式库 + 频率限制 + 本地 LLM 模型辅助检测，覆盖注入/提词/越狱等已知模式
   ├── 命中已知模式 → HTTP 400 直接返回（不进 intent-router，零 token）
   │   └── 审计 http.input.blocked（security 级别）
@@ -118,7 +118,7 @@ intent-router 是 dsh-edge-agent 的"安检 + 分流"插件：每条用户消息
 
 ---
 
-# 第一章 prompt-guard 输入防护
+# 第一章 输入防护（prompt-guard）
 
 > 核心实现：`src/dsh-adapter/prompt-guard.ts`（~720 行）。测试：`tests/unit/prompt-guard.test.ts`（78 用例）。
 
@@ -521,7 +521,7 @@ function coerceSafetyObject(obj: unknown): SafetyVerdict | null {
 
 ---
 
-# 第二章：隐私策略预检（privacy-policy）
+# 第二章 隐私策略预检（privacy-policy）
 
 > 核心实现：`src/dsh-adapter/privacy-policy.ts`。
 
@@ -1649,6 +1649,18 @@ private redactPreview(text: string): string | null {
 | `recentMessagesLimit` | `DSH_EDGE_INTENT_RECENT_LIMIT` | `3` | 上下文嵌入条数 |
 | `maxInputLength` | `DSH_EDGE_INTENT_MAX_INPUT` | `2000` | 输入长度上限 |
 | `fallbackKeywords` | `DSH_EDGE_INTENT_FALLBACK_KEYWORDS` | 内置 EN+CN | 兜底关键词列表 |
+
+**脚注**：
+
+1. **ENV 覆盖由 `cordis.patch.yml` 的 `!!js` 表达式实现**，而非 Schemastery 内置 ENV 映射。示例：
+   ```yaml
+   - id: intent-router
+     config:
+       confidenceThreshold: !!js parseFloat(process.env.DSH_EDGE_INTENT_CONFIDENCE_THRESHOLD ?? '0.6')
+   ```
+   修改默认值或新增 ENV 时需同步修改 `profiles/dsh-edge-agent/cordis.patch.yml` 而非仅依赖 Schema。
+
+2. **`confidenceThreshold` 的 Schema 修复历史**：旧版使用 `Schema.natural()`，仅接受正整数，导致默认值 `0.6` 在 Schema 校验时被拒绝。已改为 `Schema.number().min(0).max(1)`（参见 `intent-router.ts:63-67` 注释）。**不要回退到 `Schema.natural()`**，否则门控阈值会被默认值非法化、永远走规则兜底。
 
 **内置兜底关键词**（`LOCAL_KEYWORDS_DEFAULT`）：
 

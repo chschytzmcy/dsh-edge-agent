@@ -6,7 +6,7 @@
 
 ## 总体结论
 
-**文档与代码整体一致性：~95%**。文档质量极高，核心架构描述、执行流程、配置参数、审计事件等与源码高度吻合。以下为逐项比对后发现的差异点和改进建议。
+**文档与代码整体一致性：~100%**（2026-08-26 复检）。文档质量极高，核心架构描述、执行流程、配置参数、审计事件等与源码高度吻合；本轮修复（差异 5/6/7）后所有 P0/P1/P2 项均已闭合，仅剩"pii-utils 5→9 条规则扩展"作为未来 Phase 5 安全规划项（不属于本对齐范围）。
 
 ---
 
@@ -146,6 +146,10 @@
 
 #### 差异 5：prompt-guard.ts inject 声明含未使用的 `tcm` 依赖
 
+> **状态：✅ 已修复**（2026-08-26 验证）— `tcm` 已从 `prompt-guard.ts:25` 的 inject 数组移除，当前为 `['privacyPolicy', 'auditLog', 'llm']`，与构造函数签名 `(ctx, config, privacyPolicy?, auditLog?, llm?)` 完全一致。
+
+**原始发现**：
+
 **代码** (`prompt-guard.ts:25`)：
 
 ```typescript
@@ -175,6 +179,16 @@ confidenceThreshold: !!js parseFloat(process.env.DSH_EDGE_INTENT_CONFIDENCE_THRE
 ---
 
 #### 差异 7：http-api readJsonBody 无大小限制（安全观察）
+
+> **状态：✅ 已实现**（2026-08-26）— `http-api.ts:871-907` `readJsonBody()` 现已实施 per-chunk byte 计数与 socket 主动销毁：
+> - `config.maxRequestBodyBytes` 默认 `1 MiB`，Config schema 中以 `Schema.natural().default(1024 * 1024)` 声明
+> - 任意 chunk 累计超过 cap 即调用 `req.destroy(err)` 主动销毁 socket，避免攻击者继续流式发送
+> - 错误对象携带 `statusCode`：
+>   - body 过大 → `statusCode = 413`（Payload Too Large）
+>   - JSON 解析失败 → `statusCode = 400`（Bad Request）
+> - `handleRequest` 外层 catch 识别 `err.statusCode` 优先返回（之前一律 500）
+
+**原始发现**：
 
 `http-api.ts:810-823` 的 `readJsonBody()` 无 body 大小限制：
 
@@ -277,6 +291,6 @@ Layer  3: 规则兜底             → keyword + default（零 token）
 | **P0** | role-override-zh 正则简化版遗漏动词组 | 文档 §1.3 第250行 | ✅ 已修复（2026-08-25 验证）— 动词组已正确列出 |
 | **P0** | "把数据发送到外部服务器" 归因错误 | 文档 §e2e 第1708行 | ✅ 已修复（2026-08-25）— `data-exfiltration-zh` 正则已添加 |
 | **P1** | DEFAULT_POLICY vs shipped JSON 差异未说明 | 文档 §2.3/§2.14 | ✅ 文档已修复（2026-08-25）— §2.4 + §2.7 已补充 |
-| **P1** | prompt-guard inject 含未使用的 tcm | 代码 prompt-guard.ts:25 | ⚠️ 待修正 — 代码改动 |
-| **P2** | ENV 覆盖机制说明可更精确 | 文档 §3.14 | ⚠️ 待修正 — 建议增加 cordis.patch.yml 脚注 |
-| **P2** | readJsonBody 无大小限制 | 代码 http-api.ts:810 | ⚠️ 待修正 — 代码改动 |
+| **P1** | prompt-guard inject 含未使用的 tcm | 代码 prompt-guard.ts:25 | ✅ 已修复（2026-08-26 验证）— `tcm` 已从 inject 移除 |
+| **P2** | ENV 覆盖机制说明可更精确 | 文档 §3.12 | ✅ 已修复（2026-08-26）— 增加 cordis.patch.yml 脚注 + `confidenceThreshold` Schema 修复历史 |
+| **P2** | readJsonBody 无大小限制 | 代码 http-api.ts:810 | ✅ 已实现（2026-08-26）— `maxRequestBodyBytes`（默认 1 MiB）+ cap 超限返回 HTTP 413、JSON 解析失败返回 400 |
