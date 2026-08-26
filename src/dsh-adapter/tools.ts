@@ -80,14 +80,40 @@ declare module '@deepseek-ai/cordis' {
 }
 
 /**
+ * Hardcoded realm tags for upstream DSH tools whose default `classifyByPrefix`
+ * fallback would be wrong. Phase 5 (2026-08-26) wires web_search / web_fetch
+ * (from `@deepseek-ai/dsh-tool-web`) to CLOUD: they trigger outbound calls
+ * to DeepSeek's Anthropic-compatible endpoint and must NEVER run under a
+ * LOCAL or REJECT intent — see `intent-router` realm routing (G8).
+ *
+ * Anything not in this map still falls through to `classifyByPrefix`, which
+ * returns CLOUD by default (the safe path: explicit refusal rather than
+ * silently routing into LOCAL).
+ */
+const DSH_NATIVE_REALM_MAP: Readonly<Record<string, ToolRealm>> = {
+  web_search: 'CLOUD',
+  web_fetch: 'CLOUD',
+  bash: 'LOCAL',
+  read: 'LOCAL',
+  write: 'LOCAL',
+  edit: 'LOCAL',
+  glob: 'LOCAL',
+  grep: 'LOCAL',
+}
+
+/**
  * Live snapshot of the dsh-edge-agent tool surface. Reads from `ctx.tools`
  * (upstream registry) and the in-memory realm map. The class is
  * intentionally a thin view, not a writer — to add a tool, register
  * through `ctx.tools.register()`.
  *
  * Note: DSH native tools (bash, read, write, edit, web_search, web_fetch)
- * are now used directly. Realm tagging can be added via event listeners
- * or middleware if needed.
+ * are now used directly. Phase 5 (2026-08-26) hard-codes the realm tags
+ * for DSH native tools via `DSH_NATIVE_REALM_MAP` so `filterTools(intent)`
+ * correctly hides `web_search` under a LOCAL verdict without relying on
+ * prefix heuristics. The map is applied lazily — every `list()` /
+ * `filterTools()` call re-projects from the upstream registry, so tools
+ * registered after boot (via the `tools/change` event) get the right tag.
  */
 export class ToolsServiceImpl extends Service {
   private readonly realm = new Map<string, ToolRealm>()
@@ -112,13 +138,20 @@ export class ToolsServiceImpl extends Service {
     this.realm.set(toolName, realm)
   }
 
+  /** Resolve the realm of a tool name, applying the DSH native map before
+   *  falling back to `classifyByPrefix`. Used by every realm-aware query
+   *  so the hard-coded mapping stays in one place. */
+  resolveRealm(toolName: string): ToolRealm {
+    return this.realm.get(toolName) ?? DSH_NATIVE_REALM_MAP[toolName] ?? classifyByPrefix(toolName)
+  }
+
   list(realm?: ToolRealm): ToolSummary[] {
     const upstream = upstreamTools(this.ctx)
     const out: ToolSummary[] = []
     for (const tool of upstream) {
-      const r = this.realm.get(tool.name) ?? undefined
+      const r = this.resolveRealm(tool.name)
       if (realm !== undefined && r !== realm) continue
-      out.push({ name: tool.name, description: tool.description, realm: r ?? classifyByPrefix(tool.name) })
+      out.push({ name: tool.name, description: tool.description, realm: r })
     }
     return out
   }
@@ -128,11 +161,13 @@ export class ToolsServiceImpl extends Service {
   }
 
   realmOf(name: string): ToolRealm | undefined {
-    return this.realm.get(name)
+    const r = this.realm.get(name)
+    if (r !== undefined) return r
+    return DSH_NATIVE_REALM_MAP[name]
   }
 
   classify(name: string): ToolRealm {
-    return this.realm.get(name) ?? classifyByPrefix(name)
+    return this.resolveRealm(name)
   }
 
   /** G8: tools visible under a given intent-router verdict. */
@@ -140,13 +175,14 @@ export class ToolsServiceImpl extends Service {
     if (intent.category === 'REJECT') return []
     if (!this.enableToolIsolation) return this.list()
     // Under isolation, classify each upstream tool by either an explicit
-    // setRealm override or its `local_` / `cloud_` / `sanitized_` prefix.
-    // The downstream `list(realm)` is strict (requires setRealm), so we
-    // inline the prefix-aware filter here.
+    // setRealm override, the DSH_NATIVE_REALM_MAP (Phase 5: web_search etc.),
+    // or its `local_` / `cloud_` / `sanitized_` prefix. The downstream
+    // `list(realm)` is strict (requires setRealm), so we inline the
+    // prefix-aware filter here.
     const upstream = upstreamTools(this.ctx)
     const out: ToolSummary[] = []
     for (const tool of upstream) {
-      const r = this.realm.get(tool.name) ?? classifyByPrefix(tool.name)
+      const r = this.resolveRealm(tool.name)
       if (r !== intent.category) continue
       out.push({ name: tool.name, description: tool.description, realm: r })
     }
@@ -158,7 +194,7 @@ export class ToolsServiceImpl extends Service {
     if (intent.category === 'REJECT') return false
     if (!this.enableToolIsolation) return this.has(toolName)
     if (!this.has(toolName)) return false
-    const toolRealm = this.realm.get(toolName) ?? classifyByPrefix(toolName)
+    const toolRealm = this.resolveRealm(toolName)
     return toolRealm === (intent.category as ToolRealm)
   }
 }
@@ -197,6 +233,32 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
   // `ctx.provide` again — that would throw "service already registered".
   // G8: Config now actually flows into the service — `enableToolIsolation`
   // drives `filterTools` / `isToolAllowed`. Pre-G8 had `void config` here.
-  void new ToolsServiceImpl(ctx, config)
-  return async () => {}
+  const service = new ToolsServiceImpl(ctx, config)
+
+  // Phase 5 (2026-08-26): wire `DSH_NATIVE_REALM_MAP` into the live registry.
+  // DSH tools are registered by other plugins (`@deepseek-ai/dsh-tool-web`,
+  // `dsh-tool-bash`, etc.) AFTER `edge-tools-registry` boots because they
+  // live in their own cordis rows. We apply the map immediately for tools
+  // already present, then subscribe to `tools/change` so any later
+  // registration auto-tags. The handler is a no-op for tools we don't care
+  // about (resolveRealm already falls back to classifyByPrefix).
+  for (const tool of upstreamTools(ctx)) {
+    const mapped = DSH_NATIVE_REALM_MAP[tool.name]
+    if (mapped !== undefined) service.setRealm(tool.name, mapped)
+  }
+  const onToolsChange = (): void => {
+    for (const tool of upstreamTools(ctx)) {
+      const mapped = DSH_NATIVE_REALM_MAP[tool.name]
+      if (mapped !== undefined) service.setRealm(tool.name, mapped)
+    }
+  }
+  // ctx.on returns a disposer; capture so the apply() return closure can
+  // tear it down on plugin dispose.
+  const disposeChange = (ctx as unknown as { on?: (event: string, fn: () => void) => () => void }).on?.(
+    'tools/change',
+    onToolsChange,
+  )
+  return async () => {
+    disposeChange?.()
+  }
 }
