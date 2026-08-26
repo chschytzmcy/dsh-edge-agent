@@ -128,8 +128,6 @@ describe('http-api sanitize-downgrade to LOCAL', () => {
         confidence: 0.9,
         targetRealm: intentCategory === 'LOCAL' ? 'local' : 'cloud',
         rationale: `llm-classified:${intentCategory.toLowerCase()}`,
-        dataLevel: 'public',
-        requiresSanitization: false,
       }),
     }
     return svc

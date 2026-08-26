@@ -133,7 +133,7 @@ describe('http-api td-bus threat gate', () => {
     intentRouter = {
       classify: async () => {
         classifyCalls++
-        return { category: 'CLOUD', confidence: 0.9, targetRealm: 'cloud', rationale: 'test', dataLevel: 'public', requiresSanitization: false }
+        return { category: 'CLOUD', confidence: 0.9, targetRealm: 'cloud', rationale: 'test' }
       },
     }
   })

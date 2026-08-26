@@ -293,10 +293,15 @@ export class HttpApiServiceImpl extends Service {
         this.accessLog(reqId, req.method ?? '?', path, 404, Date.now() - start)
       }
     } catch (err: any) {
-      res.writeHead(500, { 'Content-Type': 'application/json' })
+      // Client errors (e.g. body too large, malformed JSON) carry statusCode.
+      // Anything else is a 500.
+      const status = typeof err?.statusCode === 'number' && err.statusCode >= 400 && err.statusCode < 600
+        ? err.statusCode
+        : 500
+      res.writeHead(status, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: err.message ?? 'Internal error' }))
-      this.accessLog(reqId, req.method ?? '?', path, 500, Date.now() - start, `err="${err.message ?? 'unknown'}"`)
-      this.audit('error', 'http.error', { reqId, method: req.method, path, error: err.message })
+      this.accessLog(reqId, req.method ?? '?', path, status, Date.now() - start, `err="${err.message ?? 'unknown'}"`)
+      this.audit(status >= 500 ? 'error' : 'warn', 'http.error', { reqId, method: req.method, path, status, error: err.message })
     }
   }
 
@@ -872,12 +877,14 @@ export class HttpApiServiceImpl extends Service {
     // Defense-in-depth: cap the body size to avoid OOM from malicious clients
     // sending unbounded bodies. Per-chunk byte counting stops the connection
     // the moment the cap is breached, before `data` accumulates further.
+    // Errors carry `statusCode` so the outer handler can return the right HTTP
+    // code: 413 for body-too-large, 400 for malformed JSON.
     const cap = this.config.maxRequestBodyBytes
     return new Promise((resolve, reject) => {
       let data = ''
       let totalBytes = 0
       let aborted = false
-      const abort = (err: Error): void => {
+      const abort = (err: Error & { statusCode?: number }): void => {
         if (aborted) return
         aborted = true
         // best-effort: tear down the socket so the attacker can't keep streaming
@@ -889,17 +896,23 @@ export class HttpApiServiceImpl extends Service {
         const buf = typeof chunk === 'string' ? Buffer.byteLength(chunk, 'utf-8') : chunk.length
         totalBytes += buf
         if (cap > 0 && totalBytes > cap) {
-          abort(new Error(`request body exceeds maxRequestBodyBytes=${cap}`))
+          const err: Error & { statusCode?: number } = new Error(`request body exceeds maxRequestBodyBytes=${cap}`)
+          err.statusCode = 413
+          abort(err)
           return
         }
         data += chunk
       })
       req.on('end', () => {
         if (aborted) return
+        if (!data) { resolve({}); return }
         try {
-          resolve(data ? JSON.parse(data) : {})
-        } catch (err) {
-          reject(err)
+          resolve(JSON.parse(data))
+        } catch (err: any) {
+          const wrapped: Error & { statusCode?: number; cause?: unknown } = new Error(`malformed JSON body: ${err?.message ?? 'parse failed'}`)
+          wrapped.statusCode = 400
+          wrapped.cause = err
+          reject(wrapped)
         }
       })
       req.on('error', (err) => abort(err))

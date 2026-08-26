@@ -61,8 +61,6 @@ function makeSpyIntentRouter(verdictCategory: string = 'CLOUD') {
         confidence: 0.95,
         targetRealm: verdictCategory.toLowerCase(),
         rationale: `llm-classified:${verdictCategory.toLowerCase()}`,
-        dataLevel: 'public',
-        requiresSanitization: false,
       }
     },
   }

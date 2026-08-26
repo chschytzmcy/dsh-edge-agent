@@ -220,8 +220,6 @@ describe('http-api E2E sanitization flow', () => {
         confidence: 0.9,
         targetRealm: intentCategory === 'LOCAL' ? 'local' : 'cloud',
         rationale: `llm-classified:${intentCategory.toLowerCase()}`,
-        dataLevel: 'public',
-        requiresSanitization: intentCategory === 'SANITIZED',
       }),
     }
     return { svc, createCalls }
@@ -448,8 +446,6 @@ describe('http-api E2E sanitization flow', () => {
         confidence: 0.9,
         targetRealm: 'cloud',
         rationale: 'llm-classified:cloud',
-        dataLevel: 'public',
-        requiresSanitization: false,
       }),
     }
 

@@ -68,8 +68,6 @@ describe('http-api REJECT short-circuit', () => {
         confidence: 0.99,
         targetRealm: 'rejected',
         rationale: `policy-rule:${text.slice(0, 8)}`,
-        dataLevel: 'internal',
-        requiresSanitization: false,
       }),
     }
   })
@@ -148,7 +146,7 @@ describe('http-api REJECT short-circuit', () => {
     // Sanity check: the REJECT guard must NOT short-circuit non-REJECT verdicts.
     intentRouter.classify = async () => ({
       category: 'CLOUD', confidence: 0.9, targetRealm: 'cloud',
-      rationale: 'llm-classified:cloud', dataLevel: 'public', requiresSanitization: false,
+      rationale: 'llm-classified:cloud',
     })
     const svc = buildService()
     ;(svc as any).agents = {
