@@ -7,10 +7,13 @@ import { redactString, redactObject, PII_RULES } from '../../src/dsh-adapter/pii
 
 describe('pii-utils', () => {
   describe('PII_RULES', () => {
-    it('defines 5 rules', () => {
-      assert.equal(PII_RULES.length, 5)
+    it('defines 9 rules (5 core + 4 extended, aligned with privacy-policy.json)', () => {
+      assert.equal(PII_RULES.length, 9)
       const names = PII_RULES.map((r) => r.name).sort()
-      assert.deepEqual(names, ['api-key', 'bank-card', 'email', 'id-card', 'phone'])
+      assert.deepEqual(names, [
+        'api-key', 'bank-card', 'email', 'id-card',
+        'ip-address', 'license-plate', 'mac-address', 'passport', 'phone',
+      ])
     })
   })
 
@@ -34,6 +37,32 @@ describe('pii-utils', () => {
       const { redacted, matches } = redactString('key=sk-abcdefghijklmnopqrstuvwxyz')
       assert.ok(redacted.includes('sk-***'))
       assert.equal(matches[0].type, 'api-key')
+    })
+
+    // Extended rules (2026-08-26): synced with privacy-policy.json 9 sanitizationRules
+    it('redacts ip-address', () => {
+      const { redacted, matches } = redactString('服务器 192.168.1.100 怎么访问')
+      assert.ok(!redacted.includes('192.168.1.100'), `redacted=${redacted}`)
+      assert.ok(/\d+\.\d+\.\*\*\*\.\*\*\*/.test(redacted), `expected masked form, got: ${redacted}`)
+      assert.equal(matches[0].type, 'ip-address')
+    })
+
+    it('redacts mac-address', () => {
+      const { redacted, matches } = redactString('设备 00:1A:2B:3C:4D:5E 配置网络')
+      assert.ok(!redacted.includes('00:1A:2B:3C:4D:5E'), `redacted=${redacted}`)
+      assert.equal(matches[0].type, 'mac-address')
+    })
+
+    it('redacts passport', () => {
+      const { redacted, matches } = redactString('护照 E12345678 办理签证')
+      assert.ok(!redacted.includes('E12345678'), `redacted=${redacted}`)
+      assert.equal(matches[0].type, 'passport')
+    })
+
+    it('redacts license-plate', () => {
+      const { redacted, matches } = redactString('车牌 京A12345 违章查询')
+      assert.ok(!redacted.includes('京A12345'), `redacted=${redacted}`)
+      assert.equal(matches[0].type, 'license-plate')
     })
 
     it('redacts multiple PII types', () => {

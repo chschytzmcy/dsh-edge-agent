@@ -134,8 +134,22 @@ const DEFAULT_POLICY: PrivacyPolicy = {
     },
   ],
   sanitizationRules: [
+    // P1 (2026-08-26): 规则顺序 id-card → bank-card → phone,
+    // phone 加 \b 边界,防止 phone 误截断 18 位身份证号内部子串
     {
-      pattern: '1[3-9]\\d{9}',
+      pattern: '[1-9]\\d{5}(19|20)\\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\\d|3[01])\\d{3}[\\dXx]',
+      replacement: '[ID_CARD]',
+      dataClass: 'secret',
+      piiType: 'id-card',
+    },
+    {
+      pattern: '\\b\\d{16,19}\\b',
+      replacement: '[BANK_CARD]',
+      dataClass: 'secret',
+      piiType: 'bank-card',
+    },
+    {
+      pattern: '\\b1[3-9]\\d{9}\\b',
       replacement: '[PHONE_$&]',
       dataClass: 'confidential',
       piiType: 'phone',
@@ -171,23 +185,10 @@ const DEFAULT_POLICY: PrivacyPolicy = {
       dataClass: 'confidential',
       piiType: 'license-plate',
     },
-    // P1 (2026-08-24): secret-level PII — id-card / bank-card / api-key.
-    // Ensures DEFAULT_POLICY covers all 9 types so prompt-guard Stage 5
-    // blocks secret PII even when the policy file is missing.
+    // P0 (2026-08-26): api-key 正则允许 sk- 后可选前缀(proj-/ant-/live-/test-/org-),
+    // 防止真实 OpenAI/Anthropic 风格 API key 漏过
     {
-      pattern: '[1-9]\\d{5}(19|20)\\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\\d|3[01])\\d{3}[\\dXx]',
-      replacement: '[ID_CARD]',
-      dataClass: 'secret',
-      piiType: 'id-card',
-    },
-    {
-      pattern: '\\d{16,19}',
-      replacement: '[BANK_CARD]',
-      dataClass: 'secret',
-      piiType: 'bank-card',
-    },
-    {
-      pattern: '(sk-[a-zA-Z0-9]{20,}|key-[a-zA-Z0-9]{16,}|api[_-]?key[_-]?[a-zA-Z0-9]{16,})',
+      pattern: '(sk-(?:proj-|ant-|live-|test-|org-)?[a-zA-Z0-9]{20,}|key-[a-zA-Z0-9]{16,}|api[_-]?key[_-]?[a-zA-Z0-9]{16,})',
       replacement: '[API_KEY]',
       dataClass: 'secret',
       piiType: 'api-key',

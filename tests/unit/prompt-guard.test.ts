@@ -44,15 +44,16 @@ const TEST_POLICY: PrivacyPolicy = {
   version: '1.0.0',
   routingRules: [],
   sanitizationRules: [
-    { pattern: '1[3-9]\\d{9}', replacement: '[PHONE]', dataClass: 'confidential', piiType: 'phone' },
-    { pattern: '[\\w.-]+@[\\w.-]+\\.\\w+', replacement: '[EMAIL]', dataClass: 'confidential', piiType: 'email' },
-    { pattern: '\\d{16,19}', replacement: '[BANK_CARD]', dataClass: 'secret', piiType: 'bank-card' },
+    // 规则顺序与 shipped JSON v1.4.0 对齐: id-card → bank-card → phone
     {
       pattern: '[1-9]\\d{5}(19|20)\\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\\d|3[01])\\d{3}[\\dXx]',
       replacement: '[ID_CARD]', dataClass: 'secret', piiType: 'id-card',
     },
+    { pattern: '\\b\\d{16,19}\\b', replacement: '[BANK_CARD]', dataClass: 'secret', piiType: 'bank-card' },
+    { pattern: '\\b1[3-9]\\d{9}\\b', replacement: '[PHONE]', dataClass: 'confidential', piiType: 'phone' },
+    { pattern: '[\\w.-]+@[\\w.-]+\\.\\w+', replacement: '[EMAIL]', dataClass: 'confidential', piiType: 'email' },
     {
-      pattern: '(sk-[a-zA-Z0-9]{20,}|key-[a-zA-Z0-9]{16,})',
+      pattern: '(sk-(?:proj-|ant-|live-|test-|org-)?[a-zA-Z0-9]{20,}|key-[a-zA-Z0-9]{16,})',
       replacement: '[API_KEY]', dataClass: 'secret', piiType: 'api-key',
     },
   ],
