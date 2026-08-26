@@ -2783,13 +2783,15 @@ cloud-llm-provider:
 
 ### 2.15 intent-router 插件（意图路由）
 
-按 `ctx.llm` 输出与 policy 双源 `matchRouting` 把用户请求路由到 LOCAL / CLOUD / SANITIZED / REJECT 四类 realm，并把意图作为后续 agent loop 的入口参数。v0.1.0 关键 trade-off：
+按 `ctx.llm` 输出与 policy 双源 `matchRouting` 把用户请求路由到 **LOCAL / CLOUD / SANITIZED / REJECT** 四类 realm，并把意图作为后续 agent loop 的入口参数。
 
-- **LLM-first → rules fallback**（不是「rules → LLM」瀑布）。低置信度时 fallback 到 keyword rules（**fail-open**，不是 fail-closed）。
-- **三层防御纵深**（职责分离）：http-api 调用 intent-router 之前先经 prompt-guard 正则模式库（攻击模式 → HTTP 400）+ 本地 qwen3-4b 模型辅助检测（复杂攻击，fail-open）；intent-router 自身的 privacy-policy REJECT 规则（业务危险操作 → HTTP 403）。三层各司其职：prompt-guard 专注攻击模式（注入/提词/越狱/角色覆盖/数据外传），privacy-policy REJECT 专注业务危险操作（破坏性命令/数据库删除）。
-- **`softService()` 软依赖**：对 privacyPolicy / modelRouter / sanitizer / piiUtils 采用 dual-mode 查找——Cordis 运行时用 `ctx.get()`（不在 inject 中时返回 undefined 而非 throw），单元测试裸 mock 用直接属性访问。保证在缺失或 mock 场景下均不崩溃。
-- **配置 schema 浮点化**：`confidenceThreshold` 是 0..1 浮点（`Schema.number().min(0).max(1)`），由 commit `18d247d` 修复 `Schema.natural()` 拒绝 `0.6` 的 bug。
-- **隐私侧额外防线**：分类 LLM 解析到 realm=CLOUD 时，先 `sanitizer.sanitize()` 再喂 LLM——**分类请求也带 PII 不出端**。
+**v0.1.0 关键 trade-off**(架构级决策):
+
+- **LLM-first → rules fallback**(不是「rules → LLM」瀑布)。低置信度时 fallback 到 keyword rules(**fail-open**,不是 fail-closed)。
+- **三层防御纵深**(职责分离):http-api 调用 intent-router 之前先经 prompt-guard 正则模式库(攻击模式 → HTTP 400)+ 本地 qwen3-4b 模型辅助检测(复杂攻击,fail-open);intent-router 自身的 privacy-policy REJECT 规则(业务危险操作 → HTTP 403)。三层各司其职:prompt-guard 专注攻击模式(注入/提词/越狱/角色覆盖/数据外传),privacy-policy REJECT 专注业务危险操作(破坏性命令/数据库删除)。
+- **`softService()` 软依赖**:对 privacyPolicy / modelRouter / sanitizer / piiUtils 采用 dual-mode 查找——Cordis 运行时用 `ctx.get()`(不在 inject 中时返回 undefined 而非 throw),单元测试裸 mock 用直接属性访问。保证在缺失或 mock 场景下均不崩溃。
+- **配置 schema 浮点化**:`confidenceThreshold` 是 0..1 浮点(`Schema.number().min(0).max(1)`),由 commit `18d247d` 修复 `Schema.natural()` 拒绝 `0.6` 的 bug。
+- **隐私侧额外防线**:分类 LLM 解析到 realm=CLOUD 时,先 `sanitizer.sanitize()` 再喂 LLM——**分类请求也带 PII 不出端**。
 
 #### 插件元信息
 ```yaml
@@ -2797,182 +2799,70 @@ name: intent-router
 type: middleware
 inject:
   - llm
-  - audit-log          # privacy-policy / model-router / sanitizer / piiUtils 走 softService() 懒查（不在 inject）
+  - audit-log          # privacy-policy / model-router / sanitizer / piiUtils 走 softService() 懒查(不在 inject)
 ```
 
-#### 接口定义
-```typescript
-export interface Config {
-  defaultCategory: 'LOCAL' | 'CLOUD' | 'SANITIZED'      // 默认 'CLOUD'
-  classificationProvider: string                         // 默认 'local-qwen3-4b'
-  classificationModel: string                            // 默认 'qwen3-4b'
-  confidenceThreshold: number                            // 默认 0.6，0..1 浮点
-  llmTimeoutMs?: number                                  // 默认 4000ms（AbortController 限时）
-  recentMessagesLimit?: number                           // 默认 3（多轮上下文嵌入窗口）
-  maxInputLength?: number                               // 默认 2000（超长截断 → audit intent.classify.truncated）
-  fallbackKeywords?: string[]                            // 默认 EN+CN 内置列表；env DSH_EDGE_INTENT_FALLBACK_KEYWORDS 覆写
-}
+#### 与相邻插件的关系(架构级)
 
-export interface Intent {
-  category: 'LOCAL' | 'CLOUD' | 'SANITIZED' | 'REJECT'
-  confidence: number
-  targetRealm: string
-  rationale: string
-}
+| 上游 | 协同 |
+|------|------|
+| `http-api` | 调用 `classify(text)`;REJECT → HTTP 403 short-circuit;Intent 作为 SSE 首帧 (`type: "intent"`) 返回 |
+| `prompt-guard` | 调用前先经 prompt-guard 正则模式库(攻击 → HTTP 400)+ 本地 LLM 模型检测(复杂攻击,fail-open) |
+| `privacy-policy` | `matchRouting()` pre-check 命中 REJECT 短路;fallback 路径命中返回 verdict(REALM_LOCAL/CLOUD/SANITIZED) |
+| `sanitizer` | CLOUD 分类前 `sanitize()`,分类请求自身也带 PII 不出端 |
 
-export interface IntentRouterService {
-  classify(text: string, context?: { recentMessages?: unknown[]; sessionId?: string }): Promise<Intent>
-  resolve(intent: Intent): { realm: string; config: Record<string, unknown> }
-  /** G9: 15 个计数器 + 10-bucket confidenceHistogram */
-  getStats(): IntentRouterStats
-}
-```
-
-#### 核心实现（基于 `src/dsh-adapter/intent-router.ts`）——`classify()` 流水线
-
-```
-classify(text, context):
-  1. stats.total++ ；空文本 → stats.empty++ 返回 defaultCategory
-  2. 长度截断（text > maxInputLength）→ stats.truncated++，截断到 maxInputLength
-  3. policy pre-check:
-       policy.matchRouting(text)
-       ├─ 命中 realm === 'REJECT' → stats.rejected++ ；audit security intent.rules.rejected
-       │                            → 返回 category=REJECT（短路；不调 LLM）
-       └─ 其它 or 未命中           → 继续
-  4. LLM-first try (classifyWithLlm):
-       modelRouter = softService('modelRouter')（dual-mode 懒查，兼容 Cordis 运行时与单元测试 mock）
-       resolved    = modelRouter.resolve(classificationProvider)
-                       // 警告：必须是带 local- / cloud- 前缀的路由 id；
-                       //       裸 model id 会被 model-router 落到 realm=CLOUD。
-       provider/model = resolved.provider/model ?? config.{classificationProvider,classificationModel}
-       if (resolved.realm === 'CLOUD'):
-         sanitizer = ctx.get('sanitizer')
-         if (sanitizer):
-           result = await sanitizer.sanitize(text, { sessionId })
-           promptText = result.sanitizedText ?? text   // sanitize 抛错 → keep 原文本（fail-open）
-           stats.sanitized++ ; sanitizeError 升级到 security 级审计
-         else: stats.sanitizeSkipped++
-       multi-turn: 抽最近 recentMessagesLimit 条 → "history" 块追加在 prompt 前（信息块，不是分类目标）
-       prompt = ROUTING_SYSTEM_PROMPT_CN + history + "用户请求：" + promptText
-       userMessage = createUserMessage({ content: [{type:'text', text: prompt }] })
-       controller = new AbortController(); timer = setTimeout(aborting, llmTimeoutMs)
-       try:
-         for await (chunk of llm.stream({provider, model, messages:[userMessage], signal:controller.signal})):
-           if (chunk.type === 'text-delta') responseText += chunk.text
-       catch (err):
-         isAbort = err.name === 'AbortError' || controller.signal.aborted
-         stats.timeout++ / stats.llmError++（依 isAbort 分流）
-         throw wrapped_err._intentRouterReason = isAbort ? 'timeout' : 'llm-error'
-       finally: clearTimeout(timer)
-       verdict = parseClassificationVerdict(responseText)
-         三档：①直接 JSON.parse → ②抽首个 {...} → ③regex 双命中（category & confidence 都拿到）
-         任一档返回 null → stats.parseFailure++ + stats.llmError++
-                          → throw _intentRouterReason = 'unclear'
-       if (verdict.confidence < confidenceThreshold):
-         stats.lowConfidence++
-         throw _intentRouterReason = 'low-confidence'
-       G9: bucket = floor(verdict.confidence*10) clamp [0,9]
-            confidenceHistogram[bucket].{accepted|rejected}++
-       return { category: verdict.category, confidence, targetRealm, rationale: 'llm-classified:<x>' }
-  5. catch (llm err) → fallback classifyWithRules:
-       policy.matchRouting(text)（再次；但 pre-check 已用过，这里再走 fallback 路径）
-       ├─ 命中 SANITIZED → category=SANITIZED, targetRealm='sanitized'（调用方凭 category 自行走 sanitizer）
-       ├─ 命中 REJECT    → stats.rejected++
-       ├─ 命中 LOCAL/CLOUD → stats.ruleHit++
-       └─ 未命中：
-            lower = text.toLowerCase()
-            match = fallbackKeywords.find(k => lower.includes(k.toLowerCase()))
-            ├─ 命中    → stats.ruleHit++ ；返回 category=LOCAL, confidence=0.7
-            └─ 未命中  → stats.defaultHit++ ；返回 defaultCategory, confidence=0.5
-```
-
-#### `parseClassificationVerdict` 三档解析（关键加固点）
-```typescript
-function parseClassificationVerdict(raw: string): ClassificationVerdict | null {
-  // Tier 1: 直接 JSON.parse(原样 / 去 fence)
-  // Tier 2: 抽首个 {...} 块 → JSON.parse
-  // Tier 3: regex 双命中兜底
-  //         categoryMatch = /["']?category["']?\s*[:=]\s*["']?(LOCAL|CLOUD)["']?/
-  //         confidenceMatch = /["']?confidence["']?\s*[:=]?\s*([0-9.]+)/
-  //         必须两者都拿到 → 否则返回 null（commit c7b5daa：避免 0.5-confidence 误用）
-  return null
-}
-```
-**为什么 Tier 3 必须双命中**：qwen3-4b 偶发只输出 `category=LOCAL` 不带 confidence；兜底返回 `{ category, confidence: 0.5 }` 会让 0.5 永远卡在 0.6 阈值以下，造成 stats.parseFailure 隐藏——区分 transport health 与 parse health（详见 § 1.6.7）。
-
-#### `redactPreview()` ——Defense-in-depth
-- 用途：审计级别的文本预览（`textPreview` 80 字符上限），传 `intent.classify.end` 等审计事件
-- 脱敏路径：`ctx.piiUtils.redactString(text.slice(0,40))` → 若返回失败则整段返回 null（不是泄露原文；调用方需降级到长度-only 上报）
-- 注意：审计侧 `audit-log` 已经在写入前对 payload 做 `redactObject`，`redactPreview` 是 router 侧的额外一道——即便 audit-log 未挂载或失配，前置脱敏仍然生效。
-
-#### `getStats()` ——G9 可观测性
-```typescript
-interface IntentRouterStats {
-  total: number; empty: number; truncated: number;
-  llmHit: number; ruleHit: number; defaultHit: number;
-  lowConfidence: number; timeout: number; llmError: number;
-  parseFailure: number;          // P1：与 llmError 独立计数
-  rejected: number;
-  sanitized: number; sanitizeError: number; sanitizeSkipped: number;
-  // 以上共 15 个独立计数字段，加上下方的 confidenceHistogram
-  /** G9: 10-bucket histogram × {accepted, rejected} */
-  confidenceHistogram: { [bucket: '0'..'9']: { accepted: number; rejected: number } }
-}
-```
-
-#### 实装总结与下游集成
-
-intent-router 的实装定位是 **"三层防御 + LLM 分类 + 规则兜底"四层路由**，核心实现在 `src/dsh-adapter/intent-router.ts`（~760 行），配套测试 `tests/unit/intent-router.test.ts`（~1940 行）+ `tests/unit/privacy-precheck.test.ts`（22 行）+ `tests/unit/prompt-guard.test.ts`（72 行）+ `scripts/e2e-privacy-precheck.sh`（17 e2e 用例）。
-
-**下游集成**：
-
-| 消费者 | 用法 |
-|--------|------|
-| `http-api` | 每条消息先经 prompt-guard（HTTP 400），再调用 `classify()`；REJECT 意图 → HTTP 403 short-circuit；Intent 作为 SSE 首帧 (`type: "intent"`) 返回 |
-| `tools` | `filterTools(intent)` / `isToolAllowed(name, intent)` 实现 realm 级别工具隔离（REJECT → 空工具列表） |
-| `td-bus` | 威胁检测总线消费 Intent 进行异常行为分析（规划中，尚未接入主链路） |
-| plugin boot | 第 15 步启动（19 个插件拓扑排序），inject `llm, auditLog`；其他服务走 `softService()` |
-
-**软依赖架构**：intent-router 对辅助服务采用 `softService()` dual-mode 查找（Cordis 运行时 `ctx.get()` / 裸 mock 直接属性），缺失时 fail-open 不阻断主流程：
-- `llm` — 必须（无 LLM 则直接走规则兜底）
-- `auditLog` — 可选（缺失时静默跳过审计）
-- `privacyPolicy` — 可选（matchRouting 缺失时跳过预检和规则匹配）
-- `modelRouter` — 可选（resolve 缺失时用 config 默认值）
-- `sanitizer` — 可选（缺失时 CLOUD 分类不脱敏，fail-open）
-- `piiUtils` — 可选（redactString 缺失时审计日志不记录文本预览）
-
-> 完整实装解析（含分类流程图、层间流转规则、Intent 接口、下游集成、可观测性、配置参数、测试覆盖、真实环境 e2e 验证、部署注意事项、后续优化项）见 [`docs/dsh-edge-agent_意图识别路由.md`](./dsh-edge-agent_意图识别路由.md)。
+| 下游 | 用法 |
+|------|------|
+| `tools` | `filterTools(intent)` / `isToolAllowed(name, intent)` 实现 realm 级别工具隔离(REJECT → 空工具列表) |
+| `td-bus` | 威胁检测总线消费 Intent 进行异常行为分析(规划中,尚未接入主链路) |
+| `audit-log` | 每次分类触发 `intent.classify.start` / `intent.classify.end` / `intent.rules.rejected`(security 级) / `intent.classify.truncated`(warn 级) |
 
 #### 设计意图 vs 实现的差异
 | 维度 | 原 v6 设计 | 当前实现 | 原因 |
 |---|---|---|---|
-| 顺序 | rules → LLM → confidence | **LLM-first → rules fallback** | qwen3-4b 在规则路径下经常被强力 regex 反向劫持；先让 LLM 拿 verdict，规则只做兜底更稳 |
-| 低置信度 | fail-closed → REJECT | **fail-open → rules/defaultCategory** | qwen3-4b 置信度抖动较大；REJECT 误拒率不可接受 |
-| 输入防护 | 单层 | **三层防御**：prompt-guard 正则（零 token）+ prompt-guard 本地 LLM（fail-open）+ privacy-policy REJECT（零 token） | 纵深防御，即使一层漏过另一层仍可阻断 |
-| `inject` | `['llm','privacy-policy','model-router','prompt-guard','audit-log','config']` | **`['llm','auditLog']`**（其它走 `softService()` 懒查） | v6 §7 明确规定 inject 不列 `config`；privacy-policy/model-router/sanitizer 在 intent-router 之后 boot，必须懒查 |
-| 软依赖访问 | `ctx.xxx` 直接访问 | **`softService(name)`** dual-mode：Cordis `ctx.get()` / mock 直接属性 | Cordis `ctx.xxx` 对非 inject 服务会 throw；`softService()` 兼容运行时和单元测试 |
-| `ctx.llm.chat()` | 直接调用 | **`ctx.llm.stream({ signal })`** | v6 §11.2 row 4；DSH `LlmAdapter { stream }` |
-| REJECT 来源 | 仅 prompt-guard | **policy pre-check + fallback rule 两条路径** | LLM 分类只产出 LOCAL/CLOUD；REJECT 必经 policy 规则 |
+| 顺序 | rules → LLM → confidence | **LLM-first → rules fallback** | qwen3-4b 在规则路径下经常被强力 regex 反向劫持;先让 LLM 拿 verdict,规则只做兜底更稳 |
+| 低置信度 | fail-closed → REJECT | **fail-open → rules/defaultCategory** | qwen3-4b 置信度抖动较大;REJECT 误拒率不可接受 |
+| 输入防护 | 单层 | **三层防御**:prompt-guard 正则(零 token)+ prompt-guard 本地 LLM(fail-open)+ privacy-policy REJECT(零 token) | 纵深防御,即使一层漏过另一层仍可阻断 |
+| `inject` | `['llm','privacy-policy','model-router','prompt-guard','audit-log','config']` | **`['llm','auditLog']`**(其它走 `softService()` 懒查) | v6 §7 明确规定 inject 不列 `config`;privacy-policy/model-router/sanitizer 在 intent-router 之后 boot,必须懒查 |
+| 软依赖访问 | `ctx.xxx` 直接访问 | **`softService(name)`** dual-mode:Cordis `ctx.get()` / mock 直接属性 | Cordis `ctx.xxx` 对非 inject 服务会 throw;`softService()` 兼容运行时和单元测试 |
+| `ctx.llm.chat()` | 直接调用 | **`ctx.llm.stream({ signal })`** | v6 §11.2 row 4;DSH `LlmAdapter { stream }` |
+| REJECT 来源 | 仅 prompt-guard | **policy pre-check + fallback rule 两条路径** | LLM 分类只产出 LOCAL/CLOUD;REJECT 必经 policy 规则 |
 | SANITIZED | LLM verdict | **仅 policy 规则命中** | LLM prompt 模版里不写 SANITIZED 选项 |
 
-#### 配置 schema（cordis.yml 当前形态）
+#### 配置 schema(cordis.yml 当前形态)
 ```yaml
 intent-router:
   defaultCategory: 'CLOUD'                  # 兜底 category
-  classificationProvider: 'local-qwen3-4b'  # 必须是带前缀的路由 id（modelRouter 解析）
+  classificationProvider: 'local-qwen3-4b'  # 必须是带前缀的路由 id(modelRouter 解析)
   classificationModel: 'qwen3-4b'
-  confidenceThreshold: 0.6                  # 0..1 浮点（18d247d 修复）
+  confidenceThreshold: 0.6                  # 0..1 浮点(18d247d 修复)
   llmTimeoutMs: 4000
   recentMessagesLimit: 3
   maxInputLength: 2000
-  fallbackKeywords: []                      # 空时用 EN+CN 内置；非空时整体替换
+  fallbackKeywords: []                      # 空时用 EN+CN 内置;非空时整体替换
 ```
 
-环境覆写：
+环境覆写:
 - `DSH_EDGE_INTENT_LLM_TIMEOUT_MS`
 - `DSH_EDGE_INTENT_MAX_INPUT`
 - `DSH_EDGE_INTENT_FALLBACK_KEYWORDS` (comma-separated)
 - `DSH_EDGE_INTENT_CONFIDENCE_THRESHOLD`
+
+#### 详细信息参考
+
+> **本节仅为架构级概要**(`intent-router` 在插件拓扑中的位置、关键 trade-off、与相邻插件的关系、设计决策表、配置 schema)。完整实装解析 ——
+>
+> - **核心实现** `classify()` 流水线(195 行 ASCII 树状图,含 `policy pre-check` → `classifyWithLlm` → `classifyWithRules` fallback → 7 种 `_intentRouterReason` 异常分支)
+> - **接口定义** `Config` / `Intent` / `IntentRouterService` 完整 TypeScript 定义
+> - **关键加固点** `parseClassificationVerdict` 三档解析(Tier 1/2/3 + Tier 3 双命中原因)
+> - **Defense-in-depth** `redactPreview()` 审计级文本预览(80 字符上限 + null 降级)
+> - **可观测性** `getStats()` 15 个独立计数字段 + G9 10-bucket confidenceHistogram
+> - **下游集成** + **软依赖架构**(`softService()` dual-mode 详细说明)
+> - **真实环境 e2e 验证**(2026-08-26 实跑 31 个用例,LOCAL/CLOUD/REJECT 完整覆盖)
+> - **shipped privacy-policy.json v1.x 修复历史**(v1.0.0 → v1.4.0,含 P0 api-key + P1 phone 截断 id-card 修复)
+> - **部署注意事项** + **后续优化项**
+>
+> —— 详见 **[`docs/dsh-edge-agent_意图识别路由.md`](./dsh-edge-agent_意图识别路由.md)**。
 
 ---
 
