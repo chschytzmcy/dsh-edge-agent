@@ -743,19 +743,25 @@ classifyData(text: string): string {
 
 脱敏规则定义 PII 识别和替换模板：
 
-**当前 shipped 的 9 条脱敏规则**：
+**当前 shipped 的 9 条脱敏规则**(v1.4.0,2026-08-26)：
 
 | # | pattern | replacement | dataClass | piiType |
 |---|---------|-------------|-----------|---------|
-| 1 | `1[3-9]\d{9}` | `[PHONE]` | confidential | phone |
-| 2 | `[1-9]\d{5}(19\|20)\d{2}...` | `[ID_CARD]` | secret | id-card |
-| 3 | `\d{16,19}` | `[BANK_CARD]` | secret | bank-card |
+| 1 | `[1-9]\d{5}(19\|20)\d{2}(0[1-9]\|1[0-2])(0[1-9]\|[12]\d\|3[01])\d{3}[\dXx]` | `[ID_CARD]` | secret | id-card |
+| 2 | `\b\d{16,19}\b` | `[BANK_CARD]` | secret | bank-card |
+| 3 | `\b1[3-9]\d{9}\b` | `[PHONE]` | confidential | phone |
 | 4 | `[\w.-]+@[\w.-]+\.\w+` | `[EMAIL]` | confidential | email |
-| 5 | `sk-[a-zA-Z0-9]{20,}\|key-...\|api_key...` | `[API_KEY]` | secret | api-key |
+| 5 | `sk-(?:proj-\|ant-\|live-\|test-\|org-)?[a-zA-Z0-9]{20,}\|key-...\|api[_-]?key[_-]?...` | `[API_KEY]` | secret | api-key |
 | 6 | `\b(?:\d{1,3}\.){3}\d{1,3}\b` | `[IP_ADDRESS]` | confidential | ip-address |
 | 7 | `([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}` | `[MAC_ADDRESS]` | confidential | mac-address |
 | 8 | `(E[0-9A-Z]\d{7}\|G\d{8})` | `[PASSPORT]` | secret | passport |
 | 9 | `[京津沪...][A-Z][A-HJ-NP-Z0-9]{5}` | `[LICENSE_PLATE]` | confidential | license-plate |
+
+**关键设计点**(v1.4.0 修复):
+
+1. **规则顺序 id-card → bank-card → phone**(长规则优先)。原 v1.2.0 顺序 `phone → id-card → bank-card` 有 P1 bug:phone 正则 `1[3-9]\d{9}` 会截断 18 位身份证号内部子串(如 `110101199003078811` 中 `19900307881`),导致 id-card 仅 11 位被脱敏、其余明文。调换顺序后 id-card 先吃完整 18 位,phone 后续仅匹配独立 11 位。
+2. **phone / bank-card 加 `\b` 单词边界**(双重保险)。即使未来规则顺序错乱,`\b1[3-9]\d{9}\b` 也不会在更长数字串内部误命中(`110101199003078811` 中 `19900307881` 前后都是数字,无 `\b`,**不会匹配**)。
+3. **api-key 正则允许 `sk-proj-` / `sk-ant-` / `sk-live-` / `sk-test-` / `sk-org-` 可选项目名前缀**。原 v1.2.0 `sk-[a-zA-Z0-9]{20,}` 不允许连字符,真实 OpenAI / Anthropic 风格 `sk-proj-XXX` 全部漏过。
 
 **规则格式**：
 
@@ -814,7 +820,7 @@ async desanitize(text, sessionId) {
 
 两者用同一个 `sessionId`，共享映射表。
 
-**注意**：`pii-utils.ts`（审计日志输出脱敏）定义了 5 种 PII 正则（phone/email/id-card/bank-card/api-key），其正则**较宽松**（如 id-card 仅匹配任意 17 位数字+校验位）。`privacy-policy` 的 9 条脱敏规则正则**更严格**（如 id-card 会校验年月日有效性），用于输入分类和路由决策。两者职责不同：pii-utils 用于输出掩码（宁可多脱不漏），privacy-policy 用于输入分类（减少误判）。
+**注意**：`pii-utils.ts`（审计日志输出脱敏）定义了 **9 种 PII 正则**(与 shipped JSON v1.4.0 完全对齐,2026-08-26 扩展),其正则**较宽松**（如 id-card 仅匹配任意 17 位数字+校验位）。`privacy-policy` 的 9 条脱敏规则正则**更严格**（如 id-card 会校验年月日有效性），用于输入分类和路由决策。两者职责不同：pii-utils 用于输出掩码（宁可多脱不漏），privacy-policy 用于输入分类（减少误判）。
 
 ### DEFAULT_POLICY vs shipped JSON 的差异
 
@@ -824,7 +830,7 @@ async desanitize(text, sessionId) {
 |------|--------------------------|---------------------------|
 | **路由规则数** | 3 条（2 REJECT + 1 LOCAL） | 6 条（2 REJECT + 3 LOCAL + 1 CLOUD） |
 | **LOCAL 关键词** | `(本地\|local\|文件\|file\|计算\|calculate\|读取\|写入)` | 额外含凭证规则（密码/token）、金融 PII 规则（身份证/银行卡）、CLOUD 知识规则 |
-| **脱敏规则数** | 9 条（与 shipped JSON 一致，2026-08-24 扩展） | 9 条 |
+| **脱敏规则数** | 9 条（与 shipped JSON 一致，**v1.4.0 多次修复**,2026-08-26） | 9 条 |
 | **replacement 格式** | `[PHONE_$&]`（`$&` 嵌入原始匹配值） | `[PHONE]`（纯占位符） |
 
 **replacement 格式差异的影响**：
@@ -2171,13 +2177,18 @@ try {
 ## 不可逆掩码：pii-utils
 
 ```typescript
-// pii-utils.ts:19-48
+// pii-utils.ts (v1.4.0,与 shipped privacy-policy.json 完全对齐,9 条)
 export const PII_RULES: PIIRule[] = [
-  { name: 'phone',     pattern: /1[3-9]\d{9}/g,            mask: (m) => `${m.slice(0, 3)}****${m.slice(7)}` },
-  { name: 'id-card',   pattern: /\d{17}[\dXx]/g,           mask: (m) => `${m.slice(0, 3)}***********${m.slice(14)}` },
-  { name: 'bank-card', pattern: /\d{16,19}/g,               mask: (m) => `${m.slice(0, 4)}**********${m.slice(-4)}` },
-  { name: 'email',     pattern: /([\w.-]+)@([\w.-]+\.\w+)/g, mask: (m) => `${m.split('@')[0][0]}***@${m.split('@')[1]}` },
-  { name: 'api-key',   pattern: /sk-[a-zA-Z0-9]{20,}/g,    mask: () => 'sk-***' },
+  // 规则顺序: id-card → bank-card → phone (长规则优先,P1 修复)
+  { name: 'id-card',    pattern: /\d{17}[\dXx]/g,                  mask: (m) => `${m.slice(0, 3)}***********${m.slice(14)}` },
+  { name: 'bank-card',  pattern: /\b\d{16,19}\b/g,                  mask: (m) => `${m.slice(0, 4)}**********${m.slice(-4)}` },
+  { name: 'phone',      pattern: /\b1[3-9]\d{9}\b/g,               mask: (m) => `${m.slice(0, 3)}****${m.slice(7)}` },
+  { name: 'email',      pattern: /([\w.-]+)@([\w.-]+\.\w+)/g,      mask: (m) => `${m.split('@')[0][0]}***@${m.split('@')[1]}` },
+  { name: 'api-key',    pattern: /sk-(?:proj-|ant-|live-|test-|org-)?[a-zA-Z0-9]{20,}/g, mask: () => 'sk-***' },
+  { name: 'ip-address', pattern: /\b(?:\d{1,3}\.){3}\d{1,3}\b/g,    mask: (m) => `${m.split('.')[0]}.${m.split('.')[1]}.***.***` },
+  { name: 'mac-address',pattern: /([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}/g, mask: (m) => `${m.split(/[:-]/)[0]}:${m.split(/[:-]/)[1]}:**:**:**:**` },
+  { name: 'passport',   pattern: /\b(?:E[0-9A-Z]\d{7}|G\d{8})\b/g, mask: (m) => `${m[0]}****${m.slice(-2)}` },
+  { name: 'license-plate', pattern: /[京津沪渝冀豫云辽黑湘皖鲁新苏浙赣鄂桂甘晋蒙陕吉闽贵粤川青藏琼][A-Z][A-HJ-NP-Z0-9]{5}/g, mask: (m) => `${m[0]}*·*****` },
 ]
 ```
 
@@ -2195,31 +2206,45 @@ export const PII_RULES: PIIRule[] = [
 | `http-api.ts` | 同步审计预览脱敏 |
 | `prompt-guard.ts` | `checkOutput()` 当 session **未**被 sanitizer 管理时，作为输出安全网掩码 |
 
-### ⚠️ pii-utils 与 sanitizer-pipeline 规则范围差异（安全间隙说明）
+### pii-utils 与 sanitizer-pipeline 规则一致性（v1.4.0 已对齐）
 
 | 维度 | pii-utils（PII_RULES） | sanitizer-pipeline（privacy-policy sanitizationRules） |
 |------|----------------------|------------------------------------------------|
-| **规则数** | 5（phone / id-card / bank-card / email / api-key） | 9（+ ip-address / mac-address / passport / license-plate） |
+| **规则数** | **9**(phone / id-card / bank-card / email / api-key / ip-address / mac-address / passport / license-plate) | **9**(与 pii-utils 完全对齐,v1.4.0 同步) |
 | **方向** | 不可逆掩码 | 可逆占位符（`[PHONE_1]` ↔ 原值） |
 | **典型调用方** | audit-log / local-storage / prompt-guard.checkOutput 兜底 | http-api / intent-router 进出云端的 PII 替换 |
-| **覆盖范围** | 仅 5 类基础 PII | 覆盖 9 类含 secret 级 PII |
+| **覆盖范围** | **9 类全 PII** | **9 类全 PII** |
 
 **安全含义**：
 
 - **正向脱敏（出云端）** 全程走 sanitizer-pipeline 9 条规则，IP/MAC/护照/车牌都会被替换为占位符——这条路径无间隙。
-- **反向输出安全网**（prompt-guard `checkOutput` 在 session **未**经 sanitizer 管理时调用的兜底分支、audit-log 写盘前的 `redactObject`）**只覆盖 5 类基础 PII**。理论上 IP/MAC/护照/车牌可能从这条出口路径泄漏到客户端或日志文件。
+- **反向输出安全网**（prompt-guard `checkOutput` 在 session **未**经 sanitizer 管理时调用的兜底分支、audit-log 写盘前的 `redactObject`）**已覆盖 9 类全 PII**（v1.4.0 同步修复）。
+- 主链路（`/v1/chat` + `/v1/chat/stream`）100% 走 sanitizer-pipeline，正向脱敏 + desanitize 已经处理全部 9 类 PII；prompt-guard 的输出兜底**仅在 sanitizer 不可用**时生效。
+- LOCAL-only session（`isLocal === true`）不经 sanitizer，但本地 LLM 不外发数据——IP/MAC/护照/车牌的输出泄漏面只到 `audit-log`（已脱敏 9 类）和客户端 UI。
 
-**实际影响评估**：
+**v1.4.0 已对齐选项 A**：pii-utils 扩展至 9 条,与 sanitizer-pipeline 完全对齐;修复方向选项 B/C 不再需要。
 
-1. 主链路（`/v1/chat` + `/v1/chat/stream`）100% 走 sanitizer-pipeline，正向脱敏 + desanitize 已经处理全部 9 类 PII；prompt-guard 的输出兜底**仅在 sanitizer 不可用**时生效。
-2. LOCAL-only session（`isLocal === true`）不经 sanitizer，但本地 LLM 不外发数据——IP/MAC/护照/车牌的输出泄漏面只到 `audit-log`（已脱敏5 类）和客户端 UI。
-3. 已知折中：扩展 pii-utils 的 5→9 条规则需要额外加 4 条 mask 函数（IP → `192.168.*.*`、MAC → `AA:BB:CC:**:**:**`、护照 → `E********`、车牌 → `**A*1234`）。**当前优先级 P2**（取决于后续 Phase 5 客户端审计需求）。
+---
 
-**修复方向**：
+## shipped JSON v1.x 修复历史
 
-- 选项 A：扩展 pii-utils 到 9 条规则，与 sanitizer 对齐（推荐，简单且对称）。
-- 选项 B：将 pii-utils 的 5 条规则下沉为 `core-rules`，sanitizer 的 4 条扩展规则作为 `extended-rules`，prompt-guard 兜底时合并调用。
-- 当前默认：维持现状，但在 audit-log 的 `output.pii-redacted` 审计事件中记录「仅识别 N 类 PII」的 hint，便于运维察觉规则漂移。
+| 版本 | 日期 | 类型 | 修复内容 |
+|------|------|------|---------|
+| **v1.4.0** | 2026-08-26 | bug-fix | (1) **P0**: api-key 正则从 `sk-[a-zA-Z0-9]{20,}` 改为 `sk-(?:proj-\|ant-\|live-\|test-\|org-)?[a-zA-Z0-9]{20,}`,修复真实 OpenAI/Anthropic 风格 `sk-proj-XXX` 漏过的安全风险;(2) **P1**: 规则顺序重排 `id-card → bank-card → phone`(长规则优先),phone / bank-card 加 `\b` 边界,修复 phone 截断 18 位身份证号内部子串 `19900307881` 的 P1 问题;(3) pii-utils `PII_RULES` 同步对齐 9 条规则 |
+| v1.3.0 | 2026-08-26 | feature | ip-address / mac-address / passport / license-plate 4 类扩展 PII(7220e93 feat commit) |
+| v1.2.0 | 2026-08-25 | bug-fix | id-card 18 位结构验证(`[1-9]\d{5}(19\|20)\d{2}(0[1-9]\|1[0-2])(0[1-9]\|[12]\d\|3[01])\d{3}[\dXx]`),去除 `\d{17}[\dXx]` 宽松匹配 |
+| v1.1.0 | 2026-08-24 | security | multi-turn recentMessages sanitize(6390da2 fix commit) |
+| v1.0.0 | 2026-08-23 | initial | shipped 9 条 PII 规则初始版本 |
+
+**`pii-utils.ts` 同步点**:每次 shipped JSON 升级时,**必须**同步修改 3 处:
+
+1. `src/dsh-adapter/pii-utils.ts` 的 `PII_RULES` 数组(redactString/redactObject 入口)
+2. `src/dsh-adapter/privacy-policy.ts` 的 `DEFAULT_POLICY.sanitizationRules`(fallback)
+3. `tests/unit/prompt-guard.test.ts` 的 stub `sanitizationRules`(测试用例基线)
+
+任一处漂移会导致:`pii-utils` 与 `sanitizer-pipeline` 规则范围不一致,产生 §2198 节所述的"安全间隙"。**v1.4.0 三处已严格对齐**。
+
+**单元测试**: `pii-utils.test.ts` 19/19 + `prompt-guard.test.ts` 78/78 + 全量 **447/447 PASS**(v1.4.0 实测)。
 
 ## 完整请求流中的 6 个脱敏调用点
 
