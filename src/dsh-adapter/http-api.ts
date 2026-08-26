@@ -197,6 +197,25 @@ export class HttpApiServiceImpl extends Service {
       console.log('[http-api] Error getting intentRouter:', err?.message)
     }
 
+    // Phase 5 diagnostic: dump the upstream tool registry so E2E can see
+    // whether web_search / web_fetch are actually mounted. The Cordis proxy
+    // throws when `tools` hasn't injected, so wrap defensively.
+    try {
+      const edgeTools = (this.cordisCtx as any).edgeTools
+      if (edgeTools && typeof edgeTools.list === 'function') {
+        const allTools = edgeTools.list()
+        const names = allTools.map((t: any) => `${t.name}:${t.realm}`)
+        console.log(`[http-api] edgeTools.list() → ${names.length} tools: ${names.join(', ')}`)
+        const hasWebSearch = names.some((n: string) => n.startsWith('web_search:'))
+        const hasWebFetch = names.some((n: string) => n.startsWith('web_fetch:'))
+        console.log(`[http-api] web_search registered: ${hasWebSearch}, web_fetch registered: ${hasWebFetch}`)
+      } else {
+        console.log('[http-api] edgeTools: missing or invalid')
+      }
+    } catch (err: any) {
+      console.log('[http-api] Error reading edgeTools:', err?.message)
+    }
+
     this.server = createServer((req, res) => this.handleRequest(req, res))
     await new Promise<void>((resolve, reject) => {
       this.server!.once('error', reject)

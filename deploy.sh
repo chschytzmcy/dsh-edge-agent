@@ -170,15 +170,42 @@ fi
 mkdir -p "\$PROFILE_DIR"
 rsync -a --delete "$REMOTE_PATH/lib/" "\$NESTED_PKG/lib/"
 
-# 同步 profile 自己的 patch 文件（含 http-api 等核心插件挂载）
+# 同步 profile 的 cordis.patch.yml（含 tool-web / web-search-guard 等插件挂载）
 if [ -f "$REMOTE_PATH/profiles/\$PROFILE/cordis.patch.yml" ]; then
     cp "$REMOTE_PATH/profiles/\$PROFILE/cordis.patch.yml" "\$PROFILE_DIR/cordis.patch.yml"
 fi
+
+# 注意：不同步 profiles/\$PROFILE/package.json — `dsh plugin add` 已经
+# 生成了正确的 package.json（bundles + deps 都指向 npm 包）。
+# 项目级的 package.json 用 file:../../ 引用本地源码，远程设备上不存在。
 
 # 同步 .env（业务变量 + API key），让 profile home 也有
 if [ -f "$REMOTE_PATH/.env" ]; then
     cp "$REMOTE_PATH/.env" "\$PROFILE_DIR/.env"
 fi
+
+# 同步 privacy-policy.json（privacy-policy 插件的热加载策略文件）
+if [ -f "$REMOTE_PATH/profiles/\$PROFILE/privacy-policy.json" ]; then
+    cp "$REMOTE_PATH/profiles/\$PROFILE/privacy-policy.json" "\$PROFILE_DIR/privacy-policy.json"
+fi
+
+# 安装上游 web search 包（tool-web / web / web-search-deepseek）。
+# 这些包是 web_search / web_fetch 工具链的依赖：
+#   - dsh-tool-web: 注册 web_search / web_fetch 工具到 ctx.tools
+#   - dsh-web: 提供 ctx.web 服务（tool-web 的 inject 依赖）
+#   - dsh-web-search-deepseek: 注册 DeepSeek 搜索 provider 到 ctx.web
+# 缺任何一个都会导致 cloud LLM 无法调用搜索工具。
+# `dsh plugin add` 是幂等的（已安装则跳过）。
+echo "  -> install upstream web-search packages"
+for _pkg in \\
+    @deepseek-ai/dsh-agent-loop \\
+    @deepseek-ai/dsh-tool-web \\
+    @deepseek-ai/dsh-web \\
+    @deepseek-ai/dsh-web-search-deepseek; do
+    dsh plugin --profile "\$PROFILE" add "\$_pkg" >/dev/null 2>&1 || {
+        echo "  warning: failed to add \$_pkg" >&2
+    }
+done
 
 echo "✓ 已同步到 \$PROFILE_DIR"
 REMOTE_SCRIPT

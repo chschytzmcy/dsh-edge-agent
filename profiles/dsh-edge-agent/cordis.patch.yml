@@ -70,6 +70,12 @@
 - id: tool-fs
 - id: tool-fs-search
 - id: tool-web
+  config:
+    search: true
+    fetch: true
+    searchMaxResults: 8
+    searchTimeoutMs: 30000
+    fetchTimeoutMs: 30000
 - id: web
 - id: dsh-web
 - id: tool-todo
@@ -269,15 +275,15 @@
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/sanitizer-pipeline'
       inject: [privacyPolicy, auditLog]
       config:
+        enableAutoDetection: true
         maxReplacementsPerSession: 1024
 
-    # ── Phase 5: web_search / web_fetch monitor (2026-08-26) ─────────────
+    # ── Phase 5: web-search 监控守卫 ──────────────────────────────────────
     # Observes `tools/result` events for web_search / web_fetch. Tasks:
     #   - PII leak monitor (security-level audit when LLM bypasses sanitizer)
     #   - tool.web-search.executed audit event (info-level, redacted payload)
     #   - In-process sliding-window rate limit (web_search < 10/min,
     #     web_fetch < 5/min) — soft alarm today; M5+ wires ctx.tools.guard().
-    # `tools` is mounted by dsh-base; sanitizer / auditLog are mounted above.
     - id: web-search-guard
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/web-search-guard'
       inject: [tools, sanitizer, auditLog]
@@ -285,5 +291,4 @@
         enablePIIMonitor: true
         enableAudit: true
         enableRateLimit: true
-        rateLimits: {}
 

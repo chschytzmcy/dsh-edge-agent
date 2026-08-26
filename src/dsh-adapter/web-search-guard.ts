@@ -264,9 +264,28 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
   // ── tools/change: refresh rate-limit counters when tools come and go ──
   // We do not create counters lazily — `recordHit` does — so this is a
   // no-op today. Kept as a hook point for future per-agent overrides.
+  // DIAGNOSTIC (Phase 5 v2): log every tool registration so E2E boot scan
+  // can see whether web_search / web_fetch actually register at all.
+  let seenNames = new Set<string>()
   const onToolsChange = (): void => {
-    // intentionally empty
+    try {
+      const t = (ctx as unknown as { tools?: { view?: () => { entries?: () => Iterable<[string, unknown]> } } }).tools
+      const view = t?.view?.()
+      const entries = view?.entries ? Array.from(view.entries()) : []
+      const fresh = entries.filter(([n]) => !seenNames.has(n))
+      if (fresh.length > 0) {
+        const names = fresh.map(([n]) => n).join(', ')
+        console.log(`[web-search-guard] tools/change +${fresh.length}: ${names}`)
+        fresh.forEach(([n]) => seenNames.add(n))
+        console.log(`[web-search-guard] total registered: ${seenNames.size} (${Array.from(seenNames).join(', ')})`)
+      }
+    } catch (err) {
+      console.log(`[web-search-guard] tools/change read error: ${err instanceof Error ? err.message : String(err)}`)
+    }
   }
+  // Fire once on apply to catch tools already registered.
+  console.log('[web-search-guard] apply() called, registering tools/change + tools/result listeners')
+  setImmediate(onToolsChange)
   const disposeChange = ctxWithOn.on?.('tools/change', onToolsChange)
 
   return async () => {

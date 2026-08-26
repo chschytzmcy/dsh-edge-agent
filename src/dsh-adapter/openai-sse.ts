@@ -57,7 +57,11 @@ export function buildChatCompletionsBody(
     wireMessages.push({ role: message.role, content: extractText(message.content) })
   }
   const body: Record<string, unknown> = {
-    model: options.model || defaultModel,
+    // CRITICAL: use the adapter's configured `defaultModel` (the real upstream
+    // model name, e.g. "deepseek-chat"), NOT `options.model` which is the Cordis
+    // provider route ID (e.g. "cloud-deepseek-v4"). The route ID is meaningless
+    // to the upstream API — only the adapter knows its own model name.
+    model: defaultModel,
     messages: wireMessages,
     stream: true,
   }

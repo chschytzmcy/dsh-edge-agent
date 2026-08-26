@@ -96,6 +96,23 @@ if [ "$DO_PNPM" = 1 ]; then
   }
 fi
 
+# ── 2.6. 安装上游 web search 包（tool-web / web / web-search-deepseek）──
+# cordis.patch.yml 的 tool-web / web / dsh-web / web-search-deepseek 行
+# 需要以下包在 profile 的 node_modules 里。缺任何一个都会导致 web_search
+# 工具注册失败（ctx.tools 看不到 web_search / web_fetch），cloud LLM 也就
+# 无法调用搜索工具。`dsh plugin add` 是幂等的。
+if [ "$DO_PNPM" = 1 ]; then
+  echo "==> [2.6/5] install upstream web-search packages  (profile=$PROFILE)"
+  for _pkg in \
+    @deepseek-ai/dsh-tool-web \
+    @deepseek-ai/dsh-web \
+    @deepseek-ai/dsh-web-search-deepseek; do
+    dsh plugin --profile "$PROFILE" add "$_pkg" >/dev/null 2>&1 || {
+      echo "  warning: failed to add $_pkg — web search may not work." >&2
+    }
+  done
+fi
+
 # ── 3. 同步编译产物到 DSH 实际加载的嵌套包 ───────────────────────────
 if [ ! -d "$NESTED_PKG" ]; then
   echo "error: nested package copy not found: $NESTED_PKG" >&2
@@ -105,7 +122,7 @@ fi
 echo "==> [3/5] rsync lib/ → $NESTED_PKG/lib/"
 rsync -a --delete "$REPO_ROOT/lib/" "$NESTED_PKG/lib/"
 
-# ── 4. 同步 cordis.patch.yml（如果仓库里有）──────────────────────────
+# ── 4. 同步 cordis.patch.yml + privacy-policy.json（如果仓库里有）────────
 if [ -f "$REPO_ROOT/profiles/$PROFILE/cordis.patch.yml" ]; then
   if ! diff -q "$REPO_ROOT/profiles/$PROFILE/cordis.patch.yml" "$PROFILE_DIR/cordis.patch.yml" >/dev/null 2>&1; then
     echo "==> [4/5] sync profiles/$PROFILE/cordis.patch.yml → $PROFILE_DIR/cordis.patch.yml"
@@ -115,6 +132,12 @@ if [ -f "$REPO_ROOT/profiles/$PROFILE/cordis.patch.yml" ]; then
   fi
 else
   echo "==> [4/5] no profiles/$PROFILE/cordis.patch.yml — skip"
+fi
+if [ -f "$REPO_ROOT/profiles/$PROFILE/privacy-policy.json" ]; then
+  if ! diff -q "$REPO_ROOT/profiles/$PROFILE/privacy-policy.json" "$PROFILE_DIR/privacy-policy.json" >/dev/null 2>&1; then
+    echo "==> [4/5] sync profiles/$PROFILE/privacy-policy.json → $PROFILE_DIR/privacy-policy.json"
+    cp "$REPO_ROOT/profiles/$PROFILE/privacy-policy.json" "$PROFILE_DIR/privacy-policy.json"
+  fi
 fi
 
 # ── 5. 重启 DSH ───────────────────────────────────────────────────────

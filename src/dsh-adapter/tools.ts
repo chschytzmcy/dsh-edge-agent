@@ -214,9 +214,25 @@ interface UpstreamToolView {
   description: string
 }
 
-/** Read the global upstream tool list without depending on the dsh-tools types. */
+/** Read the global upstream tool list without depending on the dsh-tools types.
+ *
+ * Cordis exposes registered services through a `ReflectService` proxy on
+ * `ctx`: accessing `ctx.tools` triggers a Proxy `get` trap that throws
+ * `cannot get property "tools" without inject` when the service has not yet
+ * been bound to the active fiber. This happens at apply() time if `tools`
+ * has not finished mounting — the loader wires inject dependencies AFTER
+ * the apply() body starts. Defensive: catch the proxy throw and return []
+ * so `DSH_NATIVE_REALM_MAP` simply skips the boot-time scan. The
+ * `tools/change` listener installed below catches up once tools become
+ * available.
+ */
 function upstreamTools(ctx: Context): UpstreamToolView[] {
-  const candidate = (ctx as unknown as { tools?: { view?: (scope?: unknown) => { entries?: () => Iterable<[string, { description?: string }]> } } }).tools
+  let candidate: { view?: (scope?: unknown) => { entries?: () => Iterable<[string, { description?: string }]> } } | undefined
+  try {
+    candidate = (ctx as unknown as { tools?: typeof candidate }).tools
+  } catch {
+    return []
+  }
   if (candidate?.view === undefined) return []
   const view = candidate.view()
   if (view?.entries === undefined) return []
@@ -234,6 +250,7 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
   // G8: Config now actually flows into the service — `enableToolIsolation`
   // drives `filterTools` / `isToolAllowed`. Pre-G8 had `void config` here.
   const service = new ToolsServiceImpl(ctx, config)
+  console.log('[edge-tools-registry] apply() called, ctx.edgeTools registered')
 
   // Phase 5 (2026-08-26): wire `DSH_NATIVE_REALM_MAP` into the live registry.
   // DSH tools are registered by other plugins (`@deepseek-ai/dsh-tool-web`,
@@ -242,12 +259,21 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
   // already present, then subscribe to `tools/change` so any later
   // registration auto-tags. The handler is a no-op for tools we don't care
   // about (resolveRealm already falls back to classifyByPrefix).
-  for (const tool of upstreamTools(ctx)) {
+  const bootSnapshot = upstreamTools(ctx)
+  console.log(`[edge-tools-registry] boot scan: ${bootSnapshot.length} tools visible via ctx.tools`)
+  for (const tool of bootSnapshot) {
     const mapped = DSH_NATIVE_REALM_MAP[tool.name]
     if (mapped !== undefined) service.setRealm(tool.name, mapped)
   }
+  if (bootSnapshot.length > 0) {
+    console.log(`[edge-tools-registry] boot snapshot: ${bootSnapshot.map((t) => t.name).join(', ')}`)
+  }
   const onToolsChange = (): void => {
-    for (const tool of upstreamTools(ctx)) {
+    const after = upstreamTools(ctx)
+    if (after.length > bootSnapshot.length) {
+      console.log(`[edge-tools-registry] tools/change → ${after.length} tools now: ${after.map((t) => t.name).join(', ')}`)
+    }
+    for (const tool of after) {
       const mapped = DSH_NATIVE_REALM_MAP[tool.name]
       if (mapped !== undefined) service.setRealm(tool.name, mapped)
     }
