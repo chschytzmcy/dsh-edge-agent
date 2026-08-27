@@ -5,8 +5,8 @@
  */
 
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, it } from 'vitest'
 
@@ -561,6 +561,100 @@ ${allSkillLines.join('\n')}
     it('workflow skills match lark-* glob', () => {
       assert.equal(service.skillRealm('lark-workflow-meeting-summary'), 'CLOUD')
       assert.equal(service.skillRealm('lark-workflow-standup-report'), 'CLOUD')
+    })
+  })
+
+  // ── Integration: real installed lark skills ─────────────────────────────────
+  // Verifies the bridge works with the actual lark-* skills installed in
+  // ~/.agents/skills/ on this machine. Skipped if the directory doesn't exist
+  // (e.g. CI environment without lark-cli installed).
+
+  describe('integration: real installed lark skills', () => {
+    const skillsDir = join(homedir(), '.agents', 'skills')
+    const hasSkills = existsSync(skillsDir)
+
+    it.skip(!hasSkills, 'requires ~/.agents/skills/ to exist')
+
+    it('discovers all 19 lark-* skills from ~/.agents/skills/', () => {
+      if (!hasSkills) return
+      const installed = readdirSync(skillsDir, { withFileTypes: true })
+        .filter(d => d.isDirectory())
+        .map(d => d.name)
+      const larkSkills = installed.filter(n => n.startsWith('lark-'))
+      assert.equal(larkSkills.length, 19, `expected 19 lark skills, got ${larkSkills.length}: ${larkSkills.join(', ')}`)
+    })
+
+    it('tags every installed lark-* skill as CLOUD via the real config template', async () => {
+      if (!hasSkills) return
+      // Discover real skill names
+      const installed = readdirSync(skillsDir, { withFileTypes: true })
+        .filter(d => d.isDirectory())
+        .map(d => d.name)
+      const larkSkills = installed.filter(n => n.startsWith('lark-'))
+      if (larkSkills.length === 0) return
+
+      // Use the real default config template
+      const configPath = writeConfig('skill-realms.json', {
+        skills: {
+          'lark-*': 'CLOUD',
+          'ima-*': 'CLOUD',
+          'dws': 'CLOUD',
+          'find-skills': 'CLOUD',
+          'ets-*': 'LOCAL',
+          'sys-monitor': 'LOCAL',
+        },
+        tools: { lark_api: 'CLOUD', skill_ref: 'CLOUD', sys_info: 'LOCAL', local_cmd: 'LOCAL' },
+        defaultRealm: 'hidden',
+      })
+
+      // Feed the real skill list to the fake ctx
+      const realSkills = larkSkills.map(n => ({ name: n, description: `Lark ${n}` }))
+      const service = new RealmSkillBridgeService(
+        fakeCtx(realSkills) as never,
+        { configPath, hotReload: false, watchIntervalMs: 5000 },
+        undefined,
+      )
+      await service.start()
+
+      // Every lark-* skill must be tagged CLOUD
+      for (const name of larkSkills) {
+        assert.equal(
+          service.skillRealm(name),
+          'CLOUD',
+          `real installed skill "${name}" should be CLOUD`,
+        )
+      }
+
+      // Build a catalog with all installed skills and verify CLOUD agent sees them
+      const catalogLines = [
+        ...larkSkills.map(n => `- \`${n}\`: Lark ${n}`),
+        '- `sys-monitor`: System monitor',
+        '- `ets-auth`: ETS auth',
+      ]
+      const messages = [{
+        source: { kind: 'skill-catalog' as const },
+        content: `<system-reminder>\n<available_skills>\n${catalogLines.join('\n')}\n</available_skills>\n</system-reminder>`,
+      }]
+
+      // CLOUD agent: sees all lark skills, not sys-monitor or ets-auth
+      const cloudFiltered = service.filterSkillCatalog(messages, 'CLOUD')
+      const cloudContent = (cloudFiltered[0] as { content: string }).content
+      for (const name of larkSkills) {
+        assert.ok(cloudContent.includes(name), `CLOUD agent should see ${name}`)
+      }
+      assert.ok(!cloudContent.includes('sys-monitor'), 'CLOUD should NOT see sys-monitor')
+      assert.ok(!cloudContent.includes('ets-auth'), 'CLOUD should NOT see ets-auth')
+
+      // LOCAL agent: sees sys-monitor and ets-auth, NOT any lark skill
+      const localFiltered = service.filterSkillCatalog(messages, 'LOCAL')
+      const localContent = (localFiltered[0] as { content: string }).content
+      for (const name of larkSkills) {
+        assert.ok(!localContent.includes(name), `LOCAL agent should NOT see ${name}`)
+      }
+      assert.ok(localContent.includes('sys-monitor'), 'LOCAL should see sys-monitor')
+      assert.ok(localContent.includes('ets-auth'), 'LOCAL should see ets-auth')
+
+      service.stop()
     })
   })
 })

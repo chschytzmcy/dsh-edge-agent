@@ -163,8 +163,8 @@ async function ensureDefaultConfig(configPath: string): Promise<void> {
 export class RealmSkillBridgeService extends Service {
   /** Skill name → realm tag (including 'hidden'). */
   private readonly skillRealms = new Map<string, RealmTag>()
-  /** Tool name → realm tag ('hidden' not expected for tools, but supported). */
-  private readonly toolRealms = new Map<string, RealmTag>()
+  /** Tool name → set of realm tags. A tool can belong to multiple realms. */
+  private readonly toolRealms = new Map<string, Set<RealmTag>>()
   /** Session id → realm. Written by http-api after intent classification. */
   private readonly sessionRealms = new Map<string, RealmTag>()
   /** Parsed realm config. Refreshed on hot-reload. */
@@ -227,8 +227,9 @@ export class RealmSkillBridgeService extends Service {
     return this.skillRealms.get(name) ?? this.resolveSkillRealm(name)
   }
 
-  /** Look up the realm tag for a tool name. */
-  toolRealm(name: string): RealmTag | undefined {
+  /** Look up the realm tags for a tool name. Returns undefined if no realm
+   *  constraint is configured (tool is unconstrained). */
+  toolRealm(name: string): Set<RealmTag> | undefined {
     return this.toolRealms.get(name)
   }
 
@@ -344,11 +345,19 @@ export class RealmSkillBridgeService extends Service {
 
   /** Apply tool realm tags from skill-realms.json to ctx.edgeTools. */
   private tagToolsFromConfig(): void {
-    const edgeTools = (this.ctx as unknown as { edgeTools?: { setRealm(name: string, realm: string): void } }).edgeTools
+    let edgeTools: { setRealm(name: string, realm: string): void } | undefined
+    try {
+      edgeTools = (this.ctx as unknown as { edgeTools?: { setRealm(name: string, realm: string): void } }).edgeTools
+    } catch {
+      // Cordis proxy throws when edgeTools is not injected — that's fine,
+      // we just skip the edgeTools.setRealm() calls.
+    }
     this.toolRealms.clear()
     for (const [toolName, realm] of Object.entries(this.realmConfig.tools)) {
-      // Store every tag — including 'hidden' — so checkToolRealm can deny it.
-      this.toolRealms.set(toolName, realm as RealmTag)
+      // Store realm tag in a Set (supports multi-realm if configured multiple times)
+      const existing = this.toolRealms.get(toolName) ?? new Set<RealmTag>()
+      existing.add(realm as RealmTag)
+      this.toolRealms.set(toolName, existing)
       // Only push non-hidden realms to edgeTools (which doesn't understand 'hidden').
       if (edgeTools && (realm === 'LOCAL' || realm === 'CLOUD' || realm === 'SANITIZED')) {
         edgeTools.setRealm(toolName, realm)
@@ -402,26 +411,29 @@ export class RealmSkillBridgeService extends Service {
   /**
    * Check whether a tool call is allowed in the calling agent's realm.
    * Returns a deny reason string, or undefined if the call is allowed.
+   * A tool can belong to multiple realms (e.g. bash → LOCAL+CLOUD); the call
+   * is allowed if the agent's realm is in the tool's realm set.
    */
   checkToolRealm(toolName: string, agentRealm: RealmTag | undefined): string | undefined {
     if (agentRealm === undefined) return undefined // unknown agent → allow (fail-open for now)
     if (agentRealm === 'hidden') return `Agent realm is 'hidden'; no tools allowed`
-    const toolRealm = this.toolRealm(toolName)
-    if (toolRealm === undefined) return undefined // unknown tool → no realm constraint
-    if (toolRealm === 'hidden') return `Tool "${toolName}" is hidden`
-    if (toolRealm !== agentRealm) {
-      return `Tool "${toolName}" (${toolRealm}) not allowed in ${agentRealm} realm`
+    const toolRealms = this.toolRealm(toolName)
+    if (toolRealms === undefined) return undefined // unknown tool → no realm constraint
+    if (toolRealms.has('hidden')) return `Tool "${toolName}" is hidden`
+    if (!toolRealms.has(agentRealm)) {
+      const realms = [...toolRealms].join(', ')
+      return `Tool "${toolName}" (${realms}) not allowed in ${agentRealm} realm`
     }
     return undefined
   }
 
   /** Log a realm denial to the audit log (security level). */
-  private auditDeny(toolName: string, toolRealm: RealmTag, agentRealm: RealmTag): void {
+  private auditDeny(toolName: string, toolRealms: Set<RealmTag>, agentRealm: RealmTag): void {
     this.auditLog?.log({
       level: 'security',
       kind: 'tool.realm.denied',
       source: 'realm-skill-bridge',
-      payload: { tool: toolName, toolRealm, agentRealm },
+      payload: { tool: toolName, toolRealms: [...toolRealms], agentRealm },
     })
   }
 }
@@ -492,8 +504,8 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
     const denyReason = service.checkToolRealm(e.name, agentRealm)
     if (denyReason !== undefined) {
       // Audit the denial.
-      const toolRealm = service.toolRealm(e.name) ?? 'hidden'
-      service['auditDeny'](e.name, toolRealm as RealmTag, agentRealm ?? 'hidden')
+      const toolRealms = service.toolRealm(e.name) ?? new Set<RealmTag>(['hidden' as RealmTag])
+      service['auditDeny'](e.name, toolRealms, agentRealm ?? 'hidden')
       return { kind: 'deny', reason: denyReason }
     }
     return next()

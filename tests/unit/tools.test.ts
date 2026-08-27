@@ -187,12 +187,55 @@ describe('tools (M2)', () => {
     assert.equal(service.classify('web_search'), 'CLOUD')
   })
 
-  it('Phase 5: DSH local fs tools (bash/read/write/edit) resolve to LOCAL', () => {
+  it('Phase 5: DSH local fs tools (read/write/edit) resolve to LOCAL; bash resolves to LOCAL+CLOUD', () => {
     const service = new ToolsServiceImpl(isolationCtx() as never)
-    assert.equal(service.realmOf('bash'), 'LOCAL')
+    // bash is multi-realm: LOCAL + CLOUD
+    assert.equal(service.realmOf('bash'), 'LOCAL') // first value
+    const bashRealms = service.resolveRealms('bash')
+    assert.ok(bashRealms.has('LOCAL'), 'bash should be in LOCAL')
+    assert.ok(bashRealms.has('CLOUD'), 'bash should be in CLOUD')
+    assert.equal(bashRealms.size, 2)
+    // Other fs tools are LOCAL only
     assert.equal(service.realmOf('read'), 'LOCAL')
     assert.equal(service.realmOf('write'), 'LOCAL')
     assert.equal(service.realmOf('edit'), 'LOCAL')
+    assert.equal(service.resolveRealms('read').size, 1)
+  })
+
+  it('bash is visible to both LOCAL and CLOUD intents under isolation', () => {
+    const service = new ToolsServiceImpl(
+      fakeCtx({ bash: { description: 'bash shell' }, web_search: { description: 'web search' } }) as never,
+      { enableToolIsolation: true },
+    )
+    // bash: LOCAL+CLOUD → allowed under both
+    assert.equal(service.isToolAllowed('bash', { category: 'LOCAL' }), true)
+    assert.equal(service.isToolAllowed('bash', { category: 'CLOUD' }), true)
+    assert.equal(service.isToolAllowed('bash', { category: 'SANITIZED' }), false)
+    assert.equal(service.isToolAllowed('bash', { category: 'REJECT' }), false)
+    // web_search: CLOUD only → not allowed under LOCAL
+    assert.equal(service.isToolAllowed('web_search', { category: 'LOCAL' }), false)
+    assert.equal(service.isToolAllowed('web_search', { category: 'CLOUD' }), true)
+  })
+
+  it('filterTools includes bash in both LOCAL and CLOUD results', () => {
+    const service = new ToolsServiceImpl(
+      fakeCtx({ bash: { description: 'b' }, web_search: { description: 'w' }, read: { description: 'r' } }) as never,
+      { enableToolIsolation: true },
+    )
+    const localNames = service.filterTools({ category: 'LOCAL' }).map(t => t.name).sort()
+    assert.deepEqual(localNames, ['bash', 'read'])
+    const cloudNames = service.filterTools({ category: 'CLOUD' }).map(t => t.name).sort()
+    assert.deepEqual(cloudNames, ['bash', 'web_search'])
+  })
+
+  it('setRealm is additive — calling twice adds both realms', () => {
+    const service = new ToolsServiceImpl(fakeCtx({ my_tool: { description: 'x' } }) as never)
+    service.setRealm('my_tool', 'LOCAL')
+    assert.equal(service.resolveRealms('my_tool').size, 1)
+    service.setRealm('my_tool', 'CLOUD')
+    assert.equal(service.resolveRealms('my_tool').size, 2)
+    assert.ok(service.resolveRealms('my_tool').has('LOCAL'))
+    assert.ok(service.resolveRealms('my_tool').has('CLOUD'))
   })
 
   it('Phase 5: filterTools(CLOUD) hides web_search under LOCAL intent', () => {

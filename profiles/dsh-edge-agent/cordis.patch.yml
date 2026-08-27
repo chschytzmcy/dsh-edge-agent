@@ -92,7 +92,9 @@
 - id: tool-jobs
   disabled: true
 - id: tool-skill
-  disabled: true
+  # Enabled: CLOUD agents need the `skill` tool to load lark-* SKILL.md content.
+  # realm-skill-bridge filters the catalog so each agent only sees its realm's skills.
+  disabled: false
 - id: tool-subagent
   disabled: true
 - id: tool-subagent-fork
@@ -110,7 +112,9 @@
 - id: tool-goal
   disabled: true
 - id: skill-filesystem
-  disabled: true
+  # Enabled: auto-discovers skills from ~/.agents/skills/ (lark-* etc.)
+  # realm-skill-bridge tags and filters them by realm.
+  disabled: false
 - id: skill-badge
   disabled: true
 - id: subagent
@@ -166,7 +170,7 @@
 
     - id: http-api
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/http-api'
-      inject: [agents, intentRouter, promptGuard, auditLog, sanitizer]
+      inject: [agents, intentRouter, promptGuard, auditLog, sanitizer, realmSkillBridge, edgeTools]
       config:
         host: !!js process.env.DSH_EDGE_HTTP_HOST ?? '127.0.0.1'
         port: !!js parseInt(process.env.DSH_EDGE_HTTP_PORT ?? '21017', 10)

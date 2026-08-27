@@ -19,7 +19,7 @@ import { redactString } from './pii-utils.js'
 
 export const name = 'http-api'
 
-export const inject = ['agents', 'intentRouter', 'promptGuard', 'auditLog', 'sanitizer', 'tdBus'] as const
+export const inject = ['agents', 'intentRouter', 'promptGuard', 'auditLog', 'sanitizer', 'tdBus', 'realmSkillBridge', 'edgeTools'] as const
 
 export interface Config {
   host: string

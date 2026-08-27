@@ -93,12 +93,20 @@ declare module '@deepseek-ai/cordis' {
 const DSH_NATIVE_REALM_MAP: Readonly<Record<string, ToolRealm>> = {
   web_search: 'CLOUD',
   web_fetch: 'CLOUD',
-  bash: 'LOCAL',
   read: 'LOCAL',
   write: 'LOCAL',
   edit: 'LOCAL',
   glob: 'LOCAL',
   grep: 'LOCAL',
+}
+
+/**
+ * Tools that belong to multiple realms. These override DSH_NATIVE_REALM_MAP
+ * when present. Currently `bash` is tagged both LOCAL and CLOUD so that
+ * CLOUD agents can invoke lark-cli (and other safe CLI tools) via bash.
+ */
+const DSH_NATIVE_MULTI_REALM: Readonly<Record<string, readonly ToolRealm[]>> = {
+  bash: ['LOCAL', 'CLOUD'],
 }
 
 /**
@@ -116,7 +124,8 @@ const DSH_NATIVE_REALM_MAP: Readonly<Record<string, ToolRealm>> = {
  * registered after boot (via the `tools/change` event) get the right tag.
  */
 export class ToolsServiceImpl extends Service {
-  private readonly realm = new Map<string, ToolRealm>()
+  /** Tool name → set of realms it belongs to. A tool can be in multiple realms. */
+  private readonly realm = new Map<string, Set<ToolRealm>>()
   private readonly enableToolIsolation: boolean
   /** Default per-tool rate limit (informational; M3 persistence picks it up). */
   private readonly defaultRateLimitPerMinute: number
@@ -133,25 +142,52 @@ export class ToolsServiceImpl extends Service {
     this.presentationMode = config?.presentationMode ?? 'native'
   }
 
-  /** Set realm tag for a tool. Call after tool registration. */
+  /** Set realm tag for a tool. Additive — a tool can belong to multiple realms
+   *  (e.g. bash is both LOCAL and CLOUD). Call after tool registration. */
   setRealm(toolName: string, realm: ToolRealm): void {
-    this.realm.set(toolName, realm)
+    const existing = this.realm.get(toolName) ?? new Set<ToolRealm>()
+    existing.add(realm)
+    this.realm.set(toolName, existing)
   }
 
-  /** Resolve the realm of a tool name, applying the DSH native map before
-   *  falling back to `classifyByPrefix`. Used by every realm-aware query
-   *  so the hard-coded mapping stays in one place. */
+  /** Resolve the realms of a tool name. Checks:
+   *  1. Explicit setRealm/addRealm calls (multi-realm Set)
+   *  2. DSH_NATIVE_MULTI_REALM (bash → [LOCAL, CLOUD])
+   *  3. DSH_NATIVE_REALM_MAP (single-realm fallback)
+   *  4. classifyByPrefix (default)
+   */
+  resolveRealms(toolName: string): Set<ToolRealm> {
+    // 1. Explicit multi-realm tags
+    const explicit = this.realm.get(toolName)
+    if (explicit !== undefined && explicit.size > 0) return explicit
+    // 2. Multi-realm native map
+    const multi = DSH_NATIVE_MULTI_REALM[toolName]
+    if (multi !== undefined) return new Set(multi)
+    // 3. Single-realm native map
+    const single = DSH_NATIVE_REALM_MAP[toolName]
+    if (single !== undefined) return new Set([single])
+    // 4. Prefix fallback
+    return new Set([classifyByPrefix(toolName)])
+  }
+
+  /** Backward-compatible single-value resolver. Returns the first realm
+   *  from the resolved set. For multi-realm tools (like bash), prefer
+   *  resolveRealms() + Set.has() checks instead. */
   resolveRealm(toolName: string): ToolRealm {
-    return this.realm.get(toolName) ?? DSH_NATIVE_REALM_MAP[toolName] ?? classifyByPrefix(toolName)
+    const realms = this.resolveRealms(toolName)
+    return realms.values().next().value!
   }
 
   list(realm?: ToolRealm): ToolSummary[] {
     const upstream = upstreamTools(this.ctx)
     const out: ToolSummary[] = []
     for (const tool of upstream) {
-      const r = this.resolveRealm(tool.name)
-      if (realm !== undefined && r !== realm) continue
-      out.push({ name: tool.name, description: tool.description, realm: r })
+      const realms = this.resolveRealms(tool.name)
+      // When filtering by realm, include tools that belong to that realm
+      if (realm !== undefined && !realms.has(realm)) continue
+      // For the summary, use the first realm (or 'LOCAL' for multi-realm like bash)
+      const primaryRealm = realms.values().next().value!
+      out.push({ name: tool.name, description: tool.description, realm: primaryRealm })
     }
     return out
   }
@@ -161,8 +197,10 @@ export class ToolsServiceImpl extends Service {
   }
 
   realmOf(name: string): ToolRealm | undefined {
-    const r = this.realm.get(name)
-    if (r !== undefined) return r
+    const explicit = this.realm.get(name)
+    if (explicit !== undefined && explicit.size > 0) return explicit.values().next().value
+    const multi = DSH_NATIVE_MULTI_REALM[name]
+    if (multi !== undefined) return multi[0]
     return DSH_NATIVE_REALM_MAP[name]
   }
 
@@ -174,17 +212,15 @@ export class ToolsServiceImpl extends Service {
   filterTools(intent: IntentLike): ToolSummary[] {
     if (intent.category === 'REJECT') return []
     if (!this.enableToolIsolation) return this.list()
-    // Under isolation, classify each upstream tool by either an explicit
-    // setRealm override, the DSH_NATIVE_REALM_MAP (Phase 5: web_search etc.),
-    // or its `local_` / `cloud_` / `sanitized_` prefix. The downstream
-    // `list(realm)` is strict (requires setRealm), so we inline the
-    // prefix-aware filter here.
+    // Under isolation, include tools whose realm set contains the intent's
+    // category. Multi-realm tools (e.g. bash → LOCAL+CLOUD) appear in both.
     const upstream = upstreamTools(this.ctx)
     const out: ToolSummary[] = []
     for (const tool of upstream) {
-      const r = this.resolveRealm(tool.name)
-      if (r !== intent.category) continue
-      out.push({ name: tool.name, description: tool.description, realm: r })
+      const realms = this.resolveRealms(tool.name)
+      if (!realms.has(intent.category as ToolRealm)) continue
+      const primaryRealm = realms.values().next().value!
+      out.push({ name: tool.name, description: tool.description, realm: primaryRealm })
     }
     return out
   }
@@ -194,8 +230,8 @@ export class ToolsServiceImpl extends Service {
     if (intent.category === 'REJECT') return false
     if (!this.enableToolIsolation) return this.has(toolName)
     if (!this.has(toolName)) return false
-    const toolRealm = this.resolveRealm(toolName)
-    return toolRealm === (intent.category as ToolRealm)
+    const realms = this.resolveRealms(toolName)
+    return realms.has(intent.category as ToolRealm)
   }
 }
 
@@ -262,6 +298,13 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
   const bootSnapshot = upstreamTools(ctx)
   console.log(`[edge-tools-registry] boot scan: ${bootSnapshot.length} tools visible via ctx.tools`)
   for (const tool of bootSnapshot) {
+    // Apply multi-realm native map first
+    const multiRealms = DSH_NATIVE_MULTI_REALM[tool.name]
+    if (multiRealms !== undefined) {
+      for (const r of multiRealms) service.setRealm(tool.name, r)
+      continue
+    }
+    // Then single-realm native map
     const mapped = DSH_NATIVE_REALM_MAP[tool.name]
     if (mapped !== undefined) service.setRealm(tool.name, mapped)
   }
@@ -274,6 +317,11 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
       console.log(`[edge-tools-registry] tools/change → ${after.length} tools now: ${after.map((t) => t.name).join(', ')}`)
     }
     for (const tool of after) {
+      const multiRealms = DSH_NATIVE_MULTI_REALM[tool.name]
+      if (multiRealms !== undefined) {
+        for (const r of multiRealms) service.setRealm(tool.name, r)
+        continue
+      }
       const mapped = DSH_NATIVE_REALM_MAP[tool.name]
       if (mapped !== undefined) service.setRealm(tool.name, mapped)
     }
