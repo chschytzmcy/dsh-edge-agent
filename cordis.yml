@@ -168,6 +168,18 @@
     defaultRateLimitPerMinute: !!js parseInt(process.env.DSH_EDGE_TOOL_RATE ?? '60', 10)
     enableToolIsolation: !!js process.env.DSH_EDGE_TOOL_ISOLATION !== 'false'
 
+# Realm-aware skill + tool isolation bridge. Reads skill-realms.json to tag
+# every discovered skill/tool as LOCAL | CLOUD | hidden, then enforces the
+# mapping at agent/pre-step (catalog filtering) and tools/pre-execute (deny
+# cross-realm calls). Hot-reloads the config file without restart.
+- id: realm-skill-bridge
+  name: '@deepseek-harness-edge-agent/dsh-edge-agent/realm-skill-bridge'
+  inject: [auditLog]
+  config:
+    configPath: !!js process.env.DSH_EDGE_REALM_CONFIG ?? ((process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent/skill-realms.json')
+    hotReload: !!js process.env.DSH_EDGE_REALM_HOT_RELOAD !== 'false'
+    watchIntervalMs: !!js parseInt(process.env.DSH_EDGE_REALM_WATCH_MS ?? '5000', 10)
+
 # Input/output safety scanning. MVP: checkInput only with 4 default rules.
 - id: prompt-guard
   name: '@deepseek-harness-edge-agent/dsh-edge-agent/prompt-guard'

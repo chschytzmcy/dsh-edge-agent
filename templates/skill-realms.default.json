@@ -1,0 +1,21 @@
+{
+  "_comment": "Realm 配置文件 — 控制哪些 skill/tool 归属 LOCAL 或 CLOUD。未配置的项按 defaultRealm 处理（默认 hidden）。修改后自动热重载。",
+
+  "skills": {
+    "lark-*": "CLOUD",
+    "ima-*": "CLOUD",
+    "dws": "CLOUD",
+    "find-skills": "CLOUD",
+
+    "ets-*": "LOCAL"
+  },
+
+  "tools": {
+    "lark_api": "CLOUD",
+    "skill_ref": "CLOUD",
+    "sys_info": "LOCAL",
+    "local_cmd": "LOCAL"
+  },
+
+  "defaultRealm": "hidden"
+}

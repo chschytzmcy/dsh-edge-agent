@@ -96,6 +96,7 @@ export class HttpApiServiceImpl extends Service {
   private readonly sessionBuffers = new Map<string, RecentMessage[]>()
   private running = false
   private intentRouter: any
+  private realmSkillBridge: any
   private tdBus: any
   private cleanupTimer: ReturnType<typeof setInterval> | undefined
 
@@ -195,6 +196,19 @@ export class HttpApiServiceImpl extends Service {
       }
     } catch (err: any) {
       console.log('[http-api] Error getting intentRouter:', err?.message)
+    }
+
+    // Get realmSkillBridge after all plugins are loaded. Optional — older
+    // cordis.yml configs may not mount it. When absent, Layer 1 (catalog
+    // filtering) and Layer 3 (tool realm gating) silently no-op.
+    try {
+      const bridge = (this.cordisCtx as any).realmSkillBridge
+      if (bridge && typeof bridge.setSessionRealm === 'function') {
+        this.realmSkillBridge = bridge
+        console.log('[http-api] realmSkillBridge: found and valid')
+      }
+    } catch (err: any) {
+      console.log('[http-api] realmSkillBridge: not available:', err?.message)
     }
 
     // Phase 5 diagnostic: dump the upstream tool registry so E2E can see
@@ -470,6 +484,14 @@ export class HttpApiServiceImpl extends Service {
     }
     const { provider, model } = effectiveRoute
 
+    // Tag session realm for Layer 1 (catalog filtering) and Layer 3 (tool gating).
+    // Uses effectiveIsLocal (post-sanitization downgrade) so a failed sanitizer
+    // correctly marks the session as LOCAL.
+    if (this.realmSkillBridge) {
+      const realm = effectiveIsLocal ? 'LOCAL' : (intent.category === 'SANITIZED' ? 'SANITIZED' : 'CLOUD')
+      this.realmSkillBridge.setSessionRealm(sessionId, realm)
+    }
+
     const record = await this.ensureSession(sessionId, provider, model)
 
     // Wait for turn completion by subscribing to session/event
@@ -689,6 +711,12 @@ export class HttpApiServiceImpl extends Service {
       }
     }
     const { provider, model } = effectiveRoute
+
+    // Tag session realm for Layer 1 (catalog filtering) and Layer 3 (tool gating).
+    if (this.realmSkillBridge) {
+      const realm = effectiveIsLocal ? 'LOCAL' : (intent.category === 'SANITIZED' ? 'SANITIZED' : 'CLOUD')
+      this.realmSkillBridge.setSessionRealm(sessionId, realm)
+    }
 
     const record = await this.ensureSession(sessionId, provider, model)
 
