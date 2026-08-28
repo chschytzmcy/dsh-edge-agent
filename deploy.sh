@@ -189,19 +189,23 @@ if [ -f "$REMOTE_PATH/profiles/\$PROFILE/privacy-policy.json" ]; then
     cp "$REMOTE_PATH/profiles/\$PROFILE/privacy-policy.json" "\$PROFILE_DIR/privacy-policy.json"
 fi
 
-# 安装上游 web search 包（tool-web / web / web-search-deepseek）。
-# 这些包是 web_search / web_fetch 工具链的依赖：
-#   - dsh-tool-web: 注册 web_search / web_fetch 工具到 ctx.tools
-#   - dsh-web: 提供 ctx.web 服务（tool-web 的 inject 依赖）
-#   - dsh-web-search-deepseek: 注册 DeepSeek 搜索 provider 到 ctx.web
-# 缺任何一个都会导致 cloud LLM 无法调用搜索工具。
-# `dsh plugin add` 是幂等的（已安装则跳过）。
-echo "  -> install upstream web-search packages"
+# 安装上游 web search + skill 包。
+# web search 链：dsh-tool-web → web_search / web_fetch 工具
+#               dsh-web → ctx.web 服务
+#               dsh-web-search-deepseek → DeepSeek 搜索 provider
+# skill 链：  dsh-skill → ctx.skills 注册表
+#             dsh-tool-skill → model-facing skill 工具 + catalog 注入
+#             dsh-skill-filesystem → ~/.agents/skills/ 自动发现
+# 缺任何一个都会导致对应功能不可用。`dsh plugin add` 是幂等的。
+echo "  -> install upstream web-search + skill packages"
 for _pkg in \\
     @deepseek-ai/dsh-agent-loop \\
     @deepseek-ai/dsh-tool-web \\
     @deepseek-ai/dsh-web \\
-    @deepseek-ai/dsh-web-search-deepseek; do
+    @deepseek-ai/dsh-web-search-deepseek \\
+    @deepseek-ai/dsh-skill \\
+    @deepseek-ai/dsh-tool-skill \\
+    @deepseek-ai/dsh-skill-filesystem; do
     dsh plugin --profile "\$PROFILE" add "\$_pkg" >/dev/null 2>&1 || {
         echo "  warning: failed to add \$_pkg" >&2
     }

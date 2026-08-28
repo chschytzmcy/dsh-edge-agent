@@ -168,6 +168,16 @@
         patternWindowMs: 60000
         patternThreshold: 8
 
+    # realm-skill-bridge: realm-aware skill catalog filtering + tool gating.
+    # Must mount before http-api (which injects realmSkillBridge).
+    - id: realm-skill-bridge
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/realm-skill-bridge'
+      inject: [auditLog]
+      config:
+        configPath: !!js process.env.DSH_EDGE_REALM_CONFIG ?? ((process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent/skill-realms.json')
+        hotReload: !!js process.env.DSH_EDGE_REALM_HOT_RELOAD !== 'false'
+        watchIntervalMs: !!js parseInt(process.env.DSH_EDGE_REALM_WATCH_MS ?? '5000', 10)
+
     - id: http-api
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/http-api'
       inject: [agents, intentRouter, promptGuard, auditLog, sanitizer, realmSkillBridge, edgeTools]
@@ -221,7 +231,7 @@
     # NOTE: id renamed from `tools` to avoid colliding with dsh-base.
     - id: edge-tools-registry
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/tools'
-      inject: [auditLog]
+      inject: [auditLog, tools]
       config:
         defaultRateLimitPerMinute: 60
         enableToolIsolation: true

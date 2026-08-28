@@ -499,11 +499,10 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
   const disposePreExec = (ctx as unknown as {
     on?: (event: string, fn: (exec: unknown, next: () => Promise<unknown>) => Promise<unknown>) => () => void
   }).on?.('tools/pre-execute', async (exec: unknown, next: () => Promise<unknown>) => {
-    const e = exec as { name: string; agent?: AgentLike; signal?: AbortSignal }
+    const e = exec as { name: string; agent?: AgentLike }
     const agentRealm = service.getAgentRealm(e.agent)
     const denyReason = service.checkToolRealm(e.name, agentRealm)
     if (denyReason !== undefined) {
-      // Audit the denial.
       const toolRealms = service.toolRealm(e.name) ?? new Set<RealmTag>(['hidden' as RealmTag])
       service['auditDeny'](e.name, toolRealms, agentRealm ?? 'hidden')
       return { kind: 'deny', reason: denyReason }

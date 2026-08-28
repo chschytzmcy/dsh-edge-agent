@@ -22,7 +22,7 @@ import Schema from '@deepseek-ai/schemastery'
 
 export const name = 'tools'
 
-export const inject = ['auditLog'] as const
+export const inject = ['auditLog', 'tools'] as const
 
 export type ToolRealm = 'LOCAL' | 'CLOUD' | 'SANITIZED'
 
@@ -263,7 +263,7 @@ interface UpstreamToolView {
  * available.
  */
 function upstreamTools(ctx: Context): UpstreamToolView[] {
-  let candidate: { view?: (scope?: unknown) => { entries?: () => Iterable<[string, { description?: string }]> } } | undefined
+  let candidate: { view?: (scope?: unknown) => { visible?: Map<string, { description?: string }> } } | undefined
   try {
     candidate = (ctx as unknown as { tools?: typeof candidate }).tools
   } catch {
@@ -271,9 +271,10 @@ function upstreamTools(ctx: Context): UpstreamToolView[] {
   }
   if (candidate?.view === undefined) return []
   const view = candidate.view()
-  if (view?.entries === undefined) return []
+  const visible = view?.visible
+  if (visible === undefined) return []
   const out: UpstreamToolView[] = []
-  for (const [name, def] of view.entries()) {
+  for (const [name, def] of visible.entries()) {
     out.push({ name, description: def.description ?? '' })
   }
   return out

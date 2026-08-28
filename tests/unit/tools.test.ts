@@ -23,10 +23,8 @@ function fakeCtx(toolsMap: Record<string, { description?: string }> = {}) {
     },
     tools: {
       view() {
-        const map = new Map<string, { description?: string }>(Object.entries(toolsRecord))
-        return {
-          entries() { return map.entries() },
-        }
+        const visible = new Map<string, { description?: string }>(Object.entries(toolsRecord))
+        return { visible }
       },
     },
   }
@@ -35,7 +33,7 @@ function fakeCtx(toolsMap: Record<string, { description?: string }> = {}) {
 describe('tools (M2)', () => {
   it('exports the canonical plugin shape', () => {
     assert.equal(tools.name, 'tools')
-    assert.deepEqual([...tools.inject], ['auditLog'])
+    assert.deepEqual([...tools.inject], ['auditLog', 'tools'])
     assert.equal(typeof tools.apply, 'function')
     assert.ok(tools.Config)
   })

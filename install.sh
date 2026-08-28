@@ -113,6 +113,23 @@ if [ "$DO_PNPM" = 1 ]; then
   done
 fi
 
+# ── 2.7. 安装上游 skill 包（dsh-skill / dsh-tool-skill / dsh-skill-filesystem）──
+# cordis.patch.yml 中 tool-skill + skill-filesystem 已 enabled，但需要
+# 这些包在 profile 的 node_modules 中。缺任何一个都会导致 skill catalog
+# 为空、LLM 看不到 <available_skills>、skill tool 不可用。
+# `dsh plugin add` 是幂等的。
+if [ "$DO_PNPM" = 1 ]; then
+  echo "==> [2.7/5] install upstream skill packages  (profile=$PROFILE)"
+  for _pkg in \
+    @deepseek-ai/dsh-skill \
+    @deepseek-ai/dsh-tool-skill \
+    @deepseek-ai/dsh-skill-filesystem; do
+    dsh plugin --profile "$PROFILE" add "$_pkg" >/dev/null 2>&1 || {
+      echo "  warning: failed to add $_pkg — skill system may not work." >&2
+    }
+  done
+fi
+
 # ── 3. 同步编译产物到 DSH 实际加载的嵌套包 ───────────────────────────
 if [ ! -d "$NESTED_PKG" ]; then
   echo "error: nested package copy not found: $NESTED_PKG" >&2

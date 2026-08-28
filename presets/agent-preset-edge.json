@@ -10,6 +10,7 @@
       "audit-log",
       "privacy-policy",
       "tools",
+      "realm-skill-bridge",
       "prompt-guard",
       "intent-router",
       "model-router",
