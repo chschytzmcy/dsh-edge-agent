@@ -106,10 +106,17 @@ const DSH_NATIVE_REALM_MAP: Readonly<Record<string, ToolRealm>> = {
  * and read local files (e.g. skill reference docs like lark-shared/SKILL.md).
  * Since `bash` already grants equivalent file access, `read` in CLOUD is
  * consistent rather than a new risk.
+ *
+ * `skill` is the universal skill loader — it loads SKILL.md content regardless
+ * of realm. The actual realm separation happens at the skill level (ets-* →
+ * LOCAL, lark-* → CLOUD) via realm-skill-bridge catalog filtering. Making the
+ * tool itself multi-realm lets LOCAL agents load ets-* skills and CLOUD agents
+ * load lark-* skills, each seeing only their own catalog.
  */
 const DSH_NATIVE_MULTI_REALM: Readonly<Record<string, readonly ToolRealm[]>> = {
   bash: ['LOCAL', 'CLOUD'],
   read: ['LOCAL', 'CLOUD'],
+  skill: ['LOCAL', 'CLOUD'],
 }
 
 /**

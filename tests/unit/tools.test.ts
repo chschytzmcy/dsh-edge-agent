@@ -231,6 +231,24 @@ describe('tools (M2)', () => {
     assert.deepEqual(cloudNames, ['bash', 'read', 'web_search'])
   })
 
+  it('skill tool is LOCAL + CLOUD — local agents can load ets-* skills, cloud agents can load lark-* skills', () => {
+    const service = new ToolsServiceImpl(
+      fakeCtx({ skill: { description: 'skill loader' }, bash: { description: 'b' } }) as never,
+      { enableToolIsolation: true },
+    )
+    const skillRealms = service.resolveRealms('skill')
+    assert.ok(skillRealms.has('LOCAL'), 'skill should be in LOCAL')
+    assert.ok(skillRealms.has('CLOUD'), 'skill should be in CLOUD')
+    assert.equal(skillRealms.size, 2)
+    // skill is visible to both LOCAL and CLOUD intents
+    assert.equal(service.isToolAllowed('skill', { category: 'LOCAL' }), true)
+    assert.equal(service.isToolAllowed('skill', { category: 'CLOUD' }), true)
+    const localNames = service.filterTools({ category: 'LOCAL' }).map(t => t.name).sort()
+    assert.deepEqual(localNames, ['bash', 'skill'])
+    const cloudNames = service.filterTools({ category: 'CLOUD' }).map(t => t.name).sort()
+    assert.deepEqual(cloudNames, ['bash', 'skill'])
+  })
+
   it('setRealm is additive — calling twice adds both realms', () => {
     const service = new ToolsServiceImpl(fakeCtx({ my_tool: { description: 'x' } }) as never)
     service.setRealm('my_tool', 'LOCAL')

@@ -203,8 +203,8 @@
       inject: [llm, auditLog]
       config:
         providers: [local-qwen3-4b]
-        baseUrl: !!js process.env.DSH_EDGE_LOCAL_LLM_BASEURL ?? 'http://127.0.0.1:8080/v1'
-        defaultModel: !!js process.env.DSH_EDGE_LOCAL_LLM_MODEL ?? 'qwen3-4b'
+        baseUrl: !!js process.env.DSH_EDGE_LOCAL_LLM_BASEURL ?? 'http://192.168.1.121:11017/v1'
+        defaultModel: !!js process.env.DSH_EDGE_LOCAL_LLM_MODEL ?? 'Qwen3-4B-Instruct-2507'
         apiKeyEnv: !!js process.env.DSH_EDGE_LOCAL_LLM_KEY_ENV ?? undefined
 
     - id: model-router
@@ -221,7 +221,7 @@
       config:
         defaultCategory: CLOUD
         classificationProvider: !!js process.env.DSH_EDGE_INTENT_PROVIDER ?? 'local-qwen3-4b'
-        classificationModel: !!js process.env.DSH_EDGE_INTENT_MODEL ?? 'qwen3-4b'
+        classificationModel: !!js process.env.DSH_EDGE_INTENT_MODEL ?? 'Qwen3-4B-Instruct-2507'
         confidenceThreshold: !!js parseFloat(process.env.DSH_EDGE_INTENT_CONFIDENCE_THRESHOLD ?? '0.6')
         llmTimeoutMs: !!js parseInt(process.env.DSH_EDGE_INTENT_LLM_TIMEOUT_MS ?? '4000', 10)
         recentMessagesLimit: !!js parseInt(process.env.DSH_EDGE_INTENT_RECENT_LIMIT ?? '3', 10)
@@ -272,7 +272,7 @@
         enableRateLimit: true
         enableModelDetection: !!js process.env.DSH_EDGE_GUARD_MODEL !== 'false'
         modelDetectionProvider: !!js process.env.DSH_EDGE_GUARD_MODEL_PROVIDER ?? 'local-qwen3-4b'
-        modelDetectionModel: !!js process.env.DSH_EDGE_GUARD_MODEL_MODEL ?? 'qwen3-4b'
+        modelDetectionModel: !!js process.env.DSH_EDGE_GUARD_MODEL_MODEL ?? 'Qwen3-4B-Instruct-2507'
         modelDetectionTimeoutMs: !!js parseInt(process.env.DSH_EDGE_GUARD_MODEL_TIMEOUT_MS ?? '4000', 10)
         modelDetectionMaxInputLength: !!js parseInt(process.env.DSH_EDGE_GUARD_MODEL_MAX_INPUT ?? '2000', 10)
 
