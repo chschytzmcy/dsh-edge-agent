@@ -49,12 +49,55 @@ export function buildChatCompletionsBody(
   defaultModel: string,
   temperature: number | undefined,
 ): Record<string, unknown> {
-  const wireMessages: Array<{ role: string; content: unknown }> = []
+  const wireMessages: Array<Record<string, unknown>> = []
   if (options.system !== undefined && options.system.length > 0) {
     wireMessages.push({ role: 'system', content: options.system })
   }
   for (const message of options.messages) {
-    wireMessages.push({ role: message.role, content: extractText(message.content) })
+    // Cordis messages use content-block arrays. We need to translate:
+    //   - text blocks → concatenated text content
+    //   - tool-call blocks → OpenAI `tool_calls` field (assistant messages)
+    //   - tool-result blocks → separate `role: 'tool'` messages with `tool_call_id`
+    const blocks = (Array.isArray(message.content) ? message.content : []) as unknown as Array<Record<string, unknown>>
+    const textParts: string[] = []
+    const toolCalls: Array<Record<string, unknown>> = []
+    const toolResults: Array<{ id: string; content: string }> = []
+    for (const block of blocks) {
+      if (block.type === 'text' && typeof block.text === 'string') {
+        textParts.push(block.text)
+      } else if (block.type === 'tool-call') {
+        toolCalls.push({
+          id: String(block.toolCallId ?? block.callId ?? block.id ?? `call_${Math.random().toString(36).slice(2)}`),
+          type: 'function',
+          function: {
+            name: String(block.name ?? ''),
+            arguments: typeof block.arguments === 'string' ? block.arguments : JSON.stringify(block.arguments ?? {}),
+          },
+        })
+      } else if (block.type === 'tool-result') {
+        toolResults.push({
+          id: String(block.toolCallId ?? block.callId ?? block.id ?? ''),
+          content: typeof block.content === 'string' ? block.content : extractText(block.content as Array<{ type: string; text?: string }>),
+        })
+      }
+      // reasoning blocks are intentionally skipped for the wire format
+    }
+
+    // Tool results become separate `role: 'tool'` messages
+    if (toolResults.length > 0) {
+      for (const tr of toolResults) {
+        wireMessages.push({ role: 'tool', tool_call_id: tr.id, content: tr.content })
+      }
+      continue
+    }
+
+    // Build the wire message with appropriate fields
+    const wireMsg: Record<string, unknown> = { role: message.role }
+    wireMsg.content = textParts.length > 0 ? textParts.join('') : (toolCalls.length > 0 ? null : '')
+    if (toolCalls.length > 0) {
+      wireMsg.tool_calls = toolCalls
+    }
+    wireMessages.push(wireMsg)
   }
   const body: Record<string, unknown> = {
     // CRITICAL: use the adapter's configured `defaultModel` (the real upstream
