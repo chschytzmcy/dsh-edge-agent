@@ -196,7 +196,7 @@
         providers: [cloud-deepseek-v4]
         baseUrl: !!js process.env.DEEPSEEK_BASE_URL ?? 'https://api.deepseek.com'
         apiKeyEnv: DEEPSEEK_API_KEY
-        defaultModel: deepseek-chat
+        defaultModel: !!js process.env.DSH_EDGE_MODEL ?? 'deepseek-chat'
 
     - id: local-llm-adapter
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/local-llm-adapter'

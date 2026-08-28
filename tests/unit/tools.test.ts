@@ -187,17 +187,21 @@ describe('tools (M2)', () => {
 
   it('Phase 5: DSH local fs tools (read/write/edit) resolve to LOCAL; bash resolves to LOCAL+CLOUD', () => {
     const service = new ToolsServiceImpl(isolationCtx() as never)
-    // bash is multi-realm: LOCAL + CLOUD
+    // bash and read are multi-realm: LOCAL + CLOUD
     assert.equal(service.realmOf('bash'), 'LOCAL') // first value
     const bashRealms = service.resolveRealms('bash')
     assert.ok(bashRealms.has('LOCAL'), 'bash should be in LOCAL')
     assert.ok(bashRealms.has('CLOUD'), 'bash should be in CLOUD')
     assert.equal(bashRealms.size, 2)
+    // read is also LOCAL + CLOUD (consistent with bash — since bash can
+    // already read files, restricting read doesn't add security)
+    const readRealms = service.resolveRealms('read')
+    assert.ok(readRealms.has('LOCAL'), 'read should be in LOCAL')
+    assert.ok(readRealms.has('CLOUD'), 'read should be in CLOUD')
+    assert.equal(readRealms.size, 2)
     // Other fs tools are LOCAL only
-    assert.equal(service.realmOf('read'), 'LOCAL')
     assert.equal(service.realmOf('write'), 'LOCAL')
     assert.equal(service.realmOf('edit'), 'LOCAL')
-    assert.equal(service.resolveRealms('read').size, 1)
   })
 
   it('bash is visible to both LOCAL and CLOUD intents under isolation', () => {
@@ -222,8 +226,9 @@ describe('tools (M2)', () => {
     )
     const localNames = service.filterTools({ category: 'LOCAL' }).map(t => t.name).sort()
     assert.deepEqual(localNames, ['bash', 'read'])
+    // read is LOCAL + CLOUD (consistent with bash), so it appears in both
     const cloudNames = service.filterTools({ category: 'CLOUD' }).map(t => t.name).sort()
-    assert.deepEqual(cloudNames, ['bash', 'web_search'])
+    assert.deepEqual(cloudNames, ['bash', 'read', 'web_search'])
   })
 
   it('setRealm is additive — calling twice adds both realms', () => {

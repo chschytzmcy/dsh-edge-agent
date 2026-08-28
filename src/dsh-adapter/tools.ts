@@ -93,7 +93,6 @@ declare module '@deepseek-ai/cordis' {
 const DSH_NATIVE_REALM_MAP: Readonly<Record<string, ToolRealm>> = {
   web_search: 'CLOUD',
   web_fetch: 'CLOUD',
-  read: 'LOCAL',
   write: 'LOCAL',
   edit: 'LOCAL',
   glob: 'LOCAL',
@@ -102,11 +101,15 @@ const DSH_NATIVE_REALM_MAP: Readonly<Record<string, ToolRealm>> = {
 
 /**
  * Tools that belong to multiple realms. These override DSH_NATIVE_REALM_MAP
- * when present. Currently `bash` is tagged both LOCAL and CLOUD so that
- * CLOUD agents can invoke lark-cli (and other safe CLI tools) via bash.
+ * when present. `bash` and `read` are tagged both LOCAL and CLOUD so that
+ * CLOUD agents can invoke lark-cli (and other safe CLI tools) via bash,
+ * and read local files (e.g. skill reference docs like lark-shared/SKILL.md).
+ * Since `bash` already grants equivalent file access, `read` in CLOUD is
+ * consistent rather than a new risk.
  */
 const DSH_NATIVE_MULTI_REALM: Readonly<Record<string, readonly ToolRealm[]>> = {
   bash: ['LOCAL', 'CLOUD'],
+  read: ['LOCAL', 'CLOUD'],
 }
 
 /**
