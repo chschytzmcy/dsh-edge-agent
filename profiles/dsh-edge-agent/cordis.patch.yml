@@ -355,4 +355,28 @@
         localProvider: !!js process.env.DSH_EDGE_LOCAL_PROVIDER ?? 'local-qwen3-4b'
         localModel: !!js process.env.DSH_EDGE_LOCAL_MODEL ?? 'qwen3-4b-instruct-2507'
 
+    # ── 第三入口：dsh-im（IM 聊天软件通道网关）────────────────────────
+    # 飞书 / 微信 / 钉钉 / 企业微信 / QQ / Slack / Telegram / Discord /
+    # WhatsApp 九大 IM 渠道 + AI Office Connector。
+    #
+    # 关键依赖（由 dsh-base / webserver 提供，本 patch 不重复声明）：
+    #   - credentials    → dsh-credentials-local (dsh-base)
+    #   - typertGateway  → dsh-api-gateway      (dsh-base, id=typert-gateway)
+    #   - connection     → dsh-host-webserver   (本 patch 已挂)
+    #   - apiProxy       → dsh-host-webserver 内部
+    #
+    # 不监听新端口；不引入新鉴权面；所有 IM 消息经 webserver 内部 RPC
+    # 进入 agent-loop，自动过 input-guard 三 hook（agent/pre-step +
+    # agent/request + llm/stream）。Channel 凭据由用户在 webui 的
+    # 「设置 → IM机器人」页面扫码 / 输入，存储到 dsh-credentials-local
+    # 受保护的本地凭据存储，配置文件不落盘。
+    #
+    # 渠道启用由用户在 webui 开关控制；此处只声明插件本身，提供空
+    # config 让所有渠道默认 off（apply 内部对单 channel 失败容错，
+    # 不会因为某个 channel 启动失败而拒绝整个插件）。
+    - id: xmanrui-dsh-im
+      name: '@xmanrui/dsh-im'
+      config:
+        language: !!js process.env.DSH_IM_LANGUAGE ?? undefined
+
 

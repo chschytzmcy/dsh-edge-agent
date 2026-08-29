@@ -144,6 +144,12 @@ fi
 #     web UI 前端 + 插件路由（/ui/...、/ws 等）
 #   - 两者各自 createServer，必须在不同端口
 #
+# `@xmanrui/dsh-im`：基于 dsh-host-webserver 的 connection / apiProxy
+# 服务运行的 IM 通道网关（飞书 / 微信 / 钉钉 / 企业微信 / QQ / Slack /
+# Telegram / Discord / WhatsApp 九大渠道 + AI Office Connector）。
+# 它**不监听新端口**，而是通过 webserver 内部 RPC 把 IM 消息接入
+# agent-loop，自动继承 input-guard 隐私管线。
+#
 # 跳过条件：
 #   - DSH_EDGE_SKIP_WEBUI=1  显式跳过
 #   - 已有 node_modules/@linxin666/dsh-web-ui-all 且非强制安装
@@ -156,7 +162,8 @@ if [ "$DO_PNPM" = 1 ] && [ "${DSH_EDGE_SKIP_WEBUI:-0}" != "1" ]; then
       @deepseek-ai/dsh-host-webserver \
       @deepseek-ai/dsh-web-app \
       @deepseek-ai/dsh-web-frontend \
-      @linxin666/dsh-web-ui-all; do
+      @linxin666/dsh-web-ui-all \
+      @xmanrui/dsh-im; do
       echo "       + $_pkg"
       dsh plugin --profile "$PROFILE" add "$_pkg" >/dev/null 2>&1 || {
         echo "  warning: failed to add $_pkg — web UI may not work." >&2

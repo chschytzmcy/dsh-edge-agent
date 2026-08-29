@@ -200,8 +200,12 @@ fi
 #             dsh-web-app → 浏览器 surface bundle + runtime glue
 #             dsh-web-frontend → Vite 构建的 SPA 静态资源
 #             dsh-web-ui-all → task-board/git-graph/pet/skin-center 全家桶
+#             @xmanrui/dsh-im → IM 通道网关（飞书/微信/钉钉/企微/QQ/
+#                              Slack/Telegram/Discord/WhatsApp + AI Office）；
+#                              不开新端口，依赖 webserver 的 connection /
+#                              apiProxy 服务，自动过 input-guard 隐私管线
 # 缺任何一个都会导致对应功能不可用。`dsh plugin add` 是幂等的。
-echo "  -> install upstream web-search + skill + web-ui packages"
+echo "  -> install upstream web-search + skill + web-ui + im packages"
 for _pkg in \\
     @deepseek-ai/dsh-agent-loop \\
     @deepseek-ai/dsh-tool-web \\
@@ -213,7 +217,8 @@ for _pkg in \\
     @deepseek-ai/dsh-host-webserver \\
     @deepseek-ai/dsh-web-app \\
     @deepseek-ai/dsh-web-frontend \\
-    @linxin666/dsh-web-ui-all; do
+    @linxin666/dsh-web-ui-all \\
+    @xmanrui/dsh-im; do
     dsh plugin --profile "\$PROFILE" add "\$_pkg" >/dev/null 2>&1 || {
         echo "  warning: failed to add \$_pkg" >&2
     }

@@ -72,24 +72,41 @@ See [docs/configuration.en.md](docs/configuration.en.md).
 
 See [docs/threat-model.en.md](docs/threat-model.en.md) for the complete threat model.
 
-## 🌐 Dual-Entry Architecture
+## 🌐 Multi-Entry Architecture
 
-dsh-edge-agent exposes **two HTTP entry points** with explicit division of labor:
+dsh-edge-agent exposes **three user entry points** with explicit division of labor:
 
 | Entry | Port | Auth | Target user |
 |---|---|---|---|
 | **DSH official Web UI** (SPA + apiproxy) | `:21018` | loopback trust + pairing | Browser / human |
+| **dsh-im** (IM chat gateway) | (no new port) | QR / bot credentials / AI Office Device Token | Mobile chat users |
 | **http-api** (self-developed REST + SSE) | `:21017` | Bearer token + body cap | CLI / SDK / cURL / external agent |
 
-Both entries share the **same agent-loop pipeline** (including `input-guard`, `prompt-guard`, `sanitizer`, `privacy-policy`, `audit-log`, `sessions`). Because `input-guard` registers on global hooks, **every entry automatically gets privacy protection** — the sanitize / downgrade / REJECT behavior is identical regardless of whether the request comes from the webui or from cURL.
+All three entries share the **same agent-loop pipeline** (including `input-guard`, `prompt-guard`, `sanitizer`, `privacy-policy`, `audit-log`, `sessions`). Because `input-guard` registers on global hooks, **every entry automatically gets privacy protection** — the sanitize / downgrade / REJECT behavior is identical regardless of whether the request comes from the webui, an IM chat, or cURL.
 
 ### Browser users → `:21018`
 
 Open `http://127.0.0.1:21018` and use the DSH official Web UI (chat / task-board / pet). Authentication is handled by DSH upstream pairing.
 
+### IM chat users → Feishu / WeChat / DingTalk / WeCom / QQ / Slack / Telegram / Discord / WhatsApp
+
+The `dsh-im` plugin (`@xmanrui/dsh-im`) routes IM messages to agent-loop via the webserver's internal `apiProxy` — **no new port**, automatically inherits `input-guard` privacy coverage.
+
+Setup:
+1. Open `http://127.0.0.1:21018` in a browser, navigate to **Settings → IM Bots**
+2. Pick a channel, **scan QR code** or paste App ID / Secret / Bot Token as the page guides
+3. Credentials are written **only** to `dsh-credentials-local` protected storage; config files stay clean
+4. Once enabled, IM DMs and group @messages route to agent-loop (streaming thought / tool progress / final answer all render natively per channel)
+
+Supported: Feishu (WebSocket + streaming cards) / WeChat (iLink long-poll) / DingTalk (Stream + AI Card) / WeCom (WebSocket + "thinking...") / QQ (WebSocket) / Slack (Socket Mode) / Telegram (Bot API + Rich Draft) / Discord (Gateway v10 + native Thread) / WhatsApp (WhatsApp Web) + **AI Office Connector** (HTTPS heartbeat to public Office + SSE downlink).
+
+> **⚠️ AI Office risk**: The AI Office Connector lets local Harness **actively** connect to a public Office (no public IP / port forwarding needed), but SSE downlink pushes incremental text to that Office. **Only enabled when user explicitly opts in** (webui opt-in dialog from v1.2).
+
+> **⚠️ Credential safety**: All IM bot credentials go to `dsh-credentials-local` only; RPC responses never echo raw credentials. See `docs/dual-entry-architecture.md` §10.4.
+
 ### Programmatic clients → `:21017`
 
-CLI / SDK / cURL calls to the self-developed REST API. See the [Chinese README dual-entry section](README.md#-双入口架构) for curl examples, or [`docs/dual-entry-architecture.md`](docs/dual-entry-architecture.md) for the full spec.
+CLI / SDK / cURL calls to the self-developed REST API. See the [Chinese README multi-entry section](README.md#-多入口架构) for curl examples, or [`docs/dual-entry-architecture.md`](docs/dual-entry-architecture.md) for the full spec.
 
 ```sh
 # Health check (no auth)
@@ -108,7 +125,10 @@ curl -N -X POST http://127.0.0.1:21017/v1/chat/stream \
   -d '{"message": "hello"}'
 ```
 
-> **⚠️ Auth convention**: Bearer token must be injected via the `EDGE_API_KEY` env var; **do not** hardcode in config files. Use a secret manager in production.
+> **⚠️ Auth conventions**:
+> - **http-api**: Bearer token must be injected via the `EDGE_API_KEY` env var; **do not** hardcode in config files. Use a secret manager in production.
+> - **dsh-im**: IM platform bot credentials go through the webui "Settings → IM Bots" page, written **only** to `dsh-credentials-local`. Config files stay clean.
+> - **dsh-webui**: loopback trust + DSH upstream pairing.
 >
 > **⚠️ CORS**: CORS is **not** enabled in v1 (the `enableCors` field is not even exposed in the schema). Callers should run on the same host. For browser access, use the official Web UI on `:21018`.
 

@@ -1,6 +1,6 @@
-# dsh-edge-agent 双入口架构设计
+# dsh-edge-agent 多入口架构设计
 
-**版本**：v1 (2026-08-29)
+**版本**：v1.1 (2026-08-29)
 **适用范围**：dsh-edge-agent v0.1.0+
 **关联文档**：[`input-guard-design.md`](./input-guard-design.md)、[`architecture.md`](./architecture.md)、[`plugin-architecture.md`](./plugin-architecture.md)、[`dsh-edge-agent-design.md`](./dsh-edge-agent-design.md)
 
@@ -8,14 +8,15 @@
 
 ## 1. TL;DR
 
-dsh-edge-agent 同时对外暴露**两个 HTTP 入口**，明确分工：
+dsh-edge-agent 同时对外暴露**三个用户入口**，明确分工：
 
 | 入口 | 端口 | 协议 | 鉴权 | 目标用户 |
 |---|---|---|---|---|
 | **dsh-webui**（DSH 官方 Web UI） | `:21018` | SPA + apiproxy RPC + SSE | loopback trust + pairing | **人类 / 浏览器** |
+| **dsh-im**（IM 聊天软件通道网关） | (无新端口) | webserver 内部 apiProxy + IM 平台 SDK | QR / bot credentials | **人类 / 移动端聊天** |
 | **http-api**（自研 REST） | `:21017` | REST + SSE + Bearer | Bearer token + body cap | **CLI / SDK / cURL / 外部 agent** |
 
-两条入口**共享同一套 agent-loop 管线**（input-guard / prompt-guard / sanitizer / privacy-policy / audit-log / sessions / model-router / LLM adapters）。`input-guard` 挂在全局 hook 上，所以**所有入口自动获得隐私保护**。
+三条入口**共享同一套 agent-loop 管线**（input-guard / prompt-guard / sanitizer / privacy-policy / audit-log / sessions / model-router / LLM adapters）。`input-guard` 挂在全局 hook 上，所以**所有入口自动获得隐私保护**。
 
 ```
                      ┌─────────────────────────────────┐
@@ -23,18 +24,25 @@ dsh-edge-agent 同时对外暴露**两个 HTTP 入口**，明确分工：
                      │   (privacy pipeline invariant)   │
                      └────────────────▲────────────────┘
                                       │
-                  ┌───────────────────┴───────────────────┐
-                  │                                       │
-        ┌─────────┴─────────┐                 ┌───────────┴─────────┐
-        │  dsh-webui(:21018)│                 │  http-api (:21017)  │
-        │  browser / human  │                 │  CLI / SDK / cURL   │
-        │  SPA + apiproxy   │                 │  REST + SSE + bearer│
-        └───────────────────┘                 └─────────────────────┘
+       ┌──────────────────────────────┼──────────────────────────────┐
+       │                              │                              │
+ ┌─────┴──────┐               ┌───────┴───────┐              ┌───────┴───────┐
+ │dsh-webui   │               │ dsh-im         │              │ http-api      │
+ │(:21018)    │               │ (no new port)  │              │ (:21017)      │
+ │browser     │               │IM clients      │              │CLI/SDK/cURL   │
+ │SPA+apiproxy│               │feishu/weixin/  │              │REST+SSE+bearer│
+ │            │               │dingtalk/wecom/ │              │               │
+ │            │               │qq/slack/tg/    │              │               │
+ │            │               │dc/whatsapp     │              │               │
+ └────────────┘               └───────────────┘              └───────────────┘
+       │                              │                              │
+       └──── all reach agent-loop ────┴──── all reach agent-loop ────┘
+                  via dsh-host-webserver apiProxy            via agent.followup
 ```
 
 ---
 
-## 2. 背景：input-guard 决定两条入口是平行的
+## 2. 背景：input-guard 决定三条入口是平行的
 
 2026-08-29 合并的 `input-guard`（commit `eaec70b`）把 http-api 内的脱敏/防护逻辑**上移到 agent-loop 的全局 hook**：
 
@@ -47,9 +55,12 @@ dsh-edge-agent 同时对外暴露**两个 HTTP 入口**，明确分工：
 | 入口 | 路径 | input-guard 覆盖 |
 |---|---|---|
 | dsh-webui | `dsh-host-apiproxy → agent-loop` | ✅ 自动 |
+| dsh-im | `IM SDK → dsh-host-webserver.connection → apiProxy → agent-loop` | ✅ 自动 |
 | http-api | `agent.followup → agent-loop` | ✅ 自动 |
 
-这意味着双入口不是"两条不同的实现路径"，而是"两条不同的 transport + 一条共享的 agent 管线"。input-guard 的存在让双入口**安全对齐**成为自然结果。
+这意味着多入口不是"三条不同的实现路径"，而是"三条不同的 transport + 一条共享的 agent 管线"。input-guard 的存在让多入口**安全对齐**成为自然结果。
+
+**关键洞察**：dsh-im 之所以能"零成本"获得 input-guard 覆盖，是因为它**复用**了 webserver 的 `apiProxy` 服务，而不是另起炉灶自己调 agent-loop。这意味着 dsh-im 是 webui 的 transport 变体，而不是平行的新入口——它的鉴权面（QR / bot credentials）和 webui 的 loopback trust 是同一个 webserver 实例提供的。
 
 ---
 
@@ -60,6 +71,7 @@ dsh-edge-agent 同时对外暴露**两个 HTTP 入口**，明确分工：
 **采纳用户提出的分工**：
 
 - 浏览器 / 真人用户 → dsh-webui（`@deepseek-ai/dsh-host-webserver` + `dsh-web-app` + `dsh-web-frontend` + `@linxin666/dsh-web-ui-all`）
+- 移动端 / IM 聊天用户 → dsh-im（`@xmanrui/dsh-im`，基于 webserver 的 connection/apiProxy）
 - CLI / SDK / 外部 agent / cURL → http-api
 
 ### 3.2 鉴权模型不同
@@ -74,6 +86,7 @@ dsh-edge-agent 同时对外暴露**两个 HTTP 入口**，明确分工：
 ### 3.3 接口风格不同
 
 - **dsh-webui**：SPA + apiproxy RPC（SPA 通过 `dsh-host-apiproxy` 调 `sessions.list / prompt / cancel / fork / rename` 等 DSH 合约方法）。
+- **dsh-im**：IM 平台 SDK 长连接 / 长轮询（飞书 WebSocket、钉钉 Stream、Slack Socket Mode、Telegram Bot API、Discord Gateway v10、WhatsApp Web 等），消息经 webserver 内部 `apiProxy` 入 agent-loop。
 - **http-api**：RESTful + SSE（人类熟悉 + 程序易测；SSE 15s keepalive 防代理切断）。
 
 ### 3.4 拒绝的替代方案
@@ -81,8 +94,9 @@ dsh-edge-agent 同时对外暴露**两个 HTTP 入口**，明确分工：
 - **「合并到 dsh-webui」**：webui 是浏览器表面，bearer + cookie 模型不兼容机器调用。
 - **「合并到 http-api」**：失去 DSH 原生 SPA（task-board / git-graph / pet / skin-center），违反 DSH 架构。
 - **「webui 调 http-api 反向调用」**：绕过 DSH 原生 apiproxy，破坏 input-guard 的统一 hook 设计（input-guard-design.md §4.3 已否）。
-- **「双入口共用同一端口」**：协议、鉴权、客户端形态完全不同，强行绑定会引入隐藏耦合。
+- **「三入口共用同一端口」**：协议、鉴权、客户端形态完全不同，强行绑定会引入隐藏耦合。
 - **「http-api 加 CORS 让 webui SDK 也走它」**：CORS 是 webui 的补救路径，不是主路径；先坚持 `dsh-host-apiproxy`。
+- **「dsh-im 独立监听新端口」**：dsh-im 复用 webserver 的 connection/apiProxy，不开新端口——它的鉴权面（QR / bot credentials）由 webui「设置 → IM机器人」页面统一管理。这避免了 IM 凭据与 webui 凭据两套存储的不一致。
 
 ---
 
@@ -95,6 +109,7 @@ dsh-edge-agent 同时对外暴露**两个 HTTP 入口**，明确分工：
 - **后端桥**：`dsh-host-apiproxy`（DSH 上游，不在 dsh-edge-agent 仓库控制范围）
 - **协议**：HTTP/1.1 + WebSocket（apiproxy）+ SSE（chat 流）
 - **鉴权**：loopback trust；远端访问走 DSH 上游的配对 token 流程
+- **附加角色**：同时为 dsh-im 提供 `connection` + `apiProxy` 服务（详见 §4.3）
 
 ### 4.2 http-api（`:21017`）
 
@@ -103,7 +118,34 @@ dsh-edge-agent 同时对外暴露**两个 HTTP 入口**，明确分工：
 - **鉴权**：Bearer token（`Authorization: Bearer <EDGE_API_KEY>`，环境变量注入）+ body cap（默认 1 MiB）
 - **CORS**：**v1 不暴露**——`enableCors` 字段在 schema 中完全不出现（即便 `DSH_EDGE_HTTP_CORS=true` 也不生效）。理由：CORS 是 webui 补救路径，会引入 preflight 攻击面；程序客户端同主机调用不需要 CORS。**v2 再启用**（必须配 origin allowlist + `Vary: Origin`）。
 
-### 4.3 端口冲突矩阵
+### 4.3 dsh-im（无新端口 — 复用 webserver）
+
+- **宿主**：`@xmanrui/dsh-im`（IM 通道网关插件）
+- **依赖服务**（来自 dsh-base + 本 patch 已挂载）：
+  - `connection`     ← `@deepseek-ai/dsh-host-webserver`（本 patch 顶层 configOverride）
+  - `apiProxy`       ← `@deepseek-ai/dsh-host-webserver` 内部
+  - `typertGateway`  ← `@deepseek-ai/dsh-api-gateway`（dsh-base 顶层 id `typert-gateway`）
+  - `credentials`    ← `@deepseek-ai/dsh-credentials-local`（dsh-base 顶层 id `credentials`）
+- **协议**：IM 平台原生 SDK
+  | 渠道 | 协议 |
+  |---|---|
+  | 飞书 | WebSocket 长连接 + 流式卡片 |
+  | 微信 | iLink 长轮询 + 1,800 字符分段发送 |
+  | 钉钉 | Stream 长连接 + AI Card |
+  | 企业微信 | WebSocket 长连接 + 「思考中」原生展示 |
+  | QQ | WebSocket 长连接（私聊 Markdown，群聊仅 @） |
+  | Slack | Socket Mode 长连接 |
+  | Telegram | Bot API 长轮询 + Rich Message Draft 流式预览 |
+  | Discord | Gateway v10 长连接 + 原生 Thread |
+  | WhatsApp | WhatsApp Web 长连接 |
+  | AI Office | HTTPS 心跳 + SSE 下行（90 秒任务租约） |
+- **鉴权**：
+  - **IM 渠道凭据**（飞书 App Secret / 微信 iLink 凭据 / 钉钉 Client Secret / 企业微信 Bot Secret / QQ AppSecret / Slack Bot+App Token / Telegram Bot Token / Discord Bot Token / WhatsApp 扫码）：用户从 webui 「设置 → IM机器人」页面扫码或粘贴，**只写入 `dsh-credentials-local` 受保护凭据存储**，配置文件不落盘。
+  - **AI Office Device Token**：同上，只入凭据存储。
+  - **rpcAuthority**：`'loopback'`（默认，IM 管理 RPC 仅 loopback）或 `'trusted-host'`（远端访问 webui 场景）。
+- **CORS**：N/A — IM 客户端是 SDK 长连接，不走浏览器预检。
+
+### 4.4 端口冲突矩阵
 
 | 端口 | 服务 | 冲突？ |
 |---|---|---|
@@ -111,7 +153,19 @@ dsh-edge-agent 同时对外暴露**两个 HTTP 入口**，明确分工：
 | `:21018` | dsh-host-webserver | — |
 | `:21019+` | webui SPA 内部端口（dsh-web-app 内嵌静态资源） | — |
 
-监听时使用 `127.0.0.1` 默认绑定（可通过 `DSH_EDGE_HTTP_HOST` / `DSH_EDGE_WEB_HOST` 改）。两端口**可同时监听**，互不阻塞。
+监听时使用 `127.0.0.1` 默认绑定（可通过 `DSH_EDGE_HTTP_HOST` / `DSH_EDGE_WEB_HOST` 改）。两端口**可同时监听**，互不阻塞。dsh-im 不开端口，IM 平台长连接由各渠道 SDK 自行维护；webserver 在 loopback 上为 dsh-im 提供 apiProxy。
+
+### 4.5 服务依赖矩阵（dsh-im 视角）
+
+| 依赖服务 | 提供者 | 是否在本 patch 显式挂载 |
+|---|---|---|
+| `connection` | `@deepseek-ai/dsh-host-webserver` | ✅ 顶层 configOverride（`dsh-host-webserver`） |
+| `apiProxy` | `@deepseek-ai/dsh-host-webserver` 内部 | ✅ 同上 |
+| `typertGateway` | `@deepseek-ai/dsh-api-gateway` | ❌ 由 dsh-base 顶层 id `typert-gateway` 提供 |
+| `credentials` | `@deepseek-ai/dsh-credentials-local` | ❌ 由 dsh-base 顶层 id `credentials` 提供 |
+| `tools`, `systemPrompt` | dsh-base | ❌ |
+
+dsh-im 的 plugin-level `inject` 列出 `connection / credentials / apiProxy / typertGateway`——本 patch 已**通过 `dsh-host-webserver` 顶层 configOverride 间接提供前两个**；后两个由 dsh-base 在加载时已挂。
 
 ---
 
@@ -228,14 +282,14 @@ http-api 的 Config 字段（`src/dsh-adapter/http-api.ts`）：
 - `@linxin666/dsh-web-ui-all`（task-board / git-graph / pet / skin-center）
 - `web-search` / `voice-input` / `dsh-edge-agent`（aggregator）
 
-**仅启用**：`dsh-host-webserver` + `dsh-host-apiproxy`（DSH 上游的 webui 最小集）。
+**仅启用**：`dsh-host-webserver`（DSH 上游 webui 最小集；并同时为 dsh-im 提供 connection/apiProxy）+ dsh-im（plugin 声明在 `insert:` 段）。
 
-### 9.2 SPA 通过 apiproxy 调 agent-loop，**不调 http-api**
+### 9.2 SPA / IM 通过 apiproxy 调 agent-loop，**不调 http-api**
 
-DSH 上游 SPA 的 chat RPC（`sessions.prompt` / `sessions.list` / `sessions.cancel` / `sessions.fork` / `sessions.rename`）走 `dsh-host-apiproxy`，**绝不**绕道 http-api。这样：
+DSH 上游 SPA 的 chat RPC（`sessions.prompt` / `sessions.list` / `sessions.cancel` / `sessions.fork` / `sessions.rename`）走 `dsh-host-apiproxy`，**绝不**绕道 http-api。dsh-im 也走相同的 apiproxy——这是它能"零成本"获得 input-guard 覆盖的关键。这样：
 
 - DSH 上游合约保持原样
-- input-guard 的全局 hook 自动覆盖 SPA 路径（apiproxy → agent-loop）
+- input-guard 的全局 hook 自动覆盖 SPA + IM 路径（apiproxy → agent-loop）
 - http-api 不需要承担 webui 兼容层
 
 ### 9.3 启用 webui 全家桶的代价
@@ -274,23 +328,47 @@ DSH 上游 SPA 的 chat RPC（`sessions.prompt` / `sessions.list` / `sessions.ca
 
 **未来**：attestation 是 A5 阶段工作；届时重新引入字段并接入真实检查，**单独 RFC**。
 
+### 10.4 dsh-im 凭据存储与公网回流风险
+
+**风险**：
+- dsh-im 把 9 大 IM 平台 + AI Office 的 bot credentials / Device Token **只写入 `dsh-credentials-local` 受保护本地凭据存储**，配置文件不落盘——这是 dsh-im 自身的契约（[README §安装](https://github.com/xmanrui/dsh-im)）。
+- AI Office Connector 让本机 Harness **主动**连接公网 Office（`POST /api/harness/connector/heartbeat` + `GET /api/harness/connector/stream` SSE 下行）。**不需要**本机公网 IP / 端口转发 / 反向代理；它通过 90 秒租约 + 30 秒续租保持长连。
+- SSE 下行的 `text-delta` / 状态更新 / 工具执行结果会回到公网 Office——**但只回 desensitize 后的内容**（脱敏在 input-guard `llm/stream` hook 之后）。
+
+**缓解**：
+- v1.1 起要求**默认关闭** dsh-im 的 `office` 通道（用户在 webui 开关），默认只启用用户主动配置的 IM 通道。
+- AI Office Connector 启用前需明确告知用户「状态 + 工具名 + 增量文本会到公网 Office」，UI 弹出 opt-in 对话框（v1.1 UI 工作）。
+- 如果未来需要把 IM 渠道结果**禁止**回某 IM 平台（例如：飞书群聊里讨论隐私问题，希望群消息不回 IM），需要 input-guard 加一个 per-channel allowlist——v1 不实现。
+
+### 10.5 dsh-im 的 apiProxy 依赖耦合
+
+**风险**：dsh-im `inject` 列出 `connection / apiProxy / typertGateway`，这些服务由 `dsh-host-webserver` 和 dsh-base 提供。**如果未来禁用 webserver，dsh-im 自动失效**——这是预期的（dsh-im 本身就是 webui 的 transport 变体），但需要在 profile 文档明示。
+
+**缓解**：
+- `cordis.patch.yml` 中 `dsh-host-webserver` 不在 disables 列表（这是 M4 已确定的选择）
+- dsh-im 不在 `disabled: true` 之列；它随 webserver 启用 / 禁用而隐式联动
+- 用户禁用 dsh-im 时只需在 webui 「设置 → IM机器人」关闭各 channel；插件本身不卸载（保持 QR / bot 配置持久）
+
 ---
 
 ## 11. 路线图
 
-### v1（本文档 — 已实施 2026-08-29）
+### v1.1（本文档 — 已实施 2026-08-29）
 
-- 13 个 must-have 项（见 plan §3.1）
+- 双入口：dsh-webui (:21018) / http-api (:21017)，13 个 must-have 项（见 plan §3.1）
+- 三入口扩展：dsh-im 挂入 `insert:` 段，复用 webserver 的 apiProxy
 - 无 CORS、无 UI、无工具/技能/文件端点
-- `input-guard` 是双入口统一防护的基石
+- `input-guard` 是多入口统一防护的基石
 - `patch-surface` snapshot 不变（`inserts=0, 6 configOverrides, 7 disables`）
 
-### v1.1
+### v1.2
 
 - CORS（必须配 origin allowlist）
 - `/v1/tools/{list,invoke}` 端点
 - `/v1/skills/{list,load}` 端点
 - `/v1/files/{read,write}`（受限）
+- dsh-im AI Office opt-in UI 对话框
+- IM channel 关闭时 per-channel allowlist（§10.4 缓解 3）
 
 ### v2
 
@@ -303,7 +381,7 @@ DSH 上游 SPA 的 chat RPC（`sessions.prompt` / `sessions.list` / `sessions.ca
 
 ## 12. 引用
 
-- `docs/input-guard-design.md` — input-guard 编排器设计（双入口统一防护的依赖）
+- `docs/input-guard-design.md` — input-guard 编排器设计（多入口统一防护的依赖）
 - `docs/architecture.md` — 整体架构
 - `docs/plugin-architecture.md` — Cordis 插件机制
 - `docs/dsh-edge-agent-design.md` — v6 设计文档

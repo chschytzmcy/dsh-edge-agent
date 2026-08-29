@@ -217,20 +217,40 @@ export DSH_EDGE_LOCAL_LLM_MODEL=qwen3-4b-instruct-2507
 > **Secret 警告**：`DEEPSEEK_API_KEY`、`EDGE_API_KEY` 是 secret，**绝不能提交到 git**。
 > 使用 `.env` 文件（已加入 `.gitignore`）+ `dsh --env-file=.env` 启动。
 
-## 🌐 双入口架构
+## 🌐 多入口架构
 
-dsh-edge-agent 对外暴露**两个 HTTP 入口**，明确分工，互不替代：
+dsh-edge-agent 对外暴露**三个用户入口**，明确分工，互不替代：
 
 | 入口 | 端口 | 鉴权 | 目标用户 |
 |---|---|---|---|
 | **DSH 官方 Web UI**（SPA + apiproxy） | `:21018` | loopback trust + pairing | 浏览器 / 真人用户 |
+| **dsh-im**（IM 聊天软件通道网关） | (无新端口) | QR / bot credentials / AI Office Device Token | 移动端聊天软件用户 |
 | **http-api**（自研 REST + SSE） | `:21017` | Bearer token + body cap | CLI / SDK / cURL / 外部 agent |
 
-两条入口**共享同一套 agent-loop 管线**（含 input-guard / prompt-guard / sanitizer / privacy-policy / audit-log / sessions）。`input-guard` 挂在全局 hook 上，所以**所有入口自动获得隐私保护**——无论用户从 webui 还是 cURL 进入，agent-loop 内的脱敏与降级行为完全一致。
+三条入口**共享同一套 agent-loop 管线**（含 input-guard / prompt-guard / sanitizer / privacy-policy / audit-log / sessions）。`input-guard` 挂在全局 hook 上，所以**所有入口自动获得隐私保护**——无论用户从 webui、IM 还是 cURL 进入，agent-loop 内的脱敏与降级行为完全一致。
 
 ### 浏览器用户 → `:21018`
 
 打开浏览器访问 `http://127.0.0.1:21018`，使用 DSH 官方 Web UI（chat / task-board / pet 等）。鉴权由 DSH 上游的配对 token 流程处理。
+
+### IM 聊天用户 → 飞书 / 微信 / 钉钉 / 企业微信 / QQ / Slack / Telegram / Discord / WhatsApp
+
+dsh-im 插件（`@xmanrui/dsh-im`）通过 webserver 内部 `apiProxy` 把 IM 消息接入 agent-loop——**不监听新端口**，自动继承 input-guard 隐私管线。
+
+启用步骤：
+
+1. 在浏览器访问 `http://127.0.0.1:21018`，打开 **设置 → IM机器人** 页面
+2. 选择渠道，按页面提示**扫码**或粘贴 App ID / Secret / Bot Token 等凭据
+3. 凭据仅写入 `dsh-credentials-local` 受保护本地存储，配置文件不落盘
+4. 启用后，IM 私聊 / 群消息会自动路由到 agent-loop（流式思考 / 工具执行进度 / 最终回答均原生渠道展示）
+
+支持的 IM 渠道：飞书（WebSocket + 流式卡片）/ 微信（iLink 长轮询）/ 钉钉（Stream + AI Card）/ 企业微信（WebSocket + 「思考中」）/ QQ（WebSocket）/ Slack（Socket Mode）/ Telegram（Bot API + Rich Draft）/ Discord（Gateway v10 + 原生 Thread）/ WhatsApp（WhatsApp Web）+ **AI Office Connector**（公网 HTTPS 心跳 + SSE 下行）。
+
+> **⚠️ AI Office 风险**：AI Office Connector 让本机 Harness **主动**连接公网 Office（不需公网 IP / 端口转发），但 SSE 下行的增量文本会回到公网 Office。**只在用户主动启用**后生效（v1.1 起 webui 提供 opt-in 对话框）。
+
+> **⚠️ 凭据安全**：所有 IM 平台 bot credentials 只入 `dsh-credentials-local`，RPC 响应不回传原始凭据。详见 `docs/dual-entry-architecture.md` §10.4。
+
+### 程序客户端 → `:21017`
 
 ### 程序客户端 → `:21017`
 
@@ -280,9 +300,12 @@ curl -H "Authorization: Bearer $EDGE_API_KEY" \
 curl http://127.0.0.1:21017/v1/openapi.json
 ```
 
-完整接口规范详见 [`docs/dual-entry-architecture.md`](docs/dual-entry-architecture.md)。
+完整接口规范详见 [`docs/dual-entry-architecture.md`](docs/dual-entry-architecture.md)（v1.1 起文档同时覆盖三入口，但文件名保留以保持 GitHub 链接稳定）。
 
-> **⚠️ 鉴权约定**：Bearer token 必须从环境变量 `EDGE_API_KEY` 注入；**不要硬编码**到配置文件。生产环境使用 secret manager。
+> **⚠️ 鉴权约定**：
+> - **http-api**：Bearer token 必须从环境变量 `EDGE_API_KEY` 注入；**不要硬编码**到配置文件。生产环境使用 secret manager。
+> - **dsh-im**：IM 平台 bot credentials 走 webui「设置 → IM机器人」页面，凭据**只入 `dsh-credentials-local`**。配置文件不落盘。
+> - **dsh-webui**：loopback trust + DSH 上游配对 token 流程。
 
 > **⚠️ CORS**：v1 不启用 CORS（`enableCors` 字段在 schema 中完全不暴露）。程序端请同主机调用；若需要从浏览器直接调用 http-api，请改用 `:21018` 的官方 Web UI。
 
