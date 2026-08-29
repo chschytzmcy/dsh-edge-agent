@@ -54,15 +54,18 @@ describe('http-api plugin', () => {
       const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`)
       const path = url.pathname
 
-      // Public routes
-      if (req.method === 'GET' && path === '/v1/health') {
+      // Public routes (mirrors real dispatcher: HEAD falls back to GET
+      // per RFC 7231 §4.3.2 — see http-api.ts handleRequest).
+      if (path === '/v1/health' && (req.method === 'GET' || req.method === 'HEAD')) {
         res.writeHead(200, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ status: 'ok' }))
+        if (req.method === 'GET') res.end(JSON.stringify({ status: 'ok' }))
+        else res.end()
         return
       }
-      if (req.method === 'GET' && path === '/v1/openapi.json') {
+      if (path === '/v1/openapi.json' && (req.method === 'GET' || req.method === 'HEAD')) {
         res.writeHead(200, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ openapi: '3.0.0' }))
+        if (req.method === 'GET') res.end(JSON.stringify({ openapi: '3.0.0' }))
+        else res.end()
         return
       }
 
@@ -178,6 +181,13 @@ describe('http-api plugin', () => {
     expect(res.status).toBe(200)
     const body = await res.json()
     expect(body).toEqual({ status: 'ok' })
+  })
+
+  it('HEAD /v1/health is also public (RFC 7231 §4.3.2: HEAD = GET, no body)', async () => {
+    // curl -I / load-balancer probes use HEAD; without this fallback the
+    // dispatcher would 401 (curl omits Authorization), polluting audit log.
+    const res = await fetch(`${baseUrl()}/v1/health`, { method: 'HEAD' })
+    expect(res.status).toBe(200)
   })
 
   it('openapi.json endpoint is public', async () => {

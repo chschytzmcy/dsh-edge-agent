@@ -57,7 +57,10 @@
 # + sanitizer-pipeline + privacy-policy。
 - id: webserver
   config:
-    host: !!js process.env.DSH_EDGE_WEB_HOST ?? '127.0.0.1'
+    # 2026-08-29: 改为 0.0.0.0 开放监听（部署环境需要从外部访问 webui）。
+    # 安全约束：webui 仍走 loopback trust + pairing token；生产部署务必在
+    # 防火墙 / reverse proxy 层做 IP allowlist（部署责任）。
+    host: !!js process.env.DSH_EDGE_WEB_HOST ?? '0.0.0.0'
     port: !!js parseInt(process.env.DSH_EDGE_WEB_PORT ?? '21018', 10)
 
 # Force the agent loop to a provider that edge-agent registered. The
@@ -137,11 +140,11 @@
 - id: skill-badge
   disabled: true
 - id: subagent
-  disabled: true
+  # ENABLED 2026-08-29: webui apiproxy requires ctx.subagents service
 - id: subagent-spawn-in-process
-  disabled: true
+  # ENABLED 2026-08-29: webui apiproxy requires ctx.subagents service
 - id: subagent-fork-in-process
-  disabled: true
+  # ENABLED 2026-08-29: webui apiproxy requires ctx.subagents service
 - id: workflow-worker-thread
   disabled: true
 - id: goal
@@ -178,14 +181,22 @@
         teeType: !!js process.env.DSH_EDGE_TEE_TYPE ?? 'simulated'
         keyStorePath: !!js (process.env.DSH_EDGE_STORAGE_ROOT ?? (process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent') + '/tcm-keys.json'
 
-    # td-bus: http-api injects this; must mount before http-api
+    # td-bus: http-api injects this; must mount before http-api.
+    # Config schema (`td-bus.ts`):
+    #   - windowSeconds: number             (sliding window in seconds; default 60)
+    #   - thresholds.cloudRequestsPerMinute: number (default 20)
+    #   - blockLevel: 'elevated' | 'high' | 'critical'  (default 'critical')
+    # Block triggers at 4× threshold within windowSeconds.
     - id: td-bus
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/td-bus'
       inject: [auditLog, privacyPolicy]
       config:
-        quarantineAction: log
-        patternWindowMs: 60000
-        patternThreshold: 8
+        windowSeconds: 60
+        thresholds:
+          cloudRequestsPerMinute: 8        # tighter than default 20 — escalate earlier
+          failedSanitizationStreak: 3
+          permissionDeniedStreak: 5
+        blockLevel: critical                # block on critical (4× = 32/min)
 
     # realm-skill-bridge: realm-aware skill catalog filtering + tool gating.
     # Must mount before http-api (which injects realmSkillBridge).
@@ -201,7 +212,10 @@
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/http-api'
       inject: [agents, intentRouter, promptGuard, auditLog, sanitizer, realmSkillBridge, edgeTools]
       config:
-        host: !!js process.env.DSH_EDGE_HTTP_HOST ?? '127.0.0.1'
+        # 2026-08-29: 改为 0.0.0.0 开放监听（部署环境需要从外部访问 http-api）。
+        # 安全约束：bearer token 必填（EDGE_API_KEY 不能为空）；生产部署务必
+        # 在防火墙 / reverse proxy 层做 IP allowlist（部署责任）。
+        host: !!js process.env.DSH_EDGE_HTTP_HOST ?? '0.0.0.0'
         port: !!js parseInt(process.env.DSH_EDGE_HTTP_PORT ?? '21017', 10)
         bearerToken: !!js process.env.EDGE_API_KEY ?? undefined
         # NOTE: requireAttestation removed 2026-08-29 — it was a dead config

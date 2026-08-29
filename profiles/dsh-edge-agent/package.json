@@ -5,20 +5,14 @@
     "profile": {
       "bundles": [
         "@deepseek-ai/dsh-base",
-        "@deepseek-harness-edge-agent/dsh-edge-agent"
+        "@deepseek-ai/dsh-web-app",
+        "@linxin666/dsh-web-ui-all",
+        "@xmanrui/dsh-im"
       ]
     }
   },
   "dependencies": {
-    "@deepseek-ai/dsh-agent-loop": "0.1.0-rc.6",
-    "@deepseek-ai/dsh-host-webserver": "0.0.1-rc.1",
-    "@deepseek-ai/dsh-skill": "0.0.1-rc.1",
-    "@deepseek-ai/dsh-skill-filesystem": "0.0.1-rc.3",
-    "@deepseek-ai/dsh-tool-skill": "0.0.1-rc.1",
-    "@deepseek-ai/dsh-tool-web": "0.1.0-rc.6",
-    "@deepseek-ai/dsh-web": "0.1.0-rc.6",
-    "@deepseek-ai/dsh-web-frontend": "0.0.1-rc.5",
-    "@deepseek-ai/dsh-web-search-deepseek": "0.1.0-rc.6",
-    "@deepseek-harness-edge-agent/dsh-edge-agent": "file:../../"
+    "@linxin666/dsh-web-ui-all": "^0.1.20",
+    "@xmanrui/dsh-im": "^3.1.1"
   }
 }

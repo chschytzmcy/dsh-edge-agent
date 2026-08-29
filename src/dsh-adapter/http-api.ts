@@ -309,7 +309,14 @@ export class HttpApiServiceImpl extends Service {
     }
 
     // First pass: try to match a public route (no auth required).
-    const publicMatch = findRoute(this.routes.filter((r) => r.auth === 'public'), method, path)
+    const publicRoutes = this.routes.filter((r) => r.auth === 'public')
+    let publicMatch = findRoute(publicRoutes, method, path)
+    if (!publicMatch && method === 'HEAD') {
+      // RFC 7231 §4.3.2: HEAD is identical to GET except no body.
+      // curl -I / load-balancer probes are HEAD — fall back to GET so
+      // liveness probes don't trip auth and pollute audit log.
+      publicMatch = findRoute(publicRoutes, 'GET', path)
+    }
     if (publicMatch) {
       await this.invokeRoute(publicMatch.route, publicMatch.params, req, res, reqId, start, method)
       return
@@ -755,9 +762,20 @@ export class HttpApiServiceImpl extends Service {
   /** GET /v1/models — returns the dispatcher's provider catalog. Backed
    *  by `modelRouter.listDetailed()`; falls back to a hardcoded pair
    *  when the router isn't registered (boot-order race; mirrors
-   *  `resolveRoute()`'s soft-dep pattern). */
+   *  `resolveRoute()`'s soft-dep pattern at line ~1440).
+   *
+   *  Soft-dep: cordis throws on `ctx.<name>` when the row isn't in
+   *  `inject`, so wrap the lookup in try/catch and fall back. */
   private handleListModels(res: ServerResponse): void {
-    const mr = (this.cordisCtx as any).modelRouter
+    const ctx = this.cordisCtx
+    let mr: any
+    try {
+      mr = typeof ctx?.get === 'function' ? ctx.get('modelRouter') : ctx?.modelRouter
+    } catch {
+      // Cordis throws on "without inject" — treat as "not yet registered"
+      // and let the fallback below produce a usable response.
+      mr = undefined
+    }
     let models: Array<{ provider: string; realm: string; available: boolean }>
     if (mr && typeof mr.listDetailed === 'function') {
       models = mr.listDetailed()
