@@ -16,6 +16,8 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { AgentHandle } from '@deepseek-ai/dsh-agent'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import { redactString } from './pii-utils.js'
+import { findRoute, type RouteDef, type RouteContext } from './http-api-routes.js'
+import { HttpApiSessionsImpl, type HttpApiSessions } from './http-api-sessions.js'
 
 export const name = 'http-api'
 
@@ -26,8 +28,10 @@ export interface Config {
   port: number
   /** Bearer token required for all requests. */
   bearerToken?: string
-  /** Whether to require attestation on first request. */
-  requireAttestation: boolean
+  // NOTE: `requireAttestation` removed 2026-08-29 (dual-entry plan §3.1.1).
+  // It was declared but never read (grep 0 references in this repo) — a
+  // silent lie to operators. Attestation is an A5 milestone; we'll re-add
+  // the field together with the real check, not as a decorative default.
   /** Session idle timeout in ms. Sessions not accessed within this are cleaned up. 0 = disabled. */
   sessionIdleTimeoutMs: number
   /** Maximum active sessions. LRU eviction when exceeded. 0 = unlimited. */
@@ -44,7 +48,6 @@ export const Config: Schema<Config> = Schema.object({
   host: Schema.string().default('127.0.0.1'),
   port: Schema.natural().default(21017),
   bearerToken: Schema.string(),
-  requireAttestation: Schema.boolean().default(true),
   sessionIdleTimeoutMs: Schema.natural().default(30 * 60 * 1000), // 30 min
   maxActiveSessions: Schema.natural().default(100),
   maxRequestBodyBytes: Schema.natural().default(1024 * 1024), // 1 MiB
@@ -99,6 +102,10 @@ export class HttpApiServiceImpl extends Service {
   private realmSkillBridge: any
   private tdBus: any
   private cleanupTimer: ReturnType<typeof setInterval> | undefined
+  /** Soft-dep wrapper for the upstream `sessions` plugin. See
+   *  `./http-api-sessions.ts`. Constructed lazily in `start()` so the
+   *  upstream plugin has time to register (boot-order race). */
+  private sessionsHelper: HttpApiSessions = new HttpApiSessionsImpl(null)
 
   constructor(
     private cordisCtx: any,
@@ -109,7 +116,12 @@ export class HttpApiServiceImpl extends Service {
   ) {
     super(cordisCtx, 'httpApi')
     this.tdBus = tdBus
+    this.routes = this.buildRoutes()
   }
+
+  /** Route table — built once at construction so handlers can reference
+   *  the service via `this`. See `./http-api-routes.ts` for the matcher. */
+  private readonly routes: RouteDef[]
 
   /** Emit an audit-log entry (silent no-op if missing or wrong API). */
   private audit(level: 'debug' | 'info' | 'warn' | 'error' | 'security', kind: string, payload: Record<string, unknown>): void {
@@ -228,6 +240,11 @@ export class HttpApiServiceImpl extends Service {
       console.log('[http-api] Error reading edgeTools:', err?.message)
     }
 
+    // Initialize the soft-dep sessions helper. The wrapper ducks-types
+    // `cordisCtx.sessions` lazily so a missing upstream plugin just falls
+    // back to in-memory metadata (tests run that way).
+    this.sessionsHelper = new HttpApiSessionsImpl(this.cordisCtx)
+
     this.server = createServer((req, res) => this.handleRequest(req, res))
     await new Promise<void>((resolve, reject) => {
       this.server!.once('error', reject)
@@ -276,63 +293,85 @@ export class HttpApiServiceImpl extends Service {
   private async handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`)
     const path = url.pathname
+    const method = req.method ?? 'GET'
     const reqId = randomUUID().slice(0, 8)
     const start = Date.now()
 
-    // Public routes (no auth)
-    if (req.method === 'GET' && path === '/v1/health') {
-      res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ status: 'ok' }))
-      this.accessLog(reqId, 'GET', path, 200, Date.now() - start)
-      return
-    }
-    if (req.method === 'GET' && path === '/v1/openapi.json') {
-      res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify(this.getOpenApiSpec()))
-      this.accessLog(reqId, 'GET', path, 200, Date.now() - start)
+    // OPTIONS preflight for the public read-only endpoints — returns 204
+    // without auth. CORS is NOT enabled (see docs/dual-entry-architecture.md
+    // §7.1), but loopback probes shouldn't get a 405 from a method-aware
+    // match table.
+    if (method === 'OPTIONS' && (path === '/v1/health' || path === '/v1/openapi.json')) {
+      res.writeHead(204)
+      res.end()
+      this.accessLog(reqId, 'OPTIONS', path, 204, Date.now() - start)
       return
     }
 
-    // Auth check
+    // First pass: try to match a public route (no auth required).
+    const publicMatch = findRoute(this.routes.filter((r) => r.auth === 'public'), method, path)
+    if (publicMatch) {
+      await this.invokeRoute(publicMatch.route, publicMatch.params, req, res, reqId, start, method)
+      return
+    }
+
+    // Second pass: auth-required routes. Bearer check first.
     if (!this.checkAuth(req)) {
       res.writeHead(401, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: 'Unauthorized' }))
-      this.accessLog(reqId, req.method ?? '?', path, 401, Date.now() - start, 'auth-fail')
-      this.audit('warn', 'http.auth.fail', { reqId, method: req.method, path })
+      this.accessLog(reqId, method, path, 401, Date.now() - start, 'auth-fail')
+      this.audit('warn', 'http.auth.fail', { reqId, method, path })
       return
     }
 
+    const authedMatch = findRoute(this.routes.filter((r) => r.auth === 'bearer'), method, path)
+    if (!authedMatch) {
+      res.writeHead(404, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'Not found' }))
+      this.accessLog(reqId, method, path, 404, Date.now() - start)
+      return
+    }
+
+    await this.invokeRoute(authedMatch.route, authedMatch.params, req, res, reqId, start, method)
+  }
+
+  /** Dispatch helper — builds the RouteContext (parsing the body only
+   *  when the route declares `body: 'json'`), invokes the handler, and
+   *  maps thrown errors to the right HTTP status code (mirrors the
+   *  original if/else chain's error semantics). */
+  private async invokeRoute(
+    route: RouteDef,
+    params: Record<string, string>,
+    req: IncomingMessage,
+    res: ServerResponse,
+    reqId: string,
+    start: number,
+    method: string,
+  ): Promise<void> {
+    const ctx: RouteContext = { req, res, reqId, start, body: undefined }
     try {
-      if (req.method === 'POST' && path === '/v1/chat') {
-        await this.handleChat(req, res, reqId, start)
-      } else if (req.method === 'POST' && path === '/v1/chat/stream') {
-        await this.handleChatStream(req, res, reqId, start)
-      } else if (req.method === 'GET' && path === '/v1/sessions') {
-        this.handleListSessions(res)
-        this.accessLog(reqId, 'GET', path, 200, Date.now() - start)
-      } else if (req.method === 'GET' && path.startsWith('/v1/sessions/')) {
-        const id = path.slice('/v1/sessions/'.length)
-        this.handleGetSession(id, res)
-        this.accessLog(reqId, 'GET', path, 200, Date.now() - start)
-      } else if (req.method === 'DELETE' && path.startsWith('/v1/sessions/')) {
-        const id = path.slice('/v1/sessions/'.length)
-        await this.handleDeleteSession(id, res)
-        this.accessLog(reqId, 'DELETE', path, 204, Date.now() - start)
-      } else {
-        res.writeHead(404, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ error: 'Not found' }))
-        this.accessLog(reqId, req.method ?? '?', path, 404, Date.now() - start)
+      // Parse the body INSIDE the try block — readJsonBody tags errors
+      // with statusCode (413 / 400) that the error mapper below turns
+      // into the right HTTP response. Parsing outside the try would let
+      // those rejections bubble up as uncaught.
+      if (route.body === 'json') {
+        ctx.body = await this.readJsonBody(req)
       }
+      await route.handler(ctx, params)
     } catch (err: any) {
-      // Client errors (e.g. body too large, malformed JSON) carry statusCode.
-      // Anything else is a 500.
       const status = typeof err?.statusCode === 'number' && err.statusCode >= 400 && err.statusCode < 600
         ? err.statusCode
         : 500
-      res.writeHead(status, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ error: err.message ?? 'Internal error' }))
-      this.accessLog(reqId, req.method ?? '?', path, status, Date.now() - start, `err="${err.message ?? 'unknown'}"`)
-      this.audit(status >= 500 ? 'error' : 'warn', 'http.error', { reqId, method: req.method, path, status, error: err.message })
+      if (!res.headersSent) {
+        res.writeHead(status, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: err.message ?? 'Internal error' }))
+      } else {
+        // SSE stream is already open; can't rewrite headers. Best we can
+        // do is terminate so the client sees the error.
+        try { res.end() } catch { /* socket may be gone */ }
+      }
+      this.accessLog(reqId, method, new URL(req.url ?? '/', `http://${req.headers.host}`).pathname, status, Date.now() - start, `err="${err.message ?? 'unknown'}"`)
+      this.audit(status >= 500 ? 'error' : 'warn', 'http.error', { reqId, method, path: req.url, status, error: err.message })
     }
   }
 
@@ -344,9 +383,8 @@ export class HttpApiServiceImpl extends Service {
     return scheme === 'Bearer' && token === this.config.bearerToken
   }
 
-  private async handleChat(req: IncomingMessage, res: ServerResponse, reqId: string, start: number): Promise<void> {
-    const body = await this.readJsonBody(req)
-    const { message, sessionId: requestedSessionId } = body
+  private async handleChat(req: IncomingMessage, res: ServerResponse, reqId: string, start: number, body: any): Promise<void> {
+    const { message, sessionId: requestedSessionId } = body ?? {}
     if (!message || typeof message !== 'string') {
       res.writeHead(400, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: 'message is required' }))
@@ -519,9 +557,8 @@ export class HttpApiServiceImpl extends Service {
     )
   }
 
-  private async handleChatStream(req: IncomingMessage, res: ServerResponse, reqId: string, start: number): Promise<void> {
-    const body = await this.readJsonBody(req)
-    const { message, sessionId: requestedSessionId } = body
+  private async handleChatStream(req: IncomingMessage, res: ServerResponse, reqId: string, start: number, body: any): Promise<void> {
+    const { message, sessionId: requestedSessionId } = body ?? {}
     if (!message || typeof message !== 'string') {
       res.writeHead(400, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: 'message is required' }))
@@ -603,11 +640,35 @@ export class HttpApiServiceImpl extends Service {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive',
+      // Disable nginx response buffering so chunks reach the client in real
+      // time. Without this, deepseek-chat (long CLOUD turns, 60-90s+) gets
+      // batched by an upstream proxy and the SSE stream feels frozen.
+      'X-Accel-Buffering': 'no',
     })
     this.accessLog(reqId, 'POST', '/v1/chat/stream', 200, Date.now() - start, `${provider}/${model} intent=${intent.category}`)
 
     // Emit intent first so client knows the routing decision
     res.write(`data: ${JSON.stringify({ type: 'intent', intent: { category: intent.category, targetRealm: intent.targetRealm, confidence: intent.confidence, rationale: intent.rationale } })}\n\n`)
+
+    // SSE keepalive: 15s comment frames so intermediate proxies with an
+    // idle-disconnect timeout (nginx default 60s, Cloudflare 100s) don't
+    // kill the connection mid-turn. The frame starts with `:` which makes
+    // it an SSE comment — clients ignore it. We write `: keepalive <ts>`
+    // (operator-readable in raw stream captures) rather than just `:`
+    // for diagnostics.
+    const keepaliveMs = 15_000
+    const keepaliveTimer = setInterval(() => {
+      // Best-effort write; if the socket is gone, write returns false and
+      // we clear the timer on the next 'close' handler.
+      try {
+        if (!res.write(`: keepalive ${Date.now()}\n\n`)) {
+          // backpressure — not a failure, just a hint to stop; ignore
+        }
+      } catch {
+        clearInterval(keepaliveTimer)
+      }
+    }, keepaliveMs)
+    if (typeof keepaliveTimer.unref === 'function') keepaliveTimer.unref()
 
     const dispose = this.cordisCtx.on('session/event', (_session: any, event: SessionEvent) => {
       if (event.type === 'assistant/chunk') {
@@ -637,9 +698,31 @@ export class HttpApiServiceImpl extends Service {
         const duration = Date.now() - start
         this.audit('info', 'http.chat.stream.end', { reqId, sessionId, provider, model, durationMs: duration })
         dispose()
+        clearInterval(keepaliveTimer)
         res.end()
       }
     })
+
+    // Client-disconnect cleanup — when the browser/network drops, both
+    // 'close' and 'aborted' fire (Node emits 'close' after the underlying
+    // socket is destroyed). Without this unsubscribe, every reconnect
+    // leaves a stale session/event listener that accumulates on the
+    // cordis context — memory leak under flaky-network clients. We also
+    // clear the keepalive timer here; if write() above threw because the
+    // socket was already gone, the close handler is the safety net.
+    let cleanedUp = false
+    const onClose = () => {
+      if (cleanedUp) return
+      cleanedUp = true
+      clearInterval(keepaliveTimer)
+      try { dispose() } catch { /* listener already removed */ }
+      this.audit('debug', 'http.chat.stream.client-closed', { reqId, sessionId })
+    }
+    req.on('close', onClose)
+    req.on('aborted', onClose)
+    // Also end the stream cleanly when the response side closes (write
+    // fails on a torn-down socket). Belt-and-braces.
+    res.on('close', onClose)
 
     // input-guard 会在 agent/pre-step 中对消息做脱敏处理。http-api 把原文
     // 送给 agent-loop，由 input-guard 按 routing 决定是否脱敏。
@@ -669,6 +752,100 @@ export class HttpApiServiceImpl extends Service {
     res.end(JSON.stringify({ sessions: list }))
   }
 
+  /** GET /v1/models — returns the dispatcher's provider catalog. Backed
+   *  by `modelRouter.listDetailed()`; falls back to a hardcoded pair
+   *  when the router isn't registered (boot-order race; mirrors
+   *  `resolveRoute()`'s soft-dep pattern). */
+  private handleListModels(res: ServerResponse): void {
+    const mr = (this.cordisCtx as any).modelRouter
+    let models: Array<{ provider: string; realm: string; available: boolean }>
+    if (mr && typeof mr.listDetailed === 'function') {
+      models = mr.listDetailed()
+    } else {
+      // Fallback: enumerate the legacy hardcoded pair so external clients
+      // can still discover at least the default routes.
+      models = [
+        { provider: 'local-qwen3-4b', realm: 'LOCAL', available: true },
+        { provider: 'cloud-deepseek-v4', realm: 'CLOUD', available: true },
+      ]
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ models }))
+  }
+
+  /** GET /v1/audit?since=&until=&kind=&level=&sessionId=&limit= — query
+   *  the audit-log. The audit-log API already supports level/kind/sinceMs/
+   *  untilMs/limit; we additionally filter on `payload.sessionId` post-
+   *  hoc because sessionId lives in payload (audit entries don't have a
+   *  first-class sessionId field — they're `(level, kind, source, payload)`
+   *  records). Limit defaults to 50, hard cap 500, to keep response size
+   *  bounded — the audit-log JSONL can be very large for long-running
+   *  deployments.
+   *
+   *  Path leakage: this endpoint NEVER returns the audit file path —
+   *  only structured entries. Operators wanting to inspect the raw JSONL
+   *  should use the existing file-system route (the audit-log's config
+   *  already publishes its root). */
+  private async handleListAudit(url: URL, res: ServerResponse): Promise<void> {
+    if (!this.auditLog || typeof this.auditLog.query !== 'function') {
+      res.writeHead(503, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'audit-log not available' }))
+      return
+    }
+    const sinceStr = url.searchParams.get('since')
+    const untilStr = url.searchParams.get('until')
+    const kind = url.searchParams.get('kind') ?? undefined
+    const level = url.searchParams.get('level') ?? undefined
+    const sessionId = url.searchParams.get('sessionId') ?? undefined
+    const limitStr = url.searchParams.get('limit')
+
+    let sinceMs: number | undefined
+    let untilMs: number | undefined
+    if (sinceStr) {
+      const n = Number(sinceStr)
+      if (!Number.isFinite(n)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'since must be a number (ms epoch)' }))
+        return
+      }
+      sinceMs = n
+    }
+    if (untilStr) {
+      const n = Number(untilStr)
+      if (!Number.isFinite(n)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'until must be a number (ms epoch)' }))
+        return
+      }
+      untilMs = n
+    }
+    let limit: number | undefined
+    if (limitStr) {
+      const n = Number(limitStr)
+      if (!Number.isFinite(n) || n <= 0) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'limit must be a positive number' }))
+        return
+      }
+      limit = Math.min(Math.floor(n), 500) // hard cap 500
+    } else {
+      limit = 50 // sensible default
+    }
+
+    let entries = await this.auditLog.query({
+      level: level as any,
+      kind,
+      sinceMs,
+      untilMs,
+      limit,
+    })
+    if (sessionId) {
+      entries = entries.filter((e: any) => e?.payload?.sessionId === sessionId)
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ entries, count: entries.length, limit }))
+  }
+
   private handleGetSession(id: string, res: ServerResponse): void {
     const record = this.sessions.get(id)
     if (!record) {
@@ -691,11 +868,117 @@ export class HttpApiServiceImpl extends Service {
     await record.handle.dispose()
     this.sessions.delete(id)
     this.dropSessionBuffer(id)
+    // Best-effort persistence delete. Failures don't block the 204 — the
+    // next process restart will see an orphan upstream record, which is
+    // recoverable (it's metadata, not the live agent state).
+    void this.sessionsHelper.deleteSession(id).catch(() => {})
     // input-guard 使用 WeakMap<Session, State> 维护脱敏状态，session dispose
     // 后自动回收，无需显式 purge。
     this.audit('info', 'session.deleted', { sessionId: id })
     res.writeHead(204)
     res.end()
+  }
+
+  /** POST /v1/sessions/{id}/cancel — best-effort cancel of any in-flight
+   *  turn on this session. Currently implemented by disposing the live
+   *  AgentHandle (same as DELETE); the session record is removed from
+   *  the in-memory map but persisted metadata is retained so /v1/sessions
+   *  still shows the historical record. Returns 202 Accepted to signal
+   *  async semantics (the actual abort may race the next chunk). */
+  private async handleCancelSession(id: string, res: ServerResponse): Promise<void> {
+    const record = this.sessions.get(id)
+    if (!record) {
+      // Even when not in-memory, the persistence layer may know about it.
+      // We treat that as "already canceled" — idempotent cancel is safer
+      // than a 404 when the underlying agent has already exited.
+      void this.sessionsHelper.cancelSession(id).catch(() => {})
+      res.writeHead(202, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ sessionId: id, canceled: true, status: 'no-active-handle' }))
+      return
+    }
+    await record.handle.dispose().catch(() => { /* best-effort */ })
+    this.sessions.delete(id)
+    this.dropSessionBuffer(id)
+    void this.sessionsHelper.cancelSession(id).catch(() => {})
+    this.audit('info', 'session.canceled', { sessionId: id })
+    res.writeHead(202, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ sessionId: id, canceled: true, status: 'aborted' }))
+  }
+
+  /** POST /v1/sessions/{id}/rename — body `{ title }`. Updates the
+   *  human-readable title in the persistence layer; the in-memory map
+   *  is intentionally not the source of truth (titles survive restarts). */
+  private async handleRenameSession(id: string, body: any, res: ServerResponse): Promise<void> {
+    const title = body?.title
+    if (typeof title !== 'string' || title.length === 0) {
+      res.writeHead(400, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'title is required (non-empty string)' }))
+      return
+    }
+    if (title.length > 200) {
+      res.writeHead(400, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'title must be ≤ 200 chars' }))
+      return
+    }
+    // Verify the session is known to the in-memory map OR persistence layer.
+    const inMemory = this.sessions.has(id)
+    if (!inMemory) {
+      const meta = await this.sessionsHelper.getSession(id).catch(() => null)
+      if (!meta) {
+        res.writeHead(404, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Session not found' }))
+        return
+      }
+    }
+    await this.sessionsHelper.renameSession(id, title)
+    this.audit('info', 'session.renamed', { sessionId: id, title })
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ sessionId: id, title }))
+  }
+
+  /** POST /v1/sessions/{id}/fork — body `{ atMessageIndex? }` (optional
+   *  index into the recent-message ring buffer to fork from; defaults
+   *  to "everything"). Creates a fresh session record and copies the
+   *  source's recent messages (truncated at the requested index) into
+   *  the new session's ring buffer. The live AgentHandle is NOT copied —
+   *  the forked session starts fresh; the next followup() on it spins
+   *  up a new agent. This is the same semantics as the DSH webui's
+   *  `sessions.fork` RPC. Returns 201 Created with the new sessionId. */
+  private async handleForkSession(id: string, body: any, res: ServerResponse): Promise<void> {
+    const sourceRecord = this.sessions.get(id)
+    const sourceMeta = await this.sessionsHelper.getSession(id).catch(() => null)
+    if (!sourceRecord && !sourceMeta) {
+      res.writeHead(404, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'Session not found' }))
+      return
+    }
+    const forkResult = await this.sessionsHelper.forkSession({
+      sourceSessionId: id,
+    })
+    const newSessionId = forkResult.sessionId
+
+    // Copy the recent-message ring buffer (truncated to atMessageIndex
+    // when present). This gives the forked session the prior context so
+    // the next classify() sees a coherent history.
+    if (sourceRecord) {
+      const sourceBuf = this.sessionBuffers.get(id) ?? []
+      const idx = typeof body?.atMessageIndex === 'number'
+        ? Math.max(0, Math.min(body.atMessageIndex, sourceBuf.length))
+        : sourceBuf.length
+      const copied = sourceBuf.slice(0, idx)
+      this.sessionBuffers.set(newSessionId, copied)
+    }
+
+    this.audit('info', 'session.forked', {
+      sourceSessionId: id,
+      newSessionId,
+      copiedMessages: this.sessionBuffers.get(newSessionId)?.length ?? 0,
+    })
+    res.writeHead(201, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({
+      sessionId: newSessionId,
+      sourceSessionId: id,
+    }))
   }
 
   private async ensureSession(sessionId: string, provider?: string, model?: string): Promise<SessionRecord> {
@@ -723,6 +1006,10 @@ export class HttpApiServiceImpl extends Service {
         lastAccessedAt: now,
       }
       this.sessions.set(sessionId, record)
+      // Persist metadata via the soft-dep sessions helper. Fire-and-forget:
+      // persistence failures must never block chat round-trip — the
+      // in-memory map is the source of truth for the live process.
+      void this.sessionsHelper.createSession({ sessionId, provider, model }).catch(() => {})
       this.audit('info', 'session.created', { sessionId, provider, model, totalSessions: this.sessions.size })
     } else {
       // Update last accessed time
@@ -837,62 +1124,304 @@ export class HttpApiServiceImpl extends Service {
   }
 
   private getOpenApiSpec(): object {
-    return {
-      openapi: '3.0.0',
-      info: { title: 'dsh-edge-agent HTTP API', version: '1.0.0' },
-      paths: {
-        '/v1/health': {
-          get: { summary: 'Health check', responses: { '200': { description: 'OK' } } },
-        },
-        '/v1/chat': {
-          post: {
-            summary: 'Synchronous chat',
-            requestBody: {
-              content: {
-                'application/json': {
-                  schema: {
-                    type: 'object',
-                    properties: {
-                      message: { type: 'string' },
-                      sessionId: { type: 'string' },
-                    },
-                    required: ['message'],
-                  },
-                },
-              },
+    // Derive the OpenAPI paths from the route table (single source of
+    // truth). Per-route handler-specific bodies (chat message schema,
+    // rename payload, fork body) are kept in a small lookup below so the
+    // table stays focused on routing semantics.
+    const chatRequestBody = {
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            properties: {
+              message: { type: 'string', description: 'User message text; subject to input-guard sanitize on CLOUD paths.' },
+              sessionId: { type: 'string', description: 'Optional. Omit to start a fresh session; pass an existing id to continue a multi-turn conversation.' },
             },
-            responses: { '200': { description: 'Chat response' } },
+            required: ['message'],
           },
-        },
-        '/v1/chat/stream': {
-          post: {
-            summary: 'Streaming chat (SSE)',
-            requestBody: {
-              content: {
-                'application/json': {
-                  schema: {
-                    type: 'object',
-                    properties: {
-                      message: { type: 'string' },
-                      sessionId: { type: 'string' },
-                    },
-                    required: ['message'],
-                  },
-                },
-              },
-            },
-            responses: { '200': { description: 'SSE stream' } },
-          },
-        },
-        '/v1/sessions': {
-          get: { summary: 'List sessions', responses: { '200': { description: 'Session list' } } },
-        },
-        '/v1/sessions/{id}': {
-          get: { summary: 'Get session', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Session details' } } },
-          delete: { summary: 'Delete session', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '204': { description: 'Deleted' } } },
         },
       },
     }
+    const chatResponses = {
+      '200': { description: 'Chat response with final assistant text and intent metadata.' },
+      '400': { description: 'Bad request — message missing or malformed body.' },
+      '401': { description: 'Unauthorized — missing or invalid bearer token.' },
+      '403': { description: 'Forbidden — intent REJECT (privacy-policy rule).' },
+      '413': { description: 'Payload Too Large — body exceeds maxRequestBodyBytes.' },
+      '503': { description: 'Service Unavailable — td-bus threat gate active.' },
+    }
+    const streamResponses = {
+      ...chatResponses,
+      '200': { description: 'SSE stream: intent → text chunks → done. Includes 15s `: keepalive` comment frames.' },
+    }
+    const sessionPathParams = (idParam: string) => [{
+      name: idParam,
+      in: 'path',
+      required: true,
+      schema: { type: 'string' },
+      description: 'Session id (UUID v4).',
+    }]
+    const renameBody = {
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            properties: { title: { type: 'string', maxLength: 200 } },
+            required: ['title'],
+          },
+        },
+      },
+    }
+    const forkBody = {
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            properties: {
+              atMessageIndex: { type: 'integer', minimum: 0, description: 'Truncate the copied recent-message ring buffer at this index. Omit to copy everything.' },
+              newSessionId: { type: 'string', description: 'Optional override; defaults to a fresh UUID.' },
+            },
+          },
+        },
+      },
+    }
+    const auditQueryParams = [
+      { name: 'since', in: 'query', schema: { type: 'integer' }, description: 'Filter: ts >= since (ms epoch).' },
+      { name: 'until', in: 'query', schema: { type: 'integer' }, description: 'Filter: ts <= until (ms epoch).' },
+      { name: 'kind', in: 'query', schema: { type: 'string' }, description: 'Filter by event kind (e.g. "http.chat.start").' },
+      { name: 'level', in: 'query', schema: { type: 'string', enum: ['debug', 'info', 'warn', 'error', 'security'] } },
+      { name: 'sessionId', in: 'query', schema: { type: 'string' }, description: 'Filter by payload.sessionId (post-hoc — payload-side filter).' },
+      { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 500 }, description: 'Default 50; hard cap 500.' },
+    ]
+
+    // Per-route summary overrides (the route table already carries a
+    // short summary; this map adds request bodies and richer descriptions).
+    const pathExtras: Record<string, Record<string, unknown>> = {
+      '/v1/chat': {
+        post: {
+          requestBody: chatRequestBody,
+          responses: chatResponses,
+        },
+      },
+      '/v1/chat/stream': {
+        post: {
+          requestBody: chatRequestBody,
+          responses: streamResponses,
+        },
+      },
+      '/v1/sessions/{id}': {
+        get: {
+          parameters: sessionPathParams('id'),
+          responses: { '200': { description: 'Session metadata' }, '404': { description: 'Session not found' } },
+        },
+        delete: {
+          parameters: sessionPathParams('id'),
+          responses: { '204': { description: 'Deleted' }, '404': { description: 'Session not found' } },
+        },
+      },
+      '/v1/sessions/{id}/cancel': {
+        post: {
+          parameters: sessionPathParams('id'),
+          responses: { '202': { description: 'Cancel accepted — best-effort abort.' } },
+        },
+      },
+      '/v1/sessions/{id}/rename': {
+        post: {
+          parameters: sessionPathParams('id'),
+          requestBody: renameBody,
+          responses: { '200': { description: 'Renamed' }, '400': { description: 'title missing or too long' }, '404': { description: 'Session not found' } },
+        },
+      },
+      '/v1/sessions/{id}/fork': {
+        post: {
+          parameters: sessionPathParams('id'),
+          requestBody: forkBody,
+          responses: { '201': { description: 'Forked — returns new sessionId' }, '404': { description: 'Session not found' } },
+        },
+      },
+      '/v1/models': {
+        get: {
+          responses: { '200': { description: 'Provider catalog with realm metadata.' } },
+        },
+      },
+      '/v1/audit': {
+        get: {
+          parameters: auditQueryParams,
+          responses: { '200': { description: 'Audit entries (newest-first, capped at limit).' }, '400': { description: 'Invalid filter parameter' } },
+        },
+      },
+    }
+
+    const paths: Record<string, any> = {}
+    for (const route of this.routes) {
+      // OpenAPI placeholders don't accept `{id}`; map to `{id}` already
+      // matches, but for the audit endpoint we need an empty method-key
+      // bucket. Initialize on first encounter.
+      if (!paths[route.pattern]) paths[route.pattern] = {}
+      const op: Record<string, unknown> = { summary: route.summary }
+      if (route.body === 'json') {
+        op.requestBody = {
+          content: { 'application/json': { schema: { type: 'object' } } },
+        }
+      }
+      // Apply extras (which may add parameters, requestBody, richer responses).
+      const extra = pathExtras[route.pattern]?.[route.method.toLowerCase()] as Record<string, unknown> | undefined
+      const responses = extra?.responses ?? { '200': { description: 'OK' } }
+      const merged: Record<string, unknown> = extra
+        ? { ...op, ...extra, summary: op.summary, responses }
+        : { ...op, responses }
+      paths[route.pattern][route.method.toLowerCase()] = merged
+    }
+
+    return {
+      openapi: '3.0.0',
+      info: {
+        title: 'dsh-edge-agent HTTP API',
+        version: '1.1.0',
+        description: 'Program-side entry point for the dsh-edge-agent. Browser users should use the DSH official Web UI at :21018 — see docs/dual-entry-architecture.md.',
+      },
+      paths,
+    }
+  }
+
+  /** Build the route table — public + bearer-auth. Returns an array of
+   *  RouteDef entries; the dispatcher (handleRequest) walks it to
+   *  resolve method+path → handler. Built once at construction; the
+   *  table is therefore stable across the service's lifetime, which
+   *  lets future optimization (route hot-reload, per-route metrics) hook
+   *  in at a single construction site. */
+  private buildRoutes(): RouteDef[] {
+    const svc = this
+    return [
+      // ── Public (no auth) ────────────────────────────────────────────
+      {
+        method: 'GET',
+        pattern: '/v1/health',
+        auth: 'public',
+        summary: 'Liveness probe',
+        handler: async (ctx) => {
+          ctx.res.writeHead(200, { 'Content-Type': 'application/json' })
+          ctx.res.end(JSON.stringify({ status: 'ok' }))
+          svc.accessLog(ctx.reqId, 'GET', '/v1/health', 200, Date.now() - ctx.start)
+        },
+      },
+      {
+        method: 'GET',
+        pattern: '/v1/openapi.json',
+        auth: 'public',
+        summary: 'OpenAPI 3.0 spec for this API',
+        handler: async (ctx) => {
+          ctx.res.writeHead(200, { 'Content-Type': 'application/json' })
+          ctx.res.end(JSON.stringify(svc.getOpenApiSpec()))
+          svc.accessLog(ctx.reqId, 'GET', '/v1/openapi.json', 200, Date.now() - ctx.start)
+        },
+      },
+
+      // ── Bearer-auth chat ─────────────────────────────────────────────
+      {
+        method: 'POST',
+        pattern: '/v1/chat',
+        auth: 'bearer',
+        body: 'json',
+        summary: 'Synchronous chat — returns the final assistant text after the turn completes',
+        handler: async (ctx) => svc.handleChat(ctx.req, ctx.res, ctx.reqId, ctx.start, ctx.body),
+      },
+      {
+        method: 'POST',
+        pattern: '/v1/chat/stream',
+        auth: 'bearer',
+        body: 'json',
+        summary: 'Streaming chat — SSE response with intent/text/done events',
+        handler: async (ctx) => svc.handleChatStream(ctx.req, ctx.res, ctx.reqId, ctx.start, ctx.body),
+      },
+
+      // ── Bearer-auth metadata ─────────────────────────────────────────
+      {
+        method: 'GET',
+        pattern: '/v1/models',
+        auth: 'bearer',
+        summary: 'List available LLM providers (LOCAL + CLOUD) with realm metadata',
+        handler: async (ctx) => {
+          svc.handleListModels(ctx.res)
+          svc.accessLog(ctx.reqId, 'GET', '/v1/models', 200, Date.now() - ctx.start)
+        },
+      },
+      {
+        method: 'GET',
+        pattern: '/v1/audit',
+        auth: 'bearer',
+        summary: 'Query the audit log; supports since/until/kind/level/sessionId/limit',
+        handler: async (ctx) => {
+          const url = new URL(ctx.req.url ?? '/', `http://${ctx.req.headers.host ?? 'localhost'}`)
+          await svc.handleListAudit(url, ctx.res)
+          svc.accessLog(ctx.reqId, 'GET', '/v1/audit', 200, Date.now() - ctx.start)
+        },
+      },
+
+      // ── Bearer-auth session management ───────────────────────────────
+      {
+        method: 'GET',
+        pattern: '/v1/sessions',
+        auth: 'bearer',
+        summary: 'List active sessions (LRU order)',
+        handler: async (ctx) => {
+          svc.handleListSessions(ctx.res)
+          svc.accessLog(ctx.reqId, 'GET', '/v1/sessions', 200, Date.now() - ctx.start)
+        },
+      },
+      {
+        method: 'GET',
+        pattern: '/v1/sessions/{id}',
+        auth: 'bearer',
+        summary: 'Get session metadata by id',
+        handler: async (ctx, params) => {
+          svc.handleGetSession(params.id, ctx.res)
+          svc.accessLog(ctx.reqId, 'GET', `/v1/sessions/${params.id}`, 200, Date.now() - ctx.start)
+        },
+      },
+      {
+        method: 'DELETE',
+        pattern: '/v1/sessions/{id}',
+        auth: 'bearer',
+        summary: 'Delete session and release its AgentHandle',
+        handler: async (ctx, params) => {
+          await svc.handleDeleteSession(params.id, ctx.res)
+          svc.accessLog(ctx.reqId, 'DELETE', `/v1/sessions/${params.id}`, 204, Date.now() - ctx.start)
+        },
+      },
+      {
+        method: 'POST',
+        pattern: '/v1/sessions/{id}/cancel',
+        auth: 'bearer',
+        summary: 'Cancel an in-flight turn — best-effort abort of the live AgentHandle (202 Accepted)',
+        handler: async (ctx, params) => {
+          await svc.handleCancelSession(params.id, ctx.res)
+          svc.accessLog(ctx.reqId, 'POST', `/v1/sessions/${params.id}/cancel`, 202, Date.now() - ctx.start)
+        },
+      },
+      {
+        method: 'POST',
+        pattern: '/v1/sessions/{id}/rename',
+        auth: 'bearer',
+        body: 'json',
+        summary: 'Rename a session — body `{ title }` (≤ 200 chars); persisted via the soft-dep sessions helper',
+        handler: async (ctx, params) => {
+          await svc.handleRenameSession(params.id, ctx.body, ctx.res)
+          svc.accessLog(ctx.reqId, 'POST', `/v1/sessions/${params.id}/rename`, 200, Date.now() - ctx.start)
+        },
+      },
+      {
+        method: 'POST',
+        pattern: '/v1/sessions/{id}/fork',
+        auth: 'bearer',
+        body: 'json',
+        summary: 'Fork a session into a new sessionId; copies recent-message ring buffer (201 Created)',
+        handler: async (ctx, params) => {
+          await svc.handleForkSession(params.id, ctx.body, ctx.res)
+          svc.accessLog(ctx.reqId, 'POST', `/v1/sessions/${params.id}/fork`, 201, Date.now() - ctx.start)
+        },
+      },
+    ]
   }
 }
 

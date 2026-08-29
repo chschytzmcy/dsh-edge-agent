@@ -54,7 +54,23 @@ export interface ResolvedRoute {
 export interface ModelRouterService {
   resolve(model: string): ResolvedRoute
   listAvailable(): string[]
+  /** Detailed enumeration — used by the http-api `/v1/models` endpoint
+   *  so external clients can discover the dispatcher surface without
+   *  hard-coding route ids. Returns one entry per registered adapter
+   *  with realm + availability metadata. */
+  listDetailed(): ModelInfo[]
   isAvailable(provider: string): boolean
+}
+
+export interface ModelInfo {
+  /** Provider route id (e.g. `local-qwen3-4b`). */
+  provider: string
+  /** Realm the provider belongs to. */
+  realm: Realm
+  /** Whether the provider is registered as available. Always `true` in
+   *  v1 — the router has no live ping yet. The field is exposed so the
+   *  schema doesn't churn when health probes land in v1.1. */
+  available: boolean
 }
 
 export class ModelRouterServiceImpl extends Service {
@@ -73,6 +89,17 @@ export class ModelRouterServiceImpl extends Service {
 
   listAvailable(): string[] {
     return [...this.localModels, ...this.cloudModels]
+  }
+
+  listDetailed(): ModelInfo[] {
+    const out: ModelInfo[] = []
+    for (const m of this.localModels) {
+      out.push({ provider: m, realm: 'LOCAL', available: true })
+    }
+    for (const m of this.cloudModels) {
+      out.push({ provider: m, realm: 'CLOUD', available: true })
+    }
+    return out
   }
 
   isAvailable(provider: string): boolean {

@@ -217,6 +217,75 @@ export DSH_EDGE_LOCAL_LLM_MODEL=qwen3-4b-instruct-2507
 > **Secret 警告**：`DEEPSEEK_API_KEY`、`EDGE_API_KEY` 是 secret，**绝不能提交到 git**。
 > 使用 `.env` 文件（已加入 `.gitignore`）+ `dsh --env-file=.env` 启动。
 
+## 🌐 双入口架构
+
+dsh-edge-agent 对外暴露**两个 HTTP 入口**，明确分工，互不替代：
+
+| 入口 | 端口 | 鉴权 | 目标用户 |
+|---|---|---|---|
+| **DSH 官方 Web UI**（SPA + apiproxy） | `:21018` | loopback trust + pairing | 浏览器 / 真人用户 |
+| **http-api**（自研 REST + SSE） | `:21017` | Bearer token + body cap | CLI / SDK / cURL / 外部 agent |
+
+两条入口**共享同一套 agent-loop 管线**（含 input-guard / prompt-guard / sanitizer / privacy-policy / audit-log / sessions）。`input-guard` 挂在全局 hook 上，所以**所有入口自动获得隐私保护**——无论用户从 webui 还是 cURL 进入，agent-loop 内的脱敏与降级行为完全一致。
+
+### 浏览器用户 → `:21018`
+
+打开浏览器访问 `http://127.0.0.1:21018`，使用 DSH 官方 Web UI（chat / task-board / pet 等）。鉴权由 DSH 上游的配对 token 流程处理。
+
+### 程序客户端 → `:21017`
+
+CLI / SDK / cURL 调用自研 REST API：
+
+```bash
+# 健康检查（无需鉴权）
+curl http://127.0.0.1:21017/v1/health
+
+# 鉴权 + 同步 chat
+curl -X POST http://127.0.0.1:21017/v1/chat \
+  -H "Authorization: Bearer $EDGE_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "你好"}'
+
+# 流式 chat (SSE，15s keepalive 防代理切断)
+curl -N -X POST http://127.0.0.1:21017/v1/chat/stream \
+  -H "Authorization: Bearer $EDGE_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "你好"}'
+
+# 列出 / 查询 / 取消 / 重命名 / fork / 删除 会话
+curl -H "Authorization: Bearer $EDGE_API_KEY" \
+  http://127.0.0.1:21017/v1/sessions
+curl -H "Authorization: Bearer $EDGE_API_KEY" \
+  http://127.0.0.1:21017/v1/sessions/{id}
+curl -X POST -H "Authorization: Bearer $EDGE_API_KEY" \
+  http://127.0.0.1:21017/v1/sessions/{id}/cancel
+curl -X POST -H "Authorization: Bearer $EDGE_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"title": "新标题"}' \
+  http://127.0.0.1:21017/v1/sessions/{id}/rename
+curl -X POST -H "Authorization: Bearer $EDGE_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{}' \
+  http://127.0.0.1:21017/v1/sessions/{id}/fork
+curl -X DELETE -H "Authorization: Bearer $EDGE_API_KEY" \
+  http://127.0.0.1:21017/v1/sessions/{id}
+
+# 元数据：可用模型 + 审计日志
+curl -H "Authorization: Bearer $EDGE_API_KEY" \
+  http://127.0.0.1:21017/v1/models
+curl -H "Authorization: Bearer $EDGE_API_KEY" \
+  "http://127.0.0.1:21017/v1/audit?limit=20&kind=http.chat.start"
+
+# OpenAPI 3.0 规范（无需鉴权）
+curl http://127.0.0.1:21017/v1/openapi.json
+```
+
+完整接口规范详见 [`docs/dual-entry-architecture.md`](docs/dual-entry-architecture.md)。
+
+> **⚠️ 鉴权约定**：Bearer token 必须从环境变量 `EDGE_API_KEY` 注入；**不要硬编码**到配置文件。生产环境使用 secret manager。
+
+> **⚠️ CORS**：v1 不启用 CORS（`enableCors` 字段在 schema 中完全不暴露）。程序端请同主机调用；若需要从浏览器直接调用 http-api，请改用 `:21018` 的官方 Web UI。
+
 ## 🧪 手动测试
 
 > 假设服务器运行在 `http://127.0.0.1:21017`，API Key 为 `test-secret-key`。

@@ -72,6 +72,46 @@ See [docs/configuration.en.md](docs/configuration.en.md).
 
 See [docs/threat-model.en.md](docs/threat-model.en.md) for the complete threat model.
 
+## 🌐 Dual-Entry Architecture
+
+dsh-edge-agent exposes **two HTTP entry points** with explicit division of labor:
+
+| Entry | Port | Auth | Target user |
+|---|---|---|---|
+| **DSH official Web UI** (SPA + apiproxy) | `:21018` | loopback trust + pairing | Browser / human |
+| **http-api** (self-developed REST + SSE) | `:21017` | Bearer token + body cap | CLI / SDK / cURL / external agent |
+
+Both entries share the **same agent-loop pipeline** (including `input-guard`, `prompt-guard`, `sanitizer`, `privacy-policy`, `audit-log`, `sessions`). Because `input-guard` registers on global hooks, **every entry automatically gets privacy protection** — the sanitize / downgrade / REJECT behavior is identical regardless of whether the request comes from the webui or from cURL.
+
+### Browser users → `:21018`
+
+Open `http://127.0.0.1:21018` and use the DSH official Web UI (chat / task-board / pet). Authentication is handled by DSH upstream pairing.
+
+### Programmatic clients → `:21017`
+
+CLI / SDK / cURL calls to the self-developed REST API. See the [Chinese README dual-entry section](README.md#-双入口架构) for curl examples, or [`docs/dual-entry-architecture.md`](docs/dual-entry-architecture.md) for the full spec.
+
+```sh
+# Health check (no auth)
+curl http://127.0.0.1:21017/v1/health
+
+# Sync chat (bearer auth)
+curl -X POST http://127.0.0.1:21017/v1/chat \
+  -H "Authorization: Bearer $EDGE_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "hello"}'
+
+# Streaming chat (SSE, 15s keepalive)
+curl -N -X POST http://127.0.0.1:21017/v1/chat/stream \
+  -H "Authorization: Bearer $EDGE_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "hello"}'
+```
+
+> **⚠️ Auth convention**: Bearer token must be injected via the `EDGE_API_KEY` env var; **do not** hardcode in config files. Use a secret manager in production.
+>
+> **⚠️ CORS**: CORS is **not** enabled in v1 (the `enableCors` field is not even exposed in the schema). Callers should run on the same host. For browser access, use the official Web UI on `:21018`.
+
 ## 🧪 Development
 
 ```sh

@@ -50,6 +50,9 @@ for (const file of sources) {
   if (base === 'contract' || base === 'types' || base === 'invariant' || base === 'invariant-install' || base === 'llm-adapters') continue
   if (base === 'pii-utils') continue
   if (base === 'openai-sse') continue
+  // pure helpers — used internally by the http-api plugin; not plugins themselves
+  if (base === 'http-api-routes') continue
+  if (base === 'http-api-sessions') continue
   if (base === 'plugin' || base === 'index') continue
   const content = readFileSync(file, 'utf8')
 
