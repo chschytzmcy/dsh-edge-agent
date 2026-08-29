@@ -41,13 +41,21 @@
 - id: voice-input
   disabled: true
 
+# Upstream @deepseek-ai/dsh-client-ui-attachment uses
+# `import "katex/dist/katex.min.css"` (an unstubbed CSS require). Node ESM
+# rejects with ERR_UNKNOWN_FILE_EXTENSION, which hard-fails boot whenever
+# @deepseek-ai/dsh-web-app is in bundles. Attachment UI is web-only; dsh-im
+# (IM gateway) and the http-api don't need it.
+- id: ui-attachment
+  disabled: true
+
 # ── DSH 官方 Web UI 家族 ───────────────────────────────────────────────────
 # 与 edge-agent 的 http-api (21017, JSON/SSE) 共存：dsh-host-webserver
 # 监听独立的 web 端口（默认 21018），服务前端 SPA 与 web-ui-* 插件路由。
 # Web UI 的 chat 若要复用我们的脱敏/防护管线，可把 remote-web-ui 的
 # backendUrl 指向 http://127.0.0.1:21017 （路径 A），自动过 prompt-guard
 # + sanitizer-pipeline + privacy-policy。
-- id: dsh-host-webserver
+- id: webserver
   config:
     host: !!js process.env.DSH_EDGE_WEB_HOST ?? '127.0.0.1'
     port: !!js parseInt(process.env.DSH_EDGE_WEB_PORT ?? '21018', 10)
