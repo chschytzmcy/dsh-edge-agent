@@ -196,8 +196,12 @@ fi
 # skill 链：  dsh-skill → ctx.skills 注册表
 #             dsh-tool-skill → model-facing skill 工具 + catalog 注入
 #             dsh-skill-filesystem → ~/.agents/skills/ 自动发现
+# web UI：   dsh-host-webserver → node:http 服务 web UI 前端 (端口 21018)
+#             dsh-web-app → 浏览器 surface bundle + runtime glue
+#             dsh-web-frontend → Vite 构建的 SPA 静态资源
+#             dsh-web-ui-all → task-board/git-graph/pet/skin-center 全家桶
 # 缺任何一个都会导致对应功能不可用。`dsh plugin add` 是幂等的。
-echo "  -> install upstream web-search + skill packages"
+echo "  -> install upstream web-search + skill + web-ui packages"
 for _pkg in \\
     @deepseek-ai/dsh-agent-loop \\
     @deepseek-ai/dsh-tool-web \\
@@ -205,7 +209,11 @@ for _pkg in \\
     @deepseek-ai/dsh-web-search-deepseek \\
     @deepseek-ai/dsh-skill \\
     @deepseek-ai/dsh-tool-skill \\
-    @deepseek-ai/dsh-skill-filesystem; do
+    @deepseek-ai/dsh-skill-filesystem \\
+    @deepseek-ai/dsh-host-webserver \\
+    @deepseek-ai/dsh-web-app \\
+    @deepseek-ai/dsh-web-frontend \\
+    @linxin666/dsh-web-ui-all; do
     dsh plugin --profile "\$PROFILE" add "\$_pkg" >/dev/null 2>&1 || {
         echo "  warning: failed to add \$_pkg" >&2
     }
