@@ -261,14 +261,13 @@
     # provides `sessions` upstream and nothing provides `auditLog` so
     # audit-log is mounted below under its own name.
     #
-    # ── sessions provider ── dsh-session-persistence-jsonl exposes the
-    # `sessions` service that agent-loop / intent-router / voice-input
-    # inject. Without this, agent-loop short-circuits (no session ref
-    # → no LLM call → empty result).
-    - id: sessions
-      name: '@deepseek-ai/dsh-session-persistence-jsonl'
-      config:
-        root: !!js (process.env.DSH_EDGE_SESSION_ROOT ?? (process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent-m1/sessions')
+    # ── sessions provider ── dsh-base already mounts the same package
+    # under id `session-persistence-jsonl` (root: `dshHomePath('sessions')`),
+    # which exposes `sessionPersistence`. Previously we declared a second
+    # mount under id `sessions` — that caused a duplicate `provide()` call
+    # and a hard boot failure after the loader upgrade in @xmanrui/dsh-im
+    # (commit b42c7db). Keep the upstream mount; our session-root env
+    # override (`DSH_EDGE_SESSION_ROOT`) flows through `dshHomePath()`.
 
     - id: audit-log
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/audit-log'
@@ -362,8 +361,8 @@
     # 关键依赖（由 dsh-base / webserver 提供，本 patch 不重复声明）：
     #   - credentials    → dsh-credentials-local (dsh-base)
     #   - typertGateway  → dsh-api-gateway      (dsh-base, id=typert-gateway)
-    #   - connection     → dsh-host-webserver   (本 patch 已挂)
-    #   - apiProxy       → dsh-host-webserver 内部
+    #   - connection     → dsh-host-webserver   (需要 webserver bundle)
+    #   - apiProxy       → dsh-host-webserver 内部 (需要 webserver bundle)
     #
     # 不监听新端口；不引入新鉴权面；所有 IM 消息经 webserver 内部 RPC
     # 进入 agent-loop，自动过 input-guard 三 hook（agent/pre-step +
@@ -374,9 +373,16 @@
     # 渠道启用由用户在 webui 开关控制；此处只声明插件本身，提供空
     # config 让所有渠道默认 off（apply 内部对单 channel 失败容错，
     # 不会因为某个 channel 启动失败而拒绝整个插件）。
-    - id: xmanrui-dsh-im
-      name: '@xmanrui/dsh-im'
-      config:
-        language: !!js process.env.DSH_IM_LANGUAGE ?? undefined
+    #
+    # RUNTIME STATUS (2026-08-29): dsh-im 已通过 install.sh 安装到
+    # /home/etsme/.dsh/profiles/dsh-edge-agent/node_modules/@xmanrui/dsh-im
+    # 但默认 bundles 仅含 dsh-base + dsh-edge-agent（没有 webserver
+    # bundle），所以插件目前不在运行时挂载。要启用 dsh-im 需把
+    # @deepseek-ai/dsh-web-app 加入 packages.json 的 dsh.profile.bundles
+    # ——但 dsh-web-app 当前在 linux-x64 上有上游 blocker（katex CSS
+    # loader + node-pty prebuild 缺失），跟踪上游修复；启用前需
+    # 验证 DSH 启动不报错。
+    #
+    # 本 patch 不再 insert 避免 duplicate loader entry id。
 
 
