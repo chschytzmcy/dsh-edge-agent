@@ -1,11 +1,14 @@
 # dsh-edge-agent 意图识别路由（intent-router）
 
 > 核心实现：`src/dsh-adapter/intent-router.ts`。
+> **版本**：v2（含 input-guard 编排器章节）· 2026-08-29 · [变更记录](#变更记录)
+> **本插件现已作为 `input-guard` 编排器的叶子服务被调用**（v2 重构，2026-08-29），不再由 http-api 命令式直接驱动。详见 [第五章 input-guard 编排器（v2 重构）](#第五章-input-guard-编排器v2-重构)。
 
 ## 目录
 
 - [一句话概括](#一句话概括)
 - [为什么需要意图路由](#为什么需要意图路由)
+- [v2 框架说明](#v2-框架说明2026-08-29)
 - [分类流程总览](#分类流程总览)
 - [层间流转规则](#层间流转规则)
 - [第一章 输入防护（prompt-guard）](#第一章-输入防护prompt-guard)
@@ -13,6 +16,7 @@
 - [第三章 LLM 分类（intent-router）](#第三章-llm-分类intent-router)
 - [第四章 规则兜底（classifyWithRules）](#第四章-规则兜底classifywithrules)
 - [脱敏能力架构](#脱敏能力架构)
+- [**第五章 input-guard 编排器（v2 重构）**](#第五章-input-guard-编排器v2-重构)
 - [下游集成](#下游集成)
 - [结论](#结论)
 - [部署注意事项](#部署注意事项)
@@ -32,6 +36,21 @@ intent-router 是 dsh-edge-agent 的"安检 + 分流"插件：每条用户消息
 * 导出数据库 → 危险操作 → **REJECT**（直接拒绝）
 
 路由错了 = 隐私泄漏或安全事故。意图路由是隐私防线的"总开关"。
+
+## v2 框架说明（2026-08-29）
+
+> 本文档前四章描述的 intent-router / prompt-guard / privacy-policy / sanitizer 内部机制**仍然有效**——它们是叶子服务，本身的逻辑没变。**变化的是编排层**：
+
+| 维度 | v1（本文档主体内容） | v2（input-guard 重构后） |
+|---|---|---|
+| 编排者 | http-api 命令式依次调用 `promptGuard.checkInput` → `privacyPolicy.matchRouting` → `intentRouter.classify` → `sanitizer.sanitize` | `input-guard` 作为编排器，在 agent-loop 的 3 个全局 hook 上自动调用上述服务 |
+| 接入点 | 仅 http-api `POST /v1/chat` 一条路径 | 任何走 agent-loop 的入口自动覆盖（http-api `:21017`、Web UI `:21018`、dsh-im 无端口） |
+| 脱敏失败降级 | http-api catch + intent-router 抛异常 → 降级到 `classifyWithRules()` 规则兜底 | input-guard `agent/request` hook 把 CLOUD 改写为 LOCAL，原始 PII 留在本地（参见 [第五章 § sanitize 失败降级 LOCAL](#54-sanitize-失败降级-local)） |
+| 跨 hook 状态 | 无 | `stepState: Map<sessionId, {sanitized, replacements, downgraded, originalProvider/Model/Realm}>` |
+
+**v2 配套文档**：[docs/input-guard-hook-architecture.md](./input-guard-hook-architecture.md) — 含 3 张架构图（系统、时序、插件组合）。
+
+下游文档阅读建议：本文档的 [第一/二/三/四章] 仍然是叶子服务的权威参考；新增的 [第五章] 描述 input-guard 怎么把它们串起来；架构全景图见 [input-guard-hook-architecture.md](./input-guard-hook-architecture.md)。
 
 ## 分类流程总览
 
@@ -2336,14 +2355,206 @@ const { redacted } = redactString(result)
 
 sanitizer-pipeline 在 intent-router **之后**启动，但 intent-router 通过 `softService('sanitizer')` 懒查找——每次 `classify()` 调用时实时查找而非构造时缓存。当第一条 HTTP 请求到达时，所有插件已完成启动。
 
+---
+
+# 第五章 input-guard 编排器（v2 重构）
+
+> **本章内容**：2026-08-29 v2 重构后新增。**前置阅读**：[input-guard-design.md](./input-guard-design.md) — 设计动机 + 跨插件职责划分。本章聚焦"intent-router 在 v2 架构里的新位置"和"脱敏降级语义的变化"。
+> **配套架构图**：[input-guard-hook-architecture.md](./input-guard-hook-architecture.md) — 3 张 mermaid 图（系统 / 时序 / 插件组合）。
+
+## 5.1 为什么需要编排层
+
+v1（本文档前四章描述的架构）的核心问题：**安全/私密逻辑硬编码在 http-api 内部**：
+
+```
+http-api.ts:
+  L385: promptGuard.checkInput(...)     ← 攻击检测
+  L458: sanitizer.sanitize(...)         ← PII 脱敏
+  L466: sanitizer.desanitize(...)       ← 输出还原
+  + intentRouter.classify(...)          ← LOCAL/CLOUD 分支
+```
+
+当 Web UI（dsh-web-ui-all 全家桶）通过 `dsh-host-apiproxy` 走 agent-loop 时，**完全绕过 http-api**，v1 的脱敏/审计管线失效。dsh-im 接入后问题更严重 —— IM 通道无 HTTP 入口可言。
+
+v2 把这套管线从 transport 层**上移到 agent-loop 事件链上**：
+
+```
+http-api ──┐
+Web UI ────┼──► agent-loop ──► [agent/pre-step] ──► LLM
+CLI / SDK ─┤              (input-guard 在这里)
+dsh-im ────┘              统一执行管线
+        ▲
+        └─ 任何走 agent-loop 的入口自动覆盖
+```
+
+## 5.2 input-guard 的位置与注入
+
+```yaml
+# profiles/dsh-edge-agent/cordis.patch.yml:366-377
+- id: input-guard
+  name: '@deepseek-harness-edge-agent/dsh-edge-agent/input-guard'
+  inject: [promptGuard, privacyPolicy, intentRouter, sanitizer, auditLog]
+  config:
+    enableInputGuard: true
+    sanitizeLocalTraffic: false
+    rejectOnPolicyViolation: true   # 攻击 / REJECT → 阻断 step
+    downgradeOnSanitizeFailure: true  # sanitize 失败 → 降级 LOCAL
+    localProvider: 'local-qwen3-4b'
+    localModel: 'qwen3-4b-instruct-2507'
+```
+
+**注入 5 个服务**：promptGuard（攻击检测） + privacyPolicy（REJECT 策略） + intentRouter（LOCAL/CLOUD 分类） + sanitizer（CLOUD 路径 PII 映射） + auditLog（所有事件落盘）。
+
+intent-router 在 v2 里**降级为叶子服务**——`input-guard.handlePreStep` 调用 `intentRouter.classify()` 来决定 LOCAL/CLOUD/SANITIZED/REJECT，但不再被 http-api 命令式驱动。
+
+## 5.3 三个全局 hook（input-guard 注册到 agent-loop）
+
+`src/dsh-adapter/input-guard.ts:677-702`：
+
+```ts
+const d1 = on('agent/pre-step', async (payload, next) => {
+  return service.handlePreStep(payload, next)
+}, { global: true })   // ← 全局：所有 agent 都过
+
+const d2 = on('llm/stream', (options, next) => {
+  return service.handleLlmStream(options, next)
+}, { global: true })
+
+const d3 = on('agent/request', async (payload, seed, next) => {
+  return service.handleAgentRequest(payload ?? {}, seed ?? {}, async () => next())
+}, { global: true })
+```
+
+| Hook | 触发时机 | 内部动作 | 输出 |
+|---|---|---|---|
+| `agent/pre-step` | agent-loop 每步进入 | ① `promptGuard.checkInput` ② `privacyPolicy.matchRouting`（REJECT 短路）③ `intentRouter.classify`（读 `agent._edgeRoute` 优先，否则 fallback classify）④ `sanitizer.sanitize`（CLOUD 路径） | `decision`（可能改写 messages 或返回 reject）|
+| `agent/request`  | agent-loop 组装 LLM 请求 | 检查 `stepState.downgraded`，若 true 则改写 provider/model 到 LOCAL | `AgentRequestConfig` |
+| `llm/stream`     | LLM 流式输出 text-delta | 跨 chunk 累积占位符前缀，flush 后 `sanitizer.desanitize` 还原 PII | 流式 chunk |
+
+## 5.4 sanitize 失败降级 LOCAL
+
+**v1 的语义**（本文档第四章 §4.2 仍然有效）：
+> sanitizer 不可用 / `sanitize()` 抛异常 → intent-router 在 CLOUD realm 时抛 `SanitizeError` → 外层 catch → 降级到 `classifyWithRules()` 规则兜底
+
+**v2 的语义**（input-guard `agent/request` hook）：
+> sanitizer 抛异常 → `handlePreStep` 标记 `stepState.downgraded=true` → **不阻断 step**（消息照常送给 agent-loop） → `handleAgentRequest` 把 provider/model 从 CLOUD 改写到 LOCAL → 原始 PII 留本地 → LLM 流式输出也不需要 desanitize（因为从一开始就没脱敏）
+
+```ts
+// input-guard.ts:386-403 (sanitize 失败分支)
+this.stepState.set(sessionId, {
+  sanitized: false, replacements: 0, sessionId, timestamp: Date.now(),
+  downgraded: true, downgradeReason: reason,
+  originalProvider: edgeRoute?.provider,
+  originalModel: edgeRoute?.model,
+  originalRealm: edgeRoute?.realm,
+})
+return decision   // 不抛异常，让 step 继续走
+```
+
+```ts
+// input-guard.ts:428-440 (route 改写)
+const downgraded: AgentRequestConfig = {
+  ...seedConfig,
+  provider: this.config.localProvider,    // 'local-qwen3-4b'
+  model: this.config.localModel,          // 'qwen3-4b-instruct-2507'
+}
+this.audit('info', 'input-guard.route.overridden', {
+  sessionId,
+  from: { provider: seedConfig.provider, model: seedConfig.model },
+  to:   { provider: downgraded.provider, model: downgraded.model },
+  reason: state.downgradeReason,
+})
+return downgraded
+```
+
+**两种语义对比**：
+
+| 维度 | v1（规则兜底） | v2（降级 LOCAL） |
+|---|---|---|
+| step 是否阻断 | 是（intent-router 抛异常 → classifyWithRules 返回 LOCAL/CLOUD/REJECT） | 否（消息照常送 agent-loop） |
+| 原始 PII 流向 | 经 sanitize 失败时**未脱敏**就被 catch，原 PII 文本已读入 intent-router 上下文（但未上云） | **从一开始就不脱敏**，通过 `agent/request` 改写 route 让 PII 永远不出设备 |
+| 用户体验 | 看到"分类走规则 + 返回可能不准确的结果" | 看到"路由悄悄切到本地"（透明降级，可用性更好） |
+| 审计事件 | `intent.llm.sanitize-error` / `intent.llm.sanitize-unavailable` | 新增 `input-guard.sanitize.failed` / `input-guard.sanitize.downgraded` / `input-guard.route.overridden` |
+
+**配置开关**（`input-guard.ts:42-46`）：
+
+```yaml
+downgradeOnSanitizeFailure: true   # 默认：降级 LOCAL（隐私优先 + 可用）
+# = false 时：保守降级（fail-closed），REJECT step，user 看到空 result
+```
+
+## 5.5 intent-router 在 v2 里被调用的方式
+
+`input-guard.handlePreStep` 在调用 `intentRouter.classify()` 前会**优先读 `agent._edgeRoute`**——这个 route 是上游入口（http-api `intent-router` handler）在 followup 前写入的：
+
+```ts
+// input-guard.ts:217-223
+private readEdgeRoute(agent: unknown): AgentEdgeRoute | undefined {
+  const route = (agent as { _edgeRoute?: AgentEdgeRoute } | null | undefined)?._edgeRoute
+  if (!route || typeof route !== 'object') return undefined
+  if (typeof route.provider !== 'string' || typeof route.model !== 'string') return undefined
+  if (!['LOCAL', 'CLOUD', 'SANITIZED'].includes(route.realm)) return undefined
+  return route
+}
+```
+
+**这条优化路径让 Web UI 和 dsh-im 可以跳过 intent-router.classify() 的 LLM 调用**——但**前提是上游入口必须先 `classify()` 一次**并把结果写到 `_edgeRoute`。目前只有 http-api 这么做（v1 的命令式调用），Web UI / dsh-im 走 input-guard fallback `intentRouter.classify()` 路径。
+
+## 5.6 Boot 顺序变化
+
+v2 新增 `input-guard` 后的 boot 顺序（实际启动拓扑，2026-08-29）：
+
+```
+1. tcm              (TCM 密钥)
+2. td-bus           (威胁检测总线)
+3. realm-skill-bridge
+4. prompt-guard     (攻击检测)
+5. privacy-policy   (REJECT 策略)
+6. intent-router    (LOCAL/CLOUD 分类)
+7. sanitizer-pipeline  (PII 映射)
+8. audit-log        (审计落盘)
+9. input-guard      (编排器，inject 5 个上游服务)
+10. web-search-guard
+11. http-api        (:21017 程序入口)
+12. webserver       (:21018 Web UI)
+```
+
+input-guard 必须在 http-api 之后或至少在 agent-loop 启动前完成 apply；当前拓扑满足这一点。
+
+## 5.7 三入口接入代码定位
+
+| 入口 | 进 agent-loop 的代码 |
+|---|---|
+| **http-api**  | `src/dsh-adapter/http-api.ts:1010` `await this.agents.create({...})` |
+| **Web UI**    | `@deepseek-ai/dsh-host-webserver` 内部 `apiproxy` → `ctx.agents.create()` |
+| **dsh-im**    | `@xmanrui/dsh-im/plugin-src/host/harness-session-coordinator.mjs:11` `agents = ctx.get('agents')` |
+
+三个入口走的都是**同一个** `ctx.agents` 注册表——这是 input-guard 接入点成立的物理基础。
+
+## 5.8 小结
+
+| 角色 | v1 | v2 |
+|---|---|---|
+| intent-router  | 中央编排器（被 http-api 命令式驱动） | 叶子服务（被 input-guard 编排） |
+| 输入防护       | http-api 内部串联 | input-guard.handlePreStep 串联 |
+| 跨 hook 状态   | 无 | `stepState: Map<sessionId, ...>` |
+| 接入点         | 仅 http-api `POST /v1/chat` | agent-loop 3 个全局 hook，3 入口通用 |
+| sanitize 失败  | 规则兜底 | 降级 LOCAL（原始 PII 留本地）|
+
+intent-router 作为 LOCAL/CLOUD 分类器本身**逻辑没变**，变的是它被谁调用、调用的上下文、调用前后的状态管理。
+
+---
+
 # 下游集成
 
 | 消费者 | 用法 |
 |--------|------|
-| **http-api** | 每条消息先经 prompt-guard（HTTP 400），再调用 `classify()`；REJECT 意图 → HTTP 403 short-circuit；Intent 作为 SSE 首帧 (`type: "intent"`) 返回 |
+| **http-api** | 每条消息先经 prompt-guard（HTTP 400），再调用 `classify()`；REJECT 意图 → HTTP 403 short-circuit；Intent 作为 SSE 首帧 (`type: "intent"`) 返回。v2 后实际上由 input-guard `agent/pre-step` hook 接管防护逻辑，http-api 仅做 transport + 写 `_edgeRoute` 缓存 |
+| **Web UI** | 通过 webserver `:21018` 的 `apiproxy` 路由到 agent-loop，自动经 input-guard 三 hook。无需任何安全代码（参 [dual-entry-architecture.md](./dual-entry-architecture.md)） |
+| **dsh-im**  | IM connector process → webserver 内部 RPC → `ctx.get('agents')` → agent-loop → input-guard 三 hook。Channel 凭据存 `dsh-credentials-local`，配 cordis.patch.yml:379-393 |
 | **tools** | `filterTools(intent)` / `isToolAllowed(name, intent)` 实现 realm 级别的工具隔离（REJECT → 空工具列表） |
 | **td-bus** | 威胁检测总线（已接入 http-api 主链路）：每次 chat 调 `recordCloudRequest()`，触发 critical 级威胁时短路 HTTP 503；`/v1/chat` 与 `/v1/chat/stream` 均已接入 |
-| **plugin boot** | 第 15 步启动（19 个插件拓扑排序），inject `llm, auditLog`；其他服务走 `softService()` |
+| **plugin boot** | intent-router 在第 15 步启动（19 个插件拓扑排序），inject `llm, auditLog`；其他服务走 `softService()`；v2 新增 input-guard 在第 9 步启动 |
 
 # 结论
 
@@ -2405,25 +2616,31 @@ done
 
 **推进条件**：置信度分布标准差 < 0.1（当前约 0.25），或引入自适应阈值（按会话/领域动态调整）。
 
-### 2. 规则优先的分类顺序
+### 2. 规则优先的分类顺序 🟡 部分实现
 
 **原设计**：规则 → 模型 → 置信度。规则命中零成本，模型分类 <1s。
 
-**当前实现**：LLM → 规则兜底。
+**当前实现**：
+- 在 `input-guard.handlePreStep` 中（v2 重构后），`privacyPolicy.matchRouting()` 现在跑在 `intentRouter.classify()` **之前**（`input-guard.ts:277`）—— REJECT 命中直接阻断（零 token），其它命中则用规则结果作为 initial category，**省掉一次 LLM 调用**。
+- 但完整"规则优先"仍未达成：非 REJECT 的 LOCAL/CLOUD 规则当前仍先 LLM 再 fallback，规则只在 LLM 失败时兜底。
 
-**评估**：原设计更高效（规则命中时省掉 LLM 调用），但当前 privacy-policy 规则粒度不够，强力 regex 容易反向劫持（如"帮我查文件"被"文件"关键词误判为 LOCAL）。需先把规则引擎细化到语义级（结合 prompt-guard 的 model-based 检测），再切回规则优先。
+**评估**：input-guard 已经实现了"REJECT 优先 + LLM 主决"的部分规则优先，但完整规则优先需要 privacy-policy 规则粒度细化到语义级。
 
 **推进条件**：privacy-policy 规则支持语义级匹配（非纯 regex）；规则命中准确率 > 0.95。
 
-### 3. agent/pre-step 事件协议
+### 3. agent/pre-step 事件协议 ✅ 已实现
 
-**原设计**：intent-router 通过 `ctx.event.on('agent/pre-step')` 监听 Agent Loop 事件，返回决策对象。
+**历史状态**（v1）：intent-router 通过 `intentRouter.classify()` 被 http-api 命令式调用；CLI / SDK / WebSocket / dsh-im 等多入口出现时无统一拦截点。
 
-**当前实现**：http-api 命令式调用 `intentRouter.classify()`。
+**当前状态**（v2，2026-08-29）：新增 `input-guard` 插件作为编排器，在 DSH agent-loop 事件链上注册 **3 个全局 hook**：
 
-**评估**：事件协议架构更清晰（解耦 http-api 与 intent-router，支持多入口），但当前只有 http-api 一个入口，命令式调用更直接。若后续开放 CLI / SDK / WebSocket 等多入口，应切换为事件协议。
+| Hook | 时机 | 用途 |
+|---|---|---|
+| `agent/pre-step`  | agent-loop 每步进入 | 攻击检测 → 策略 → 分类 → 脱敏 |
+| `agent/request`   | agent-loop 组装 LLM 请求 | sanitize 失败时 CLOUD → LOCAL 降级 |
+| `llm/stream`      | LLM 流式输出 text-delta | 流式 desanitize（占位符→PII）|
 
-**推进条件**：第二个消息入口出现时。
+3 个入口（http-api `:21017`、Web UI `:21018`、dsh-im 无端口）走 agent-loop 后**自动覆盖**。详见 [第五章](#第五章-input-guard-编排器v2-重构) 和 [input-guard-hook-architecture.md](./input-guard-hook-architecture.md)。
 
 ### 4. td-bus 主链路接入 ✅ 已实现
 
@@ -2440,8 +2657,22 @@ done
 
 **优化**：暴露 `addInputRule(rule)` / `removeInputRule(id)` 接口，支持运行时规则增删。
 
-### 6. 4-action 规则分级
+### 6. 4-action 规则分级 🟡 部分实现
 
-**当前**：仅 `block` 一种动作（REJECT）。
+**历史状态**：仅 `block` 一种动作（REJECT）。
 
-**优化**：引入 `warn`（放行但审计）、`sanitize`（改写后放行）、`redact`（输出打码）分级动作，匹配 prompt-guard 的 action 体系。
+**当前状态**（2026-08-24 职责分离优化后）：
+- **prompt-guard**：已实现 3-action 分级（`block` / `warn` / `sanitize`），见 [§ 1.4 三级 action 处理流程](#14-三级-action-处理流程)。DEFAULT_INJECTION_PATTERNS 已按分级标注（block=10 条、warn=6 条、sanitize=0 条预留扩展）。
+- **privacy-policy**：仍仅 `block`（REJECT 路由），未引入 `warn` / `sanitize` / `redact`。
+
+**剩余优化**：把 privacy-policy 的 routingRules 扩展为 4-action 体系，让业务危险规则也能"warn 放行"（如某条规则命中但仅 audit）而不直接 REJECT。
+
+---
+
+# 变更记录
+
+| 日期 | 版本 | 变更摘要 | 关联 commit / memory |
+|---|---|---|---|
+| 2026-08-26 | v1.x | 文档主体（第一~四章 + 脱敏架构） | 历史累积 |
+| 2026-08-29 | **v2** | ① 新增[v2 框架说明](#v2-框架说明2026-08-29) 章节 ② 新增[第五章 input-guard 编排器](#第五章-input-guard-编排器v2-重构)（含 [§ 5.4 sanitize 失败降级 LOCAL](#54-sanitize-失败降级-local)）③ 后续优化项 #3 标 ✅ 已实现（input-guard 3 个全局 hook）④ 后续优化项 #2 标 🟡 部分实现（privacy-policy.matchRouting 已先于 intentRouter.classify）⑤ 后续优化项 #6 标 🟡 部分实现（prompt-guard 已 3-action）⑥ [下游集成](#下游集成) 补 Web UI / dsh-im 行 ⑦ 目录增加第五章 + v2 框架说明 | [[职责分离优化]] · [[脱敏降级策略]] · [[dsh-im 运行时 blocker]] · `feat(input-guard): extract privacy pipeline` (eaec70b) · `feat(http-api): dual-entry architecture` (4aa63fd) · `feat(im): mount dsh-im as third user entry` (b42c7db) |
+| 2026-08-29 | — | 配套架构图：[input-guard-hook-architecture.md](./input-guard-hook-architecture.md)（3 张 mermaid 图） | — |

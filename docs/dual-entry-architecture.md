@@ -297,7 +297,7 @@ DSH 上游 SPA 的 chat RPC（`sessions.prompt` / `sessions.list` / `sessions.ca
 若未来启用 `@linxin666/dsh-web-ui-all`，需检查其 cordis patch 内部是否挂载 `sessions` 插件（已知风险 §10.1）。启用前**必须**：
 
 1. grep bundle 内 `sessions` 配置
-2. 确认 root 不覆盖我们的 `~/.dsh-edge-agent-m1/sessions/`
+2. 确认 root 不覆盖我们的 `~/.dsh-edge-agent/sessions/`
 3. 必要时调整 `cordis.patch.yml` 顺序
 
 ---

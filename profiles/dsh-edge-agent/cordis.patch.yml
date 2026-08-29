@@ -275,7 +275,8 @@
     - id: local-storage
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/local-storage'
       config:
-        root: !!js (process.env.DSH_EDGE_STORAGE_ROOT ?? (process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent-m1/storage')
+        # 2026-08-29: 去掉 -m1 后缀，与 DSH_HOME (sessions + skill-realms) 统一在 ~/.dsh-edge-agent/ 下
+        root: !!js (process.env.DSH_EDGE_STORAGE_ROOT ?? (process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent/storage')
         filename: storage.plain.jsonl
         enablePIIRedaction: true
 
@@ -298,7 +299,8 @@
         ringBufferSize: 512
         flushIntervalMs: !!js parseInt(process.env.DSH_EDGE_AUDIT_FLUSH_MS ?? '1000', 10)
         filename: audit.plain.jsonl
-        root: !!js (process.env.DSH_EDGE_AUDIT_ROOT ?? (process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent-m1/audit')
+        # 2026-08-29: 去掉 -m1 后缀，与 DSH_HOME 统一在 ~/.dsh-edge-agent/audit 下
+        root: !!js (process.env.DSH_EDGE_AUDIT_ROOT ?? (process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent/audit')
         enablePIIRedaction: true
         maxFileSizeBytes: 10485760  # 10MB
         maxFileAgeDays: 7
