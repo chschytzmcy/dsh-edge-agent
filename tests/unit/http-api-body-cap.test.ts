@@ -113,12 +113,7 @@ describe('http-api body cap (maxRequestBodyBytes)', () => {
           }
         },
       } as any,
-      null,
       audit,
-      {
-        sanitize: async () => ({ sanitizedText: 'XX', replacements: [] }),
-        desanitize: async (text: string) => text,
-      },
       undefined,
     )
     ;(svc as any).intentRouter = intentRouter

@@ -137,9 +137,7 @@ function buildService(opts: { spy: any; fixtureMap: Map<string, SessionFixture>;
       requireAttestation: false,
     } as any,
     agents as any,
-    null,  // promptGuard
     audit,
-    null,  // sanitizer
     undefined, // tdBus
   )
   ;(svc as any).intentRouter = spy

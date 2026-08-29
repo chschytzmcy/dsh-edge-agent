@@ -1,13 +1,5 @@
 {
-  "inserts": [
-    "plugin-host",
-    "td-bus",
-    "sanitizer-pipeline",
-    "ohttp-gateway",
-    "secure-bridge",
-    "attestation",
-    "dsh-edge-agent"
-  ],
+  "inserts": [],
   "configOverrides": [
     "system-prompt",
     "llm-deepseek",
@@ -16,7 +8,15 @@
     "session-persistence-jsonl",
     "sandbox-policy"
   ],
-  "disablesBeyondWebApp": [],
+  "disablesBeyondWebApp": [
+    "plugin-host",
+    "td-bus",
+    "sanitizer-pipeline",
+    "ohttp-gateway",
+    "secure-bridge",
+    "attestation",
+    "dsh-edge-agent"
+  ],
   "webAppDisablesBeyondTui": [],
   "insertsSharedWithWebApp": []
 }

@@ -51,6 +51,10 @@
       "types": "./lib/types/dsh-adapter/invariant.d.ts",
       "default": "./lib/types/dsh-adapter/invariant.js"
     },
+    "./input-guard": {
+      "types": "./lib/types/dsh-adapter/input-guard.d.ts",
+      "import": "./lib/types/dsh-adapter/input-guard.js"
+    },
     "./llm-adapters": {
       "types": "./lib/types/dsh-adapter/llm-adapters.d.ts",
       "import": "./lib/types/dsh-adapter/llm-adapters.js"

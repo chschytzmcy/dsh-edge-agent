@@ -19,7 +19,7 @@ import { redactString } from './pii-utils.js'
 
 export const name = 'http-api'
 
-export const inject = ['agents', 'intentRouter', 'promptGuard', 'auditLog', 'sanitizer', 'tdBus', 'realmSkillBridge', 'edgeTools'] as const
+export const inject = ['agents', 'intentRouter', 'auditLog', 'tdBus', 'realmSkillBridge', 'edgeTools'] as const
 
 export interface Config {
   host: string
@@ -104,9 +104,7 @@ export class HttpApiServiceImpl extends Service {
     private cordisCtx: any,
     private config: Config,
     private agents: any,
-    private promptGuard: any,
     private auditLog: any,
-    private sanitizer: any,
     tdBus?: any,
   ) {
     super(cordisCtx, 'httpApi')
@@ -381,25 +379,6 @@ export class HttpApiServiceImpl extends Service {
       }
     }
 
-    // Input security check
-    if (this.promptGuard) {
-      try {
-        const inputCheck = await this.promptGuard.checkInput(message, sessionId)
-        if (!inputCheck.safe) {
-          this.accessLog(reqId, 'POST', '/v1/chat', 400, Date.now() - start, 'input-blocked')
-          res.writeHead(400, { 'Content-Type': 'application/json' })
-          res.end(JSON.stringify({
-            error: 'Input blocked by security policy',
-            reason: inputCheck.reason,
-            riskLevel: inputCheck.riskLevel,
-          }))
-          return
-        }
-      } catch (err: any) {
-        this.audit('error', 'http.chat.input-check.error', { reqId, sessionId, error: err.message })
-      }
-    }
-
     // Snapshot the per-session history BEFORE pushing the current user message,
     // then push. The router embeds the snapshot as the "history" block and
     // appends the current query itself — passing the buffer that already
@@ -442,53 +421,21 @@ export class HttpApiServiceImpl extends Service {
     // fallback; modelRouter (registered later in boot order) takes
     // precedence via lazy lookup so http-api doesn't need an inject dep.
     const isLocal = intent.category === 'LOCAL'
-    // effectiveIsLocal/effectiveRoute may be flipped to LOCAL below when
-    // sanitization is required but unavailable — "脱不了敏就不上云".
-    let effectiveIsLocal = isLocal
-    let effectiveRoute = this.resolveRoute(isLocal)
-    this.audit('info', 'http.chat.route', { reqId, sessionId, intent: intent.category, provider: effectiveRoute.provider, model: effectiveRoute.model, resolved: effectiveRoute.resolved, confidence: intent.confidence, rationale: intent.rationale })
+    const route = this.resolveRoute(isLocal)
+    this.audit('info', 'http.chat.route', { reqId, sessionId, intent: intent.category, provider: route.provider, model: route.model, resolved: route.resolved, confidence: intent.confidence, rationale: intent.rationale })
 
-    // Phase 4: Sanitize input for CLOUD requests.
-    // Policy: if sanitizer is unavailable or throws, DOWNGRADE to LOCAL
-    // instead of sending raw (potentially PII-containing) text to the cloud.
-    // "脱不了敏就不上云" — audit at security level so SIEM picks it up.
-    let messageToSend = message
-    let sanitizationInfo: { replacements: number } | undefined
-    if (!isLocal) {
-      if (!this.sanitizer) {
-        this.audit('security', 'http.chat.sanitize.unavailable', {
-          reqId, sessionId, originalIntent: intent.category,
-        })
-        effectiveIsLocal = true
-        effectiveRoute = this.resolveRoute(true)
-      } else {
-        try {
-          const sanitizationResult = await this.sanitizer.sanitize(message, { sessionId })
-          messageToSend = sanitizationResult.sanitizedText
-          if (sanitizationResult.replacements.length > 0) {
-            sanitizationInfo = { replacements: sanitizationResult.replacements.length }
-            this.audit('info', 'http.chat.sanitized', {
-              reqId,
-              sessionId,
-              replacementCount: sanitizationResult.replacements.length,
-            })
-          }
-        } catch (err: any) {
-          this.audit('security', 'http.chat.sanitize.failed', {
-            reqId, sessionId, error: err.message, originalIntent: intent.category,
-          })
-          effectiveIsLocal = true
-          effectiveRoute = this.resolveRoute(true)
-        }
-      }
-    }
-    const { provider, model } = effectiveRoute
+    // 脱敏逻辑已由 input-guard 插件在 agent/pre-step hook 中统一处理。
+    // http-api 不再做 sanitizer.sanitize 或降级策略 — 所有入口（http-api /
+    // Web UI / CLI）共享同一套管线。sanitizer 失败时 input-guard 会阻断
+    // agent-loop（fail-closed），不会泄露原始 PII。
+    const { provider, model } = route
 
     // Tag session realm for Layer 1 (catalog filtering) and Layer 3 (tool gating).
-    // Uses effectiveIsLocal (post-sanitization downgrade) so a failed sanitizer
-    // correctly marks the session as LOCAL.
+    // Realm is derived from intent-router's classification. input-guard may further
+    // refine routing (REJECT / SANITIZED) within agent-loop, but http-api's realm
+    // tag is the first-pass routing signal.
     if (this.realmSkillBridge) {
-      const realm = effectiveIsLocal ? 'LOCAL' : (intent.category === 'SANITIZED' ? 'SANITIZED' : 'CLOUD')
+      const realm = isLocal ? 'LOCAL' : (intent.category === 'SANITIZED' ? 'SANITIZED' : 'CLOUD')
       this.realmSkillBridge.setSessionRealm(sessionId, realm)
     }
 
@@ -522,53 +469,39 @@ export class HttpApiServiceImpl extends Service {
       })
     })
 
+    // input-guard 会在 agent/pre-step 中对消息做脱敏处理。http-api 把原文
+    // 送给 agent-loop，由 input-guard 按 routing 决定是否脱敏（CLOUD 路径）
+    // 或直接放行（LOCAL 路径）。
     const userMessage = createUserMessage({
-      content: [{ type: 'text', text: messageToSend }],
+      content: [{ type: 'text', text: message }],
       source: { kind: 'user' },
     })
+
+    // 把路由决策挂到 agent 实例上，让 input-guard 在 agent/pre-step 里读到，
+    // 避免重复跑 intentRouter.classify()（每次 ~0.5-1s 的 Qwen3-4B 推理）。
+    // input-guard 也通过 agent/_edgeRoute 知道原始 realm；sanitize 失败降级
+    // 到 LOCAL 后，audit / response 可以展示 "原始 CLOUD → 降级 LOCAL"。
+    ;(record.agent as any)._edgeRoute = {
+      realm: isLocal ? 'LOCAL' : (intent.category === 'SANITIZED' ? 'SANITIZED' : 'CLOUD'),
+      category: intent.category,
+      provider: route.provider,
+      model: route.model,
+      confidence: intent.confidence,
+      rationale: intent.rationale,
+    }
 
     // Call followup - it's fire-and-forget, agent loop runs async
     record.agent.followup(userMessage)
 
     let result = await turnEnd
 
-    // Phase 4: Desanitize output for CLOUD requests
-    // Use effectiveIsLocal — if we downgraded to LOCAL, no sanitization was
-    // applied, so desanitization must also be skipped.
-    if (!effectiveIsLocal && this.sanitizer && sanitizationInfo) {
-      try {
-        result = await this.sanitizer.desanitize(result, sessionId)
-        this.audit('debug', 'http.chat.desanitized', { reqId, sessionId })
-      } catch (err: any) {
-        this.audit('error', 'http.chat.desanitize.error', { reqId, sessionId, error: err.message })
-      }
-    }
-
-    // Output security check (PII redaction)
-    // Pass sanitized=true when sanitizer-pipeline managed this session,
-    // so prompt-guard skips its own masking and doesn't undo the desanitize above.
-    let redactedInfo: Array<{ type: string; masked: string }> | undefined
-    if (this.promptGuard && result) {
-      try {
-        const wasSanitized = !!sanitizationInfo
-        const outputCheck = await this.promptGuard.checkOutput(result, { sanitized: wasSanitized })
-        result = outputCheck.filtered
-        if (outputCheck.redacted.length > 0) {
-          redactedInfo = outputCheck.redacted
-        }
-      } catch (err: any) {
-        this.audit('error', 'http.chat.output-check.error', { reqId, sessionId, error: err.message })
-      }
-    }
+    // 脱敏恢复（desanitize）已由 input-guard 插件在 llm/stream hook 中统一处理。
+    // 输出安全过滤（prompt-guard.checkOutput）也迁移到 input-guard，
+    // 以便 Web UI / CLI / SDK 所有入口统一受益。http-api 不再做安全过滤。
 
     const duration = Date.now() - start
-    // Build the response intent — if sanitization failed and we downgraded
-    // to LOCAL, reflect the effective category so the caller sees the truth.
-    const responseIntent = effectiveIsLocal && !isLocal
-      ? { ...intent, category: 'LOCAL', targetRealm: 'local', rationale: `${intent.rationale}:sanitized-fallback` }
-      : intent
-    this.audit('info', 'http.chat.end', { reqId, sessionId, provider, model, durationMs: duration, resultLen: result.length, downgraded: effectiveIsLocal && !isLocal })
-    this.accessLog(reqId, 'POST', '/v1/chat', 200, duration, `${provider}/${model} intent=${responseIntent.category}${effectiveIsLocal && !isLocal ? '(downgraded)' : ''}`)
+    this.audit('info', 'http.chat.end', { reqId, sessionId, provider, model, durationMs: duration, resultLen: result.length })
+    this.accessLog(reqId, 'POST', '/v1/chat', 200, duration, `${provider}/${model} intent=${intent.category}`)
 
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(
@@ -576,13 +509,12 @@ export class HttpApiServiceImpl extends Service {
         sessionId,
         result,
         intent: {
-          category: responseIntent.category,
-          targetRealm: responseIntent.targetRealm,
-          confidence: responseIntent.confidence,
-          rationale: responseIntent.rationale,
+          category: intent.category,
+          targetRealm: intent.targetRealm,
+          confidence: intent.confidence,
+          rationale: intent.rationale,
         },
         duration,
-        ...(redactedInfo && { redacted: redactedInfo }),
       }),
     )
   }
@@ -613,25 +545,6 @@ export class HttpApiServiceImpl extends Service {
         res.writeHead(503, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ error: 'Service unavailable — threat level elevated', threat }))
         return
-      }
-    }
-
-    // Input security check
-    if (this.promptGuard) {
-      try {
-        const inputCheck = await this.promptGuard.checkInput(message, sessionId)
-        if (!inputCheck.safe) {
-          this.accessLog(reqId, 'POST', '/v1/chat/stream', 400, Date.now() - start, 'input-blocked')
-          res.writeHead(400, { 'Content-Type': 'application/json' })
-          res.end(JSON.stringify({
-            error: 'Input blocked by security policy',
-            reason: inputCheck.reason,
-            riskLevel: inputCheck.riskLevel,
-          }))
-          return
-        }
-      } catch (err: any) {
-        this.audit('error', 'http.chat.stream.input-check.error', { reqId, sessionId, error: err.message })
       }
     }
 
@@ -671,50 +584,16 @@ export class HttpApiServiceImpl extends Service {
     }
 
     const isLocal = intent.category === 'LOCAL'
-    // effectiveIsLocal/effectiveRoute may be flipped to LOCAL below when
-    // sanitization is required but unavailable — "脱不了敏就不上云".
-    let effectiveIsLocal = isLocal
-    let effectiveRoute = this.resolveRoute(isLocal)
-    this.audit('info', 'http.chat.stream.route', { reqId, sessionId, intent: intent.category, provider: effectiveRoute.provider, model: effectiveRoute.model, resolved: effectiveRoute.resolved })
+    const route = this.resolveRoute(isLocal)
+    this.audit('info', 'http.chat.stream.route', { reqId, sessionId, intent: intent.category, provider: route.provider, model: route.model, resolved: route.resolved })
 
-    // Phase 4: Sanitize input for CLOUD requests.
-    // Policy: if sanitizer is unavailable or throws, DOWNGRADE to LOCAL
-    // instead of sending raw (potentially PII-containing) text to the cloud.
-    let messageToSend = message
-    let didSanitize = false
-    if (!isLocal) {
-      if (!this.sanitizer) {
-        this.audit('security', 'http.chat.stream.sanitize.unavailable', {
-          reqId, sessionId, originalIntent: intent.category,
-        })
-        effectiveIsLocal = true
-        effectiveRoute = this.resolveRoute(true)
-      } else {
-        try {
-          const sanitizationResult = await this.sanitizer.sanitize(message, { sessionId })
-          messageToSend = sanitizationResult.sanitizedText
-          if (sanitizationResult.replacements.length > 0) {
-            didSanitize = true
-            this.audit('info', 'http.chat.stream.sanitized', {
-              reqId,
-              sessionId,
-              replacementCount: sanitizationResult.replacements.length,
-            })
-          }
-        } catch (err: any) {
-          this.audit('security', 'http.chat.stream.sanitize.failed', {
-            reqId, sessionId, error: err.message, originalIntent: intent.category,
-          })
-          effectiveIsLocal = true
-          effectiveRoute = this.resolveRoute(true)
-        }
-      }
-    }
-    const { provider, model } = effectiveRoute
+    // 脱敏逻辑已由 input-guard 插件在 agent/pre-step hook 中统一处理。
+    // http-api 不再做 sanitizer.sanitize 或降级策略 — 所有入口共享同一套管线。
+    const { provider, model } = route
 
     // Tag session realm for Layer 1 (catalog filtering) and Layer 3 (tool gating).
     if (this.realmSkillBridge) {
-      const realm = effectiveIsLocal ? 'LOCAL' : (intent.category === 'SANITIZED' ? 'SANITIZED' : 'CLOUD')
+      const realm = isLocal ? 'LOCAL' : (intent.category === 'SANITIZED' ? 'SANITIZED' : 'CLOUD')
       this.realmSkillBridge.setSessionRealm(sessionId, realm)
     }
 
@@ -725,32 +604,18 @@ export class HttpApiServiceImpl extends Service {
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive',
     })
-    this.accessLog(reqId, 'POST', '/v1/chat/stream', 200, Date.now() - start, `${provider}/${model} intent=${effectiveIsLocal && !isLocal ? 'LOCAL(downgraded)' : intent.category}`)
-
-    // Build the effective intent for SSE — if sanitization failed and we
-    // downgraded to LOCAL, reflect the effective category.
-    const streamResponseIntent = effectiveIsLocal && !isLocal
-      ? { ...intent, category: 'LOCAL', targetRealm: 'local', rationale: `${intent.rationale}:sanitized-fallback` }
-      : intent
+    this.accessLog(reqId, 'POST', '/v1/chat/stream', 200, Date.now() - start, `${provider}/${model} intent=${intent.category}`)
 
     // Emit intent first so client knows the routing decision
-    res.write(`data: ${JSON.stringify({ type: 'intent', intent: { category: streamResponseIntent.category, targetRealm: streamResponseIntent.targetRealm, confidence: streamResponseIntent.confidence, rationale: streamResponseIntent.rationale } })}\n\n`)
+    res.write(`data: ${JSON.stringify({ type: 'intent', intent: { category: intent.category, targetRealm: intent.targetRealm, confidence: intent.confidence, rationale: intent.rationale } })}\n\n`)
 
     const dispose = this.cordisCtx.on('session/event', (_session: any, event: SessionEvent) => {
       if (event.type === 'assistant/chunk') {
         const chunk = (event as any).data.chunk
         if (chunk.type === 'text-delta') {
-          // Phase 4: Desanitize streamed text for CLOUD requests
-          // Use effectiveIsLocal — if downgraded, no sanitization was applied.
-          let textToSend = chunk.text
-          if (!effectiveIsLocal && this.sanitizer && didSanitize) {
-            try {
-              textToSend = this.sanitizer.desanitizeSync(chunk.text, sessionId)
-            } catch {
-              // If desanitize fails, send original text
-            }
-          }
-          res.write(`data: ${JSON.stringify({ type: 'text', text: textToSend })}\n\n`)
+          // 脱敏恢复已由 input-guard 在 llm/stream hook 中对 session 内 chunks 统一处理。
+          // http-api 只负责把 chunk 透传给 SSE 客户端。
+          res.write(`data: ${JSON.stringify({ type: 'text', text: chunk.text })}\n\n`)
         }
       } else if (event.type === 'turn/end') {
         // Pull the assembled assistant text from session.events to feed
@@ -770,14 +635,25 @@ export class HttpApiServiceImpl extends Service {
 
         res.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`)
         const duration = Date.now() - start
-        this.audit('info', 'http.chat.stream.end', { reqId, sessionId, provider, model, durationMs: duration, downgraded: effectiveIsLocal && !isLocal })
+        this.audit('info', 'http.chat.stream.end', { reqId, sessionId, provider, model, durationMs: duration })
         dispose()
         res.end()
       }
     })
 
+    // input-guard 会在 agent/pre-step 中对消息做脱敏处理。http-api 把原文
+    // 送给 agent-loop，由 input-guard 按 routing 决定是否脱敏。
+    // 同步挂路由决策到 agent，让 input-guard 避免重复 classify。
+    ;(record.agent as any)._edgeRoute = {
+      realm: isLocal ? 'LOCAL' : (intent.category === 'SANITIZED' ? 'SANITIZED' : 'CLOUD'),
+      category: intent.category,
+      provider: route.provider,
+      model: route.model,
+      confidence: intent.confidence,
+      rationale: intent.rationale,
+    }
     const userMessage = createUserMessage({
-      content: [{ type: 'text', text: messageToSend }],
+      content: [{ type: 'text', text: message }],
       source: { kind: 'user' },
     })
     record.agent.followup(userMessage)
@@ -815,14 +691,8 @@ export class HttpApiServiceImpl extends Service {
     await record.handle.dispose()
     this.sessions.delete(id)
     this.dropSessionBuffer(id)
-    // Phase 4: Purge sanitizer mappings for deleted session
-    if (this.sanitizer) {
-      try {
-        await this.sanitizer.purge(id)
-      } catch (err: any) {
-        this.audit('error', 'session.delete.sanitizer-purge.error', { sessionId: id, error: err.message })
-      }
-    }
+    // input-guard 使用 WeakMap<Session, State> 维护脱敏状态，session dispose
+    // 后自动回收，无需显式 purge。
     this.audit('info', 'session.deleted', { sessionId: id })
     res.writeHead(204)
     res.end()
@@ -1054,12 +924,10 @@ export function resolveRoute(
 
 export async function apply(ctx: any, config: Config): Promise<() => Promise<void>> {
   const agents = ctx.get('agents')
-  const promptGuard = ctx.get('promptGuard')
   const auditLog = ctx.get('auditLog')
-  const sanitizer = ctx.get('sanitizer')
   const tdBus = ctx.get?.('tdBus')
-  console.log(`[http-api] apply() - promptGuard: ${!!promptGuard}, auditLog: ${!!auditLog}, sanitizer: ${!!sanitizer}, tdBus: ${!!tdBus}`)
-  const service = new HttpApiServiceImpl(ctx, config, agents, promptGuard, auditLog, sanitizer, tdBus)
+  console.log(`[http-api] apply() - auditLog: ${!!auditLog}, tdBus: ${!!tdBus}`)
+  const service = new HttpApiServiceImpl(ctx, config, agents, auditLog, tdBus)
   await service.start()
   return async () => {
     await service.stop()

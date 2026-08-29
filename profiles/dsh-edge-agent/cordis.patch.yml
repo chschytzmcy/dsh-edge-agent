@@ -41,6 +41,17 @@
 - id: voice-input
   disabled: true
 
+# ── DSH 官方 Web UI 家族 ───────────────────────────────────────────────────
+# 与 edge-agent 的 http-api (21017, JSON/SSE) 共存：dsh-host-webserver
+# 监听独立的 web 端口（默认 21018），服务前端 SPA 与 web-ui-* 插件路由。
+# Web UI 的 chat 若要复用我们的脱敏/防护管线，可把 remote-web-ui 的
+# backendUrl 指向 http://127.0.0.1:21017 （路径 A），自动过 prompt-guard
+# + sanitizer-pipeline + privacy-policy。
+- id: dsh-host-webserver
+  config:
+    host: !!js process.env.DSH_EDGE_WEB_HOST ?? '127.0.0.1'
+    port: !!js parseInt(process.env.DSH_EDGE_WEB_PORT ?? '21018', 10)
+
 # Force the agent loop to a provider that edge-agent registered. The
 # default in dsh-base is `deepseek-official`, which we just disabled.
 - id: agent-default-model
@@ -247,6 +258,16 @@
     # NOTE: `sessions` and `audit-log` are NOT mounted — `dsh-session`
     # provides `sessions` upstream and nothing provides `auditLog` so
     # audit-log is mounted below under its own name.
+    #
+    # ── sessions provider ── dsh-session-persistence-jsonl exposes the
+    # `sessions` service that agent-loop / intent-router / voice-input
+    # inject. Without this, agent-loop short-circuits (no session ref
+    # → no LLM call → empty result).
+    - id: sessions
+      name: '@deepseek-ai/dsh-session-persistence-jsonl'
+      config:
+        root: !!js (process.env.DSH_EDGE_SESSION_ROOT ?? (process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent-m1/sessions')
+
     - id: audit-log
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/audit-log'
       config:
@@ -305,4 +326,31 @@
         enablePIIMonitor: true
         enableAudit: true
         enableRateLimit: true
+
+    # ── Phase 6: input-guard 编排器 ────────────────────────────────────
+    # 端侧隐私安全管线的编排器。把安全/隐私/脱敏逻辑从 transport 层
+    # (http-api) 上移到 Agent Loop 的事件链上 (agent/pre-step + llm/stream)，
+    # 让所有入口（http-api / Web UI / CLI / SDK）自动统一走同一套管线。
+    #
+    # 组合调用：
+    #   promptGuard.checkInput   (攻击检测)
+    #   privacyPolicy.matchRouting (策略 REJECT)
+    #   intentRouter.classify    (LOCAL/CLOUD 路由)
+    #   sanitizer.sanitize       (仅 CLOUD：PII → 占位符)
+    #   sanitizer.desanitize     (输出方向：占位符 → PII)
+    #
+    # 设计详见：docs/input-guard-design.md
+    - id: input-guard
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/input-guard'
+      inject: [promptGuard, privacyPolicy, intentRouter, sanitizer, auditLog]
+      config:
+        enableInputGuard: !!js process.env.DSH_EDGE_INPUT_GUARD !== 'false'
+        sanitizeLocalTraffic: false
+        # 攻击 / privacy-policy REJECT → 阻断 step（user 行为不端）
+        rejectOnPolicyViolation: !!js process.env.DSH_EDGE_REJECT_POLICY !== 'false'
+        # sanitize 失败 → 降级 LOCAL（系统故障而非 user 错；fail-closed + 可用）
+        downgradeOnSanitizeFailure: !!js process.env.DSH_EDGE_SANITIZE_DOWNGRADE !== 'false'
+        localProvider: !!js process.env.DSH_EDGE_LOCAL_PROVIDER ?? 'local-qwen3-4b'
+        localModel: !!js process.env.DSH_EDGE_LOCAL_MODEL ?? 'qwen3-4b-instruct-2507'
+
 

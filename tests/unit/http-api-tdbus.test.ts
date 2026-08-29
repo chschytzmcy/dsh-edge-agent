@@ -150,9 +150,7 @@ describe('http-api td-bus threat gate', () => {
         requireAttestation: false,
       } as any,
       agents as any,
-      null,         // promptGuard — disabled to isolate td-bus
       audit,
-      null,         // sanitizer
       tdBus.impl,   // ← td-bus wired in
     )
     ;(svc as any).intentRouter = intentRouter
@@ -222,9 +220,7 @@ describe('http-api td-bus threat gate', () => {
       ctx as any,
       { bearerToken: 'test-token', sessionIdleTimeoutMs: 0, maxActiveSessions: 100, requireAttestation: false } as any,
       agents as any,
-      null,
       audit,
-      null,
       undefined,  // no tdBus
     )
     ;(svc as any).intentRouter = intentRouter

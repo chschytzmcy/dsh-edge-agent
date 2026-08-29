@@ -89,14 +89,7 @@ describe('http-api REJECT short-circuit', () => {
           throw new Error('agents.create must NOT be called for REJECT')
         },
       } as any,
-      null,                                       // promptGuard
       audit,
-      {
-        sanitize: async () => {
-          sanitizeCallCount++
-          return { sanitizedText: 'XX', replacements: [] }
-        },
-      },
       undefined,                                  // tdBus
     )
     ;(svc as any).intentRouter = intentRouter
