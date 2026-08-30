@@ -148,6 +148,25 @@ interface AgentEdgeRoute {
   rationale?: string
 }
 
+/**
+ * input-guard 在 pre-step 拒收时挂到 agent 上的"为什么被拒"标签。
+ *
+ * agent-loop 把 `{ kind: 'reject' }` 转成 `turnEnds = { kind: 'blocked' }`
+ * 时会把 input-guard 给出的 reason 字符串丢掉，导致 http-api 看到 blocked
+ * 但不知道为何被拒、也无法给客户端返回有意义的 400。
+ *
+ * 这里把 `{ kind, reason, riskLevel }` 直接挂到 agent 上，让 http-api 在
+ * 订阅 `session/event` 的 turn/end 监听器里读到。写入发生在 pre-step
+ * 返回 reject 之前，读取发生在 turn/end 事件触发之后，顺序天然保证。
+ *
+ * 仅在 reject 时写入；正常 turn 不污染 agent 状态。
+ */
+interface AgentEdgeRejection {
+  kind: 'attack' | 'policy' | 'intent' | 'sanitizer'
+  reason: string
+  riskLevel?: 'low' | 'medium' | 'high'
+}
+
 /** agent/request waterfall 返回的 config 形状（DSH agent-loop 的 contract）。*/
 interface AgentRequestConfig {
   provider: string
@@ -212,7 +231,22 @@ export class InputGuardServiceImpl extends Service {
     return this.stepState.get(sessionId)
   }
 
-  /** 读取 agent 上的 edge-route（由 http-api / 其他入口在 followup 前写入）。
+  /**
+   * 把拒收原因挂到 agent 对象上，供 http-api 在订阅 `session/event` 的
+   * turn/end 监听器里读取（因为 agent-loop 把 `{ kind: 'reject' }` 翻译成
+   * `turnEnds = { kind: 'blocked' }` 时会丢掉 reason 字符串）。
+   *
+   * 只在 reject 路径写入；正常 turn 不污染 agent 状态。
+   */
+  private attachRejection(
+    agent: { _edgeRejection?: AgentEdgeRejection } & Record<string, unknown>,
+    rejection: AgentEdgeRejection,
+  ): void {
+    agent._edgeRejection = rejection
+  }
+
+  /**
+   * 读取 agent 上的 edge-route（由 http-api / 其他入口在 followup 前写入）。
    *  避免 input-guard 重复跑 intent-router.classify()（每次 ~0.5-1s）。*/
   private readEdgeRoute(agent: unknown): AgentEdgeRoute | undefined {
     const route = (agent as { _edgeRoute?: AgentEdgeRoute } | null | undefined)?._edgeRoute
@@ -235,7 +269,16 @@ export class InputGuardServiceImpl extends Service {
     // 默认 handler 先跑（组装 systemPrompt 段）
     const decision = await next()
     if (!this.config.enableInputGuard) return decision
-    if (decision.kind === 'reject') return decision
+    if (decision.kind === 'reject') {
+      // 上游 hook 链已经拒了一次（多 hook 串联）。把上一家的 reason
+      // 也透传到 _edgeRejection，让 http-api 看到 blocked 时能给客户端
+      // 反馈原始原因。
+      this.attachRejection(payload.agent, {
+        kind: 'policy',
+        reason: decision.reason ?? 'upstream-reject',
+      })
+      return decision
+    }
 
     const sessionId = payload.agent.session.id ?? 'unknown'
     // 注意：next() 后 decision.messages 可能包含 dsh-agent-instructions 注入的
@@ -256,6 +299,11 @@ export class InputGuardServiceImpl extends Service {
             preview: redact(originalLastUser.text),
           })
           if (this.config.rejectOnPolicyViolation) {
+            this.attachRejection(payload.agent, {
+              kind: 'attack',
+              reason: attackCheck.reason ?? 'attack-detected',
+              riskLevel: attackCheck.riskLevel,
+            })
             return { kind: 'reject', reason: attackCheck.reason ?? 'attack-detected' }
           }
           // fail-open on policy: 审计 + 放行（不推荐）
@@ -283,6 +331,10 @@ export class InputGuardServiceImpl extends Service {
             preview: redact(originalLastUser.text),
           })
           if (this.config.rejectOnPolicyViolation) {
+            this.attachRejection(payload.agent, {
+              kind: 'policy',
+              reason: routing.rationale ?? 'privacy-policy-reject',
+            })
             return { kind: 'reject', reason: routing.rationale ?? 'privacy-policy-reject' }
           }
           // fail-open on policy
@@ -313,6 +365,10 @@ export class InputGuardServiceImpl extends Service {
             sessionId, confidence: intent.confidence, rationale: intent.rationale,
           })
           if (this.config.rejectOnPolicyViolation) {
+            this.attachRejection(payload.agent, {
+              kind: 'intent',
+              reason: intent.rationale ?? 'intent-reject',
+            })
             return { kind: 'reject', reason: intent.rationale ?? 'intent-reject' }
           }
         }
@@ -380,6 +436,10 @@ export class InputGuardServiceImpl extends Service {
       })
 
       if (!this.config.downgradeOnSanitizeFailure) {
+        this.attachRejection(payload.agent, {
+          kind: 'sanitizer',
+          reason: 'sanitizer-failed',
+        })
         return { kind: 'reject', reason: 'sanitizer-failed' }
       }
 
@@ -409,17 +469,20 @@ export class InputGuardServiceImpl extends Service {
    *  当 handlePreStep 因 sanitize 失败标记了 stepState.downgraded，
    *  本钩子把请求改写到本地 LLM，原始 PII 不会离开设备。
    *
-   *  seedConfig 是 agent-loop 根据 AgentOptions 算出的默认（http-api
-   *  传入的 provider/model）。我们只在 downgraded 状态下覆盖。*/
+   *  注意 DSH waterfall 契约：监听器真实签名是 `(payload, next)`，
+   *  其中 `payload` 已被 dsh-agent 的 fused wrapper 注入 `agent` 字段
+   *  （见 @deepseek-ai/dsh-agent/lib/types/dispatch.js#agentEvents）。
+   *  上一层 apply() 必须先 `await next()` 取出 seedConfig 后再传进来，
+   *  因为 next() 是 chain 的下一步，handler 不能跳过它直接返回。*/
   async handleAgentRequest(
-    payload: { turn?: number; step?: number; signal?: AbortSignal; sessionId?: string },
+    payload: { turn?: number; step?: number; signal?: AbortSignal; agent?: { session?: { id?: string } } },
     seedConfig: AgentRequestConfig,
     next: () => Promise<AgentRequestConfig>,
   ): Promise<AgentRequestConfig> {
     if (!this.config.enableInputGuard) return seedConfig
 
-    // sessionId 来自上游调用方（agent-loop 在 buildRequest 里通过 session.id 传入）
-    const sessionId = payload?.sessionId
+    // sessionId 来自 fused wrapper 注入的 payload.agent.session.id
+    const sessionId = payload?.agent?.session?.id
     if (!sessionId) return seedConfig
 
     const state = this.stepState.get(sessionId)
@@ -666,6 +729,31 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
   const sanitizer = (ctx as unknown as { sanitizer?: SanitizerLike }).sanitizer
   const auditLog = (ctx as unknown as { auditLog?: AuditLogLike }).auditLog
 
+  // 启动期 fail-fast：这些依赖缺失时，管线不会报错，而是每一条请求都在
+  // 运行期抛出 → 被 catch → 静默降级 LOCAL。表面上"能用"，实际上云端
+  // 能力整体失效且无人察觉。宁可在启动时就说清楚缺了谁。
+  // （enableInputGuard=false 是显式关闭，不在此列。）
+  if (config.enableInputGuard) {
+    const missing: string[] = []
+    if (!privacyPolicy) missing.push('privacyPolicy')
+    if (!sanitizer) missing.push('sanitizer')
+    if (!intentRouter) missing.push('intentRouter')
+    if (!promptGuard) missing.push('promptGuard')
+    if (missing.length > 0) {
+      const detail = missing.join(', ')
+      void auditLog?.log?.({
+        level: 'security',
+        kind: 'input-guard.dependency.missing',
+        source: 'input-guard',
+        payload: { missing, hint: 'check plugin boot order in cordis.yml' },
+      })
+      throw new Error(
+        `input-guard: required services unavailable (${detail}) — check plugin boot order, ` +
+          'or set DSH_EDGE_INPUT_GUARD=false to disable the guard explicitly',
+      )
+    }
+  }
+
   const service = new InputGuardServiceImpl(ctx, config, promptGuard, privacyPolicy, intentRouter, sanitizer, auditLog)
 
   // 类型安全的 ctx.on 访问（cordis 的 ctx.on 在类型上不一定暴露）
@@ -693,10 +781,13 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
     // 路由改写：agent/request（全局）。
     // 当 handlePreStep 因 sanitize 失败标记了 stepState.downgraded，
     // 这里把 provider/model 从 CLOUD 改写到 LOCAL，原始 PII 不离开设备。
-    // agent-loop 的 contract：waterfall handler 收到 (payload, seed, next)，
-    // 返回最终 config。我们注册在 default 之前，确保先于其他 listener 改写。
-    const d3 = on('agent/request', async (payload: any, seed: any, next: any) => {
-      const result = await service.handleAgentRequest(payload ?? {}, seed ?? {}, async () => next())
+    // agent-loop 的 contract：监听器真实签名是 `(payload, next)`，
+    // payload 由 dsh-agent 的 fused wrapper 注入了 `agent` 字段
+    // （dispatch.js#agentEvents）。next() 返回 chain 默认的 seedConfig。
+    // 我们必须先 await next() 拿到 seedConfig 再决定是否改写，不能跳过。
+    const d3 = on('agent/request', async (payload: any, next: any) => {
+      const seedConfig = await next()
+      const result = await service.handleAgentRequest(payload ?? {}, seedConfig, async () => seedConfig)
       return result
     }, { global: true })
     if (d3) disposers.push(d3)
