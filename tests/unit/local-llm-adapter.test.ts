@@ -67,7 +67,8 @@ function restoreFetch(): void {
 describe('local-llm-adapter (M4, real-only)', () => {
   it('exports the canonical plugin shape', () => {
     assert.equal(localMod.name, 'local-llm-adapter')
-    assert.deepEqual([...localMod.inject], ['llm', 'auditLog'])
+    // 2026-08-31：注入 input-guard 用于清洗 orphan tool_call
+    assert.deepEqual([...localMod.inject], ['llm', 'auditLog', 'inputGuard'])
     assert.equal(typeof localMod.apply, 'function')
     assert.ok(localMod.Config)
   })

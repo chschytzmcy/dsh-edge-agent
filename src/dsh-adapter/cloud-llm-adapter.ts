@@ -42,11 +42,28 @@ import {
 
 export const name = 'cloud-llm-adapter'
 
-export const inject = ['llm', 'auditLog'] as const
+export const inject = ['llm', 'auditLog', 'inputGuard'] as const
 
 /** Minimal interface our adapter needs from the audit-log service. */
 interface AuditLike {
   log(entry: { level: 'debug' | 'info' | 'warn' | 'error' | 'security'; kind: string; source: string; payload: Record<string, unknown> }): Promise<unknown>
+}
+
+/**
+ * Minimal interface for input-guard's orphan-tool-call sanitizer
+ * (added 2026-08-31). cloud-llm-adapter injects `'inputGuard'` and
+ * calls this before buildChatCompletionsBody to avoid DeepSeek 400
+ * errors when session history has orphaned tool_calls.
+ */
+interface InputGuardLike {
+  sanitizeOrphanToolCalls(
+    messages: ReadonlyArray<Record<string, unknown>>,
+    sessionId?: string,
+  ): {
+    messages: Array<Record<string, unknown>>
+    orphanCount: number
+    syntheticInjected: number
+  }
 }
 
 export interface Config {
@@ -86,8 +103,9 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
   private readonly defaultModel: string
   private readonly temperature: number | undefined
   private readonly auditLog: AuditLike | undefined
+  private readonly inputGuard: InputGuardLike | undefined
 
-  constructor(config: Config, auditLog?: AuditLike) {
+  constructor(config: Config, auditLog?: AuditLike, inputGuard?: InputGuardLike) {
     super()
     this.providersList = [...config.providers]
     this.baseUrl = config.baseUrl.replace(/\/+$/u, '')
@@ -95,6 +113,7 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
     this.defaultModel = config.defaultModel
     this.temperature = config.temperature
     this.auditLog = auditLog
+    this.inputGuard = inputGuard
   }
 
   private audit(level: 'debug' | 'info' | 'warn' | 'error' | 'security', kind: string, payload: Record<string, unknown>): void {
@@ -144,10 +163,24 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
     }
     console.log(`[cloud-llm-adapter] API key found, calling ${this.baseUrl}/chat/completions`)
     const url = `${this.baseUrl}/chat/completions`
-    const body = buildChatCompletionsBody(options, this.defaultModel, this.temperature)
-    const promptText = options.messages.map((m) => `${m.role}:${extractText(m.content)}`).join('\n')
+
+    // 2026-08-31：input-guard 清洗孤儿 tool_call（避免 DeepSeek 400）。
+    // input-guard 未注入（plugin 顺序 / DSH_EDGE_INPUT_GUARD=false）则跳过。
+    // 这里只覆盖 messages，其他 option 字段（tools / temperature 等）
+    // 原样传给 buildChatCompletionsBody。
+    let sanitizedMessages: typeof options.messages = options.messages
+    if (this.inputGuard) {
+      const result = this.inputGuard.sanitizeOrphanToolCalls(
+        options.messages as unknown as ReadonlyArray<Record<string, unknown>>,
+        (options as { sessionId?: string }).sessionId,
+      )
+      sanitizedMessages = result.messages as unknown as typeof options.messages
+    }
+
+    const body = buildChatCompletionsBody({ ...options, messages: sanitizedMessages }, this.defaultModel, this.temperature)
+    const promptText = sanitizedMessages.map((m) => `${m.role}:${extractText(m.content)}`).join('\n')
     const promptLen = promptText.length
-    const messageCount = options.messages.length
+    const messageCount = sanitizedMessages.length
     const start = Date.now()
     this.audit('info', 'llm.cloud.start', { provider: options.provider, model: options.model, messageCount, promptLen, baseUrl: this.baseUrl })
 
@@ -243,7 +276,11 @@ function readApiKey(slot: string): string | undefined {
 export async function apply(ctx: Context, config: Config): Promise<() => Promise<void>> {
   console.log(`[cloud-llm-adapter] apply() called with providers: ${config.providers?.join(', ')}`)
   const auditLog = (ctx as unknown as { auditLog?: AuditLike }).auditLog
-  const adapter = new CloudLlmAdapterImpl(config, auditLog)
+  // input-guard 是可选注入 —— plugin 启动顺序里 cloud-llm-adapter 在
+  // input-guard 之后才能拿到；否则降级为不洗（保持旧行为）。enableInputGuard=false
+  // 时 inputGuard.sanitizeOrphanToolCalls 自身也 pass-through。
+  const inputGuard = (ctx as unknown as { inputGuard?: InputGuardLike }).inputGuard
+  const adapter = new CloudLlmAdapterImpl(config, auditLog, inputGuard)
   const llm = (ctx as unknown as {
     llm: { registerAdapter(providers: string[], adapter: LlmAdapter): { (): void } }
   }).llm

@@ -10,14 +10,16 @@ import * as cloudAdapter from '../../src/dsh-adapter/cloud-llm-adapter.ts'
 describe('llm-adapters', () => {
   it('local-llm-adapter has the canonical shape', () => {
     assert.equal(localAdapter.name, 'local-llm-adapter')
-    assert.deepEqual([...localAdapter.inject], ['llm', 'auditLog'])
+    // 2026-08-31：注入 input-guard 以清洗 orphan tool_call（见 webui 失败复盘）
+    assert.deepEqual([...localAdapter.inject], ['llm', 'auditLog', 'inputGuard'])
     assert.equal(typeof localAdapter.apply, 'function')
     assert.ok(localAdapter.Config)
   })
 
   it('cloud-llm-adapter has the canonical shape', () => {
     assert.equal(cloudAdapter.name, 'cloud-llm-adapter')
-    assert.deepEqual([...cloudAdapter.inject], ['llm', 'auditLog'])
+    // 2026-08-31：注入 input-guard 以清洗 orphan tool_call（DeepSeek 400 修复）
+    assert.deepEqual([...cloudAdapter.inject], ['llm', 'auditLog', 'inputGuard'])
     assert.equal(typeof cloudAdapter.apply, 'function')
     assert.ok(cloudAdapter.Config)
   })

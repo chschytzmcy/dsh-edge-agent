@@ -39,11 +39,27 @@ import {
 
 export const name = 'local-llm-adapter'
 
-export const inject = ['llm', 'auditLog'] as const
+export const inject = ['llm', 'auditLog', 'inputGuard'] as const
 
 /** Minimal interface our adapter needs from the audit-log service. */
 interface AuditLike {
   log(entry: { level: 'debug' | 'info' | 'warn' | 'error' | 'security'; kind: string; source: string; payload: Record<string, unknown> }): Promise<unknown>
+}
+
+/**
+ * 2026-08-31: input-guard 注入用于清洗孤儿 tool_call。
+ * qwen3 对 orphan tool_call 不像 DeepSeek 那么严格（不会 400），
+ * 但统一清洗可避免 LLM 上下文里出现悬空调用、提升模型行为稳定性。
+ */
+interface InputGuardLike {
+  sanitizeOrphanToolCalls(
+    messages: ReadonlyArray<Record<string, unknown>>,
+    sessionId?: string,
+  ): {
+    messages: Array<Record<string, unknown>>
+    orphanCount: number
+    syntheticInjected: number
+  }
 }
 
 function audit(log: AuditLike | undefined, level: 'debug' | 'info' | 'warn' | 'error' | 'security', kind: string, payload: Record<string, unknown>): void {
@@ -84,12 +100,12 @@ export class LocalLlmAdapterImpl extends LlmAdapter {
   private readonly providersList: string[]
   private readonly innerByProvider: Map<string, LlmAdapter>
 
-  constructor(config: Config, auditLog?: AuditLike) {
+  constructor(config: Config, auditLog?: AuditLike, inputGuard?: InputGuardLike) {
     super()
     this.providersList = [...config.providers]
     this.innerByProvider = new Map()
     for (const provider of this.providersList) {
-      this.innerByProvider.set(provider, new RealLocalAdapter(provider, config, auditLog))
+      this.innerByProvider.set(provider, new RealLocalAdapter(provider, config, auditLog, inputGuard))
     }
   }
 
@@ -142,14 +158,16 @@ class RealLocalAdapter extends LlmAdapter {
   private readonly defaultModel: string
   private readonly apiKeyEnv: string | undefined
   private readonly auditLog: AuditLike | undefined
+  private readonly inputGuard: InputGuardLike | undefined
 
-  constructor(provider: string, config: Config, auditLog?: AuditLike) {
+  constructor(provider: string, config: Config, auditLog?: AuditLike, inputGuard?: InputGuardLike) {
     super()
     this.providerName = provider
     this.baseUrl = config.baseUrl.replace(/\/+$/u, '')
     this.defaultModel = config.defaultModel
     this.apiKeyEnv = config.apiKeyEnv
     this.auditLog = auditLog
+    this.inputGuard = inputGuard
   }
 
   get providers(): string[] {
@@ -180,7 +198,18 @@ class RealLocalAdapter extends LlmAdapter {
 
   override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
     const url = `${this.baseUrl}/chat/completions`
-    const body = buildChatCompletionsBody(options, this.defaultModel, undefined)
+
+    // 2026-08-31：input-guard 清洗孤儿 tool_call。
+    let sanitizedMessages: typeof options.messages = options.messages
+    if (this.inputGuard) {
+      const result = this.inputGuard.sanitizeOrphanToolCalls(
+        options.messages as unknown as ReadonlyArray<Record<string, unknown>>,
+        (options as { sessionId?: string }).sessionId,
+      )
+      sanitizedMessages = result.messages as unknown as typeof options.messages
+    }
+
+    const body = buildChatCompletionsBody({ ...options, messages: sanitizedMessages }, this.defaultModel, undefined)
     const headers: Record<string, string> = {
       'content-type': 'application/json',
       'accept': 'text/event-stream',
@@ -189,10 +218,10 @@ class RealLocalAdapter extends LlmAdapter {
     const apiKey = this.apiKeyEnv !== undefined ? readApiKey(this.apiKeyEnv) : undefined
     if (apiKey !== undefined) headers.authorization = `Bearer ${apiKey}`
 
-    const promptText = options.messages.map((m) => `${m.role}:${extractText(m.content)}`).join('\n')
+    const promptText = sanitizedMessages.map((m) => `${m.role}:${extractText(m.content)}`).join('\n')
     const promptLen = promptText.length
     const start = Date.now()
-    audit(this.auditLog, 'info', 'llm.local.start', { provider: options.provider, model: options.model, messageCount: options.messages.length, promptLen, baseUrl: this.baseUrl })
+    audit(this.auditLog, 'info', 'llm.local.start', { provider: options.provider, model: options.model, messageCount: sanitizedMessages.length, promptLen, baseUrl: this.baseUrl })
 
     let response: Response
     try {
@@ -278,7 +307,10 @@ function readApiKey(slot: string): string | undefined {
 export async function apply(ctx: Context, config: Config): Promise<() => Promise<void>> {
   console.log(`[local-llm-adapter] apply() called with providers: ${config.providers?.join(', ')}`)
   const auditLog = (ctx as unknown as { auditLog?: AuditLike }).auditLog
-  const adapter = new LocalLlmAdapterImpl(config, auditLog)
+  // 2026-08-31: input-guard 可选注入；DSH_EDGE_INPUT_GUARD=false 或 plugin
+  // 启动顺序导致 inputGuard 未就绪时降级为不洗（保持旧行为）。
+  const inputGuard = (ctx as unknown as { inputGuard?: InputGuardLike }).inputGuard
+  const adapter = new LocalLlmAdapterImpl(config, auditLog, inputGuard)
   const llm = (ctx as unknown as {
     llm: { registerAdapter(providers: string[], adapter: LlmAdapter): { (): void } }
   }).llm

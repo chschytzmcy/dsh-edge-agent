@@ -232,6 +232,194 @@ export class InputGuardServiceImpl extends Service {
   }
 
   /**
+   * 清洗 messages 数组中的孤儿 tool_call。
+   *
+   * 背景（2026-08-31）：当 session 历史里残留一条 assistant 消息含
+   * `tool_calls`，但后续没有匹配的 `role: tool` + `tool_call_id` 时，
+   * OpenAI / DeepSeek API 会返回 400 invalid_request_error
+   * "An assistant message with 'tool_calls' must be followed by tool
+   *  messages responding to each 'tool_call_id'."
+   *
+   * 根因：webui 复用先前 http-api 创建的会话做 session.prompt，但
+   * agent-loop 把整个 history 投影到 OpenAI 兼容 schema 时保留了
+   * 没有 tool 响应的 tool_call。
+   *
+   * 修复策略：对每个 orphan tool_call，在 assistant 之后紧邻位置插入一条
+   * 合成的 `{role:'user', content:[{type:'tool-result', toolCallId, content:'{\"error\":\"aborted\"}...'}]}`。
+   * 这样：
+   *   - assistant 消息被原样保留（tool-call 块不动）——必须保证 wire 端
+   *     assistant.tool_calls 包含所有 ids，synthetic 才能与之匹配
+   *   - wire 转换后 API 看到完整的 tool_calls ↔ tool 配对，校验通过
+   *   - LLM 收到"之前那次工具调用被中止了"的信号，自然续写
+   *
+   * 关键：不要剥离 orphan tool-call 块（初版犯的错）。如果剥离，Case B
+   * （assistant 同时含 responded + orphan ids）会让合成的 tool-result
+   * 找不到匹配的 tool_call_id，wire 端再次 400。
+   *
+   * 副作用：上游 provider 可能继续推演被中止的工具调用（如果 LLM 智能
+   * 不足）。优先级：先让请求能跑通，再考虑 LLM 行为。这是 input-guard
+   * 的职责边界：保证 schema 合规，不保证 LLM 行为合理。
+   *
+   * 调用方：cloud-llm-adapter / local-llm-adapter 在 buildChatCompletionsBody
+   * 前调用。如 input-guard 未启用（enableInputGuard=false）则跳过。
+   */
+  sanitizeOrphanToolCalls(
+    messages: ReadonlyArray<Record<string, unknown>>,
+    sessionId?: string,
+  ): {
+    messages: Array<Record<string, unknown>>
+    orphanCount: number
+    syntheticInjected: number
+  } {
+    if (!this.config.enableInputGuard) {
+      // 不洗：保持原样
+      return { messages: [...messages], orphanCount: 0, syntheticInjected: 0 }
+    }
+    const out: Array<Record<string, unknown>> = []
+    let orphanCount = 0
+    let syntheticInjected = 0
+
+    /**
+     * 2026-08-31: dsh 的消息不是 OpenAI 格式。tool_call 是 assistant content 数组
+     * 里的 `{type:'tool-call', toolCallId, name, arguments}` 块，tool 响应是
+     * 后续 user 消息 content 里的 `{type:'tool-result', toolCallId, content}` 块。
+     * 上游 openai-sse.ts 的 buildChatCompletionsBody 把它们转成 OpenAI wire 格式
+     * （assistant.tool_calls + role:'tool' 消息）。如果 assistant 里的 toolCallId
+     * 在之后没有匹配 tool-result 块，wire 就会带悬空 tool_calls，DeepSeek 返 400。
+     *
+     * 因此清洗要直接操作 dsh 的 content 块：
+     *   1. 收集本条 assistant content 里的所有 toolCallId
+     *   2. 在后续所有消息（不限于 role）里找匹配的 tool-result 块
+     *   3. 缺失则插入一条 user 消息携带合成 tool-result 块
+     */
+
+    /** 从一个消息 content 数组里抽所有 tool-result 的 id（dsh 字段名：toolCallId） */
+    const collectResultIds = (content: unknown): Set<string> => {
+      const ids = new Set<string>()
+      if (!Array.isArray(content)) return ids
+      for (const block of content) {
+        if (!block || typeof block !== 'object') continue
+        const b = block as Record<string, unknown>
+        if (b.type === 'tool-result') {
+          const id = typeof b.toolCallId === 'string' ? b.toolCallId
+            : typeof b.callId === 'string' ? b.callId
+              : typeof b.id === 'string' ? b.id
+                : undefined
+          if (id) ids.add(id)
+        }
+      }
+      return ids
+    }
+
+    /** 从 assistant content 数组里抽所有 tool-call 的 id（保持顺序） */
+    const collectToolCallIds = (content: unknown): string[] => {
+      const ids: string[] = []
+      if (!Array.isArray(content)) return ids
+      for (const block of content) {
+        if (!block || typeof block !== 'object') continue
+        const b = block as Record<string, unknown>
+        if (b.type === 'tool-call') {
+          const id = typeof b.toolCallId === 'string' ? b.toolCallId
+            : typeof b.callId === 'string' ? b.callId
+              : typeof b.id === 'string' ? b.id
+                : undefined
+          if (id) ids.push(id)
+        }
+      }
+      return ids
+    }
+
+    // 第一遍：扫描所有消息，构建 "所有出现过的 tool-result id" 集合
+    // 我们不只盯紧跟 assistant 的"连续 tool 段"——因为 dsh 把 tool-result
+    // 放在后续 user 消息的 content 块里，可能隔了几条消息。
+    const respondedAll = new Set<string>()
+    for (const m of messages) {
+      const c = (m as { content?: unknown }).content
+      for (const id of collectResultIds(c)) respondedAll.add(id)
+    }
+
+    // 第二遍：扫 assistant 消息，遇到有 tool-call 的就补缺失响应
+    for (let i = 0; i < messages.length; i++) {
+      const msg = messages[i]
+      const role = (msg as { role?: unknown }).role
+      const content = (msg as { content?: unknown }).content
+
+      // 复制消息（不可变）
+      if (role !== 'assistant') {
+        out.push(msg)
+        continue
+      }
+      const tcIds = collectToolCallIds(content)
+      if (tcIds.length === 0) {
+        out.push(msg)
+        continue
+      }
+
+      // 找出本 assistant 后尚未被响应的 id（在 respondedAll 里检查）
+      // 注意：respondedAll 是全局的，可能包含更晚 assistant 的 tool-call
+      // 需要的响应。所以只看本 assistant 之前的消息 + 本 assistant 自身。
+      // 实际 dsh 行为：tool-result 块总是出现在对应的 assistant tool-call 之后，
+      // 但不一定紧跟（中间可能有 user 消息）。所以扫描 i+1 之后所有消息即可。
+      const respondedAfter = new Set<string>()
+      for (let k = i + 1; k < messages.length; k++) {
+        for (const id of collectResultIds((messages[k] as { content?: unknown }).content)) {
+          respondedAfter.add(id)
+        }
+      }
+
+      const missing: string[] = []
+      for (const id of tcIds) {
+        if (!respondedAfter.has(id)) missing.push(id)
+      }
+
+      if (missing.length === 0) {
+        out.push(msg)
+        continue
+      }
+
+      orphanCount += missing.length
+      syntheticInjected += missing.length
+
+      // 保留 assistant 消息的 content 原样（包括 orphan tool-call 块）——
+      // 必须保证 wire 格式里 assistant.tool_calls 包含所有 ids，synthetic
+      // tool-result 才能与之匹配。如果剥离 orphan tool-call，会留下悬空
+      // tool-result 块（Case B：assistant 同时有 responded + orphan ids）。
+      out.push(msg)
+
+      // 为每个 missing id 插入一条 user 消息携带合成 tool-result 块
+      for (const id of missing) {
+        const synthetic: Record<string, unknown> = {
+          role: 'user',
+          content: [
+            {
+              type: 'tool-result',
+              toolCallId: id,
+              content: JSON.stringify({
+                error: 'aborted',
+                reason: 'previous tool call was aborted before completion',
+                recovered_by: 'input-guard.sanitizeOrphanToolCalls',
+              }),
+            },
+          ],
+        }
+        out.push(synthetic)
+      }
+    }
+
+    if (orphanCount > 0 || process.env.DSH_EDGE_INPUT_GUARD_DEBUG === 'true') {
+      this.audit('warn', 'input-guard.orphan-tool-call.recovered', {
+        sessionId,
+        orphanCount,
+        syntheticInjected,
+        originalMessageCount: messages.length,
+        recoveredMessageCount: out.length,
+      })
+    }
+
+    return { messages: out, orphanCount, syntheticInjected }
+  }
+
+  /**
    * 把拒收原因挂到 agent 对象上，供 http-api 在订阅 `session/event` 的
    * turn/end 监听器里读取（因为 agent-loop 把 `{ kind: 'reject' }` 翻译成
    * `turnEnds = { kind: 'blocked' }` 时会丢掉 reason 字符串）。

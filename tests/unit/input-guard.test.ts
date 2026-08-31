@@ -781,3 +781,225 @@ describe('messages manipulation', () => {
     assert.equal(original[0].content, 'send to user@example.com')
   })
 })
+
+// ─────────────────────────────────────────────────────────────────────────────
+// sanitizeOrphanToolCalls（2026-08-31）
+// 修复 webui 复用 http-api 会话时，agent-loop 把残留的 orphan tool_call
+// 投影到 OpenAI schema 触发 DeepSeek 400 的问题。
+//
+// 触发场景：上一 turn assistant 调了 web_search 但 tool_result 没写进
+// history（被外部中断 / error 路径），下一 turn 重发时 history 含
+// tool_calls 但无对应 tool 消息。
+// 期望行为：在 assistant 后注入合成 tool 响应，使 schema 完整。
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('sanitizeOrphanToolCalls', () => {
+  // 注意：本方法操作的是 dsh content-block 格式（在 buildChatCompletionsBody
+  // 之前调用）。tool_call 出现在 assistant content 数组里的
+  // `{type:'tool-call', toolCallId}` 块，tool 响应出现在后续 user 消息
+  // content 里的 `{type:'tool-result', toolCallId}` 块。OpenAI wire 格式
+  // （`tool_calls[]` 顶层字段 + `{role:'tool'}` 消息）由 buildChatCompletionsBody
+  // 转换产出——本方法只清洗 dsh 格式。
+
+  it('returns input unchanged when no assistant contains tool-call blocks', () => {
+    const svc = new InputGuardServiceImpl(
+      fakeCtx() as any, defaultConfig(),
+      undefined, undefined, undefined, undefined, fakeAuditLog().api as any,
+    )
+    const messages: ReadonlyArray<Record<string, unknown>> = [
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: 'hello' },
+      { role: 'assistant', content: 'hi' },
+    ]
+    const result = svc.sanitizeOrphanToolCalls(messages)
+    assert.equal(result.orphanCount, 0)
+    assert.equal(result.syntheticInjected, 0)
+    assert.equal(result.messages.length, messages.length)
+  })
+
+  it('passes through when enableInputGuard=false (even with orphan tool-call blocks)', () => {
+    const audit = fakeAuditLog()
+    const svc = new InputGuardServiceImpl(
+      fakeCtx() as any, defaultConfig({ enableInputGuard: false }),
+      undefined, undefined, undefined, undefined, audit.api as any,
+    )
+    const messages: ReadonlyArray<Record<string, unknown>> = [
+      { role: 'user', content: 'q' },
+      { role: 'assistant', content: [
+        { type: 'tool-call', toolCallId: 'call_orphan_1', name: 'web_search', arguments: {} },
+      ] },
+    ]
+    const result = svc.sanitizeOrphanToolCalls(messages)
+    assert.equal(result.orphanCount, 0, '禁用时不应检测 orphan（跳过整个逻辑）')
+    assert.equal(result.syntheticInjected, 0)
+    assert.equal(result.messages.length, 2, '禁用时 messages 数组长度不变')
+  })
+
+  it('inserts synthetic tool-result adjacent to assistant with orphan tool-call (preserves tool-call block)', () => {
+    const audit = fakeAuditLog()
+    const svc = new InputGuardServiceImpl(
+      fakeCtx() as any, defaultConfig(),
+      undefined, undefined, undefined, undefined, audit.api as any,
+    )
+    const messages: ReadonlyArray<Record<string, unknown>> = [
+      { role: 'user', content: 'q' },
+      { role: 'assistant', content: [
+        { type: 'tool-call', toolCallId: 'call_orphan_1', name: 'web_search', arguments: {} },
+        { type: 'text', text: 'side note' },
+      ] },
+      { role: 'user', content: 'next question' },
+    ]
+    const result = svc.sanitizeOrphanToolCalls(messages, 'sess-x')
+    assert.equal(result.orphanCount, 1)
+    assert.equal(result.syntheticInjected, 1)
+    assert.equal(result.messages.length, 4, 'assistant 后插一条合成的 user(tool-result)')
+
+    // assistant 仍在位置 1；orphan tool-call 块保留（关键：wire 端
+    // assistant.tool_calls 必须含所有 ids，synthetic 才能与之匹配），
+    // text 块也保留。
+    const assistantOut = result.messages[1] as Record<string, unknown>
+    assert.equal(assistantOut.role, 'assistant')
+    assert.ok(Array.isArray(assistantOut.content))
+    const assistantBlocks = assistantOut.content as Array<Record<string, unknown>>
+    assert.equal(assistantBlocks.length, 2, 'orphan tool-call 块不应被剥离')
+    assert.equal(assistantBlocks[0].type, 'tool-call')
+    assert.equal(assistantBlocks[0].toolCallId, 'call_orphan_1')
+    assert.equal(assistantBlocks[1].type, 'text')
+    assert.equal(assistantBlocks[1].text, 'side note')
+
+    // 位置 2 = 合成的 user(tool-result)（紧跟 assistant，wire 端 adjacent）
+    const synthetic = result.messages[2] as Record<string, unknown>
+    assert.equal(synthetic.role, 'user')
+    assert.ok(Array.isArray(synthetic.content))
+    const synthBlocks = synthetic.content as Array<Record<string, unknown>>
+    assert.equal(synthBlocks.length, 1)
+    assert.equal(synthBlocks[0].type, 'tool-result')
+    assert.equal(synthBlocks[0].toolCallId, 'call_orphan_1')
+    const payload = JSON.parse(synthBlocks[0].content as string)
+    assert.equal(payload.error, 'aborted')
+    assert.equal(payload.recovered_by, 'input-guard.sanitizeOrphanToolCalls')
+
+    // 位置 3 = 原始 user 消息
+    assert.equal(result.messages[3].role, 'user')
+    assert.equal(result.messages[3].content, 'next question')
+
+    // 审计事件被记上
+    const recovery = audit.entries.find((e) => e.kind === 'input-guard.orphan-tool-call.recovered')
+    assert.ok(recovery, '应记 input-guard.orphan-tool-call.recovered 审计')
+    assert.equal(recovery.payload.orphanCount, 1)
+    assert.equal(recovery.payload.sessionId, 'sess-x')
+  })
+
+  it('does not duplicate when tool-result already present for the same id', () => {
+    const audit = fakeAuditLog()
+    const svc = new InputGuardServiceImpl(
+      fakeCtx() as any, defaultConfig(),
+      undefined, undefined, undefined, undefined, audit.api as any,
+    )
+    const messages: ReadonlyArray<Record<string, unknown>> = [
+      { role: 'assistant', content: [
+        { type: 'tool-call', toolCallId: 'call_already', name: 'web_search', arguments: {} },
+      ] },
+      { role: 'user', content: [
+        { type: 'tool-result', toolCallId: 'call_already', content: '{"hits":1}' },
+      ] },
+    ]
+    const result = svc.sanitizeOrphanToolCalls(messages)
+    assert.equal(result.orphanCount, 0)
+    assert.equal(result.syntheticInjected, 0)
+    assert.equal(result.messages.length, 2, '已有 tool-result 时不重复插')
+  })
+
+  it('handles multiple tool-call blocks in one assistant (Case B: synthetic inserted adjacent, all tool-call blocks preserved)', () => {
+    const audit = fakeAuditLog()
+    const svc = new InputGuardServiceImpl(
+      fakeCtx() as any, defaultConfig(),
+      undefined, undefined, undefined, undefined, audit.api as any,
+    )
+    const messages: ReadonlyArray<Record<string, unknown>> = [
+      { role: 'assistant', content: [
+        { type: 'tool-call', toolCallId: 'call_1', name: 'web_search', arguments: {} },
+        { type: 'tool-call', toolCallId: 'call_2', name: 'web_fetch', arguments: {} },
+      ] },
+      { role: 'user', content: [
+        { type: 'tool-result', toolCallId: 'call_1', content: '{"ok":1}' },
+      ] },
+      // call_2 没有响应 —— orphan
+    ]
+    const result = svc.sanitizeOrphanToolCalls(messages)
+    assert.equal(result.orphanCount, 1)
+    assert.equal(result.syntheticInjected, 1)
+
+    // 顺序：assistant（call_1 + call_2 tool-call 块都保留）, user(tool-result call_2 synthetic,
+    //      紧跟 assistant 以保证 wire 端 adjacency）, user(tool-result call_1 original)
+    const aOut = result.messages[0] as Record<string, unknown>
+    const aBlocks = aOut.content as Array<Record<string, unknown>>
+    assert.equal(aBlocks.length, 2, 'orphan tool-call 块不剥离（Case B 关键修复）')
+    assert.equal(aBlocks[0].toolCallId, 'call_1')
+    assert.equal(aBlocks[1].toolCallId, 'call_2')
+
+    const synthMsg = result.messages[1] as Record<string, unknown>
+    assert.equal(synthMsg.role, 'user')
+    const synthBlocks = synthMsg.content as Array<Record<string, unknown>>
+    assert.equal(synthBlocks[0].type, 'tool-result')
+    assert.equal(synthBlocks[0].toolCallId, 'call_2')
+
+    const tool1Msg = result.messages[2] as Record<string, unknown>
+    const tool1Blocks = tool1Msg.content as Array<Record<string, unknown>>
+    assert.equal(tool1Blocks[0].toolCallId, 'call_1')
+  })
+
+  it('handles back-to-back assistant messages with tool-call blocks (each followed by their own tool-result)', () => {
+    const audit = fakeAuditLog()
+    const svc = new InputGuardServiceImpl(
+      fakeCtx() as any, defaultConfig(),
+      undefined, undefined, undefined, undefined, audit.api as any,
+    )
+    const messages: ReadonlyArray<Record<string, unknown>> = [
+      { role: 'assistant', content: [
+        { type: 'tool-call', toolCallId: 'call_a', name: 'web_search', arguments: {} },
+      ] },
+      // call_a 缺响应
+      { role: 'assistant', content: [
+        { type: 'tool-call', toolCallId: 'call_b', name: 'web_fetch', arguments: {} },
+      ] },
+      { role: 'user', content: [
+        { type: 'tool-result', toolCallId: 'call_b', content: '{}' },
+      ] },
+      // call_b 有响应
+    ]
+    const result = svc.sanitizeOrphanToolCalls(messages)
+    // call_a 没有后续 tool-result → orphan
+    assert.equal(result.orphanCount, 1)
+    assert.equal(result.syntheticInjected, 1)
+
+    // 顺序：assistant(call_a), user(synthetic tool-result call_a),
+    //      assistant(call_b), user(tool-result call_b)
+    assert.equal((result.messages[0] as any).role, 'assistant')
+    const synthMsg = result.messages[1] as Record<string, unknown>
+    assert.equal(synthMsg.role, 'user')
+    const synthBlocks = synthMsg.content as Array<Record<string, unknown>>
+    assert.equal(synthBlocks[0].toolCallId, 'call_a')
+
+    assert.equal((result.messages[2] as any).role, 'assistant')
+    const toolBMsg = result.messages[3] as Record<string, unknown>
+    const toolBBlocks = toolBMsg.content as Array<Record<string, unknown>>
+    assert.equal(toolBBlocks[0].toolCallId, 'call_b')
+  })
+
+  it('does not mutate the input messages array', () => {
+    const audit = fakeAuditLog()
+    const svc = new InputGuardServiceImpl(
+      fakeCtx() as any, defaultConfig(),
+      undefined, undefined, undefined, undefined, audit.api as any,
+    )
+    const original: ReadonlyArray<Record<string, unknown>> = [
+      { role: 'assistant', content: [
+        { type: 'tool-call', toolCallId: 'orphan_x', name: 'x', arguments: {} },
+      ] },
+    ]
+    const before = JSON.stringify(original)
+    svc.sanitizeOrphanToolCalls(original)
+    assert.equal(JSON.stringify(original), before, '不应修改入参数组')
+  })
+})
