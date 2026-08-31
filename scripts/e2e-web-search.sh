@@ -102,18 +102,36 @@ send_chat() {
 
 # ─── 定位审计日志文件 ───────────────────────────────────────────
 # web-search-guard 写入的审计事件在 audit-log 插件的 plain JSONL 文件里
-# (filename=audit.plain.jsonl, root=$DSH_EDGE_AUDIT_ROOT 或 ~/.dsh-edge-agent-m1/audit)。
+# (filename=audit.plain.jsonl, root=$DSH_EDGE_AUDIT_ROOT 或
+# ~/.dsh-edge-agent/audit)。
+#
+# 2026-08-29: 把默认 audit root 从 `~/.dsh-edge-agent-m1/audit` 改成
+# `~/.dsh-edge-agent/audit`，与 `~/.dsh/` 命名一致；旧的 `-m1` 路径作为
+# 后备保留（已部署的旧实例可能还在写那里）。
 find_audit_log() {
-    local root="${DSH_EDGE_AUDIT_ROOT:-}"
-    if [ -z "$root" ]; then
-        root="${USERPROFILE:-${HOME:-/home/$(id -un)}}/.dsh-edge-agent-m1/audit"
-    fi
-    local candidate="$root/audit.plain.jsonl"
-    if [ -f "$candidate" ]; then
-        echo "$candidate"
+    local home="${USERPROFILE:-${HOME:-/home/$(id -un)}}"
+
+    # 1. 显式 DSH_EDGE_AUDIT_ROOT 永远优先
+    if [ -n "${DSH_EDGE_AUDIT_ROOT:-}" ] && [ -f "$DSH_EDGE_AUDIT_ROOT/audit.plain.jsonl" ]; then
+        echo "$DSH_EDGE_AUDIT_ROOT/audit.plain.jsonl"
         return 0
     fi
-    find "$(dirname "$root")" -name "audit.plain.jsonl" -newer /tmp/dsh-web-search-test.log 2>/dev/null | head -1
+
+    # 2. 当前默认路径（2026-08-29 起）
+    if [ -f "$home/.dsh-edge-agent/audit/audit.plain.jsonl" ]; then
+        echo "$home/.dsh-edge-agent/audit/audit.plain.jsonl"
+        return 0
+    fi
+
+    # 3. 旧 `-m1` 路径（兼容 2026-08-29 之前的部署）
+    if [ -f "$home/.dsh-edge-agent-m1/audit/audit.plain.jsonl" ]; then
+        echo "$home/.dsh-edge-agent-m1/audit/audit.plain.jsonl"
+        return 0
+    fi
+
+    # 4. 兜底：两个候选目录下找最新的 audit.plain.jsonl
+    find "$home/.dsh-edge-agent" "$home/.dsh-edge-agent-m1" \
+        -name "audit.plain.jsonl" -newer /tmp/dsh-web-search-test.log 2>/dev/null | head -1
 }
 
 # ─── 计数审计事件 ──────────────────────────────────────────────
