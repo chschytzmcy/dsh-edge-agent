@@ -12,3 +12,9 @@ AGENTS.md
 coverage/
 *.tsbuildinfo
 .claude/
+
+# Stray artifacts (added 2026-08-31) — phone.txt once held real PII
+# (13800138000) from a test fixture and must NEVER enter git history.
+# Use placeholder values like 13800000000 in test fixtures instead.
+phone.txt
+__pycache__/
