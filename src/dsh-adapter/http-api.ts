@@ -169,9 +169,22 @@ export class HttpApiServiceImpl extends Service {
   }
 
   /** Drop the buffer for a session. Called from handleDeleteSession,
-   *  cleanupExpiredSessions, evictLeastRecentSession, and stop(). */
+   *  cleanupExpiredSessions, evictLeastRecentSession, and stop().
+   *
+   *  也负责清除 sanitizer 的会话映射表——那张表里存的是**明文 PII**，
+   *  若只删 buffer 不 purge，PII 会一直驻留在堆里直到进程退出
+   *  （2026-08-30 修复）。软依赖 + best-effort：sanitizer 未注册或
+   *  purge 失败都不能影响会话删除本身。 */
   private dropSessionBuffer(sessionId: string): void {
     this.sessionBuffers.delete(sessionId)
+    const sanitizer = (this.cordisCtx as unknown as {
+      sanitizer?: { purge?(id: string): Promise<void> }
+    }).sanitizer
+    if (typeof sanitizer?.purge === 'function') {
+      void Promise.resolve(sanitizer.purge(sessionId)).catch(() => {
+        // 忽略：sanitizer 自身还有 TTL 清扫兜底
+      })
+    }
   }
 
   /**
@@ -487,9 +500,33 @@ export class HttpApiServiceImpl extends Service {
     const record = await this.ensureSession(sessionId, provider, model)
 
     // Wait for turn completion by subscribing to session/event
-    const turnEnd = new Promise<string>((resolve) => {
+    const turnEnd = new Promise<{ result: string; rejection?: { status: number; kind: string; reason: string; riskLevel?: string } }>((resolve) => {
       const dispose = this.cordisCtx.on('session/event', (session: any, event: SessionEvent) => {
         if (event.type === 'turn/end') {
+          // 2026-08-30 fix: agent-loop 把 input-guard 的 `{ kind: 'reject' }`
+          // 翻译成 `turnEnds = { kind: 'blocked' }` 时会丢掉 reason 字符串。
+          // input-guard 改在 reject 时把 reason 写到 `agent._edgeRejection`，
+          // 这里读它并把 blocked turn 转成 HTTP 400 / 403。
+          // event shape: { type, seq, time, data: { turn, reason } }
+          const blockedReason = (event as any).data?.reason
+          if (blockedReason?.kind === 'blocked') {
+            const edgeRej = (record.agent as any)._edgeRejection as
+              | { kind: 'attack' | 'policy' | 'intent' | 'sanitizer'; reason: string; riskLevel?: string }
+              | undefined
+            // attack → 400（请求内容不安全）
+            // policy / intent → 403（policy-rule:reject 同语义，与 http-api:465 短路对齐）
+            // sanitizer → 503（系统故障而非 user 错）
+            const status = edgeRej?.kind === 'attack' ? 400
+              : edgeRej?.kind === 'sanitizer' ? 503
+              : 403
+            const reason = edgeRej?.reason ?? 'request blocked'
+            this.audit('warn', 'http.chat.blocked', {
+              reqId, sessionId, edgeRejection: edgeRej,
+            })
+            dispose()
+            resolve({ result: '', rejection: { status, kind: edgeRej?.kind ?? 'unknown', reason, riskLevel: edgeRej?.riskLevel } })
+            return
+          }
           const events = record.agent.session.events
           const lastAssistant = events
             .filter((e) => e.type === 'assistant/message')
@@ -509,7 +546,7 @@ export class HttpApiServiceImpl extends Service {
           if (text) this.pushRecentMessage(sessionId, 'assistant', text)
 
           dispose()
-          resolve(text)
+          resolve({ result: text })
         }
       })
     })
@@ -538,7 +575,32 @@ export class HttpApiServiceImpl extends Service {
     // Call followup - it's fire-and-forget, agent loop runs async
     record.agent.followup(userMessage)
 
-    let result = await turnEnd
+    let turnResult = await turnEnd
+
+    // 2026-08-30 fix: turn-end 是 blocked 时翻译成对应的非 200 状态。
+    // attack → 400；policy/intent → 403（与 line 465 对齐）；sanitizer → 503。
+    if (turnResult.rejection) {
+      const r = turnResult.rejection
+      const duration = Date.now() - start
+      this.accessLog(reqId, 'POST', '/v1/chat', r.status, duration, `reject:${r.kind}:${r.reason}`)
+      res.writeHead(r.status, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({
+        sessionId,
+        result: '',
+        error: 'Request rejected',
+        rejection: r,
+        intent: {
+          category: intent.category,
+          targetRealm: intent.targetRealm,
+          confidence: intent.confidence,
+          rationale: intent.rationale,
+        },
+        duration,
+      }))
+      return
+    }
+
+    const result = turnResult.result
 
     // 脱敏恢复（desanitize）已由 input-guard 插件在 llm/stream hook 中统一处理。
     // 输出安全过滤（prompt-guard.checkOutput）也迁移到 input-guard，
@@ -686,6 +748,30 @@ export class HttpApiServiceImpl extends Service {
           res.write(`data: ${JSON.stringify({ type: 'text', text: chunk.text })}\n\n`)
         }
       } else if (event.type === 'turn/end') {
+        // 2026-08-30 fix: blocked turn → SSE error 事件。headers 已经
+        // 200/text-event-stream 写过了，不能再改 status code，但 SSE
+        // 客户端能解析 error 事件 → client 收到 kind: 'attack' 自行报错。
+        // event shape: { type, seq, time, data: { turn, reason } }
+        const blockedReason = (event as any).data?.reason
+        if (blockedReason?.kind === 'blocked') {
+          const edgeRej = (record.agent as any)._edgeRejection as
+            | { kind: 'attack' | 'policy' | 'intent' | 'sanitizer'; reason: string; riskLevel?: string }
+            | undefined
+          const status = edgeRej?.kind === 'attack' ? 400
+            : edgeRej?.kind === 'sanitizer' ? 503
+            : 403
+          this.accessLog(reqId, 'POST', '/v1/chat/stream', status, Date.now() - start, `reject:${edgeRej?.kind ?? 'unknown'}:${edgeRej?.reason ?? 'blocked'}`)
+          res.write(`data: ${JSON.stringify({
+            type: 'error',
+            status,
+            error: 'Request rejected',
+            rejection: edgeRej ?? { kind: 'unknown', reason: 'blocked' },
+          })}\n\n`)
+          dispose()
+          clearInterval(keepaliveTimer)
+          res.end()
+          return
+        }
         // Pull the assembled assistant text from session.events to feed
         // the multi-turn ring buffer (mirrors handleChat). Best-effort:
         // skip push if the agent never produced an assistant/message

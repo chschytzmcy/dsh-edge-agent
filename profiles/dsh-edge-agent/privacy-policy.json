@@ -1,5 +1,6 @@
 {
-  "version": "1.4.0",
+  "version": "1.5.0",
+  "_comment": "sanitizationRules 的 pattern 必须与 src/dsh-adapter/pii-utils.ts 的 PII_PATTERNS 保持一致（tests/unit/pii-utils.test.ts 有一致性断言）。已移除 replacement 字段：占位符由 sanitizer-pipeline 自行生成为 [<PIITYPE>_<seq>]，该字段历史上不生效。",
   "routingRules": [
     {
       "pattern": "(导出|删除|清空|格式化).*(数据库|系统|磁盘|全部数据)",
@@ -40,65 +41,72 @@
   ],
   "sanitizationRules": [
     {
-      "pattern": "[1-9]\\d{5}(19|20)\\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\\d|3[01])\\d{3}[\\dXx]",
-      "replacement": "[ID_CARD]",
+      "pattern": "\\b[1-9]\\d{5}(?:19|20)\\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\\d|3[01])\\d{3}[\\dXx]\\b",
       "dataClass": "secret",
       "piiType": "id-card"
     },
     {
       "pattern": "\\b\\d{16,19}\\b",
-      "replacement": "[BANK_CARD]",
       "dataClass": "secret",
       "piiType": "bank-card"
     },
     {
       "pattern": "\\b1[3-9]\\d{9}\\b",
-      "replacement": "[PHONE]",
       "dataClass": "confidential",
       "piiType": "phone"
     },
     {
       "pattern": "[\\w.-]+@[\\w.-]+\\.\\w+",
-      "replacement": "[EMAIL]",
       "dataClass": "confidential",
       "piiType": "email"
     },
     {
-      "pattern": "(sk-(?:proj-|ant-|live-|test-|org-)?[a-zA-Z0-9]{20,}|key-[a-zA-Z0-9]{16,}|api[_-]?key[_-]?[a-zA-Z0-9]{16,})",
-      "replacement": "[API_KEY]",
+      "pattern": "(?:sk-(?:proj-|ant-|live-|test-|org-)?[a-zA-Z0-9]{20,}|key-[a-zA-Z0-9]{16,}|api[_-]?key[_-]?[a-zA-Z0-9]{16,})",
       "dataClass": "secret",
       "piiType": "api-key"
     },
     {
-      "pattern": "\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b",
-      "replacement": "[IP_ADDRESS]",
+      "pattern": "(?<![vV\\d.])(?:(?:25[0-5]|2[0-4]\\d|1\\d{2}|[1-9]?\\d)\\.){3}(?:25[0-5]|2[0-4]\\d|1\\d{2}|[1-9]?\\d)(?!\\.?\\d)",
       "dataClass": "confidential",
       "piiType": "ip-address"
     },
     {
-      "pattern": "([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}",
-      "replacement": "[MAC_ADDRESS]",
+      "pattern": "(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}",
       "dataClass": "confidential",
       "piiType": "mac-address"
     },
     {
-      "pattern": "(E[0-9A-Z]\\d{7}|G\\d{8})",
-      "replacement": "[PASSPORT]",
+      "pattern": "\\b(?:E[0-9A-Z]\\d{7}|G\\d{8})\\b",
       "dataClass": "secret",
       "piiType": "passport"
     },
     {
       "pattern": "[京津沪渝冀豫云辽黑湘皖鲁新苏浙赣鄂桂甘晋蒙陕吉闽贵粤川青藏琼][A-Z][A-HJ-NP-Z0-9]{5}",
-      "replacement": "[LICENSE_PLATE]",
       "dataClass": "confidential",
       "piiType": "license-plate"
     }
   ],
   "dataClassifications": [
-    { "class": "public", "defaultRealm": "CLOUD", "ttlSeconds": 3600 },
-    { "class": "internal", "defaultRealm": "SANITIZED", "ttlSeconds": 1800 },
-    { "class": "confidential", "defaultRealm": "LOCAL", "ttlSeconds": 900 },
-    { "class": "secret", "defaultRealm": "LOCAL", "ttlSeconds": 300 }
+    {
+      "class": "public",
+      "defaultRealm": "CLOUD",
+      "ttlSeconds": 3600
+    },
+    {
+      "class": "internal",
+      "defaultRealm": "SANITIZED",
+      "ttlSeconds": 1800
+    },
+    {
+      "class": "confidential",
+      "defaultRealm": "LOCAL",
+      "ttlSeconds": 900
+    },
+    {
+      "class": "secret",
+      "defaultRealm": "LOCAL",
+      "ttlSeconds": 300
+    }
   ],
   "globalConstraints": {
     "maxCloudRequestsPerMinute": 20,

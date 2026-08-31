@@ -237,6 +237,11 @@
   config:
     enableAutoDetection: !!js process.env.DSH_EDGE_SAN_AUTO !== 'false'
     maxReplacementsPerSession: !!js parseInt(process.env.DSH_EDGE_SAN_MAX ?? '1024', 10)
+    # 会话映射表持有明文 PII，必须有生命周期上限。http-api 删会话时会主动
+    # purge；以下两项是防止调用方漏调的兜底（2026-08-30）。
+    sessionTtlMs: !!js parseInt(process.env.DSH_EDGE_SAN_TTL_MS ?? '900000', 10)
+    maxSessions: !!js parseInt(process.env.DSH_EDGE_SAN_MAX_SESSIONS ?? '1000', 10)
+    sweepIntervalMs: !!js parseInt(process.env.DSH_EDGE_SAN_SWEEP_MS ?? '60000', 10)
 
 # Phase 5 web-search monitoring guard: observes `tools/result` events for
 # web_search / web_fetch, emits audit entries, PII-leak detection, rate-limit.

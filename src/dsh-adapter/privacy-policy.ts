@@ -20,6 +20,7 @@ import { readFile, stat } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { createHmac, timingSafeEqual } from 'node:crypto'
+import { PII_PATTERNS, PII_ORDER, PII_DATA_CLASS } from './pii-utils.js'
 
 export const name = 'privacy-policy'
 
@@ -51,8 +52,15 @@ export interface RoutingRule {
 export interface SanitizationRule {
   /** Regex pattern to match PII. */
   pattern: string
-  /** Replacement template (e.g., "[PHONE_$1]"). */
-  replacement: string
+  /**
+   * 可读的替换示例，仅用于文档与运维展示，**运行时不生效**。
+   *
+   * 可逆脱敏要求占位符在会话内唯一可还原，因此 `sanitizer-pipeline`
+   * 一律自行生成 `[<PIITYPE>_<seq>]` 形式的占位符并忽略本字段。
+   * 历史上本字段曾被误认为可配置（改了没有任何效果），现显式标记为
+   * 可选 + 非生效（2026-08-30）。不可逆掩码走 `pii-utils.PII_MASKS`。
+   */
+  replacement?: string
   /** Data classification class. */
   dataClass: string
   /** PII type name (phone, email, etc.). */
@@ -133,67 +141,11 @@ const DEFAULT_POLICY: PrivacyPolicy = {
       rationale: 'Local operations stay on device',
     },
   ],
-  sanitizationRules: [
-    // P1 (2026-08-26): 规则顺序 id-card → bank-card → phone,
-    // phone 加 \b 边界,防止 phone 误截断 18 位身份证号内部子串
-    {
-      pattern: '[1-9]\\d{5}(19|20)\\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\\d|3[01])\\d{3}[\\dXx]',
-      replacement: '[ID_CARD]',
-      dataClass: 'secret',
-      piiType: 'id-card',
-    },
-    {
-      pattern: '\\b\\d{16,19}\\b',
-      replacement: '[BANK_CARD]',
-      dataClass: 'secret',
-      piiType: 'bank-card',
-    },
-    {
-      pattern: '\\b1[3-9]\\d{9}\\b',
-      replacement: '[PHONE_$&]',
-      dataClass: 'confidential',
-      piiType: 'phone',
-    },
-    {
-      pattern: '([\\w.-]+)@([\\w.-]+\\.\\w+)',
-      replacement: '[EMAIL_$&]',
-      dataClass: 'confidential',
-      piiType: 'email',
-    },
-    // P1 (2026-08-24): IP / MAC / passport / license plate — low FP, high-value
-    {
-      pattern: '\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b',
-      replacement: '[IP_$&]',
-      dataClass: 'confidential',
-      piiType: 'ip-address',
-    },
-    {
-      pattern: '([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}',
-      replacement: '[MAC_$&]',
-      dataClass: 'confidential',
-      piiType: 'mac-address',
-    },
-    {
-      pattern: '(E[0-9A-Z]\\d{7}|G\\d{8})',
-      replacement: '[PASSPORT_$&]',
-      dataClass: 'secret',
-      piiType: 'passport',
-    },
-    {
-      pattern: '[京津沪渝冀豫云辽黑湘皖鲁新苏浙赣鄂桂甘晋蒙陕吉闽贵粤川青藏琼][A-Z][A-HJ-NP-Z0-9]{5}',
-      replacement: '[PLATE_$&]',
-      dataClass: 'confidential',
-      piiType: 'license-plate',
-    },
-    // P0 (2026-08-26): api-key 正则允许 sk- 后可选前缀(proj-/ant-/live-/test-/org-),
-    // 防止真实 OpenAI/Anthropic 风格 API key 漏过
-    {
-      pattern: '(sk-(?:proj-|ant-|live-|test-|org-)?[a-zA-Z0-9]{20,}|key-[a-zA-Z0-9]{16,}|api[_-]?key[_-]?[a-zA-Z0-9]{16,})',
-      replacement: '[API_KEY]',
-      dataClass: 'secret',
-      piiType: 'api-key',
-    },
-  ],
+  sanitizationRules: PII_ORDER.map((piiType) => ({
+    pattern: PII_PATTERNS[piiType],
+    dataClass: PII_DATA_CLASS[piiType],
+    piiType,
+  })),
   dataClassifications: [
     { class: 'public', defaultRealm: 'CLOUD', ttlSeconds: 3600 },
     { class: 'internal', defaultRealm: 'SANITIZED', ttlSeconds: 1800 },
