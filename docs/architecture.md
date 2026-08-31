@@ -6578,7 +6578,7 @@ sequenceDiagram
 
 ### 4.2 主循环流程（http-api 真实形态）
 
-> 以下是 `http-api.handleChat` 的简化版骨架，对应 `src/dsh-adapter/http-api.ts:218-402`。`handleChatStream` 是同样的同步版本 + SSE 推送 + `desanitizeSync`（不能 await）。
+> 以下是 `http-api.handleChat` 的简化版骨架，对应 `src/dsh-adapter/http-api.ts:406-627`。`handleChatStream`（`http-api.ts:629-836`）是同样的同步版本 + SSE 推送 + `desanitizeSync`（不能 await）。
 
 ```typescript
 // http-api.ts 真实结构（简化）

@@ -808,7 +808,7 @@ private redactPreview(text: string): string | null {
 `src/dsh-adapter/http-api.ts` 在 `handleChat()` 和 `handleChatStream()` 各加一段 REJECT short-circuit（在 sanitize / ensureSession 之前）：
 
 ```ts
-// src/dsh-adapter/http-api.ts:283 (handleChat)
+// src/dsh-adapter/http-api.ts:465 (handleChat REJECT short-circuit)
 if (intent.category === 'REJECT') {
   const reason = (intent as any).rationale || 'policy-rule:reject'
   this.audit('warn', 'http.chat.rejected', { reqId, sessionId, reason, confidence: intent.confidence })
@@ -840,7 +840,7 @@ if (intent.category === 'REJECT') {
 `Config` 增加可选字段 `fallbackKeywords?: string[]`，构造时：
 
 ```ts
-// src/dsh-adapter/intent-router.ts:131-136
+// src/dsh-adapter/intent-router.ts:148-150
 this.fallbackKeywords = (config.fallbackKeywords && config.fallbackKeywords.length > 0)
   ? config.fallbackKeywords
   : LOCAL_KEYWORDS_DEFAULT
@@ -1929,7 +1929,7 @@ Layer  3: 规则兜底             → keyword + default（零 token）
 |----|------|
 | **原正则** | `sk-[a-zA-Z0-9]{20,}` |
 | **修复后** | `sk-(?:proj-\|ant-\|live-\|test-\|org-)?[a-zA-Z0-9]{20,}` |
-| **修改文件** | (1) `profiles/dsh-edge-agent/privacy-policy.json` v1.2.0→v1.3.0;(2) `src/dsh-adapter/pii-utils.ts:53`;(3) `src/dsh-adapter/privacy-policy.ts:190` DEFAULT_POLICY;(4) `tests/unit/prompt-guard.test.ts:55` stub |
+| **修改文件** | (1) `profiles/dsh-edge-agent/privacy-policy.json` v1.2.0→v1.3.0;(2) `src/dsh-adapter/pii-utils.ts:53`;(3) `src/dsh-adapter/privacy-policy.ts:119` DEFAULT_POLICY;(4) `tests/unit/prompt-guard.test.ts:55` stub |
 | **修复后匹配** | `sk-proj-XXX` / `sk-ant-XXX` / `sk-live-XXX` / `sk-test-XXX` / `sk-org-XXX` / 标准 `sk-XXX`(无前缀)全部命中 |
 | **回归测试** | 纯函数 trace **11/11 PASS** + 全量单元测试 **628/628 PASS** |
 
