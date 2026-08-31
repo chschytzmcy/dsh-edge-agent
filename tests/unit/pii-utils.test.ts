@@ -3,7 +3,7 @@
  */
 import assert from 'node:assert/strict'
 import { describe, it } from 'vitest'
-import { redactString, redactObject, PII_RULES } from '../../src/dsh-adapter/pii-utils.js'
+import { redactString, redactObject, PII_RULES, PII_PATTERNS } from '../../src/dsh-adapter/pii-utils.js'
 
 describe('pii-utils', () => {
   describe('PII_RULES', () => {
@@ -155,5 +155,107 @@ describe('pii-utils', () => {
       assert.ok(redactedPayload.messagePreview.includes('138****5678'))
       assert.equal(count, 1)
     })
+  })
+})
+
+/**
+ * 2026-08-30 修复回归。
+ */
+describe('pii-utils 单一事实源', () => {
+  it('每条 PII_RULES 的 pattern 都来自 PII_PATTERNS', () => {
+    for (const rule of PII_RULES) {
+      assert.equal(
+        rule.pattern.source,
+        new RegExp(PII_PATTERNS[rule.name]).source,
+        `${rule.name} 的正则必须复用 PII_PATTERNS，禁止另写字面量`,
+      )
+    }
+  })
+
+  it('shipped privacy-policy.json 的 pattern 与 PII_PATTERNS 完全一致', async () => {
+    const { readFileSync } = await import('node:fs')
+    const url = new URL(
+      '../../profiles/dsh-edge-agent/privacy-policy.json',
+      import.meta.url,
+    )
+    const policy = JSON.parse(readFileSync(url, 'utf-8'))
+    for (const rule of policy.sanitizationRules) {
+      assert.equal(
+        rule.pattern,
+        PII_PATTERNS[rule.piiType as keyof typeof PII_PATTERNS],
+        `privacy-policy.json 的 ${rule.piiType} 与 pii-utils 脱钩了`,
+      )
+    }
+    assert.equal(policy.sanitizationRules.length, PII_RULES.length)
+  })
+
+  it('DEFAULT_POLICY 的 pattern 与 PII_PATTERNS 完全一致', async () => {
+    const { PrivacyPolicyServiceImpl } = await import(
+      '../../src/dsh-adapter/privacy-policy.js'
+    )
+    const svc = new PrivacyPolicyServiceImpl(
+      { reflect: { provide: () => () => {} }, provide: () => () => {} } as never,
+      { policyPath: '/nonexistent/policy.json', hotReload: false, watchIntervalMs: 5000 },
+      { log: async () => {} },
+    )
+    await svc.reload() // 文件不存在 → 回落 DEFAULT_POLICY
+    for (const rule of svc.getSanitizationRules()) {
+      assert.equal(
+        rule.pattern,
+        PII_PATTERNS[rule.piiType as keyof typeof PII_PATTERNS],
+      )
+    }
+  })
+})
+
+describe('redactString 累进匹配', () => {
+  it('身份证被掩码后不会被 bank-card 规则重复计一笔', () => {
+    // 旧实现始终在原文上匹配、在结果上替换：bank-card 在原文里命中这串
+    // 18 位身份证 → result.replace 找不到 → 静默 no-op，但 matches 里
+    // 却记了一笔根本没发生的 bank-card 脱敏。
+    const { redacted, matches } = redactString('身份证 110101199003078815')
+    assert.ok(!redacted.includes('110101199003078815'))
+    assert.deepEqual(matches.map((m) => m.type), ['id-card'])
+  })
+
+  it('同一取值出现多次时全部替换且只计一笔', () => {
+    const { redacted, matches } = redactString('13812345678 和 13812345678')
+    assert.ok(!redacted.includes('13812345678'))
+    assert.equal(matches.length, 1)
+    assert.equal(redacted, '138****5678 和 138****5678')
+  })
+
+  it('多种 PII 混排时各自只计一笔', () => {
+    const { matches } = redactString('13812345678 / a@b.com / 13812345678')
+    assert.deepEqual(matches.map((m) => m.type).sort(), ['email', 'phone'])
+  })
+})
+
+describe('ip-address 误伤收敛', () => {
+  it('不把带 v 前缀的四段版本号当成 IP', () => {
+    const { redacted, matches } = redactString('升级到 v1.0.0.1 版本')
+    assert.equal(redacted, '升级到 v1.0.0.1 版本')
+    assert.equal(matches.length, 0)
+  })
+
+  it('不匹配五段以上的点分数字', () => {
+    const { matches } = redactString('序号 1.2.3.4.5')
+    assert.equal(matches.filter((m) => m.type === 'ip-address').length, 0)
+  })
+
+  it('不匹配非法八位组', () => {
+    const { matches } = redactString('值域 999.999.999.999')
+    assert.equal(matches.filter((m) => m.type === 'ip-address').length, 0)
+  })
+
+  it('仍然识别真实内网 / 公网 IP', () => {
+    for (const ip of ['192.168.1.100', '10.0.0.254', '8.8.8.8', '172.16.31.7']) {
+      const { redacted, matches } = redactString(`访问 ${ip}`)
+      assert.ok(
+        matches.some((m) => m.type === 'ip-address'),
+        `${ip} 应被识别为 IP`,
+      )
+      assert.ok(!redacted.includes(ip))
+    }
   })
 })

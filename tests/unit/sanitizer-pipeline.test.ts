@@ -184,7 +184,7 @@ describe('sanitizer-pipeline forward sanitization', () => {
     assert.equal(svc.getMappingSize('s2'), 1)
   })
 
-  it('respects maxReplacementsPerSession limit', async () => {
+  it('throws SanitizerLimitError when maxReplacementsPerSession is exceeded', async () => {
     const policy = createPolicyService()
     await policy.reload()
     const audit = fakeAuditLog()
@@ -193,9 +193,47 @@ describe('sanitizer-pipeline forward sanitization', () => {
       maxReplacementsPerSession: 2,
     }, policy, audit)
 
-    await svc.sanitize('电话13812345678 13900001111 13700002222', { sessionId: 's1' })
+    // 超限必须抛错，不能"脱一半就放行"——剩余未替换的 PII 会随 prompt
+    // 直接上云。调用方（input-guard）据此降级 LOCAL。
+    await assert.rejects(
+      () => svc.sanitize('电话13812345678 13900001111 13700002222', { sessionId: 's1' }),
+      (err: Error) => {
+        assert.equal((err as { code?: string }).code, 'sanitizer-limit-exceeded')
+        return true
+      },
+    )
     assert.equal(svc.getMappingSize('s1'), 2)
     assert.ok(audit.entries.some(e => e.kind === 'sanitizer.limit-reached'))
+  })
+
+  it('does not keep minting placeholders across rules once at the limit', async () => {
+    const policy = createPolicyService()
+    await policy.reload()
+    const svc = new SanitizerServiceImpl(fakeCtx() as never, {
+      enableAutoDetection: true,
+      maxReplacementsPerSession: 1,
+    }, policy, fakeAuditLog())
+
+    // 手机号 + 邮箱分属两条规则。旧实现的 `break` 只跳出内层 matches 循环,
+    // 外层规则照常继续铸造,限流形同虚设。
+    await assert.rejects(
+      () => svc.sanitize('13812345678 与 a@b.com', { sessionId: 's1' }),
+    )
+    assert.equal(svc.getMappingSize('s1'), 1)
+  })
+
+  it('counts a repeated value once instead of per occurrence', async () => {
+    const policy = createPolicyService()
+    await policy.reload()
+    const svc = new SanitizerServiceImpl(fakeCtx() as never, {
+      enableAutoDetection: true,
+      maxReplacementsPerSession: 1024,
+    }, policy, fakeAuditLog())
+
+    const r = await svc.sanitize('13812345678 又是 13812345678', { sessionId: 's1' })
+    assert.equal(r.replacements.length, 1)
+    assert.equal(svc.getMappingSize('s1'), 1)
+    assert.ok(!r.sanitizedText.includes('13812345678'))
   })
 
   it('uses default sessionId when none provided', async () => {
@@ -508,5 +546,98 @@ describe('sanitizer-pipeline P1 PII patterns (v1.2.0)', () => {
     // needed, but v18.17.0 only has 2 dots → NO match
     assert.equal(r.replacements.length, 0, 'version string should NOT match IP regex (only 2 dots)')
     assert.equal(r.sanitizedText, 'node v18.17.0')
+  })
+})
+
+/**
+ * 2026-08-30 修复回归：会话映射表生命周期、占位符防碰撞、反向还原正确性。
+ */
+describe('sanitizer-pipeline session lifecycle', () => {
+  it('expires session mappings after sessionTtlMs', async () => {
+    const policy = createPolicyService()
+    await policy.reload()
+    const audit = fakeAuditLog()
+    const svc = new SanitizerServiceImpl(fakeCtx() as never, {
+      enableAutoDetection: true,
+      maxReplacementsPerSession: 1024,
+      sessionTtlMs: 1,
+      sweepIntervalMs: 0, // 只测惰性清扫，避免定时器干扰
+    } as never, policy, audit)
+
+    await svc.sanitize('13812345678', { sessionId: 'old' })
+    assert.equal(svc.getMappingSize('old'), 1)
+
+    await new Promise((r) => setTimeout(r, 5))
+    // 任意一次 sanitize 都会先跑清扫
+    await svc.sanitize('无 PII 文本', { sessionId: 'new' })
+
+    assert.equal(svc.getMappingSize('old'), 0, '过期会话的明文 PII 必须被释放')
+    assert.ok(audit.entries.some((e) => e.kind === 'sanitizer.session-expired'))
+  })
+
+  it('evicts least-recently-used sessions beyond maxSessions', async () => {
+    const policy = createPolicyService()
+    await policy.reload()
+    const svc = new SanitizerServiceImpl(fakeCtx() as never, {
+      enableAutoDetection: true,
+      maxReplacementsPerSession: 1024,
+      sessionTtlMs: 0,
+      maxSessions: 2,
+      sweepIntervalMs: 0,
+    } as never, policy, fakeAuditLog())
+
+    await svc.sanitize('13812345678', { sessionId: 's1' })
+    await svc.sanitize('13900001111', { sessionId: 's2' })
+    await svc.sanitize('13700002222', { sessionId: 's3' })
+
+    assert.ok(svc.getSessionCount() <= 2, '会话数不得超过 maxSessions')
+    assert.equal(svc.getMappingSize('s1'), 0, '最久未访问的会话应被淘汰')
+    assert.equal(svc.getMappingSize('s3'), 1)
+  })
+
+  it('stop() clears every session mapping', async () => {
+    const policy = createPolicyService()
+    await policy.reload()
+    const svc = new SanitizerServiceImpl(fakeCtx() as never, {
+      enableAutoDetection: true, maxReplacementsPerSession: 1024,
+    } as never, policy, fakeAuditLog())
+
+    await svc.sanitize('13812345678', { sessionId: 'a' })
+    await svc.sanitize('13900001111', { sessionId: 'b' })
+    await svc.stop()
+
+    assert.equal(svc.getSessionCount(), 0)
+  })
+})
+
+describe('sanitizer-pipeline placeholder collision safety', () => {
+  it('never mints a placeholder that collides with a literal in the input', async () => {
+    const policy = createPolicyService()
+    await policy.reload()
+    const svc = new SanitizerServiceImpl(fakeCtx() as never, {
+      enableAutoDetection: true, maxReplacementsPerSession: 1024,
+    } as never, policy, fakeAuditLog())
+
+    // 用户输入里本就含占位符形状的字面量
+    const r = await svc.sanitize('见 [PHONE_1] 与 13812345678', { sessionId: 'c1' })
+    assert.ok(!r.sanitizedText.includes('13812345678'))
+    // 新铸造的占位符必须跳过 1
+    assert.notEqual(r.replacements[0].placeholder, '[PHONE_1]')
+    // 还原后用户原本的 [PHONE_1] 字面量保持不变
+    const back = await svc.desanitize(r.sanitizedText, 'c1')
+    assert.ok(back.includes('[PHONE_1]'))
+    assert.ok(back.includes('13812345678'))
+  })
+
+  it('leaves unknown placeholders untouched on desanitize', async () => {
+    const policy = createPolicyService()
+    await policy.reload()
+    const svc = new SanitizerServiceImpl(fakeCtx() as never, {
+      enableAutoDetection: true, maxReplacementsPerSession: 1024,
+    } as never, policy, fakeAuditLog())
+
+    await svc.sanitize('13812345678', { sessionId: 'c2' })
+    const out = await svc.desanitize('未知 [EMAIL_99] 占位符', 'c2')
+    assert.equal(out, '未知 [EMAIL_99] 占位符')
   })
 })
