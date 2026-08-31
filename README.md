@@ -10,10 +10,10 @@
 ## ✨ 核心特性
 
 - **🔒 端侧优先**：默认本地 LLM 处理，云端仅在明确需要时调用
-- **🛡️ 隐私保护**：AES-256-GCM 加密存储、TEE 密钥管理、PII 自动脱敏
+- **🛡️ 隐私保护**：PII 自动脱敏 + 隐私策略热重载（[AES-256-GCM 加密存储](./docs/PROGRESS.md#planned)）
 - **🌐 零信任通信**：RFC 9458 OHTTP 协议，云端无法关联用户身份与请求
 - **🚨 威胁检测**：实时监控异常行为，自动隔离可疑流量
-- **🔌 插件化**：19 核心 + 1 可选 HTTP API，全部 subpath 导出
+- **🔌 插件化**：22 核心 + 1 可选 HTTP API，全部 subpath 导出
 
 ## 🏗️ 架构
 
@@ -60,69 +60,136 @@
 | `http-api` | REST + SSE HTTP 服务器 | ✅ 可用 |
 | `tools` | Realm 工具注册表配置 | ✅ 可用 |
 | `tcm` | 可信计算模块 | 🔲 桩 |
-| `prompt-guard` | 输入/输出安全防护 | 🔲 桩 |
-| `sanitizer-pipeline` | PII 脱敏/还原 | 🔲 桩 |
+| `prompt-guard` | 输入/输出安全防护（正则 + LLM 兜底，rejection 翻译） | ✅ 可用 |
+| `sanitizer-pipeline` | PII 脱敏/还原（9 规则，fail-open） | ✅ 可用 |
 | `ohttp-gateway` | OHTTP 网关 | 🔲 桩 |
 | `secure-bridge` | 端云安全通信桥 | 🔲 桩 |
 | `attestation` | TEE 远程证明 | 🔲 桩 |
-| `td-bus` | 威胁检测总线 | 🔲 桩 |
+| `td-bus` | 威胁检测总线（速率/脱敏/权限阈值告警） | ✅ 可用 |
 | `voice-input` | 语音输入 | 🔲 桩 |
 | `plugin-host` | 第三方插件宿主 | 🔲 桩 |
 
-> **工具复用**: dsh-edge-agent 使用 DSH 原生工具（bash、read/write/edit、web_search/web_fetch），而非自行实现。详见 [docs/dsh-native-tools-analysis.md](docs/dsh-native-tools-analysis.md)。
+> **工具复用**: dsh-edge-agent 使用 DSH 原生工具（bash、read/write/edit、web_search/web_fetch），而非自行实现。详见 [docs/architecture.md](docs/architecture.md)。
 >
-> M 段（M0–M5）已全部完成，意图识别（LOCAL/CLOUD）路由已端到端打通。A 段安全加固均未开始。详见 [docs/PROGRESS.md](docs/PROGRESS.md)。
+> M 段（M0–M5）已全部完成，意图识别（LOCAL/CLOUD）路由已端到端打通；A1（input-guard 编排器）与 A2（rejection → HTTP 400/403/503 翻译）已完成。A3+ 安全加固未开始。详见 [docs/PROGRESS.md](docs/PROGRESS.md)。
+
+---
 
 ## 📦 安装
 
-### 快速安装（推荐）
+### 系统要求
+
+| 组件 | 最低版本 | 推荐版本 |
+|---|---|---|
+| Node.js | `^22.19` 或 `>=24` | `>=22.20` |
+| pnpm | `^10` 或 `^11` | `^11.7.0` |
+| 操作系统 | Linux / macOS / Windows | Linux |
+| 架构 | x64 / arm64 | arm64（for TEE） |
+
+### 前置依赖
 
 ```bash
-# 前置：dsh CLI + pnpm
-npm install -g @deepseek-ai/dsh pnpm
+# 1. DSH CLI（DeepSeek Harness 官方客户端）
+npm install -g @deepseek-ai/dsh
+dsh --version   # 验证
 
-# 克隆并一键安装
-git clone https://github.com/chschytzmcy/dsh-edge-agent.git
-cd dsh-edge-agent
-pnpm install
-./install.sh
+# 2. pnpm
+npm install -g pnpm
+# 或：corepack enable pnpm
+pnpm --version   # 验证
+
+# 3.（可选）TEE 开发环境
+# 仅当需要在真实 TEE 上运行时需要：
+#   ARM TrustZone  → 支持 TrustZone 的设备上编译 OP-TEE
+#   RISC-V Keystone → RISC-V 工具链
+#   Intel SGX       → Intel SGX SDK
+# 脚手架阶段可用 simulated 后端，无需真实 TEE。
 ```
 
-### 详细安装（单命令逐步执行）
+### 方式一：从 npm 全局安装（推荐用户）
 
 ```bash
-# 1. 安装 dsh CLI（DeepSeek Harness 官方客户端）
-npm install -g @deepseek-ai/dsh
+npm install -g @deepseek-harness-edge-agent/dsh-edge-agent
+dsh plugin --profile dsh-edge-agent add @deepseek-harness-edge-agent/dsh-edge-agent
+dsh-edge-agent
+```
 
-# 2. 安装 pnpm 包管理器
-npm install -g pnpm
+### 方式二：从源码构建（推荐开发者）
 
-# 3. 克隆仓库
+```bash
 git clone https://github.com/chschytzmcy/dsh-edge-agent.git
 cd dsh-edge-agent
 
-# 4. 安装项目依赖
 pnpm install
-
-# 5. 编译 TypeScript
 pnpm run compile
 
-# 6. 运行验证（确保所有插件形状正确）
-pnpm run verify:build
+# 首次运行引导 profile
+./install.sh
 
-# 7. 运行单元测试（16 个测试文件）
-pnpm test
+# 启动
+dsh-edge-agent
+```
 
-# 8. 将插件安装到 DSH profile
-#    这会自动创建 ~/.dsh/profiles/dsh-edge-agent/ 并注入所有插件
+### 方式三：Windows
+
+```cmd
+:: PowerShell 或 cmd
 dsh plugin --profile dsh-edge-agent add @deepseek-harness-edge-agent/dsh-edge-agent
 
-# 9. 验证 profile 已创建
-ls ~/.dsh/profiles/dsh-edge-agent/
-
-# 10. 启动服务
-dsh --profile dsh-edge-agent
+:: 启动（仓库根目录的 .cmd shim 处理 --resume 兼容）
+dsh-edge-agent.cmd
 ```
+
+### 首次启动流程
+
+首次运行会执行：
+
+1. 检测 dsh CLI 是否已安装
+2. 在 `$DSH_HOME/profiles/dsh-edge-agent/` 创建独立 profile
+3. 通过 pnpm 安装所有 DSH 依赖
+4. 根据 `cordis.patch.yml` 注入 dsh-edge-agent 插件
+5. 创建存储目录（默认 `~/.dsh-edge-agent/`）
+6. 加载默认策略 `profiles/dsh-edge-agent/privacy-policy.json`（`process.cwd()` 相对路径，可由 `DSH_EDGE_PRIVACY_POLICY_PATH` 覆盖）
+
+完成后 agent loop 启动，等待用户输入。
+
+### 验证安装
+
+```bash
+# 检查 profile 是否就绪
+ls $DSH_HOME/profiles/dsh-edge-agent/
+
+# 检查插件是否挂载
+dsh --profile dsh-edge-agent --dump-config | grep -E "dsh-edge-agent|tcm|ohttp"
+
+# 冒烟测试
+pnpm run smoke
+```
+
+### 故障排查
+
+| 现象 | 排查 |
+|---|---|
+| `未检测到 dsh CLI` | `npm install -g @deepseek-ai/dsh` 后 `hash -r` |
+| `未检测到 pnpm` | `npm install -g pnpm` 或 `corepack enable pnpm` |
+| `profile runs v0.0.X but launcher is v0.1.0` | `dsh plugin --profile dsh-edge-agent add @deepseek-harness-edge-agent/dsh-edge-agent@latest` |
+| `adapter boundary violated` | 把 `@deepseek-ai/*` 的 import 移到 `src/dsh-adapter/` 内（或经 `src/dsh-adapter/types.ts` 重新导出） |
+| `upstream contract violated` | DSH 依赖版本与 `UPSTREAM_VALIDATED_VERSION`（`0.1.0-rc.6`）不匹配；运行 `pnpm install` 或 `pnpm update @deepseek-ai/dsh-agent @deepseek-ai/dsh-llm ...` |
+
+### 卸载
+
+```bash
+# 移除 profile
+dsh plugin --profile dsh-edge-agent remove @deepseek-harness-edge-agent/dsh-edge-agent
+
+# 移除存储（注意：会删除所有会话和加密数据！）
+rm -rf ~/.dsh-edge-agent/
+
+# 移除全局包（如适用）
+npm uninstall -g @deepseek-harness-edge-agent/dsh-edge-agent
+```
+
+---
 
 ## 🚀 部署
 
@@ -172,13 +239,9 @@ cp profiles/dsh-edge-agent/cordis.patch.yml ~/.dsh/profiles/dsh-edge-agent/
 dsh --profile dsh-edge-agent
 ```
 
-### 完整环境变量
-
-详见 [.env.example](.env.example)。`.env` 文件已加入 `.gitignore`，**切勿提交含真实 Key 的 `.env`**。
-
 ### LLM 路由机制
 
-dsh-edge-agent 通过 **意图路由**自动选择 LLM，无需手动指定 provider：
+dsh-edge-agent 通过**意图路由**自动选择 LLM，无需手动指定 provider：
 
 | 用户消息类型 | 触发关键词 | 路由到 | 示例 |
 |---|---|---|---|
@@ -190,7 +253,7 @@ dsh-edge-agent 通过 **意图路由**自动选择 LLM，无需手动指定 prov
 
 ### 本地 LLM 端点
 
-`local-llm-adapter` 始终走真实 OpenAI 兼容端点（默认 `http://127.0.0.1:8080/v1`）。
+`local-llm-adapter` 始终走真实 OpenAI 兼容端点（Schema 默认 `http://127.0.0.1:8080/v1`；部署默认 `http://192.168.1.121:11017/v1`）。
 通过环境变量指向任一 llama.cpp / vLLM / Ollama 实例：
 
 ```bash
@@ -199,23 +262,218 @@ export DSH_EDGE_LOCAL_LLM_BASEURL=http://192.168.66.195:8701/v1
 export DSH_EDGE_LOCAL_LLM_MODEL=qwen3-4b-instruct-2507
 ```
 
-### 环境变量
+---
+
+## ⚙️ 配置参考
+
+dsh-edge-agent 通过**环境变量**和 `cordis.yml` 进行配置。所有环境变量都以 `DSH_EDGE_` 前缀开头（除业务变量 `EDGE_API_KEY` 和 `DEEPSEEK_API_KEY`）。完整模板见 [.env.example](.env.example)，`.env` 文件已加入 `.gitignore`，**切勿提交含真实 Key 的 `.env`**。
+
+> **Secret 警告**：`DEEPSEEK_API_KEY`、`EDGE_API_KEY` 是 secret，**绝不能提交到 git**。
+
+### 🌐 通用配置
+
+| 变量 | 默认值 | 取值范围 | 说明 |
+|---|---|---|---|
+| `DSH_EDGE_LANG` | `zh` | `zh` / `en` | 启动器消息语言（不影响 agent 内容语言） |
+| `DSH_EDGE_WORKSPACE` | 当前目录 | 任意路径 | 工作目录 |
+| `DSH_EDGE_RESUME_SESSION` | — | session id | 通过 `--resume` 设置 |
+| `DSH_EDGE_PERMISSION_MODE` | `workspace-write`（部署默认）/ `ask`（Schema 默认） | `ask` / `workspace-write` / `danger-full-access` | 权限模式 |
+
+### 🔐 TEE 配置
+
+| 变量 | 默认值 | 取值范围 | 说明 |
+|---|---|---|---|
+| `DSH_EDGE_TEE_TYPE` | `simulated` | `simulated` / `trustzone` / `keystone` / `sgx` | TEE 后端类型 |
+| `DSH_EDGE_TEE_INFERENCE` | `false` | `true` / `false` | 是否在 TEE 内执行 LLM 推理 |
+| `DSH_EDGE_SECURE_MEM` | `67108864` | 字节数 | 安全内存上限 |
+
+`DSH_EDGE_TEE_TYPE` 取值：
+
+- **`simulated`**（默认）：纯 JS 实现，仅用于开发/CI
+- **`trustzone`**：ARM TrustZone（生产环境推荐）
+- **`keystone`**：RISC-V Keystone
+- **`sgx`**：Intel SGX（服务器端测试）
+
+### 💾 存储配置
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `EDGE_API_KEY` | — | API 鉴权密钥（无值则跳过认证） |
-| `DSH_EDGE_HTTP_PORT` | `21017` | HTTP API 端口 |
-| `DSH_EDGE_PROVIDER` | `cloud-deepseek-v4` | 仅用于 system prompt，不影响实际路由 |
-| `DSH_EDGE_MODEL` | `deepseek-chat` | 仅用于 system prompt |
-| `DEEPSEEK_API_KEY` | — | DeepSeek API Key（CLOUD 路由必需） |
-| `DSH_EDGE_LOCAL_LLM_BASEURL` | `http://127.0.0.1:8080/v1` | 本地 LLM 端点 |
-| `DSH_EDGE_LOCAL_LLM_MODEL` | `qwen3-4b` | 本地 LLM 模型名 |
-| `DSH_EDGE_INTENT_PROVIDER` | `local-qwen3-4b` | 意图分类所用 provider |
-| `DSH_EDGE_INTENT_MODEL` | `qwen3-4b` | 意图分类所用模型 |
-| `DSH_EDGE_STORAGE_ROOT` | `~/.dsh-edge-agent-m1` | 数据存储根目录 |
+| `DSH_EDGE_STORAGE_ROOT` | `~/.dsh-edge-agent/storage` | 存储根目录 |
+| `DSH_EDGE_STORAGE_FILE` | `storage.plain.jsonl` | JSONL 存储文件名（未加密；AES-256-GCM 加密见 [Planned](./docs/PROGRESS.md#planned)） |
 
-> **Secret 警告**：`DEEPSEEK_API_KEY`、`EDGE_API_KEY` 是 secret，**绝不能提交到 git**。
-> 使用 `.env` 文件（已加入 `.gitignore`）+ `dsh --env-file=.env` 启动。
+### 📜 策略配置
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `DSH_EDGE_PRIVACY_POLICY_PATH` | `process.cwd()/profiles/dsh-edge-agent/privacy-policy.json` | 隐私策略文件路径 |
+| `DSH_EDGE_REALM_HOT_RELOAD` | `true` | realm 配置热重载开关（不重载策略文件本身） |
+
+### 🚦 路由配置
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `DSH_EDGE_DEFAULT_DATA_LEVEL` | `sanitized` | 默认数据级别（`public` / `sanitized` / `internal`） |
+| `DSH_EDGE_ROUTER_LLM_FALLBACK` | `true` | 当规则匹配置信度低时是否使用 LLM 兜底 |
+| `DSH_EDGE_ROUTER_THRESHOLD` | `0.6` | 规则匹配置信度阈值 |
+| `DSH_EDGE_INTENT_CONFIDENCE_THRESHOLD` | `0.6` | LLM 分类置信度门槛；低于此值降级到 keyword 规则 |
+| `DSH_EDGE_GUARD_MODEL` | `false` | 是否启用 prompt-guard 模型辅助检测 |
+| `DSH_EDGE_GUARD_MODEL_PROVIDER` | `local-qwen3-4b` | 模型辅助检测 provider route |
+| `DSH_EDGE_GUARD_MODEL_MODEL` | `Qwen3-4B-Instruct-2507` | 模型辅助检测 model id（部署默认） |
+| `DSH_EDGE_GUARD_MODEL_TIMEOUT_MS` | `4000` | 模型辅助检测单次超时（毫秒） |
+| `DSH_EDGE_GUARD_MODEL_MAX_INPUT` | `2000` | 超过此字符数则跳过模型检测（fail-open） |
+| `DSH_EDGE_INTENT_PROVIDER` | `local-qwen3-4b` | 意图分类 provider |
+| `DSH_EDGE_INTENT_MODEL` | `Qwen3-4B-Instruct-2507` | 意图分类 model id |
+| `DSH_EDGE_INTENT_LLM_TIMEOUT_MS` | `4000` | 意图分类单次 LLM 超时（毫秒） |
+| `DSH_EDGE_INTENT_RECENT_LIMIT` | `3` | 上下文 recent-messages 数量 |
+| `DSH_EDGE_INTENT_MAX_INPUT` | `2000` | 超过此字符数则跳过 LLM 分类 |
+| `DSH_EDGE_INTENT_FALLBACK_KEYWORDS` | （空） | 关键词兜底列表（逗号分隔） |
+
+### 🤖 模型配置
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `DSH_EDGE_DEFAULT_MODEL` | `local-qwen3-4b` | 默认模型 |
+| `DSH_EDGE_LOCAL_MODELS` | `local-qwen3-4b,local-llama3-8b` | 本地模型列表（逗号分隔） |
+| `DSH_EDGE_CLOUD_MODELS` | `cloud-deepseek-v4,cloud-deepseek-v3` | 云端模型列表（逗号分隔） |
+
+**本地 LLM**
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `DSH_EDGE_LOCAL_MODEL_PATH` | `~/.dsh-edge-agent/models/qwen3-4b.gguf` | GGUF 模型文件路径 |
+| `DSH_EDGE_LOCAL_CTX` | `8192` | 上下文窗口大小 |
+| `DSH_EDGE_LOCAL_THREADS` | `4` | 推理线程数 |
+| `DSH_EDGE_LOCAL_LLM_BASEURL` | `http://127.0.0.1:8080/v1`（Schema）/`http://192.168.1.121:11017/v1`（部署） | OpenAI 兼容端点 URL（实际使用） |
+| `DSH_EDGE_LOCAL_LLM_MODEL` | `qwen3-4b`（Schema）/`qwen3-4b-instruct-2507`（部署） | 端点 model id |
+| `DSH_EDGE_LOCAL_LLM_MODE` | `mock`（Schema）/`real`（部署） | `mock` / `real`（是否走真实端点） |
+
+**云端 LLM**
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `DSH_EDGE_CLOUD_KEY_ENV` | `DEEPSEEK_API_KEY` | API key 环境变量 |
+| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | API base URL |
+| `DEEPSEEK_API_KEY` | — | DeepSeek API Key（CLOUD 路由必需） |
+
+### 🌐 出站配置
+
+| 变量 | 默认值 | 取值范围 | 说明 |
+|---|---|---|---|
+| `DSH_EDGE_BRIDGE_MODE` | `ohttp` | `ohttp` / `tls` / `auto` | 出站模式 |
+| `DSH_EDGE_BRIDGE_ALLOW` | — | 域名列表 | 允许的域名（逗号分隔） |
+| `DSH_EDGE_BRIDGE_DENY` | — | 域名列表 | 拒绝的域名（逗号分隔） |
+| `DSH_EDGE_BRIDGE_TIMEOUT_MS` | `30000` | 毫秒数 | 请求超时 |
+
+**OHTTP**
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `DSH_EDGE_OHTTP_RELAY` | — | OHTTP relay URL |
+| `DSH_EDGE_OHTTP_TARGET` | — | OHTTP target URL |
+| `DSH_EDGE_OHTTP_PUBKEY` | — | HPKE 公钥 |
+| `DSH_EDGE_OHTTP_KEY_ID` | — | OHTTP key id |
+| `DSH_EDGE_ALLOW_FALLBACK_TLS` | `false` | OHTTP 不可用时是否允许回退到 TLS |
+
+### 🛡️ 审计与威胁检测
+
+**审计日志**
+
+| 变量 | 默认值 | 取值范围 | 说明 |
+|---|---|---|---|
+| `DSH_EDGE_AUDIT_LEVEL` | `info` | `debug` / `info` / `warn` / `error` / `security` | 最小日志级别 |
+| `DSH_EDGE_AUDIT_SENSITIVE_FIELDS` | — | 字段名列表 | 视为敏感的字段（逗号分隔） |
+| `DSH_EDGE_AUDIT_ALERTS` | `true` | `true` / `false` | 是否启用告警 |
+| `DSH_EDGE_AUDIT_CLOUD_RATE` | `20` | 数字 | 每分钟云端请求告警阈值 |
+| `DSH_EDGE_AUDIT_SAN_FAIL` | `3` | 数字 | 脱敏失败告警阈值 |
+| `DSH_EDGE_AUDIT_PERM_DENIED` | `5` | 数字 | 权限拒绝告警阈值 |
+| `DSH_EDGE_AUDIT_FLUSH_MS` | `500` | 毫秒数 | 刷新间隔 |
+
+**威胁检测**
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `DSH_EDGE_TD_WINDOW` | `60` | 时间窗口（秒） |
+| `DSH_EDGE_TD_CLOUD_RATE` | `20` | 时间窗口内最大云端请求数 |
+| `DSH_EDGE_TD_SAN` | `3` | 连续脱敏失败阈值 |
+| `DSH_EDGE_TD_PERM` | `5` | 连续权限拒绝阈值 |
+
+### 🛠️ 工具配置
+
+**本地工具**
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `DSH_EDGE_LOCAL_TOOLS_ALLOW` | — | 允许的路径前缀（逗号分隔） |
+| `DSH_EDGE_LOCAL_TOOLS_WRITE` | `false` | 是否允许写操作 |
+| `DSH_EDGE_LOCAL_TOOLS_MAX` | `10485760` | 最大文件大小（字节） |
+
+**Web 搜索**
+
+| 变量 | 默认值 | 取值范围 | 说明 |
+|---|---|---|---|
+| `DSH_EDGE_WEB_BACKEND` | `duckduckgo` | `duckduckgo` / `brave` / `custom` | 后端 |
+| `DSH_EDGE_WEB_MAX` | `8` | 数字 | 最大结果数 |
+
+### 🎤 语音输入
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `DSH_EDGE_VOICE_MODEL` | `~/.dsh-edge-agent/models/whisper-tiny.bin` | Whisper 模型路径 |
+| `DSH_EDGE_VOICE_VAD` | `0.6` | VAD 静音阈值（秒） |
+| `DSH_EDGE_VOICE_SR` | `16000` | 采样率 |
+
+### 🔌 插件配置
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `DSH_EDGE_PLUGINS_THIRD_PARTY` | `false` | 是否允许第三方插件 |
+
+### 🌐 HTTP API（可选）
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `DSH_EDGE_HTTP_HOST` | `0.0.0.0`（部署默认）/ `127.0.0.1`（Schema 默认） | HTTP 服务器绑定地址 |
+| `DSH_EDGE_HTTP_PORT` | `21017` | HTTP 服务器端口 |
+| `DSH_EDGE_HTTP_BEARER` | — | Bearer token（如不设则禁用） |
+| `EDGE_API_KEY` | — | API 鉴权密钥（注入到 `DSH_EDGE_HTTP_BEARER`） |
+
+### 📊 遥测
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `DSH_EDGE_TELEMETRY` | `false` | 是否启用 DSH 遥测 |
+
+### ⚙️ 会话
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `DSH_EDGE_SESSION_ROOT` | `~/.dsh-edge-agent/sessions` | 会话 JSONL 根目录 |
+| `DSH_EDGE_SESSION_TTL` | `3600` | 默认 TTL（秒） |
+| `DSH_EDGE_MAX_SESSIONS` | `8` | 最大并发会话数 |
+| `DSH_EDGE_SESSION_WINDOW_SIZE` | `32` | 意图路由的会话窗口大小 |
+
+### ⚙️ Bash
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `DSH_EDGE_BASH_TIMEOUT_MS` | `60000` | Bash 命令超时（毫秒） |
+
+### 🛠️ 通过 cordis.yml 覆盖
+
+环境变量会设置默认值，但你可以通过 `cordis.patch.yml` 覆盖任何配置：
+
+```yaml
+- id: tcm
+  config:
+    teeType: trustzone
+    keyStorePath: /opt/secure/keys
+    teeInference: true
+    secureMemoryLimit: 134217728  # 128 MiB
+```
+
+**优先级**：`cordis.yml` > 环境变量 > Schema 默认值
+
+---
 
 ## 🌐 多入口架构
 
@@ -248,9 +506,7 @@ dsh-im 插件（`@xmanrui/dsh-im`）通过 webserver 内部 `apiProxy` 把 IM �
 
 > **⚠️ AI Office 风险**：AI Office Connector 让本机 Harness **主动**连接公网 Office（不需公网 IP / 端口转发），但 SSE 下行的增量文本会回到公网 Office。**只在用户主动启用**后生效（v1.1 起 webui 提供 opt-in 对话框）。
 
-> **⚠️ 凭据安全**：所有 IM 平台 bot credentials 只入 `dsh-credentials-local`，RPC 响应不回传原始凭据。详见 `docs/dual-entry-architecture.md` §10.4。
-
-### 程序客户端 → `:21017`
+> **⚠️ 凭据安全**：所有 IM 平台 bot credentials 只入 `dsh-credentials-local`，RPC 响应不回传原始凭据。详见 [docs/architecture.md](docs/architecture.md) §10.4。
 
 ### 程序客户端 → `:21017`
 
@@ -300,14 +556,16 @@ curl -H "Authorization: Bearer $EDGE_API_KEY" \
 curl http://127.0.0.1:21017/v1/openapi.json
 ```
 
-完整接口规范详见 [`docs/dual-entry-architecture.md`](docs/dual-entry-architecture.md)（v1.1 起文档同时覆盖三入口，但文件名保留以保持 GitHub 链接稳定）。
+完整接口规范详见 [docs/architecture.md](docs/architecture.md)（v1.1 起文档同时覆盖三入口，但文件名保留以保持 GitHub 链接稳定）。
 
 > **⚠️ 鉴权约定**：
 > - **http-api**：Bearer token 必须从环境变量 `EDGE_API_KEY` 注入；**不要硬编码**到配置文件。生产环境使用 secret manager。
 > - **dsh-im**：IM 平台 bot credentials 走 webui「设置 → IM机器人」页面，凭据**只入 `dsh-credentials-local`**。配置文件不落盘。
 > - **dsh-webui**：loopback trust + DSH 上游配对 token 流程。
-
+>
 > **⚠️ CORS**：v1 不启用 CORS（`enableCors` 字段在 schema 中完全不暴露）。程序端请同主机调用；若需要从浏览器直接调用 http-api，请改用 `:21018` 的官方 Web UI。
+
+---
 
 ## 🧪 手动测试
 
@@ -357,7 +615,7 @@ curl -s -o /dev/null -w "%{http_code}" -X POST http://127.0.0.1:21017/v1/chat \
 
 ### Chat 同步
 
-#### LOCAL Intent（本地处理 — 文件操作、计算）
+**LOCAL Intent**（本地处理 — 文件操作、计算）
 
 ```bash
 curl -X POST http://127.0.0.1:21017/v1/chat \
@@ -382,7 +640,7 @@ curl -X POST http://127.0.0.1:21017/v1/chat \
 
 > LOCAL intent 路由到本地 LLM（`local-qwen3-4b`），直连真实 OpenAI 兼容端点（不消耗云端 API 配额）。
 
-#### CLOUD Intent（云端处理 — 知识问答、创意）
+**CLOUD Intent**（云端处理 — 知识问答、创意）
 
 ```bash
 curl -X POST http://127.0.0.1:21017/v1/chat \
@@ -411,7 +669,7 @@ curl -X POST http://127.0.0.1:21017/v1/chat \
 
 dsh-edge-agent 使用 DSH 原生工具，所有工具都通过模型自动调用。
 
-#### Bash 工具（本地命令执行）
+**Bash 工具**（本地命令执行）
 
 ```bash
 curl -X POST http://127.0.0.1:21017/v1/chat \
@@ -422,7 +680,7 @@ curl -X POST http://127.0.0.1:21017/v1/chat \
 
 模型会调用 `bash` 工具执行 `echo $((17*23))`，返回计算结果。
 
-#### 文件工具（读/写/编辑）
+**文件工具**（读/写/编辑）
 
 ```bash
 # 读取文件
@@ -444,7 +702,7 @@ curl -X POST http://127.0.0.1:21017/v1/chat \
   -d '{"message":"将 /tmp/hello.txt 中的 Hello 改为 Hi","sessionId":"test-file-edit"}'
 ```
 
-#### Web 搜索工具（DeepSeek 搜索引擎）
+**Web 搜索工具**（DeepSeek 搜索引擎）
 
 ```bash
 curl -X POST http://127.0.0.1:21017/v1/chat \
@@ -455,7 +713,7 @@ curl -X POST http://127.0.0.1:21017/v1/chat \
 
 模型会调用 `web_search` 工具，返回搜索结果摘要。
 
-#### Web 获取工具（抓取网页内容）
+**Web 获取工具**（抓取网页内容）
 
 ```bash
 curl -X POST http://127.0.0.1:21017/v1/chat \
@@ -524,9 +782,11 @@ curl -X DELETE http://127.0.0.1:21017/v1/sessions/test-001 \
 curl http://127.0.0.1:21017/v1/openapi.json | jq .
 ```
 
+---
+
 ## 🧪 自动化测试
 
-### 单元测试（99 个测试用例）
+### 单元测试（628 个测试用例 / 37 个测试文件）
 
 ```bash
 pnpm test
@@ -552,6 +812,6 @@ pnpm run verify:build
 
 ---
 
-更多文档见 `docs/` 目录：[架构](docs/architecture.md) · [配置](docs/configuration.md) · [威胁模型](docs/threat-model.md) · [插件开发](docs/plugin-development.md) · [实施进度](docs/PROGRESS.md)
+更多文档见 [docs/architecture.md](docs/architecture.md)：[架构](docs/architecture.md) · [上游适配契约](docs/architecture.md) · [威胁模型](docs/architecture.md) · [插件开发](docs/architecture.md) · [实施进度](docs/PROGRESS.md)
 
 MIT License. 详见 [LICENSE](LICENSE)。
