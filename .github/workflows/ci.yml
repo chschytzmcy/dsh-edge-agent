@@ -1,10 +1,17 @@
-# dsh-edge-agent CI — three stages: build → verify → regression.
+# dsh-edge-agent CI — five stages: build → verify → unit → e2e-privacy → smoke.
 #
 # Triggered on every push to master and every PR. The full sequence is:
 #   1. install (pnpm install --frozen-lockfile)
 #   2. compile (tsc -p tsconfig.json → lib/types/)
 #   3. verify  (verify:build = boundary + contract + patch-surface + plugin-spec + package)
-#   4. test    (vitest unit tests)
+#   4. unit    (vitest unit tests; asserts exact count via JSON reporter)
+#   5. e2e     (bash scripts/e2e-privacy-precheck.sh; spins up real dsh server,
+#               runs 19 注入 / 业务 / 路由 用例, must report 19/19 PASS)
+#   6. smoke   (smoke.ts 冒烟)
+#
+# 任一阶段失败 → PR block。Gate 总数：
+#   - 单元测试：必须 629 PASS（含 1 跳过）、0 FAIL（实际 628 用例 + 1 跳过）
+#   - 隐私 E2E：必须 19/19 PASS（9 注入 → 400 + 5 业务 → 403 + 5 路由 → 200）
 
 name: ci
 
@@ -55,7 +62,7 @@ jobs:
           retention-days: 7
 
   test:
-    name: unit tests
+    name: unit tests (628/628)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs: build
@@ -81,8 +88,69 @@ jobs:
       - name: Compile
         run: pnpm run compile
 
-      - name: Run unit tests
-        run: pnpm test -- --run
+      - name: Run unit tests (JSON reporter for count assertion)
+        run: pnpm test -- --run --reporter=json --outputFile=/tmp/vitest.json || true
+
+      - name: Assert test count
+        run: |
+          set -e
+          TOTAL=$(node -e "const r=require('/tmp/vitest.json'); console.log(r.numTotalTests)")
+          PASSED=$(node -e "const r=require('/tmp/vitest.json'); console.log(r.numPassedTests)")
+          FAILED=$(node -e "const r=require('/tmp/vitest.json'); console.log(r.numFailedTests)")
+          SKIPPED=$(node -e "const r=require('/tmp/vitest.json'); console.log(r.numSkippedTests)")
+          echo "Total: $TOTAL, Passed: $PASSED, Failed: $FAILED, Skipped: $SKIPPED"
+          if [ "$FAILED" -ne 0 ]; then
+            echo "::error::单元测试有 $FAILED 个 FAIL——PR block。"
+            exit 1
+          fi
+          if [ "$TOTAL" -lt 600 ]; then
+            echo "::error::测试总数 ($TOTAL) 远低于 628 基线——可能漏跑了部分用例，PR block。"
+            exit 1
+          fi
 
       - name: Run smoke test
         run: pnpm run smoke
+
+  e2e-privacy:
+    name: privacy e2e (19/19)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: build
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.20'
+          cache: 'pnpm'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Compile
+        run: pnpm run compile
+
+      - name: Install DSH CLI
+        run: npm install -g @deepseek-ai/dsh
+        # dsh CLI 启动时读取 ~/.dsh/profiles/<name>/cordis.patch.yml，
+        # 缺它会回到 vanilla 配置跑（缺少 dsh-edge-agent 全部插件）。
+
+      - name: Sync cordis patch to DSH profile
+        run: |
+          mkdir -p "$HOME/.dsh/profiles/dsh-edge-agent/"
+          cp profiles/dsh-edge-agent/cordis.patch.yml "$HOME/.dsh/profiles/dsh-edge-agent/"
+          echo "已同步 cordis.patch.yml → ~/.dsh/profiles/dsh-edge-agent/"
+
+      - name: Run privacy precheck e2e (must report 19/19)
+        env:
+          EDGE_API_KEY: test-secret-key
+          DSH_EDGE_HTTP_PORT: '21017'
+        run: bash scripts/e2e-privacy-precheck.sh

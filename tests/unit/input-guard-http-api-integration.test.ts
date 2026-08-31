@@ -300,7 +300,7 @@ describe('input-guard ↔ http-api integration', () => {
           const seedConfig = { provider: agentOptions.provider, model: agentOptions.model }
           const finalConfig = await ctx.dispatch.waterfall(
             'agent/request',
-            { turn: 1, step: 1, sessionId },
+            { turn: 1, step: 1, agent: { session: { id: sessionId } } },
             seedConfig,
             async () => seedConfig,
           )

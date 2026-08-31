@@ -300,7 +300,11 @@ describe('input-guard E2E — downgrade semantics', () => {
 
     // handleAgentRequest：改写 route 到 LOCAL
     const seed = { provider: 'cloud-deepseek-v4', model: 'deepseek-chat', maxTokens: 4096 }
-    const result = await svc.handleAgentRequest({ sessionId }, seed, async () => seed)
+    const result = await svc.handleAgentRequest(
+      { agent: { session: { id: sessionId } } },
+      seed,
+      async () => seed,
+    )
     assert.equal(result.provider, 'local-qwen3-4b')
     assert.equal(result.model, 'qwen3-4b-instruct-2507')
     assert.equal(result.maxTokens, 4096, '其他字段保留')
@@ -336,7 +340,11 @@ describe('input-guard E2E — downgrade semantics', () => {
     assert.equal(state?.downgraded, undefined)
     // 路由不改写
     const seed = { provider: 'cloud-deepseek-v4', model: 'deepseek-chat' }
-    const result = await svc.handleAgentRequest({ sessionId: 'down-2' }, seed, async () => seed)
+    const result = await svc.handleAgentRequest(
+      { agent: { session: { id: 'down-2' } } },
+      seed,
+      async () => seed,
+    )
     assert.deepEqual(result, seed)
   })
 
@@ -574,7 +582,11 @@ describe('input-guard E2E — top-level bypass', () => {
       downgraded: true, originalProvider: 'cloud', originalModel: 'gpt',
     })
     const seed = { provider: 'cloud-deepseek-v4', model: 'deepseek-chat' }
-    const reqResult = await svc.handleAgentRequest({ sessionId: 'bypass-1' }, seed, async () => seed)
+    const reqResult = await svc.handleAgentRequest(
+      { agent: { session: { id: 'bypass-1' } } },
+      seed,
+      async () => seed,
+    )
     assert.deepEqual(reqResult, seed, 'enableInputGuard=false → 不改写')
 
     // llm/stream: 即使 sanitized=true 也不 desanitize（因为 enableInputGuard=false）
@@ -871,7 +883,11 @@ describe('input-guard E2E — full downgrade round-trip', () => {
 
     // ─ Phase 2: agent/request（模拟 agent-loop 的 buildRequest 阶段）
     const seed = { provider: 'cloud-deepseek-v4', model: 'deepseek-chat', maxTokens: 4096 }
-    const reqResult = await svc.handleAgentRequest({ sessionId }, seed, async () => seed)
+    const reqResult = await svc.handleAgentRequest(
+      { agent: { session: { id: sessionId } } },
+      seed,
+      async () => seed,
+    )
     assert.equal(reqResult.provider, 'local-qwen3-4b', 'route 改写到 LOCAL')
     assert.equal(reqResult.model, 'qwen3-4b-instruct-2507')
 
