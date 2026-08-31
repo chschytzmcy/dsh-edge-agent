@@ -1,0 +1,14 @@
+# dsh-edge-agent preset metadata.
+#
+# Display text shown in the Web UI's preset picker. `id` is the directory
+# name and `trust` is derived from the discovery root (system = shipped,
+# user = $DSH_HOME/.agent-presets/), so neither is writable here.
+#
+# - `name`: shown in the picker list
+# - `description`: shown as a tooltip / sub-line
+# - `order`: lower = earlier in the picker (1 = shipped standard's slot).
+#   Use a higher number to keep this preset below the shipped ones.
+
+name: Edge Agent
+description: 隐私优先的边缘端 AI agent。本地/云端智能路由、输入防护、PII 自动脱敏；本地文件读写 + Shell + Skills 工具。需配合 dsh-edge-agent profile 使用。
+order: 10

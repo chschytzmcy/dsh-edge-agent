@@ -203,6 +203,26 @@ if [ -f "$REPO_ROOT/profiles/$PROFILE/privacy-policy.json" ]; then
   fi
 fi
 
+# 2026-08-31: 同步自定义 agent-preset 到 $DSH_HOME/.agent-presets/
+#
+# dsh CLI 的 profile-boot 组合器会硬覆盖 `agent-presets` 行的 `roots`
+# 字段为只含 SHIPPED_PRESET_ROOT，自定义 preset 必须放在
+# $DSH_HOME/.agent-presets/<name>/ 下由 includeUserRoot（默认 true）
+# 自动发现。我们的 preset 文件就在仓库里 `profiles/$PROFILE/agent-presets/`，
+# 此处 rsync 到 DSH_HOME 让用户无需手 cp。`--delete` 保证删除已废弃的
+# preset（一旦 remove 后 `agent-presets/<name>/` 应整体消失）。
+USER_PRESET_SRC="$REPO_ROOT/profiles/$PROFILE/agent-presets"
+USER_PRESET_DST="$DSH_HOME/.agent-presets"
+if [ -d "$USER_PRESET_SRC" ]; then
+  mkdir -p "$USER_PRESET_DST"
+  if diff -qr "$USER_PRESET_SRC" "$USER_PRESET_DST" >/dev/null 2>&1; then
+    echo "==> [4/5] agent-presets unchanged — skip"
+  else
+    echo "==> [4/5] sync profiles/$PROFILE/agent-presets/ → $USER_PRESET_DST/"
+    rsync -a --delete "$USER_PRESET_SRC/" "$USER_PRESET_DST/"
+  fi
+fi
+
 # ── 5. 重启 DSH ───────────────────────────────────────────────────────
 if [ "$DO_RESTART" = 0 ]; then
   echo "==> [5/5] --no-restart set; DSH not restarted"
