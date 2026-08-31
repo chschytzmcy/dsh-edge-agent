@@ -1087,6 +1087,166 @@ getStats(): IntentRouterStats {
 
 ---
 
+### 7.17 input-guard.sanitizeOrphanToolCalls——webui 400 修复 + Case B adjacency（2026-08-31）
+
+**背景**：用户从 webui（`:21018`）进入时复用先前 http-api（`:21017`）创建的会话做 `session.prompt`。agent-loop 把整个 history 投影到 OpenAI 兼容 schema 时，**assistant 消息含 `tool_calls` 但后续没有匹配的 `role: tool` + `tool_call_id`**，DeepSeek 返回 400：
+
+> invalid_request_error: An assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id'.
+
+根因：上一 turn assistant 调了 `web_search` / `web_fetch` 等异步工具，但 tool_result 没写进 history（外部中断 / error 路径 / webui 端没拿到 stream 完整 body）。webui 重发时 history 里 assistant 残留了 tool_calls 但无对应 tool 响应。
+
+#### 7.17.1 设计——清洗位置 + 操作格式
+
+**清洗位置**：`buildChatCompletionsBody()`（dsh → OpenAI wire 转换）**之前**。原因：
+
+- 转换之后的 wire 格式已经定型，悬空 tool_calls 写进去就是 DeepSeek 400
+- dsh 格式层（assistant content 数组里 `{type:'tool-call', toolCallId}` 块 + 后续 user content 里 `{type:'tool-result', toolCallId}` 块）保留了**完整结构信息**，可以无损补全
+- 镜像 §7.11 的"分类 LLM 前脱敏"思路：sanitize 在最后一跳出口之前
+
+**关键决策**：不要剥离 orphan tool-call 块，只插入合成 tool-result 在 assistant 紧邻位置（详见 §7.17.2 Case B 陷阱）。
+
+#### 7.17.2 Case B 陷阱——为什么不能剥离 orphan tool-call 块
+
+第一版实现的"剥离 + 注入"策略（剥离 orphan tool-call 块 + 注入合成 tool-result）对最常见的 Case A（assistant 只含 1 个 tool-call，无响应）能工作：
+
+```
+输入: assistant([tool-call call_a])                ← orphan
+策略: 剥离 call_a + 注入 synthetic(tool call_a)
+wire: assistant(tool_calls=[]) + tool(call_a)       ← wire 不带 tool_calls，规则不触发
+       但 tool(call_a) 找不到匹配 → 又 400
+```
+
+实际上 Case A 也有问题：wire 端 `assistant(tool_calls=[])` 后跟 `tool(call_a)`，OpenAI/DeepSeek 看到的 assistant 没有 tool_calls，所以 `tool(call_a)` 真的成了孤儿。
+
+**Case B**（assistant 同时含 responded + orphan）：
+
+```
+输入: assistant([call_1, call_2]), user(tool-result call_1)   ← call_2 是 orphan
+第一版策略: 剥离 call_2 + 注入 synthetic(tool call_2)
+wire: assistant(tool_calls=[call_1]) + tool(call_2) + tool(call_1)
+                                  ↑ call_2 不在 tool_calls → 400
+```
+
+**正确策略**：保留 assistant content 原样（含 orphan tool-call 块），仅插入合成 tool-result 在 assistant 紧邻位置：
+
+```
+wire: assistant(tool_calls=[call_1, call_2]) + tool(call_2 synthetic) + tool(call_1 original)
+       ↑ 包含所有 ids，synthetic tool-result 立即 adjacent，全部匹配 ✓
+```
+
+这条决策是从测试失败倒推出来的——8 个新测试第一版用 OpenAI wire 格式写，3 个失败暴露了这个 bug（详见 §7.17.5 调试踩坑）。
+
+#### 7.17.3 实现
+
+**`src/dsh-adapter/input-guard.ts:231-420`** 新增 `sanitizeOrphanToolCalls(messages, sessionId?)`：
+
+```ts
+sanitizeOrphanToolCalls(
+  messages: ReadonlyArray<Record<string, unknown>>,
+  sessionId?: string,
+): {
+  messages: Array<Record<string, unknown>>
+  orphanCount: number
+  syntheticInjected: number
+}
+```
+
+**算法**：
+
+1. **第一遍**：扫描所有消息，收集所有出现过的 `tool-result.toolCallId` 到 `respondedAll` 集合（不区分 role——dsh 把 tool-result 放在后续 user 消息的 content 块里，可能隔几条消息）
+2. **第二遍**：扫 assistant 消息，对每条有 tool-call 块的 assistant：
+   - 从 assistant content 抽 `toolCallIds`（保持顺序）
+   - 扫描 `i+1` 之后所有消息的 content，收集本 assistant 后续的 `tool-result.toolCallId` 到 `respondedAfter`
+   - `missing = toolCallIds.filter(id => !respondedAfter.has(id))`
+   - 如果 missing 非空：`out.push(msg)`（**保留 assistant 原样**）+ 为每个 missing id `out.push(syntheticUser(tool-result))`
+3. **审计**：当 `orphanCount > 0 || DSH_EDGE_INPUT_GUARD_DEBUG=true` 时，记 `input-guard.orphan-tool-call.recovered`（warn 级）
+
+**synthetic 结构**（dsh 格式）：
+
+```ts
+{
+  role: 'user',
+  content: [{
+    type: 'tool-result',
+    toolCallId: id,
+    content: JSON.stringify({
+      error: 'aborted',
+      reason: 'previous tool call was aborted before completion',
+      recovered_by: 'input-guard.sanitizeOrphanToolCalls',
+    }),
+  }],
+}
+```
+
+**字段名兼容**：`collectToolCallIds` / `collectResultIds` 同时识别 `toolCallId` / `callId` / `id` 三种命名（dsh 历史版本用过 `callId`，旧 schema 也有 `id`）。
+
+**`enableInputGuard=false` 时**：方法 pass-through，`{messages, orphanCount: 0, syntheticInjected: 0}`——保持幂等。
+
+#### 7.17.4 LLM 适配器接入
+
+**`src/dsh-adapter/cloud-llm-adapter.ts`**：
+
+- `inject` 数组加入 `'inputGuard'`（依赖顺序：input-guard 必须在 cloud-llm-adapter 之前 apply）
+- `CloudLlmAdapterImpl` 构造函数加入第 3 参数 `inputGuard?: InputGuardLike`
+- `stream(options)` 在 `buildChatCompletionsBody` **之前**调用清洗：
+
+```ts
+let sanitizedMessages = options.messages
+if (this.inputGuard) {
+  const result = this.inputGuard.sanitizeOrphanToolCalls(
+    options.messages,
+    (options as { sessionId?: string }).sessionId,
+  )
+  sanitizedMessages = result.messages
+}
+const body = buildChatCompletionsBody({ ...options, messages: sanitizedMessages }, ...)
+```
+
+- `apply(ctx, config)` 从 ctx 取 `inputGuard`，传入构造函数
+- **软依赖**：`inputGuard === undefined` 时降级为不洗（旧行为不变）
+
+**`src/dsh-adapter/local-llm-adapter.ts`**：对称实现，qwen3 对 orphan tool_call 不像 DeepSeek 严格 400，但**统一清洗**避免 LLM 上下文出现悬空调用、提升模型行为稳定性。
+
+#### 7.17.5 调试踩坑——测试格式与实现格式错位
+
+**Bug 表**：
+
+| Bug | 原因 | 修复 |
+|---|---|---|
+| 8 个新测试 3 个失败：`orphanCount` expected 1, got 0 | 测试 fixture 用 OpenAI wire 格式（`messages[i].tool_calls[]` 顶层 + `{role:'tool', tool_call_id}` 消息），但实现操作 dsh content-block 格式（`content: [{type:'tool-call', toolCallId}]`） | 全部测试 fixture 重写为 dsh content-block 格式 |
+| 重写后 1 个测试仍失败：`tool-call call_2` 期望在位置 1，实际在位置 2 | 实现初版采用"剥离 orphan tool-call 块 + 注入 synthetic tool-result"，对 Case B（assistant 同时含 responded + orphan）会让 synthetic tool-result 找不到匹配 tool_call_id，wire 端再次 400 | 修正实现策略：保留 assistant content 原样，**仅插入** synthetic tool-result 在 assistant 紧邻位置 |
+| 单 orphan 测试断言失败：期望 `assistantBlocks.length === 1`（剥离后只剩 text），实际 `=== 2` | 同上 | 同上 |
+
+**深刻教训**：
+
+1. **测试 fixture 的格式假设必须与实现一致**——TDD 时如果先写测试再写实现，fixture 写错会"误通过"（impl 识别不了 → 返回 0，断言 `=== 0` 也"过"）。本次 8 个测试里 **5 个"通过"是巧合**，3 个真实失败暴露问题。如果只看到 5 passed 就以为 OK，会带着 Case B bug 上线。
+2. **Case B 是金标准测试**——只测"全 orphan"覆盖不到这个 bug，必须有"部分 orphan"用例。`tests/unit/input-guard.test.ts` §7.17 测试 4 就是金标准。
+
+#### 7.17.6 测试覆盖（8 new cases in `tests/unit/input-guard.test.ts` `describe('sanitizeOrphanToolCalls')`）
+
+| # | 用例 | 验证 |
+|---|---|---|
+| 1 | no assistant tool-call blocks | 返回原 messages，orphanCount=0 |
+| 2 | `enableInputGuard=false` pass-through | 即使 fixture 含 orphan tool-call 块也不检测，orphanCount=0 |
+| 3 | single orphan + 保留 text 块 | assistant 保留 `[tool-call, text]` 双块；合成 user(tool-result) 紧跟其后；audit 落地 + sessionId 正确 |
+| 4 | **Case B 金标准**：assistant 含 `[call_1, call_2]` tool-call 块 + 后续 user(tool-result call_1) | orphan 仅 call_2；assistant 保留**两个** tool-call 块；synthetic user(tool-result call_2) 紧邻；原始 user(tool-result call_1) 顺延 |
+| 5 | back-to-back assistants：assistant(call_a) + assistant(call_b) + user(tool-result call_b) | call_a 是 orphan；输出顺序 assistant(call_a) → synthetic user(tool-result call_a) → assistant(call_b) → user(tool-result call_b) |
+| 6 | tool-result 已存在的 no-op | orphanCount=0，messages.length 不变 |
+| 7 | immutability | JSON.stringify 前后 fixture 一致 |
+| 8 | 审计事件 | orphanCount=1 时记 `input-guard.orphan-tool-call.recovered`，sessionId 透传 |
+
+**`tests/unit/llm-adapters.test.ts` + `tests/unit/local-llm-adapter.test.ts`** 更新 `inject` 断言为 `['llm', 'auditLog', 'inputGuard']`。
+
+#### 7.17.7 留给后续
+
+1. **agent-loop 真实路径覆盖**：本次测试只覆盖 `sanitizeOrphanToolCalls` 单元 + LLM adapter 集成。webui 真实场景需要 e2e 跑一遍（`scripts/m5-e2e-test.sh` 扩展 + webui 端点验证）。
+2. **审计输出冗余控制**：`input-guard.orphan-tool-call.recovered` 是 warn 级，高频 orphan 场景会刷屏。考虑加 `DSH_EDGE_INPUT_GUARD_RECOVERED_RATE_LIMIT` 阈值（每分钟最多 N 条）。
+3. **LLM 行为副作用**：本次修复只保证 schema 合规，LLM 可能把 synthetic `error: aborted` 当真实错误处理（重复调用已中止的工具）。与原 §7.17.1 JSDoc 注释一致——input-guard 职责边界是 schema 合规，不保证 LLM 行为。
+
+**总计**：635 个单测全过（+8 new in `input-guard.test.ts`）+ 11 个 adapter 测试更新，input-guard.test.ts 现在 89 用例，verify:build 4 关全过，compile 零错。
+
+---
+
 ## 八、关键发现
 
 1. **M 段代码"裸奔"时代结束** — Phase 2-4 为 M 段补齐了基础安全能力：PII 脱敏、审计日志轮转、会话管理、CLOUD 端到端脱敏。
