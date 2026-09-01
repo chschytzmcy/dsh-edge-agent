@@ -297,7 +297,7 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
   // G8: Config now actually flows into the service — `enableToolIsolation`
   // drives `filterTools` / `isToolAllowed`. Pre-G8 had `void config` here.
   const service = new ToolsServiceImpl(ctx, config)
-  console.log('[edge-tools-registry] apply() called, ctx.edgeTools registered')
+  ctx.logger?.info?.('[edge-tools-registry] apply() called, ctx.edgeTools registered')
 
   // Phase 5 (2026-08-26): wire `DSH_NATIVE_REALM_MAP` into the live registry.
   // DSH tools are registered by other plugins (`@deepseek-ai/dsh-tool-web`,
@@ -307,7 +307,7 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
   // registration auto-tags. The handler is a no-op for tools we don't care
   // about (resolveRealm already falls back to classifyByPrefix).
   const bootSnapshot = upstreamTools(ctx)
-  console.log(`[edge-tools-registry] boot scan: ${bootSnapshot.length} tools visible via ctx.tools`)
+  ctx.logger?.info?.(`[edge-tools-registry] boot scan: ${bootSnapshot.length} tools visible via ctx.tools`)
   for (const tool of bootSnapshot) {
     // Apply multi-realm native map first
     const multiRealms = DSH_NATIVE_MULTI_REALM[tool.name]
@@ -320,12 +320,12 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
     if (mapped !== undefined) service.setRealm(tool.name, mapped)
   }
   if (bootSnapshot.length > 0) {
-    console.log(`[edge-tools-registry] boot snapshot: ${bootSnapshot.map((t) => t.name).join(', ')}`)
+    ctx.logger?.info?.(`[edge-tools-registry] boot snapshot: ${bootSnapshot.map((t) => t.name).join(', ')}`)
   }
   const onToolsChange = (): void => {
     const after = upstreamTools(ctx)
     if (after.length > bootSnapshot.length) {
-      console.log(`[edge-tools-registry] tools/change → ${after.length} tools now: ${after.map((t) => t.name).join(', ')}`)
+      ctx.logger?.info?.(`[edge-tools-registry] tools/change → ${after.length} tools now: ${after.map((t) => t.name).join(', ')}`)
     }
     for (const tool of after) {
       const multiRealms = DSH_NATIVE_MULTI_REALM[tool.name]

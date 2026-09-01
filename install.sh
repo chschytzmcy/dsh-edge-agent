@@ -15,6 +15,7 @@
 #   DSH_EDGE_PROFILE=my-edge ./install.sh       # 自定义 profile 名
 #   DSH_HOME=~/.dsh ./install.sh                # 自定义 DSH home
 #   DSH_EDGE_LOG=./run.log ./install.sh         # 自定义日志路径
+#   DSH_EDGE_LOG_ROOT=/var/log/dsh ./install.sh # 自定义日志根目录（默认 ~/.dsh-edge-agent/log）
 #   ./install.sh --no-restart                   # 装完不重启
 #   ./install.sh --skip-pnpm                    # 跳过 npm install（假设已装过）
 #   ./install.sh --force-install                # 强制重装本包（覆盖 rsync）
@@ -31,7 +32,11 @@ done
 
 PROFILE="${DSH_EDGE_PROFILE:-dsh-edge-agent}"
 DSH_HOME="${DSH_HOME:-$HOME/.dsh}"
-LOG="${DSH_EDGE_LOG:-/tmp/dsh-edge-agent.log}"
+# 默认日志路径指向 dsh-edge-agent 自己的 file-logger（src/dsh-adapter/file-logger.ts）
+# 写入 ~/.dsh-edge-agent/log/dsh-edge-agent.log。host stdout 也被重定向到这里，
+# 所以操作员只需 tail 一个文件即可看到 DSH host boot + 上游 plugin + 我们19 个
+# plugin 的完整现场。可被 DSH_EDGE_LOG 完全覆盖（写到任何位置）。
+LOG="${DSH_EDGE_LOG:-${DSH_EDGE_LOG_ROOT:-$HOME/.dsh-edge-agent/log/dsh-edge-agent.log}}"
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 PROFILE_DIR="$DSH_HOME/profiles/$PROFILE"
 NESTED_PKG="$PROFILE_DIR/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent"
@@ -230,6 +235,7 @@ if [ "$DO_RESTART" = 0 ]; then
 fi
 
 echo "==> [5/5] restart DSH (profile=$PROFILE, log=$LOG)"
+echo "      (file-logger plugin owns this path; see src/dsh-adapter/file-logger.ts)"
 # 只匹配真正的 dsh node 进程（PID 为数字，命令行含 'node' 和 'dsh'），
 # 避免把 pgrep 自身或包装 shell 一起杀掉。
 pids=$(ps -eo pid,cmd 2>/dev/null | awk '/node.*dsh --profile '"$PROFILE"'/{print $1}') || true
@@ -249,6 +255,10 @@ if [ ! -x "$DSH_BIN" ]; then
   echo "error: dsh binary not found (tried \$DSH_EDGE_BIN, PATH, /home/etsme/.npm-global/bin/dsh)" >&2
   exit 1
 fi
+
+# 确保日志目录存在（file-logger 也会兜底 mkdir，但提前创建能更早暴露
+# 权限错误，避免 nohup 启动后才发现写不进文件）。
+mkdir -p "$(dirname "$LOG")"
 
 nohup bash -c "source '$REPO_ROOT/.env.sh' && exec '$DSH_BIN' --profile $PROFILE" \
   > "$LOG" 2>&1 &

@@ -17,7 +17,7 @@
  * @module dsh-edge-agent/local-llm-adapter
  */
 
-import type { Context } from '@deepseek-ai/cordis'
+import type { Context, LoggerService } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
 import { attributionHeaders, LlmAdapter, LlmError } from '@deepseek-ai/dsh-llm'
 import type {
@@ -67,6 +67,10 @@ function audit(log: AuditLike | undefined, level: 'debug' | 'info' | 'warn' | 'e
   void log.log({ level, kind, source: 'local-llm-adapter', payload }).catch(() => {})
 }
 
+/** Minimal duck-typed handle for Cordis `LoggerService`. Used by tests to stub
+ *  logger behavior; `apply()` injects the live `ctx.logger` from Cordis. */
+type LoggerLike = Pick<LoggerService, 'info' | 'warn' | 'error' | 'debug'>
+
 export interface Config {
   /** Provider route ids this adapter owns. */
   providers: string[]
@@ -100,12 +104,12 @@ export class LocalLlmAdapterImpl extends LlmAdapter {
   private readonly providersList: string[]
   private readonly innerByProvider: Map<string, LlmAdapter>
 
-  constructor(config: Config, auditLog?: AuditLike, inputGuard?: InputGuardLike) {
+  constructor(config: Config, auditLog?: AuditLike, inputGuard?: InputGuardLike, logger?: LoggerLike) {
     super()
     this.providersList = [...config.providers]
     this.innerByProvider = new Map()
     for (const provider of this.providersList) {
-      this.innerByProvider.set(provider, new RealLocalAdapter(provider, config, auditLog, inputGuard))
+      this.innerByProvider.set(provider, new RealLocalAdapter(provider, config, auditLog, inputGuard, logger))
     }
   }
 
@@ -159,8 +163,9 @@ class RealLocalAdapter extends LlmAdapter {
   private readonly apiKeyEnv: string | undefined
   private readonly auditLog: AuditLike | undefined
   private readonly inputGuard: InputGuardLike | undefined
+  private readonly logger: LoggerLike | undefined
 
-  constructor(provider: string, config: Config, auditLog?: AuditLike, inputGuard?: InputGuardLike) {
+  constructor(provider: string, config: Config, auditLog?: AuditLike, inputGuard?: InputGuardLike, logger?: LoggerLike) {
     super()
     this.providerName = provider
     this.baseUrl = config.baseUrl.replace(/\/+$/u, '')
@@ -168,6 +173,7 @@ class RealLocalAdapter extends LlmAdapter {
     this.apiKeyEnv = config.apiKeyEnv
     this.auditLog = auditLog
     this.inputGuard = inputGuard
+    this.logger = logger
   }
 
   get providers(): string[] {
@@ -305,18 +311,19 @@ function readApiKey(slot: string): string | undefined {
 }
 
 export async function apply(ctx: Context, config: Config): Promise<() => Promise<void>> {
-  console.log(`[local-llm-adapter] apply() called with providers: ${config.providers?.join(', ')}`)
+  ctx.logger?.info?.(`[local-llm-adapter] apply() called with providers: ${config.providers?.join(', ')}`)
   const auditLog = (ctx as unknown as { auditLog?: AuditLike }).auditLog
   // 2026-08-31: input-guard 可选注入；DSH_EDGE_INPUT_GUARD=false 或 plugin
   // 启动顺序导致 inputGuard 未就绪时降级为不洗（保持旧行为）。
   const inputGuard = (ctx as unknown as { inputGuard?: InputGuardLike }).inputGuard
-  const adapter = new LocalLlmAdapterImpl(config, auditLog, inputGuard)
+  const logger = ctx.logger as LoggerLike | undefined
+  const adapter = new LocalLlmAdapterImpl(config, auditLog, inputGuard, logger)
   const llm = (ctx as unknown as {
     llm: { registerAdapter(providers: string[], adapter: LlmAdapter): { (): void } }
   }).llm
-  console.log(`[local-llm-adapter] Registering adapter for providers: ${config.providers?.join(', ')}`)
+  ctx.logger?.info?.(`[local-llm-adapter] Registering adapter for providers: ${config.providers?.join(', ')}`)
   const registration = llm.registerAdapter(config.providers, adapter)
-  console.log(`[local-llm-adapter] Adapter registered successfully`)
+  ctx.logger?.info?.(`[local-llm-adapter] Adapter registered successfully`)
   return async () => {
     registration()
   }

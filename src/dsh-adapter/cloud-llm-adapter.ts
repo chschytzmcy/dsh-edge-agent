@@ -20,7 +20,7 @@
  * @module dsh-edge-agent/cloud-llm-adapter
  */
 
-import type { Context } from '@deepseek-ai/cordis'
+import type { Context, LoggerService } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
 import { attributionHeaders, LlmAdapter, LlmError } from '@deepseek-ai/dsh-llm'
 import type {
@@ -48,6 +48,10 @@ export const inject = ['llm', 'auditLog', 'inputGuard'] as const
 interface AuditLike {
   log(entry: { level: 'debug' | 'info' | 'warn' | 'error' | 'security'; kind: string; source: string; payload: Record<string, unknown> }): Promise<unknown>
 }
+
+/** Minimal duck-typed handle for Cordis `LoggerService`. Used by tests to stub
+ *  logger behavior; `apply()` injects the live `ctx.logger` from Cordis. */
+type LoggerLike = Pick<LoggerService, 'info' | 'warn' | 'error' | 'debug'>
 
 /**
  * Minimal interface for input-guard's orphan-tool-call sanitizer
@@ -104,8 +108,9 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
   private readonly temperature: number | undefined
   private readonly auditLog: AuditLike | undefined
   private readonly inputGuard: InputGuardLike | undefined
+  private readonly logger: LoggerLike | undefined
 
-  constructor(config: Config, auditLog?: AuditLike, inputGuard?: InputGuardLike) {
+  constructor(config: Config, auditLog?: AuditLike, inputGuard?: InputGuardLike, logger?: LoggerLike) {
     super()
     this.providersList = [...config.providers]
     this.baseUrl = config.baseUrl.replace(/\/+$/u, '')
@@ -114,6 +119,7 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
     this.temperature = config.temperature
     this.auditLog = auditLog
     this.inputGuard = inputGuard
+    this.logger = logger
   }
 
   private audit(level: 'debug' | 'info' | 'warn' | 'error' | 'security', kind: string, payload: Record<string, unknown>): void {
@@ -151,17 +157,17 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
   }
 
   override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
-    console.log(`[cloud-llm-adapter] stream() called for provider=${options.provider}, model=${options.model}`)
+    this.logger?.debug?.(`[cloud-llm-adapter] stream() called for provider=${options.provider}, model=${options.model}`)
     const apiKey = readApiKey(this.apiKeyEnv)
     if (!apiKey) {
-      console.log(`[cloud-llm-adapter] ERROR: Missing API key in env slot: ${this.apiKeyEnv}`)
+      this.logger?.error?.(`[cloud-llm-adapter] missing API key in env slot: ${this.apiKeyEnv}`)
       this.audit('error', 'llm.cloud.missing_key', { provider: options.provider, model: options.model, envSlot: this.apiKeyEnv })
       throw new LlmError(
         `cloud-llm-adapter: missing API key in env slot "${this.apiKeyEnv}"`,
         'MISSING_CREDENTIAL',
       )
     }
-    console.log(`[cloud-llm-adapter] API key found, calling ${this.baseUrl}/chat/completions`)
+    this.logger?.debug?.(`[cloud-llm-adapter] API key found, calling ${this.baseUrl}/chat/completions`)
     const url = `${this.baseUrl}/chat/completions`
 
     // 2026-08-31：input-guard 清洗孤儿 tool_call（避免 DeepSeek 400）。
@@ -274,19 +280,20 @@ function readApiKey(slot: string): string | undefined {
 }
 
 export async function apply(ctx: Context, config: Config): Promise<() => Promise<void>> {
-  console.log(`[cloud-llm-adapter] apply() called with providers: ${config.providers?.join(', ')}`)
+  ctx.logger?.info?.(`[cloud-llm-adapter] apply() called with providers: ${config.providers?.join(', ')}`)
   const auditLog = (ctx as unknown as { auditLog?: AuditLike }).auditLog
   // input-guard 是可选注入 —— plugin 启动顺序里 cloud-llm-adapter 在
   // input-guard 之后才能拿到；否则降级为不洗（保持旧行为）。enableInputGuard=false
   // 时 inputGuard.sanitizeOrphanToolCalls 自身也 pass-through。
   const inputGuard = (ctx as unknown as { inputGuard?: InputGuardLike }).inputGuard
-  const adapter = new CloudLlmAdapterImpl(config, auditLog, inputGuard)
+  const logger = ctx.logger as LoggerLike | undefined
+  const adapter = new CloudLlmAdapterImpl(config, auditLog, inputGuard, logger)
   const llm = (ctx as unknown as {
     llm: { registerAdapter(providers: string[], adapter: LlmAdapter): { (): void } }
   }).llm
-  console.log(`[cloud-llm-adapter] Registering adapter for providers: ${config.providers?.join(', ')}`)
+  ctx.logger?.info?.(`[cloud-llm-adapter] Registering adapter for providers: ${config.providers?.join(', ')}`)
   const registration = llm.registerAdapter(config.providers, adapter)
-  console.log(`[cloud-llm-adapter] Adapter registered successfully`)
+  ctx.logger?.info?.(`[cloud-llm-adapter] Adapter registered successfully`)
   return async () => {
     registration()
   }

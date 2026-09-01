@@ -131,9 +131,9 @@ export class HttpApiServiceImpl extends Service {
     void this.auditLog.log({ level, kind, source: 'http-api', payload }).catch(() => {})
   }
 
-  /** One-line access log to stdout (visible in /tmp/dsh.log). */
+  /** One-line access log (visible in /tmp/dsh.log via stdout exporter). */
   private accessLog(reqId: string, method: string, path: string, status: number, durationMs: number, extra?: string): void {
-    console.log(`[http-api][${reqId}] ${method} ${path} ${status} ${durationMs}ms${extra ? ' ' + extra : ''}`)
+    this.ctx.logger?.info?.(`[http-api][${reqId}] ${method} ${path} ${status} ${durationMs}ms${extra ? ' ' + extra : ''}`)
   }
 
   /** Append a recent-message entry to the session's ring buffer. Evicts
@@ -213,12 +213,12 @@ export class HttpApiServiceImpl extends Service {
       const router = (this.cordisCtx as any).intentRouter
       if (router && typeof router.classify === 'function') {
         this.intentRouter = router
-        console.log('[http-api] intentRouter: found and valid')
+        this.ctx.logger?.info?.('[http-api] intentRouter: found and valid')
       } else {
-        console.log('[http-api] intentRouter: exists but invalid', router)
+        this.ctx.logger?.info?.('[http-api] intentRouter: exists but invalid', router)
       }
     } catch (err: any) {
-      console.log('[http-api] Error getting intentRouter:', err?.message)
+      this.ctx.logger?.warn?.('[http-api] Error getting intentRouter:', err?.message)
     }
 
     // Get realmSkillBridge after all plugins are loaded. Optional — older
@@ -228,10 +228,10 @@ export class HttpApiServiceImpl extends Service {
       const bridge = (this.cordisCtx as any).realmSkillBridge
       if (bridge && typeof bridge.setSessionRealm === 'function') {
         this.realmSkillBridge = bridge
-        console.log('[http-api] realmSkillBridge: found and valid')
+        this.ctx.logger?.info?.('[http-api] realmSkillBridge: found and valid')
       }
     } catch (err: any) {
-      console.log('[http-api] realmSkillBridge: not available:', err?.message)
+      this.ctx.logger?.warn?.('[http-api] realmSkillBridge: not available:', err?.message)
     }
 
     // Phase 5 diagnostic: dump the upstream tool registry so E2E can see
@@ -242,15 +242,15 @@ export class HttpApiServiceImpl extends Service {
       if (edgeTools && typeof edgeTools.list === 'function') {
         const allTools = edgeTools.list()
         const names = allTools.map((t: any) => `${t.name}:${t.realm}`)
-        console.log(`[http-api] edgeTools.list() → ${names.length} tools: ${names.join(', ')}`)
+        this.ctx.logger?.info?.(`[http-api] edgeTools.list() → ${names.length} tools: ${names.join(', ')}`)
         const hasWebSearch = names.some((n: string) => n.startsWith('web_search:'))
         const hasWebFetch = names.some((n: string) => n.startsWith('web_fetch:'))
-        console.log(`[http-api] web_search registered: ${hasWebSearch}, web_fetch registered: ${hasWebFetch}`)
+        this.ctx.logger?.info?.(`[http-api] web_search registered: ${hasWebSearch}, web_fetch registered: ${hasWebFetch}`)
       } else {
-        console.log('[http-api] edgeTools: missing or invalid')
+        this.ctx.logger?.info?.('[http-api] edgeTools: missing or invalid')
       }
     } catch (err: any) {
-      console.log('[http-api] Error reading edgeTools:', err?.message)
+      this.ctx.logger?.warn?.('[http-api] Error reading edgeTools:', err?.message)
     }
 
     // Initialize the soft-dep sessions helper. The wrapper ducks-types
@@ -1092,7 +1092,7 @@ export class HttpApiServiceImpl extends Service {
       if (this.config.maxActiveSessions > 0 && this.sessions.size >= this.config.maxActiveSessions) {
         await this.evictLeastRecentSession()
       }
-      console.log(`[http-api] Creating agent with provider=${provider}, model=${model}`)
+      this.ctx.logger?.info?.(`[http-api] Creating agent with provider=${provider}, model=${model}`)
       const handle = await this.agents.create({
         sessionId: SessionId(sessionId),
         agentOptions: {
@@ -1101,7 +1101,7 @@ export class HttpApiServiceImpl extends Service {
         },
         meta: { cwd: process.cwd() },
       })
-      console.log(`[http-api] Agent created successfully`)
+      this.ctx.logger?.info?.(`[http-api] Agent created successfully`)
       const now = Date.now()
       record = {
         agent: handle.agent,
@@ -1559,7 +1559,7 @@ export async function apply(ctx: any, config: Config): Promise<() => Promise<voi
   const agents = ctx.get('agents')
   const auditLog = ctx.get('auditLog')
   const tdBus = ctx.get?.('tdBus')
-  console.log(`[http-api] apply() - auditLog: ${!!auditLog}, tdBus: ${!!tdBus}`)
+  ctx.logger?.info?.(`[http-api] apply() - auditLog: ${!!auditLog}, tdBus: ${!!tdBus}`)
   const service = new HttpApiServiceImpl(ctx, config, agents, auditLog, tdBus)
   await service.start()
   return async () => {

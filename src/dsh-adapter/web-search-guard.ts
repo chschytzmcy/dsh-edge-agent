@@ -275,16 +275,16 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
       const fresh = entries.filter(([n]) => !seenNames.has(n))
       if (fresh.length > 0) {
         const names = fresh.map(([n]) => n).join(', ')
-        console.log(`[web-search-guard] tools/change +${fresh.length}: ${names}`)
+        ctx.logger?.info?.(`[web-search-guard] tools/change +${fresh.length}: ${names}`)
         fresh.forEach(([n]) => seenNames.add(n))
-        console.log(`[web-search-guard] total registered: ${seenNames.size} (${Array.from(seenNames).join(', ')})`)
+        ctx.logger?.info?.(`[web-search-guard] total registered: ${seenNames.size} (${Array.from(seenNames).join(', ')})`)
       }
     } catch (err) {
-      console.log(`[web-search-guard] tools/change read error: ${err instanceof Error ? err.message : String(err)}`)
+      ctx.logger?.warn?.(`[web-search-guard] tools/change read error: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
   // Fire once on apply to catch tools already registered.
-  console.log('[web-search-guard] apply() called, registering tools/change + tools/result listeners')
+  ctx.logger?.info?.('[web-search-guard] apply() called, registering tools/change + tools/result listeners')
   setImmediate(onToolsChange)
   const disposeChange = ctxWithOn.on?.('tools/change', onToolsChange)
 

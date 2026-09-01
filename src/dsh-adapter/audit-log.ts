@@ -180,8 +180,7 @@ export class AuditLogServiceImpl extends Service {
     try {
       JSON.stringify(record)
     } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error(`[audit-log] dropping non-JSON entry kind=${entry.kind} source=${entry.source} err=${(err as Error).message}`)
+      this.ctx.logger?.error?.(`[audit-log] dropping non-JSON entry kind=${entry.kind} source=${entry.source} err=${(err as Error).message}`)
       return
     }
     this.ringBuffer.push(record)
@@ -264,8 +263,7 @@ export class AuditLogServiceImpl extends Service {
         // A single non-serializable entry would otherwise pin the buffer
         // forever and stop every subsequent flush. Drop the batch and report;
         // log() already pre-validates JSON so this is a belt-and-braces guard.
-        // eslint-disable-next-line no-console
-        console.error(`[audit-log] flush failed, dropping ${toWrite.length} entries: ${(err as Error).message}`)
+        this.ctx.logger?.error?.(`[audit-log] flush failed, dropping ${toWrite.length} entries: ${(err as Error).message}`)
         this.flushIndex = end
         this.dirty = false
       }
@@ -308,8 +306,7 @@ export class AuditLogServiceImpl extends Service {
       }
     } catch (err) {
       // Rotation failure should not block flushing
-      // eslint-disable-next-line no-console
-      console.error(`[audit-log] rotation failed: ${(err as Error).message}`)
+      this.ctx.logger?.error?.(`[audit-log] rotation failed: ${(err as Error).message}`)
     }
   }
 
