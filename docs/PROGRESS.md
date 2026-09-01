@@ -1409,6 +1409,232 @@ const body = buildChatCompletionsBody({ ...options, messages: sanitizedMessages 
 | 审计预览 | 2 | intent.classify.start preview 脱敏、piiUtils 不可用时 fallback |
 | 截断顺序 | 1 | 截断在脱敏之前执行（先 maxInputLength 截断，再 sanitize） |
 
+### 7.18 webui 对接全景与剩余风险（2026-09-01）+ E.1.1 / E.1.4 落地
+
+**背景**：webui（`:21018`）、自研 http-api（`:21017`）、dsh-im（`:21018` SPA 标签）三条入口的隐私管线已统一经 `input-guard` 三个 global hook（详见 §6 / §7.11）。但两件事在落地中被发现：
+
+#### 7.18.1 E.1.1 — sessions 提升为 configOverride
+
+**问题**：`profiles/dsh-edge-agent/cordis.patch.yml` line 313-323 长期是**纯注释**，而 `patch-surface.snapshot.json` 把 `session-persistence-jsonl` 列为 `configOverride` —— 两者不一致（snapshot stale）。实际行为：上游 `dsh-base` mount 时把 `root: dshHomePath('sessions')`（`~/.dsh/sessions`）作为唯一路径，patch 没真正 override 任何东西，webui / http-api 共用上游默认。
+
+**修复**：把 313-323 的注释换成真正的 configOverride 行：
+
+```yaml
+- id: session-persistence-jsonl
+  config:
+    root: !!js (process.env.DSH_EDGE_SESSION_ROOT ?? (process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent/sessions')
+```
+
+**效果**：
+- webui（apiproxy RPC）写入的 session 和 http-api 的 `POST /v1/chat` 写入的 session **落到同一 JSONL 目录**（默认 `~/.dsh-edge-agent/sessions/`，与 audit/、storage/ 同根）
+- `DSH_EDGE_SESSION_ROOT` 环境变量可改写根目录
+- `patch-surface.snapshot.json` 不再 stale（实际行数恢复 0 inserts / 6 configOverrides / 7 disables）
+- 解决 §A.D.3 "apiproxy vs http-api session 模型分裂"风险的第一步
+
+**为什么不 insert 而用 configOverride**：历史 commit b42c7db 曾自研一个 id=`sessions` 的 insert mount，与上游 `session-persistence-jsonl` 重复；`@xmanrui/dsh-im` loader 升级后触发 duplicate `provide()` + 硬 boot 失败。configOverride 同 id 不重新 apply()，不重复 provide()，是唯一安全路径。
+
+**rsync 验证**：`cordis.patch.yml` repo ↔ `~/.dsh/profiles/.../cordis.patch.yml` md5 一致（`226cb4cd9b00e606d5b98c51e26a79a7`）。下次 dsh 重启生效。
+
+#### 7.18.2 E.1.4 — `scripts/m5-webui-smoke.sh`
+
+**背景**：现有 `scripts/m5-e2e-test.sh` 跑完整 :21017 HTTP API（鉴权 / 会话 / SSE / CRUD），但**没有覆盖 :21018 webui 入口**。webui 是主要用户入口，CI 必跑。
+
+**脚本覆盖**（默认 :21018 + :21017）：
+- **A 组 webui SPA**：A.1 `/` → 200；A.2 `/manifest.webmanifest` → 200；A.3 SPA HTML 含 `dsh-web-ui-all` marker；A.4 SPA HTML 含 `dsh-im` marker
+- **B 组 http-api**：B.1 `/v1/health` → 200（无鉴权）；B.2 `/v1/sessions` 无 token → 401；B.3 `/v1/sessions` bearer token → 200
+- **C 组 webui 隔离断言**：C.1 `:21018/api/sessions` 必须 404；C.2 `:21018/api/chat` 必须 404
+  - 这两条**反断言**保护架构不变量：webui 会话/聊天走 apiproxy RPC；若 webui 暴露 REST sessions，与 http-api 的 bearer / body-cap / `_edgeRejection` 翻译防护**分裂**，是 §D.3 风险
+
+**关键设计**：
+- **端口冲突硬失败**（`:21018` / `:21017` 任一被占用 → 直接 exit 1）。烟囱脚本不会接管已在跑的 dsh 实例；让用户决定是 kill 旧实例还是用 `DSH_EDGE_WEB_PORT` / `DSH_EDGE_HTTP_PORT` 改端口。
+- **双入口轮询**：webui + http-api **都**响应才启动测试，避免半就绪状态。
+- **executable +755** + shell 语法 OK，可直接 `./scripts/m5-webui-smoke.sh` 或塞 CI。
+
+**验证**：
+- `bash -n` 通过
+- 与 `m5-e2e-test.sh` 端口相同 → 不能并行跑；CI 需串行或起新端口
+
+#### 7.18.3 已知剩余风险（架构层，§D.3）
+
+- **dsh-host-apiproxy 不可打补丁** → webui 拒绝路径不可控；input-guard 抛错时 webui 用户看到原始 stack 而非友好 400/403/503（http-api 经 `_edgeRejection` → status code 翻译）
+- **三入口 session schema 仍未统一** → webui client-managed UUID vs http-api `body.sessionId` 命名空间未映射；E.1.1 让 JSONL 文件统一，但 sessionId 命名仍分裂
+- **上游 web-ui-all 版本 caret 升级** → 每次升级需回归 m5-webui-smoke.sh
+
+### 7.19 file-logger plugin — 持久化运维日志 + 双通道纪律（2026-09-01）
+
+**目标**：让 dsh-edge-agent 的 `ctx.logger.*` 输出**持久化到固定路径**，可离线定位服务端问题；同时**建立两个日志通道的纪律**，避免请求/返回内容泄漏到运维日志。
+
+#### 7.19.1 现实是 DSH host 不自带服务日志
+
+调研结论（**写代码前**）：
+
+| 问题 | 事实 |
+|---|---|
+| DSH host 自带 `--log-file` 选项吗？ | ❌ 没有（`dsh --help` 全无 logger 配置）|
+| Cordis `LoggerService` 默认持久化吗？ | ❌ 只有 1000 条内存 ring buffer，exit 即丢 |
+| 今天 `/tmp/dsh-restart3.log` 哪来的？ | `install.sh:253-254` 的 `nohup ... > "$LOG" 2>&1 &`（不是 DSH 自带）|
+
+**结论**：持久化责任完全在我们。DSH 把"日志写哪"完全甩给 launcher。
+
+#### 7.19.2 双通道纪律 — audit-log vs 运维日志
+
+| 通道 | 路径 | 触发 | 内容规则 | 消费者 |
+|---|---|---|---|---|
+| **审计** | `~/.dsh-edge-agent/audit/audit.plain.jsonl` | `auditLog.log({...})` 主动 | **具体调用内容**（provider/model/promptLen/messageCount/toolName/redacted args/durationMs），字段级 PII 脱敏 | 合规/法务 |
+| **运维** | `~/.dsh-edge-agent/log/dsh-edge-agent.log` | `ctx.logger.*` 被动 | **服务逻辑 + 错误信息**，**禁止**请求 body/响应 body/tool args/prompt 文本/PII | 操作员排错 |
+
+**为什么需要两条**：合规需要**结构化、可验证**账本（HMAC 链 P3），运维需要**人类可读、可 grep** 日志。两者**不可替代**，JSONL vs 自由文本。审计里的所有字段都已经在 `redactObject` 后才落盘，运维日志干脆**不写**这类数据，从源头杜绝泄漏。
+
+#### 7.19.3 实现 — `src/dsh-adapter/file-logger.ts`
+
+**核心结构**（377 行）：
+- `Config` schema（schemastery）：`root`、`filename`、`flushIntervalMs`、`queueCapacity`、`maxFileSizeBytes`、`maxFileAgeDays`、`maxRotatedFiles`
+- `FileLoggerServiceImpl extends Service` — 暴露 `ctx.fileLogger`
+- **关键设计点**：Cordis `export()` **严格同步返回 `void`**（`@deepseek-ai/cordis@4.0.1/src/logger.ts:46`，`:154-159` 同步循环不 await），所以必须**同步入队 + 后台 flush**
+- `export(message: Message): void` — 同步 push 到 `queue: string[]`，永不调 `ctx.logger`（否则自环）
+- `setInterval().unref()` 后台 flush（参照 `audit-log.ts:147-152` 模式）
+- `flush()` 用 `fs.open(path, 'a')` append 写入（不需要 read-merge-write 因为单一写入者）
+- `checkAndRotate()` — 复制 `audit-log.ts:278-311` 算法，`.N → .N+1` 移位 + 超 `maxRotatedFiles` 删除
+- `queueCapacity` 上限 10000 — 超限静默丢弃最旧 + 计数器 + stderr 告警（不调 ctx.logger）
+- `formatLine()` — `${iso-ts} ${TYPE.padEnd(5)} [${name}] ${line}\n`，**`Error.stack` 内的 `\n` 转义成 `⏎`**（避免 1 条日志占 5-10 行破坏轮转算术）
+
+**入口函数**：
+```ts
+installFileLogger(ctx, resolved?)  // apply() 第一行执行
+shutdownFileLogger(svc?)            // dispose hook
+resolveLoggerConfig(env?)           // env → ResolvedLoggerConfig
+```
+
+**双重开关**：
+- `DSH_EDGE_LOG_FILE === 'false'` → 跳过（测试）
+- `ctx.logger.exporters.size > 1` → 跳过（first-wins，防止未来 host 自带时双写）
+
+#### 7.19.4 注册位置 + install.sh 路径合并
+
+`src/dsh-adapter/index.ts:apply()` **第 1 行**注册（**早于** drift warning `ctx.logger.warn` 调用）：
+```ts
+const { installFileLogger } = await import('./file-logger.js')
+installFileLogger(ctx)
+```
+
+`install.sh` 改动（line 34/252/237）：
+```bash
+LOG="${DSH_EDGE_LOG:-${DSH_EDGE_LOG_ROOT:-$HOME/.dsh-edge-agent/log/dsh-edge-agent.log}}"
+mkdir -p "$(dirname "$LOG")"   # nohup 前
+```
+
+**为什么不保留 stdout exporter**：用户明确表态"不要 stdout"。保留会让 ctx.logger 同时写 stdout + file — 当 install.sh 把 stdout 重定向到同一个 LOG 文件时**双写**。直接删除是正解。
+
+#### 7.19.5 测试覆盖（`tests/unit/file-logger.test.ts`，11 cases，292 行）
+
+| 用例 | 验证内容 |
+|---|---|
+| plugin shape | `name='file-logger'`、`inject=[]`、`typeof Config='function'`（Schemastery 函数）|
+| format | `<iso-ts> <LEVEL> [<name>] <msg>` + Error.stack `\n` → `⏎` 转义 |
+| 轮转 | 极小 `maxFileSizeBytes=100B`，断言 `dsh-edge-agent.log.1` 出现 |
+| queue 容量保护 | `queueCapacity=3`，push 7 → `droppedCount === 4` |
+| flush 串行化 | 并发 10 次 `flush()` → 文件不重复不缺 |
+| env 开关 | `DSH_EDGE_LOG_FILE=false` → 返回 `undefined` |
+| first-wins | size > 1 → 返回 `undefined`（测了 2 个 fake exporters 模拟 host ring buffer + 1 额外）|
+| resolveLoggerConfig | `DSH_EDGE_LOG_ROOT` 优先 → `USERPROFILE` → `HOME` |
+| shutdownFileLogger | stop timer + drain queue |
+
+**最终验证**：`pnpm compile && pnpm test` → **646 passed / 1 skipped**（38/38 文件）；`grep "console\." src/` = **0 行**。
+
+#### 7.19.6 留给后续
+
+- `DSH_EDGE_LOG_LEVEL` env 开关（默认 INFO，过滤掉 debug 级噪音；本期先不做）
+- HMAC 链式 audit（A3 work，不在本 PR）
+- Cordis 自带 file exporter 时清理 first-wins 兜底代码
+- dev-restart.sh / launch-dev.sh 的 stdout 处理一致性（infra 问题，跟 file-logger 无关）
+
+#### 7.19.7 关键事实写入 memory
+
+#### 7.19.8 部署踩坑 — wiring 修复（2026-09-01）
+
+`§7.19.4` 写的是"在 `src/dsh-adapter/index.ts:apply()` 第 1 行注册 file-logger" —— **这个 wiring 假设是错的**，第一次部署 DSH 就 crash。三个 blocker 串起来才彻底解决：
+
+##### 7.19.8.1 Blocker 1：`session-persistence-jsonl` 重复声明
+
+`§7.18.1` E.1.1 改的 patch 把 `session-persistence-jsonl` 加成 configOverride，**但忘了上游 dsh-base 已经在 patch 里声明过一次**（`@deepseek-ai/dsh-base/cordis.patch.yml:98` 指向 `@deepseek-ai/dsh-session-persistence-jsonl`，`root: dshHomePath('sessions')`）。
+
+```
+Error: dsh: plugin tree failed to load: duplicate loader entry id: session-persistence-jsonl
+  at EntryGroup.update (...cordis-plugin-loader/lib/index.js:81:28)
+```
+
+**修复**：`git checkout profiles/dsh-edge-agent/cordis.patch.yml` 直接 revert。E.1.1 的"把 sessions 路径迁到 `~/.dsh-edge-agent/sessions/`"目标**不在本次 M6 范围**，会话存储路径迁移属于另一个 milestone（需要 disabled 上游 + 新 id 的安全路径，或者 symlink `$DSH_HOME/sessions`）。
+
+##### 7.19.8.2 Blocker 2：`web-search-deepseek` 缺 peer dep
+
+修复 #1 后第二个 crash：`Cannot find package '@deepseek-ai/dsh-environment'`。
+
+根因：`install.sh:104-119` step 2.6 现在能装 `web-search-deepseek`（之前 pnpm policies 拒过），但上游 dsh-base patch:409-410 默认就声明了这个 id，loader 一加载就 import → peer dep 缺失 → ESM 抛 `ERR_MODULE_NOT_FOUND`。
+
+**修复**：我们的 patch 第 128 行加上 `disabled: true`，注释说明 `@deepseek-ai/dsh-environment` 被 pnpm supply-chain 策略拦截，等白名单或上游修 bug 后再启用。
+
+##### 7.19.8.3 Blocker 3（**真正的元根因**）：`dsh-edge-agent` id `disabled: true` —— `apply()` 根本没跑
+
+修完 #1+#2，DSH 终于启动。但 `~/.dsh-edge-agent/log/dsh-edge-agent.log` **只有 14 行**，全是 `.env.sh` echo + `dsh web:`，**没有 `[ts] INFO [plugin-name]` 格式化输出**。给 `installFileLogger` 加 DEBUG stderr → 重编 → 重启 → **DEBUG 行根本没出现**。
+
+> 元根因：`cordis.patch.yml:26-29` 把聚合 id `dsh-edge-agent` 设成 `disabled: true`（注释说"M4 是 single-purpose headless driver, 聚合器保持禁用"），所以 `src/dsh-adapter/index.ts:apply()` **整段从未执行**。
+>
+> 子 plugin（`./http-api`、`./audit-log` 等）通过 `name: '@.../http-api'` 单独被 cordis loader 加载，所以它们工作；但任何写在 `index.ts:apply()` 里**聚合级**的逻辑（drift check、file-logger、...）全部被跳过。
+
+##### 7.19.8.4 修复 — 把 file-logger 升级成独立 plugin id
+
+把 `installFileLogger` 调用从 `index.ts:apply()` 顶部搬走，让 file-logger 自身就是一个完整的 cordis plugin：
+
+| 改动 | 文件 | 内容 |
+|---|---|---|
+| 1 | `src/dsh-adapter/file-logger.ts` | 导出标准 `apply(ctx, config): Promise<dispose>`，内部调 `installFileLogger(ctx, config)` + 返回 `shutdownFileLogger` 包装 |
+| 2 | `package.json` `exports` | 加 `"./file-logger": { "types": ..., "import": ... }`（参考其他子 plugin 入口）|
+| 3 | `profiles/dsh-edge-agent/cordis.patch.yml` `- insert:` 块首位 | 加 `- id: file-logger` + `name: '@deepseek-harness-edge-agent/dsh-edge-agent/file-logger'` + config |
+| 4 | `src/dsh-adapter/file-logger.ts` 顶部注释 | 加 "Wiring (2026-09-01)" 段落，记录 disabled 聚合器的约束 |
+
+**为什么放在 `- insert:` 块首位**：`inject=[]`，cordis 按依赖顺序加载，no-inject plugin 自然排在前 —— file-logger **早于** tcm / td-bus / audit-log / http-api 启动，所有后续 plugin 的 `ctx.logger.*` 都进 file。
+
+**first-wins 兜底仍在**：`installFileLogger` 仍检查 `ctx.logger.exporters.size > 1` —— 未来 DSH 若自带 file exporter，我们自动 skip，不会双写。
+
+##### 7.19.8.5 验证 — 双通道纪律实测
+
+部署后日志：
+
+```
+$ ls ~/.dsh-edge-agent/
+audit/audit.plain.jsonl          # 6.2 MB
+log/dsh-edge-agent.log            # 23 KB, 88 lines
+
+$ tail -3 ~/.dsh-edge-agent/log/dsh-edge-agent.log
+2026-09-01T06:50:50.637Z INFO  [http-api] [http-api] Creating agent with provider=local-qwen3-4b, model=local-qwen3-4b
+2026-09-01T06:50:50.662Z INFO  [http-api] [http-api] Agent created successfully
+2026-09-01T06:50:18.081Z ERROR [preset-tree] Error: a skill provider named "filesystem" is already registered ⏎ ...
+
+$ tail -1 ~/.dsh-edge-agent/audit/audit.plain.jsonl | jq
+{
+  "ts": 1788245481818, "level": "info", "kind": "llm.local.start",
+  "source": "local-llm-adapter",
+  "payload": {
+    "provider": "local-qwen3-4b", "model": "local-qwen3-4b",
+    "messageCount": 74, "promptLen": 1601,
+    "baseUrl": "http://192.168.***.***:11017/v1"   ← 脱敏
+  }
+}
+```
+
+✅ ops log 全是 metadata（provider/model/agent ID/severity/Error stack），**无请求/响应体**。
+✅ audit JSONL 字段级 PII 脱敏生效（baseUrl 末段 `***`）。
+✅ Error stack 的 5-10 行被 `⏎` 折叠成单行，rotation 算术稳定。
+
+##### 7.19.8.6 留给后续
+
+| 项目 | 优先级 | 备注 |
+|---|---|---|
+| `skill-filesystem` 与 preset 的 skill provider 重名 | P1 | `preset-tree` ERROR 隔离了 boot 但 spawn-fork/preset-spawn 链有噪音；上游 dsh 0.1.0-rc.7 bug |
+| E.1.1 session 路径迁移 (`~/.dsh-edge-agent/sessions`) | P2 | 需 disabled 上游 `session-persistence-jsonl` 后用新 id 声明，或 symlink `$DSH_HOME/sessions` |
+| `web-search-deepseek` peer dep 修复 | P3 | 等上游 `@deepseek-ai/dsh-environment` 加白名单或修 bug |
+| `src/dsh-adapter/index.ts:apply()` 内 `installFileLogger(ctx)` 冗余调用 | P4 | first-wins 已保护，但保留会让阅读者误以为还在生效；下个 PR 清掉 |
+
 ### 6. prompt-guard.test.ts — 78 用例 ✅（PII 相关 ~12 用例）
 
 | 类别 | 用例 | 验证内容 |

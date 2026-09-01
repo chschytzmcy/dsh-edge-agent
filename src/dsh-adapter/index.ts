@@ -54,10 +54,25 @@ export const Config: Schema<Config> = Schema.object({
 })
 
 export async function apply(ctx: Context, config: Config): Promise<() => Promise<void>> {
+  // 0. Install the file-logger exporter (see ./file-logger.ts).
+  //
+    // All dsh-edge-agent plugins log through `ctx.logger.*`; without an
+    // external exporter those calls only land in Cordis's 1000-entry
+    // in-memory ring buffer and are lost on exit. We register a file
+    // exporter here, BEFORE any other plugin can call `ctx.logger.*` so
+    // the drift warning (next step) and every boot diagnostic land on
+    // disk. See `./file-logger.ts` for the persistence + rotation logic.
+  //
+  // - Gated by DSH_EDGE_LOG_FILE !== 'false' (default ON; tests opt out).
+  // - "First-wins" guard: if the DSH host already registered its own
+  //   file exporter, ours would double-write — skip instead.
+  const { installFileLogger } = await import('./file-logger.js')
+  installFileLogger(ctx)
+
   // 1. Drift check — warn at boot when upstream DSH has moved.
   const { upstreamDrift } = await import('./contract.js')
   for (const entry of await upstreamDrift()) {
-    console.warn(`[dsh-edge-agent] upstream drift: ${entry.pkg} has ${entry.installed} (expected ${entry.expected})`)
+    ctx.logger?.warn?.(`[dsh-edge-agent] upstream drift: ${entry.pkg} has ${entry.installed} (expected ${entry.expected})`)
   }
 
   // 2. Delegate to the real implementation under plugin.ts.

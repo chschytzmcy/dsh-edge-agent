@@ -126,10 +126,14 @@
 - id: tool-todo
 - id: tool-str-replace-editor
 - id: web-search-deepseek
-  # Provides the DeepSeek-backed search provider for `ctx.web.search()`.
-  # Shares $DEEPSEEK_API_KEY with cloud-llm-adapter; hits the Anthropic-
-  # compatible endpoint (api.deepseek.com/anthropic/v1) using the native
-  # web_search_20250305 server tool, not the chat-completions base.
+  # 2026-09-01: disabled — its peer dep @deepseek-ai/dsh-environment is
+  # blocked by pnpm supply-chain policy, which makes loader crash on
+  # import (ERR_MODULE_NOT_FOUND at boot). Web search provider is not
+  # needed for the audio.log / ops-log verification (M5 smoke path uses
+  # local qwen3-4b + cloud chat, no web tool calls). Re-enable after
+  # adding @deepseek-ai/dsh-environment to packages.json or fixing the
+  # policy allow-list.
+  disabled: true
 
 # 禁用的工具
 - id: tool-pwsh
@@ -204,6 +208,24 @@
 - id: command-compact
   disabled: true
 - insert:
+    # 2026-09-01 (M6): file-logger — durable ops log exporter.
+    # Must mount FIRST so every other plugin's ctx.logger.* call (audit-log
+    # diagnostics, http-api req lines, td-bus blocks, etc.) lands on disk.
+    # No inject deps — Cordis loads plugins in dependency order, and this
+    # has none, so it runs before tcm / td-bus / audit-log / http-api.
+    # See `src/dsh-adapter/file-logger.ts` for the two-channel discipline
+    # (ops log: metadata only; audit JSONL: redacted call content).
+    - id: file-logger
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/file-logger'
+      config:
+        root: !!js process.env.DSH_EDGE_LOG_ROOT ?? ((process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent/log')
+        filename: dsh-edge-agent.log
+        flushIntervalMs: 1000
+        queueCapacity: 10000
+        maxFileSizeBytes: 52428800  # 50MB
+        maxFileAgeDays: 0
+        maxRotatedFiles: 5
+
     # tcm: prompt-guard injects this; must mount first
     - id: tcm
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/tcm'

@@ -39,6 +39,10 @@
       "import": "./lib/types/dsh-adapter/cloud-llm-adapter.js"
     },
     "./cordis.patch.yml": "./cordis.patch.yml",
+    "./file-logger": {
+      "types": "./lib/types/dsh-adapter/file-logger.d.ts",
+      "import": "./lib/types/dsh-adapter/file-logger.js"
+    },
     "./http-api": {
       "types": "./lib/types/dsh-adapter/http-api.d.ts",
       "import": "./lib/types/dsh-adapter/http-api.js"
