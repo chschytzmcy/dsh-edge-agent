@@ -1440,7 +1440,7 @@ const body = buildChatCompletionsBody({ ...options, messages: sanitizedMessages 
 **背景**：现有 `scripts/m5-e2e-test.sh` 跑完整 :21017 HTTP API（鉴权 / 会话 / SSE / CRUD），但**没有覆盖 :21018 webui 入口**。webui 是主要用户入口，CI 必跑。
 
 **脚本覆盖**（默认 :21018 + :21017）：
-- **A 组 webui SPA**：A.1 `/` → 200；A.2 `/manifest.webmanifest` → 200；A.3 SPA HTML 含 `dsh-web-ui-all` marker；A.4 SPA HTML 含 `dsh-im` marker
+- **A 组 webui SPA**：A.1 `/` → 200；A.2 `/manifest.webmanifest` → 200；A.3 SPA HTML 含主 JS bundle（`assets/index-*.js`）;A.4 SPA HTML 含 `dsh-im` marker
 - **B 组 http-api**：B.1 `/v1/health` → 200（无鉴权）；B.2 `/v1/sessions` 无 token → 401；B.3 `/v1/sessions` bearer token → 200
 - **C 组 webui 隔离断言**：C.1 `:21018/api/sessions` 必须 404；C.2 `:21018/api/chat` 必须 404
   - 这两条**反断言**保护架构不变量：webui 会话/聊天走 apiproxy RPC；若 webui 暴露 REST sessions，与 http-api 的 bearer / body-cap / `_edgeRejection` 翻译防护**分裂**，是 §D.3 风险
@@ -2332,3 +2332,43 @@ Layer  3: 规则兜底             → keyword + default（零 token）
 **详细 trace 数据见**:`/tmp/sanitize-trace2.mjs`(v2 修复版,展示 §5.3 两个 bug 的实证数据)。
 
 ---
+
+
+### 7.20 webui + dsh-im 整体卸载 + 重新部署（2026-09-01）
+
+**决策**：把 DSH 官方 Web UI 家族（`@deepseek-ai/dsh-web-app` / `dsh-web-frontend` / `dsh-host-webserver`）以及 `@xmanrui/dsh-im` IM 通道网关从 dsh-edge-agent profile 整体卸载。edge-agent 现**只暴露** 自研 http-api (`:21017`)，单入口架构。
+
+**Why**：
+- @linxin666/dsh-web-ui-all v0.1.20 caret 仍在快速迭代（§7.18 blocker）
+- DSH 官方 webui 引入 katex CSS loader / node-pty prebuild 等上游 blocker
+- dsh-im 强依赖 webserver 的 connection / apiProxy 服务，webserver 卸载后必然启动失败
+
+**改动**：
+| 文件 | 改动 |
+|---|---|
+| `profiles/dsh-edge-agent/package.json` | `bundles[]` 从 3 项 → 1 项（仅 `@deepseek-ai/dsh-base`）；`dependencies` 清空 |
+| `profiles/dsh-edge-agent/cordis.patch.yml` | 删 `webserver` config override；删 `ui-attachment` disabled；删 dsh-im 整段注释块（标注为历史记录）；subagent enable 注释精简 |
+| `install.sh` step 2.8 | 整个 webui/im install loop 替换为一行 skip log |
+| `deploy.sh` install loop | 移除 `@deepseek-ai/dsh-host-webserver` / `dsh-web-app` / `dsh-web-frontend` / `@xmanrui/dsh-im` |
+| `scripts/m5-webui-smoke.sh` | 标记废弃（profile 不再暴露 webui，脚本无意义） |
+| `~/.dsh/profiles/dsh-edge-agent/` | 整目录删除重建 |
+
+**新架构**：
+- 单端口：`:21017`（自研 REST + SSE + Bearer）
+- dsh-base 提供 LLM / sessions / tools / sandbox / subagent / skill 全套基础设施
+- dsh-edge-agent 自研插件：tcm / audit-log / local-storage / sessions / privacy-policy / tools / prompt-guard / intent-router / model-router / cloud-llm-adapter / local-llm-adapter / sanitizer-pipeline / td-bus / realm-skill-bridge / input-guard / http-api / file-logger
+- input-guard 三个全局 hook（agent/pre-step + agent/request + llm/stream）保护唯一入口
+
+**回归验证**（pid 347582）：
+
+| 检查 | 结果 |
+|---|---|
+| `:21017/v1/health` | 200 |
+| `:21017/v1/sessions` 无 token | 401 |
+| `:21018/` | connection refused (000) — webui 已卸载 |
+| chat 端到端（input-guard → intent-router → LLM） | sessionId 返回 + intent=LOCAL confidence=1 |
+| file-logger 输出 | `[http-api] apply() - auditLog: true, tdBus: true` + 12 tools 列表 |
+
+**端口分配**：`:21017`（http-api）保留；`:21018`（webserver）永久释放。
+
+**memory 影响**：`dsh-im-runtime-blockers` 大幅简化（webui/im 全卸，原 blocker #1/#3 失效，#4/#5 不再适用）。详见 [[dsh-im-runtime-blockers]] 更新。

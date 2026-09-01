@@ -135,51 +135,17 @@ if [ "$DO_PNPM" = 1 ]; then
   done
 fi
 
-# ── 2.8. 安装 DSH 官方 Web UI 全家桶（可选）──────────────────────────
-# DSH 自带 web UI：`@deepseek-ai/dsh-web-app`（浏览器 surface bundle +
-# runtime glue + 静态 dist 服务）+ `@deepseek-ai/dsh-host-webserver`
-# （node:http 服务器，提供前端 dist 与插件注册的路由）+
-# `@linxin666/dsh-web-ui-all`（task-board / git-graph / pet /
-# remote-web-ui / live-stats / skin-center 等全家桶）。
-#
-# 与现有 http-api 的关系：
-#   - http-api 监听 DSH_EDGE_HTTP_PORT (默认 21017)，对外暴露 JSON/SSE
-#     API (/v1/chat, /api/launch, /api/sessions/...)
-#   - dsh-host-webserver 监听 DSH_EDGE_WEB_PORT (默认 21018)，服务
-#     web UI 前端 + 插件路由（/ui/...、/ws 等）
-#   - 两者各自 createServer，必须在不同端口
-#
-# `@xmanrui/dsh-im`：基于 dsh-host-webserver 的 connection / apiProxy
-# 服务运行的 IM 通道网关（飞书 / 微信 / 钉钉 / 企业微信 / QQ / Slack /
-# Telegram / Discord / WhatsApp 九大渠道 + AI Office Connector）。
-# 它**不监听新端口**，而是通过 webserver 内部 RPC 把 IM 消息接入
-# agent-loop，自动继承 input-guard 隐私管线。
-#
-# 跳过条件：
-#   - DSH_EDGE_SKIP_WEBUI=1  显式跳过
-#   - 已有 node_modules/@linxin666/dsh-web-ui-all 且非强制安装
-if [ "$DO_PNPM" = 1 ] && [ "${DSH_EDGE_SKIP_WEBUI:-0}" != "1" ]; then
-  if [ -d "$PROFILE_DIR/node_modules/@linxin666/dsh-web-ui-all" ] && [ "$FORCE_INSTALL" = 0 ]; then
-    echo "==> [2.8/5] skip web-ui install (already at $PROFILE_DIR/node_modules/@linxin666/dsh-web-ui-all)"
-  else
-    echo "==> [2.8/5] install DSH web UI family  (profile=$PROFILE)"
-    for _pkg in \
-      @deepseek-ai/dsh-host-webserver \
-      @deepseek-ai/dsh-web-app \
-      @deepseek-ai/dsh-web-frontend \
-      @linxin666/dsh-web-ui-all \
-      @xmanrui/dsh-im; do
-      echo "       + $_pkg"
-      dsh plugin --profile "$PROFILE" add "$_pkg" >/dev/null 2>&1 || {
-        echo "  warning: failed to add $_pkg — web UI may not work." >&2
-      }
-    done
-  fi
-elif [ "${DSH_EDGE_SKIP_WEBUI:-0}" = "1" ]; then
-  echo "==> [2.8/5] skip web-ui install (DSH_EDGE_SKIP_WEBUI=1)"
-else
-  echo "==> [2.8/5] skip web-ui install (--skip-pnpm)"
-fi
+# ── 2.8. Web UI 家族 ── 2026-09-01 卸载 ────────────────────────────
+# DSH 官方 Web UI + 第三方 dsh-web-ui-all 全家桶 + @xmanrui/dsh-im IM 通道
+# 网关全部卸载。edge-agent profile 现只暴露自研 http-api (:21017)，单
+# 入口；移除理由：
+#   - @linxin666/dsh-web-ui-all v0.1.20 caret 仍在快速迭代（blocker）
+#   - DSH 官方 webui (dsh-host-webserver / dsh-web-app / dsh-web-frontend)
+#     引入 katex CSS loader / node-pty prebuild 等上游 blocker
+#   - dsh-im 强依赖 webserver 的 connection / apiProxy 服务，webserver
+#     卸载后必然挂；一并清掉更干净
+# 唯一入口：自研 http-api :21017 → agent-loop → input-guard → LLM adapters
+echo "==> [2.8/5] skip web-ui install (uninstalled 2026-09-01; http-api :21017 only)"
 
 # ── 3. 同步编译产物到 DSH 实际加载的嵌套包 ───────────────────────────
 if [ ! -d "$NESTED_PKG" ]; then

@@ -195,15 +195,19 @@ run_group_webui_root() {
     # A.2 web manifest 存在 — 表明 webserver 正确服务 SPA 静态资源
     expect_status "A.2 :$WEB_PORT/manifest.webmanifest" "$WEB_URL/manifest.webmanifest" "200"
 
-    # A.3 SPA HTML 包含 dsh-web-ui-all bundle marker
-    log_test "A.3 SPA HTML 含 dsh-web-ui-all marker"
+    # A.3 SPA HTML 含主 JS bundle (Vite 构建的 index-*.js)
+    # 2026-09-01 变更：移除 dsh-web-ui-all 后，原 A.3 标记不再适用；改为检查
+    # SPA 主 bundle（assets/index-*.js），这是 DSH 官方 dsh-web-app /
+    # dsh-web-frontend 提供的核心入口。bundle 缺失 = SPA 加载失败 = webui
+    # 整体不可用。
+    log_test "A.3 SPA HTML 含主 JS bundle"
     local html
     html=$(curl -s --max-time 5 "$WEB_URL/" 2>/dev/null || true)
-    if echo "$html" | grep -q "dsh-web-ui-all"; then
-        log_pass "A.3 SPA 含 dsh-web-ui-all marker"
+    if echo "$html" | grep -qE 'assets/index-[^"]+\.js'; then
+        log_pass "A.3 SPA 含主 JS bundle"
         TESTS_PASSED=$((TESTS_PASSED + 1))
     else
-        log_fail "A.3 SPA 缺 dsh-web-ui-all marker (webui bundle 未加载)"
+        log_fail "A.3 SPA 缺主 JS bundle (webui 加载失败)"
         TESTS_FAILED=$((TESTS_FAILED + 1))
     fi
 

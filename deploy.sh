@@ -196,16 +196,12 @@ fi
 # skill 链：  dsh-skill → ctx.skills 注册表
 #             dsh-tool-skill → model-facing skill 工具 + catalog 注入
 #             dsh-skill-filesystem → ~/.agents/skills/ 自动发现
-# web UI：   dsh-host-webserver → node:http 服务 web UI 前端 (端口 21018)
-#             dsh-web-app → 浏览器 surface bundle + runtime glue
-#             dsh-web-frontend → Vite 构建的 SPA 静态资源
-#             dsh-web-ui-all → task-board/git-graph/pet/skin-center 全家桶
-#             @xmanrui/dsh-im → IM 通道网关（飞书/微信/钉钉/企微/QQ/
-#                              Slack/Telegram/Discord/WhatsApp + AI Office）；
-#                              不开新端口，依赖 webserver 的 connection /
-#                              apiProxy 服务，自动过 input-guard 隐私管线
+# web UI / IM：2026-09-01 卸载。edge-agent profile 现只暴露自研
+#               http-api (:21017)，不需要 dsh-host-webserver /
+#               dsh-web-app / dsh-web-frontend / @xmanrui/dsh-im /
+#               @linxin666/dsh-web-ui-all 中的任何一个。
 # 缺任何一个都会导致对应功能不可用。`dsh plugin add` 是幂等的。
-echo "  -> install upstream web-search + skill + web-ui + im packages"
+echo "  -> install upstream web-search + skill packages (no web-ui, no im)"
 for _pkg in \\
     @deepseek-ai/dsh-agent-loop \\
     @deepseek-ai/dsh-tool-web \\
@@ -213,12 +209,7 @@ for _pkg in \\
     @deepseek-ai/dsh-web-search-deepseek \\
     @deepseek-ai/dsh-skill \\
     @deepseek-ai/dsh-tool-skill \\
-    @deepseek-ai/dsh-skill-filesystem \\
-    @deepseek-ai/dsh-host-webserver \\
-    @deepseek-ai/dsh-web-app \\
-    @deepseek-ai/dsh-web-frontend \\
-    @linxin666/dsh-web-ui-all \\
-    @xmanrui/dsh-im; do
+    @deepseek-ai/dsh-skill-filesystem; do
     dsh plugin --profile "\$PROFILE" add "\$_pkg" >/dev/null 2>&1 || {
         echo "  warning: failed to add \$_pkg" >&2
     }

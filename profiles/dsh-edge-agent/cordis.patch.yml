@@ -43,25 +43,15 @@
 
 # Upstream @deepseek-ai/dsh-client-ui-attachment uses
 # `import "katex/dist/katex.min.css"` (an unstubbed CSS require). Node ESM
-# rejects with ERR_UNKNOWN_FILE_EXTENSION, which hard-fails boot whenever
-# @deepseek-ai/dsh-web-app is in bundles. Attachment UI is web-only; dsh-im
-# (IM gateway) and the http-api don't need it.
-- id: ui-attachment
-  disabled: true
+# rejects with ERR_UNKNOWN_FILE_EXTENSION whenever
+# @deepseek-ai/dsh-web-app is in bundles. 2026-09-01: webui 卸载后该
+# bundle 不再加载，ui-attachment row 无源 → 整段移除。
 
-# ── DSH 官方 Web UI 家族 ───────────────────────────────────────────────────
-# 与 edge-agent 的 http-api (21017, JSON/SSE) 共存：dsh-host-webserver
-# 监听独立的 web 端口（默认 21018），服务前端 SPA 与 web-ui-* 插件路由。
-# Web UI 的 chat 若要复用我们的脱敏/防护管线，可把 remote-web-ui 的
-# backendUrl 指向 http://127.0.0.1:21017 （路径 A），自动过 prompt-guard
-# + sanitizer-pipeline + privacy-policy。
-- id: webserver
-  config:
-    # 2026-08-29: 改为 0.0.0.0 开放监听（部署环境需要从外部访问 webui）。
-    # 安全约束：webui 仍走 loopback trust + pairing token；生产部署务必在
-    # 防火墙 / reverse proxy 层做 IP allowlist（部署责任）。
-    host: !!js process.env.DSH_EDGE_WEB_HOST ?? '0.0.0.0'
-    port: !!js parseInt(process.env.DSH_EDGE_WEB_PORT ?? '21018', 10)
+# ── 2026-09-01 变更：卸载 DSH 官方 Web UI 家族 ─────────────────────
+# edge-agent profile 现只暴露自研 http-api (:21017, JSON/SSE)。
+# dsh-host-webserver / dsh-web-app / dsh-web-frontend 全部从 bundles 移除，
+# 对应的 `webserver` config override 行删除。dsh-im 同步卸载（依赖
+# webserver 的 connection / apiProxy 服务）。唯一入口：自研 http-api。
 
 # Force the agent loop to a provider that edge-agent registered. The
 # default in dsh-base is `deepseek-official`, which we just disabled.
@@ -166,17 +156,22 @@
 - id: tool-goal
   disabled: true
 - id: skill-filesystem
-  # Enabled: auto-discovers skills from ~/.agents/skills/ (lark-* etc.)
-  # realm-skill-bridge tags and filters them by realm.
-  disabled: false
+  # 2026-09-01: Disabled at host — the dsh-edge-agent agent preset registers
+  # its own skill-filesystem row (see agent-presets/dsh-edge-agent/
+  # agent.cordis.yml). Leaving both enabled throws "a skill provider named
+  # 'filesystem' is already registered" at session start, blocking every
+  # new chat in the Web UI. Mirrors the tool-skill pattern just above:
+  # host owns the registry, preset owns the provider entries, realm-skill-
+  # bridge filters the merged catalog per realm regardless of which row
+  # registered the tool.
+  disabled: true
 - id: skill-badge
   disabled: true
 - id: subagent
-  # ENABLED 2026-08-29: webui apiproxy requires ctx.subagents service
+  # 2026-09-01: webui/im 卸载后保留（dsh-base 已 enable；不写本行也可，
+  # 显式声明便于阅读）。
 - id: subagent-spawn-in-process
-  # ENABLED 2026-08-29: webui apiproxy requires ctx.subagents service
 - id: subagent-fork-in-process
-  # ENABLED 2026-08-29: webui apiproxy requires ctx.subagents service
 - id: workflow-worker-thread
   disabled: true
 # 2026-08-31: goal service + driver + command re-enabled — required by
@@ -434,49 +429,10 @@
         localProvider: !!js process.env.DSH_EDGE_LOCAL_PROVIDER ?? 'local-qwen3-4b'
         localModel: !!js process.env.DSH_EDGE_LOCAL_MODEL ?? 'qwen3-4b-instruct-2507'
 
-    # ── 第三入口：dsh-im（IM 聊天软件通道网关）────────────────────────
-    # 飞书 / 微信 / 钉钉 / 企业微信 / QQ / Slack / Telegram / Discord /
-    # WhatsApp 九大 IM 渠道 + AI Office Connector。
-    #
-    # 关键依赖（由 dsh-base / webserver 提供，本 patch 不重复声明）：
-    #   - credentials    → dsh-credentials-local (dsh-base)
-    #   - typertGateway  → dsh-api-gateway      (dsh-base, id=typert-gateway)
-    #   - connection     → dsh-host-webserver   (需要 webserver bundle)
-    #   - apiProxy       → dsh-host-webserver 内部 (需要 webserver bundle)
-    #
-    # 不监听新端口；不引入新鉴权面；所有 IM 消息经 webserver 内部 RPC
-    # 进入 agent-loop，自动过 input-guard 三 hook（agent/pre-step +
-    # agent/request + llm/stream）。Channel 凭据由用户在 webui 的
-    # 「设置 → IM机器人」页面扫码 / 输入，存储到 dsh-credentials-local
-    # 受保护的本地凭据存储，配置文件不落盘。
-    #
-    # 渠道启用由用户在 webui 开关控制；此处只声明插件本身，提供空
-    # config 让所有渠道默认 off（apply 内部对单 channel 失败容错，
-    # 不会因为某个 channel 启动失败而拒绝整个插件）。
-    #
-    # RUNTIME STATUS (2026-08-31): dsh-im 已挂载并与 webui 共存。
-    # packages.json 的 dsh.profile.bundles 已包含 4 项：
-    #   - @deepseek-ai/dsh-base          (基础 + webserver row)
-    #   - @deepseek-ai/dsh-web-app       (app:web-surface + web-runtime)
-    #   - @linxin666/dsh-web-ui-all      (3rd 方 SPA UI + task-board/git-graph 等)
-    #   - @xmanrui/dsh-im@3.1.1          (IM 9 渠道 + AI Office connector)
-    # 三入口端口：自研 HTTP API → :21017，Web UI (dsh-host-webserver)
-    # → :21018，IM Gateway → 独立 Node 进程（与 dsh 主进程分离，通过
-    # webserver 内部 RPC 进入 agent-loop，自动过 input-guard 三 hook）。
-    #
-    # 已知上游 blocker（跟踪 dsh-im-issue 清单，2026-08-29 仍在）：
-    #   - katex CSS loader（@deepseek-ai/dsh-client-ui-attachment 引用
-    #     `katex/dist/katex.min.css` 在 Node ESM 下 ERR_UNKNOWN_FILE_EXTENSION）
-    #     → 本 patch 已 disabled `ui-attachment` 行 (a186472) 绕过
-    #   - node-pty prebuild 缺失（linux-x64 prebuild binary 缺）
-    #   - subagent 工具族默认 disabled（dsh-im connector 在某些渠道需
-    #     subagent；M4 暂不需要）
-    #   - dsh-web-ui-all 版本（v0.1.20）上游仍在快速迭代
-    #
-    # 启用前必跑：dsh --profile dsh-edge-agent 启动看 stderr，确认
-    # 4 bundles 全 loaded 且无 ERR_* panic。M4 smoke 已验证 :21017
-    # HTTP API 健康；:21018 webui 与 IM connector 端到端尚未验证。
-    #
-    # 本 patch 不再 insert 避免 duplicate loader entry id。
+    # ── 第三入口：dsh-im（IM 聊天软件通道网关）── 卸载 ──────────────
+    # 2026-09-01：dsh-im 卸载（依赖 dsh-host-webserver 的 connection /
+    # apiProxy 服务；webserver 移除后必然启动失败）。profile 现只暴露
+    # 自研 http-api :21017 一个入口。整段保留为历史记录，避免将来误
+    # 重新引入（dsh-im 与 webserver 强耦合，需同时恢复）。
 
 

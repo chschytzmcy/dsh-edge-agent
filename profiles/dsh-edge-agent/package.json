@@ -4,15 +4,9 @@
   "dsh": {
     "profile": {
       "bundles": [
-        "@deepseek-ai/dsh-base",
-        "@deepseek-ai/dsh-web-app",
-        "@linxin666/dsh-web-ui-all",
-        "@xmanrui/dsh-im"
+        "@deepseek-ai/dsh-base"
       ]
     }
   },
-  "dependencies": {
-    "@linxin666/dsh-web-ui-all": "^0.1.20",
-    "@xmanrui/dsh-im": "^3.1.1"
-  }
+  "dependencies": {}
 }
