@@ -2372,3 +2372,73 @@ Layer  3: 规则兜底             → keyword + default（零 token）
 **端口分配**：`:21017`（http-api）保留；`:21018`（webserver）永久释放。
 
 **memory 影响**：`dsh-im-runtime-blockers` 大幅简化（webui/im 全卸，原 blocker #1/#3 失效，#4/#5 不再适用）。详见 [[dsh-im-runtime-blockers]] 更新。
+
+
+### 7.21 intent-router defaultCategory 改为 SANITIZED + 端到端验证（2026-09-02）
+
+**决策**（commit `62e7ebf`）：把 LLM 分类失败 / 规则未命中时的 `defaultCategory` 从 `CLOUD` 改为 `SANITIZED`。
+
+**Why fail-closed**：
+- 旧 `default:cloud` 是 **fail-open**：模糊请求直接路由到云端 LLM，raw 数据可能 leak 到云端
+- 历史基线（全量 audit）：**102 次** `default:cloud` 事件（7.7% of 1,318 classifications），conf 全是 0.5，全部为 `path: rules-after-llm-error`
+- 新 `default:sanitized` 走 input-guard sanitizer-pipeline：sanitize 成功 → 上云（带脱敏数据），sanitize 失败 → `input-guard.sanitize.downgraded` → LOCAL
+
+**改动**：
+| 文件 | 改动 |
+|---|---|
+| `src/dsh-adapter/intent-router.ts:60` | `Schema.default('CLOUD')` → `Schema.default('SANITIZED')` |
+| `profiles/dsh-edge-agent/cordis.patch.yml` | `defaultCategory: CLOUD` → `SANITIZED` |
+
+**下游支持**（确认 SANITIZED realm 端到端可达）：
+- `model-router.ts:29 Realm = 'LOCAL' | 'CLOUD' | 'SANITIZED'` ✅
+- `privacy-policy.ts:45 realm` 同样三态 ✅
+- `realm-skill-bridge.ts:34 RealmTag` 四态（含 hidden） ✅
+- `input-guard.ts:575 shouldSanitize = CLOUD || SANITIZED || sanitizeLocalTraffic` ✅
+- `input-guard.ts:643 input-guard.sanitize.downgraded` → LOCAL（sanitize 失败自动降级） ✅
+
+---
+
+**端到端验证**（PID 367616 + env 覆盖 `DSH_EDGE_INTENT_PROVIDER=nonexistent-llm-provider` 强制 LLM 失败路径）：
+
+**测试请求**：
+1. `POST /v1/chat {"message": "zxqw 7&^% vv qq"}` — 纯 gibberish，无任何 fallback keyword 命中
+2. `POST /v1/chat {"message": "🎉🎊🌟"}` — emoji 串，无任何 fallback keyword 命中
+
+**完整 audit 链路**（session 32594d8f / e5b35dad）：
+
+```
+09:22:20.276  http.chat.start           sid=32594d8f-d781...
+09:22:20.277  intent.classify.start     classifier=nonexistent-llm-provider  textLen=15
+09:22:20.280  intent.classify.end       cat=SANITIZED path=rules-after-llm-error  conf=0.5  rat=default:sanitized
+09:22:20.280  intent.classify.llm_error err=intent-router: llm response unclear
+09:22:23.154  http.chat.end             sid=32594d8f-d781...  duration=2878ms
+
+09:22:23.163  http.chat.start           sid=e5b35dad-d78c...
+09:22:23.164  intent.classify.start     classifier=nonexistent-llm-provider  textLen=6
+09:22:23.165  intent.classify.end       cat=SANITIZED path=rules-after-llm-error  conf=0.5  rat=default:sanitized
+09:22:23.165  intent.classify.llm_error err=intent-router: llm response unclear
+09:22:27.495  http.chat.end             sid=e5b35dad-d78c...  duration=4333ms
+```
+
+**关键 audit 事件 verbatim**：
+
+```jsonl
+{"ts":1788312140280,"level":"info","kind":"intent.classify.end","source":"intent-router","payload":{"textLen":15,"path":"rules-after-llm-error","category":"SANITIZED","confidence":0.5,"rationale":"default:sanitized","durationMs":4}}
+{"ts":1788312140280,"level":"warn","kind":"intent.classify.llm_error","source":"intent-router","payload":{"textLen":15,"error":"intent-router: llm response unclear"}}
+{"ts":1788312143165,"level":"info","kind":"intent.classify.end","source":"intent-router","payload":{"textLen":6,"path":"rules-after-llm-error","category":"SANITIZED","confidence":0.5,"rationale":"default:sanitized","durationMs":2}}
+{"ts":1788312143165,"level":"warn","kind":"intent.classify.llm_error","source":"intent-router","payload":{"textLen":6,"error":"intent-router: llm response unclear"}}
+```
+
+**对比**：
+
+| 维度 | 旧（default:cloud） | 新（default:sanitized） |
+|---|---|---|
+| `category` | `CLOUD` | **`SANITIZED`** ✓ |
+| `targetRealm` | `cloud` | `sanitized`（sanitize 失败时由 input-guard 降到 `local`） |
+| `rationale` | `default:cloud` | **`default:sanitized`** ✓ |
+| sanitize 失败 | 仍走 CLOUD（raw 外发）| **降级 LOCAL**（fail-closed）✓ |
+| 历史触发次数 | 102 | 0（4 天内无生产 fallback） |
+
+**验证收尾**：测试完成后用 `kill 367616` + 重启 dsh（不传 `DSH_EDGE_INTENT_PROVIDER` override），回到生产配置。重启后 PID 368572，`/v1/health` 200，正常 chat `"2+2 等于几"` 走 LLM path → LOCAL conf=1（10.6s 完成），证明 source/route/patch/runtime 四层一致。
+
+**memory 影响**：audit log 中 ts=1788312140280 / 1788312143165 是首批也是迄今仅有的 2 条 `default:sanitized` 事件，可作未来 CI 烟测的金标准断言（`grep '"rationale":"default:sanitized"' ~/.dsh-edge-agent/audit/audit.plain.jsonl | wc -l` ≥ 1 即通过 defaultCategory 改动回归）。
