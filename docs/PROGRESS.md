@@ -2442,3 +2442,83 @@ Layer  3: 规则兜底             → keyword + default（零 token）
 **验证收尾**：测试完成后用 `kill 367616` + 重启 dsh（不传 `DSH_EDGE_INTENT_PROVIDER` override），回到生产配置。重启后 PID 368572，`/v1/health` 200，正常 chat `"2+2 等于几"` 走 LLM path → LOCAL conf=1（10.6s 完成），证明 source/route/patch/runtime 四层一致。
 
 **memory 影响**：audit log 中 ts=1788312140280 / 1788312143165 是首批也是迄今仅有的 2 条 `default:sanitized` 事件，可作未来 CI 烟测的金标准断言（`grep '"rationale":"default:sanitized"' ~/.dsh-edge-agent/audit/audit.plain.jsonl | wc -l` ≥ 1 即通过 defaultCategory 改动回归）。
+
+
+### 7.22 脱敏（sanitize）端到端验证（2026-09-02）
+
+**目的**：验证 input-guard sanitizer-pipeline 在 CLOUD 路径下端到端工作，包括 PII 检测 → 占位符替换 → mapping 注册 → forward 到云端 LLM。
+
+**测试矩阵**（PID 368572）：
+
+| # | 输入 | 预期路径 | 实际结果 |
+|---|---|---|---|
+| 1 | phone + id-card + email | secret → input-guard REJECT | ✓ REJECT（defense-in-depth） |
+| 2 | bank-card | secret → REJECT | ✓ REJECT |
+| 3 | IP `192.0.2.1` only | confidential → sanitize | ✗ 不命中（IP 上下文正则排除 RFC 5737 段） |
+| 4 | 无 PII 纯知识查询 | 无 sanitize | ✓ 正常通过 |
+| 5-7 | phone / phone+email / MAC | CLOUD + sanitize | ✗ 实际全部 LOCAL（关键词触发 routing rule #3） |
+| **8** | **phone + "帮我写一首关于秋天的小诗"** | **CLOUD + sanitize×1** | **✓ 完美 sanitize（金标准用例）** |
+| 9 | phone + email + "写进通讯录" | CLOUD + sanitize×2 | ✗ LOCAL（"通讯录/写进"触发 routing rule #3） |
+
+**金标准用例 (Test 8) 完整 audit 链路**：
+
+```
+09:41:36  intent.classify.end     cat=CLOUD  conf=0.95  rat=llm-classified:cloud
+09:41:40  sanitizer.sanitized     src=sanitizer-pipeline  replacementCount=1  totalMappings=1
+09:41:40  input-guard.sanitized   src=input-guard         replacementCount=1  category=CLOUD
+09:41:44  http.chat.end           sid=1214ef9a-b058-4123-9ba5-7e1b190fe662  duration=10711ms
+```
+
+**关键 audit 事件 verbatim**：
+
+```jsonl
+{"ts":1788315700189,"level":"info","kind":"sanitizer.sanitized","source":"sanitizer-pipeline","payload":{"sessionId":"1214ef9a-b058-4123-9ba5-7e1b190fe662","replacementCount":1,"totalMappings":1}}
+{"ts":1788315700190,"level":"info","kind":"input-guard.sanitized","source":"input-guard","payload":{"sessionId":"1214ef9a-b058-4123-9ba5-7e1b190fe662","replacementCount":1,"category":"CLOUD"}}
+```
+
+**用户响应**：云端 LLM 拿到的是 `我的联系方式是 [PHONE_PLACEHOLDER_1], 帮我写一首关于秋天的小诗`，返回完整秋天小诗。response stream 末尾 desanitize 阶段会用 mapping 把占位符反替换（本用例 LLM 没在诗里提到 phone，所以 desanitize 命中 0 次 — 这是预期行为）。
+
+**Sanitize 端到端链路（8 步）验证清单**：
+
+| 步骤 | 代码位置 | 验证 |
+|---|---|---|
+| 1. Intent classify | intent-router.ts:200+ | ✅ conf=0.95 |
+| 2. shouldSanitize gate | input-guard.ts:575 (`category === 'CLOUD'`) | ✅ |
+| 3. Sanitize 调用 | input-guard.ts:594 `await this.sanitizer.sanitize(...)` | ✅ |
+| 4. Replacement 计数 | sanitizer-pipeline 返回 `replacements: [{original, placeholder, piiType}]` | ✅ replacementCount=1 |
+| 5. Mapping 注册 | sanitizer-pipeline 内部 sessionId → mapping 持久化 | ✅ totalMappings=1 |
+| 6. Messages 改写 | input-guard.ts:593 `replaceAtUserIndex(... result.sanitizedText)` | ✅ |
+| 7. stepState 记录 | input-guard.ts:596-601 `sanitized: true, replacements:1` | ✅ |
+| 8. Audit 双源落地 | sanitizer-pipeline + input-guard 各写一条 | ✅ 2 条 event |
+
+**防御纵深（Defense in Depth）验证**：
+
+| Tier | PII 类型 | defaultRealm | 实际行为 |
+|---|---|---|---|
+| secret | id-card, bank-card, api-key | LOCAL | **REJECT**（input-guard attachRejection）|
+| confidential | phone, email, ip-address, mac-address, passport, license-plate | LOCAL | **SANITIZE → CLOUD**（可逆占位符 + 反替换）|
+| internal | （未配置 patterns）| SANITIZED | （无 PII 触发）|
+| public | 无 | CLOUD | （直接走云）|
+
+**Sanitize 失败降级**（fail-closed）：
+- input-guard.ts:643 `input-guard.sanitize.downgraded` → LOCAL（实测本轮无 downgraded，sanitize 100% 成功）
+- 配置开关：`downgradeOnSanitizeFailure=true`（默认）；debug 时可设 `DSH_EDGE_SANITIZE_DOWNGRADE=false` 改为 fail-open
+
+**CI 烟测建议**：
+
+```bash
+# 1. defaultCategory SANITIZED 改动回归（§7.21）
+grep '"rationale":"default:sanitized"' ~/.dsh-edge-agent/audit/audit.plain.jsonl | wc -l  # ≥ 1
+
+# 2. Sanitize pipeline 端到端（§7.22）
+curl -s -X POST http://127.0.0.1:21017/v1/chat \
+  -H 'Authorization: Bearer test-secret-key' \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"我的联系方式是 13800000000, 帮我写一首关于秋天的小诗"}' \
+  --max-time 60 > /dev/null
+sleep 3
+# 断言：input-guard.sanitized 与 sanitizer.sanitized 各 ≥ 1
+grep '"replacementCount":1' ~/.dsh-edge-agent/audit/audit.plain.jsonl | wc -l  # ≥ 2
+```
+
+**memory 影响**：ts=1788315700189 / 1788315700190 是首批 `sanitizer.sanitized`+`input-guard.sanitized` 双源验证事件（同一 session 1214ef9a-b058-4123-9ba5-7e1b190fe662），与 [[sanitize-downgrade-policy]] 引用一致。
