@@ -57,7 +57,11 @@ export interface Config {
 
 export const Config: Schema<Config> = Schema.object({
   defaultCategory: Schema.union(['LOCAL', 'CLOUD', 'SANITIZED'] as const)
-    .default('CLOUD'),
+    // 2026-09-02: changed from 'CLOUD' to 'SANITIZED'. Old default failed open
+    // — ambiguous requests went straight to CLOUD LLM (raw data egress). With
+    // SANITIZED, the input-guard sanitizer-pipeline runs first; sanitize
+    // failure triggers input-guard.sanitize.downgraded → LOCAL (fail-closed).
+    .default('SANITIZED'),
   classificationProvider: Schema.string().default('local-qwen3-4b'),
   classificationModel: Schema.string().default('qwen3-4b'),
   // confidenceThreshold is a 0..1 probability, NOT an integer. Pre-fix used

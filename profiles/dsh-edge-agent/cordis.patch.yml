@@ -301,7 +301,11 @@
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/intent-router'
       inject: [llm, auditLog]
       config:
-        defaultCategory: CLOUD
+        # 2026-09-02: changed from CLOUD to SANITIZED. Old default failed open
+        # (ambiguous requests → CLOUD LLM, raw data egress). New default routes
+        # through input-guard sanitizer first; sanitize failure downgrades to
+        # LOCAL (fail-closed). See intent-router.ts:60 schema default.
+        defaultCategory: SANITIZED
         classificationProvider: !!js process.env.DSH_EDGE_INTENT_PROVIDER ?? 'local-qwen3-4b'
         classificationModel: !!js process.env.DSH_EDGE_INTENT_MODEL ?? 'Qwen3-4B-Instruct-2507'
         confidenceThreshold: !!js parseFloat(process.env.DSH_EDGE_INTENT_CONFIDENCE_THRESHOLD ?? '0.6')
