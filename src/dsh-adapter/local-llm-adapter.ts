@@ -227,6 +227,13 @@ class RealLocalAdapter extends LlmAdapter {
     const promptText = sanitizedMessages.map((m) => `${m.role}:${extractText(m.content)}`).join('\n')
     const promptLen = promptText.length
     const start = Date.now()
+    // 2026-09-02: per-call request/response body logging to ops log at
+    // debug level (mirrors cloud-llm-adapter). LOCAL content never
+    // leaves the device, so this is purely a local-debug aid; CLOUD
+    // prompts are pre-sanitized by input-guard before egress. Set
+    // `DSH_EDGE_LOG_LEVEL=info` to suppress bodies entirely.
+    this.logger?.debug?.(`[local-llm-adapter] LLM_REQUEST provider=${options.provider} model=${options.model} messageCount=${sanitizedMessages.length} promptLen=${promptLen}`)
+    this.logger?.debug?.(`[local-llm-adapter] LLM_MESSAGES ${JSON.stringify({ messages: sanitizedMessages })}`)
     audit(this.auditLog, 'info', 'llm.local.start', { provider: options.provider, model: options.model, messageCount: sanitizedMessages.length, promptLen, baseUrl: this.baseUrl })
 
     let response: Response
@@ -297,6 +304,10 @@ class RealLocalAdapter extends LlmAdapter {
         sawToolCall,
         ...(wireError !== undefined ? { wireError } : {}),
       })
+      // 2026-09-02: dump response summary + full text to the ops log at
+      // debug level (mirrors cloud-llm-adapter).
+      this.logger?.debug?.(`[local-llm-adapter] LLM_RESPONSE provider=${options.provider} durationMs=${durationMs} resultLen=${assembledText.length} finishKind=${finishKind ?? 'unknown'}`)
+      this.logger?.debug?.(`[local-llm-adapter] LLM_RESPONSE_TEXT ${JSON.stringify({ text: assembledText })}`)
     }
 
     yield* terminalChunks(sawText, assembledText, toolCalls, finishKind, sawToolCall)

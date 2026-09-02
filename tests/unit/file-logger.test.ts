@@ -33,16 +33,23 @@ import {
  * Minimal context stub mirroring audit-log's fakeCtx. file-exporter reads
  * `ctx.logger.exporters.size` for the first-wins guard and calls
  * `ctx.logger.exporter(...)` to register itself; tests can inspect either.
+ *
+ * 2026-09-02: capture every registered exporter so tests can assert on
+ * `exporter.levels` (the per-exporter level filter passed by
+ * `installFileLogger` to enable debug-level body logging).
  */
 function fakeCtx() {
   const exporters = new Map<object, true>()
+  const registered: object[] = []
   return {
+    registered,
     reflect: { provide(_n: string, _v: unknown) { return () => {} } },
     provide(_n: string, _v: unknown) { return () => {} },
     logger: {
       exporters,
       exporter(impl: object) {
         exporters.set(impl, true)
+        registered.push(impl)
         return () => exporters.delete(impl)
       },
       info() {},
@@ -66,7 +73,9 @@ afterEach(() => {
 describe('file-logger plugin shape', () => {
   it('exports the canonical plugin shape', () => {
     assert.equal(fileLogger.name, 'file-logger')
-    assert.deepEqual([...fileLogger.inject], [])
+    // 2026-09-02: inject=['web'] — see file-logger.ts for rationale
+    // (boot diagnostic reads ctx.web.searchProviders.size).
+    assert.deepEqual([...fileLogger.inject], ['web'])
     // Config is a Schemastery function (`Schema.object(...)`), not a plain
     // object — just assert it exists and is callable.
     assert.equal(typeof fileLogger.Config, 'function')
@@ -263,6 +272,84 @@ describe('resolveLoggerConfig', () => {
     assert.equal(cfg.maxFileSizeBytes, 50 * 1024 * 1024)
     assert.equal(cfg.maxFileAgeDays, 0)
     assert.equal(cfg.maxRotatedFiles, 5)
+    // 2026-09-02: default level flipped info → debug so LLM body
+    // debug calls reach the ops log.
+    assert.equal(cfg.level, 'debug')
+  })
+
+  // 2026-09-02: DSH_EDGE_LOG_LEVEL env var overrides the default.
+  it('honours DSH_EDGE_LOG_LEVEL env var override', () => {
+    assert.equal(resolveLoggerConfig({ HOME: '/tmp', DSH_EDGE_LOG_LEVEL: 'info' }).level, 'info')
+    assert.equal(resolveLoggerConfig({ HOME: '/tmp', DSH_EDGE_LOG_LEVEL: 'warn' }).level, 'warn')
+    assert.equal(resolveLoggerConfig({ HOME: '/tmp', DSH_EDGE_LOG_LEVEL: 'error' }).level, 'error')
+    assert.equal(resolveLoggerConfig({ HOME: '/tmp', DSH_EDGE_LOG_LEVEL: 'debug' }).level, 'debug')
+  })
+
+  // 2026-09-02: invalid env value falls back to 'debug' (silent recovery;
+  // operators see no obvious error but bodies stop logging because Cordis
+  // filters by the wrong level — but they will still get the loud default).
+  it('falls back to debug for invalid DSH_EDGE_LOG_LEVEL values', () => {
+    assert.equal(resolveLoggerConfig({ HOME: '/tmp', DSH_EDGE_LOG_LEVEL: 'verbose' }).level, 'debug')
+    assert.equal(resolveLoggerConfig({ HOME: '/tmp', DSH_EDGE_LOG_LEVEL: '' }).level, 'debug')
+    assert.equal(resolveLoggerConfig({ HOME: '/tmp', DSH_EDGE_LOG_LEVEL: 'TRACE' }).level, 'debug')
+  })
+})
+
+// 2026-09-02: installFileLogger must register the exporter with a
+// per-exporter `levels: { default: <numeric> }` so Cordis passes debug
+// messages through. Without this, Cordis's default INFO filter silently
+// drops every `ctx.logger.debug(...)` call (including the LLM body calls
+// in cloud-llm-adapter.ts / local-llm-adapter.ts).
+describe('installFileLogger level wiring', () => {
+  it('registers an exporter with levels.default = 3 when level=debug', () => {
+    const ctx = fakeCtx()
+    installFileLogger(ctx as never, {
+      root,
+      filename: 'a.log',
+      flushIntervalMs: 60_000,
+      queueCapacity: 100,
+      maxFileSizeBytes: 50 * 1024 * 1024,
+      maxFileAgeDays: 0,
+      maxRotatedFiles: 5,
+      level: 'debug',
+    })
+    assert.equal(ctx.registered.length, 1)
+    const exporter = ctx.registered[0] as { levels: Record<string, number> }
+    assert.deepEqual(exporter.levels, { default: 3 })
+  })
+
+  it('registers an exporter with levels.default = 1 when level=info (suppresses debug)', () => {
+    const ctx = fakeCtx()
+    installFileLogger(ctx as never, {
+      root,
+      filename: 'a.log',
+      flushIntervalMs: 60_000,
+      queueCapacity: 100,
+      maxFileSizeBytes: 50 * 1024 * 1024,
+      maxFileAgeDays: 0,
+      maxRotatedFiles: 5,
+      level: 'info',
+    })
+    const exporter = ctx.registered[0] as { levels: Record<string, number> }
+    assert.deepEqual(exporter.levels, { default: 1 })
+  })
+
+  it('maps warn/error to numeric 2/0', () => {
+    const ctxWarn = fakeCtx()
+    installFileLogger(ctxWarn as never, {
+      root, filename: 'a.log', flushIntervalMs: 60_000, queueCapacity: 100,
+      maxFileSizeBytes: 50 * 1024 * 1024, maxFileAgeDays: 0, maxRotatedFiles: 5,
+      level: 'warn',
+    })
+    assert.deepEqual((ctxWarn.registered[0] as { levels: Record<string, number> }).levels, { default: 2 })
+
+    const ctxError = fakeCtx()
+    installFileLogger(ctxError as never, {
+      root, filename: 'a.log', flushIntervalMs: 60_000, queueCapacity: 100,
+      maxFileSizeBytes: 50 * 1024 * 1024, maxFileAgeDays: 0, maxRotatedFiles: 5,
+      level: 'error',
+    })
+    assert.deepEqual((ctxError.registered[0] as { levels: Record<string, number> }).levels, { default: 0 })
   })
 })
 

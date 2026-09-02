@@ -34,11 +34,22 @@
  *  ┌─ OPERATIONS LOG ──────────────────────────────────────────────────┐
  *  │ Path:   ~/.dsh-edge-agent/log/dsh-edge-agent.log (this file)      │
  *  │ Source: every `ctx.logger.{info,warn,error,debug}` call           │
- *  │ Rule:   **MUST NOT contain request bodies, response bodies,       │
- *  │         tool arguments, prompt text, or any user PII.** Only      │
- *  │         metadata (provider, model, reqId, durationMs, counts) and │
- *  │         error diagnostics are allowed. Used by operators to       │
- *  │         triage service flow and failures.                         │
+ *  │ Rule:   **info / warn / error entries MUST NOT contain request    │
+ *  │         bodies, response bodies, tool arguments, prompt text,    │
+ *  │         or any user PII.** Only metadata (provider, model,        │
+ *  │         reqId, durationMs, counts) and error diagnostics.         │
+ *  │                                                                   │
+ *  │         **debug entries MAY carry LLM call bodies** (request     │
+ *  │         messages + response text) for offline triage — opt-in    │
+ *  │         via `DSH_EDGE_LOG_LEVEL=debug` (the default since        │
+ *  │         2026-09-02). CLOUD prompts are pre-sanitized by          │
+ *  │         input-guard before egress, so the captured prompt is     │
+ *  │         already placeholder-text for sensitive spans. CLOUD      │
+ *  │         response text is NOT redacted — set                       │
+ *  │         `DSH_EDGE_LOG_LEVEL=info` to suppress bodies entirely.    │
+ *  │         Call sites: cloud-llm-adapter.ts, local-llm-adapter.ts.  │
+ *  │         Used by operators to triage service flow, failures, and  │
+ *  │         LLM call replay.                                         │
  *  └───────────────────────────────────────────────────────────────────┘
  *
  *  ┌─ AUDIT LOG ───────────────────────────────────────────────────────┐
@@ -78,7 +89,27 @@ import Schema from '@deepseek-ai/schemastery'
 
 export const name = 'file-logger'
 
-export const inject = [] as const
+// 2026-09-02: inject `web` so the boot diagnostic at installFileLogger()
+// can read `ctx.web.searchProviders.size` without Cordis throwing
+// `cannot get property "web" without inject`. file-logger itself does
+// not use the service; only the diagnostic does.
+export const inject = ['web'] as const
+
+export type LogLevel = 'debug' | 'info' | 'warn' | 'error'
+
+/** Numeric Cordis logger level (mirrors @deepseek-ai/cordis/src/logger.ts:22-27). */
+const LEVEL_NUMERIC: Record<LogLevel, number> = {
+  error: 0,
+  info: 1,
+  warn: 2,
+  debug: 3,
+}
+
+/** Reverse lookup for `resolveLoggerConfig` env validation. */
+function parseLogLevel(value: string | undefined, fallback: LogLevel = 'debug'): LogLevel {
+  if (value === 'debug' || value === 'info' || value === 'warn' || value === 'error') return value
+  return fallback
+}
 
 export interface Config {
   /** Directory holding the log file. Created if missing. */
@@ -95,6 +126,15 @@ export interface Config {
   maxFileAgeDays: number
   /** Maximum number of rotated files to keep. */
   maxRotatedFiles: number
+  /**
+   * Minimum logger level emitted to disk. 2026-09-02: default flipped
+   * from `info` to `debug` so LLM body debug calls
+   * (`cloud-llm-adapter.ts` / `local-llm-adapter.ts` LLM_REQUEST /
+   * LLM_MESSAGES / LLM_RESPONSE / LLM_RESPONSE_TEXT) reach the ops log.
+   * Set `DSH_EDGE_LOG_LEVEL=info` to revert to the pre-change quiet
+   * behavior.
+   */
+  level: LogLevel
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -105,6 +145,7 @@ export const Config: Schema<Config> = Schema.object({
   maxFileSizeBytes: Schema.natural().default(50 * 1024 * 1024), // 50MB
   maxFileAgeDays: Schema.number().default(0),
   maxRotatedFiles: Schema.natural().default(5),
+  level: Schema.union(['debug', 'info', 'warn', 'error'] as const).default('debug'),
 })
 
 declare module '@deepseek-ai/cordis' {
@@ -315,6 +356,7 @@ export interface ResolvedLoggerConfig {
   maxFileSizeBytes: number
   maxFileAgeDays: number
   maxRotatedFiles: number
+  level: LogLevel
 }
 
 /**
@@ -325,6 +367,10 @@ export interface ResolvedLoggerConfig {
  * Path resolution: `DSH_EDGE_LOG_ROOT` wins, then `USERPROFILE` (Windows),
  * then `HOME` (POSIX). File name is fixed (`dsh-edge-agent.log`) so
  * operators always know what file to tail.
+ *
+ * Level resolution: `DSH_EDGE_LOG_LEVEL` wins, otherwise `debug`. The
+ * `debug` default is what makes the LLM body debug calls in
+ * `cloud-llm-adapter.ts` / `local-llm-adapter.ts` visible in the ops log.
  */
 export function resolveLoggerConfig(env: NodeJS.ProcessEnv = process.env): ResolvedLoggerConfig {
   const homeBase = (env.USERPROFILE ?? env.HOME ?? '').toString()
@@ -339,6 +385,7 @@ export function resolveLoggerConfig(env: NodeJS.ProcessEnv = process.env): Resol
     maxFileSizeBytes: 50 * 1024 * 1024,
     maxFileAgeDays: 0,
     maxRotatedFiles: 5,
+    level: parseLogLevel(env.DSH_EDGE_LOG_LEVEL, 'debug'),
   }
 }
 
@@ -367,10 +414,42 @@ export function installFileLogger(
   const config = resolved ?? resolveLoggerConfig()
   const service = new FileLoggerServiceImpl(ctx, config)
   service.start()
+  // 2026-09-02 diagnostic: dump the web seam provider registry once boot
+  // settles. The "configured web provider deepseek-official is not
+  // registered" error we hit on `web_search` tool calls means
+  // web-search-deepseek's `apply()` never ran its
+  // `ctx.web.registerSearchProvider(...)` line — either because its
+  // `inject: ['web']` dep wasn't satisfied, or because
+  // `installSettingsSection` threw first. Knowing which one at boot saves
+  // a 90s chat round-trip. Deferred via setImmediate so every plugin's
+  // `apply()` has run before we read the registry; `ctx.inject` callbacks
+  // only fire when their deps are live, so the loader must settle first.
+  setImmediate(() => {
+    try {
+      const web = (ctx as unknown as { web?: { searchProviders?: Map<string, unknown> } }).web
+      const map = web?.searchProviders
+      const size = map instanceof Map ? map.size : -1
+      const ids = map instanceof Map ? [...map.keys()].join(',') : 'n/a'
+      ctx.logger?.info?.(`[web-diag] ctx.web registered=${web !== undefined} searchProviders.size=${size} ids=[${ids}]`)
+    } catch (err: any) {
+      ctx.logger?.warn?.(`[web-diag] failed: ${err?.message ?? String(err)}`)
+    }
+  })
   // Bind the export callback to the service instance. Cordis calls this
   // synchronously from inside its logger loop — never invoke ctx.logger
   // from inside (would re-enter and loop).
-  ctx.logger.exporter({ export: (msg: Message): void => service.export(msg) })
+  //
+  // 2026-09-02: pass `levels: { default: <numeric> }` so the file-logger
+  // receives all messages at-or-above the configured threshold. Without
+  // this, Cordis's per-exporter level defaults to INFO and silently
+  // suppresses every `ctx.logger.debug(...)` call — including the LLM
+  // body debug calls in cloud-llm-adapter.ts / local-llm-adapter.ts.
+  // Cordis's own ring-buffer exporter keeps its hard-coded INFO level so
+  // the in-memory buffer stays tight while disk captures everything.
+  ctx.logger.exporter({
+    export: (msg: Message): void => service.export(msg),
+    levels: { default: LEVEL_NUMERIC[config.level] },
+  })
   return service
 }
 

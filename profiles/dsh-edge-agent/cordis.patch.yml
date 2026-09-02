@@ -112,18 +112,28 @@
     searchTimeoutMs: 30000
     fetchTimeoutMs: 30000
 - id: web
-- id: dsh-web
+  # 2026-09-02: WebRuntime.Config (dsh-web/lib/index.js:42-50) requires BOTH
+  # `searchProvider` AND `fetchProvider`. The upstream dsh-base row only
+  # supplies `searchProvider`, so Cordis plugin-config validation rejects
+  # the WebRuntime class plugin silently — `ctx.web` never gets provided,
+  # web-search-deepseek's `inject: ['web']` never fires, and `web_search`
+  # tool calls fail with "configured web provider ... is not registered".
+  # Provide a dummy `fetchProvider` here; tool-web disables fetch via
+  # `config.fetch: false` so the seam is never actually used for fetch.
+  config:
+    searchProvider: deepseek-official
+    fetchProvider: ''
 - id: tool-todo
 - id: tool-str-replace-editor
 - id: web-search-deepseek
-  # 2026-09-01: disabled — its peer dep @deepseek-ai/dsh-environment is
-  # blocked by pnpm supply-chain policy, which makes loader crash on
-  # import (ERR_MODULE_NOT_FOUND at boot). Web search provider is not
-  # needed for the audio.log / ops-log verification (M5 smoke path uses
-  # local qwen3-4b + cloud chat, no web tool calls). Re-enable after
-  # adding @deepseek-ai/dsh-environment to packages.json or fixing the
-  # policy allow-list.
-  disabled: true
+  # 2026-09-02: re-enabled. Original 2026-09-01 disable note claimed
+  # peer dep `@deepseek-ai/dsh-environment` was blocked, but the actual
+  # peer dep name is `@deepseek-ai/dsh-launch-environment` and that
+  # package is now resolvable (verified via `node -e "import('@...')"`
+  # at 2026-09-02). Web search enables LLM to answer real-time news
+  # queries instead of falling back to "service unavailable" text.
+  # If boot fails with ERR_MODULE_NOT_FOUND on dsh-launch-environment,
+  # revert to disabled: true and investigate pnpm allow-list.
 
 # 禁用的工具
 - id: tool-pwsh
@@ -220,6 +230,13 @@
         maxFileSizeBytes: 52428800  # 50MB
         maxFileAgeDays: 0
         maxRotatedFiles: 5
+        # 2026-09-02: default flipped info → debug so LLM body debug
+        # calls (LLM_REQUEST / LLM_MESSAGES / LLM_RESPONSE /
+        # LLM_RESPONSE_TEXT in cloud-llm-adapter.ts and
+        # local-llm-adapter.ts) pass through to the ops log. Set
+        # `DSH_EDGE_LOG_LEVEL=info` to revert to the pre-change quiet
+        # behavior (no LLM body content on disk).
+        level: !!js process.env.DSH_EDGE_LOG_LEVEL ?? 'debug'
 
     # tcm: prompt-guard injects this; must mount first
     - id: tcm

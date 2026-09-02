@@ -157,7 +157,14 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
   }
 
   override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
-    this.logger?.debug?.(`[cloud-llm-adapter] stream() called for provider=${options.provider}, model=${options.model}`)
+    // 2026-09-02: per-call request/response body logging to ops log at
+    // debug level. CLOUD prompts are pre-sanitized by input-guard before
+    // egress so the captured prompt is already placeholder-text for
+    // sensitive spans; response text is NOT redacted. Set
+    // `DSH_EDGE_LOG_LEVEL=info` to suppress bodies entirely (the LLM_REQUEST
+    // / LLM_MESSAGES / LLM_RESPONSE / LLM_RESPONSE_TEXT lines below all
+    // gate on Cordis's per-exporter level filter — see file-logger.ts).
+    this.logger?.debug?.(`[cloud-llm-adapter] LLM_REQUEST provider=${options.provider} model=${options.model} messageCount=${options.messages.length} promptLen=${options.messages.reduce((n, m) => n + extractText(m.content).length, 0)}`)
     const apiKey = readApiKey(this.apiKeyEnv)
     if (!apiKey) {
       this.logger?.error?.(`[cloud-llm-adapter] missing API key in env slot: ${this.apiKeyEnv}`)
@@ -167,7 +174,6 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
         'MISSING_CREDENTIAL',
       )
     }
-    this.logger?.debug?.(`[cloud-llm-adapter] API key found, calling ${this.baseUrl}/chat/completions`)
     const url = `${this.baseUrl}/chat/completions`
 
     // 2026-08-31：input-guard 清洗孤儿 tool_call（避免 DeepSeek 400）。
@@ -188,6 +194,10 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
     const promptLen = promptText.length
     const messageCount = sanitizedMessages.length
     const start = Date.now()
+    // 2026-09-02: dump the full sanitized messages array to the ops log
+    // at debug level. JSON.stringify keeps the entry single-line so
+    // file-logger's `formatLine` newline-collapse doesn't kick in.
+    this.logger?.debug?.(`[cloud-llm-adapter] LLM_MESSAGES ${JSON.stringify({ messages: sanitizedMessages })}`)
     this.audit('info', 'llm.cloud.start', { provider: options.provider, model: options.model, messageCount, promptLen, baseUrl: this.baseUrl })
 
     const headers: Record<string, string> = {
@@ -265,6 +275,11 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
         sawToolCall,
         ...(wireError !== undefined ? { wireError } : {}),
       })
+      // 2026-09-02: dump response summary + full text to the ops log at
+      // debug level. Splits into two entries (header + body) so grepping
+      // for `LLM_RESPONSE_TEXT` can isolate the body without parsing JSON.
+      this.logger?.debug?.(`[cloud-llm-adapter] LLM_RESPONSE provider=${options.provider} durationMs=${durationMs} resultLen=${assembledText.length} finishKind=${finishKind ?? 'unknown'}`)
+      this.logger?.debug?.(`[cloud-llm-adapter] LLM_RESPONSE_TEXT ${JSON.stringify({ text: assembledText })}`)
     }
 
     yield* terminalChunks(sawText, assembledText, toolCalls, finishKind, sawToolCall)

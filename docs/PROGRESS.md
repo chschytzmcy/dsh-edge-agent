@@ -1543,7 +1543,7 @@ mkdir -p "$(dirname "$LOG")"   # nohup 前
 
 #### 7.19.6 留给后续
 
-- `DSH_EDGE_LOG_LEVEL` env 开关（默认 INFO，过滤掉 debug 级噪音；本期先不做）
+- ~~`DSH_EDGE_LOG_LEVEL` env 开关（默认 INFO，过滤掉 debug 级噪音；本期先不做）~~ ✅ 2026-09-02 完成（见 §7.23）
 - HMAC 链式 audit（A3 work，不在本 PR）
 - Cordis 自带 file exporter 时清理 first-wins 兜底代码
 - dev-restart.sh / launch-dev.sh 的 stdout 处理一致性（infra 问题，跟 file-logger 无关）
@@ -2522,3 +2522,134 @@ grep '"replacementCount":1' ~/.dsh-edge-agent/audit/audit.plain.jsonl | wc -l  #
 ```
 
 **memory 影响**：ts=1788315700189 / 1788315700190 是首批 `sanitizer.sanitized`+`input-guard.sanitized` 双源验证事件（同一 session 1214ef9a-b058-4123-9ba5-7e1b190fe662），与 [[sanitize-downgrade-policy]] 引用一致。
+
+### 7.23 ops log 记录完整 LLM 请求/响应（debug 级）（2026-09-02）
+
+**目的**：让 ops log 看到每次 LLM 调用的完整 prompt + response，方便离线排查。debug 级别（默认开启），info/warn/error 不变（保持隐私安全）。
+
+**改动面**：
+
+| 文件 | 改动 |
+|---|---|
+| `src/dsh-adapter/file-logger.ts` | (a) 加 `level` 字段到 Config/ResolvedLoggerConfig + `parseLogLevel` 校验 + `LEVEL_NUMERIC` 映射（debug=3, info=1, warn=2, error=0）。(b) `resolveLoggerConfig` 读 `DSH_EDGE_LOG_LEVEL` 默认 `'debug'`。(c) `installFileLogger` 把 `levels: { default: LEVEL_NUMERIC[config.level] }` 传给 `ctx.logger.exporter(...)`，让 Cordis 不再默认 INFO 过滤掉 debug。(d) 顶部 discipline block 改写：info/warn/error 仍 MUST NOT contain bodies；debug 可携带 LLM body（"opt-in via `DSH_EDGE_LOG_LEVEL=debug` (the default since 2026-09-02)"）。 |
+| `profiles/dsh-edge-agent/cordis.patch.yml` | file-logger row 加 `level: !!js process.env.DSH_EDGE_LOG_LEVEL ?? 'debug'`（production-loaded wiring，aggregator row `disabled=true` 不走）。 |
+| `src/dsh-adapter/cloud-llm-adapter.ts` | stream() 加 4 条 `ctx.logger?.debug?.(...)`：LLM_REQUEST（provider/model/messageCount/promptLen header）、LLM_MESSAGES（`JSON.stringify({messages: sanitizedMessages})` 完整消息数组）、LLM_RESPONSE（provider/durationMs/resultLen/finishKind）、LLM_RESPONSE_TEXT（`JSON.stringify({text: assembledText})`）。删除原 line 160、line 170 两条 metadata-only debug（被 LLM_REQUEST 覆盖）。 |
+| `src/dsh-adapter/local-llm-adapter.ts` | 同步加 4 条 debug（同模式）。`RealLocalAdapter` 已有 `logger` 字段注入（构造函数 line 172），无需新增。 |
+| `tests/unit/file-logger.test.ts` | (a) fakeCtx 加 `registered` 数组捕获注册的 exporter。(b) `resolveLoggerConfig` 测试加 default=`'debug'` 断言 + env override 测试（info/warn/error/debug 四档）+ invalid value fallback 测试。(c) 新 describe block `installFileLogger level wiring`：3 case 验证 `levels.default` 数值正确（3/1/2/0）。 |
+| `docs/PROGRESS.md` | §7.19.6 deferred note `DSH_EDGE_LOG_LEVEL` 项标 ✅ 指向 §7.23。 |
+
+**为什么打破 "MUST NOT contain bodies" discipline**：
+
+- 用户明确请求 + 本地 operator 是 owner，privacy 风险接受：
+  - CLOUD prompt：input-guard 已经 pre-sanitize（phone→`[PHONE_PLACEHOLDER]`），写本地 ops log 是 placeholder-text，不再是 raw PII
+  - CLOUD response：可能 echo PII（LLM hallucination），但 ops log 是 operator 自己看
+  - LOCAL：永不出设备，纯本地 debug
+- 替代方案审计对比：
+    - **审计 JSONL**：有 redactObject（pii-utils.ts:169-195），但只存 metadata（`promptLen / messageCount`），不存正文
+    - **新文件 `*.llm.log`**：双文件不便 grep
+    - **纯 debug + 可关闭**：本方案选这个，operator 想安静 ops log 设 `DSH_EDGE_LOG_LEVEL=info` 即可（body debug calls 静默被 Cordis 过滤掉）
+
+**验证**（待执行）：
+
+```bash
+# 1. Compile + test
+npm run compile && npx vitest run tests/unit/file-logger.test.ts tests/unit/cloud-llm-adapter.test.ts tests/unit/local-llm-adapter.test.ts
+
+# 2. 重启 dsh + curl + tail
+EDGE_API_KEY=test-secret-key dsh --profile dsh-edge-agent &
+sleep 5
+curl -s -X POST http://127.0.0.1:21017/v1/chat \
+  -H "Authorization: Bearer test-secret-key" \
+  -H "Content-Type: application/json" \
+  -d '{"message":"hello"}' >/dev/null
+sleep 2
+tail -f ~/.dsh-edge-agent/log/dsh-edge-agent.log | grep -E 'LLM_REQUEST|LLM_MESSAGES|LLM_RESPONSE|LLM_RESPONSE_TEXT'
+# 预期看到 4 条 DEBUG 包含完整 prompt + response
+
+# 3. 关 debug 验证可关闭
+DSH_EDGE_LOG_LEVEL=info dsh --profile dsh-edge-agent &
+# ... send chat ... tail log → 预期没有 DEBUG 行
+```
+
+**Ops log 体积影响**：
+- 典型 chat turn：5-15KB body content × 2（req + resp）+ ~200B header × 2 = ~10-30KB
+- 默认 50MB rotation cap 触发会变快（~3000-5000 个 turn/rotate）
+- 5 个 rotated file 保留策略不变
+- 想再次降低频率：env 调 `DSH_EDGE_LOG_MAX_FILE_SIZE_BYTES=200000000`（200MB）或 `DSH_EDGE_LOG_LEVEL=info`
+
+### 7.24 web-search 使能 + ctx.web 注册缺失排查（2026-09-02）
+
+**目的**：让 LLM 真的能跑 `web_search` 工具去 DeepSeek 搜索接口拿实时结果，而不是回 "configured web provider ... is not registered"。
+
+**症状**：`tool-web` 注册的 `web_search` / `web_fetch` 工具看得到（edgeTools.list 显示存在），但一调用就抛 `WebError("configured web provider \"deepseek-official\" is not registered", "WEB_PROVIDER_CONFIGURED_MISSING")` —— 该字符串是 `dsh-web/lib/index.js:123` `resolveProvider()` 的死路径。
+
+**根因**（双层故障，必须两个都修）：
+
+1. **`@deepseek-ai/dsh-web` 的 `WebRuntime` 类 plugin 拒绝启动 —— `ctx.web` 永远不提供**
+
+   `WebRuntime`（`dsh-web/lib/index.js:11-58`）是 `Service` 子类，只有 `default` 导出（无 `apply` / `name`）。Cordis 当 class plugin 处理 `new WebRuntime(ctx, config)`，先跑 `static Config = z.object({ searchProvider: z.string(), fetchProvider: z.string() })` 校验。**两个字段都 required，没 default**。
+
+   上游 `dsh-base/cordis.patch.yml:404-407` 只配 `searchProvider: deepseek-official`，缺 `fetchProvider`。Cordis 默默丢弃该 plugin entry → `ctx.web` 未挂上 → `web-search-deepseek` 的 `inject: ['web']` 永远不触发 → 无 provider 注册 → 所有 `web_search` 调用都在 `resolveProvider` 第 123 行 throw。
+
+   上游同样配置能跑是因为它还有一个隐式 layer（headless / dsh-defaults）补上 `fetchProvider`；我们的 overlay 直接覆盖 patch 表，没继承那一层。
+
+2. **`web-search-deepseek` 的 `inject: ['web']` dep 不满足 → `apply()` 不跑**
+
+   `WebRuntime` 没起来 → `ctx.web` 是 undefined → `web-search-deepseek` 卡在 inject 队列 → 即便 install 设对也不会调 `ctx.web.registerSearchProvider(...)`。
+
+**修复**：
+
+| 文件 | 改动 |
+|---|---|
+| `profiles/dsh-edge-agent/cordis.patch.yml` | (a) 删 `- id: dsh-web` 死行（残留的早期实验 code，loader 找不到上游 entry 一直 warn `patch: entry %C not found dsh-web`）。(b) 在保留的 `- id: web` 上加完整 config：`searchProvider: deepseek-official` + `fetchProvider: ''`。fetch 路径由 `tool-web config.fetch: false` 关掉，dummy 空串足够让 `z.string()` 通过、`fetchProviderId = '' ?? env` 走 env-only 分支，永不实际 fetch。 |
+| `src/dsh-adapter/file-logger.ts` | (a) `inject` 从 `[]` 改为 `['web']` —— file-logger 自己不用 web，但 boot diagnostic 要读 `ctx.web.searchProviders.size`，Cordis 严格模式 `ctx.web` 没 inject 抛 `cannot get property "web" without inject`。(b) `installFileLogger` 加一个 `setImmediate` 一次性 diagnostic：dump `ctx.web?.searchProviders?.size` + 现有 provider ids 到 ops log，省下后续盲猜时间。 |
+
+**为什么 file-logger 要 inject=web**：Cordis 的 proxy property 强制声明 deps 才能访问（`cordis/src/reflect.ts:179`）。如果 file-logger 不 inject，diagnostic 永远 throw、看不到真实状态。
+
+**验证**（全部跑通）：
+
+```bash
+# 1. Compile + 同步 + 重启
+npm run compile
+rsync -a --delete lib/types/ ~/.dsh/profiles/dsh-edge-agent/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/lib/
+mkdir -p ~/.dsh/profiles/dsh-edge-agent/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/lib/types/dsh-adapter
+cp ~/.dsh/profiles/dsh-edge-agent/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/lib/dsh-adapter/* \
+   ~/.dsh/profiles/dsh-edge-agent/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/lib/types/dsh-adapter/
+cp ~/.dsh/profiles/dsh-edge-agent/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/lib/*.js \
+   ~/.dsh/profiles/dsh-edge-agent/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/lib/types/
+cp profiles/dsh-edge-agent/cordis.patch.yml ~/.dsh/profiles/dsh-edge-agent/cordis.patch.yml
+nohup env EDGE_API_KEY=test-secret-key dsh --profile dsh-edge-agent > /tmp/dsh.log 2>&1 &
+sleep 8
+
+# 2. 验证 ctx.web 已挂 + provider 已注册
+grep -E "web-diag" ~/.dsh-edge-agent/log/dsh-edge-agent.log
+# 预期：INFO [file-logger] [web-diag] ctx.web registered=true searchProviders.size=1 ids=[deepseek-official]
+
+# 3. 端到端 web_search
+curl -s -m 60 -X POST http://127.0.0.1:21017/v1/chat \
+  -H "Authorization: Bearer test-secret-key" \
+  -H "Content-Type: application/json" \
+  -d '{"message":"搜索最新AI新闻"}'
+# 预期：返回包含具体新闻标题 + 链接 + snippet 的 markdown 文本
+```
+
+**实测结果**（2026-09-02 17:54）：
+
+```
+[web-diag] ctx.web registered=true searchProviders.size=1 ids=[deepseek-official]
+
+POST /v1/chat 200 14756ms intent=CLOUD
+→ "这里为你整理了几条近期值得关注的AI新闻：
+   ## 近期重要AI动态
+   **1. 模型与技术进展**
+   - 有媒体报道OpenAI推出GPT-5.2 [...] 
+   - 谷歌为AI翻译应用增加新功能 [...]
+   **2. 行业年度回顾与展望**
+   - 《2025年度AI十大趋势报告》[...]"
+```
+
+5 条 markdown 来源链接（podscan.fm / baijiahao.baidu.com / qiia.org / 163.com / fidelity.com），意图分类 CLOUD，duration 14.7s（单次 web_search + 一次 LLM 综合）。
+
+**lib/types/ 路径问题**（顺手发现）：tsconfig 的 `outDir: "lib/types"` 让 build 输出落在 `lib/types/`，但 `package.json` 的 `exports` 字段也指 `lib/types/`，`install.sh` 又 rsync `lib/ → lib/`（保留路径）。三方预期一致 → 应正常工作。**但**之前装机时有人手动把 `lib/types/dsh-adapter/*` 拍平到 `lib/dsh-adapter/*`（去掉 `types/` 中间层），导致 my-edit 走 `lib/types/` 时 dsh 找不到（path mismatch）。手动 cp 修复后两次 rsync 流程能跑。建议后续 install.sh 改成 `rsync lib/ $NESTED_PKG/lib/`（无尾斜杠）保留 `types/` 中间层，或改 tsconfig outDir 改 `lib` 去掉中间层（但 lib/types 是有意的命名空间 —— DSH 其他多产物项目都用 lib/types/）。
+
+**memory 影响**：`[web-diag]` 行从此进 ops log 的每次 boot。运维 ops 想确认 web 是否启用 → `grep web-diag ~/.dsh-edge-agent/log/dsh-edge-agent.log | tail -1`。`size=0` ⇒ ctx.web 没起；`size=1 ids=[]` ⇒ WebRuntime 起了但 web-search-deepseek 没注册（看是不是 `inject: ['web']` 卡死）；`size=1 ids=[deepseek-official]` ⇒ OK。
