@@ -1,13 +1,16 @@
 # dsh-edge-agent bundle patch — applied after the dsh-base layer.
-# This patch is BOTH the root-bundle patch (when dsh-edge-agent is consumed
-# as a npm bundle) AND the only overlay needed when a profile lists
+# This patch is the ONLY patch needed when a profile lists
 # `@deepseek-harness-edge-agent/dsh-edge-agent` in its bundles array.
 #
-# 2026-09-02: previously this was 102 lines (overrides + disabled rows).
-# Profile lived in profiles/dsh-edge-agent/cordis.patch.yml (459 lines,
-# carried the insert: block). Consolidated into this file so the bundle
-# is self-contained — `dsh plugin --profile web add -w $LOCAL_PKG` now
-# picks up every plugin in a single bundle layer.
+# 2026-09-03 (§7.31): dsh-edge-agent is a pure-plugin bundle for web profile.
+# Previously had a separate profiles/dsh-edge-agent/cordis.patch.yml (459 lines)
+# that was the profile overlay; that overlay is now deleted. Bundle is fully
+# self-contained — `dsh plugin --profile web add -w $LOCAL_PKG` picks up every
+# plugin in a single bundle layer with no profile overlay needed.
+#
+# 2026-09-03: http-api plugin disabled (P-structural refactor). web profile
+# uses dsh-web-app native chat plugin; no need for the standalone HTTP entry.
+# Code in src/dsh-adapter/http-api.ts is preserved for future revival.
 #
 # Load order:
 #   dsh-base → ...other bundles... → @deepseek-harness-edge-agent/dsh-edge-agent (this)
@@ -116,10 +119,9 @@
 
 - id: dsh-edge-agent
   disabled: true
-  # Aggregator; the bundle can mount into any profile (see PROGRESS
-  # §7.25 + §7.25.x), so the aggregator stays disabled to avoid
-  # double-apply when individual plugins (file-logger, http-api, etc.)
-  # are also wired with their own ids.
+  # Aggregator; 2026-09-03 (§7.31) dsh-edge-agent bundle 仅装 web profile
+  # 一个, 但 aggregator 仍保持 disabled 避免 individual plugins (file-logger,
+  # http-api, input-guard, etc.) double-apply。
 
 - id: plugin-host
   disabled: true
@@ -166,14 +168,16 @@
 - id: tool-todo
 - id: tool-str-replace-editor
 - id: web-search-deepseek
-  # 2026-09-02: re-enabled. Original 2026-09-01 disable note claimed
-  # peer dep `@deepseek-ai/dsh-environment` was blocked, but the actual
-  # peer dep name is `@deepseek-ai/dsh-launch-environment` and that
-  # package is now resolvable (verified via `node -e "import('@...')"`
-  # at 2026-09-02). Web search enables LLM to answer real-time news
-  # queries instead of falling back to "service unavailable" text.
-  # If boot fails with ERR_MODULE_NOT_FOUND on dsh-launch-environment,
-  # revert to disabled: true and investigate pnpm allow-list.
+  # 2026-09-03: re-disabled. cordis.patch.yml comment 2026-09-02 was wrong —
+  # actual peer dep name is `@deepseek-ai/dsh-environment` (not dsh-launch-environment
+  # as comment claimed), and that package is not in npm registry (pnpm 404).
+  # web-search-guard plugin (separate, in dsh-edge-agent bundle) still
+  # operates independently — it gates audit / redaction, not the actual
+  # web_search tool call. With web-search-deepseek disabled, LLM web
+  # search falls back to "service unavailable" text response (no real-time
+  # news), but all other 18 bundle plugins + webui/IM channels work.
+  # Re-enable when `@deepseek-ai/dsh-environment` becomes resolvable.
+  disabled: true
 
 # 禁用的工具
 - id: tool-pwsh
@@ -182,9 +186,10 @@
   disabled: true
 - id: tool-skill
   # Disabled: dsh-edge-agent preset registers its own tool-skill row inside
-  # an isolate group (see agent-presets/dsh-edge-agent/agent.cordis.yml),
-  # which joins the agent scope via parentage. Leaving this host row
-  # enabled would mean two tool-skill providers competing for the same
+  # an isolate group (see repo-root agent-presets/dsh-edge-agent/
+  # agent.cordis.yml, moved here 2026-09-03 from profiles/dsh-edge-agent/
+  # overlay), which joins the agent scope via parentage. Leaving this host
+  # row enabled would mean two tool-skill providers competing for the same
   # catalog slot — dsh-agent-presets rejects double-mount at session start.
   # realm-skill-bridge (mounted in the insert block below) filters the
   # merged catalog per realm regardless of which row registered the tool.
@@ -207,7 +212,7 @@
   disabled: true
 - id: skill-filesystem
   # 2026-09-01: Disabled at host — the dsh-edge-agent agent preset registers
-  # its own skill-filesystem row (see agent-presets/dsh-edge-agent/
+  # its own skill-filesystem row (see repo-root agent-presets/dsh-edge-agent/
   # agent.cordis.yml). Leaving both enabled throws "a skill provider named
   # 'filesystem' is already registered" at session start, blocking every
   # new chat in the Web UI. Mirrors the tool-skill pattern just above:
@@ -311,20 +316,17 @@
         watchIntervalMs: !!js parseInt(process.env.DSH_EDGE_REALM_WATCH_MS ?? '5000', 10)
 
     - id: http-api
+      disabled: true
+      # 2026-09-03 (§7.31): disabled per P-structural refactor. dsh-edge-agent
+      # bundle 现在仅装 web profile；web profile 自带 dsh-web-app 提供 webui
+      # chat 入口 (:3080)，不需要自研 http-api (:21017)。
+      # 代码保留（src/dsh-adapter/http-api.ts），未来若需要 standalone HTTP
+      # 入口可重新启用或迁出到独立 chat-gateway bundle。
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/http-api'
-      inject: [agents, intentRouter, promptGuard, auditLog, sanitizer, realmSkillBridge, edgeTools]
-      config:
-        # 2026-08-29: 改为 0.0.0.0 开放监听（部署环境需要从外部访问 http-api）。
-        # 安全约束：bearer token 必填（EDGE_API_KEY 不能为空）；生产部署务必
-        # 在防火墙 / reverse proxy 层做 IP allowlist（部署责任）。
-        host: !!js process.env.DSH_EDGE_HTTP_HOST ?? '0.0.0.0'
-        port: !!js parseInt(process.env.DSH_EDGE_HTTP_PORT ?? '21017', 10)
-        bearerToken: !!js process.env.EDGE_API_KEY ?? undefined
-        # NOTE: requireAttestation removed 2026-08-29 — it was a dead config
-        # field declared in http-api but never read. Attestation is an A5
-        # milestone; re-add with the real check, not a decorative default.
-        sessionIdleTimeoutMs: 1800000  # 30 min
-        maxActiveSessions: 100
+      # inject + config 块省略（disabled 后 cordis 不会 apply）；保留为参考：
+      #   inject: [agents, intentRouter, promptGuard, auditLog, sanitizer, realmSkillBridge, edgeTools]
+      #   config: host=0.0.0.0, port=21017, bearerToken=EDGE_API_KEY,
+      #           sessionIdleTimeoutMs=1800000, maxActiveSessions=100
 
     - id: cloud-llm-adapter
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/cloud-llm-adapter'
@@ -433,7 +435,14 @@
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/privacy-policy'
       inject: [auditLog]
       config:
-        policyPath: !!js (process.env.DSH_EDGE_PRIVACY_POLICY_PATH ?? (process.cwd() + '/profiles/dsh-edge-agent/privacy-policy.json'))
+        # 2026-09-03 (§7.36): 默认 policy path 改为单 bundle root `~/.dsh-edge-agent/`。
+        # §7.33 之前：fallback 到 `~/.dsh-edge-agent-web/`（web profile isolated root）。
+        # §7.36：user 决定合并 web + tui → 单 root。DSH CLI 一次只跑一个 profile，
+        # 所有 profile 共用同一份 policy 文件——跟 6 个 channel 数据合并一致。
+        # 优先用 DSH_EDGE_PRIVACY_POLICY_PATH（profile .env.sh 显式设），
+        # 其次 $DSH_EDGE_STORAGE_ROOT/privacy-policy.json（per-profile 重定向），
+        # 最后回落到 `~/.dsh-edge-agent/privacy-policy.json`（bundle 单 root 默认）。
+        policyPath: !!js (process.env.DSH_EDGE_PRIVACY_POLICY_PATH ?? (process.env.DSH_EDGE_STORAGE_ROOT ?? (process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent') + '/privacy-policy.json')
         hotReload: true
         watchIntervalMs: 5000
 
