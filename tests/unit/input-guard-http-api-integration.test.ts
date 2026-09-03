@@ -223,6 +223,7 @@ function guardConfig(overrides: Partial<GuardConfig> = {}): GuardConfig {
     downgradeOnSanitizeFailure: true,
     localProvider: 'local-qwen3-4b',
     localModel: 'qwen3-4b-instruct-2507',
+    cloudApiKeyEnv: 'DEEPSEEK_API_KEY',
     ...overrides,
   }
 }
@@ -236,6 +237,8 @@ describe('input-guard ↔ http-api integration', () => {
   let intentRouter: any
 
   beforeEach(() => {
+    // §7.35 (2026-09-03): 默认设 DEEPSEEK_API_KEY，避免被"缺 key 降级 LOCAL"短路
+    process.env.DEEPSEEK_API_KEY = 'sk-test-integration-default'
     ctx = makeCordisCtx()
     audit = { entries: [], log: async (e: any) => { audit.entries.push(e) } }
     sanitizer = makeSanitizer()

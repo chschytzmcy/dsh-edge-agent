@@ -25,6 +25,12 @@ import * as guard from '../../src/dsh-adapter/input-guard.ts'
 import { InputGuardServiceImpl } from '../../src/dsh-adapter/input-guard.ts'
 import type { Config } from '../../src/dsh-adapter/input-guard.ts'
 
+// §7.35 (2026-09-03): 默认把 DEEPSEEK_API_KEY 设上，避免所有 CLOUD intent
+// 测试被新的"缺 key 降级 LOCAL"分支意外短路。§7.35 自己的 4 个 case 在
+// describe 内部 clearKey() / restoreKey() 显式覆盖。
+const ORIGINAL_TEST_KEY = process.env.DEEPSEEK_API_KEY
+process.env.DEEPSEEK_API_KEY = ORIGINAL_TEST_KEY ?? 'sk-test-suite-default'
+
 // ── helpers ─────────────────────────────────────────────────────────────────
 
 function fakeCtx() {
@@ -133,6 +139,7 @@ function defaultConfig(overrides: Partial<Config> = {}): Config {
     downgradeOnSanitizeFailure: true,
     localProvider: 'local-qwen3-4b',
     localModel: 'qwen3-4b-instruct-2507',
+    cloudApiKeyEnv: 'DEEPSEEK_API_KEY',
     ...overrides,
   }
 }
@@ -688,7 +695,11 @@ describe('handlePreStep — §7.26 bug A regression: LOCAL intent must downgrade
     assert.equal((downgraded?.payload as any).targetProvider, 'local-qwen3-4b')
   })
 
-  it('LOCAL edgeRoute with already-local provider → downgraded=false (no false alarm)', async () => {
+  it('LOCAL edgeRoute with already-local provider → downgraded=true (idempotent rewrite)', async () => {
+    // §7.34 fix: intent=LOCAL is authoritative; even when current provider
+    // is already local, mark downgraded=true so handleAgentRequest rewrites.
+    // The rewrite is idempotent (same provider/model), audit fires for
+    // traceability, no actual behavior change.
     const ir = fakeIntentRouter({ category: 'LOCAL' })
     const svc = new InputGuardServiceImpl(
       fakeCtx() as any, defaultConfig(),
@@ -697,14 +708,15 @@ describe('handlePreStep — §7.26 bug A regression: LOCAL intent must downgrade
     const payload = makePreStepPayload('查本地IP')
     ;(payload.agent as any)._edgeRoute = {
       realm: 'LOCAL', category: 'LOCAL',
-      provider: 'local-qwen3-4b',    // 已经是本地，不需要降级
+      provider: 'local-qwen3-4b',    // 已经是本地
       model: 'qwen3-4b-instruct-2507',
       confidence: 0.95, rationale: 'edge-route-cached',
     }
     await svc.handlePreStep(payload as any, makeNext(payload.messages))
     const state = svc.getStepState(payload.agent.session.id ?? 'sess-1')
-    assert.equal(state?.downgraded, false)
-    assert.equal(state?.downgradeReason, undefined)
+    assert.equal(state?.downgraded, true, '§7.34: intent=LOCAL always forces LOCAL')
+    assert.equal(state?.downgradeReason, 'intent-local')
+    assert.equal(state?.routeSource, 'http-api')
   })
 
   it('CLOUD edgeRoute with cloud-* provider → downgraded=false (not applicable)', async () => {
@@ -724,7 +736,10 @@ describe('handlePreStep — §7.26 bug A regression: LOCAL intent must downgrade
     assert.equal(state?.downgraded, false, 'CLOUD intent 不会触发 intent-local 降级')
   })
 
-  it('LOCAL edgeRoute without provider field → downgraded=false (defensive)', async () => {
+  it('LOCAL edgeRoute without provider field → downgraded=true (intent is authoritative, §7.34)', async () => {
+    // §7.34 fix: malformed _edgeRoute (no provider) used to short-circuit
+    // downgrade (defensive guard). New behavior: intent=LOCAL is the
+    // authoritative verdict — fire downgrade regardless of edgeRoute shape.
     const ir = fakeIntentRouter({ category: 'LOCAL' })
     const svc = new InputGuardServiceImpl(
       fakeCtx() as any, defaultConfig(),
@@ -734,11 +749,71 @@ describe('handlePreStep — §7.26 bug A regression: LOCAL intent must downgrade
     ;(payload.agent as any)._edgeRoute = {
       realm: 'LOCAL', category: 'LOCAL',
       confidence: 0.95, rationale: 'edge-route-cached',
-      // 故意缺 provider — wantsDowngradeToLocal 应安全返回 false
+      // 故意缺 provider — §7.34 不再 short-circuit
     }
     await svc.handlePreStep(payload as any, makeNext(payload.messages))
     const state = svc.getStepState(payload.agent.session.id ?? 'sess-1')
-    assert.equal(state?.downgraded, false)
+    assert.equal(state?.downgraded, true, '§7.34: intent=LOCAL wins over edgeRoute shape')
+    assert.equal(state?.routeSource, 'http-api')
+  })
+
+  it('LOCAL intent WITHOUT _edgeRoute (webui path) → downgraded=true (Chat 2 leak bug, §7.34)', async () => {
+    // 复现 Chat 2 (2026-09-03)：用户在 webui 输 "查询密盒里有哪些文件"。
+    // intent-router 正确分类 LOCAL @ 0.95，但 webui (dsh-web-app chat) 不设
+    // _edgeRoute。§7.26 修复对 http-api 路径有效；webui 路径仍走 cloud-deepseek-v4。
+    // 9 次 cloud LLM 调用，promptLen 6841→7419，文件列表 leak 到 deepseek API。
+    //
+    // §7.34 修复：wantsDowngradeToLocal = category === 'LOCAL'（不再依赖 edgeRoute）。
+    const ir = fakeIntentRouter({ category: 'LOCAL', confidence: 0.95 })
+    const audit = fakeAuditLog()
+    const svc = new InputGuardServiceImpl(
+      fakeCtx() as any, defaultConfig(),
+      undefined, undefined, ir.api as any, undefined, audit.api as any,
+    )
+    const payload = makePreStepPayload('查询密盒里有哪些文件')
+    // 不设 _edgeRoute — 模拟 webui 路径
+    assert.equal((payload.agent as any)._edgeRoute, undefined)
+    await svc.handlePreStep(payload as any, makeNext(payload.messages))
+    const state = svc.getStepState(payload.agent.session.id ?? 'sess-1')
+    assert.ok(state)
+    assert.equal(state?.downgraded, true, '§7.34: webui 路径 intent=LOCAL 也必须 downgraded')
+    assert.equal(state?.downgradeReason, 'intent-local')
+    assert.equal(state?.routeSource, 'webui', '入口识别为 webui（_edgeRoute 缺失）')
+    // audit 应记录
+    const downgraded = audit.entries.find(e => e.kind === 'input-guard.intent.downgraded')
+    assert.ok(downgraded, 'must emit input-guard.intent.downgraded')
+    assert.equal(downgraded?.level, 'security')
+    assert.equal((downgraded?.payload as any).routeSource, 'webui')
+    assert.equal((downgraded?.payload as any).originalProvider, undefined, 'webui 路径无 _edgeRoute.originalProvider')
+    assert.equal((downgraded?.payload as any).targetProvider, 'local-qwen3-4b')
+  })
+
+  it('LOCAL intent without _edgeRoute → handleAgentRequest rewrites provider (end-to-end, §7.34)', async () => {
+    // 端到端：pre-step 走完 webui 路径后，agent/request hook 应改写 seedConfig。
+    const ir = fakeIntentRouter({ category: 'LOCAL', confidence: 0.95 })
+    const audit = fakeAuditLog()
+    const svc = new InputGuardServiceImpl(
+      fakeCtx() as any, defaultConfig(),
+      undefined, undefined, ir.api as any, undefined, audit.api as any,
+    )
+    const payload = makePreStepPayload('查询密盒里有哪些文件')
+    await svc.handlePreStep(payload as any, makeNext(payload.messages))
+    // 模拟 agent-loop 拿到的 seedConfig（默认 cloud-deepseek-v4）
+    const seed = { provider: 'cloud-deepseek-v4', model: 'deepseek-chat', maxTokens: 4096 }
+    const result = await svc.handleAgentRequest(
+      { agent: { session: { id: payload.agent.session.id } } },
+      seed,
+      async () => seed,
+    )
+    assert.equal(result.provider, 'local-qwen3-4b', '§7.34: webui 路径必须改写到 LOCAL')
+    assert.equal(result.model, 'qwen3-4b-instruct-2507')
+    assert.equal(result.maxTokens, 4096, '其他字段保留')
+    // 审计：input-guard.route.overridden 应被记录
+    const ov = audit.entries.find(e => e.kind === 'input-guard.route.overridden')
+    assert.ok(ov)
+    assert.deepEqual(ov?.payload?.from, { provider: 'cloud-deepseek-v4', model: 'deepseek-chat' })
+    assert.deepEqual(ov?.payload?.to, { provider: 'local-qwen3-4b', model: 'qwen3-4b-instruct-2507' })
+    assert.equal(ov?.payload?.reason, 'intent-local')
   })
 })
 
@@ -757,6 +832,124 @@ describe('handlePreStep — §7.26 bug B regression: routed audit is info level'
     // §7.26 bug B regression: must be 'info' not 'debug' (otherwise audit-log minLevel='info' silently drops)
     assert.equal(routed?.level, 'info', '必须用 info 级别；debug 会被 audit-log minLevel drop')
     assert.equal((routed?.payload as any).category, 'LOCAL')
+  })
+})
+
+// §7.35 (2026-09-03): Cloud API key 缺失 → 降级 LOCAL，绝不抛 MISSING_CREDENTIAL。
+// 场景：TUI profile 没 source repo .env.sh → DEEPSEEK_API_KEY 空 → category=CLOUD
+// 走老逻辑会到 cloud-llm-adapter 抛错。修复：input-guard 在 sanitize 之前检测
+// key，缺失就标 downgraded=true 让 handleAgentRequest 改写到 LOCAL。
+describe('handlePreStep — §7.35: cloud API key missing → downgrade LOCAL', () => {
+  const ORIGINAL_KEY = process.env.DEEPSEEK_API_KEY
+
+  function clearKey() {
+    delete process.env.DEEPSEEK_API_KEY
+  }
+  function restoreKey() {
+    if (ORIGINAL_KEY === undefined) delete process.env.DEEPSEEK_API_KEY
+    else process.env.DEEPSEEK_API_KEY = ORIGINAL_KEY
+  }
+
+  it('CLOUD intent + missing DEEPSEEK_API_KEY → downgraded=true, envSlot recorded', async () => {
+    clearKey()
+    try {
+      const ir = fakeIntentRouter({ category: 'CLOUD' })
+      const audit = fakeAuditLog()
+      const svc = new InputGuardServiceImpl(
+        fakeCtx() as any, defaultConfig({ cloudApiKeyEnv: 'DEEPSEEK_API_KEY' }),
+        undefined, undefined, ir.api as any, undefined, audit.api as any,
+      )
+      const payload = makePreStepPayload('查一下广州天气')
+      const result = await svc.handlePreStep(payload as any, makeNext(payload.messages))
+
+      // step 不被阻断——user 体验保持连贯（后续 handleAgentRequest 改写到 LOCAL）
+      assert.equal(result.kind, 'enter')
+      // 状态：downgraded=true，让 handleAgentRequest 接管
+      const state = svc.getStepState(payload.agent.session.id ?? 'sess-1')
+      assert.ok(state)
+      assert.equal(state?.downgraded, true)
+      assert.equal(state?.sanitized, false)
+      assert.match(state?.downgradeReason ?? '', /^cloud-key-missing:DEEPSEEK_API_KEY$/u)
+
+      // 审计：input-guard.cloud-key.missing (security level)，含 target provider
+      const missing = audit.entries.find(e => e.kind === 'input-guard.cloud-key.missing')
+      assert.ok(missing, 'must emit input-guard.cloud-key.missing')
+      assert.equal(missing?.level, 'security')
+      assert.equal((missing?.payload as any).envSlot, 'DEEPSEEK_API_KEY')
+      // category 字段记录的是 intent-router 的原始分类（CLOUD），targetProvider
+      // 才是降级后的目标（LOCAL）——这是审计可追溯性的语义。
+      assert.equal((missing?.payload as any).category, 'CLOUD', '记录原始分类')
+      assert.equal((missing?.payload as any).targetProvider, 'local-qwen3-4b', '记录降级目标')
+      assert.equal((missing?.payload as any).routeSource, 'webui', 'tui/webui 路径无 _edgeRoute')
+
+      // sanitize 不应被调用（缺失分支早于 sanitizer 触发）
+      assert.equal((ir.api as any).sanitizeCalls?.length ?? 0, 0, 'sanitizer 不应被调用')
+    } finally {
+      restoreKey()
+    }
+  })
+
+  it('SANITIZED intent + missing key → also downgrade LOCAL', async () => {
+    clearKey()
+    try {
+      const ir = fakeIntentRouter({ category: 'SANITIZED' })
+      const audit = fakeAuditLog()
+      const svc = new InputGuardServiceImpl(
+        fakeCtx() as any, defaultConfig(),
+        undefined, undefined, ir.api as any, undefined, audit.api as any,
+      )
+      const payload = makePreStepPayload('user@example.com 查天气')
+      const result = await svc.handlePreStep(payload as any, makeNext(payload.messages))
+      assert.equal(result.kind, 'enter')
+      const state = svc.getStepState(payload.agent.session.id ?? 'sess-1')
+      assert.equal(state?.downgraded, true)
+      assert.match(state?.downgradeReason ?? '', /^cloud-key-missing:/u)
+    } finally {
+      restoreKey()
+    }
+  })
+
+  it('LOCAL intent + missing key → no downgrade (already local, no cloud needed)', async () => {
+    clearKey()
+    try {
+      const ir = fakeIntentRouter({ category: 'LOCAL' })
+      const audit = fakeAuditLog()
+      const svc = new InputGuardServiceImpl(
+        fakeCtx() as any, defaultConfig(),
+        undefined, undefined, ir.api as any, undefined, audit.api as any,
+      )
+      const payload = makePreStepPayload('ls /tmp')
+      await svc.handlePreStep(payload as any, makeNext(payload.messages))
+      const missing = audit.entries.find(e => e.kind === 'input-guard.cloud-key.missing')
+      assert.equal(missing, undefined, 'LOCAL intent 不应触发 cloud-key-missing')
+      // 但 downgraded 仍为 true（走 §7.34 intent-local 分支）
+      const state = svc.getStepState(payload.agent.session.id ?? 'sess-1')
+      assert.equal(state?.downgraded, true)
+      assert.equal(state?.downgradeReason, 'intent-local')
+    } finally {
+      restoreKey()
+    }
+  })
+
+  it('CLOUD intent + key present → no downgrade, sanitize proceeds', async () => {
+    process.env.DEEPSEEK_API_KEY = 'sk-test-present'
+    try {
+      const ir = fakeIntentRouter({ category: 'CLOUD' })
+      const san = fakeSanitizer({ replacements: 1 })
+      const audit = fakeAuditLog()
+      const svc = new InputGuardServiceImpl(
+        fakeCtx() as any, defaultConfig(),
+        undefined, undefined, ir.api as any, san.api as any, audit.api as any,
+      )
+      const payload = makePreStepPayload('user@example.com')
+      await svc.handlePreStep(payload as any, makeNext(payload.messages))
+      const missing = audit.entries.find(e => e.kind === 'input-guard.cloud-key.missing')
+      assert.equal(missing, undefined, 'key 存在时不应触发 cloud-key-missing')
+      const sanitized = audit.entries.find(e => e.kind === 'input-guard.sanitized')
+      assert.ok(sanitized, 'sanitize 应被调用（category=CLOUD + key present + 有 PII）')
+    } finally {
+      restoreKey()
+    }
   })
 })
 

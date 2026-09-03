@@ -26,6 +26,12 @@ import { describe, it } from 'vitest'
 import { InputGuardServiceImpl } from '../../src/dsh-adapter/input-guard.ts'
 import type { Config } from '../../src/dsh-adapter/input-guard.ts'
 
+// §7.35 (2026-09-03): 默认 DEEPSEEK_API_KEY 存在，避免所有 CLOUD intent 测试
+// 被新加的"缺 key 降级 LOCAL"分支短路。describe 内部如果需要"缺 key"行为
+// 会显式 delete（暂无，因为 §7.35 自己的 4 case 在 input-guard.test.ts）。
+const ORIGINAL_TEST_KEY = process.env.DEEPSEEK_API_KEY
+process.env.DEEPSEEK_API_KEY = ORIGINAL_TEST_KEY ?? 'sk-test-e2e-default'
+
 // ── helpers ─────────────────────────────────────────────────────────────────
 
 function fakeCtx() {
@@ -115,6 +121,7 @@ function defaultConfig(overrides: Partial<Config> = {}): Config {
     downgradeOnSanitizeFailure: true,
     localProvider: 'local-qwen3-4b',
     localModel: 'qwen3-4b-instruct-2507',
+    cloudApiKeyEnv: 'DEEPSEEK_API_KEY',
     ...overrides,
   }
 }

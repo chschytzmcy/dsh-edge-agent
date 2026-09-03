@@ -43,6 +43,14 @@ export interface Config {
   /** 降级目标 provider / model。必须与本地 LLM adapter 注册名一致。*/
   localProvider: string
   localModel: string
+  /** 2026-09-03 §7.35: Cloud adapter 读 key 的 env slot 名。
+   *  与 cloud-llm-adapter.Config.apiKeyEnv 默认一致（'DEEPSEEK_API_KEY'），
+   *  也尊重 cordis.patch.yml:41 的 DSH_EDGE_CLOUD_KEY_ENV 覆盖。
+   *  当 category=CLOUD|SANITIZED 但该 env slot 为空时，input-guard 不会
+   *  走 sanitize（避免 sanitize 完发现根本送不出去、浪费算力），而是直接
+   *  标记 downgraded=true 让 handleAgentRequest 把路由改写到 LOCAL——
+   *  与"脱敏失败降级 LOCAL"对称：都是"系统配置缺失/故障，绝不上云"。*/
+  cloudApiKeyEnv: string
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -52,6 +60,10 @@ export const Config: Schema<Config> = Schema.object({
   downgradeOnSanitizeFailure: Schema.boolean().default(true),
   localProvider: Schema.string().default('local-qwen3-4b'),
   localModel: Schema.string().default('qwen3-4b-instruct-2507'),
+  cloudApiKeyEnv: Schema.string().default(
+    // mirror cordis.patch.yml:41 的 !!js 表达式；apply() 里再尊重 DSH_EDGE_CLOUD_KEY_ENV 覆盖
+    process.env.DSH_EDGE_CLOUD_KEY_ENV ?? 'DEEPSEEK_API_KEY',
+  ),
 })
 
 /** Minimal prompt-guard 接口（只暴露 input-guard 用到的方法）。*/
@@ -136,6 +148,9 @@ interface StepSanitizationState {
   originalRealm?: string
   /** Sanitize 失败原因（审计 + 调试）。*/
   downgradeReason?: string
+  /** 入口路径（'http-api' = _edgeRoute 已设；'webui' = 未设）。
+   *  §7.34 修复：webui 路径也要按 intent=LOCAL 改写。*/
+  routeSource?: 'http-api' | 'webui'
 }
 
 /** 上一路由决策：被 input-guard 在 agent/pre-step 读取，避免重复 classify()。*/
@@ -198,6 +213,19 @@ export class InputGuardServiceImpl extends Service {
    *  对应的不是同一个对象（pre-step 拿到的是 agent 实例的 session，
    *  llm/stream 拿到的是 LLM request envelope 上的 sessionId 字符串）。*/
   private readonly stepState = new Map<string, StepSanitizationState>()
+
+  /** §7.35 (2026-09-03): 检查 cloud LLM adapter 的 API key 是否就位。
+   *  缺失时不抛异常，而是让 handlePreStep 把 category=CLOUD|SANITIZED
+   *  降级到 LOCAL——与"sanitize 失败降级 LOCAL"对称（系统侧故障/配置缺失
+   *  永远不应让 user 的 PII 上云）。
+   *  返回 false 表示"就算想上云也上不了"，调用方应降级到 LOCAL。*/
+  private hasCloudCredentials(): boolean {
+    const slot = this.config.cloudApiKeyEnv
+    if (typeof slot !== 'string' || slot.length === 0) return false
+    if (typeof process === 'undefined' || !process.env) return false
+    const value = process.env[slot]
+    return typeof value === 'string' && value.length > 0
+  }
 
   constructor(
     ctx: Context,
@@ -571,19 +599,69 @@ export class InputGuardServiceImpl extends Service {
       sessionId, category, edgeRouteUsed,
     })
 
+    // §7.35 (2026-09-03): Cloud API key 缺失 → 降级 LOCAL，绝不抛 MISSING_CREDENTIAL。
+    // 场景：TUI profile 没 source repo .env.sh → DEEPSEEK_API_KEY 空。
+    // user 走 dsh-tui chat 触发意图分类（intent-router 不读 _edgeRoute，因为
+    // dsh-tui 跟 dsh-web-app/dsh-web-ui 同源、不挂 _edgeRoute），如果分到 CLOUD
+    // （含敏感问题 / 跨域查询等），cloud-llm-adapter 会在 stream 阶段抛
+    // MISSING_CREDENTIAL → user 看到 error，体验断裂。
+    //
+    // 与"脱敏失败降级 LOCAL"对称：都属于"系统侧故障 / 配置缺失"，绝不让 user
+    // 的 PII 上云（即便没 PII，强制上云也会失败）。这里把"key 缺失"视为
+    // 与"sanitize 失败"等价的降级触发，category=CLOUD|SANITIZED 都走 LOCAL。
+    //
+    // 关键：早于 sanitize 执行——避免 sanitize 跑完一遍才发现根本送不出去，
+    // 既浪费算力又让 user 看到延迟。降级后 messages 不动（LOCAL LLM 不上云，
+    // 不需要脱敏），由 handleAgentRequest 改写 route。
+    if ((category === 'CLOUD' || category === 'SANITIZED') && !this.hasCloudCredentials()) {
+      const hasRawEdgeRoute = typeof (payload.agent as { _edgeRoute?: unknown })?._edgeRoute !== 'undefined'
+      const routeSource: 'http-api' | 'webui' = hasRawEdgeRoute ? 'http-api' : 'webui'
+      this.audit('security', 'input-guard.cloud-key.missing', {
+        sessionId, category, envSlot: this.config.cloudApiKeyEnv,
+        originalProvider: edgeRoute?.provider,
+        originalModel: edgeRoute?.model,
+        originalRealm: edgeRoute?.realm,
+        routeSource,
+        targetProvider: this.config.localProvider,
+        targetModel: this.config.localModel,
+      })
+      this.stepState.set(sessionId, {
+        sanitized: false, replacements: 0, sessionId, timestamp: Date.now(),
+        downgraded: true,
+        downgradeReason: `cloud-key-missing:${this.config.cloudApiKeyEnv}`,
+        originalProvider: edgeRoute?.provider,
+        originalModel: edgeRoute?.model,
+        originalRealm: edgeRoute?.realm,
+        routeSource,
+      })
+      return decision
+    }
+
     // 4. 脱敏（仅 CLOUD 路径，或显式开启 LOCAL）
     const shouldSanitize = category === 'CLOUD' || category === 'SANITIZED' || this.config.sanitizeLocalTraffic
     if (!shouldSanitize || !this.sanitizer) {
-      // 2026-09-03 §7.26 fix: when intent=category=LOCAL, the upstream
-      // request was likely destined for cloud (because agent-default-model
-      // defaults to cloud-deepseek-v4 in cordis.patch.yml:75). Downgrade
-      // provider/model to local via the agent/request hook so PII never
-      // leaves the device. Without this, intent=LOCAL only changes audit
-      // events but the actual call still goes to cloud.
-      const wantsDowngradeToLocal =
-        category === 'LOCAL' &&
-        typeof edgeRoute?.provider === 'string' &&
-        edgeRoute.provider.startsWith('cloud-')
+      // 2026-09-03 §7.26 + 2026-09-03 §7.34 fix. intent=category=LOCAL means
+      // the user's request is fully resolvable on-device (file/local/system
+      // query) — PII must not egress. Two entry points feed into pre-step:
+      //   - http-api: sets _edgeRoute (provider='cloud-deepseek-v4', category='LOCAL').
+      //     §7.26 covered this; wantsDowngradeToLocal=true → rewrite.
+      //   - webui (dsh-web-app chat): does NOT set _edgeRoute; default provider
+      //     is cloud-deepseek-v4 from cordis.patch.yml. Without §7.34 fix,
+      //     intent=LOCAL only changes audit events but the actual LLM call still
+      //     goes to cloud, leaking file content (observed: 9 cloud calls, 6841
+      //     → 7419 promptLen for "查询密盒里有哪些文件", 2026-09-03).
+      //
+      // §7.34 fix: drop the `edgeRoute.provider.startsWith('cloud-')` guard.
+      // intent=LOCAL is the authoritative verdict — when it fires, force LOCAL
+      // regardless of how the request entered (http-api cached route / webui
+      // direct chat / any future transport). If current provider is already
+      // local, the rewrite in handleAgentRequest is idempotent (same provider/model).
+      //
+      // routeSource='http-api' when _edgeRoute was set on agent (even malformed;
+      // raw presence = http-api wrote it). 'webui' when _edgeRoute absent.
+      const wantsDowngradeToLocal = category === 'LOCAL'
+      const hasRawEdgeRoute = typeof (payload.agent as { _edgeRoute?: unknown })?._edgeRoute !== 'undefined'
+      const routeSource: 'http-api' | 'webui' = hasRawEdgeRoute ? 'http-api' : 'webui'
       this.stepState.set(sessionId, {
         sanitized: false, replacements: 0, sessionId, timestamp: Date.now(),
         downgraded: wantsDowngradeToLocal,
@@ -591,10 +669,11 @@ export class InputGuardServiceImpl extends Service {
         originalProvider: edgeRoute?.provider,
         originalModel: edgeRoute?.model,
         originalRealm: edgeRoute?.realm,
+        routeSource,
       })
       if (wantsDowngradeToLocal) {
         this.audit('security', 'input-guard.intent.downgraded', {
-          sessionId, category, reason: 'intent-local',
+          sessionId, category, reason: 'intent-local', routeSource,
           originalProvider: edgeRoute?.provider,
           originalModel: edgeRoute?.model,
           originalRealm: edgeRoute?.realm,
@@ -932,6 +1011,13 @@ async function flushBuffer(
 }
 
 export async function apply(ctx: Context, config: Config): Promise<() => Promise<void>> {
+  // §7.35 (2026-09-03): 运行时尊重 DSH_EDGE_CLOUD_KEY_ENV 覆盖。
+  // Schema default 在模块加载时求值；如果用户在 apply() 之后才 export env，
+  // 这里补一刀。跟 cordis.patch.yml:41 的 !!js 表达式保持一致。
+  if (process.env.DSH_EDGE_CLOUD_KEY_ENV && process.env.DSH_EDGE_CLOUD_KEY_ENV !== config.cloudApiKeyEnv) {
+    ctx.logger?.info?.(`[input-guard] cloudApiKeyEnv override: ${config.cloudApiKeyEnv} → ${process.env.DSH_EDGE_CLOUD_KEY_ENV}`)
+    ;(config as { cloudApiKeyEnv: string }).cloudApiKeyEnv = process.env.DSH_EDGE_CLOUD_KEY_ENV
+  }
   const promptGuard = (ctx as unknown as { promptGuard?: PromptGuardLike }).promptGuard
   const privacyPolicy = (ctx as unknown as { privacyPolicy?: PrivacyPolicyLike }).privacyPolicy
   const intentRouter = (ctx as unknown as { intentRouter?: IntentRouterLike }).intentRouter
