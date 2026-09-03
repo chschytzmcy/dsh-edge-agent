@@ -366,7 +366,8 @@ describe('input-guard E2E — downgrade semantics', () => {
     // state.sanitized=false，但**没有** downgraded 标记（因为从未尝试 sanitize）
     assert.equal(result.kind, 'enter')
     const state = svc.getStepState('down-3')
-    assert.equal(state?.downgraded, undefined)
+    // §7.26 fix: downgraded 字段总是被显式设置；CLOUD + cloud-* 路径 = false
+    assert.equal(state?.downgraded, false)
   })
 })
 

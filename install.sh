@@ -19,6 +19,9 @@
 #   ./install.sh --no-restart                   # 装完不重启
 #   ./install.sh --skip-pnpm                    # 跳过 npm install（假设已装过）
 #   ./install.sh --force-install                # 强制重装本包（覆盖 rsync）
+#   ./install.sh --to-profile web               # 把 dsh-edge-agent 作为 bundle
+#                                                #   装到 web profile（自研 http-api
+#                                                #   :21017 跟 dsh-web-app :3080 共存）
 
 set -euo pipefail
 
@@ -44,16 +47,34 @@ NESTED_PKG="$PROFILE_DIR/node_modules/@deepseek-harness-edge-agent/dsh-edge-agen
 DO_RESTART=1
 DO_PNPM=1
 FORCE_INSTALL=0
+# 2026-09-02: --to-profile 把 dsh-edge-agent 装到目标 profile 作为 bundle。
+# 例：./install.sh --to-profile web   把 dsh-edge-agent 加到 web profile
+# （不影响它独立运行 dsh-edge-agent profile 的能力）。
+TO_PROFILE=""
 for arg in "$@"; do
   case "$arg" in
     --no-restart) DO_RESTART=0 ;;
     --skip-pnpm)  DO_PNPM=0 ;;
     --force-install) FORCE_INSTALL=1 ;;
+    --to-profile) TO_PROFILE="$2"; shift 2 ;;
+    --to-profile=*) TO_PROFILE="${arg#*=}"; shift ;;
     -h|--help)
-      sed -n '2,32p' "$0"; exit 0 ;;
+      sed -n '2,35p' "$0"; exit 0 ;;
     *) echo "unknown flag: $arg" >&2; exit 2 ;;
   esac
 done
+
+# --to-profile 把 dsh-edge-agent 作为 bundle 装到目标 profile 后，
+# 重启目标和日志路径都跟到目标 profile（user 期望管理那个进程）。
+if [ -n "$TO_PROFILE" ]; then
+  PROFILE="$TO_PROFILE"
+  PROFILE_DIR="$DSH_HOME/profiles/$PROFILE"
+  NESTED_PKG="$PROFILE_DIR/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent"
+  # 共享目标 profile 的日志约定（多数 profile 没有自定义就回退到 dsh-home 默认）
+  if [ -z "${DSH_EDGE_LOG:-}" ]; then
+    LOG="$DSH_HOME/profiles/$PROFILE/run.log"
+  fi
+fi
 
 if ! command -v dsh >/dev/null 2>&1; then
   echo "未检测到 dsh CLI。先安装官方客户端：" >&2
@@ -135,17 +156,20 @@ if [ "$DO_PNPM" = 1 ]; then
   done
 fi
 
-# ── 2.8. Web UI 家族 ── 2026-09-01 卸载 ────────────────────────────
-# DSH 官方 Web UI + 第三方 dsh-web-ui-all 全家桶 + @xmanrui/dsh-im IM 通道
-# 网关全部卸载。edge-agent profile 现只暴露自研 http-api (:21017)，单
-# 入口；移除理由：
-#   - @linxin666/dsh-web-ui-all v0.1.20 caret 仍在快速迭代（blocker）
-#   - DSH 官方 webui (dsh-host-webserver / dsh-web-app / dsh-web-frontend)
-#     引入 katex CSS loader / node-pty prebuild 等上游 blocker
-#   - dsh-im 强依赖 webserver 的 connection / apiProxy 服务，webserver
-#     卸载后必然挂；一并清掉更干净
-# 唯一入口：自研 http-api :21017 → agent-loop → input-guard → LLM adapters
-echo "==> [2.8/5] skip web-ui install (uninstalled 2026-09-01; http-api :21017 only)"
+# ── 2.8. Web UI 家族 ── 2026-09-02 重装 ────────────────────────────
+# 2026-09-01：DSH 官方 webui 家族 + dsh-im 全部从 dsh-edge-agent profile 卸载
+# （katex CSS / node-pty prebuild / caret 漂移 / dsh-im↔webserver 强耦合）。
+#
+# 2026-09-02 翻转：dsh-edge-agent 现在以 bundle 身份可以装到任何 profile
+# （包括 web）。装到 dsh-edge-agent profile 时仍然不拉 webui —— dsh-edge-agent
+# profile 是 headless 部署，只暴露自研 http-api (:21017)。装到 web profile
+# 时由 web profile 本身已经把 webui 拉好（先有 webui，再加 dsh-edge-agent
+# bundle），不需要本步骤动手。
+#
+# web profile 加入本 bundle 的标准操作：
+#   ./install.sh --to-profile web
+# 该路径会跳到 §2（--to-profile 重置 PROFILE/NESTED_PKG），不拉 webui。
+echo "==> [2.8/5] no webui install here (webui lives in target profile; this bundle rides on top)"
 
 # ── 3. 同步编译产物到 DSH 实际加载的嵌套包 ───────────────────────────
 if [ ! -d "$NESTED_PKG" ]; then

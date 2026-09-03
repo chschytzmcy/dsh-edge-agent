@@ -567,20 +567,41 @@ export class InputGuardServiceImpl extends Service {
         // 分类失败用默认 CLOUD（fail-open）
       }
     }
-    this.audit('debug', 'input-guard.routed', {
+    this.audit('info', 'input-guard.routed', {
       sessionId, category, edgeRouteUsed,
     })
 
     // 4. 脱敏（仅 CLOUD 路径，或显式开启 LOCAL）
     const shouldSanitize = category === 'CLOUD' || category === 'SANITIZED' || this.config.sanitizeLocalTraffic
     if (!shouldSanitize || !this.sanitizer) {
-      // 不脱敏：记录状态，让 llm/stream 知道不需要 desanitize
+      // 2026-09-03 §7.26 fix: when intent=category=LOCAL, the upstream
+      // request was likely destined for cloud (because agent-default-model
+      // defaults to cloud-deepseek-v4 in cordis.patch.yml:75). Downgrade
+      // provider/model to local via the agent/request hook so PII never
+      // leaves the device. Without this, intent=LOCAL only changes audit
+      // events but the actual call still goes to cloud.
+      const wantsDowngradeToLocal =
+        category === 'LOCAL' &&
+        typeof edgeRoute?.provider === 'string' &&
+        edgeRoute.provider.startsWith('cloud-')
       this.stepState.set(sessionId, {
         sanitized: false, replacements: 0, sessionId, timestamp: Date.now(),
+        downgraded: wantsDowngradeToLocal,
+        downgradeReason: wantsDowngradeToLocal ? 'intent-local' : undefined,
         originalProvider: edgeRoute?.provider,
         originalModel: edgeRoute?.model,
         originalRealm: edgeRoute?.realm,
       })
+      if (wantsDowngradeToLocal) {
+        this.audit('security', 'input-guard.intent.downgraded', {
+          sessionId, category, reason: 'intent-local',
+          originalProvider: edgeRoute?.provider,
+          originalModel: edgeRoute?.model,
+          originalRealm: edgeRoute?.realm,
+          targetProvider: this.config.localProvider,
+          targetModel: this.config.localModel,
+        })
+      }
       return decision
     }
 
@@ -947,6 +968,21 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
   // 类型安全的 ctx.on 访问（cordis 的 ctx.on 在类型上不一定暴露）
   const on = (ctx as unknown as { on?: <T extends (...args: any[]) => any>(event: string, handler: T, opts?: Record<string, unknown>) => () => void }).on
 
+  // 2026-09-03 §7.26 probe: log ctx.on reachability + each hook registration
+  // outcome so we can tell from audit log whether hook registration failed
+  // (no-ctx-on) vs hook registered but never dispatched (silent filter).
+  // NOTE: level='info' because audit-log default minLevel is 'info' and 'debug'
+  // entries are silently dropped at audit-log.ts:163.
+  void auditLog?.log?.({
+    level: 'info',
+    kind: 'input-guard.boot.probe',
+    source: 'input-guard',
+    payload: {
+      hasCtxOn: Boolean(on),
+      ctxOnType: typeof on,
+    },
+  })
+
   const disposers: Array<() => void> = []
 
   if (on) {
@@ -954,6 +990,12 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
     const d1 = on('agent/pre-step', async (payload: any, next: any) => {
       return service.handlePreStep(payload, next)
     }, { global: true })
+    void auditLog?.log?.({
+      level: 'info',
+      kind: 'input-guard.hook.registered',
+      source: 'input-guard',
+      payload: { event: 'agent/pre-step', global: true, disposerReturned: typeof d1 === 'function' },
+    })
     if (d1) disposers.push(d1)
 
     // 反向：llm/stream（全局）
@@ -964,6 +1006,12 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
     const d2 = on('llm/stream', (options: any, next: any) => {
       return service.handleLlmStream(options, next)
     }, { global: true })
+    void auditLog?.log?.({
+      level: 'info',
+      kind: 'input-guard.hook.registered',
+      source: 'input-guard',
+      payload: { event: 'llm/stream', global: true, disposerReturned: typeof d2 === 'function' },
+    })
     if (d2) disposers.push(d2)
 
     // 路由改写：agent/request（全局）。
@@ -978,6 +1026,12 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
       const result = await service.handleAgentRequest(payload ?? {}, seedConfig, async () => seedConfig)
       return result
     }, { global: true })
+    void auditLog?.log?.({
+      level: 'info',
+      kind: 'input-guard.hook.registered',
+      source: 'input-guard',
+      payload: { event: 'agent/request', global: true, disposerReturned: typeof d3 === 'function' },
+    })
     if (d3) disposers.push(d3)
   }
 

@@ -1,4 +1,21 @@
+packages:
+  - .
+
+nodeLinker: hoisted
+autoInstallPeers: false
 allowBuilds:
-  esbuild: true
+  # 2026-09-02: when dsh-edge-agent is added as a bundle to a webui-based
+  # profile (e.g. `dsh plugin --profile web add -w $LOCAL_PKG`), the
+  # transitive deps may pull node-pty (linux-x64 prebuild blocker).
+  # See PROGRESS §7.25.
+  node-pty: true
+  # 2026-09-02: cloudflared / cpu-features / ssh2 already required by
+  # the dsh-tui and dsh-edge-agent profiles (e.g. dsh-tui's pnpm-workspace
+  # already lists these). Promote them here so anyone installing this
+  # bundle standalone (without a pre-existing profile overlay) gets the
+  # same allow-list.
+  cloudflared: true
+  cpu-features: true
+  ssh2: true
 onlyBuiltDependencies:
   - esbuild

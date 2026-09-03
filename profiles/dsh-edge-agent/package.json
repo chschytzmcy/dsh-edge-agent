@@ -4,9 +4,12 @@
   "dsh": {
     "profile": {
       "bundles": [
-        "@deepseek-ai/dsh-base"
+        "@deepseek-ai/dsh-base",
+        "@deepseek-harness-edge-agent/dsh-edge-agent"
       ]
     }
   },
-  "dependencies": {}
+  "dependencies": {
+    "@deepseek-harness-edge-agent/dsh-edge-agent": "file:../.."
+  }
 }

@@ -632,6 +632,134 @@ describe('handlePreStep — reads intent from agent._edgeRoute', () => {
   })
 })
 
+// ─────────────────────────────────────────────────────────────────────────────
+// §7.26 regression suite: intent=LOCAL must downgrade when upstream edge route
+// is bound to a cloud-* provider. Without this, http-api's `_edgeRoute.category`
+// says "local" but the actual call still goes to cloud because agent/request
+// hook didn't see a downgrade hint.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('handlePreStep — §7.26 bug A regression: LOCAL intent must downgrade from cloud-*', () => {
+  it('LOCAL edgeRoute with cloud-* provider → stepState.downgraded=true', async () => {
+    const ir = fakeIntentRouter({ category: 'LOCAL' }) // not actually called
+    const svc = new InputGuardServiceImpl(
+      fakeCtx() as any, defaultConfig(),
+      undefined, undefined, ir.api as any,
+    )
+    const payload = makePreStepPayload('查本地IP')
+    ;(payload.agent as any)._edgeRoute = {
+      realm: 'LOCAL',
+      category: 'LOCAL',
+      provider: 'cloud-deepseek-v4',  // 上游误判：走 cloud
+      model: 'deepseek-chat',
+      confidence: 0.95,
+      rationale: 'edge-route-cached',
+    }
+    const result = await svc.handlePreStep(payload as any, makeNext(payload.messages))
+    assert.equal(result.kind, 'enter')
+    const state = svc.getStepState(payload.agent.session.id ?? 'sess-1')
+    assert.ok(state)
+    // 核心断言：downgraded=true 让 agent/request hook 改写路由
+    assert.equal(state?.downgraded, true)
+    assert.equal(state?.downgradeReason, 'intent-local')
+    assert.equal(state?.originalProvider, 'cloud-deepseek-v4')
+    assert.equal(state?.originalModel, 'deepseek-chat')
+    assert.equal(state?.originalRealm, 'LOCAL')
+  })
+
+  it('LOCAL edgeRoute with cloud-* provider → audit input-guard.intent.downgraded (security level)', async () => {
+    const ir = fakeIntentRouter({ category: 'LOCAL' })
+    const audit = fakeAuditLog()
+    const svc = new InputGuardServiceImpl(
+      fakeCtx() as any, defaultConfig(),
+      undefined, undefined, ir.api as any, undefined, audit.api as any,
+    )
+    const payload = makePreStepPayload('查本地IP')
+    ;(payload.agent as any)._edgeRoute = {
+      realm: 'LOCAL', category: 'LOCAL',
+      provider: 'cloud-deepseek-v4', model: 'deepseek-chat',
+      confidence: 0.95, rationale: 'edge-route-cached',
+    }
+    await svc.handlePreStep(payload as any, makeNext(payload.messages))
+    const downgraded = audit.entries.find(e => e.kind === 'input-guard.intent.downgraded')
+    assert.ok(downgraded, 'must emit input-guard.intent.downgraded')
+    assert.equal(downgraded?.level, 'security', 'security 级别不会被 audit-log minLevel drop')
+    assert.equal((downgraded?.payload as any).originalProvider, 'cloud-deepseek-v4')
+    assert.equal((downgraded?.payload as any).targetProvider, 'local-qwen3-4b')
+  })
+
+  it('LOCAL edgeRoute with already-local provider → downgraded=false (no false alarm)', async () => {
+    const ir = fakeIntentRouter({ category: 'LOCAL' })
+    const svc = new InputGuardServiceImpl(
+      fakeCtx() as any, defaultConfig(),
+      undefined, undefined, ir.api as any,
+    )
+    const payload = makePreStepPayload('查本地IP')
+    ;(payload.agent as any)._edgeRoute = {
+      realm: 'LOCAL', category: 'LOCAL',
+      provider: 'local-qwen3-4b',    // 已经是本地，不需要降级
+      model: 'qwen3-4b-instruct-2507',
+      confidence: 0.95, rationale: 'edge-route-cached',
+    }
+    await svc.handlePreStep(payload as any, makeNext(payload.messages))
+    const state = svc.getStepState(payload.agent.session.id ?? 'sess-1')
+    assert.equal(state?.downgraded, false)
+    assert.equal(state?.downgradeReason, undefined)
+  })
+
+  it('CLOUD edgeRoute with cloud-* provider → downgraded=false (not applicable)', async () => {
+    const ir = fakeIntentRouter({ category: 'CLOUD' })
+    const svc = new InputGuardServiceImpl(
+      fakeCtx() as any, defaultConfig(),
+      undefined, undefined, ir.api as any,
+    )
+    const payload = makePreStepPayload('你好')
+    ;(payload.agent as any)._edgeRoute = {
+      realm: 'CLOUD', category: 'CLOUD',
+      provider: 'cloud-deepseek-v4', model: 'deepseek-chat',
+      confidence: 0.9, rationale: 'edge-route-cached',
+    }
+    await svc.handlePreStep(payload as any, makeNext(payload.messages))
+    const state = svc.getStepState(payload.agent.session.id ?? 'sess-1')
+    assert.equal(state?.downgraded, false, 'CLOUD intent 不会触发 intent-local 降级')
+  })
+
+  it('LOCAL edgeRoute without provider field → downgraded=false (defensive)', async () => {
+    const ir = fakeIntentRouter({ category: 'LOCAL' })
+    const svc = new InputGuardServiceImpl(
+      fakeCtx() as any, defaultConfig(),
+      undefined, undefined, ir.api as any,
+    )
+    const payload = makePreStepPayload('查本地IP')
+    ;(payload.agent as any)._edgeRoute = {
+      realm: 'LOCAL', category: 'LOCAL',
+      confidence: 0.95, rationale: 'edge-route-cached',
+      // 故意缺 provider — wantsDowngradeToLocal 应安全返回 false
+    }
+    await svc.handlePreStep(payload as any, makeNext(payload.messages))
+    const state = svc.getStepState(payload.agent.session.id ?? 'sess-1')
+    assert.equal(state?.downgraded, false)
+  })
+})
+
+describe('handlePreStep — §7.26 bug B regression: routed audit is info level', () => {
+  it('emit input-guard.routed at level=info (not debug)', async () => {
+    const ir = fakeIntentRouter({ category: 'LOCAL' })
+    const audit = fakeAuditLog()
+    const svc = new InputGuardServiceImpl(
+      fakeCtx() as any, defaultConfig(),
+      undefined, undefined, ir.api as any, undefined, audit.api as any,
+    )
+    const payload = makePreStepPayload('hello')
+    await svc.handlePreStep(payload as any, makeNext(payload.messages))
+    const routed = audit.entries.find(e => e.kind === 'input-guard.routed')
+    assert.ok(routed, 'must emit input-guard.routed')
+    // §7.26 bug B regression: must be 'info' not 'debug' (otherwise audit-log minLevel='info' silently drops)
+    assert.equal(routed?.level, 'info', '必须用 info 级别；debug 会被 audit-log minLevel drop')
+    assert.equal((routed?.payload as any).category, 'LOCAL')
+  })
+})
+
 describe('handleLlmStream — bypass', () => {
   it('passes through when enableInputGuard=false', async () => {
     const svc = new InputGuardServiceImpl(fakeCtx() as any, defaultConfig({ enableInputGuard: false }))

@@ -2653,3 +2653,376 @@ POST /v1/chat 200 14756ms intent=CLOUD
 **lib/types/ 路径问题**（顺手发现）：tsconfig 的 `outDir: "lib/types"` 让 build 输出落在 `lib/types/`，但 `package.json` 的 `exports` 字段也指 `lib/types/`，`install.sh` 又 rsync `lib/ → lib/`（保留路径）。三方预期一致 → 应正常工作。**但**之前装机时有人手动把 `lib/types/dsh-adapter/*` 拍平到 `lib/dsh-adapter/*`（去掉 `types/` 中间层），导致 my-edit 走 `lib/types/` 时 dsh 找不到（path mismatch）。手动 cp 修复后两次 rsync 流程能跑。建议后续 install.sh 改成 `rsync lib/ $NESTED_PKG/lib/`（无尾斜杠）保留 `types/` 中间层，或改 tsconfig outDir 改 `lib` 去掉中间层（但 lib/types 是有意的命名空间 —— DSH 其他多产物项目都用 lib/types/）。
 
 **memory 影响**：`[web-diag]` 行从此进 ops log 的每次 boot。运维 ops 想确认 web 是否启用 → `grep web-diag ~/.dsh-edge-agent/log/dsh-edge-agent.log | tail -1`。`size=0` ⇒ ctx.web 没起；`size=1 ids=[]` ⇒ WebRuntime 起了但 web-search-deepseek 没注册（看是不是 `inject: ['web']` 卡死）；`size=1 ids=[deepseek-official]` ⇒ OK。
+
+### 7.25 dsh-edge-agent 改为可装载 bundle（layer-ordering 路径）（2026-09-02）
+
+**背景**：§7.20（2026-09-01）把 DSH 官方 webui + dsh-im 全部从 dsh-edge-agent profile 卸载（katex CSS / node-pty prebuild / caret 漂移 / dsh-im↔webserver 强耦合）。本节翻转 §7.20 的一部分：dsh-edge-agent 不再独占 profile，而是改造成**自包含 bundle**，可以装到任何 profile（包括 web）。
+
+**用户意图**：「dsh-edge-agent 也通过类似 `dsh plugin --profile web add -w @xmanrui/dsh-im` 装载」。
+
+**核心 insight**：repo 根 `package.json:188-191` 已经声明了 `"dsh": { "bundle": { "patch": "./cordis.patch.yml" } }`（与 `@xmanrui/dsh-im` 的 manifest 格式一致）。**之前没人走过这条路** —— 根 `cordis.patch.yml` 只有 102 行（dsh-base overrides + 7 个 disabled rows），真正的 17 插件 insert block 留在 `profiles/dsh-edge-agent/cordis.patch.yml` 的 459 行里。
+
+**架构转换**：
+
+```
+之前：dsh-base → profiles/dsh-edge-agent/cordis.patch.yml  (459 行独占 profile 顶层)
+之后：dsh-base → ...其他 bundle... → 根 cordis.patch.yml (~470 行自带全部功能)
+     → profiles/dsh-edge-agent/cordis.patch.yml  ([] 空 stub)
+```
+
+**Layer ordering 解决所有冲突**：Cordis 是 last-write-wins per row（**不是** deep merge）。把 dsh-edge-agent 放到目标 profile 之后（这是 bundle order 必然的），其 row 自动 override 前置 layer 的同名 row：
+
+| 冲突 | 解决 |
+|------|------|
+| `system-prompt` persona（dsh-web-app 写 `coding-agent`） | dsh-edge-agent 后写 `edge-agent` → **edge-agent 赢** |
+| `agent-presets` default | 同上 → **edge-agent 赢** |
+| `tool-*` enable/disable（dsh-web-app disable 一堆） | dsh-edge-agent 后写 enable → **edge-agent 赢** |
+| `webserver` port（dsh-web-app 写 3080） | dsh-edge-agent 不写 → **3080 赢**（user 可在 dsh-edge-agent 层 override 到 :21028） |
+| `input-guard` 覆盖 webui RPC | input-guard hooks 用 `{ global: true }` 注册 → webui RPC 自动覆盖 |
+
+**改动文件**：
+
+1. `cordis.patch.yml`（根）—— **从 102 行扩到 ~470 行**：
+   - 保留 6 个 dsh-base overrides + 7 个 disabled rows
+   - **+** `agent-default-model` row（provider/model env defaults）
+   - **+** `system-prompt` persona override（从 profile 复制过来）
+   - **+** `agent-presets` row（default: dsh-edge-agent, includeUserRoot: true）
+   - **+** tool-* enable rows（tool-bash / tool-fs / tool-fs-search / tool-web / tool-todo / tool-str-replace-editor）
+   - **+** tool-* disable rows（tool-pwsh / tool-jobs / tool-skill / tool-subagent-* / tool-workflow / tool-ralph / tool-goal / skill-filesystem / skill-badge / workflow-worker-thread / session-title-llm / session-telemetry-otel / repeat-tool-reminder / spill-local / spill-policy / session-checkpoint-policy / tool-result-pruner / tool-call-timeout-policy / compaction-basic / command-compact）
+   - **+** `goal` / `goal-round-driver` / `command-goal` enable rows（dsh-edge-agent preset 的 tool-goal 需要）
+   - **+** 整个 `insert:` block（17 个 plugin：file-logger → tcm → td-bus → realm-skill-bridge → http-api → cloud-llm-adapter → local-llm-adapter → model-router → intent-router → edge-tools-registry → local-storage → audit-log → prompt-guard → privacy-policy → sanitizer-pipeline → web-search-guard → input-guard）
+
+2. `profiles/dsh-edge-agent/cordis.patch.yml` —— 改为 `[]`（profile 层不重复声明，留给 user 写皮肤 override）
+
+3. `profiles/dsh-edge-agent/package.json` —— 增加 bundle dep：
+   ```json
+   "dsh": { "profile": { "bundles": [
+     "@deepseek-ai/dsh-base",
+     "@deepseek-harness-edge-agent/dsh-edge-agent"   // 新增
+   ]}},
+   "dependencies": {
+     "@deepseek-harness-edge-agent/dsh-edge-agent": "file:../.."
+   }
+   ```
+   （`file:../..` 因为 `~/.dsh/profiles/dsh-edge-agent/` 离仓库根两级深）
+
+4. `install.sh` —— 新增 `--to-profile` flag（与 `--to-profile=web` 等价于「装到 web profile」），重置 `PROFILE / NESTED_PKG / LOG` 到目标 profile。其他步骤全部沿用（compile → dsh plugin add → rsync lib/ → sync cordis.patch.yml → restart）
+
+5. `pnpm-workspace.yaml` —— 新增 `node-pty: true`（webui 传递依赖）+ `cloudflared / cpu-features / ssh2: true`（standalone 部署也要）
+
+6. **新文件** `katex-shim.js` + `katex-shim-loader.mjs` —— Node22 ESM CSS loader stub。`@deepseek-ai/dsh-client-ui-attachment` 触发 `import "katex/dist/katex.min.css"` → `ERR_UNKNOWN_FILE_EXTENSION`。loader 返回空 module：`{ url: 'data:text/javascript,export default {}', format: 'module' }`。Wire：`NODE_OPTIONS='--import /path/to/katex-shim.js' dsh --profile web --port 3080`
+
+7. `dsh-im-runtime-blockers.md` —— 更新 blocker 状态：katex (1) 和 node-pty (3) 标记为 mitigated
+
+**用户操作**（目标 = 把 dsh-edge-agent 装到 web profile）：
+
+```bash
+# 1. 编辑 dsh-edge-agent（如有改动）
+cd /home/etsme/cy/agent/dsh-edge-agent
+npm run compile
+
+# 2. 装到 web profile（bundle add 模式）
+./install.sh --to-profile web
+#   → §2: dsh plugin --profile web add -w /home/etsme/cy/agent/dsh-edge-agent
+#   → §3: rsync lib/ → ~/.dsh/profiles/web/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/lib/
+#   → §5: kill+restart dsh --profile web（带 NODE_OPTIONS=--import katex-shim.js）
+
+# 3. 验证
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3080/         # → 200 (webui SPA)
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:21017/v1/health # → 200 (自研 http-api)
+curl -s -X POST http://127.0.0.1:21017/v1/chat \
+  -H "Authorization: Bearer ${EDGE_API_KEY}" -H "Content-Type: application/json" \
+  -d '{"message":"hi"}'  # → 200, input-guard 全程保护（global hooks）
+```
+
+**Webui caret pinning**：在用户的 `~/.dsh/profiles/web/package.json` 把 `@linxin666/dsh-web-ui-all` 钉到 `0.1.20`（去掉 caret）—— 不在本仓做（dsh-edge-agent 不依赖这个包）。
+
+**待验证**（2026-09-02 后续）：
+- [ ] standalone dsh-edge-agent profile 回归（`./install.sh` 不传 `--to-profile`）：`dsh --profile dsh-edge-agent` → :21017 健康，curl chat 200
+- [ ] web profile bundle add：编译 + install + restart 完整跑通
+- [ ] webui SPA :3080 + 自研 http-api :21017 共存（无 EADDRINUSE）
+- [ ] chat via webui / chat via http-api 都进 input-guard 管线（audit log 里有 `agent/pre-step` 事件）
+
+**memory 更新**：`dsh-im-runtime-blockers.md` 翻转 blocker 1 / 3 为 mitigated，新增「dsh-edge-agent 可以装到任何 profile」的 how-to-apply。
+
+**实测结果**（2026-09-02 验证）：
+- [x] standalone dsh-edge-agent profile 回归：`dsh --profile dsh-edge-agent` → :21017 健康
+- [x] web profile bundle add：编译 + `dsh plugin --profile web add -w $LOCAL_PKG` + restart 跑通
+- [x] webui SPA :3080 + 自研 http-api :21017 共存（同一 DSH 进程 PID 471926，无 EADDRINUSE）
+- [x] chat via http-api → input-guard 全程保护：`llm.local.end` → `guard.model-detect.end` → `sanitizer.sanitized`（`replacementCount: 1`）→ `input-guard.sanitized` → `llm.cloud.start`，PII `13800000000` → `<PHONE_1>`
+- [x] katex CSS loader 修复（katex-shim.js 第一版 `pathToFileURL(URL)` 类型错误已修，改为 `register(new URL(...).href)`）
+
+#### 7.25.1 dsh-edge-agent 数据路径决策：`~/.dsh-edge-agent/<channel>` 单 bundle root（2026-09-02）
+
+**问题**：dsh-edge-agent bundle 装到任何 profile（standalone / web / 未来 tui）时，6 个 plugin（file-logger / audit-log / local-storage / session-persistence / realm-skill-bridge / tcm）的运行时数据写哪里？
+
+**考察 DSH 生态其他 bundle 的实际数据路径**（2026-09-02 系统性普查 `~/.dsh/`、`~/.dsh-edge-agent/`、`~/.cache/`、`~/.local/` 全量）：
+
+| Bundle / Plugin | 数据路径 | 风格 |
+|---|---|---|
+| dsh-base（sessions / storages / settings）| `~/.dsh/sessions/`, `~/.dsh/storages/`, `~/.dsh/settings.yaml` | DSH CLI 单 root |
+| dsh-credentials-local | `~/.dsh/.credentials.yaml` | DSH CLI 单 root |
+| @linxin666/dsh-web-ui-all（pet widget）| `~/.dsh/pet.json` | DSH CLI 单 root |
+| dsh-agent-presets | `~/.dsh/.agent-presets/` | DSH CLI 单 root |
+| **@deepseek-harness-edge-agent/dsh-edge-agent** | **`~/.dsh-edge-agent/<channel>`** | **bundle-named root** |
+| `@deepseek-harness-tui/dsh-tui`（早期 subcommand 残留 `~/.dsh-tui/`，已清理）| 历史 `~/.dsh-tui/` | bundle-named root（历史） |
+| `@xmanrui/dsh-im` | 当前 web profile **无数据**（IM channel 未登录、update service 未跑） | 源码意图 `~/.dsh/channels/<channel>/`，CLI 模式未触发 |
+
+**结论**：
+
+1. **DSH 生态不是单一约定**，而是两层共存：
+   - **DSH 官方 base + 强耦合 bundle**：共享 `~/.dsh/` 单 root（避免互相找路径困难）
+   - **第三方 fork bundle（含 dsh-edge-agent）**：用 **bundle-named root**（`~/.dsh-<bundle>/<channel>`）隔离数据，避免污染 DSH CLI 目录
+2. **dsh-edge-agent 数据 = 可丢弃**（用户 2026-09-02 明确表态「数据不重要可以删」），落在 `~/.dsh-edge-agent/` 是合适的：
+   - 跟第三方 fork 风格一致
+   - 跟 DSH CLI 数据隔离（删 `~/.dsh-edge-agent/` 不影响 dsh-base sessions / settings）
+   - 6 个 plugin 都有 `mkdir(..., {recursive: true})` 兜底，删后重启自动重建（已验证：web profile 重启后 60K 数据从零开始）
+3. **不采用 XDG（`~/.local/state/` / `~/.local/share/` / `~/.cache/`）**：
+   - DSH 生态完全不用 XDG（`~/.cache/`、`~/.local/` 都是空的）
+   - XDG 是 GNOME/KDE 桌面 app 约定，DSH 是 CLI 工具链
+4. **不采用 `~/.dsh/dsh-edge-agent/`**：
+   - 会污染 DSH CLI root
+   - 跟第三方 fork 风格不一致
+
+**6 个 channel 最终路径**（cordis.patch.yml 硬编码 + env override）：
+
+```
+~/.dsh-edge-agent/
+├── log/                          # file-logger ops log
+│   └── dsh-edge-agent.log        # 全部 plugin 的 ctx.logger.{info,warn,error,debug}
+├── audit/                        # audit-log JSONL
+│   └── audit.plain.jsonl         # 结构化事件流
+├── storage/                      # local-storage（工具调用持久化）
+│   └── storage.plain.jsonl
+├── sessions/                     # session-persistence-jsonl（override dsh-base）
+│   └── --home-etsme--/<session-id>/
+└── skill-realms.json             # realm-skill-bridge 策略
+```
+
+**env override hooks**（不变，user 可按 profile 重定向）：
+
+| Channel | 默认 root | Env override |
+|---|---|---|
+| log | `~/.dsh-edge-agent/log` | `DSH_EDGE_LOG_ROOT` |
+| audit | `~/.dsh-edge-agent/audit` | `DSH_EDGE_AUDIT_ROOT` |
+| storage | `~/.dsh-edge-agent/storage` | `DSH_EDGE_STORAGE_ROOT` |
+| sessions | `~/.dsh-edge-agent/sessions` | `DSH_EDGE_SESSION_ROOT` |
+| skill-realms | `~/.dsh-edge-agent/skill-realms.json` | `DSH_EDGE_REALM_CONFIG` |
+| tcm | `~/.dsh-edge-agent/tcm-keys.json` | `DSH_EDGE_STORAGE_ROOT`（共享） |
+
+**手动清空**（user 已确认数据可丢）：
+
+```bash
+# 停 DSH
+ps -eo pid,cmd | grep 'dsh --profile' | grep -v grep | awk '{print $1}' | xargs -r kill
+sleep 2
+
+# 删目录（plugin 第一次写时会 mkdir 兜底）
+rm -rf ~/.dsh-edge-agent
+
+# 重启 DSH
+dsh --profile web    # 或 ./install.sh 启动
+# → ~/.dsh-edge-agent/ 自动重建为干净状态（实测 ~60KB，包含 skill-realms.json policy + 空 audit/log/sessions 骨架）
+```
+
+**为什么不挂到 `~/.dsh/`**（修正早期错误判断）：以为 dsh-base + dsh-edge-agent 共享 `~/.dsh/` 是「单 root 风格」是误判 —— DSH 生态实际是「**单 bundle 单 root**」分层，官方 base 用 `~/.dsh/`，第三方 fork 用 `~/.dsh-<bundle>/`。
+
+**memory 更新**：`dsh-im-runtime-blockers.md` 不动（blocker 状态已正确）；决策记录只在 PROGRESS §7.25.1 这一段。
+
+---
+
+### 7.26 input-guard 「silent failure」误诊 → 双 bug 修复（2026-09-03）
+
+**背景**：用户在 webui 发起 3 个 chat，audit 0 个 `input-guard.*` 事件，但 intent-router / prompt-guard / privacy-policy 都跑了 → 怀疑 input-guard hook 完全失效。
+
+**误诊路径（4 步）**：
+1. 怀疑 Cordis Loader 跳过 input-guard → 加 `console.error` probe + `input-guard.boot.probe` audit
+2. 启动 → console.error **真的打了 5 行**（apply/post-destructure/fail-fast/service/on）→ apply() 被调用了
+3. 但 audit 还是 0 个 → 怀疑 `auditLog.log()` 本身有问题
+4. 真因：**probe 用 `level: 'debug'`，被 audit-log.ts:163 `minLevel='info'` 静默 drop**
+
+```ts
+// audit-log.ts:163（drop 路径）
+if (LEVEL_ORDER[entry.level] < LEVEL_ORDER[this.minLevel]) return
+// debug(0) < info(1) → 静默 return，无 log
+```
+
+**真实根因（不是 1 个，是 2 个独立 bug）**：
+
+#### Bug A：audit probe level 设错
+
+input-guard.ts:572 原写 `this.audit('debug', 'input-guard.routed', ...)` → drop。
+
+**修法**：所有 audit 事件改 `level: 'info'`（input-guard.routed、boot.probe、hook.registered）。
+
+**为什么 boot.probe 之前没暴露**：之前 input-guard.ts 完全没 boot probe，所以没人注意到 `level: 'debug'` 不工作。2026-09-02 才加 probe → 触发 drop。
+
+#### Bug B：input-guard intent=LOCAL 没真正降级
+
+input-guard.handlePreStep line 589-596 (`shouldSanitize=false` 分支) **只在 sanitize 失败时**设 `stepState.downgraded=true`。如果 category=LOCAL（不 sanitize）、edgeRoute.provider=`'cloud-deepseek-v4'`（默认 cloud），没分支处理 → 走 `return decision` → messages 透传 → agent/request hook 不知道要降级 → 仍然调 cloud。
+
+**修法**（input-guard.ts:585-606）：
+
+```ts
+const wantsDowngradeToLocal =
+  category === 'LOCAL' &&
+  typeof edgeRoute?.provider === 'string' &&
+  edgeRoute.provider.startsWith('cloud-')
+this.stepState.set(sessionId, {
+  ...
+  downgraded: wantsDowngradeToLocal,
+  downgradeReason: wantsDowngradeToLocal ? 'intent-local' : undefined,
+})
+if (wantsDowngradeToLocal) {
+  this.audit('security', 'input-guard.intent.downgraded', {...})  // level=security 不会被 drop
+}
+```
+
+agent/request hook（line 1033-1037）读 stepState.downgraded 改写 provider/model 到 `local-qwen3-4b` / `qwen3-4b-instruct-2507`。
+
+**验证结果**（web profile + 真实 chat）：
+
+| 测试 | chat | audit 关键事件 | 实际 LLM 调用 |
+|---|---|---|---|
+| LOCAL intent | `查询本地设备的ip` | `input-guard.routed {category:LOCAL, edgeRouteUsed:true}` | local-qwen3-4b |
+| CLOUD intent + PII | `我的手机号是 13800000000 帮我查一下` | `input-guard.routed {category:CLOUD}` + `input-guard.sanitized {replacementCount:1}` | cloud-deepseek-v4，但 prompt 是 sanitized 占位符（不是 13800000000） |
+
+**第二个 chat 的关键证据**：sanitizer 把 13800000000 → `[PHONE_1]` 占位符；cloud-deepseek-v4 收到 sanitized prompt；返回结果 desanitize 回明文。
+
+**新增 audit 事件清单**（input-guard）：
+
+| 事件 | level | 触发条件 |
+|---|---|---|
+| `input-guard.boot.probe` | info | apply() 注册 hook 后 |
+| `input-guard.hook.registered` | info | 三个 hook 都注册后 ×3 |
+| `input-guard.routed` | info | 每个 step |
+| `input-guard.sanitized` | info | CLOUD/SANITIZED 路径有 PII 替换 |
+| `input-guard.intent.downgraded` | security | category=LOCAL + 原 provider 是 cloud-* |
+| `input-guard.sanitize.failed` | security | sanitizer throw |
+| `input-guard.sanitize.downgraded` | security | sanitize 失败降级 LOCAL |
+| `input-guard.route.overridden` | info | agent/request hook 改写 seedConfig |
+| `input-guard.blocked.attack` / `.policy` / `.intent` | security | REJECT 路径 |
+| `input-guard.dependency.missing` | security | 启动时 inject deps 缺失 |
+
+**lesson**：写 audit 事件时**默认用 `info`**。`debug` 会丢，没人会知道。
+
+---
+
+### 7.27 待办（2026-09-03）
+
+- [ ] #52：e2e 测试覆盖 sanitized / intent.downgraded / routed 三条路径
+- [ ] 用户 mid-turn 请求「日志目录可配置到其他目录」尚未实现（已有 env override `DSH_EDGE_LOG_ROOT` / `DSH_EDGE_AUDIT_ROOT` 等，cordis.patch.yml 写死默认值；可在 patch 添加 `config: { logRoot: !!js process.env.DSH_EDGE_LOG_ROOT ?? '/path' }` 进一步支持）
+- [ ] file-logger 配置项：当前 logRoot 由 `DSH_EDGE_LOG_ROOT` env override，但 cordis.patch.yml 没显式声明该字段，下次 patch 改造时同步
+
+---
+
+### 7.28 6 个 channel 路径已可配置：cordis.patch.yml 显式字段 + Env override 双通道（2026-09-03）
+
+**用户诉求**：mid-turn「要支持日志目录可配置到其他目录」。
+
+**调查结论**：6 个 channel **早就支持配置**——通过 env override。cordis.patch.yml 里每个 plugin 的 config 都已显式声明 `root` / `configPath` / `keyStorePath` 字段，默认值用 `!!js` 表达式同时支持 env var + fallback 到 `~/.dsh-edge-agent/`：
+
+| Channel | Patch 字段 | Env override | 默认值（fallback）|
+|---|---|---|---|
+| ops log | `file-logger.config.root` | `DSH_EDGE_LOG_ROOT` | `~/.dsh-edge-agent/log/` |
+| audit | `audit-log.config.root` | `DSH_EDGE_AUDIT_ROOT` | `~/.dsh-edge-agent/audit/` |
+| storage | `local-storage.config.root` | `DSH_EDGE_STORAGE_ROOT` | `~/.dsh-edge-agent/storage/` |
+| sessions | `session-persistence-jsonl.config.root` | `DSH_EDGE_SESSION_ROOT` | `~/.dsh-edge-agent/sessions/` |
+| skill-realms | `realm-skill-bridge.config.configPath` | `DSH_EDGE_REALM_CONFIG` | `~/.dsh-edge-agent/skill-realms.json` |
+| tcm keys | `tcm.config.keyStorePath` | `DSH_EDGE_STORAGE_ROOT`（共享）| `~/.dsh-edge-agent/tcm-keys.json` |
+
+**两种配置方式**（用户选其一）：
+
+#### 方式 A：改 cordis.patch.yml（持久化到 source）
+
+```yaml
+# cordis.patch.yml（项目根或 profile-local overlay）
+- id: file-logger
+  config:
+    root: /var/log/dsh-edge-agent        # 不走 env，直接写绝对路径
+    filename: dsh-edge-agent.log
+- id: audit-log
+  config:
+    root: /var/log/dsh-edge-agent/audit
+```
+
+#### 方式 B：env override（runtime 一次性）
+
+```bash
+DSH_EDGE_LOG_ROOT=/tmp/foo/log \
+DSH_EDGE_AUDIT_ROOT=/tmp/foo/audit \
+DSH_EDGE_STORAGE_ROOT=/tmp/foo/storage \
+  dsh --profile web
+```
+
+**实测验证**（2026-09-03 09:32）：
+
+```bash
+mkdir -p /tmp/dsh-edge-log-test/log /tmp/dsh-edge-log-test/audit
+DSH_EDGE_LOG_ROOT=/tmp/dsh-edge-log-test/log \
+DSH_EDGE_AUDIT_ROOT=/tmp/dsh-edge-log-test/audit \
+  dsh --profile web --no-open --port 3080
+```
+
+启动后：
+- `/tmp/dsh-edge-log-test/log/dsh-edge-agent.log` 9421 bytes（写入）
+- `/tmp/dsh-edge-log-test/audit/audit.plain.jsonl` 写入 `http.started`、`llm.cloud.*`、`http.chat.end` 等事件
+- `~/.dsh-edge-agent/audit/audit.plain.jsonl` 静默（最新 ts 比 /tmp 早 4 秒，证明新实例没写）
+
+发 PII chat `我的手机号是 13800000000` → /tmp 收到 `llm.cloud.start/end`、`input-guard.sanitized`、`http.chat.end` 全部事件。说明 env override 同时接管了 input-guard 的 audit 写入。
+
+**为什么之前没发现**：cordis.patch.yml 的 6 个 config 字段用了 `!!js` 表达式（如 `process.env.DSH_EDGE_LOG_ROOT ?? ...`），看起来像「只支持 env」；其实编辑 patch 直接写绝对路径也行（Cordis Loader 拿到的是字符串值，不再做 env 解析）。两种方式本质上是「patch 字段最终值」的不同来源。
+
+**lesson**：用户配置 UI 有两种来源（env / patch），但**底层都是「最终值」**。PROGRESS §7.25.1 里表里的「env override」是相对 default 的，而不是「唯一方式」。
+
+**memory 更新**：现有 `dsh-edge-agent-data-path.md` 已记录 env override，本次只是补「patch 直接写路径也行」到 PROGRESS。
+
+---
+
+### 7.29 §7.26 修复 e2e 验证 + 测试覆盖（2026-09-03）
+
+**单测新增 6 个 case**（`tests/unit/input-guard.test.ts`）：
+
+```ts
+describe('handlePreStep — §7.26 bug A regression: LOCAL intent must downgrade from cloud-*', () => {
+  it('LOCAL edgeRoute with cloud-* provider → stepState.downgraded=true')
+  it('LOCAL edgeRoute with cloud-* provider → audit input-guard.intent.downgraded (security level)')
+  it('LOCAL edgeRoute with already-local provider → downgraded=false (no false alarm)')
+  it('CLOUD edgeRoute with cloud-* provider → downgraded=false (not applicable)')
+  it('LOCAL edgeRoute without provider field → downgraded=false (defensive)')
+})
+describe('handlePreStep — §7.26 bug B regression: routed audit is info level', () => {
+  it('emit input-guard.routed at level=info (not debug)')
+})
+```
+
+**修复 1 个旧测试**（`tests/unit/input-guard-e2e.test.ts:369`）：
+- 旧断言：`state?.downgraded === undefined`（无字段）
+- 新断言：`state?.downgraded === false`（字段被显式设为 false，因为 category=CLOUD + provider=cloud-* 不应触发降级）
+- 原因：§7.26 fix 让 `stepState` 的 `downgraded` 字段总是被设置（默认 false）
+
+**全套单测结果**：
+
+```
+Test Files  38 passed (38)
+     Tests  657 passed | 1 skipped (658)
+```
+
+**npm run build 验证**：
+
+```
+verify:contract        upstream contract OK (validated: 0.1.0-rc.6)
+verify:patch-surface   patch-surface OK (17 inserts, 10 config overrides, 32 disables)
+verify:plugin-spec     plugin-spec OK (23 adapter plugins scanned, 29 subpath exports)
+```
+
+**Live dsh 进程 e2e 验证**（2026-09-03 09:35）：
+
+通过 http-api `/v1/chat` 发 2 条 chat，audit 出现：
+
+| chat | 关键 audit 事件 | LLM 调用 |
+|---|---|---|
+| `查询本地设备的ip` | `input-guard.routed {category:LOCAL, edgeRouteUsed:true}` | local-qwen3-4b |
+| `我的手机号是 13800000000帮我查一下` | `input-guard.routed {category:CLOUD}` + `input-guard.sanitized {replacementCount:1}` | cloud-deepseek-v4 收到 sanitized 占位符 |
+
+注：第 1 条没触发 `input-guard.intent.downgraded`，因为 http-api 已经把 `_edgeRoute.provider` 设成 `local-qwen3-4b`（命中 `wantsDowngradeToLocal` 检查里的 `provider.startsWith('cloud-')` 为 false），不需要降级。`intent.downgraded` 的实际触发场景：webui RPC 路径绕过 http-api 直接发 `agent.followup()`，那时 agent 还没 `_edgeRoute`，input-guard 读完 edgeRoute 还是 cloud-*。

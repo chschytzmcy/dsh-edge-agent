@@ -17,4 +17,13 @@ coverage/
 # (13800138000) from a test fixture and must NEVER enter git history.
 # Use placeholder values like 13800000000 in test fixtures instead.
 phone.txt
+# 2026-09-03: more agent-session scratch artifacts that must never enter
+# git history — mac_address.txt held a real Dell OUI; answer.txt /
+# final_answer.txt / ping_result.txt / 秋日小诗.md are tool-call outputs
+# with no semantic value to the project.
+mac_address.txt
+answer.txt
+final_answer.txt
+ping_result.txt
+秋日小诗.md
 __pycache__/
