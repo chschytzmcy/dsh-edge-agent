@@ -324,14 +324,41 @@ export class FileLoggerServiceImpl extends Service {
  * (`src/dsh-adapter/index.ts:80-88` before Step 1.5), so operator grep
  * habits (`grep '\[http-api\]' ~/.dsh-edge-agent/log/...`) carry over.
  *
+ * Timestamp policy (§7.30): local-time ISO 8601 with numeric offset
+ * (e.g. `2026-09-03T09:41:30.824+08:00`), NOT `toISOString()` UTC `Z`.
+ * Operators in Asia/Shanghai tailing the ops log need wall-clock matches
+ * with their chat logs and `date` output. Epoch value is unchanged —
+ * any reader (jq, awk, datalog) can still parse the absolute moment.
+ * The audit log keeps epoch ms (machine-only schema; no human readers).
+ *
  * Newlines inside an Error's `stack` are escaped to `⏎` so each log
  * entry stays a single physical line; without this, a thrown Error
  * spreads across 5-10 stack frames and `split('\n').filter(Boolean)`
  * downstream counts them as separate entries, breaking rotation
  * arithmetic and grep counts.
  */
+function formatLocalIso(d: Date): string {
+  // Manual ISO 8601 in system TZ with offset, since `toISOString()` is
+  // hardcoded UTC and `Intl.DateTimeFormat` is locale-aware (varies by
+  // runtime). getXxx() methods on Date already use system local time.
+  // getTimezoneOffset returns minutes WEST of UTC; flip sign so positive
+  // offsets are east of UTC (ISO convention).
+  const pad = (n: number, w = 2): string => String(n).padStart(w, '0')
+  const padMs = (n: number): string => String(n).padStart(3, '0')
+  const offsetMin = -d.getTimezoneOffset()
+  const sign = offsetMin >= 0 ? '+' : '-'
+  const absMin = Math.abs(offsetMin)
+  const offH = pad(Math.floor(absMin / 60))
+  const offM = pad(absMin % 60)
+  return (
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
+    `T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}` +
+    `.${padMs(d.getMilliseconds())}${sign}${offH}:${offM}`
+  )
+}
+
 function formatLine(message: Message): string {
-  const ts = new Date(message.ts).toISOString()
+  const ts = formatLocalIso(new Date(message.ts))
   const type = message.type.toUpperCase().padEnd(5)
   const args = message.args ?? []
   const head = args[0] instanceof Error

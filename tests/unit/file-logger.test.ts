@@ -120,7 +120,11 @@ describe('FileLoggerServiceImpl.export + flush', () => {
       // `type.padEnd(5)` produces `INFO ` (5-wide) so the rendered line has
       // two spaces between the level and the plugin name; allow either
       // single or double space to keep this assertion loose to format tweaks.
-      assert.match(lines[0]!, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z INFO {1,2}\[test-plugin\] hello world$/)
+      // §7.30: timestamp is local ISO 8601 with offset (`+08:00` for
+      // Asia/Shanghai), not UTC `Z`. Match a numeric offset (positive or
+      // negative, 2-digit hour + 2-digit minute) so the assertion survives
+      // any TZ the test machine happens to run in.
+      assert.match(lines[0]!, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}[+\-]\d{2}:\d{2} INFO {1,2}\[test-plugin\] hello world$/)
       // Line 1 is an Error — `formatLine` collapses `stack` newlines to `⏎`
       // markers so the entry stays one physical line; assert the head is
       // present and stack frames are escaped rather than raw newlines.
@@ -353,8 +357,7 @@ describe('installFileLogger level wiring', () => {
   })
 })
 
-describe('shutdownFileLogger', () => {
-  it('stops the timer and drains the queue', async () => {
+describe('shutdownFileLogger', () => {  it('stops the timer and drains the queue', async () => {
     const svc = new FileLoggerServiceImpl(fakeCtx() as never, {
       root,
       filename: 'a.log',
@@ -376,5 +379,73 @@ describe('shutdownFileLogger', () => {
     assert.ok(existsSync(svc.filePathForTests()))
     const content = readFileSync(svc.filePathForTests(), 'utf-8')
     assert.match(content, /\[shutdown\] final/)
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §7.30 regression suite: ops log timestamp is local ISO 8601 with numeric
+// offset (e.g. "+08:00"), NOT UTC "Z". Without this, operators in
+// Asia/Shanghai see "01:41:30" in the ops log when the actual moment is
+// "09:41:30" local, which is unintuitive when tailing alongside `date`
+// or other system logs.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('§7.30 ops log timestamp — local ISO with numeric offset', () => {
+  it('formatLine uses numeric offset (not Z) that matches system TZ', async () => {
+    const svc = new FileLoggerServiceImpl(fakeCtx() as never, {
+      root,
+      filename: 'tz.log',
+      flushIntervalMs: 60_000,
+      queueCapacity: 100,
+      maxFileSizeBytes: 50 * 1024 * 1024,
+      maxFileAgeDays: 0,
+      maxRotatedFiles: 5,
+    })
+    const probeTs = Date.now()
+    svc.export({
+      sn: 1, ts: probeTs, name: 'tz-test', type: 'info', level: 1, args: ['probe'],
+    } as never)
+    await svc.flush()
+    const content = readFileSync(svc.filePathForTests(), 'utf-8')
+    // Match: <year>-<mo>-<dd>T<h>:<m>:<s>.<ms>[+-]<HH>:<MM> INFO [tz-test] probe
+    const m = content.match(/^(\S+) INFO {1,2}\[tz-test\] probe$/m)
+    assert.ok(m, `expected line, got: ${content}`)
+    const ts = m![1]!
+    // Should NOT end with Z (UTC marker)
+    assert.ok(!ts.endsWith('Z'), `must not end with Z (UTC), got: ${ts}`)
+    // Should end with ±HH:MM (numeric offset)
+    assert.match(ts, /[+-]\d{2}:\d{2}$/, `must end with ±HH:MM offset, got: ${ts}`)
+    // The wall-clock components must match the local rendering of probeTs
+    const d = new Date(probeTs)
+    const expectedWall = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}T${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}.${String(d.getMilliseconds()).padStart(3, '0')}`
+    assert.ok(ts.startsWith(expectedWall), `wall-clock mismatch: got=${ts} expected-start=${expectedWall}`)
+    // Offset must equal system TZ (Date#getTimezoneOffset minutes west, flip sign)
+    const offsetMin = -d.getTimezoneOffset()
+    const sign = offsetMin >= 0 ? '+' : '-'
+    const absMin = Math.abs(offsetMin)
+    const expectedOffset = `${sign}${String(Math.floor(absMin / 60)).padStart(2, '0')}:${String(absMin % 60).padStart(2, '0')}`
+    assert.ok(ts.endsWith(expectedOffset), `offset mismatch: got-offset=${ts.slice(-6)} expected=${expectedOffset}`)
+  })
+
+  it('output parses back to the same epoch ms (round-trip)', async () => {
+    const svc = new FileLoggerServiceImpl(fakeCtx() as never, {
+      root,
+      filename: 'round.log',
+      flushIntervalMs: 60_000,
+      queueCapacity: 100,
+      maxFileSizeBytes: 50 * 1024 * 1024,
+      maxFileAgeDays: 0,
+      maxRotatedFiles: 5,
+    })
+    const probeTs = 1_726_144_823_456  // fixed probe (2024-09-26 ish)
+    svc.export({
+      sn: 1, ts: probeTs, name: 'rt', type: 'info', level: 1, args: ['x'],
+    } as never)
+    await svc.flush()
+    const content = readFileSync(svc.filePathForTests(), 'utf-8')
+    const m = content.match(/^(\S+) INFO/m)
+    assert.ok(m)
+    const parsed = Date.parse(m![1]!)
+    assert.equal(parsed, probeTs, 'parsed timestamp must equal original epoch ms (TZ-neutral ISO 8601)')
   })
 })

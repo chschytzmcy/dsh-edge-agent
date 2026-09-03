@@ -180,6 +180,59 @@ fi
 echo "==> [3/5] rsync lib/ → $NESTED_PKG/lib/"
 rsync -a --delete "$REPO_ROOT/lib/" "$NESTED_PKG/lib/"
 
+# ── 3.5. 同步 repo 根的 cordis.patch.yml 到嵌套包（bundle-level patch）──
+# 2026-09-03：发现 b1c11e0 commit 把 profile-level patch 改成空 stub（7 行
+# 注释 + []），意图让 repo 根的 cordis.patch.yml（484 行，19 个 plugin 定义）
+# 通过 `dsh.profile.bundles` 加载。但 install.sh 之前**只**同步
+# profiles/$PROFILE/cordis.patch.yml 到 $PROFILE_DIR/cordis.patch.yml
+# （profile overlay 层），从未同步根 patch 到嵌套包（bundle-level）。结果
+# dsh 启动只加载 dsh-base 的 30 个 plugin，19 个 dsh-edge-agent plugin
+# 全部未注册，:21017 不 listen、file-logger 不接管 stdout、audit-log
+# 不写。修复：在嵌套包根同步 cordis.patch.yml（diff 避免每次都写）。
+if [ -f "$REPO_ROOT/cordis.patch.yml" ]; then
+  if ! diff -q "$REPO_ROOT/cordis.patch.yml" "$NESTED_PKG/cordis.patch.yml" >/dev/null 2>&1; then
+    echo "==> [3.5/5] sync cordis.patch.yml → $NESTED_PKG/cordis.patch.yml (bundle patch)"
+    cp "$REPO_ROOT/cordis.patch.yml" "$NESTED_PKG/cordis.patch.yml"
+  fi
+fi
+
+# ── 3.6. 确保 profile 的 dsh.profile.bundles 包含本 bundle ────────────
+# 2026-09-03：手动创建的 profile（不在 PROFILE_TEMPLATES 里）初始
+# bundles 列表只有 [@deepseek-ai/dsh-base]，dsh plugin add 本包会因
+# npm 404 静默失败（包不在 registry），导致 bundles 永远不增。手动
+# 加 @deepseek-harness-edge-agent/dsh-edge-agent 到 bundles + dependencies。
+# 用 python3 JSON 编辑（profile/package.json 不是标准 JSON 但兼容）。
+if command -v python3 >/dev/null 2>&1; then
+  _PROFILE_PKG="$PROFILE_DIR/package.json"
+  if [ -f "$_PROFILE_PKG" ]; then
+    python3 - "$_PROFILE_PKG" "$NESTED_PKG" <<'PYEOF' || true
+import json, sys, os
+path, nested = sys.argv[1], sys.argv[2]
+with open(path) as f:
+    d = json.load(f)
+target = "@deepseek-harness-edge-agent/dsh-edge-agent"
+bundles = d.setdefault("dsh", {}).setdefault("profile", {}).setdefault("bundles", [])
+deps = d.setdefault("dependencies", {})
+changed = False
+if target not in bundles:
+    bundles.append(target)
+    changed = True
+if target not in deps:
+    # Use a relative file: link so pnpm symlinks to the nested package dir
+    # we already rsync'd into. The nested package's package.json must
+    # exist (it does — install.sh created it via `dsh plugin add`).
+    rel = os.path.relpath(nested, os.path.dirname(path))
+    deps[target] = f"file:{rel}"
+    changed = True
+if changed:
+    with open(path, "w") as f:
+        json.dump(d, f, indent=2)
+        f.write("\n")
+    print(f"  added {target} to bundles + dependencies")
+PYEOF
+  fi
+fi
+
 # ── 4. 同步 cordis.patch.yml + privacy-policy.json（如果仓库里有）────────
 if [ -f "$REPO_ROOT/profiles/$PROFILE/cordis.patch.yml" ]; then
   if ! diff -q "$REPO_ROOT/profiles/$PROFILE/cordis.patch.yml" "$PROFILE_DIR/cordis.patch.yml" >/dev/null 2>&1; then

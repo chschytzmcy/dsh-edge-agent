@@ -3026,3 +3026,178 @@ verify:plugin-spec     plugin-spec OK (23 adapter plugins scanned, 29 subpath ex
 | `我的手机号是 13800000000帮我查一下` | `input-guard.routed {category:CLOUD}` + `input-guard.sanitized {replacementCount:1}` | cloud-deepseek-v4 收到 sanitized 占位符 |
 
 注：第 1 条没触发 `input-guard.intent.downgraded`，因为 http-api 已经把 `_edgeRoute.provider` 设成 `local-qwen3-4b`（命中 `wantsDowngradeToLocal` 检查里的 `provider.startsWith('cloud-')` 为 false），不需要降级。`intent.downgraded` 的实际触发场景：webui RPC 路径绕过 http-api 直接发 `agent.followup()`，那时 agent 还没 `_edgeRoute`，input-guard 读完 edgeRoute 还是 cloud-*。
+
+---
+
+### 7.30 ops log 时区修正：本地 ISO 8601 + 数值 offset（2026-09-03）
+
+**问题**：系统在 Asia/Shanghai（CST = UTC+8），但 ops log（file-logger 输出）用 `Date#toISOString()`，每条事件的尾部都是 `Z`（UTC）：
+
+```
+2026-09-03T01:47:54.990Z DEBUG [cloud-llm-adapter] ...
+# ↑ 实际时刻是本地 09:47:54，但读起来像凌晨 1:47，跟 date / 系统日志对不上
+```
+
+操作员 `tail -f ~/.dsh-edge-agent/log/dsh-edge-agent.log` 时，每个时间戳都比 wall-clock 慢 8 小时，排查实时事件非常误导。audit log 的 `ts` 字段保持 epoch ms（机器友好，所有 jq/datadog 期望的 schema）。
+
+**修法**（`src/dsh-adapter/file-logger.ts:333-352`）：
+
+```ts
+function formatLocalIso(d: Date): string {
+  // Manual ISO 8601 in system TZ with offset, since toISOString() is
+  // hardcoded UTC and Intl.DateTimeFormat is locale-aware (varies by
+  // runtime). getXxx() methods on Date already use system local time.
+  const pad = (n: number, w = 2) => String(n).padStart(w, '0')
+  const padMs = (n: number) => String(n).padStart(3, '0')
+  const offsetMin = -d.getTimezoneOffset()  // sign flip: ISO east-of-UTC positive
+  const sign = offsetMin >= 0 ? '+' : '-'
+  const absMin = Math.abs(offsetMin)
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
+         `T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}` +
+         `.${padMs(d.getMilliseconds())}${sign}${pad(Math.floor(absMin / 60))}:${pad(absMin % 60)}`
+}
+
+function formatLine(message: Message): string {
+  const ts = formatLocalIso(new Date(message.ts))  // was: new Date(message.ts).toISOString()
+  ...
+}
+```
+
+输出从 `2026-09-03T01:47:54.990Z` → `2026-09-03T09:47:54.990+08:00`。
+
+**为什么手写不用 `Intl.DateTimeFormat`**：后者 locale-aware（输出格式因 runtime 变化，比如 ICU 版本差异），手写 ISO 8601 输出固定，跨环境稳定。`Date#getXxx()` 已用系统 TZ，无 locale 依赖。
+
+**ISO 8601 round-trip 验证**：`Date.parse('2026-09-03T09:47:54.990+08:00')` 返回等价于 epoch ms，跟原 `Z` 版本互转无差。所有 `grep` / `awk` / `jq` 不变（offset 后缀被解析为同一瞬间）。
+
+**测试**（`tests/unit/file-logger.test.ts` 加 2 个 case）：
+
+```ts
+it('formatLine uses numeric offset (not Z) that matches system TZ', ...)
+it('output parses back to the same epoch ms (round-trip)', ...)
+```
+
+第 1 个用 `Date#getTimezoneOffset()` 反算期望 offset，独立于系统 TZ；第 2 个用固定 ts `1_726_144_823_456` 验证 `Date.parse()` 还原回 epoch ms。
+
+**全套单测**：659 → 660（+2 file-logger tz 测，-1 skip）。`npm run build` 全过。
+
+**Live 验证**（2026-09-03 09:47）：
+
+```bash
+$ tail -3 ~/.dsh-edge-agent/log/dsh-edge-agent.log
+2026-09-03T09:47:54.990+08:00 DEBUG [cloud-llm-adapter] [cloud-llm-adapter] LLM_RESPONSE provider=cloud-deepseek-v4 ...
+2026-09-03T09:47:54.991+08:00 DEBUG [cloud-llm-adapter] [cloud-llm-adapter] LLM_RESPONSE_TEXT {"text":"..."}
+2026-09-03T09:47:55.006+08:00 INFO  [http-api] [http-api][f8568ecf] POST /v1/chat 200 4789ms ...
+
+$ date +'%H:%M:%S.%3N'
+09:47:58.016
+```
+
+ops log 末条 09:47:55，3 秒前，**匹配 wall-clock** ✓。
+
+**Audit log 决定不改**：epoch ms 是 schema 事实（jq `todate`、Datadog、Grafana 期望）。要本地时间显示用：
+```bash
+TZ=Asia/Shanghai jq '.ts |./1000|todate' ~/.dsh-edge-agent/audit/audit.plain.jsonl
+# 2026-09-03T09:47:54+08:00
+```
+或：
+```bash
+jq -r '"\(.ts/1000|tstrftime("%Y-%m-%dT%H:%M:%S%z"))"' ~/.dsh-edge-agent/audit/audit.plain.jsonl
+```
+
+**lesson**：人类读的日志（ops log）按人本地时区；机器读的日志（audit log）保持 epoch ms / UTC ISO。两类消费者关心不同坐标轴。
+
+---
+
+### 7.31 install.sh 漏 sync bundle patch — dsh 启动后 plugin 全没注册（2026-09-03）
+
+**症状**（用户报告"webui chat 正常但 skill 没看到 dsh 启动"）：
+
+1. `dsh` node process alive 30+ 秒，状态 `Sl` ep_poll（event loop idle）
+2. `ss -ltn | grep 21017` 为空（端口不 listen）
+3. `~/.dsh-edge-agent/log/dsh-edge-agent.log` 只 13 行 env.sh 输出（file-logger 没接管 stdout）
+4. `~/.dsh-edge-agent/audit/audit.plain.jsonl` 不增新事件（audit-log 没启动）
+
+直觉反应："audit-log minLevel 把 debug drop 了"（per `audit-log-minlevel-drop.md`）→ 但**没新事件意味着 plugin 根本没起来**，不是事件被过滤掉。
+
+**根因（按嵌套级别拆）**：
+
+dsh profile 的 patch composition 顺序（`@deepseek-ai/dsh-app-boot/lib/index.js:composeProfile`）：
+
+```
+1. bundlePatches（`profile.layers.flatMap((layer) => layer.patches)`）
+   — 来自 profile `dsh.profile.bundles` 列表里每个 bundle 的 `dsh.bundle.patch` 字段
+2. profile.patches（`~/.dsh/profiles/<name>/cordis.patch.yml`）
+3. homePatches（`$DSH_HOME/cordis.patch.yml`）
+4. CLI --patch overlays
+5. telemetry switch
+```
+
+dsh-edge-agent 的 19 个 plugin manifest 都在 repo 根 `cordis.patch.yml`（484 行，bundle-level patch），通过 dsh-edge-agent 嵌套包 `package.json` 的 `dsh.bundle.patch: "./cordis.patch.yml"` 暴露。
+
+要让 bundle patch 被加载，**两个条件必须同时满足**：
+
+| 条件 | 状态（修复前）|
+|---|---|
+| 嵌套包根 `cordis.patch.yml` 存在 | ❌ **从来没同步**（install.sh 漏）|
+| profile `package.json` 的 `dsh.profile.bundles` 含本 bundle | ❌ 只初始有 `[@deepseek-ai/dsh-base]` |
+
+**为什么 b1c11e0 commit 之后才暴露**：
+之前 `profiles/dsh-edge-agent/cordis.patch.yml` 是 459 行（profile-level overlay，自己注册 19 个 plugin），跟 bundle 路径没关系，dsh 正常。b1c11e0 改成 7 行空 stub（意图走 bundle 路径）— 但**同时** install.sh 没改，bundle 路径没接通 → dsh 启动只加载 dsh-base 的 30 个 plugin，19 个 dsh-edge-agent plugin 全部未注册。
+
+**为什么 `dsh plugin add` 没自动修复**：
+本包 `@deepseek-harness-edge-agent/dsh-edge-agent` **不在 npm registry**（`pnpm add` 报 404），`dsh plugin add` 静默失败 — 没有报错，但 `dsh.profile.bundles` 没更新。手创建的 profile（不在 `PROFILE_TEMPLATES` 里：`web` / `headless`）初始 bundles 只包含 `[@deepseek-ai/dsh-base]`，本包永远加不进去。
+
+**修复（`install.sh` §3.5 + §3.6）**：
+
+§3.5：sync repo 根 `cordis.patch.yml` → 嵌套包（bundle-level patch manifest）：
+
+```bash
+if [ -f "$REPO_ROOT/cordis.patch.yml" ]; then
+  if ! diff -q "$REPO_ROOT/cordis.patch.yml" "$NESTED_PKG/cordis.patch.yml" >/dev/null 2>&1; then
+    echo "==> [3.5/5] sync cordis.patch.yml → $NESTED_PKG/cordis.patch.yml (bundle patch)"
+    cp "$REPO_ROOT/cordis.patch.yml" "$NESTED_PKG/cordis.patch.yml"
+  fi
+fi
+```
+
+§3.6：python3 JSON 编辑 profile `package.json`，确保 bundle 在 `dsh.profile.bundles` + `dependencies`：
+
+```python
+target = "@deepseek-harness-edge-agent/dsh-edge-agent"
+bundles = d["dsh"]["profile"]["bundles"]
+if target not in bundles:
+    bundles.append(target)
+deps = d.setdefault("dependencies", {})
+if target not in deps:
+    deps[target] = f"file:{rel}"
+```
+
+`file:` link 让 pnpm 知道嵌套包在 `./node_modules/...`，不需要再 fetch registry。
+
+**验证（部署 skill `deploy-dsh-edge-agent` §1 加了 3 步必跑验证）**：
+
+```bash
+curl -s --max-time 5 http://127.0.0.1:21017/v1/health
+# 期望：{"status":"ok"}
+
+tail -10 ~/.dsh-edge-agent/audit/audit.plain.jsonl | jq -c 'select(.kind | test("started|registered|loaded"))'
+# 期望：policy.signing.disabled → input-guard.hook.registered ×3 → http.started
+
+tail -3 ~/.dsh-edge-agent/log/dsh-edge-agent.log
+# 期望：2026-09-03T...+08:00 DEBUG ...
+```
+
+**live 验证（修复后，2026-09-03 10:29）**：
+
+发 chat "测试时区"：
+- audit log 8 个事件依次触发：`http.chat.route → session.created → guard.model-detect.start → llm.local.start/end → guard.model-detect.end → input-guard.routed → llm.cloud.start/end → llm.cloud.start`（final reply 二次调用 cloud）
+- ops log TZ 正确显示 `2026-09-03T10:29:50.674+08:00`（本地时间，TZ 修复同时生效）
+- chat tool-call `date` 返回 `2026年 09月 03日 星期四 10:29:50 CST +0800 Asia/Shanghai` ✓
+
+**lesson**：
+
+1. **Cordis patch 有 4 层加载顺序**（bundle / profile / home / --patch）。改任何一层的 manifest 时必须检查**整条链路**：bundle 文件存在 + bundle 名在 profile `dsh.profile.bundles` + profile cordis.patch.yml 不冲突。`dsh --dump-config` 永远是真相之源 — `grep <plugin-id>` 看 manifest 是否包含。
+2. **`dsh plugin add` 不是万能** — 本包不在 npm registry 时 pnpm 404 静默失败，bundles 永远不增。手动创建的 profile 必须有兜底（install.sh §3.6）。
+3. **"plugin 没生效" 不等于"plugin 注册失败"** — 也可能是 plugin 没被加载（manifest 缺失）。区分方式：`dsh --dump-config | grep <plugin-id>`，**命中 = 注册了，没命中 = 没加载**。
+4. **deploy skill 必须有验证步骤** — 跑命令不等于成功。`curl /v1/health` 是底线，audit log 前置事件是 plugin 链路证据。
+5. **静默启动 + event loop idle** 是最隐蔽的失败模式。dsh 进程 alive 但完全没做事是 cordis loader boot 失败的标志，不是 plugin 内部错误。
