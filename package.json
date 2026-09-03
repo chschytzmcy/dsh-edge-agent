@@ -157,11 +157,12 @@
     "smoke:m3": "node --import tsx/esm scripts/m3-smoke.ts",
     "smoke:m4": "node --import tsx/esm scripts/m4-smoke.ts",
     "smoke:m6": "node --import tsx/esm scripts/m6-smoke.ts",
-    "verify:build": "npm run verify:boundary && npm run verify:contract && npm run verify:patch-surface && npm run verify:plugin-spec",
+    "verify:build": "npm run verify:boundary && npm run verify:contract && npm run verify:patch-surface && npm run verify:plugin-spec && npm run verify:bundle-profile-separation",
     "verify:boundary": "node --import tsx/esm scripts/verify-adapter-boundary.ts",
     "verify:contract": "node --import tsx/esm scripts/verify-upstream-contract.ts",
     "verify:patch-surface": "node --import tsx/esm scripts/verify-patch-surface.ts",
     "verify:plugin-spec": "node --import tsx/esm scripts/verify-plugin-spec.ts",
+    "verify:bundle-profile-separation": "bash scripts/verify-bundle-profile-separation.sh",
     "verify:package": "npm pack --dry-run --json --ignore-scripts | node scripts/verify-package.mjs"
   },
   "peerDependencies": {

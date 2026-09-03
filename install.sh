@@ -49,7 +49,8 @@ DO_PNPM=1
 FORCE_INSTALL=0
 # 2026-09-02: --to-profile 把 dsh-edge-agent 装到目标 profile 作为 bundle。
 # 例：./install.sh --to-profile web   把 dsh-edge-agent 加到 web profile
-# （不影响它独立运行 dsh-edge-agent profile 的能力）。
+# （不影响默认 headless profile 容器独立运行 dsh-edge-agent bundle 的能力）。
+# 默认 headless profile 容器名跟 bundle 名撞车（都叫 dsh-edge-agent），见 §7.25。
 TO_PROFILE=""
 for arg in "$@"; do
   case "$arg" in
@@ -157,14 +158,15 @@ if [ "$DO_PNPM" = 1 ]; then
 fi
 
 # ── 2.8. Web UI 家族 ── 2026-09-02 重装 ────────────────────────────
-# 2026-09-01：DSH 官方 webui 家族 + dsh-im 全部从 dsh-edge-agent profile 卸载
-# （katex CSS / node-pty prebuild / caret 漂移 / dsh-im↔webserver 强耦合）。
+# 2026-09-01：DSH 官方 webui 家族 + dsh-im 全部从默认 headless profile 卸载
+# （彼时 dsh-edge-agent bundle 跟默认 profile 容器撞名）。原因：
+# katex CSS / node-pty prebuild / caret 漂移 / dsh-im↔webserver 强耦合。
 #
 # 2026-09-02 翻转：dsh-edge-agent 现在以 bundle 身份可以装到任何 profile
-# （包括 web）。装到 dsh-edge-agent profile 时仍然不拉 webui —— dsh-edge-agent
-# profile 是 headless 部署，只暴露自研 http-api (:21017)。装到 web profile
-# 时由 web profile 本身已经把 webui 拉好（先有 webui，再加 dsh-edge-agent
-# bundle），不需要本步骤动手。
+# （包括 web）。装到默认 headless profile 时仍然不拉 webui —— 该 profile
+# 是 headless 部署，只暴露自研 http-api (:21017)。装到 web profile 时由
+# web profile 本身已经把 webui 拉好（先有 webui，再加 dsh-edge-agent bundle），
+# 不需要本步骤动手。
 #
 # web profile 加入本 bundle 的标准操作：
 #   ./install.sh --to-profile web

@@ -1,6 +1,13 @@
 #!/usr/bin/env node
 /**
- * dsh-edge-agent — one-shot launcher for the edge-side private agent profile.
+ * dsh-edge-agent — one-shot launcher for the dsh-edge-agent bundle's
+ * default standalone install (headless profile, :21017).
+ *
+ * Note: `dsh-edge-agent` is the bundle name (npm package
+ * @deepseek-harness-edge-agent/dsh-edge-agent). The default profile
+ * container is also named `dsh-edge-agent` for historical reasons
+ * (install.sh:36 default). They are not the same thing — see PROGRESS
+ * §7.25 + §7.25.x for the bundle-vs-profile invariant.
  *
  * After a global `npm install -g @deepseek-harness-edge-agent/dsh-edge-agent`,
  * this script gives you the `dsh-edge-agent` command so you don't have to

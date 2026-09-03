@@ -30,8 +30,14 @@ if (!process.env.DEEPSEEK_API_KEY) {
   process.exit(2)
 }
 
+// Test sandbox root — separate from the production channel path
+// `~/.dsh-edge-agent/` so a smoke run never touches user data. Per
+// PROGRESS §7.25 + §7.25.x the production name is the bundle's channel
+// root, not a profile name; this sandbox name keeps the `-m3-smoke`
+// suffix for traceability.
+const TEST_SANDBOX = '.dsh-edge-agent-m3-smoke'
 const home = process.env.USERPROFILE ?? process.env.HOME ?? '/tmp'
-const root = join(home, '.dsh-edge-agent-m3-smoke')
+const root = join(home, TEST_SANDBOX)
 const storageFile = join(root, 'storage', 'storage.plain.jsonl')
 const auditFile = join(root, 'audit', 'audit.plain.jsonl')
 

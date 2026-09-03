@@ -143,10 +143,13 @@ check_prereqs() {
         npm run compile > /dev/null 2>&1 || { log_fail "编译失败"; exit 1; }
         log_info "编译完成"
 
-        # 同步到 profile locations
+        # 同步到 profile locations.
+        # PROFILE_DIR mirrors install.sh:36 pattern (env-overridable default).
+        # Override via DSH_EDGE_PROFILE_DIR when targeting a non-default profile.
+        PROFILE_DIR="${DSH_EDGE_PROFILE_DIR:-$HOME/.dsh/profiles/dsh-edge-agent}"
         for dir in \
           profiles/dsh-edge-agent/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent \
-          ~/.dsh/profiles/dsh-edge-agent/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent; do
+          "$PROFILE_DIR/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent"; do
           [ -d "$dir" ] && rsync -a --delete lib/ "$dir/lib/" 2>/dev/null || true
         done
         log_info "同步完成"

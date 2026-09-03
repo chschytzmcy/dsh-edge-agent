@@ -21,11 +21,14 @@
  *                 `http://192.168.66.195:8701/v1` can resolve it. Skipped
  *                 unless `DSH_EDGE_REAL_LLM_REQUIRED=1`.
  *
- * The smoke uses the `dsh-edge-agent` profile whose `cordis.patch.yml`
- * sits in `$DSH_HOME/profiles/dsh-edge-agent/`. That patch disables
- * upstream tool/web/subagent/workflow rows so the qwen3-4b context
- * window (13 000 tokens) is not exceeded by the bundled system prompt.
- * Re-enable those rows when targeting a larger-context backend.
+ * The smoke uses the default headless profile (container
+ * `$DSH_HOME/profiles/dsh-edge-agent/`, bundles=[dsh-base,
+ * dsh-edge-agent bundle]). The bundle's `cordis.patch.yml` lives at
+ * the repo root and gets synced to the nested package via install.sh §3.5.
+ * That patch disables upstream tool/web/subagent/workflow rows so the
+ * qwen3-4b context window (13 000 tokens) is not exceeded by the bundled
+ * system prompt. Re-enable those rows when targeting a larger-context
+ * backend.
  *
  * Run: `pnpm exec tsx scripts/m4-smoke.ts`. Exit code 0 when every
  * requested run completes successfully.

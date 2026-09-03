@@ -10,5 +10,5 @@
 #   Use a higher number to keep this preset below the shipped ones.
 
 name: Edge Agent
-description: 隐私优先的边缘端 AI agent。本地/云端智能路由、输入防护、PII 自动脱敏；本地文件读写 + Shell + Skills 工具。需配合 dsh-edge-agent profile 使用。
+description: 隐私优先的边缘端 AI agent。本地/云端智能路由、输入防护、PII 自动脱敏；本地文件读写 + Shell + Skills 工具。需配合 dsh-edge-agent bundle 使用（bundle 可装入任何 profile，包括默认 headless profile 容器 `dsh-edge-agent`）。
 order: 10

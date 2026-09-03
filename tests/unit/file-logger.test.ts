@@ -21,6 +21,14 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, it } from 'vitest'
 
+// Constants — mirror the bundle's channel-path defaults so a future rename
+// (PROGRESS §7.25 / §7.25.x P3-P5) only touches these literals, not the
+// assertions below. Per §7.25.x: the bundle name `dsh-edge-agent` MUST NOT
+// be treated as a profile container name; `LOG_ROOT` is the bundle's
+// channel-path default, independent of profile container name.
+const LOG_FILENAME = 'dsh-edge-agent.log'
+const LOG_ROOT_SEGMENT = '.dsh-edge-agent' // under $HOME, by default
+
 import * as fileLogger from '../../src/dsh-adapter/file-logger.ts'
 import {
   FileLoggerServiceImpl,
@@ -261,12 +269,12 @@ describe('resolveLoggerConfig', () => {
   it('uses DSH_EDGE_LOG_ROOT when set', () => {
     const cfg = resolveLoggerConfig({ DSH_EDGE_LOG_ROOT: '/var/log/custom' })
     assert.equal(cfg.root, '/var/log/custom')
-    assert.equal(cfg.filename, 'dsh-edge-agent.log')
+    assert.equal(cfg.filename, LOG_FILENAME)
   })
 
   it('falls back to $HOME/.dsh-edge-agent/log when no env override', () => {
     const cfg = resolveLoggerConfig({ HOME: '/home/tester' })
-    assert.equal(cfg.root, join('/home/tester', '.dsh-edge-agent', 'log'))
+    assert.equal(cfg.root, join('/home/tester', LOG_ROOT_SEGMENT, 'log'))
   })
 
   it('exposes the agreed defaults', () => {

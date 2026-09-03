@@ -1399,13 +1399,18 @@ run_p0_supplementary_tests() {
 }
 
 # ─── 定位审计日志文件 ───────────────────────────────────────────────
-# audit-log 插件（见 profiles/dsh-edge-agent/cordis.patch.yml:230-239）的
-# filename=audit.plain.jsonl + root=$DSH_EDGE_AUDIT_ROOT 或 ~/.dsh-edge-agent-m1/audit。
+# audit-log 插件（见 repo-root cordis.patch.yml:230-239 — 旧 ref
+# profiles/dsh-edge-agent/cordis.patch.yml 已 §7.25 翻转后归零）的
+# filename=audit.plain.jsonl + root=$DSH_EDGE_AUDIT_ROOT 或 ~/.dsh-edge-agent/audit。
 # 这里按环境变量→默认值依次尝试，与插件内部行为对齐。
+# 2026-09-03: -m1 是 pre-§7.25 历史 milestone 命名；当前主路径是
+# `~/.dsh-edge-agent/audit`，m1 路径作为 legacy fallback 保留。
 find_audit_log() {
     local root="${DSH_EDGE_AUDIT_ROOT:-}"
     if [ -z "$root" ]; then
-        root="${USERPROFILE:-${HOME:-/home/$(id -un)}}/.dsh-edge-agent-m1/audit"
+        # 2026-09-03: 默认 audit root 是 ~/.dsh-edge-agent/audit（当前 bundle 命名）。
+        # m1 是 pre-§7.25 legacy，保留为最终 fallback。
+        root="${USERPROFILE:-${HOME:-/home/$(id -un)}}/.dsh-edge-agent/audit"
     fi
     local candidate="$root/audit.plain.jsonl"
     if [ -f "$candidate" ]; then

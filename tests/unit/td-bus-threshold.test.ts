@@ -14,8 +14,10 @@ import assert from 'node:assert/strict'
 import { describe, it, beforeEach } from 'vitest'
 import { TdBusServiceImpl } from '../../src/dsh-adapter/td-bus.ts'
 
-// Mirror the runtime config in profiles/dsh-edge-agent/cordis.patch.yml
-// (td-bus block). If the patch changes, update the literal below AND
+// Mirror the runtime config in repo-root cordis.patch.yml (td-bus block).
+// Per §7.25 the bundle's manifest lives at the repo root, not in the
+// profile overlay (`profiles/dsh-edge-agent/cordis.patch.yml` is now
+// `[]`). If the patch changes, update the literal below AND
 // patch-surface.snapshot.json — both must stay in sync.
 const PROD_CONFIG = {
   windowSeconds: 60,

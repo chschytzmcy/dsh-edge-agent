@@ -104,8 +104,10 @@
 # ── upstream-disabled rows ──────────────────────────────────────────────────────
 # 2026-09-02: keep the disabled rows for the 7 stub plugins so any future
 # downgrade (dsh-edge-agent bundle mounted alone, without the
-# profiles/dsh-edge-agent overlay) still skips their apply() — they are
-# M5+ work, not M4.
+# profiles/dsh-edge-agent overlay profile) still skips their apply() —
+# they are M5+ work, not M4. The "dsh-edge-agent overlay" here refers
+# to the default standalone profile directory, not a profile name; the
+# bundle itself lives at the repo root.
 
 - id: llm-deepseek
   disabled: true
@@ -114,8 +116,10 @@
 
 - id: dsh-edge-agent
   disabled: true
-  # Aggregator; the bundle is a multi-purpose driver, so the aggregator
-  # stays disabled.
+  # Aggregator; the bundle can mount into any profile (see PROGRESS
+  # §7.25 + §7.25.x), so the aggregator stays disabled to avoid
+  # double-apply when individual plugins (file-logger, http-api, etc.)
+  # are also wired with their own ids.
 
 - id: plugin-host
   disabled: true

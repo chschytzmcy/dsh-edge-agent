@@ -1,7 +1,7 @@
 {
   "name": "agent-preset-edge",
   "version": "0.1.0",
-  "description": "Full edge-agent preset: 19 core plugins + 1 http-api. Mounts via cordis.yml row id `dsh-edge-agent`.",
+  "description": "Full edge-agent preset: 19 core plugins + 1 http-api, registered as cordis row id `dsh-edge-agent` (the bundle's cordis aggregator; disabled — see PROGRESS §7.31). Individual plugin rows (file-logger / http-api / input-guard / etc.) each register independently. The preset mounts in the agent scope, not a specific profile.",
   "composition": {
     "plugins": [
       "tcm",

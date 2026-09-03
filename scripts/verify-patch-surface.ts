@@ -1,6 +1,8 @@
 /**
- * Patch-surface contract: the dsh-edge-agent profile patch may only touch
- * official rows that are justified. The baseline is a SNAPSHOT
+ * Patch-surface contract: the dsh-edge-agent bundle patch may only touch
+ * official rows that are justified. The bundle lives at the repo root
+ * (`cordis.patch.yml`), NOT at a profile-level overlay. The baseline is
+ * a SNAPSHOT
  * (patch-surface.snapshot.json) derived from the local cordis.patch.yml.
  *
  * When the patch drifts (new inserts, new disables, changed config

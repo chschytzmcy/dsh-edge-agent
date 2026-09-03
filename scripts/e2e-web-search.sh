@@ -108,6 +108,11 @@ send_chat() {
 # 2026-08-29: 把默认 audit root 从 `~/.dsh-edge-agent-m1/audit` 改成
 # `~/.dsh-edge-agent/audit`，与 `~/.dsh/` 命名一致；旧的 `-m1` 路径作为
 # 后备保留（已部署的旧实例可能还在写那里）。
+#
+# 2026-09-03: -m1 是 pre-§7.25 历史产物（旧 milestone 命名）。当前 profile
+# 容器名虽仍叫 dsh-edge-agent（撞 bundle 名，见 §7.25 + §7.25.x），但 audit
+# root 应该跟当前 bundle 命名一致 = `~/.dsh-edge-agent/audit`。旧 -m1 路径
+# 仅作 legacy fallback。
 find_audit_log() {
     local home="${USERPROFILE:-${HOME:-/home/$(id -un)}}"
 

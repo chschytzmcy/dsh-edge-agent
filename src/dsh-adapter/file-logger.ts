@@ -495,9 +495,10 @@ export async function shutdownFileLogger(service: FileLoggerServiceImpl | undefi
  * Standard Cordis plugin apply — installs the file exporter on first
  * load and returns a disposer that drains the queue on shutdown.
  *
- * Wired into `profiles/dsh-edge-agent/cordis.patch.yml` as a standalone
- * plugin id `file-logger` so this runs at boot, before any other
- * dsh-edge-agent plugin (audit-log / http-api / etc.) emits log lines.
+ * Wired into repo-root `cordis.patch.yml` (per §7.25 + §7.31 — bundle is
+ * self-contained) as a standalone plugin id `file-logger` so this runs
+ * at boot, before any other dsh-edge-agent plugin (audit-log / http-api /
+ * etc.) emits log lines.
  *
  * Idempotency: `installFileLogger` already has a first-wins guard via
  * `ctx.logger.exporters.size > 1`. Calling it twice is a no-op.

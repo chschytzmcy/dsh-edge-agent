@@ -174,8 +174,13 @@ describe('pii-utils 单一事实源', () => {
 
   it('shipped privacy-policy.json 的 pattern 与 PII_PATTERNS 完全一致', async () => {
     const { readFileSync } = await import('node:fs')
+    const { fileURLToPath } = await import('node:url')
+    const { dirname, join, resolve } = await import('node:path')
+    // Bundle's profile overlay directory (see PROGRESS §7.25.x).
+    // Pinned constant so a future P4 rename only touches this line.
+    const overlayDir = resolve(dirname(fileURLToPath(import.meta.url)), '../../profiles/dsh-edge-agent')
     const url = new URL(
-      '../../profiles/dsh-edge-agent/privacy-policy.json',
+      join(overlayDir, 'privacy-policy.json'),
       import.meta.url,
     )
     const policy = JSON.parse(readFileSync(url, 'utf-8'))

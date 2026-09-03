@@ -115,12 +115,16 @@ const samples: Sample[] = [
   },
 ]
 
+// Test sandbox root — separate from the production channel path
+// `~/.dsh-edge-agent/` so a smoke run never touches user data. See
+// PROGRESS §7.25 + §7.25.x invariant.
+const TEST_SANDBOX = '.dsh-edge-agent-m6-smoke'
 const home = process.env.USERPROFILE ?? process.env.HOME ?? homedir()
-const auditRoot = join(home, '.dsh-edge-agent-m6-smoke', 'audit')
+const auditRoot = join(home, TEST_SANDBOX, 'audit')
 const auditFile = join(auditRoot, 'audit.plain.jsonl')
 
 // Clean slate so each smoke run starts from a deterministic log.
-rmSync(join(home, '.dsh-edge-agent-m6-smoke'), { recursive: true, force: true })
+rmSync(join(home, TEST_SANDBOX), { recursive: true, force: true })
 mkdirSync(auditRoot, { recursive: true })
 
 if (!requireReal) {

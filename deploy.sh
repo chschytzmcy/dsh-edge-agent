@@ -196,10 +196,10 @@ fi
 # skill 链：  dsh-skill → ctx.skills 注册表
 #             dsh-tool-skill → model-facing skill 工具 + catalog 注入
 #             dsh-skill-filesystem → ~/.agents/skills/ 自动发现
-# web UI / IM：2026-09-01 卸载。edge-agent profile 现只暴露自研
-#               http-api (:21017)，不需要 dsh-host-webserver /
-#               dsh-web-app / dsh-web-frontend / @xmanrui/dsh-im /
-#               @linxin666/dsh-web-ui-all 中的任何一个。
+# web UI / IM：2026-09-01 卸载。默认 headless profile（容器名跟
+#               dsh-edge-agent bundle 同名）现只暴露自研 http-api (:21017)，
+#               不需要 dsh-host-webserver / dsh-web-app / dsh-web-frontend /
+#               @xmanrui/dsh-im / @linxin666/dsh-web-ui-all 中的任何一个。
 # 缺任何一个都会导致对应功能不可用。`dsh plugin add` 是幂等的。
 echo "  -> install upstream web-search + skill packages (no web-ui, no im)"
 for _pkg in \\

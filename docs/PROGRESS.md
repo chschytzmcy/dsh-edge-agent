@@ -1409,6 +1409,8 @@ const body = buildChatCompletionsBody({ ...options, messages: sanitizedMessages 
 | 审计预览 | 2 | intent.classify.start preview 脱敏、piiUtils 不可用时 fallback |
 | 截断顺序 | 1 | 截断在脱敏之前执行（先 maxInputLength 截断，再 sanitize） |
 
+> **[corrected per §7.25, 2026-09-03]** 本节写在 dsh-edge-agent 改 bundle 之前。"dsh-edge-agent profile" = 当时独占的 headless profile 容器；按 §7.25 翻转后，`dsh-edge-agent` 是 bundle，可装入任何 profile。
+
 ### 7.18 webui 对接全景与剩余风险（2026-09-01）+ E.1.1 / E.1.4 落地
 
 **背景**：webui（`:21018`）、自研 http-api（`:21017`）、dsh-im（`:21018` SPA 标签）三条入口的隐私管线已统一经 `input-guard` 三个 global hook（详见 §6 / §7.11）。但两件事在落地中被发现：
@@ -1459,6 +1461,8 @@ const body = buildChatCompletionsBody({ ...options, messages: sanitizedMessages 
 - **dsh-host-apiproxy 不可打补丁** → webui 拒绝路径不可控；input-guard 抛错时 webui 用户看到原始 stack 而非友好 400/403/503（http-api 经 `_edgeRejection` → status code 翻译）
 - **三入口 session schema 仍未统一** → webui client-managed UUID vs http-api `body.sessionId` 命名空间未映射；E.1.1 让 JSONL 文件统一，但 sessionId 命名仍分裂
 - **上游 web-ui-all 版本 caret 升级** → 每次升级需回归 m5-webui-smoke.sh
+
+> **[corrected per §7.25, 2026-09-03]** 本节写在 dsh-edge-agent 改 bundle 之前。"dsh-edge-agent profile" 字面 = 当时独占的 headless profile 容器；按 §7.25 翻转后，`dsh-edge-agent` 是 bundle 名，profile 容器名虽仍叫 dsh-edge-agent 但只是历史撞名（见 §7.25.x invariant）。
 
 ### 7.19 file-logger plugin — 持久化运维日志 + 双通道纪律（2026-09-01）
 
@@ -1577,7 +1581,7 @@ Error: dsh: plugin tree failed to load: duplicate loader entry id: session-persi
 
 修完 #1+#2，DSH 终于启动。但 `~/.dsh-edge-agent/log/dsh-edge-agent.log` **只有 14 行**，全是 `.env.sh` echo + `dsh web:`，**没有 `[ts] INFO [plugin-name]` 格式化输出**。给 `installFileLogger` 加 DEBUG stderr → 重编 → 重启 → **DEBUG 行根本没出现**。
 
-> 元根因：`cordis.patch.yml:26-29` 把聚合 id `dsh-edge-agent` 设成 `disabled: true`（注释说"M4 是 single-purpose headless driver, 聚合器保持禁用"），所以 `src/dsh-adapter/index.ts:apply()` **整段从未执行**。
+> 元根因：`cordis.patch.yml` 把聚合 id `dsh-edge-agent` 设成 `disabled: true`（当前注释：「Aggregator; the bundle can mount into any profile (see §7.25 + §7.25.x), so the aggregator stays disabled to avoid double-apply when individual plugins are also wired with their own ids」），所以 `src/dsh-adapter/index.ts:apply()` **整段从未执行**。
 >
 > 子 plugin（`./http-api`、`./audit-log` 等）通过 `name: '@.../http-api'` 单独被 cordis loader 加载，所以它们工作；但任何写在 `index.ts:apply()` 里**聚合级**的逻辑（drift check、file-logger、...）全部被跳过。
 
@@ -1755,7 +1759,7 @@ REJECT 短路
 # 意图识别路由 — 文档与代码对齐分析报告
 
 > 分析日期：2026-08-24
-> 文档版本：`docs/dsh-edge-agent_意图识别路由.md`（main 分支 2026-08-24 校准）
+> 文档版本：`docs/intent-and-sanitization.md`（main 分支 2026-08-24 校准；原 `docs/dsh-edge-agent_意图识别路由.md` 已重命名）
 > 代码版本：main 分支最新
 
 ## 总体结论
@@ -2036,7 +2040,7 @@ Layer  3: 规则兜底             → keyword + default（零 token）
 
 ### 整体评价
 
-文档 `docs/dsh-edge-agent_意图识别路由.md` 是一份**高质量的工程文档**，与代码的一致性约 **95%**。核心架构描述、执行流程、配置参数、审计事件、测试覆盖等关键内容均与源码吻合。
+文档 `docs/intent-and-sanitization.md`（原 `docs/dsh-edge-agent_意图识别路由.md`）是一份**高质量的工程文档**，与代码的一致性约 **95%**。核心架构描述、执行流程、配置参数、审计事件、测试覆盖等关键内容均与源码吻合。
 
 ### 需要修正的问题清单
 
@@ -2062,7 +2066,7 @@ Layer  3: 规则兜底             → keyword + default（零 token）
 
 **审视日期**:2026-08-26  
 **审视对象**:`scripts/e2e-llm-classification.sh` + shipped `privacy-policy.json` v1.2.0  
-**运行环境**:dsh-edge-agent @ 127.0.0.1:21018,LLM = `local-qwen3-4b`,`SKIP_BUILD=true`,`confidenceThreshold=0.6`
+**运行环境**:dsh-edge-agent bundle @ 默认 headless profile (`127.0.0.1:21017` 自研 http-api 或 web profile `:21018` webui)，LLM = `local-qwen3-4b`,`SKIP_BUILD=true`,`confidenceThreshold=0.6`
 
 ---
 
@@ -2334,9 +2338,11 @@ Layer  3: 规则兜底             → keyword + default（零 token）
 ---
 
 
+> **[corrected per §7.25, 2026-09-03]** 本节写在 dsh-edge-agent 改 bundle 之前。webui/IM 卸载是从默认 headless profile 容器（彼时 dsh-edge-agent 独占该容器）；§7.25 翻转后 dsh-edge-agent 是 bundle，webui 可装到 web profile（`@xmanrui/dsh-im` 仍在 web profile 默认 bundles 里，见 SKILL.md §10）。
+
 ### 7.20 webui + dsh-im 整体卸载 + 重新部署（2026-09-01）
 
-**决策**：把 DSH 官方 Web UI 家族（`@deepseek-ai/dsh-web-app` / `dsh-web-frontend` / `dsh-host-webserver`）以及 `@xmanrui/dsh-im` IM 通道网关从 dsh-edge-agent profile 整体卸载。edge-agent 现**只暴露** 自研 http-api (`:21017`)，单入口架构。
+**决策**：把 DSH 官方 Web UI 家族（`@deepseek-ai/dsh-web-app` / `dsh-web-frontend` / `dsh-host-webserver`）以及 `@xmanrui/dsh-im` IM 通道网关从默认 headless profile 整体卸载（彼时 dsh-edge-agent bundle 跟默认 profile 撞名）。该 profile 现**只暴露** 自研 http-api (`:21017`)，单入口架构。
 
 **Why**：
 - @linxin666/dsh-web-ui-all v0.1.20 caret 仍在快速迭代（§7.18 blocker）
@@ -2373,6 +2379,8 @@ Layer  3: 规则兜底             → keyword + default（零 token）
 
 **memory 影响**：`dsh-im-runtime-blockers` 大幅简化（webui/im 全卸，原 blocker #1/#3 失效，#4/#5 不再适用）。详见 [[dsh-im-runtime-blockers]] 更新。
 
+
+> **[corrected per §7.25, 2026-09-03]** 本节写在 dsh-edge-agent 改 bundle 当天。`profiles/dsh-edge-agent/cordis.patch.yml` 引用 — 该 overlay 自 §7.25 已归零（profile 层不重复声明），manifest 在 repo 根 `cordis.patch.yml`。
 
 ### 7.21 intent-router defaultCategory 改为 SANITIZED + 端到端验证（2026-09-02）
 
@@ -2443,6 +2451,8 @@ Layer  3: 规则兜底             → keyword + default（零 token）
 
 **memory 影响**：audit log 中 ts=1788312140280 / 1788312143165 是首批也是迄今仅有的 2 条 `default:sanitized` 事件，可作未来 CI 烟测的金标准断言（`grep '"rationale":"default:sanitized"' ~/.dsh-edge-agent/audit/audit.plain.jsonl | wc -l` ≥ 1 即通过 defaultCategory 改动回归）。
 
+
+> **[corrected per §7.25, 2026-09-03]** 本节写在 dsh-edge-agent 改 bundle 当天。`profiles/dsh-edge-agent/cordis.patch.yml` 引用 — 该 overlay 自 §7.25 已归零（profile 层不重复声明），manifest 在 repo 根 `cordis.patch.yml`。
 
 ### 7.22 脱敏（sanitize）端到端验证（2026-09-02）
 
@@ -2523,6 +2533,8 @@ grep '"replacementCount":1' ~/.dsh-edge-agent/audit/audit.plain.jsonl | wc -l  #
 
 **memory 影响**：ts=1788315700189 / 1788315700190 是首批 `sanitizer.sanitized`+`input-guard.sanitized` 双源验证事件（同一 session 1214ef9a-b058-4123-9ba5-7e1b190fe662），与 [[sanitize-downgrade-policy]] 引用一致。
 
+> **[corrected per §7.25, 2026-09-03]** 本节写在 dsh-edge-agent 改 bundle 当天。`profiles/dsh-edge-agent/cordis.patch.yml` 引用 — 该 overlay 自 §7.25 已归零（profile 层不重复声明），manifest 在 repo 根 `cordis.patch.yml`。
+
 ### 7.23 ops log 记录完整 LLM 请求/响应（debug 级）（2026-09-02）
 
 **目的**：让 ops log 看到每次 LLM 调用的完整 prompt + response，方便离线排查。debug 级别（默认开启），info/warn/error 不变（保持隐私安全）。
@@ -2576,6 +2588,8 @@ DSH_EDGE_LOG_LEVEL=info dsh --profile dsh-edge-agent &
 - 默认 50MB rotation cap 触发会变快（~3000-5000 个 turn/rotate）
 - 5 个 rotated file 保留策略不变
 - 想再次降低频率：env 调 `DSH_EDGE_LOG_MAX_FILE_SIZE_BYTES=200000000`（200MB）或 `DSH_EDGE_LOG_LEVEL=info`
+
+> **[corrected per §7.25, 2026-09-03]** 本节写在 dsh-edge-agent 改 bundle 当天。`profiles/dsh-edge-agent/cordis.patch.yml` 引用 — 该 overlay 自 §7.25 已归零（profile 层不重复声明），manifest 在 repo 根 `cordis.patch.yml`。
 
 ### 7.24 web-search 使能 + ctx.web 注册缺失排查（2026-09-02）
 
@@ -2828,6 +2842,88 @@ dsh --profile web    # 或 ./install.sh 启动
 **为什么不挂到 `~/.dsh/`**（修正早期错误判断）：以为 dsh-base + dsh-edge-agent 共享 `~/.dsh/` 是「单 root 风格」是误判 —— DSH 生态实际是「**单 bundle 单 root**」分层，官方 base 用 `~/.dsh/`，第三方 fork 用 `~/.dsh-<bundle>/`。
 
 **memory 更新**：`dsh-im-runtime-blockers.md` 不动（blocker 状态已正确）；决策记录只在 PROGRESS §7.25.1 这一段。
+
+---
+
+### 7.25.x Bundle / Profile Naming Separation Invariant（2026-09-03）
+
+**用户诉求**：「保证 dsh-edge-agent 不作为 profile」+「清理 dsh-edge-agent 作为 profile 的遗迹」
+
+§7.25 把 dsh-edge-agent 改为 bundle，但 install.sh 默认 PROFILE=dsh-edge-agent 让容器名跟 bundle 名撞车，导致 codebase / 文档里 13 处把 dsh-edge-agent 当 profile 描述。本节把 bundle-vs-profile 不变量（invariant）固化下来。
+
+#### Invariant 规则
+
+字符串 `dsh-edge-agent` 必须**只**出现在以下两种上下文：
+
+1. **npm package name**：`@deepseek-harness-edge-agent/dsh-edge-agent`（产品标识）
+2. **cordis plugin id / aggregator name**：`name = 'dsh-edge-agent'`（cordis 注册名）
+
+**禁止**出现在：
+
+- ❌ `PROFILE=...` 默认值（如 `install.sh:36` 是已知 legacy 例外，已加注释豁免）
+- ❌ 文档 / 注释里说 "dsh-edge-agent profile" / "dsh-edge-agent 是 profile"
+- ❌ 硬编码 `~/.dsh/profiles/dsh-edge-agent/` 路径（运行路径由 `$PROFILE_DIR` 计算，非硬编码）
+
+#### 已知 legacy 例外（承认但 deprecated）
+
+| 位置 | 状态 | 后续动作 |
+|---|---|---|
+| `install.sh:36` `PROFILE="${DSH_EDGE_PROFILE:-dsh-edge-agent}"` | 默认值跟 bundle 名撞车 | P3 — 改默认 PROFILE 名为 `headless-edge` 或类似（breaking） |
+| `bin/dsh-edge-agent.js:36` `const PROFILE = 'dsh-edge-agent'` | CLI launcher 硬编码同上 | P3 一起改 |
+| `scripts/dev-restart.sh:11-12` 双重默认值 + bash 替换 | 同上 | P3 一起改 |
+| `~/.dsh/profiles/dsh-edge-agent/` | 当前容器名（user data 在 `~/.dsh-edge-agent/`，跟容器名解耦） | P4 — rename 容器（数据迁移） |
+| `~/.dsh-edge-agent/<channel>` | 6 channel 数据根（独立于 profile 容器名） | P5 — rename 数据根（数据迁移） |
+
+#### 已清理的混淆站点（P0，13 处）
+
+13 处 high-confidence confusion site 全部改成准确措辞（bundle vs profile 区分），覆盖 `cordis.patch.yml:117-118`、`install.sh:160-167` + `52`、`deploy.sh:199-202`、`scripts/m4-smoke.ts:6, 24-28`、`scripts/verify-patch-surface.ts:2`、`presets/agent-preset-edge.json:4`、`profiles/dsh-edge-agent/agent-presets/dsh-edge-agent/preset.yml:13`、`bin/dsh-edge-agent.js:3`、`docs/PROGRESS.md:1580, 2339`、`memory/entrypoints.md` 顶部澄清段。
+
+PROGRESS §7.18-§7.24（§7.25 之前的章节）每节顶部加 `[corrected per §7.25, 2026-09-03]` addendum cross-ref。
+
+3 处 stale file ref（`docs/dsh-edge-agent_意图识别路由.md` → `docs/intent-and-sanitization.md`）已修。
+
+`scripts/e2e-web-search.sh` + `scripts/e2e-llm-classification.sh` 里的 `~/.dsh-edge-agent-m1` legacy audit path lookback 改成纯 fallback + 加注释说明历史。
+
+5 个 test fixture 路径常量提取（`LOG_FILENAME` / `LOG_ROOT_SEGMENT` / `OVERLAY_DIR` / `TEST_SANDBOX`），为未来 P3-P5 rename 预热。
+
+#### Enforcement：自动验证脚本（grep 守卫）
+
+新增 `scripts/verify-bundle-profile-separation.sh`（grep 守卫），CI / `npm run build` 必跑：
+
+```bash
+npm run verify:bundle-profile-separation
+# 或集成：npm run verify:build（已包含此 gate）
+```
+
+跑三类检查（每类有 allow-list）：
+
+1. **`PROFILE=.*dsh-edge-agent` 硬编码**：除 install.sh:36 + bin/dsh-edge-agent.js:36 + dev-restart.sh:11-12 三个 legacy 例外，**0 命中**
+2. **`dsh-edge-agent profile` 字面**：除 §7.25 / §7.25.x / SKILL.md §10 / README.md / memory/entrypoints.md 顶部澄清段 / 本脚本自身，**0 命中**
+3. **hardcoded `~/.dsh/profiles/dsh-edge-agent`**：除注释行外，**0 命中**
+
+跑通后输出：
+
+```
+✅ PASS [P1]: 没有新增 PROFILE=dsh-edge-agent 硬编码
+✅ PASS [P2]: 没有新增 'dsh-edge-agent profile' 字面
+✅ PASS [P3]: 没有新增 hardcoded ~/.dsh/profiles/dsh-edge-agent
+═══════════════════════════════════════════════════════════════
+✅ verify-bundle-profile-separation PASSED
+   dsh-edge-agent 字符串用法符合 §7.25 + §7.25.x invariant
+═══════════════════════════════════════════════════════════════
+```
+
+#### 范围（不在本节）
+
+- P3-P5（默认值 rename / 容器 rename / channel path rename）：等用户决定时机
+- dsh-edge-agent 内部架构（plugin 设计 / boot order）：不在本节范围
+
+#### lesson
+
+1. **invariant 必须有 enforcement** — 仅在文档写"dsh-edge-agent 是 bundle"不够；必须用 grep / lint / type system 在 CI 强制。allow-list 防止规则过严。
+2. **legacy 例外要明文列** — install.sh:36 等 3 个 legacy 例外如果不写在 invariant 文档里，新人看到会以为是 bug 想"修"，结果破坏向后兼容。
+3. **常量提取 = rename 准备** — `LOG_FILENAME` / `OVERLAY_DIR` 这类常量是 P3-P5 的预热：先把字面量集中到 import 段，未来 rename 只改 1-3 行。
+4. **bundle 跟 profile 不应同名** — 这是 §7.25 设计教训。`dsh-edge-agent` 同时是 npm 包名 + 默认 profile 容器名 = 永久 confusion。后续如果做 P3 rename profile 容器，**必须**选一个跟 bundle 完全不同的名字（`headless-edge` / `default` / `dsh-edge-agent-standalone` 之类）。
 
 ---
 
@@ -3201,3 +3297,97 @@ tail -3 ~/.dsh-edge-agent/log/dsh-edge-agent.log
 3. **"plugin 没生效" 不等于"plugin 注册失败"** — 也可能是 plugin 没被加载（manifest 缺失）。区分方式：`dsh --dump-config | grep <plugin-id>`，**命中 = 注册了，没命中 = 没加载**。
 4. **deploy skill 必须有验证步骤** — 跑命令不等于成功。`curl /v1/health` 是底线，audit log 前置事件是 plugin 链路证据。
 5. **静默启动 + event loop idle** 是最隐蔽的失败模式。dsh 进程 alive 但完全没做事是 cordis loader boot 失败的标志，不是 plugin 内部错误。
+
+---
+
+### 7.32 deploy-dsh-edge-agent skill（本地 Claude 部署工具，2026-09-03）
+
+**起因**：§7.31 fix 之后 "本地改代码 → DSH 生效" 的全链路流程没有文档化入口，每次都得口头讲"先 rsync 再 kill 重启再 diff patch 再验证 audit"。新建一个项目级 Claude Code skill 把这条路径产品化。
+
+**skill 定义**（`.claude/skills/deploy-dsh-edge-agent/SKILL.md`，**不进 git**）：
+
+```yaml
+---
+name: deploy-dsh-edge-agent
+description: "dsh-edge-agent 部署 / 重启 / 状态查询 / 跟日志。触发关键词：deploy、部署、本地、远端、install、重启、restart、status、跟日志、查状态"
+metadata:
+  requires:
+    bins: ["bash", "ssh", "curl", "ps", "tar"]
+---
+```
+
+**核心解决**：DSH **不会**从 `repo/lib/` 加载，它从 `~/.dsh/profiles/<name>/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/lib/` 加载。光 `npm run compile` 不够 — 必须 rsync + 同步 bundle manifest + 重启。这条路径不写下来就 100% 踩坑。
+
+**6 个工作流**：
+
+| 场景 | 命令 | 耗时 |
+|---|---|---|
+| **本地增量（90% 用）** | `./install.sh --skip-pnpm` | 5-10s |
+| 本地首次 / 加新依赖 | `./install.sh` | 30-60s |
+| 强制重装（嵌套包坏了） | `./install.sh --force-install` | 30-60s |
+| 装到其他 profile | `./install.sh --to-profile web` | 30-60s |
+| 远端部署（7 步） | `./deploy.sh <user@host>` | 1-3 min |
+| 仅查状态 | `ps + curl :21017` | <1s |
+
+**强制 3 步验证**（§1 末尾，写死不要跳）：
+
+```bash
+# 1. http-api listen？
+curl -s http://127.0.0.1:21017/v1/health
+# 2. plugin 链路？看 audit 前置事件
+tail -10 ~/.dsh-edge-agent/audit/audit.plain.jsonl \
+  | jq -c 'select(.kind | test("started|registered|loaded"))'
+# 3. file-logger 接管？ops log 带 +08:00？
+tail -3 ~/.dsh-edge-agent/log/dsh-edge-agent.log
+```
+
+**关键设计决策**：
+
+1. **项目级 scope，不进 git** — 用户明确"不希望被其他项目用，因为不匹配"。`.claude/` 已在 `.gitignore`。
+2. **不是 DSH 内部 skill** — 走 Claude Code 的 `~/.claude/skills/` 或 `.claude/skills/`，**不走** DSH 的 `~/.agents/skills/`（那个是 DSH 自己加载 skill 的目录，跟 Claude Code 无关）。
+3. **触发词覆盖中文** — `deploy`、`部署`、`本地`、`远端`、`install`、`重启`、`restart`、`status`、`跟日志`、`查状态` 都触发。Slash command `/deploy-dsh-edge-agent` 也行（带或不带 arg）。
+
+**§7 Case A / Case B 排查表**（写到 skill 里防再次踩坑）：
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| audit 0 个 `input-guard.*` | hook 没注册 | `dsh --dump-config \| grep input-guard`；不在 = 跳 Case B |
+| dsh alive + :21017 不 listen + ops log 只 13 行 env.sh + audit 不增 | bundle patch 没 sync + bundle 没进 `dsh.profile.bundles` | install.sh §3.5 + §3.6 兜底；手动恢复命令 5 步 |
+
+**Case B 手动恢复（最关键）**：
+
+```bash
+# 1. 嵌套包 patch 存在？
+ls -la ~/.dsh/profiles/dsh-edge-agent/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/cordis.patch.yml
+# 没有就 cp repo 根 patch 过去
+
+# 2. profile bundles 包含本包？
+cat ~/.dsh/profiles/dsh-edge-agent/package.json | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+print('OK' if '@deepseek-harness-edge-agent/dsh-edge-agent' in d['dsh']['profile']['bundles'] else 'MISSING')
+"
+
+# 3. 不在就 python3 加 bundles + file: link
+# 4. 重启 ./install.sh --skip-pnpm
+# 5. 验 dsh --dump-config | grep -E 'input-guard|file-logger|http-api' | wc -l  → 期望 3
+```
+
+**安全纪律**（写到 skill 末尾 §8）：
+
+- `.env` 含 `DEEPSEEK_API_KEY` / `EDGE_API_KEY` / `DSH_AUTH_TOKEN` — 严禁 commit（`.gitignore` 已覆盖）
+- 测试 fixture 用占位号（`13800000000` / `192.0.2.1`），禁止真实 PII
+- deploy.sh 默认 `StrictHostKeyChecking=no` — MITM 风险，生产应改 `yes` + 预填 `known_hosts`
+
+**不在 skill 范围**（§9 明确写出避免误用）：
+
+- CI 流水线（看 `.github/workflows/`）
+- 自动 rollback（手工 `git checkout <tag> && ./install.sh --skip-pnpm`）
+- 跨 profile 迁移 `~/.dsh-edge-agent/` 6 个 channel 数据（log / audit / storage / sessions / skill-realms / tcm）
+
+**lesson**：
+
+1. **项目级 skill vs user-level skill** — 一个 skill 强耦合到某个 repo 的目录结构 / 命令约定 / 故障模式时，必须项目级（`.claude/skills/`），否则污染用户所有项目。
+2. **"流程文档" 和 "skill" 是一回事** — skill 触发后人类读完照做，本质是 SOP 入口。区别在于 skill 是 Claude 入口触发，SOP 是人主动翻文件。
+3. **验证步骤必须写进 skill，不能口头要求** — §7.31 部署 silent fail 的根因就是"没人验证"。把 curl / audit / ops 三步写死在 §1 末尾，下次踩坑直接看 skill。
+4. **Case B 排查表是产品的一部分** — 不是 issue tracker 临时记录，是每次 deploy 都要查的 checklist。
