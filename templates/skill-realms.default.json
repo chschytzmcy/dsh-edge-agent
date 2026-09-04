@@ -1,8 +1,14 @@
 {
-  "_comment": "Realm 配置文件 — 只有 ets-* skills 是 LOCAL，其他全部 CLOUD。修改后自动热重载。",
+  "_comment": "Explicit skill whitelists for LOCAL and CLOUD realms.",
 
   "skills": {
-    "ets-*": "LOCAL"
+    "ets-*": "LOCAL",
+
+    "dws": "CLOUD",
+    "lark-*": "CLOUD",
+    "find-skills": "CLOUD",
+    "ima-skill": "CLOUD",
+    "claude-model-switch": "CLOUD"
   },
 
   "tools": {
@@ -11,5 +17,5 @@
     "web_fetch": "CLOUD"
   },
 
-  "defaultRealm": "CLOUD"
+  "defaultRealm": "hidden"
 }
