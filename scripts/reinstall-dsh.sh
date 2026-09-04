@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# 干净卸载 dsh + 重装到项目契约版本 0.1.2-alpha.2
+# 干净卸载 dsh + 重装到项目契约版本 0.1.2-rc.1
 #
 # 目标版本（来自 src/dsh-adapter/contract.ts:12 UPSTREAM_VALIDATED_VERSION）
-#   @deepseek-ai/dsh          = 0.1.2-alpha.2
+#   @deepseek-ai/dsh          = 0.1.2-rc.1
 #   @deepseek-harness-tui/dsh-tui = 0.10.0-beta.4（npm 上唯一 available tag）
 #
 # 流程：
 #   1. 停所有 dsh 进程
 #   2. 备份 ~/.dsh / ~/.dsh-edge-agent 到带时间戳目录
 #   3. 卸载全局 @deepseek-ai/dsh 和 @deepseek-harness-tui/dsh-tui
-#   4. 重装 dsh@0.1.2-alpha.2 + dsh-tui@0.10.0-beta.4
+#   4. 重装 dsh@0.1.2-rc.1 + dsh-tui@0.10.0-beta.4
 #   5. 跑项目 ./install.sh 把 dsh-edge-agent bundle 装进 web profile
 #   6. 验证
 #
@@ -19,7 +19,7 @@
 
 set -euo pipefail
 
-DSH_VERSION="0.1.2-alpha.2"
+DSH_VERSION="0.1.2-rc.1"
 DSH_TUI_VERSION="0.10.0-beta.4"
 BACKUP_TS="$(date +%Y%m%d-%H%M%S)"
 DSH_HOME="${DSH_HOME:-$HOME/.dsh}"

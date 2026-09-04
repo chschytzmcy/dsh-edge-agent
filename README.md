@@ -192,7 +192,7 @@ curl -s --max-time 3 http://127.0.0.1:21017/v1/health
 | web profile 启动后 `:3080` 不 listen | `tail -50 ~/.dsh/profiles/web/run.log` 看 `dsh web:` 行；可能是 webui 包未装，跑 `dsh plugin --profile web add @deepseek-ai/dsh-web @deepseek-ai/dsh-web-ui-all` |
 | 19 个 plugin 只挂载 dsh-base 的 30 个（bundle 没生效） | `dsh plugin --profile web add @deepseek-harness-edge-agent/dsh-edge-agent` 重装；或者 `install.sh §3.5 + §3.6` 没跑，手动 cp `cordis.patch.yml` 到嵌套包根 |
 | `adapter boundary violated` | 把 `@deepseek-ai/*` 的 import 移到 `src/dsh-adapter/` 内（或经 `src/dsh-adapter/types.ts` 重新导出） |
-| `upstream contract violated` | DSH 依赖版本与 `UPSTREAM_VALIDATED_VERSION`（`0.1.2-alpha.2`）不匹配；运行 `pnpm install` 或 `pnpm update @deepseek-ai/dsh-agent @deepseek-ai/dsh-llm ...` |
+| `upstream contract violated` | DSH 依赖版本与 `UPSTREAM_VALIDATED_VERSION`（`0.1.2-rc.1`）不匹配；运行 `pnpm install` 或 `pnpm update @deepseek-ai/dsh-agent @deepseek-ai/dsh-llm ...` |
 
 ### 卸载
 
@@ -887,7 +887,7 @@ pnpm run verify:build
 
 包含 4 个验证脚本：
 - `verify:boundary` — 适配器边界检查（`@deepseek-ai/*` 仅存在于 `src/dsh-adapter/`）
-- `verify:contract` — 上游版本契约（锁定 `0.1.2-alpha.2`）
+- `verify:contract` — 上游版本契约（锁定 `0.1.2-rc.1`）
 - `verify:patch-surface` — 补丁面一致性
 - `verify:plugin-spec` — 插件规范（name+inject+Config+apply）
 

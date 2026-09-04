@@ -1589,7 +1589,7 @@ declare module '@deepseek-ai/cordis' {
 
 ```typescript
 // src/dsh-adapter/contract.ts
-export const UPSTREAM_VALIDATED_VERSION = '0.1.2-alpha.2'
+export const UPSTREAM_VALIDATED_VERSION = '0.1.2-rc.1'
 
 export const UPSTREAM_FRAMEWORK_MAJORS = {
   '@deepseek-ai/cordis': '^4.0.1',
@@ -1608,7 +1608,7 @@ export const UPSTREAM_BLESSED_PACKAGES = [
 ] as const
 ```
 
-**为什么是 `0.1.2-alpha.2`？**
+**为什么是 `0.1.2-rc.1`？**
 
 1. **DSH 团队已发布**：经过 DeepSeek Harness 团队验证的稳定预发布版本
 2. **与 dsh-TUI 对齐**：确保生态兼容性
@@ -1653,7 +1653,7 @@ pnpm run verify:build
 
 ```typescript
 // src/dsh-adapter/contract.ts
--export const UPSTREAM_VALIDATED_VERSION = '0.1.2-alpha.2'
+-export const UPSTREAM_VALIDATED_VERSION = '0.1.2-rc.1'
 +export const UPSTREAM_VALIDATED_VERSION = '0.1.0'
 ```
 

@@ -9,7 +9,7 @@
  */
 
 /** The single version line we have validated against. */
-export const UPSTREAM_VALIDATED_VERSION = '0.1.2-alpha.2'
+export const UPSTREAM_VALIDATED_VERSION = '0.1.2-rc.1'
 
 /** Framework packages compared by major version only. */
 export const UPSTREAM_FRAMEWORK_MAJORS = {

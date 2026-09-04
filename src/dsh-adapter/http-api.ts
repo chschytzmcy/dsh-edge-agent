@@ -19,6 +19,20 @@ import { redactString } from './pii-utils.js'
 import { findRoute, type RouteDef, type RouteContext } from './http-api-routes.js'
 import { HttpApiSessionsImpl, type HttpApiSessions } from './http-api-sessions.js'
 
+/**
+ * Snapshot a live Session's event log, papering over the upstream API
+ * change: 0.1.2-alpha.x exposed `.events` directly, 0.1.2-rc.1 removed it
+ * in favour of `Session.snapshotEvents()`. Mirror of dsh-tui's
+ * `compat/liveSession.snapshotLiveSessionEvents`.
+ */
+function snapshotSessionEvents(session: { snapshotEvents?: () => readonly SessionEvent[]; events?: readonly SessionEvent[] }): readonly SessionEvent[] {
+  if (typeof session.snapshotEvents === 'function') {
+    return session.snapshotEvents()
+  }
+  if (Array.isArray(session.events)) return session.events
+  return []
+}
+
 export const name = 'http-api'
 
 export const inject = ['agents', 'intentRouter', 'auditLog', 'tdBus', 'realmSkillBridge', 'edgeTools'] as const
@@ -527,7 +541,7 @@ export class HttpApiServiceImpl extends Service {
             resolve({ result: '', rejection: { status, kind: edgeRej?.kind ?? 'unknown', reason, riskLevel: edgeRej?.riskLevel } })
             return
           }
-          const events = record.agent.session.events
+          const events = snapshotSessionEvents(record.agent.session as any)
           const lastAssistant = events
             .filter((e) => e.type === 'assistant/message')
             .pop()
@@ -776,7 +790,7 @@ export class HttpApiServiceImpl extends Service {
         // the multi-turn ring buffer (mirrors handleChat). Best-effort:
         // skip push if the agent never produced an assistant/message
         // (e.g. tool-only turn).
-        const lastAssistant = record.agent.session.events
+        const lastAssistant = snapshotSessionEvents(record.agent.session as any)
           .filter((e: any) => e.type === 'assistant/message')
           .pop()
         const assistantText = lastAssistant
