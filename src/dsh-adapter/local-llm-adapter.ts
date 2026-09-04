@@ -190,6 +190,18 @@ class RealLocalAdapter extends LlmAdapter {
         provider: this.providerName,
         id: this.defaultModel,
         name: this.defaultModel,
+        // §7.40 (2026-09-04): advertise contextWindow so basic-compaction-engine
+        // can compact long conversations. Without this, compaction logs
+        //   "compaction-basic: no context capacity for local-qwen3-4b/qwen3-4b-instruct-2507"
+        // and refuses to compact, leaving messageCount/promptLen to grow
+        // across turns. The local model then degrades to empty/garbled
+        // completions after the second or third call (observed in session
+        // 7eb91d59-...: call 1=19s/61 chars/tool-calls, call 2=1s/12 chars/
+        // malformed `</tool_call>`, call 3=218ms/0 chars/finishKind=unknown).
+        // 32768 is conservative for qwen3-4b (officially supports 128K but
+        // local inference often OOMs past 32K); can be lifted once we
+        // measure the local server's actual capacity.
+        contextWindow: 32768,
         inputModalities: ['text'],
       },
     ])
@@ -199,7 +211,16 @@ class RealLocalAdapter extends LlmAdapter {
     _provider: string,
     model: string,
   ): Promise<LlmResolvedModelInfo> {
-    return Promise.resolve({ provider: this.providerName, id: model, name: model })
+    // §7.40 (2026-09-04): see listModels comment — contextWindow must also
+    // surface through resolveModel so the runtime normalises it onto the
+    // active session's `info.context.contextWindow`. Without this the
+    // adapter's advertised contextWindow is ignored.
+    return Promise.resolve({
+      provider: this.providerName,
+      id: model,
+      name: model,
+      context: { contextWindow: 32768 },
+    })
   }
 
   override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
