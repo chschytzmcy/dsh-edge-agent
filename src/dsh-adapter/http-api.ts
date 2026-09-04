@@ -1099,6 +1099,42 @@ export class HttpApiServiceImpl extends Service {
     }))
   }
 
+  /**
+   * Resolve the preset id one new session will run under and the `setup` hook
+   * that mounts it. Returns `{}` when the deployment has no agent-presets
+   * roster (bare dsh CLI without dsh-agent-presets installed) — agents then
+   * run on the host composition, which is the pre-preset behaviour.
+   *
+   * Mirrors dsh-tui's `composePreset()` (lib/types/dsh-adapter/presets.js:35).
+   * The original signature is in dsh-tui's private module surface, so we
+   * inline a minimal version here: `resolve()` (exact roster match) +
+   * `mount(agentCtx, id)` are the two public calls every implementation
+   * exposes.
+   */
+  private async composeAgentPreset(): Promise<{ agentPreset?: string; setup?: (agentCtx: unknown) => Promise<void> }> {
+    const presets = (this.ctx as unknown as { get?: (k: string) => unknown }).get?.('agentPresets') as
+      | { resolve?: (id?: string) => Promise<{ id: string }>; mount?: (agentCtx: unknown, id: string) => Promise<unknown> }
+      | undefined
+    if (presets === undefined || typeof presets.resolve !== 'function' || typeof presets.mount !== 'function') {
+      return {}
+    }
+    let resolvedId: string
+    try {
+      resolvedId = (await presets.resolve(undefined)).id
+    }
+    catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      this.ctx.logger?.warn?.(`[http-api] agent preset (default) unavailable (${reason}) — composing session without a preset`)
+      return {}
+    }
+    return {
+      agentPreset: resolvedId,
+      setup: async (agentCtx: unknown) => {
+        await presets.mount!(agentCtx, resolvedId)
+      },
+    }
+  }
+
   private async ensureSession(sessionId: string, provider?: string, model?: string): Promise<SessionRecord> {
     let record = this.sessions.get(sessionId)
     if (!record) {
@@ -1107,13 +1143,33 @@ export class HttpApiServiceImpl extends Service {
         await this.evictLeastRecentSession()
       }
       this.ctx.logger?.info?.(`[http-api] Creating agent with provider=${provider}, model=${model}`)
+      // §7.38 (2026-09-04): compose preset before agents.create() so the agent
+      // joins the standard preset (tools + skills + prompt sections).
+      // Without this, dsh-agent-presets logs
+      //   "agent <id> was published without joining an agent preset; its
+      //    tools, prompt sections, and skill catalog resolve against the
+      //    empty global layer"
+      // and the resulting agent emits empty `result` (LLM has no tools/prompts).
+      // Mirrors dsh-tui's composePreset() (lib/types/dsh-adapter/presets.js:35).
+      // Roster absence (bare dsh CLI without dsh-agent-presets) is the
+      // pre-preset fallback — agents get host composition instead, which is
+      // what ran before §7.38 landed.
+      const composed = await this.composeAgentPreset()
       const handle = await this.agents.create({
         sessionId: SessionId(sessionId),
         agentOptions: {
           provider: provider ?? 'local-qwen3-4b',
           model: model ?? 'qwen3-4b',
         },
-        meta: { cwd: process.cwd() },
+        meta: {
+          cwd: process.cwd(),
+          // Durable header — a later resume re-mounts exactly this preset.
+          ...(composed.agentPreset === undefined ? {} : { agentPreset: composed.agentPreset }),
+        },
+        // Mounts the preset's tools/skills/sections onto the agent's scope.
+        // Without setup, dsh-agent warns "agent … was published without
+        // joining an agent preset" and the agent runs on empty global layer.
+        ...(composed.setup === undefined ? {} : { setup: composed.setup }),
       })
       this.ctx.logger?.info?.(`[http-api] Agent created successfully`)
       const now = Date.now()

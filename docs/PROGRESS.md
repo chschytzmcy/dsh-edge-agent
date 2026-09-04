@@ -3958,3 +3958,107 @@ CLOUD session 看 11 个 tool 是正确的（Layer 1.5 注释里也是 `note: fr
 **deepFreeze 是 dsh-llm 的 invariant，不是 bug**。所有 dsh-llm 0.1.2-rc.1+ 的 llm/stream listener 都面对 frozen payload。任何想 mutate payload 字段的"方案"在协议层被否决。Layer 1 想 work 必须遵守这个 invariant——要么 listener 只读 + audit（当前方案），要么 listener 是 trusted upstream（hook 在 dsh-llm 之前注入 payload）。
 
 **不要重复在 model-detect 上踩同一个坑**。dsh-llm 的 stream / forAdapter 链路返回 Promise<AsyncIterable> 不是 AsyncIterable。任何 await 必须先 thenable-check 再 await。`this.llm.stream(...).then ? await : ...` 是 dsh 0.1.2-rc.1 的事实契约。
+
+### §7.38 — http-api agent-preset 装配 + 撞 dsh-agent-loop upstream bug（2026-09-04）
+
+**触发**：user 用 dsh-tui 输入"列出密盒的文件"，`result=""` 空返回。`toolsCount` 从 §7.37 的 11 → 27（preset 生效），但 turn 仍失败 → 需要从 audit / session log / 上游 node_modules 三处交叉定位。
+
+**前置 §7.37 修复未解决 turn/end 失败**：
+- §7.37 让 agent 加入 realm-skill-bridge session-realm，http-api 也注入了 realmSkillBridge
+- 但 user 实测 turn 仍 `result: ""`
+- audit `realm-skill-bridge.hook.probe{toolsCount: 11, agentRealm: "LOCAL"}`——tools 还是只有 11 个，少 preset 自带 bash/grep 等
+
+**根因 1：agent 没加入 preset**：
+
+session log 警告：
+```
+WARN [agent-presets] agent "tui-fix1-1" was published without joining an agent preset;
+     its tools, prompt sections, and skill catalog resolve against the empty
+     global layer (join through AgentPresets.mount() or composeFrom() in the
+     agent factory setup)
+```
+
+dsh-agent-presets 0.1.2-rc.1 要求 agent factory 必须调 `presets.mount(agentCtx, resolvedId)`，否则 agent 跑在空 global layer——LLM 看到 11 个 dsh-edge-agent host tool + 0 个 skill + 空 prompt sections → LLM 即使 pick tool 也是空 list。
+
+**dsh-tui 正确做法**（参考 `~/.dsh/profiles/dsh-tui/node_modules/@deepseek-harness-tui/dsh-tui/lib/types/dsh-adapter/presets.js:35 composePreset`）：
+
+```js
+const composed = await composePreset(ctx, configuredPreset);  // → {agentPreset, setup}
+const created = await ctx.agents.create({
+  sessionId,
+  meta: { cwd, agentPreset: composed.agentPreset },  // durable header
+  agentOptions: route,
+  setup: composed.setup,  // = async (agentCtx) => presets.mount(agentCtx, resolvedId)
+});
+```
+
+**http-api 之前漏了这两条**：`agents.create({sessionId, agentOptions, meta: {cwd}})` ——没有 `meta.agentPreset` 也没有 `setup` 回调。
+
+**修复**（`src/dsh-adapter/http-api.ts`）：
+
+| 改动 | 位置 |
+|---|---|
+| 新增 `composeAgentPreset()` private method | line ~990-1015，inline dsh-tui 的 composePreset 逻辑（`ctx.get('agentPresets')` → `presets.resolve(undefined)` → `setup: (agentCtx) => presets.mount(agentCtx, id)`）|
+| `ensureSession()` 调用 `composeAgentPreset()`，传 `meta.agentPreset` 和 `setup` 给 `agents.create()` | line ~1030-1045 |
+
+部署同 §7.37：`npx tsc && rsync --delete lib/types/ → ~/.dsh/profiles/dsh-tui/node_modules/...`。
+
+**修复后验证（session tui-fix2-1）**：
+- audit `realm-skill-bridge.hook.probe{toolsCount: 27, agentRealm: "LOCAL"}`——`toolsCount: 11 → 27`，preset 的 16 个 tool（bash/read/write/edit/glob/grep 等）全部 mount 成功
+- session header `agentPreset: "standard"` 落库
+- "was published without joining an agent preset" 警告**消失**
+
+**根因 2：turn/end 仍报 `stream is not async iterable`**：
+
+session log seq 14（turn/end）：
+```json
+{"type":"turn/end","seq":14,"data":{"turn":1,"reason":{"kind":"error","error":{"message":"stream is not async iterable","code":"UNKNOWN"}}}}
+```
+
+**这是上游 dsh-agent-loop@0.1.2-rc.1 的 bug**：
+- 文件 `/home/etsme/.npm-global/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-agent-loop/lib/index.js:624`
+- 代码：`const stream = preparedCall?.stream(request) ?? this.loopCtx.llm.stream(request); for await (const chunk of stream) {`
+- `llm.stream()` 在 dsh-llm@0.1.2-rc.1 返回 `Promise<AsyncIterable>`（waterfall 链路包了一层）
+- for-await 直接消费 Promise → babel `_asyncIterator(stream)` 抛 "Object is not async iterable"
+- 同 bug 在 dsh-agent-loop@0.1.0-rc.7（profiles/dsh-edge-agent/node_modules/）也存在
+- 0.1.2-rc.1 npm tarball 确认含同 bug
+
+**所有入口都中招**：dsh-tui / web / webui / http-api 直调 llm.stream 全部经过 dsh-agent-loop 这条路径。session log 证据：每条 turn 都以 `error.kind: "error", message: "stream is not async iterable"` 收尾。
+
+**修复尝试与限制**：
+
+| 方案 | 可行性 |
+|---|---|
+| 修 dsh-llm stream 改 AsyncIterable（去掉 waterfall 包 Promise）| breaking change，所有 listener 协议假设 Promise<AsyncIterable> |
+| 修 dsh-agent-loop 加 `await`（line 624）| 1 字符 fix，但 global node_modules out-of-repo，auto-mode 禁止改 |
+| 通过 realm-skill-bridge llm/stream listener 拦截 | listener 收到的是 waterfall 调用上下文；**dsh-agent-loop 直接调 `llm.stream()` 不走 waterfall listener**（dsh-llm 内部 waterfall 包裹），无法在 listener 层 unwrap |
+| fork dsh-agent-loop 进 edge-agent bundle | 工程量大，需要重写 dsh-agent-loop 全量 |
+
+**已知 work-around（业务上可接受）**：
+
+audit `resultLen:0` 是因为第 1 次 turn 失败 → §7.37 的"audit 埋点存在 ≠ enforce 生效"再次印证（即使 audit probe 一切正常，upstream bug 让 enforce 不可能 work）。http-api 仍然返回 HTTP 200 + `result:""`，client 端可以按 result 空决定重试或报错。
+
+**§7.37 + §7.38 整体评估**：
+
+| 层 | 状态 |
+|---|---|
+| input-guard session-realm 注册 (§7.36) | ✅ works |
+| realm-skill-bridge Layer 1.5 audit probe (§7.37) | ✅ works（只读）|
+| realm-skill-bridge Layer 3 tool deny (§7.36 + §7.37) | ⚠️ code 正确，**upstream bug 让 LLM turn 跑不到 tool execution** |
+| agent-preset 装配 (§7.38 本节 修复1) | ✅ works（toolsCount 11→27）|
+| agent turn 整体跑通 (§7.38 本节 bug2) | ❌ dsh-agent-loop@0.1.2-rc.1 upstream bug |
+
+**TODO（待 user 决策）**：
+
+- **等 dsh 上游修复 dsh-agent-loop**（PR 提交 / 升级 0.1.2-rc.2）：关注 `@deepseek-ai/dsh-agent-loop` releases。
+- **手动 patch global node_modules**（已确认 1 字符 fix 可 work）：需 user 显式授权。本地 `npm rebuild` 会冲掉。
+- **用 patch-package 持久化**：edge-agent 加 `patch-package` + patches dir，npm postinstall 钩子自动 reapply。最稳但需 user 同意。
+- **降级到 0.1.1-rc.x**：那版本 llm/stream 还是 AsyncIterable 直返，无 for-await 问题（但 0.1.2-rc.1 已经用 deepFreeze，rollback 失去 freeze invariant）。**不推荐**。
+
+**lesson**：
+
+**fix-once 不等于 fix-always**。§7.37 改了 Layer 1.5 → §7.38 发现 Layer 1 (agent-pre-step) 之外的 Layer 1.5 (llm/stream) hook 实际触发了 → 但 turn 依然失败 → 根因回到 agent-loop 而非我们的 hook 链。每加一层防御都要重新 verify end-to-end，单层 audit 看不到上下游 bug。
+
+**dsh-agent-loop 的 for-await-on-Promise 是已知反模式**。`@babel/runtime/helpers/asyncIterator.js` 抛的 "Object is not async iterable" 一定源自 for-await 一个非 AsyncIterable——Promise 是最常见罪犯。0.1.2-rc.1 这次 broken 同时影响 dsh-agent-loop、dsh-session-title-llm、dsh-tui sideQuestion、dsh-tui channel 等多个调用点。**任何 await 必须先 thenable-check** 这条 lesson（§7.37 末）现在要发给上游。
+
+**agent-preset 装配是 http-api 的必修课**。dsh 0.1.2 引入 agent-presets 后，**所有**调用 `agents.create()` 的代码都必须传 `meta.agentPreset` + `setup` 回调，否则 agent 跑空 global layer。这条 invariant 应该在 dsh 文档里硬写明，但目前只在 dsh-tui/web 内部模块里提过——任何外部 bundle（如我们 dsh-edge-agent）都得自己抄一份 composePreset。
