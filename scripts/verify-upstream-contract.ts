@@ -1,7 +1,7 @@
 /**
  * CI gate for the upstream compatibility contract: fails when any blessed
  * official package is installed at a version other than the validated
- * release line (0.1.0-rc.6), so a mismatched install breaks CI before
+ * release line (0.1.2-alpha.2), so a mismatched install breaks CI before
  * user machines.
  *
  * Run via `node --import tsx/esm scripts/verify-upstream-contract.ts`.
