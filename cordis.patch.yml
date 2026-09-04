@@ -183,15 +183,20 @@
 - id: tool-jobs
   disabled: true
 - id: tool-skill
-  # Disabled: dsh-edge-agent preset registers its own tool-skill row inside
-  # an isolate group (see repo-root agent-presets/dsh-edge-agent/
-  # agent.cordis.yml, moved here 2026-09-03 from profiles/dsh-edge-agent/
-  # overlay), which joins the agent scope via parentage. Leaving this host
-  # row enabled would mean two tool-skill providers competing for the same
-  # catalog slot — dsh-agent-presets rejects double-mount at session start.
-  # realm-skill-bridge (mounted in the insert block below) filters the
-  # merged catalog per realm regardless of which row registered the tool.
-  disabled: true
+  # 2026-09-04 (§7.40.2): RE-ENABLED at host plane. Previously disabled
+  # to avoid conflict with preset's tool-skill row. Empirically the
+  # preset's row did NOT deliver the `skill` tool to the LLM — system-
+  # prompt.assemble gathers toolProviders from the scope where dsh-tools
+  # was constructed (host), so the bridge between ctx.tools.register() and
+  # assembly.tools lives at host, not at the preset's standing scope. The
+  # agent joined the standing scope by parentage but did not inherit the
+  # toolProviders layer, so the `skill` tool was absent from the 27-tool
+  # list while the system reminder kept telling the model to call it.
+  # 2026-09-04 fix: disable the preset's row (single registration point)
+  # and enable this host row. Session `cw-fix-test-1` and earlier
+  # `7eb91d59-...` reproduced the 5-turn loop with resultLen=12
+  # (`</tool_call>` residual) — LLM picked `tool-fs-search` instead and
+  # produced malformed outputs.
 - id: tool-subagent
   disabled: true
 - id: tool-subagent-fork

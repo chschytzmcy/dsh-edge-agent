@@ -1,5 +1,6 @@
 {
   "inserts": [
+    "agent-presets",
     "file-logger",
     "tcm",
     "td-bus",
@@ -26,7 +27,6 @@
     "session-persistence-jsonl",
     "sandbox-policy",
     "agent-default-model",
-    "agent-presets",
     "tool-web",
     "web"
   ],
@@ -41,7 +41,6 @@
     "voice-input",
     "tool-pwsh",
     "tool-jobs",
-    "tool-skill",
     "tool-subagent",
     "tool-subagent-fork",
     "tool-subagent-control",
