@@ -160,24 +160,22 @@
   # the WebRuntime class plugin silently — `ctx.web` never gets provided,
   # web-search-deepseek's `inject: ['web']` never fires, and `web_search`
   # tool calls fail with "configured web provider ... is not registered".
-  # Provide a dummy `fetchProvider` here; tool-web disables fetch via
-  # `config.fetch: false` so the seam is never actually used for fetch.
+  # 2026-09-04: fetchProvider now uses 'http' from dsh-web-fetch-http plugin.
   config:
     searchProvider: deepseek-official
-    fetchProvider: ''
+    fetchProvider: http
 - id: tool-todo
 - id: tool-str-replace-editor
 - id: web-search-deepseek
-  # 2026-09-03: re-disabled. cordis.patch.yml comment 2026-09-02 was wrong —
-  # actual peer dep name is `@deepseek-ai/dsh-environment` (not dsh-launch-environment
-  # as comment claimed), and that package is not in npm registry (pnpm 404).
-  # web-search-guard plugin (separate, in dsh-edge-agent bundle) still
-  # operates independently — it gates audit / redaction, not the actual
-  # web_search tool call. With web-search-deepseek disabled, LLM web
-  # search falls back to "service unavailable" text response (no real-time
-  # news), but all other 18 bundle plugins + webui/IM channels work.
-  # Re-enable when `@deepseek-ai/dsh-environment` becomes resolvable.
-  disabled: true
+  # 2026-09-04: RE-ENABLED. The 2026-09-03 comment claimed peer dep
+  # `@deepseek-ai/dsh-environment` was missing. Wrong — actual peer deps are
+  # `dsh-launch-environment`, `dsh-web`, `dsh-agent`, all in dsh scope (0.1.2-rc.1).
+  # Without this plugin, `deepseek-official` search provider is never registered,
+  # so web_search tool calls fail with "provider not registered".
+- id: web-fetch-http
+  # 2026-09-04: ENABLED. Provides the 'http' fetch provider for web_fetch tool.
+  # Peer deps (cordis, dsh-timeout, dsh-web) all in dsh scope. Without this,
+  # web_fetch tool calls fail with "fetchProvider not registered".
 
 # 禁用的工具
 - id: tool-pwsh
