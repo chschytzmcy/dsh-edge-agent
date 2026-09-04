@@ -23,7 +23,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # 配置
-PROFILE="dsh-edge-agent"
+PROFILE="web"
 PORT="${DSH_EDGE_HTTP_PORT:-21017}"
 API_KEY="${EDGE_API_KEY:-test-secret-key}"
 PROVIDER="${DSH_EDGE_PROVIDER:-local-qwen3-4b-mock}"

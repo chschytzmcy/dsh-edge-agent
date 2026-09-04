@@ -106,15 +106,7 @@ pnpm --version   # 验证
 # 脚手架阶段可用 simulated 后端，无需真实 TEE。
 ```
 
-### 方式一：从 npm 全局安装（推荐用户）
-
-```bash
-npm install -g @deepseek-harness-edge-agent/dsh-edge-agent
-dsh plugin --profile dsh-edge-agent add @deepseek-harness-edge-agent/dsh-edge-agent
-dsh-edge-agent
-```
-
-### 方式二：从源码构建（推荐开发者）
+### 方式一：从源码构建（推荐开发者）
 
 ```bash
 git clone https://github.com/chschytzmcy/dsh-edge-agent.git
@@ -123,47 +115,72 @@ cd dsh-edge-agent
 pnpm install
 pnpm run compile
 
-# 首次运行引导 profile
-./install.sh
+# 默认装到 web profile（也可装到 tui 或任意自定义 profile）
+./install.sh                       # 默认 PROFILE=web
+./install.sh --to-profile tui     # 装到 tui profile（如有）
+DSH_EDGE_PROFILE=my-edge ./install.sh   # 装到自定义 profile
 
-# 启动
-dsh-edge-agent
+# 启动宿主 profile（默认 web）
+cd ~/.dsh/profiles/web
+setsid nohup dsh --profile web > run.log 2>&1 < /dev/null &
+disown
 ```
+
+### 方式二：把 bundle 装到现有 web profile（默认 + primary 文档案例）
+
+适用于「web profile 已存在（DSH 上游 webui 已装）」，只装 dsh-edge-agent bundle：
+
+```bash
+dsh plugin --profile web add @deepseek-harness-edge-agent/dsh-edge-agent
+
+# 然后 rsync + sync bundle patch + 注册 bundles + 重启
+cd /path/to/dsh-edge-agent
+./install.sh --skip-pnpm
+```
+
+> bundle 是 profile-agnostic 的——同样模式可装到任何 DSH profile（`--to-profile <name>` 或 `DSH_EDGE_PROFILE=<name>`）。web 是默认 + primary 文档案例，因为它自带 DSH 上游 webui / IM。
 
 ### 方式三：Windows
 
 ```cmd
 :: PowerShell 或 cmd
-dsh plugin --profile dsh-edge-agent add @deepseek-harness-edge-agent/dsh-edge-agent
-
-:: 启动（仓库根目录的 .cmd shim 处理 --resume 兼容）
-dsh-edge-agent.cmd
+:: （Windows 上 dsh CLI 行为一致；具体启动命令参考 DSH 官方 Windows 文档）
+dsh plugin --profile web add @deepseek-harness-edge-agent/dsh-edge-agent
+:: 或装到任意 profile：dsh plugin --profile <name> add @deepseek-harness-edge-agent/dsh-edge-agent
 ```
 
 ### 首次启动流程
 
-首次运行会执行：
+首次运行 `install.sh` 会执行：
 
-1. 检测 dsh CLI 是否已安装
-2. 在 `$DSH_HOME/profiles/dsh-edge-agent/` 创建独立 profile
-3. 通过 pnpm 安装所有 DSH 依赖
-4. 根据 `cordis.patch.yml` 注入 dsh-edge-agent 插件
-5. 创建存储目录（默认 `~/.dsh-edge-agent/`）
-6. 加载默认策略 `profiles/dsh-edge-agent/privacy-policy.json`（`process.cwd()` 相对路径，可由 `DSH_EDGE_PRIVACY_POLICY_PATH` 覆盖）
+1. 检测 dsh CLI / pnpm 是否已安装
+2. `dsh plugin --profile web add` 注册本 bundle 到 web profile 的 `dsh.profile.bundles` 列表
+3. pnpm 装 7 个上游包（dsh-agent-loop / dsh-tool-web / dsh-web / dsh-web-search-deepseek / dsh-skill / dsh-tool-skill / dsh-skill-filesystem）
+4. rsync `lib/` → web profile 嵌套包
+5. 同步 `cordis.patch.yml` 到嵌套包（**bundle-level patch**，§7.31 fix）
+6. 创建 6 个 channel 目录（默认 `~/.dsh-edge-agent-web/`，由 web profile `.env.sh` 设置）
+7. 加载默认策略 `tests/fixtures/privacy-policy.json`（也可由 `DSH_EDGE_PRIVACY_POLICY_PATH` 覆盖）
+8. 启动 web profile → `dsh web: http://127.0.0.1:3080/`
 
-完成后 agent loop 启动，等待用户输入。
+完成后浏览器访问 `:3080` 即可使用 webui chat。
 
 ### 验证安装
 
 ```bash
-# 检查 profile 是否就绪
-ls $DSH_HOME/profiles/dsh-edge-agent/
+# 1. bundle 已注册到 web profile？
+grep '@deepseek-harness-edge-agent/dsh-edge-agent' ~/.dsh/profiles/web/package.json
 
-# 检查插件是否挂载
-dsh --profile dsh-edge-agent --dump-config | grep -E "dsh-edge-agent|tcm|ohttp"
+# 2. 19 个 plugin 全部挂载？
+dsh --profile web --dump-config | grep -E 'input-guard|file-logger|intent-router|sanitizer' | wc -l
+# 期望：≥4
 
-# 冒烟测试
-pnpm run smoke
+# 3. webui listen？
+curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:3080/
+# 期望：200
+
+# 4. http-api 已 disabled（§7.33）
+curl -s --max-time 3 http://127.0.0.1:21017/v1/health
+# 期望：连接拒绝（:21017 不 listen）
 ```
 
 ### 故障排查
@@ -172,20 +189,28 @@ pnpm run smoke
 |---|---|
 | `未检测到 dsh CLI` | `npm install -g @deepseek-ai/dsh` 后 `hash -r` |
 | `未检测到 pnpm` | `npm install -g pnpm` 或 `corepack enable pnpm` |
-| `profile runs v0.0.X but launcher is v0.1.0` | `dsh plugin --profile dsh-edge-agent add @deepseek-harness-edge-agent/dsh-edge-agent@latest` |
+| web profile 启动后 `:3080` 不 listen | `tail -50 ~/.dsh/profiles/web/run.log` 看 `dsh web:` 行；可能是 webui 包未装，跑 `dsh plugin --profile web add @deepseek-ai/dsh-web @deepseek-ai/dsh-web-ui-all` |
+| 19 个 plugin 只挂载 dsh-base 的 30 个（bundle 没生效） | `dsh plugin --profile web add @deepseek-harness-edge-agent/dsh-edge-agent` 重装；或者 `install.sh §3.5 + §3.6` 没跑，手动 cp `cordis.patch.yml` 到嵌套包根 |
 | `adapter boundary violated` | 把 `@deepseek-ai/*` 的 import 移到 `src/dsh-adapter/` 内（或经 `src/dsh-adapter/types.ts` 重新导出） |
 | `upstream contract violated` | DSH 依赖版本与 `UPSTREAM_VALIDATED_VERSION`（`0.1.0-rc.6`）不匹配；运行 `pnpm install` 或 `pnpm update @deepseek-ai/dsh-agent @deepseek-ai/dsh-llm ...` |
 
 ### 卸载
 
 ```bash
-# 移除 profile
-dsh plugin --profile dsh-edge-agent remove @deepseek-harness-edge-agent/dsh-edge-agent
+# 1. 停 web profile
+pkill -f 'node.*dsh --profile web' || true
 
-# 移除存储（注意：会删除所有会话和加密数据！）
-rm -rf ~/.dsh-edge-agent/
+# 2. 从 web profile bundles 列表移除 bundle
+# （CLI：dsh plugin --profile web remove <bundle> — 如 dsh CLI 0.1.0-rc.x 提供）
+# 或手动编辑 ~/.dsh/profiles/web/package.json 删除 bundles + dependencies 中的 dsh-edge-agent
 
-# 移除全局包（如适用）
+# 3. 移除嵌套包
+rm -rf ~/.dsh/profiles/web/node_modules/@deepseek-harness-edge-agent/
+
+# 4. 移除 bundle 数据（注意：会删除所有会话和加密数据！）
+rm -rf ~/.dsh-edge-agent-web/
+
+# 5. 移除全局包（如适用）
 npm uninstall -g @deepseek-harness-edge-agent/dsh-edge-agent
 ```
 
@@ -205,14 +230,16 @@ export PATH="$HOME/.npm-global/bin:$PATH"
 cp .env.example .env
 $EDITOR .env   # 填入 DEEPSEEK_API_KEY、EDGE_API_KEY 等
 
-# 3. 同步 cordis 配置（关键步骤！）
-cp profiles/dsh-edge-agent/cordis.patch.yml ~/.dsh/profiles/dsh-edge-agent/
+# 3. cordis patch 已由 ./install.sh §3.5 自动同步到 web profile 嵌套包；手动开发期改完 bundle 也可重跑：
+./install.sh --skip-pnpm
 
-# 4. 启动（.env.sh 自动 export 所有 DSH_EDGE_* 变量）
-source .env.sh && dsh --profile dsh-edge-agent
+# 4. 启动（web profile 自己 source 自己的 .env.sh；无需 source repo 根 .env.sh）
+cd ~/.dsh/profiles/web
+setsid nohup dsh --profile web > run.log 2>&1 < /dev/null &
+disown
 
-# 后台运行
-setsid bash -c 'source .env.sh && dsh --profile dsh-edge-agent' > /tmp/dsh.log 2>&1 < /dev/null &
+# 或前台（debug 用）
+source .env.sh && dsh --profile web
 ```
 
 `.env.sh` 会打印加载的变量（脱敏）便于调试。
@@ -234,9 +261,17 @@ export DSH_EDGE_LOCAL_LLM_MODE=real
 export DSH_EDGE_LOCAL_LLM_BASEURL=http://192.168.66.195:8701/v1
 export DSH_EDGE_LOCAL_LLM_MODEL=qwen3-4b-instruct-2507
 
-cp profiles/dsh-edge-agent/cordis.patch.yml ~/.dsh/profiles/dsh-edge-agent/
+# DSH_EDGE_HTTP_PORT 仅在重新启用 http-api（cordis.patch.yml:313 disabled: false）时有效
+export DSH_EDGE_HTTP_PORT=21017  # §7.33 后默认 disabled，本变量无副作用
+export DSH_EDGE_PROVIDER=cloud-deepseek-v4
+export DSH_EDGE_MODEL=deepseek-chat
+export DSH_EDGE_LOCAL_LLM_MODE=real
+export DSH_EDGE_LOCAL_LLM_BASEURL=http://192.168.66.195:8701/v1
+export DSH_EDGE_LOCAL_LLM_MODEL=qwen3-4b-instruct-2507
 
-dsh --profile dsh-edge-agent
+# bundle 自带完整 cordis.patch.yml，无需 cp profile overlay
+cd ~/.dsh/profiles/web
+dsh --profile web
 ```
 
 ### LLM 路由机制
@@ -305,7 +340,7 @@ dsh-edge-agent 通过**环境变量**和 `cordis.yml` 进行配置。所有环�
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `DSH_EDGE_PRIVACY_POLICY_PATH` | `process.cwd()/profiles/dsh-edge-agent/privacy-policy.json` | 隐私策略文件路径 |
+| `DSH_EDGE_PRIVACY_POLICY_PATH` | `${DSH_EDGE_STORAGE_ROOT}/privacy-policy.json`（默认 `~/.dsh-edge-agent-web/storage/privacy-policy.json`）| 隐私策略文件路径 |
 | `DSH_EDGE_REALM_HOT_RELOAD` | `true` | realm 配置热重载开关（不重载策略文件本身） |
 
 ### 🚦 路由配置
@@ -475,42 +510,56 @@ dsh-edge-agent 通过**环境变量**和 `cordis.yml` 进行配置。所有环�
 
 ---
 
-## 🌐 多入口架构
+## 🌐 入口架构（§7.33 重构后：bundle 默认挂到 web profile）
 
-dsh-edge-agent 对外暴露**三个用户入口**，明确分工，互不替代：
+> **2026-09-03 §7.33 重要变更**：dsh-edge-agent 不再是独立 profile + 自研 http-api `:21017` 入口。bundle 是"纯 plugins"——在 **web profile（默认 / primary 宿主）** 下，所有用户交互走 **DSH 官方 Web UI `:3080`**（web profile 自带）。`http-api` plugin 当前 **disabled**（代码保留，未来可手动启用）。
+>
+> bundle 是 **profile-agnostic** 的——可以同样模式挂到 tui / 任意自定义 profile；web 是默认 + primary 文档案例（自带 DSH 上游 webui / IM），不是唯一合法宿主。
 
-| 入口 | 端口 | 鉴权 | 目标用户 |
+**默认入口（web profile 宿主）**：
+
+| 入口 | 端口 | 鉴权 | 目标用户 | 状态 |
+|---|---|---|---|---|
+| **DSH 官方 Web UI**（SPA + apiproxy） | `:3080` | loopback trust + pairing | 浏览器 / 真人用户 / IM 渠道 | ✅ enabled |
+
+**已 disabled 的可选入口**（代码保留，未来手动启用见下文 §"重新启用 http-api"）：
+
+| 入口 | 端口 | 用途 | 状态 |
 |---|---|---|---|
-| **DSH 官方 Web UI**（SPA + apiproxy） | `:21018` | loopback trust + pairing | 浏览器 / 真人用户 |
-| **dsh-im**（IM 聊天软件通道网关） | (无新端口) | QR / bot credentials / AI Office Device Token | 移动端聊天软件用户 |
-| **http-api**（自研 REST + SSE） | `:21017` | Bearer token + body cap | CLI / SDK / cURL / 外部 agent |
+| **http-api**（自研 REST + SSE） | `:21017` | CLI / SDK / cURL / 外部 agent | ❌ disabled（`cordis.patch.yml:313 disabled: true`）|
 
-三条入口**共享同一套 agent-loop 管线**（含 input-guard / prompt-guard / sanitizer / privacy-policy / audit-log / sessions）。`input-guard` 挂在全局 hook 上，所以**所有入口自动获得隐私保护**——无论用户从 webui、IM 还是 cURL 进入，agent-loop 内的脱敏与降级行为完全一致。
+### 浏览器 / IM 用户 → `:3080`
 
-### 浏览器用户 → `:21018`
+打开浏览器访问 `http://127.0.0.1:3080`，使用 DSH 官方 Web UI（chat / task-board / pet / IM机器人 等）。鉴权由 DSH 上游的配对 token 流程处理。
 
-打开浏览器访问 `http://127.0.0.1:21018`，使用 DSH 官方 Web UI（chat / task-board / pet 等）。鉴权由 DSH 上游的配对 token 流程处理。
-
-### IM 聊天用户 → 飞书 / 微信 / 钉钉 / 企业微信 / QQ / Slack / Telegram / Discord / WhatsApp
-
-dsh-im 插件（`@xmanrui/dsh-im`）通过 webserver 内部 `apiProxy` 把 IM 消息接入 agent-loop——**不监听新端口**，自动继承 input-guard 隐私管线。
+`@xmanrui/dsh-im` 插件通过 webserver 内部 `apiProxy` 把 IM 消息接入 agent-loop——**不监听新端口**，自动继承 input-guard 隐私管线。
 
 启用步骤：
 
-1. 在浏览器访问 `http://127.0.0.1:21018`，打开 **设置 → IM机器人** 页面
+1. 在浏览器访问 `http://127.0.0.1:3080`，打开 **设置 → IM机器人** 页面
 2. 选择渠道，按页面提示**扫码**或粘贴 App ID / Secret / Bot Token 等凭据
 3. 凭据仅写入 `dsh-credentials-local` 受保护本地存储，配置文件不落盘
 4. 启用后，IM 私聊 / 群消息会自动路由到 agent-loop（流式思考 / 工具执行进度 / 最终回答均原生渠道展示）
 
 支持的 IM 渠道：飞书（WebSocket + 流式卡片）/ 微信（iLink 长轮询）/ 钉钉（Stream + AI Card）/ 企业微信（WebSocket + 「思考中」）/ QQ（WebSocket）/ Slack（Socket Mode）/ Telegram（Bot API + Rich Draft）/ Discord（Gateway v10 + 原生 Thread）/ WhatsApp（WhatsApp Web）+ **AI Office Connector**（公网 HTTPS 心跳 + SSE 下行）。
 
-> **⚠️ AI Office 风险**：AI Office Connector 让本机 Harness **主动**连接公网 Office（不需公网 IP / 端口转发），但 SSE 下行的增量文本会回到公网 Office。**只在用户主动启用**后生效（v1.1 起 webui 提供 opt-in 对话框）。
+> **⚠️ AI Office 风险**：AI Office Connector 让本机 Harness **主动**连接公网 Office（不需公网 IP / 端口转发），但 SSE 下行的增量文本会回到公网 Office。**只在用户主动启用**后生效。
 
-> **⚠️ 凭据安全**：所有 IM 平台 bot credentials 只入 `dsh-credentials-local`，RPC 响应不回传原始凭据。详见 [docs/architecture.md](docs/architecture.md) §10.4。
+> **⚠️ 凭据安全**：所有 IM 平台 bot credentials 只入 `dsh-credentials-local`，RPC 响应不回传原始凭据。
 
-### 程序客户端 → `:21017`
+### 重新启用 http-api（可选，advanced）
 
-CLI / SDK / cURL 调用自研 REST API：
+如果你确实需要 CLI / SDK / cURL 调用（`curl :21017/v1/chat`），http-api 代码完整保留在 `src/dsh-adapter/http-api.ts`。启用步骤：
+
+```bash
+# 1. 编辑 cordis.patch.yml:313 把 disabled: true 删掉（或改成 false）
+$EDITOR cordis.patch.yml
+
+# 2. 同步到嵌套包 + 重启 web profile
+./install.sh --skip-pnpm
+```
+
+启用后，http-api 会在 `:21017` 重新 listen（与 `:3080` webui 并存）。代码路径完全保留，下面是 REST API 文档存档（§7.33 之前是主入口，现在为 advanced option）：
 
 ```bash
 # 健康检查（无需鉴权）
@@ -556,20 +605,52 @@ curl -H "Authorization: Bearer $EDGE_API_KEY" \
 curl http://127.0.0.1:21017/v1/openapi.json
 ```
 
-完整接口规范详见 [docs/architecture.md](docs/architecture.md)（v1.1 起文档同时覆盖三入口，但文件名保留以保持 GitHub 链接稳定）。
+完整接口规范详见 [docs/architecture.md](docs/architecture.md)。
 
 > **⚠️ 鉴权约定**：
-> - **http-api**：Bearer token 必须从环境变量 `EDGE_API_KEY` 注入；**不要硬编码**到配置文件。生产环境使用 secret manager。
-> - **dsh-im**：IM 平台 bot credentials 走 webui「设置 → IM机器人」页面，凭据**只入 `dsh-credentials-local`**。配置文件不落盘。
+> - **http-api**（如启用）：Bearer token 必须从环境变量 `EDGE_API_KEY` 注入；**不要硬编码**到配置文件。生产环境使用 secret manager。
+> - **dsh-im**：IM 平台 bot credentials 走 webui「设置 → IM机器人」页面，凭据**只入 `dsh-credentials-local`**。
 > - **dsh-webui**：loopback trust + DSH 上游配对 token 流程。
 >
-> **⚠️ CORS**：v1 不启用 CORS（`enableCors` 字段在 schema 中完全不暴露）。程序端请同主机调用；若需要从浏览器直接调用 http-api，请改用 `:21018` 的官方 Web UI。
+> **⚠️ CORS**：v1 不启用 CORS（`enableCors` 字段在 schema 中完全不暴露）。程序端请同主机调用；若需要从浏览器调用，请用 `:3080` 的官方 Web UI。
 
 ---
 
 ## 🧪 手动测试
 
-> 假设服务器运行在 `http://127.0.0.1:21017`，API Key 为 `test-secret-key`。
+### Webui smoke（推荐，§7.33 后默认入口）
+
+```bash
+# 1. 启动 web profile
+cd ~/.dsh/profiles/web
+setsid nohup dsh --profile web > run.log 2>&1 < /dev/null &
+disown
+
+# 2. 等 5-10s（webui 首次加载慢）
+sleep 10
+
+# 3. 浏览器访问 http://127.0.0.1:3080/
+#    应看到 DSH 官方 Web UI（chat / task-board / pet / IM机器人）
+
+# 4. 验证 dsh-edge-agent bundle plugin 已挂载（input-guard / intent-router / sanitizer）
+curl -s http://127.0.0.1:3080/ | head -3
+# 期望：HTML 含 dsh / webui 字样
+
+# 5. 跟 audit log 验证 input-guard hook 注册
+tail -10 ~/.dsh-edge-agent-web/audit/audit.plain.jsonl \
+  | jq -c 'select(.kind | test("registered|loaded"))' | head -5
+# 期望：input-guard.hook.registered 等事件
+
+# 6. http-api 应 disabled（§7.33）
+curl -s --max-time 3 http://127.0.0.1:21017/v1/health
+# 期望：连接拒绝
+```
+
+### http-api 手动测试（advanced，**需先启用**）
+
+> ⚠️ §7.33 后 http-api 默认 disabled。如要跑以下 curl 示例，先 `cordis.patch.yml:313` 删 `disabled: true` 并 `./install.sh --skip-pnpm` 重启 web profile。
+
+假设服务器运行在 `http://127.0.0.1:21017`，API Key 为 `test-secret-key`。
 
 ### 启动服务
 
@@ -579,10 +660,10 @@ curl http://127.0.0.1:21017/v1/openapi.json
 
 # 方式 2: 手动启动
 source .env.sh
-dsh --profile dsh-edge-agent
+dsh --profile web
 
 # 方式 3: 后台运行
-setsid bash -c 'source .env.sh && dsh --profile dsh-edge-agent' > /tmp/dsh.log 2>&1 < /dev/null &
+setsid bash -c 'source .env.sh && dsh --profile web' > /tmp/dsh.log 2>&1 < /dev/null &
 ```
 
 ### Health Check

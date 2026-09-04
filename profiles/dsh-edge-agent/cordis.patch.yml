@@ -1,8 +1,0 @@
-# 2026-09-02: profile-level patch is empty. The full plugin manifest
-# lives in the root bundle patch (./cordis.patch.yml) so the bundle is
-# self-contained and can be added to ANY profile via
-# `dsh plugin --profile <name> add -w $LOCAL_PKG`.
-#
-# This stub stays so the profile remains a valid Cordis patch layer
-# (user customisations in the profile still win last-write-wins).
-[]

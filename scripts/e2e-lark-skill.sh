@@ -32,7 +32,7 @@ NC='\033[0m'
 
 PORT="${DSH_EDGE_HTTP_PORT:-21020}"
 API_KEY="${EDGE_API_KEY:-test-e2e-lark-key}"
-PROFILE="dsh-edge-agent"
+PROFILE="web"
 BASE_URL="http://127.0.0.1:$PORT"
 SERVER_PID=""
 TESTS_PASSED=0

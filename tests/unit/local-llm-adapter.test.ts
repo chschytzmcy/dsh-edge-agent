@@ -231,4 +231,71 @@ describe('local-llm-adapter (M4, real-only)', () => {
     )
     restoreFetch()
   })
+
+  // 2026-09-03 §7.34.2 regression suite: empty stream must NOT leave
+  // BlockAssembler with an orphan text block. Real-world repro (webui
+  // chat "查询下密盒有哪些图片文件" 17:20:40 +08:00): llama.cpp
+  // 192.168.1.121:11017 returned completion_tokens=0 finish_reason=stop
+  // for a 24-message / 2535-token prompt. dsh received block-start
+  // then finish with no block-end — agent-loop state machine hung
+  // waiting for the missing block-end.
+  //
+  // Fix: yield `block-start` lazily, only just before the first text-delta.
+  // Empty streams now yield no block-start at all, so BlockAssembler stays
+  // in clean state.
+  it('empty stream (finish=stop with no content) → no block-start, only finish chunk (§7.34.2)', async () => {
+    installFetchMock(() => sseResponse([
+      { choices: [{ delta: {}, finish_reason: 'stop' }] },
+    ]))
+    const adapter = new LocalLlmAdapterImpl({
+      providers: ['local-qwen3-4b'],
+      baseUrl: 'http://127.0.0.1:8080/v1',
+      defaultModel: 'qwen3-4b',
+    })
+
+    const chunks: Array<{ type: string; [k: string]: unknown }> = []
+    for await (const chunk of adapter.stream({
+      provider: 'local-qwen3-4b',
+      model: 'qwen3-4b',
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+    })) {
+      chunks.push(chunk as { type: string })
+    }
+
+    const types = chunks.map((c) => c.type)
+    // §7.34.2: empty stream yields ONLY 'finish' — no orphan 'block-start'.
+    // 之前会 yield ['block-start', 'finish'] → BlockAssembler 卡在等待 block-end。
+    assert.deepEqual(types, ['finish'])
+    const finishChunk = chunks[0] as { type: string; reason?: { kind: string } }
+    assert.equal(finishChunk.reason?.kind, 'stop')
+    restoreFetch()
+  })
+
+  it('text-delta stream → block-start emitted ONCE before first delta (§7.34.2)', async () => {
+    installFetchMock(() => sseResponse([
+      { choices: [{ delta: { content: 'hello' }, finish_reason: null }] },
+      { choices: [{ delta: { content: ' world' }, finish_reason: null }] },
+      { choices: [{ delta: {}, finish_reason: 'stop' }] },
+    ]))
+    const adapter = new LocalLlmAdapterImpl({
+      providers: ['local-qwen3-4b'],
+      baseUrl: 'http://127.0.0.1:8080/v1',
+      defaultModel: 'qwen3-4b',
+    })
+
+    const chunks: Array<{ type: string; [k: string]: unknown }> = []
+    for await (const chunk of adapter.stream({
+      provider: 'local-qwen3-4b',
+      model: 'qwen3-4b',
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+    })) {
+      chunks.push(chunk as { type: string })
+    }
+
+    const types = chunks.map((c) => c.type)
+    assert.deepEqual(types, ['block-start', 'text-delta', 'text-delta', 'block-end', 'finish'])
+    // 严格断言只有 1 个 block-start（防止回归到多次 yield）
+    assert.equal(types.filter((t) => t === 'block-start').length, 1)
+    restoreFetch()
+  })
 })

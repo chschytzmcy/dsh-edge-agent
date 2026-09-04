@@ -17,15 +17,15 @@
  */
 
 import type {
-  CallId,
   GenerateOptions,
   LlmModelInfo,
   LlmProviderInfo,
   LlmResolvedModelInfo,
   Message as DshMessage,
   StreamChunk,
+  ToolCallId,
 } from '@deepseek-ai/dsh-llm'
-import { attributionHeaders, CallId as brandCallId, LlmError } from '@deepseek-ai/dsh-llm'
+import { attributionHeaders, LlmError, ToolCallId as brandCallId } from '@deepseek-ai/dsh-llm'
 
 /** Adapter contract surface shared by every OpenAI-compatible endpoint. */
 export interface OpenAiCompatibleAdapter {
@@ -198,7 +198,7 @@ export function sseEventToChunk(
     const chunk: StreamChunk = {
       type: 'tool-call-delta',
       index: event.index,
-      id: brandCallId(idForChunk as CallId | string) as CallId,
+      id: brandCallId(idForChunk as ToolCallId | string) as ToolCallId,
       argumentsDelta: event.argumentsDelta,
     }
     if (event.name !== undefined) chunk.name = event.name
@@ -237,7 +237,7 @@ export function* terminalChunks(
       index: toolCallIndex++,
       block: {
         type: 'tool-call',
-        id: brandCallId(call.id as CallId | string) as CallId,
+        id: brandCallId(call.id as ToolCallId | string) as ToolCallId,
         name: call.name,
         arguments: call.arguments,
       },

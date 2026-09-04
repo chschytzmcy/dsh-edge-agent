@@ -140,14 +140,22 @@ jobs:
 
       - name: Install DSH CLI
         run: npm install -g @deepseek-ai/dsh
-        # dsh CLI 启动时读取 ~/.dsh/profiles/<name>/cordis.patch.yml，
-        # 缺它会回到 vanilla 配置跑（缺少 dsh-edge-agent 全部插件）。
+        # dsh CLI 启动时读取 ~/.dsh/profiles/<name>/cordis.yml + bundles 列表，
+        # 缺 bundle 注册会回到 vanilla 配置跑（缺少 dsh-edge-agent 全部 plugins）。
+        # 2026-09-03 (§7.31): CI 跑 web profile (唯一 profile).
 
-      - name: Sync cordis patch to DSH profile
+      - name: Bootstrap DSH web profile
         run: |
-          mkdir -p "$HOME/.dsh/profiles/dsh-edge-agent/"
-          cp profiles/dsh-edge-agent/cordis.patch.yml "$HOME/.dsh/profiles/dsh-edge-agent/"
-          echo "已同步 cordis.patch.yml → ~/.dsh/profiles/dsh-edge-agent/"
+          # 2026-09-03 (§7.31): web profile is the only profile.
+          # CI 创建 web profile + 注册 dsh-edge-agent bundle, 把 repo 根
+          # cordis.patch.yml 同步到嵌套包, 确保 19 个 plugins 加载.
+          mkdir -p "$HOME/.dsh/profiles/web"
+          dsh plugin --profile web add @deepseek-harness-edge-agent/dsh-edge-agent || true
+          NESTED="$HOME/.dsh/profiles/web/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent"
+          mkdir -p "$NESTED"
+          cp cordis.patch.yml "$NESTED/cordis.patch.yml"
+          cp cordis.yml "$NESTED/cordis.yml" 2>/dev/null || true
+          echo "已同步 bundle patch → $NESTED/cordis.patch.yml"
 
       - name: Run privacy precheck e2e (must report 19/19)
         env:

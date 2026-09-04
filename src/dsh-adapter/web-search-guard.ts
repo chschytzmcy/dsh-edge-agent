@@ -232,6 +232,47 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
   const sanitizer = (ctx as unknown as { sanitizer?: SanitizerLike }).sanitizer
   service.attach(audit, sanitizer)
 
+  // ── tools/pre-execute waterfall gate (§7.37 defense-in-depth) ──────────
+  // Hard invariant: web_search / web_fetch (cloud-only tools, hit DeepSeek
+  // Anthropic-compatible endpoint) MUST NOT run under a local-* provider.
+  // input-guard's §7.35 may downgrade CLOUD → LOCAL on a key miss; if that
+  // downgrade is wrong (false positive) we still refuse here so the LLM
+  // never actually fires a request. Without this hook, a misclassified
+  // CLOUD intent lands on local-qwen3-4b, which still has web_search in
+  // its tool list (tools are global), and qwen wastes DeepSeek API quota
+  // on a task the local model can't usefully answer.
+  //
+  // Mechanism: dsh-tools runs `ctx.waterfall("tools/pre-execute", exec,
+  // () => allow)` before each tool dispatch — see
+  // @deepseek-ai/dsh-tools/lib/index.js:3098. A listener returning
+  // `{kind: 'deny', reason}` short-circuits the dispatch.
+  type GateDecision = { kind: 'allow' } | { kind: 'deny'; reason: string }
+  type PreExecuteListener = (
+    exec: ToolExecView & { agent?: { config?: { provider?: string }; session?: { config?: { provider?: string } } } },
+    next: () => Promise<GateDecision>,
+  ) => Promise<GateDecision>
+  const onToolsPreExecute = (async (exec, next) => {
+    if (!MONITORED_TOOLS.has(exec.name)) return next()
+    const provider =
+      (exec as { agent?: { session?: { config?: { provider?: string } } } }).agent?.session?.config?.provider ??
+      (exec as { agent?: { config?: { provider?: string } } }).agent?.config?.provider
+    if (typeof provider === 'string' && provider.startsWith('local-')) {
+      await audit?.log({
+        level: 'security',
+        kind: 'web-search-guard.blocked-local-provider',
+        source: 'web-search-guard',
+        payload: {
+          toolName: exec.name,
+          callId: exec.callId,
+          provider,
+          args: redactPayload((exec.arguments ?? {}) as Record<string, unknown>),
+        },
+      })
+      return { kind: 'deny', reason: `web-search blocked: provider=${provider} (cloud-only tool, must run on cloud-* provider)` }
+    }
+    return next()
+  }) as PreExecuteListener
+
   // ── tools/result observer ────────────────────────────────────────────────
   // DSH dsh-tools emits this AFTER the canonical outcome is materialized
   // (see `notifyResult` in dsh-tools/lib/index.js:3272). The event is
@@ -257,8 +298,13 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
   }) as ResultListener
 
   const ctxWithOn = ctx as unknown as {
-    on?: (event: string, fn: ResultListener) => () => void | Promise<void>
+    on?: (event: string, fn: (...args: any[]) => any, opts?: Record<string, unknown>) => () => void | Promise<void>
   }
+  // tools/pre-execute is a *waterfall* (see dsh-tools/lib/index.js:3098), so
+  // the listener must be registered with `{ global: true }` to survive
+  // per-session scope bindings. Without `global`, the gate is invisible to
+  // tools dispatched under agent session scopes and §7.37 never fires.
+  const disposePre = ctxWithOn.on?.('tools/pre-execute', onToolsPreExecute, { global: true })
   const disposeOn = ctxWithOn.on?.('tools/result', onToolsResult)
 
   // ── tools/change: refresh rate-limit counters when tools come and go ──
@@ -284,11 +330,12 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
     }
   }
   // Fire once on apply to catch tools already registered.
-  ctx.logger?.info?.('[web-search-guard] apply() called, registering tools/change + tools/result listeners')
+  ctx.logger?.info?.('[web-search-guard] apply() called, registering tools/pre-execute + tools/change + tools/result listeners')
   setImmediate(onToolsChange)
   const disposeChange = ctxWithOn.on?.('tools/change', onToolsChange)
 
   return async () => {
+    await disposePre?.()
     await disposeOn?.()
     await disposeChange?.()
   }

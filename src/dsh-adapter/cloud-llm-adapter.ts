@@ -229,7 +229,16 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
       throw new LlmError(`cloud-llm-adapter: HTTP ${response.status}: ${respBody.slice(0, 200)}`, 'PROVIDER_ERROR')
     }
 
-    yield { type: 'block-start', index: 0, blockType: 'text' }
+    // 2026-09-03 §7.34.2 fix: defer `block-start` until the first text-delta.
+    // Same root cause as local-llm-adapter — empty stream (e.g. DeepSeek upstream
+    // returns finish=stop with 0 content) would leave BlockAssembler with an
+    // orphan text block + finish, agent-loop state machine hangs.
+    let blockStartYielded = false
+    const yieldBlockStartOnce = (): boolean => {
+      if (blockStartYielded) return false
+      blockStartYielded = true
+      return true
+    }
     let assembledText = ''
     let finishKind: 'stop' | 'length' | 'tool-calls' | undefined
     const toolCalls = new Map<number, { id: string; name: string; arguments: string }>()
@@ -251,6 +260,10 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
         const result = sseEventToChunk(event, toolCalls)
         if (result === null) continue
         if (result.chunk.type === 'text-delta') {
+          // §7.34.2: yield block-start lazily before the first text-delta
+          if (yieldBlockStartOnce()) {
+            yield { type: 'block-start', index: 0, blockType: 'text' }
+          }
           assembledText += (result.chunk as { text: string }).text
           sawText = result.sawText
         } else if (result.chunk.type === 'tool-call-delta') {

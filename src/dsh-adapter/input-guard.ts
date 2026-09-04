@@ -224,6 +224,28 @@ export class InputGuardServiceImpl extends Service {
     if (typeof slot !== 'string' || slot.length === 0) return false
     if (typeof process === 'undefined' || !process.env) return false
     const value = process.env[slot]
+    // ── §7.35 DEBUG (2026-09-03) ─────────────────────────────────────────
+    // Surface runtime state so we can diagnose the false-positive TUI
+    // downgrade (process.env had DEEPSEEK_API_KEY 35 chars / credentials
+    // yaml also synced, but hasCloudCredentials still returned false).
+    // Cheap info log, gated by plugin start (avoid noise on every pre-step).
+    if (this.ctx) {
+      const dsKeys = Object.keys(process.env).filter((k) => k.includes('DEEPSEEK'))
+      const v = typeof value === 'string' ? value : undefined
+      // Try reading via ctx.get('credentials') to compare env vs DSH creds store
+      const credsLen = (() => {
+        try {
+          const creds = this.ctx.get?.('credentials') as { get?: (k: string) => unknown } | undefined
+          const got = creds?.get?.(slot)
+          return typeof got === 'string' ? got.length : 'no-get'
+        } catch {
+          return 'no-credentials-service'
+        }
+      })()
+      this.ctx.logger?.info?.(
+        `[input-guard] hasCloudCredentials: slot=${slot} envValueLen=${typeof v === 'string' ? v.length : 'undefined'} dsEnvKeys=[${dsKeys.join(',')}] credentialsServiceValueLen=${credsLen}`,
+      )
+    }
     return typeof value === 'string' && value.length > 0
   }
 

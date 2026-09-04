@@ -6,13 +6,10 @@ import { describe, it, assert } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve, join } from 'node:path'
 
-// Constant — bundle's profile overlay directory (contains default
-// privacy-policy.json shipped with the dsh-edge-agent bundle). Per
-// PROGRESS §7.25 + §7.25.x the directory name is the *profile* name
-// (collides with bundle name historically); the bundle itself lives
-// at the repo root. A future P4 container rename only needs to touch
-// this constant.
-const OVERLAY_DIR = resolve(__dirname, '../../profiles/dsh-edge-agent')
+// Constant — privacy-policy.json fixture path. 2026-09-03 (§7.31):
+// bundle is a pure plugin in web profile; tests load privacy-policy.json
+// from tests/fixtures/ (was profiles/dsh-edge-agent/ overlay before refactor).
+const OVERLAY_DIR = resolve(__dirname, '../fixtures')
 
 // Load the actual shipped policy
 const policyPath = join(OVERLAY_DIR, 'privacy-policy.json')

@@ -59,7 +59,6 @@ package: build
 
 	@# 复制必要文件
 	@cp -r lib $(PACKAGE_DIR)/dsh-edge-agent/
-	@cp -r bin $(PACKAGE_DIR)/dsh-edge-agent/
 	@cp -r profiles $(PACKAGE_DIR)/dsh-edge-agent/
 	@cp -r presets $(PACKAGE_DIR)/dsh-edge-agent/
 	@cp -r scripts $(PACKAGE_DIR)/dsh-edge-agent/
@@ -91,7 +90,7 @@ install: package
 	@echo "下一步:"
 	@echo "  1. 进入目录: cd $(INSTALL_DIR)"
 	@echo "  2. 配置环境: cp .env.example .env && \$$EDITOR .env"
-	@echo "  3. 启动服务: source .env.sh && dsh --profile dsh-edge-agent"
+	@echo "  3. 启动服务: source .env.sh && dsh --profile web"
 
 # 清理
 clean:

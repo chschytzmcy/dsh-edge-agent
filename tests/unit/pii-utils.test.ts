@@ -176,13 +176,11 @@ describe('pii-utils 单一事实源', () => {
     const { readFileSync } = await import('node:fs')
     const { fileURLToPath } = await import('node:url')
     const { dirname, join, resolve } = await import('node:path')
-    // Bundle's profile overlay directory (see PROGRESS §7.25.x).
-    // Pinned constant so a future P4 rename only touches this line.
-    const overlayDir = resolve(dirname(fileURLToPath(import.meta.url)), '../../profiles/dsh-edge-agent')
-    const url = new URL(
-      join(overlayDir, 'privacy-policy.json'),
-      import.meta.url,
-    )
+    // 2026-09-03 (§7.31): bundle is a pure plugin in web profile; tests
+    // load privacy-policy.json from tests/fixtures/ (was profiles/dsh-edge-agent/
+    // overlay before the refactor).
+    const fixturePath = resolve(dirname(fileURLToPath(import.meta.url)), '../fixtures/privacy-policy.json')
+    const url = new URL(fixturePath, import.meta.url)
     const policy = JSON.parse(readFileSync(url, 'utf-8'))
     for (const rule of policy.sanitizationRules) {
       assert.equal(

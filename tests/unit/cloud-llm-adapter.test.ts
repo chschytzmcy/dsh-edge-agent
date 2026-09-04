@@ -281,26 +281,28 @@ describe('cloud-llm-adapter (M2 tool-calls)', () => {
       chunks.push(chunk)
     }
 
-    // Expected sequence: block-start(text) → 2× tool-call-delta → block-end(tool-call) → finish(tool-calls).
-    // No text-block-end in this trace because the assistant emitted only a tool call.
+    // Expected sequence (§7.34.2): 2× tool-call-delta → block-end(tool-call) → finish(tool-calls).
+    // No block-start(text) — there's no text in this stream (lazy block-start, only emitted
+    // before the first text-delta). Old behavior was ['block-start', 'tool-call-delta', ...]
+    // which left an orphan text block in BlockAssembler when no text was ever streamed.
     const types = chunks.map((c) => (c as { type: string }).type)
-    assert.deepEqual(types, ['block-start', 'tool-call-delta', 'tool-call-delta', 'block-end', 'finish'])
+    assert.deepEqual(types, ['tool-call-delta', 'tool-call-delta', 'block-end', 'finish'])
 
-    const firstDelta = chunks[1] as { id: string; name?: string; argumentsDelta: string }
+    const firstDelta = chunks[0] as { id: string; name?: string; argumentsDelta: string }
     assert.equal(firstDelta.id, 'call_abc')
     assert.equal(firstDelta.name, 'local_file_read')
     assert.equal(firstDelta.argumentsDelta, '')
 
-    const secondDelta = chunks[2] as { argumentsDelta: string }
+    const secondDelta = chunks[1] as { argumentsDelta: string }
     assert.equal(secondDelta.argumentsDelta, '{"path":"/tmp/test.txt"}')
 
-    const blockEnd = chunks[3] as { block: { type: string; id: string; name: string; arguments: string } }
+    const blockEnd = chunks[2] as { block: { type: string; id: string; name: string; arguments: string } }
     assert.equal(blockEnd.block.type, 'tool-call')
     assert.equal(blockEnd.block.id, 'call_abc')
     assert.equal(blockEnd.block.name, 'local_file_read')
     assert.equal(blockEnd.block.arguments, '{"path":"/tmp/test.txt"}')
 
-    const finish = chunks[4] as { reason: { kind: string } }
+    const finish = chunks[3] as { reason: { kind: string } }
     assert.equal(finish.reason.kind, 'tool-calls')
   })
 
@@ -332,5 +334,37 @@ describe('cloud-llm-adapter (M2 tool-calls)', () => {
     assert.equal(blockEnds.length, 2)
     const kinds = blockEnds.map((b) => b.block.type).sort()
     assert.deepEqual(kinds, ['text', 'tool-call'])
+  })
+
+  // 2026-09-03 §7.34.2 regression: empty cloud stream must not orphan block-start.
+  // Same root cause as local-llm-adapter. Even if DeepSeek returns finish=stop
+  // with 0 content (e.g. upstream moderation / server filter), BlockAssembler
+  // must not be left waiting for block-end.
+  it('empty stream (finish=stop with no content) → no block-start, only finish (§7.34.2)', async () => {
+    process.env.DEEPSEEK_API_KEY = 'sk-test-empty'
+    installFetchMock(() => sseResponse([
+      { choices: [{ delta: {}, finish_reason: 'stop' }] },
+    ]))
+    const adapter = new CloudLlmAdapterImpl({
+      providers: ['cloud-deepseek-v4'],
+      baseUrl: 'https://api.deepseek.com',
+      apiKeyEnv: 'DEEPSEEK_API_KEY',
+      defaultModel: 'deepseek-chat',
+    })
+
+    const chunks: Array<{ type: string; [k: string]: unknown }> = []
+    for await (const chunk of adapter.stream({
+      provider: 'cloud-deepseek-v4',
+      model: 'deepseek-chat',
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+    })) {
+      chunks.push(chunk as { type: string })
+    }
+    delete process.env.DEEPSEEK_API_KEY
+
+    const types = chunks.map((c) => c.type)
+    assert.deepEqual(types, ['finish'])
+    assert.equal((chunks[0] as { reason?: { kind: string } }).reason?.kind, 'stop')
+    restoreFetch()
   })
 })

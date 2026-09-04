@@ -11,17 +11,17 @@
 #   - pnpm 已安装（npm install -g pnpm 或 corepack enable pnpm）
 #
 # 用法：
-#   ./install.sh                                # 默认 profile dsh-edge-agent
-#   DSH_EDGE_PROFILE=my-edge ./install.sh       # 自定义 profile 名
+#   ./install.sh                                # 默认 profile web（2026-09-03 后默认）
+#   DSH_EDGE_PROFILE=my-edge ./install.sh       # 自定义 profile 名（仅 back-compat）
 #   DSH_HOME=~/.dsh ./install.sh                # 自定义 DSH home
 #   DSH_EDGE_LOG=./run.log ./install.sh         # 自定义日志路径
-#   DSH_EDGE_LOG_ROOT=/var/log/dsh ./install.sh # 自定义日志根目录（默认 ~/.dsh-edge-agent/log）
+#   DSH_EDGE_LOG_ROOT=/var/log/dsh ./install.sh # 自定义日志根目录
 #   ./install.sh --no-restart                   # 装完不重启
 #   ./install.sh --skip-pnpm                    # 跳过 npm install（假设已装过）
 #   ./install.sh --force-install                # 强制重装本包（覆盖 rsync）
-#   ./install.sh --to-profile web               # 把 dsh-edge-agent 作为 bundle
-#                                                #   装到 web profile（自研 http-api
-#                                                #   :21017 跟 dsh-web-app :3080 共存）
+#   ./install.sh --to-profile <name>           # 把 dsh-edge-agent 作为 bundle
+#                                                #   装到 <name> profile；profile 名
+#                                                #   可为 web / tui / 任何自定义
 
 set -euo pipefail
 
@@ -33,13 +33,12 @@ for _cand in "$HOME/.npm-global/bin" "$HOME/.local/share/npm/bin" "/usr/local/bi
 done
 [ -n "$_NPM_BIN" ] && export PATH="${PATH}$_NPM_BIN"
 
-PROFILE="${DSH_EDGE_PROFILE:-dsh-edge-agent}"
+PROFILE="${DSH_EDGE_PROFILE:-web}"
 DSH_HOME="${DSH_HOME:-$HOME/.dsh}"
-# 默认日志路径指向 dsh-edge-agent 自己的 file-logger（src/dsh-adapter/file-logger.ts）
-# 写入 ~/.dsh-edge-agent/log/dsh-edge-agent.log。host stdout 也被重定向到这里，
-# 所以操作员只需 tail 一个文件即可看到 DSH host boot + 上游 plugin + 我们19 个
-# plugin 的完整现场。可被 DSH_EDGE_LOG 完全覆盖（写到任何位置）。
-LOG="${DSH_EDGE_LOG:-${DSH_EDGE_LOG_ROOT:-$HOME/.dsh-edge-agent/log/dsh-edge-agent.log}}"
+# 默认日志路径写到 web profile 的 run.log（dsh host stdout 也被 file-logger 接管
+# 写到 DSH_EDGE_LOG_ROOT 指向的 channel root，profile run.log 只看 host boot 行）。
+# 可被 DSH_EDGE_LOG 完全覆盖（写到任何位置）。
+LOG="${DSH_EDGE_LOG:-${DSH_EDGE_LOG_ROOT:-$DSH_HOME/profiles/$PROFILE/run.log}}"
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 PROFILE_DIR="$DSH_HOME/profiles/$PROFILE"
 NESTED_PKG="$PROFILE_DIR/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent"
@@ -47,10 +46,8 @@ NESTED_PKG="$PROFILE_DIR/node_modules/@deepseek-harness-edge-agent/dsh-edge-agen
 DO_RESTART=1
 DO_PNPM=1
 FORCE_INSTALL=0
-# 2026-09-02: --to-profile 把 dsh-edge-agent 装到目标 profile 作为 bundle。
-# 例：./install.sh --to-profile web   把 dsh-edge-agent 加到 web profile
-# （不影响默认 headless profile 容器独立运行 dsh-edge-agent bundle 的能力）。
-# 默认 headless profile 容器名跟 bundle 名撞车（都叫 dsh-edge-agent），见 §7.25。
+# --to-profile flag 指定宿主 profile 名；dsh-edge-agent 是 profile-agnostic
+# bundle，可装到 web / tui / 任何自定义 profile。
 TO_PROFILE=""
 for arg in "$@"; do
   case "$arg" in
@@ -65,8 +62,7 @@ for arg in "$@"; do
   esac
 done
 
-# --to-profile 把 dsh-edge-agent 作为 bundle 装到目标 profile 后，
-# 重启目标和日志路径都跟到目标 profile（user 期望管理那个进程）。
+# 应用 --to-profile（任意 profile 名都接受；profile-agnostic bundle）
 if [ -n "$TO_PROFILE" ]; then
   PROFILE="$TO_PROFILE"
   PROFILE_DIR="$DSH_HOME/profiles/$PROFILE"
@@ -104,7 +100,11 @@ if [ "$DO_PNPM" = 1 ]; then
     echo "         pass --force-install to force a re-install from npm."
   else
     echo "==> [2/5] dsh plugin add @deepseek-harness-edge-agent/dsh-edge-agent  (profile=$PROFILE)"
-    dsh plugin --profile "$PROFILE" add @deepseek-harness-edge-agent/dsh-edge-agent
+    # 本 bundle 不发布到 npm registry（pnpm 404 是预期）；失败时依赖 §3.5/§3.6
+    # 本地兜底：拷贝 nested pkg + 编辑 profile/package.json 注册 bundles。
+    dsh plugin --profile "$PROFILE" add @deepseek-harness-edge-agent/dsh-edge-agent || {
+      echo "        (npm 404 预期：bundle 未发布；§3.5/§3.6 兜底本地 install)"
+    }
   fi
 else
   echo "==> [2/5] skip pnpm install (--skip-pnpm)"
@@ -157,28 +157,23 @@ if [ "$DO_PNPM" = 1 ]; then
   done
 fi
 
-# ── 2.8. Web UI 家族 ── 2026-09-02 重装 ────────────────────────────
-# 2026-09-01：DSH 官方 webui 家族 + dsh-im 全部从默认 headless profile 卸载
-# （彼时 dsh-edge-agent bundle 跟默认 profile 容器撞名）。原因：
-# katex CSS / node-pty prebuild / caret 漂移 / dsh-im↔webserver 强耦合。
+# ── 2.8. Web UI 家族 ─────────────────────────────────────
+# dsh-edge-agent bundle 是 profile-agnostic 的安全插件层。宿主 profile
+# 决定 webui 是否存在；web profile 自带 dsh-web-app / dsh-web-ui-all /
+# dsh-im（先有 webui，再加 dsh-edge-agent bundle），本步骤不主动拉 webui。
 #
-# 2026-09-02 翻转：dsh-edge-agent 现在以 bundle 身份可以装到任何 profile
-# （包括 web）。装到默认 headless profile 时仍然不拉 webui —— 该 profile
-# 是 headless 部署，只暴露自研 http-api (:21017)。装到 web profile 时由
-# web profile 本身已经把 webui 拉好（先有 webui，再加 dsh-edge-agent bundle），
-# 不需要本步骤动手。
-#
-# web profile 加入本 bundle 的标准操作：
-#   ./install.sh --to-profile web
-# 该路径会跳到 §2（--to-profile 重置 PROFILE/NESTED_PKG），不拉 webui。
-echo "==> [2.8/5] no webui install here (webui lives in target profile; this bundle rides on top)"
+# 加入本 bundle 的标准操作：
+#   ./install.sh                                  # 默认 PROFILE=web
+#   ./install.sh --to-profile web                 # 等价
+#   ./install.sh --to-profile tui                 # tui 宿主（如有）
+#   DSH_EDGE_PROFILE=my-edge ./install.sh         # 任意自定义 profile
+echo "==> [2.8/5] webui is owned by the host profile; this bundle rides on top of it"
 
 # ── 3. 同步编译产物到 DSH 实际加载的嵌套包 ───────────────────────────
-if [ ! -d "$NESTED_PKG" ]; then
-  echo "error: nested package copy not found: $NESTED_PKG" >&2
-  echo "       did step 2 fail? Re-run without --skip-pnpm." >&2
-  exit 1
-fi
+# Clean state（嵌套包不存在，例如 fresh profile 或上次 install 失败留下）
+# 时，§2 的 dsh plugin add 会因 npm 404 失败但被容忍；这里 mkdir 本地
+# 嵌套包，让 rsync + §3.5 cordis.patch.yml 同步能跑。
+mkdir -p "$NESTED_PKG"
 echo "==> [3/5] rsync lib/ → $NESTED_PKG/lib/"
 rsync -a --delete "$REPO_ROOT/lib/" "$NESTED_PKG/lib/"
 
@@ -222,7 +217,8 @@ if target not in bundles:
 if target not in deps:
     # Use a relative file: link so pnpm symlinks to the nested package dir
     # we already rsync'd into. The nested package's package.json must
-    # exist (it does — install.sh created it via `dsh plugin add`).
+    # exist for pnpm to resolve the file: reference (§3.7 bootstraps it
+    # if dsh plugin add was skipped due to npm 404).
     rel = os.path.relpath(nested, os.path.dirname(path))
     deps[target] = f"file:{rel}"
     changed = True
@@ -235,7 +231,29 @@ PYEOF
   fi
 fi
 
-# ── 4. 同步 cordis.patch.yml + privacy-policy.json（如果仓库里有）────────
+# ── 3.7. Bootstrap nested pkg（clean reinstall 路径）────────────
+# 2026-09-03：clean reinstall（嵌套包被 rm 掉 + profile bundles 清空）
+# 时，§2 的 `dsh plugin add` 因 npm 404 失败但被容忍；§3 mkdir 了嵌套
+# 包目录，但缺 package.json — pnpm 无法识别 file: 引用目标，profile
+# 启动时 dsh 找不到 bundle。这里 cp repo 根的 package.json 进嵌套包，
+# 然后 `pnpm install --offline` 在 profile 目录让 pnpm 把 file: 引用
+# 解析为本地软链接（web profile 已有 pnpm store 缓存，不需要网络）。
+if [ ! -f "$NESTED_PKG/package.json" ] && [ -f "$REPO_ROOT/package.json" ]; then
+  echo "==> [3.7/5] bootstrap nested pkg: cp package.json + pnpm wire file: dep"
+  cp "$REPO_ROOT/package.json" "$NESTED_PKG/package.json"
+  if command -v pnpm >/dev/null 2>&1; then
+    (cd "$PROFILE_DIR" && pnpm install --offline --ignore-scripts 2>&1 | tail -5) || {
+      echo "warning: pnpm install --offline failed; bundle may not be linked" >&2
+    }
+  else
+    echo "warning: pnpm not on PATH; nested pkg created but file: dep not wired" >&2
+  fi
+fi
+
+# ── 4. 同步 profile overlay（legacy, no-op for web profile）────────
+# 2026-09-03 (§7.31): bundle profile-agnostic（user 反馈 2026-09-03）；
+# 任何 profile 都不依赖 profiles/$PROFILE/ overlay，bundle 自带完整
+# cordis.patch.yml 在 §3.5 已同步。No-op 路径走 else 分支。
 if [ -f "$REPO_ROOT/profiles/$PROFILE/cordis.patch.yml" ]; then
   if ! diff -q "$REPO_ROOT/profiles/$PROFILE/cordis.patch.yml" "$PROFILE_DIR/cordis.patch.yml" >/dev/null 2>&1; then
     echo "==> [4/5] sync profiles/$PROFILE/cordis.patch.yml → $PROFILE_DIR/cordis.patch.yml"
@@ -244,31 +262,29 @@ if [ -f "$REPO_ROOT/profiles/$PROFILE/cordis.patch.yml" ]; then
     echo "==> [4/5] cordis.patch.yml unchanged — skip"
   fi
 else
-  echo "==> [4/5] no profiles/$PROFILE/cordis.patch.yml — skip"
+  echo "==> [4/5] no profiles/$PROFILE/cordis.patch.yml — skip (bundle-level patch synced at §3.5)"
 fi
 if [ -f "$REPO_ROOT/profiles/$PROFILE/privacy-policy.json" ]; then
   if ! diff -q "$REPO_ROOT/profiles/$PROFILE/privacy-policy.json" "$PROFILE_DIR/privacy-policy.json" >/dev/null 2>&1; then
     echo "==> [4/5] sync profiles/$PROFILE/privacy-policy.json → $PROFILE_DIR/privacy-policy.json"
     cp "$REPO_ROOT/profiles/$PROFILE/privacy-policy.json" "$PROFILE_DIR/privacy-policy.json"
   fi
+else
+  echo "==> [4/5] no profiles/$PROFILE/privacy-policy.json — skip (privacy policy lives at DSH_EDGE_PRIVACY_POLICY_PATH)"
 fi
 
 # 2026-08-31: 同步自定义 agent-preset 到 $DSH_HOME/.agent-presets/
-#
-# dsh CLI 的 profile-boot 组合器会硬覆盖 `agent-presets` 行的 `roots`
-# 字段为只含 SHIPPED_PRESET_ROOT，自定义 preset 必须放在
-# $DSH_HOME/.agent-presets/<name>/ 下由 includeUserRoot（默认 true）
-# 自动发现。我们的 preset 文件就在仓库里 `profiles/$PROFILE/agent-presets/`，
-# 此处 rsync 到 DSH_HOME 让用户无需手 cp。`--delete` 保证删除已废弃的
-# preset（一旦 remove 后 `agent-presets/<name>/` 应整体消失）。
-USER_PRESET_SRC="$REPO_ROOT/profiles/$PROFILE/agent-presets"
+# 2026-09-03 (§7.31): agent-presets 改放 repo 根 `agent-presets/`，不再走
+# profiles/$PROFILE/ overlay（overlay 已删除）。从 repo 根同步到用户级
+# $DSH_HOME/.agent-presets/，dsh CLI 的 includeUserRoot 自动发现。
+USER_PRESET_SRC="$REPO_ROOT/agent-presets"
 USER_PRESET_DST="$DSH_HOME/.agent-presets"
 if [ -d "$USER_PRESET_SRC" ]; then
   mkdir -p "$USER_PRESET_DST"
   if diff -qr "$USER_PRESET_SRC" "$USER_PRESET_DST" >/dev/null 2>&1; then
     echo "==> [4/5] agent-presets unchanged — skip"
   else
-    echo "==> [4/5] sync profiles/$PROFILE/agent-presets/ → $USER_PRESET_DST/"
+    echo "==> [4/5] sync agent-presets/ → $USER_PRESET_DST/"
     rsync -a --delete "$USER_PRESET_SRC/" "$USER_PRESET_DST/"
   fi
 fi
@@ -305,7 +321,16 @@ fi
 # 权限错误，避免 nohup 启动后才发现写不进文件）。
 mkdir -p "$(dirname "$LOG")"
 
-nohup bash -c "source '$REPO_ROOT/.env.sh' && exec '$DSH_BIN' --profile $PROFILE" \
+# web profile 自带 .env.sh（设 6 个 channel env override + source repo .env）；
+# 优先 source 它（web profile 常见 case），fallback 到 repo .env.sh。其他 profile
+# 如果有自己 .env.sh 也会被优先 source。
+PROFILE_ENV_SH="$PROFILE_DIR/.env.sh"
+if [ -f "$PROFILE_ENV_SH" ]; then
+  _LAUNCH_ENV="source '$PROFILE_ENV_SH'"
+else
+  _LAUNCH_ENV="source '$REPO_ROOT/.env.sh' 2>/dev/null || true"
+fi
+nohup bash -c "$_LAUNCH_ENV && exec '$DSH_BIN' --profile $PROFILE" \
   > "$LOG" 2>&1 &
 NEW_PID=$!
 disown 2>/dev/null || true
@@ -315,7 +340,7 @@ echo "      launched PID=$NEW_PID"
 for _ in 1 2 3 4 5 6 7 8; do
   sleep 1
   ps -eo pid,cmd 2>/dev/null | grep -q "node.*dsh --profile $PROFILE" || continue
-  grep -q 'http-api.*found and valid\|intentRouter: found' "$LOG" 2>/dev/null && break
+  grep -q 'dsh web: http://\|intentRouter: found' "$LOG" 2>/dev/null && break
 done
 
 if ps -eo pid,cmd 2>/dev/null | grep -q "node.*dsh --profile $PROFILE"; then
@@ -323,11 +348,11 @@ if ps -eo pid,cmd 2>/dev/null | grep -q "node.*dsh --profile $PROFILE"; then
   echo "deploy OK. tail of $LOG:"
   tail -n 6 "$LOG"
   echo
-  echo "Try a request:"
-  echo "  curl -s -X POST http://127.0.0.1:\${DSH_EDGE_HTTP_PORT:-21017}/v1/chat \\"
-  echo "    -H 'Authorization: Bearer \${EDGE_API_KEY}' \\"
-  echo "    -H 'Content-Type: application/json' \\"
-  echo "    -d '{\"message\":\"帮我计算 7 * 8\"}'"
+  echo "Open web UI:"
+  echo "  http://127.0.0.1:3080/"
+  echo
+  echo "Or tail bundle channel logs:"
+  echo "  tail -f \$DSH_EDGE_LOG_ROOT/dsh-edge-agent.log   # (path set by web profile .env.sh)"
 else
   echo
   echo "warning: DSH did not stay up. tail of $LOG:" >&2

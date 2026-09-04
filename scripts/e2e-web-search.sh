@@ -41,7 +41,7 @@ NC='\033[0m'
 
 PORT="${DSH_EDGE_HTTP_PORT:-21019}"
 API_KEY="${EDGE_API_KEY:-test-secret-key}"
-PROFILE="dsh-edge-agent"
+PROFILE="web"
 BASE_URL="http://127.0.0.1:$PORT"
 SERVER_PID=""
 TESTS_PASSED=0
@@ -102,40 +102,41 @@ send_chat() {
 
 # ─── 定位审计日志文件 ───────────────────────────────────────────
 # web-search-guard 写入的审计事件在 audit-log 插件的 plain JSONL 文件里
-# (filename=audit.plain.jsonl, root=$DSH_EDGE_AUDIT_ROOT 或
-# ~/.dsh-edge-agent/audit)。
+# (filename=audit.plain.jsonl, root=$DSH_EDGE_AUDIT_ROOT)。
 #
-# 2026-08-29: 把默认 audit root 从 `~/.dsh-edge-agent-m1/audit` 改成
-# `~/.dsh-edge-agent/audit`，与 `~/.dsh/` 命名一致；旧的 `-m1` 路径作为
-# 后备保留（已部署的旧实例可能还在写那里）。
-#
-# 2026-09-03: -m1 是 pre-§7.25 历史产物（旧 milestone 命名）。当前 profile
-# 容器名虽仍叫 dsh-edge-agent（撞 bundle 名，见 §7.25 + §7.25.x），但 audit
-# root 应该跟当前 bundle 命名一致 = `~/.dsh-edge-agent/audit`。旧 -m1 路径
-# 仅作 legacy fallback。
+# 2026-09-03 (§7.31): dsh-edge-agent bundle 仅装 web profile。
+# web profile 的 audit root 通过 ~/.dsh/profiles/web/.env.sh 设到
+# ~/.dsh-edge-agent-web/audit（隔离 headless 命名空间）。DSH_EDGE_AUDIT_ROOT
+# 环境变量被 web profile 启动时 source 到 e2e shell 进程，路径走 env 优先。
 find_audit_log() {
     local home="${USERPROFILE:-${HOME:-/home/$(id -un)}}"
 
-    # 1. 显式 DSH_EDGE_AUDIT_ROOT 永远优先
+    # 1. 显式 DSH_EDGE_AUDIT_ROOT 永远优先（web profile .env.sh 已 export）
     if [ -n "${DSH_EDGE_AUDIT_ROOT:-}" ] && [ -f "$DSH_EDGE_AUDIT_ROOT/audit.plain.jsonl" ]; then
         echo "$DSH_EDGE_AUDIT_ROOT/audit.plain.jsonl"
         return 0
     fi
 
-    # 2. 当前默认路径（2026-08-29 起）
+    # 2. web profile 默认 channel root（2026-09-03 起）
+    if [ -f "$home/.dsh-edge-agent-web/audit/audit.plain.jsonl" ]; then
+        echo "$home/.dsh-edge-agent-web/audit/audit.plain.jsonl"
+        return 0
+    fi
+
+    # 3. 旧 headless 路径（兼容 2026-09-03 之前的部署；将于 C13 删除）
     if [ -f "$home/.dsh-edge-agent/audit/audit.plain.jsonl" ]; then
         echo "$home/.dsh-edge-agent/audit/audit.plain.jsonl"
         return 0
     fi
 
-    # 3. 旧 `-m1` 路径（兼容 2026-08-29 之前的部署）
+    # 4. 旧 `-m1` 路径（兼容 2026-08-29 之前的部署）
     if [ -f "$home/.dsh-edge-agent-m1/audit/audit.plain.jsonl" ]; then
         echo "$home/.dsh-edge-agent-m1/audit/audit.plain.jsonl"
         return 0
     fi
 
-    # 4. 兜底：两个候选目录下找最新的 audit.plain.jsonl
-    find "$home/.dsh-edge-agent" "$home/.dsh-edge-agent-m1" \
+    # 5. 兜底：四个候选目录下找最新的 audit.plain.jsonl
+    find "$home/.dsh-edge-agent-web" "$home/.dsh-edge-agent" "$home/.dsh-edge-agent-m1" \
         -name "audit.plain.jsonl" -newer /tmp/dsh-web-search-test.log 2>/dev/null | head -1
 }
 

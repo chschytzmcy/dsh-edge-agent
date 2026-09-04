@@ -16,9 +16,6 @@
   },
   "type": "module",
   "packageManager": "pnpm@11.7.0",
-  "bin": {
-    "dsh-edge-agent": "./bin/dsh-edge-agent.js"
-  },
   "main": "lib/types/index.js",
   "types": "lib/types/index.d.ts",
   "exports": {
@@ -134,12 +131,10 @@
     }
   },
   "files": [
-    "bin",
     "lib",
     "cordis.patch.yml",
     "cordis.yml",
-    "presets",
-    "profiles"
+    "presets"
   ],
   "engines": {
     "node": "^22.19 || >=24"
@@ -157,29 +152,35 @@
     "smoke:m3": "node --import tsx/esm scripts/m3-smoke.ts",
     "smoke:m4": "node --import tsx/esm scripts/m4-smoke.ts",
     "smoke:m6": "node --import tsx/esm scripts/m6-smoke.ts",
-    "verify:build": "npm run verify:boundary && npm run verify:contract && npm run verify:patch-surface && npm run verify:plugin-spec && npm run verify:bundle-profile-separation",
+    "verify:build": "npm run verify:boundary && npm run verify:contract && npm run verify:patch-surface && npm run verify:plugin-spec && npm run verify:bundle-mount",
     "verify:boundary": "node --import tsx/esm scripts/verify-adapter-boundary.ts",
     "verify:contract": "node --import tsx/esm scripts/verify-upstream-contract.ts",
     "verify:patch-surface": "node --import tsx/esm scripts/verify-patch-surface.ts",
     "verify:plugin-spec": "node --import tsx/esm scripts/verify-plugin-spec.ts",
-    "verify:bundle-profile-separation": "bash scripts/verify-bundle-profile-separation.sh",
+    "verify:bundle-mount": "bash scripts/verify-bundle-mounted-in-web.sh",
     "verify:package": "npm pack --dry-run --json --ignore-scripts | node scripts/verify-package.mjs"
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-agent": "0.1.0-rc.6",
-    "@deepseek-ai/dsh-llm": "0.1.0-rc.6",
-    "@deepseek-ai/dsh-scope": "0.1.0-rc.6",
-    "@deepseek-ai/dsh-session": "0.1.0-rc.6",
-    "@deepseek-ai/dsh-system-prompt": "0.1.0-rc.6",
-    "@deepseek-ai/dsh-tools": "0.1.0-rc.6",
-    "@deepseek-ai/schemastery": "^3.18.1"
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-agent": "0.1.2-alpha.2",
+    "@deepseek-ai/dsh-llm": "0.1.2-alpha.2",
+    "@deepseek-ai/dsh-scope": "0.1.2-alpha.2",
+    "@deepseek-ai/dsh-session": "0.1.2-alpha.2",
+    "@deepseek-ai/dsh-system-prompt": "0.1.2-alpha.2",
+    "@deepseek-ai/dsh-tools": "0.1.2-alpha.2",
+    "@deepseek-ai/schemastery": "^3.18.2"
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-tool-web": "0.1.0-rc.6",
-    "@deepseek-ai/dsh-web-search-deepseek": "0.1.0-rc.6",
-    "@deepseek-ai/schemastery": "^3.18.1",
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-agent": "0.1.2-alpha.2",
+    "@deepseek-ai/dsh-llm": "0.1.2-alpha.2",
+    "@deepseek-ai/dsh-scope": "0.1.2-alpha.2",
+    "@deepseek-ai/dsh-session": "0.1.2-alpha.2",
+    "@deepseek-ai/dsh-system-prompt": "0.1.2-alpha.2",
+    "@deepseek-ai/dsh-tools": "0.1.2-alpha.2",
+    "@deepseek-ai/dsh-tool-web": "0.1.2-alpha.2",
+    "@deepseek-ai/dsh-web-search-deepseek": "0.1.2-alpha.2",
+    "@deepseek-ai/schemastery": "^3.18.2",
     "@types/node": "^22.10.0",
     "tsx": "^4.0.0",
     "typescript": "^5.6.0",

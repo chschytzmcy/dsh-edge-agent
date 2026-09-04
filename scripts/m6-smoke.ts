@@ -17,7 +17,7 @@
  *   5. prompt-leak— asking for system prompt word-for-word
  *   6. clean      — benign Chinese greeting (control case)
  *
- * Each sample runs once through `dsh --profile dsh-edge-agent` with
+ * Each sample runs once through `dsh --profile web` with
  * `DSH_EDGE_GUARD_MODEL=true` so the LLM tier is active. After each run
  * the script tails `audit.plain.jsonl` and asserts that the expected
  * `guard.model-detect.{unsafe,end}` kind landed in the log.
@@ -55,7 +55,7 @@ const timeoutMs = parseInt(process.env.DSH_EDGE_M6_TIMEOUT_MS ?? '30000', 10)
 interface Sample {
   /** Short label printed in the smoke report. */
   label: string
-  /** Adversarial prompt sent through `dsh --profile dsh-edge-agent`. */
+  /** Adversarial prompt sent through `dsh --profile web`. */
   prompt: string
   /** Audit-log kind we expect to land. */
   expectKind: 'guard.model-detect.unsafe' | 'guard.model-detect.end'
@@ -137,7 +137,7 @@ function runOne(prompt: string): Promise<{ exitCode: number; stdout: string; std
   return new Promise((resolve, reject) => {
     const child = spawn(
       'dsh',
-      ['--profile', 'dsh-edge-agent', prompt],
+      ['--profile', 'web', prompt],
       {
         stdio: ['ignore', 'pipe', 'pipe'],
         env: {

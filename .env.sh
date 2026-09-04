@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 从 .env 中导出允许的变量，然后 export 必须的 DSH_EDGE_* 变量并启动 dsh。
-# 使用: source .env.sh && dsh --profile dsh-edge-agent
-#       或: . .env.sh && dsh --profile dsh-edge-agent
+# 使用: source .env.sh && dsh --profile web
+#       或: . .env.sh && dsh --profile web
 
 # 1. 从 .env 加载允许的变量（业务变量 + 第三方 API Key）
 if [ -f .env ]; then

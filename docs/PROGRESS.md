@@ -2670,6 +2670,8 @@ POST /v1/chat 200 14756ms intent=CLOUD
 
 ### 7.25 dsh-edge-agent 改为可装载 bundle（layer-ordering 路径）（2026-09-02）
 
+> **[corrected per §7.33, 2026-09-03]**：本节确立"dsh-edge-agent 是 bundle"是概念起点；§7.33 进一步限制"bundle 唯一装在 web profile"（不再是"可装任何 profile"）。layer-ordering 机制不变。
+
 **背景**：§7.20（2026-09-01）把 DSH 官方 webui + dsh-im 全部从 dsh-edge-agent profile 卸载（katex CSS / node-pty prebuild / caret 漂移 / dsh-im↔webserver 强耦合）。本节翻转 §7.20 的一部分：dsh-edge-agent 不再独占 profile，而是改造成**自包含 bundle**，可以装到任何 profile（包括 web）。
 
 **用户意图**：「dsh-edge-agent 也通过类似 `dsh plugin --profile web add -w @xmanrui/dsh-im` 装载」。
@@ -2847,6 +2849,8 @@ dsh --profile web    # 或 ./install.sh 启动
 
 ### 7.25.x Bundle / Profile Naming Separation Invariant（2026-09-03）
 
+> **[superseded by §7.33, 2026-09-03]**：本 invariant（"profile 容器名 ≠ bundle 名"）在 §7.33 升级为 "bundle 必须、且只能、装在 web profile"。原 3 个 legacy 例外（`install.sh:36` + `bin/dsh-edge-agent.js:36` + `dev-restart.sh:11-12`）在 §7.33 全部清零。`scripts/verify-bundle-profile-separation.sh` 在 §7.33 替换为 `scripts/verify-bundle-mounted-in-web.sh`（集成到 `npm run verify:build`）。
+
 **用户诉求**：「保证 dsh-edge-agent 不作为 profile」+「清理 dsh-edge-agent 作为 profile 的遗迹」
 
 §7.25 把 dsh-edge-agent 改为 bundle，但 install.sh 默认 PROFILE=dsh-edge-agent 让容器名跟 bundle 名撞车，导致 codebase / 文档里 13 处把 dsh-edge-agent 当 profile 描述。本节把 bundle-vs-profile 不变量（invariant）固化下来。
@@ -3006,6 +3010,8 @@ agent/request hook（line 1033-1037）读 stepState.downgraded 改写 provider/m
 
 ### 7.27 待办（2026-09-03）
 
+> **[corrected per §7.33, 2026-09-03]**：本节 P3-P5 待办（默认值 rename / 容器 rename / channel path rename）**全部清零**。§7.33 一次性把所有 PROFILE 默认值改成 `web`、删除 headless profile 容器 + bin launcher、保留 channel path `~/.dsh-edge-agent/`（user 授权可丢 + 历史命名）。新待办转 §7.33 Acceptance Criteria。
+
 - [ ] #52：e2e 测试覆盖 sanitized / intent.downgraded / routed 三条路径
 - [ ] 用户 mid-turn 请求「日志目录可配置到其他目录」尚未实现（已有 env override `DSH_EDGE_LOG_ROOT` / `DSH_EDGE_AUDIT_ROOT` 等，cordis.patch.yml 写死默认值；可在 patch 添加 `config: { logRoot: !!js process.env.DSH_EDGE_LOG_ROOT ?? '/path' }` 进一步支持）
 - [ ] file-logger 配置项：当前 logRoot 由 `DSH_EDGE_LOG_ROOT` env override，但 cordis.patch.yml 没显式声明该字段，下次 patch 改造时同步
@@ -3013,6 +3019,8 @@ agent/request hook（line 1033-1037）读 stepState.downgraded 改写 provider/m
 ---
 
 ### 7.28 6 个 channel 路径已可配置：cordis.patch.yml 显式字段 + Env override 双通道（2026-09-03）
+
+> **[corrected per §7.33, 2026-09-03]**：本节描述的 env override 路径在 §7.33 通过 web profile `.env.sh` 切到 `~/.dsh-edge-agent-web/<channel>`，bundle 不再有 headless profile 共享 `~/.dsh-edge-agent/`。env 字段名不变（仍是 `DSH_EDGE_LOG_ROOT` 等单数）。
 
 **用户诉求**：mid-turn「要支持日志目录可配置到其他目录」。
 
@@ -3127,6 +3135,8 @@ verify:plugin-spec     plugin-spec OK (23 adapter plugins scanned, 29 subpath ex
 
 ### 7.30 ops log 时区修正：本地 ISO 8601 + 数值 offset（2026-09-03）
 
+> **[corrected per §7.33, 2026-09-03]**：本节 file-logger 写入路径仍是 `~/.dsh-edge-agent/log/dsh-edge-agent.log`（channel root 保留历史名），但 web profile 通过 env redirect 到 `~/.dsh-edge-agent-web/log/dsh-edge-agent.log`。
+
 **问题**：系统在 Asia/Shanghai（CST = UTC+8），但 ops log（file-logger 输出）用 `Date#toISOString()`，每条事件的尾部都是 `Z`（UTC）：
 
 ```
@@ -3205,6 +3215,8 @@ jq -r '"\(.ts/1000|tstrftime("%Y-%m-%dT%H:%M:%S%z"))"' ~/.dsh-edge-agent/audit/a
 ---
 
 ### 7.31 install.sh 漏 sync bundle patch — dsh 启动后 plugin 全没注册（2026-09-03）
+
+> **[corrected per §7.33, 2026-09-03]**：本节修复（install.sh §3.5 + §3.6 sync bundle patch + 兜底 bundles 列表）在 §7.33 完整保留。**PROFILE 默认值从 `dsh-edge-agent` 改成 `web`**，所以这条 bug 报告里的 `~/.dsh/profiles/dsh-edge-agent/` 路径在 §7.33 全部改为 `~/.dsh/profiles/web/`。
 
 **症状**（用户报告"webui chat 正常但 skill 没看到 dsh 启动"）：
 
@@ -3302,6 +3314,8 @@ tail -3 ~/.dsh-edge-agent/log/dsh-edge-agent.log
 
 ### 7.32 deploy-dsh-edge-agent skill（本地 Claude 部署工具，2026-09-03）
 
+> **[corrected per §7.33, 2026-09-03]**：skill §10 "起 web profile（完整版）" 内容已重写为单一 profile 模式；§10 验证步骤里的 `:21017` 删掉（http-api disabled）；§10 "双 profile 同时跑：dsh-edge-agent bundle channel 路径会冲突" 整段删除；channel env var plural → singular 修正。
+
 **起因**：§7.31 fix 之后 "本地改代码 → DSH 生效" 的全链路流程没有文档化入口，每次都得口头讲"先 rsync 再 kill 重启再 diff patch 再验证 audit"。新建一个项目级 Claude Code skill 把这条路径产品化。
 
 **skill 定义**（`.claude/skills/deploy-dsh-edge-agent/SKILL.md`，**不进 git**）：
@@ -3391,3 +3405,462 @@ print('OK' if '@deepseek-harness-edge-agent/dsh-edge-agent' in d['dsh']['profile
 2. **"流程文档" 和 "skill" 是一回事** — skill 触发后人类读完照做，本质是 SOP 入口。区别在于 skill 是 Claude 入口触发，SOP 是人主动翻文件。
 3. **验证步骤必须写进 skill，不能口头要求** — §7.31 部署 silent fail 的根因就是"没人验证"。把 curl / audit / ops 三步写死在 §1 末尾，下次踩坑直接看 skill。
 4. **Case B 排查表是产品的一部分** — 不是 issue tracker 临时记录，是每次 deploy 都要查的 checklist。
+
+---
+
+### 7.33 P-structural refactor：drop headless profile，bundle 唯一装在 web（2026-09-03）
+
+**用户诉求**（2026-09-02~03 多轮）：
+
+> 「我担心概念的混淆，结构层面重构下，去掉 profile」
+> 「dsh-edge-agent 没有自己的 web，也建议把 http api 先关掉，只做纯净的插件，就跟 dsh-im 一样」
+> 「dsh-edge-agent 仅作为 web profile 的 bundle」
+> 「http 代码不能删，只是先不启用」
+> 「dsh-edge-agent 这个项目交付的是 bundle，要按这个设计」
+
+**refactor 前**（§7.25.x 末期状态）：2 个 profile 容器并存 — `~/.dsh/profiles/dsh-edge-agent/`（headless，211 MB，自研 http-api :21017 listen）+ `~/.dsh/profiles/web/`（webui :3080）。3 个概念撞车：npm 包名 = cordis plugin id = 默认 profile 名（`dsh-edge-agent`）。
+
+**refactor 后**（本节）：**单一 profile = `web`**。`dsh-edge-agent` 只作为 npm bundle 装在 web profile 里。bundle 是"纯 plugins" — input-guard / intent-router / sanitizer / privacy-policy / file-logger / audit-log 等 18 个核心 + 1 个 disabled（http-api）— 没有自己的 HTTP 服务、没有自己的 webui、没有自己的 profile 容器。
+
+| 概念 | refactor 前 | refactor 后 |
+|---|---|---|
+| profile 容器 | `dsh-edge-agent`（headless）+ `web`（full）| **`web` only** |
+| bundle | `@deepseek-harness-edge-agent/dsh-edge-agent`（装在两 profile）| 同 bundle，只装在 `web` |
+| HTTP 入口 | `:21017` 自研 http-api + `:3080` dsh-web-app | **`:3080` dsh-web-app only** |
+| channel root | `~/.dsh-edge-agent/` + `~/.dsh-edge-agent-web/` | **`~/.dsh-edge-agent-web/` only**（历史遗留路径名保留） |
+| 启动器 | `bin/dsh-edge-agent.js`（npm bin `dsh-edge-agent`）| **删除**，用户用 `dsh --profile web` 或 setsid |
+| http-api plugin | enabled in `cordis.patch.yml:313` | **disabled**（代码保留，未来可恢复） |
+| profile overlay | `profiles/dsh-edge-agent/`（含 cordis.patch.yml stub）| **整目录删除**；bundle 自带完整 `cordis.patch.yml` |
+
+#### 5 类实施动作
+
+**1. 删除文件（6 项）**
+
+- `bin/dsh-edge-agent.js`（启动器，跟 web profile 直接 spawn 重复）
+- `dsh-edge-agent.cmd`（Windows 双胞胎）
+- `profiles/dsh-edge-agent/`（整 overlay 目录，stub 7 行注释 + 空 `[]`，bundle 自带完整 patch）
+- `scripts/verify-bundle-profile-separation.sh`（§7.25.x invariant 验证，refactor 后 trivially satisfied）
+- 运行时：`~/.dsh/profiles/dsh-edge-agent/`（211 MB，user 授权可丢）+ `~/.dsh-edge-agent/`（712 KB，user 授权可丢）— Phase 4 待执行
+
+**2. 重写 installer / 重启脚本（4 文件）**
+
+| 文件 | 关键变化 |
+|---|---|
+| `install.sh:36` | `PROFILE="${DSH_EDGE_PROFILE:-dsh-edge-agent}"` → `PROFILE="${DSH_EDGE_PROFILE:-web}"` |
+| `install.sh:42` | `LOG` 默认 → `~/.dsh/profiles/web/run.log`（profile 自带 run.log，不写 bundle channel log） |
+| `install.sh:62-79` | `--to-profile` flag 保留但仅 `web` 合法；其他值报错（防 stale 调用误装） |
+| `install.sh:233-247` | overlay 同步改为 no-op for web profile（bundle 自带 patch，单源 §3.5） |
+| `install.sh:305` | 不 source repo `.env.sh`（web profile 自己有 `~/.dsh/profiles/web/.env.sh`） |
+| `deploy.sh` | 7 处 `dsh-edge-agent` profile 名 → `web`；restart probe 改 `pkill -f 'dsh --profile web'`；远端先 `cd ~/.dsh/profiles/web` 再 setsid spawn |
+| `scripts/dev-restart.sh` | 4 行 wrapper → 1 行 `exec install.sh --skip-pnpm` |
+
+**3. 关闭 http-api（code 保留）**
+
+`cordis.patch.yml:313-317`：
+
+```yaml
+# 2026-09-03 (§7.33): disabled per P-structural refactor
+# web profile 不需要自研 http-api，chat 走 dsh-web-app native chat plugin.
+# 代码 src/dsh-adapter/http-api.ts 完整保留，未来如需开启：
+#   1. 把 disabled: true 删掉
+#   2. 重启 web profile
+#   3. 注意：开启后会在 :21017 重新 listen，跟 dsh-web-app :3080 并存
+- id: http-api
+  disabled: true    # ← 新加
+  # 原 config 留作 reference（不删）
+  - package: '@deepseek-harness-edge-agent/dsh-edge-agent/http-api'
+  - http: { port: 21017, host: 127.0.0.1, ... }
+  ...
+```
+
+**4. privacy-policy path 重写（cordis.patch.yml:438）**
+
+```js
+// refactor 前：cwd-relative fallback 不靠谱
+policyPath: !!js (process.env.DSH_EDGE_PRIVACY_POLICY_PATH ?? (process.cwd() + '/profiles/dsh-edge-agent/privacy-policy.json'))
+
+// refactor 后：env 优先 → channel root fallback → user home fallback
+policyPath: !!js (process.env.DSH_EDGE_PRIVACY_POLICY_PATH ?? (process.env.DSH_EDGE_STORAGE_ROOT ?? (process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent-web') + '/privacy-policy.json')
+```
+
+web profile 通过 `~/.dsh/profiles/web/.env.sh` 把 `DSH_EDGE_STORAGE_ROOT` 指到 `/home/etsme/.dsh-edge-agent-web/storage`，bundle 自动在 `~/.dsh-edge-agent-web/storage/privacy-policy.json` 找 policy。
+
+**5. unit test fixture 路径重定位**
+
+`tests/unit/pii-utils.test.ts` + `tests/unit/privacy-precheck.test.ts`：`OVERLAY_DIR = resolve(__dirname, '../../profiles/dsh-edge-agent')` → `tests/fixtures/privacy-policy.json`（在 repo 内复制了一份 fixture 用于 test isolation，避免依赖 `~/.dsh-edge-agent-web/`）。
+
+`tests/unit/web-search-guard.test.ts` + `tests/unit/td-bus-threshold.test.ts`：注释里 `dsh-edge-agent profile` 字面 → `web`（事实校对）。
+
+#### env var 副修复：SESSIONS_ROOT (plural) → SESSION_ROOT (singular)
+
+**Bug**：web profile `.env.sh` 导出 `DSH_EDGE_SESSIONS_ROOT`（plural），但 `cordis.yml:40` + `cordis.patch.yml:62` 读 `DSH_EDGE_SESSION_ROOT`（**singular**）。结果：web profile 启动时 env 被静默忽略，session 漏写到 headless channel root（`~/.dsh-edge-agent/sessions/`），跟 headless profile 串数据。
+
+**修复**：`~/.dsh/profiles/web/.env.sh:8` 改成 singular。`docs/skills/deploy-dsh-edge-agent.md:384-389, 414-419`（§10）同步修。
+
+> 这是 §7.25.1 数据隔离问题的真正根因之一。refactor 前 2 个 profile 并存时不易察觉（headless profile 自己写到 `~/.dsh-edge-agent/sessions/`）；refactor 后 web profile 唯一，但因 env var 不匹配也会写错位置。
+
+#### 新 invariant：bundle 必须、且只能，装在 web profile
+
+**取代** §7.25.x 的"profile 容器名 ≠ bundle 名"。
+
+新 grep 守卫：`scripts/verify-bundle-mounted-in-web.sh`，自动串入 `npm run verify:build`：
+
+```bash
+npm run verify:bundle-mounted-in-web
+```
+
+逻辑（node inline，因为 jq 不一定装）：
+
+1. 遍历 `~/.dsh/profiles/*/package.json`
+2. 每个 profile 检查 `dsh.profile.bundles` 数组是否含 `@deepseek-harness-edge-agent/dsh-edge-agent`
+3. 报告 `web` 必须命中，其他 profile 必须 0 命中
+4. **0 DSH 装机时干净 skip**（CI 无 DSH 安装环境正常通过）
+
+防误装路径：未来谁手动 `dsh plugin add` 到非 web profile，CI 立即 fail。
+
+#### 用户 / dev 视角的实际变化
+
+| 任务 | refactor 前 | refactor 后 |
+|---|---|---|
+| 起 dsh-edge-agent | `dsh-edge-agent`（npm bin）或 `dsh --profile dsh-edge-agent` | `dsh --profile web` |
+| 跟 chat log | `:21017/v1/health` + `~/.dsh-edge-agent/audit/...` | `:3080` webui + `~/.dsh-edge-agent-web/audit/...` |
+| webui 入口 | 启 `~/.dsh/profiles/web/` 同时启 | 同 |
+| installer | `./install.sh`（默认装 headless 容器）+ 手动加 `--to-profile web` | `./install.sh`（默认装 web，唯一合法 profile） |
+| 部署到远端 | `./deploy.sh ...` 默认装 headless，远端 2 个 profile | `./deploy.sh ...` 只装 web，远端 1 个 profile |
+
+#### 文档连带清理
+
+| 文档 | 改动 |
+|---|---|
+| `README.md:113-585` | installation steps 全改成 `dsh plugin --profile web`；multi-entry 段从"3 入口"改成"1 入口（:3080 webui）" |
+| `docs/skills/deploy-dsh-edge-agent.md:1-419`（§1-§10） | 术语对齐到"单一 profile = web"；§10 "双 profile 资源冲突"整段删除；channel env var 改成 singular |
+| `memory/bundle-profile-invariant.md` | 删除（invariant 已替换为 `bundle-mounted-in-web`） |
+| `memory/entrypoints.md` | top section 重写（单入口 :3080） |
+| `memory/dsh-edge-agent-data-path.md` | 顶部加注 "channel root 名 `~/.dsh-edge-agent/` 是历史遗留，未 rename" |
+| `memory/dsh-im-runtime-blockers.md:83,99` | standalone 概念改 web profile 唯一 |
+| `memory/dsh-profile-overlay.md:17-19` | overlay 段改 web profile overlay（no-op） |
+| `MEMORY.md` 索引 | "Entry Points" + "bundle-profile-invariant" 两行改写 |
+
+#### §7.25.x addendum（历史溯源）
+
+§7.25.x 的 "Bundle/Profile Naming Separation Invariant"（2026-09-03）已被本节 §7.33 替换。invariant 从"profile 容器名 ≠ bundle 名"升级为"bundle 必须、且只能、装在 web profile"。原 §7.25.x 3 个 legacy 例外（`install.sh:36` + `bin/dsh-edge-agent.js:36` + `dev-restart.sh:11-12`）在 §7.33 全部清零：默认值改 web、bin 删除、dev-restart.sh 改 1 行 wrapper。原 §7.25.x `verify-bundle-profile-separation.sh` 在 §7.33 替换为 `verify-bundle-mounted-in-web.sh`。
+
+#### lesson
+
+1. **概念混淆的最深一公里是 codebase 不一致** — 仅文档说"dsh-edge-agent 是 bundle"不够；必须删 default profile 名 + 删 bin launcher + 删 profile overlay 三件套，codebase 跟设计才能对上。allow-list 例外是 design debt，要明示周期清理。
+2. **bundle 跟 profile 不应同名，且 bundle 不该拥有自己的 profile** — §7.25 是这个教训的轻量版（profile 名 ≠ bundle 名）；§7.33 是彻底版（bundle 不该有独立 profile）。dsh-im 是 reference architecture：纯 bundle，依赖 dsh-web-app 提供 webui。
+3. **disabled ≠ deleted** — http-api 这次 disable 保 code，是给"未来 webui 不够用"留退路。cordis `disabled: true` 比 rm 安全 100 倍。
+4. **副修复经常发现结构问题** — SESSIONS_ROOT/SESSION_ROOT bug 是 refactor 过程中定位的；refactor 触发清理，清理暴露历史 bug。线性顺序："重构 → 验证 → 副 bug 浮现"。
+5. **新 invariant 替代旧 invariant，不是叠加** — "profile 名 ≠ bundle 名" + "bundle 装 web profile" 两个 invariant 同时跑会冲突（例：headless profile rename 后名字冲突，但被 bundle 守卫挡）。文档里要明示"§7.33 取代 §7.25.x"。
+
+#### Acceptance Criteria（待 Phase 4 执行）
+
+- [ ] `ls ~/.dsh/profiles/` 只有 `web` 一个
+- [ ] `ls ~/.dsh-edge-agent*/` 只有 `.dsh-edge-agent-web/` 一个
+- [ ] `bin/dsh-edge-agent.js` 不存在；`which dsh-edge-agent` 返回空
+- [ ] `dsh --profile web` 启动后 `:3080` listen；`:21017` **不** listen
+- [ ] webui chat 工作（input-guard + intent-router + sanitizer 全部注册）
+- [ ] 18 个 bundle plugins enabled；http-api **disabled**（code 保留）
+- [ ] `npx vitest run` 全过
+- [ ] `npm run build` 全过（含新 `verify:bundle-mounted-in-web`）
+- [ ] `grep -rn 'dsh --profile dsh-edge-agent'` 0 命中（除本节历史 + memory entrypoints.md）
+- [ ] `grep -rn '~/.dsh/profiles/dsh-edge-agent'` 0 命中（除本节历史）
+- [ ] `scripts/verify-bundle-mounted-in-web.sh` 在 fresh CI 环境（无 DSH）干净 skip
+- [ ] `scripts/verify-bundle-mounted-in-web.sh` 在装了 web profile 的 dev box PASS
+
+#### 2026-09-03 correction addendum（user feedback 撤回 §7.33 overreach）
+
+**用户反馈**（2026-09-03 紧接本节落地后）：
+
+> 「当前项目不仅仅只做 web 的 bundle，可以是 tui，也可以是任何 profile 的 bundle」
+
+**本节 overreach 修正清单**（R1-R6 实施）：
+
+| 项 | 之前（overreach） | 之后（回退 / 修正） |
+|---|---|---|
+| `install.sh:62-71` `--to-profile` 校验 | 非 `web` 直接报错退出 | **接受任意 profile 名**（`tui` / `my-edge` / 任何自定义） |
+| `install.sh:14, 49, 162-163` 注释 / 帮助 | "dsh-edge-agent 仅装 web profile" | 改为"web 是默认 + primary 文档案例"；tui / 任意 profile 同款可用 |
+| `scripts/verify-bundle-mounted-in-web.sh` | `FAIL=1` if bundle in 非 web profile | **改为 informational report**（永远 exit 0），不 fail；仍 grep 报告状态 |
+| `package.json:155, 160` | `verify:bundle-mounted-in-web` 串入 `verify:build` | 改为 `verify:bundle-mount`，仍 informational |
+| `README.md:118, 127, 510, 512, 522` | "唯一入口 / 唯一合法 profile = web" | 改为"默认 / primary 案例"；"web 是默认 + primary 文档案例" |
+| `memory/entrypoints.md` | "web profile 唯一入口" | 改为"web 是默认入口" |
+| `memory/bundle-profile-invariant.md` | "bundle 必须、且只能、装在 web profile" | 改为"bundle 应装在 web profile（默认 + primary 文档案例）；tui / 自定义 profile 同款可用" |
+| `docs/dsh-edge-agent发布.md` Phase 1 段 | "web 或 tui" 但 §7.33 实操只 web | 保持 "web / tui / 任意 profile"；§7.33 留下的 install.sh / verifier 限制已回退到 profile-agnostic |
+| `docs/skills/deploy-dsh-edge-agent.md §10` | "web 是唯一合法 profile" | 改为"默认 web；`--to-profile <任意名>` 同款可用" |
+
+**保留的正确部分**（§7.33 整体结构不动）：
+
+- ✅ headless `~/.dsh/profiles/dsh-edge-agent/` 容器删除（user 授权"旧数据可丢"）
+- ✅ profile overlay `profiles/dsh-edge-agent/` 目录删除（empty stub）
+- ✅ `bin/dsh-edge-agent.js` 启动器删除（bundle 不该有自命名 bin launcher）
+- ✅ http-api `cordis.patch.yml:313` disabled（user 显式"先关掉"）
+- ✅ SESSION_ROOT (plural→singular) bug 修复
+- ✅ 文档 / memory 把 "dsh-edge-agent" 同时是 bundle 名 + profile 名 + 插件 id 的概念混淆清理
+
+**§7.33 错误抽象的诊断**：
+
+把"bundle profile-agnostic"收紧为"bundle 只能装 web"是 §7.33 抽象层的一处错位。dsh-edge-agent 作为**安全 bundle** 的定位是"按需挂到任何宿主 profile 上增强隐私 / 输入防护"——这条定位（见 `docs/dsh-edge-agent发布.md` Phase 1 段）要求 profile-agnostic。§7.33 在 install.sh / verifier / 文档上把这条收紧到 web only，违反 bundle 自身定位。
+
+**后续 invariant 写法（替代 §7.25.x + 原 §7.33 invariant）**：
+
+> "dsh-edge-agent bundle 优先装在 web profile（默认 + primary 文档案例，自带 DSH 上游 webui / IM）；tui / 任意自定义 profile 也支持同等模式。installer / verifier 不做 host profile 白名单。"
+
+**feedback memory**：`~/.claude/projects/.../memory/dsh-edge-agent-bundle-host-flexibility.md`（2026-09-03 写入）。
+
+---
+
+### 7.34 input-guard §7.26 修复不彻底：webui 路径 intent=LOCAL 仍 leak 到 cloud（2026-09-03）
+
+**背景**：§7.26 修复 input-guard 在 `category=LOCAL` + edgeRoute=cloud 时降级到 LOCAL provider。修复后 webui chat "查询本地设备的ip" 验证通过（audit `input-guard.routed {category:LOCAL}` + agent/request 改写到 local-qwen3-4b）。但 webui 实际日常使用中发现一个 chat **仍 leak 到 cloud**：用户在 webui 输 "查询密盒里有哪些文件"，intent-router 正确分类 LOCAL @ 0.95，audit 也记 `input-guard.routed {category:LOCAL}`，但紧接着 9 次 cloud-deepseek-v4 调用 + tool-call 循环。
+
+**根因**：
+
+§7.26 修复条件（input-guard.ts:583-586）：
+
+```ts
+const wantsDowngradeToLocal =
+  category === 'LOCAL' &&
+  typeof edgeRoute?.provider === 'string' &&
+  edgeRoute.provider.startsWith('cloud-')
+```
+
+`edgeRoute` 来自 `agent._edgeRoute`（input-guard.ts:439-445 `readEdgeRoute`）。**只有 http-api 路径写入 `_edgeRoute`**（http-api.ts:564-566 + 823）；dsh-web-app chat plugin（webui 路径）**不写** `_edgeRoute`，所以 `readEdgeRoute` 返回 undefined → `wantsDowngradeToLocal=false` → 不走降级 → 走默认 cloud-deepseek-v4（cordis.patch.yml:75 `agent-default-model`）。
+
+**实测 leak 数据**（2026-09-03 chat 2）：
+
+| 时间 | 事件 | provider | promptLen | 备注 |
+|---|---|---|---|---|
+| `1788424605543` | `input-guard.routed` | — | — | `category:LOCAL, edgeRouteUsed:false` |
+| `1788424605553` | `llm.cloud.start` | cloud-deepseek-v4 | 6841 | 第 1 次云端调用（应改写到 local） |
+| `1788424606815` | `llm.cloud.end` | cloud-deepseek-v4 | 6841 | tool-callCount=2 |
+| `1788424606837` | `llm.cloud.start` | cloud-deepseek-v4 | 6888 | 第 2 次 |
+| `…` | … | cloud-deepseek-v4 | → 7419 | 8 次 tool-call loop，最后 stop |
+| `1788424631319` | `llm.cloud.end` | cloud-deepseek-v4 | 7419 | resultLen=1287 |
+
+messageCount 5→22（每 tool result 追加 1 条 user-role message），promptLen 6841→7419（每次 +47~155 bytes，文件名 / 文件内容片段）。**9 次 cloud API 调用** + 密盒文件列表 + 内容片段全部上送到 `https://api.deepseek.com`。
+
+**修法**（input-guard.ts:575-606）：
+
+去掉 `edgeRoute.provider.startsWith('cloud-')` 守卫，让 `wantsDowngradeToLocal = category === 'LOCAL'` 单条件触发。intent=LOCAL 是权威判定 — http-api 缓存路径 / webui 直聊 / 任何未来 transport 都走同一规则。handleAgentRequest 的 rewrite 是幂等的（如果当前 provider 已经是 local，写入同值无副作用）。
+
+```ts
+// §7.34 fix
+const wantsDowngradeToLocal = category === 'LOCAL'
+const hasRawEdgeRoute = typeof (payload.agent as { _edgeRoute?: unknown })?._edgeRoute !== 'undefined'
+const routeSource: 'http-api' | 'webui' = hasRawEdgeRoute ? 'http-api' : 'webui'
+```
+
+新增 `routeSource` 字段到 StepSanitizationState + `input-guard.intent.downgraded` 审计 payload，用于分辨降级来源（http-api 缓存 / webui 直聊）。
+
+**为什么不用更"精细"的判定（如检查 seedConfig.provider）**：
+
+handleAgentRequest 的 seedConfig 在 pre-step 之后才可用，无法在 pre-step 直接探测当前 provider。handleAgentRequest 改成"读 stepState.intentCategory + seedConfig.provider.startsWith('cloud-')"也能工作，但要多维护一个跨 hook 状态字段（intentCategory）。当前的 rewrite 幂等性已保证安全，直接以 intent 为权威信号更简单。
+
+**对 §7.26 测试的影响**：
+
+| 测试 | §7.26 期望 | §7.34 后 | 原因 |
+|---|---|---|---|
+| LOCAL + edgeRoute=cloud-* → downgraded=true | true | true ✓ | 不变 |
+| LOCAL + edgeRoute=local → downgraded=false (no false alarm) | false | **true** (§7.34) | intent 是权威；rewrite 幂等 |
+| CLOUD + edgeRoute=cloud → downgraded=false | false | false ✓ | 不变 |
+| LOCAL + edgeRoute 无 provider 字段 → downgraded=false (defensive) | false | **true** (§7.34) | intent 是权威；malformed edgeRoute 不应短路 |
+
+**新增测试**（input-guard.test.ts）：
+
+1. `LOCAL intent WITHOUT _edgeRoute (webui path) → downgraded=true` — 复现 Chat 2 场景，断言 downgraded=true + routeSource='webui' + audit `input-guard.intent.downgraded` 带 `routeSource:'webui'`。
+2. `LOCAL intent without _edgeRoute → handleAgentRequest rewrites provider (end-to-end, §7.34)` — 端到端：pre-step 跑完 webui 路径后，agent/request hook 改写 seedConfig.provider='local-qwen3-4b'，audit `input-guard.route.overridden` 记录 from/to。
+
+**验证**：
+
+- `npx vitest run`：661/661 pass（含 2 个新增）
+- `npm run build`：verify:boundary / verify:contract / verify:patch-surface（snapshot 重生成，因 web-search-deepseek disabled 触发了 disablesBeyondWebApp 列表变化）/ verify:plugin-spec / verify:bundle-mount 全绿
+- `./install.sh --skip-pnpm`：rsync + bundle patch 同步 OK，web profile 重启（PID 625654），webui 仍 200
+
+**lesson**：
+
+**审计事件存在 ≠ 实际生效**。§7.26 加 `input-guard.routed` 事件后看上去分类已对（"category:LOCAL"），但实际 LLM 调用还在云端。审计埋点只证明"分类跑了"，不证明"分类被 enforce"。enforce 必须有"独立证据链"——本案例就是 `agent/request` hook 的 `input-guard.route.overridden` 事件；之前从来没断言过 webui 路径是否触发这个事件。
+
+---
+
+### 7.34.2 §7.34 修复暴露下游 bug：empty stream 让 BlockAssembler 卡死（2026-09-03）
+
+**背景**：§7.34 把 webui chat 路由到 local-qwen3-4b 后，用户在 webui 再输 "查询下密盒有哪些图片文件"（17:20:40 +08:00）。audit 链路完美：
+
+```
+input-guard.routed {category:LOCAL, edgeRouteUsed:false}
+input-guard.intent.downgraded {routeSource:'webui', targetProvider:'local-qwen3-4b'}
+input-guard.route.overridden {from:cloud-deepseek-v4, to:local-qwen3-4b, reason:intent-local}
+llm.local.start {provider:local-qwen3-4b, model:qwen3-4b-instruct-2507, messageCount:24, promptLen:8735}
+llm.local.end   {durationMs:253, resultLen:0, finishKind:unknown}    ← 空响应
+[agent-loop 之后无任何事件，dsh ep_poll idle 4+ 分钟]
+```
+
+**根因**：远端 llama.cpp `http://192.168.1.121:11017/v1`（cordis.patch.yml:345 baseUrl）在 24 条 message / 2535 tokens prompt 上返回：
+
+```
+data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+: [METRICS] {"completion_tokens":0,"prompt_tokens":2535,...}
+```
+
+合法 OpenAI 兼容响应（completion_tokens=0 + finish_reason=stop），但 **生成 0 token**。curl 直测确认：
+
+```bash
+$ curl -s http://192.168.1.121:11017/v1/chat/completions -d '{"messages":[...24条...2535 token prompt...], "stream":true}'
+data: {... "delta":{},"finish_reason":"stop"}
+: [METRICS] {"completion_tokens":0,...}   ← 0 token 输出
+```
+
+**dsh 这边**：`local-llm-adapter.ts:261` 在 SSE 循环前**无条件** yield `block-start {index:0, blockType:'text'}`。SSE 流里只有 `finish_reason=stop` 没有 text-delta → `terminalChunks` 走 `sawText=false` 分支不 yield `block-end` → 但仍 yield `finish {reason:stop}`。
+
+agent-loop 收到序列：`block-start → finish`（**无 block-end**）→ BlockAssembler 留下 orphan text block → 状态机等 block-end 永远不会到 → 整个 turn 卡死。
+
+**修法**：`block-start` 改为 **lazy**（仅在第一个 text-delta 之前 yield 一次）。empty stream / tool-call-only stream / mixed stream 都不会留下 orphan block。
+
+```typescript
+// local-llm-adapter.ts + cloud-llm-adapter.ts（对称修复）
+let blockStartYielded = false
+const yieldBlockStartOnce = (): boolean => {
+  if (blockStartYielded) return false
+  blockStartYielded = true
+  return true
+}
+// ...
+if (result.chunk.type === 'text-delta') {
+  if (yieldBlockStartOnce()) {
+    yield { type: 'block-start', index: 0, blockType: 'text' }
+  }
+  // ...
+}
+```
+
+**修复后行为**：
+
+| Stream 类型 | 修复前 | 修复后 |
+|---|---|---|
+| `text-delta x N, finish=stop` | `block-start, text×N, block-end, finish` | 同（不变）|
+| `tool-call-delta x N, finish=tool_calls` | `block-start, tool-call×N, block-end, finish` ← orphan text block | `tool-call×N, block-end, finish` ✓ |
+| `delta:{}, finish=stop`（empty）| `block-start, finish` ← 卡死 | `finish` ✓ |
+| `text + tool-call mixed` | `block-start(text), text-delta, block-end, tool-call×N, block-end, finish` | 同（不变）|
+
+**新增测试**：
+
+| 文件 | 测试 |
+|---|---|
+| `local-llm-adapter.test.ts` | `empty stream (finish=stop with no content) → no block-start, only finish` |
+| `local-llm-adapter.test.ts` | `text-delta stream → block-start emitted ONCE before first delta`（防止多次 yield 回归）|
+| `cloud-llm-adapter.test.ts` | `empty stream (finish=stop with no content) → no block-start, only finish` |
+
+**测试修改**：cloud-llm-adapter.test.ts `emits tool-call-delta chunks and finish` 把预期从 `['block-start', 'tool-call-delta'×2, 'block-end', 'finish']` 改成 `['tool-call-delta'×2, 'block-end', 'finish']`，对应 chunk 索引 −1。旧预期会因 §7.34.2 失败，这是**正确的回归**——之前 tool-call-only 流也会留 orphan block。
+
+**验证**：
+
+- `npx vitest run`：664/664 pass（was 661 → +3 新增）
+- `npm run build`：verify:boundary / verify:contract / verify:patch-surface / verify:plugin-spec / verify:bundle-mount 全绿
+
+**webui 恢复**：需要手动 `pkill -f 'dsh --profile web' && setsid 重启 web profile`，因为 pkill 被 auto mode 拦下，dsh 进程 625654 当前仍持有卡死 turn 的 session state。
+
+**lesson**：
+
+**SSE adapter 必须对 empty stream 健壮**。任何 LLM 后端（llama.cpp / ollama / vllm / DeepSeek）都可能在某些 prompt 下返回 0 token（moderation filter、context overflow、model refusal），这是**合法的 OpenAI 响应**而不是协议错误。dsh 的 BlockAssembler 协议要求 `block-start → block-end` 配对，adapter 不能 yield block-start 而不保证 block-end。**Lazy block-start** 是最简单修复；另一种是"always emit empty block-end if sawText=false"（同步对称但需要重写 terminalChunks）。
+
+### §7.35 — input-guard 加 "缺 DEEPSEEK_API_KEY → 降级 LOCAL"（2026-09-03）
+
+**触发**：把 bundle 装到 dsh-tui profile 后用户报"TUI 里没有配置 DEEPSEEK_API_KEY"。dsh-tui 不像 web profile 自动 `source repo .env`，所以 `DEEPSEEK_API_KEY` 环境变量为空。
+
+**症状**：TUI 用户发 chat 触发意图分类，intent-router 分到 `CLOUD` 时 cloud-llm-adapter 在 stream 阶段抛 `MISSING_CREDENTIAL`（`src/dsh-adapter/cloud-llm-adapter.ts:172`），user 看到 error，chat 中断。
+
+**原则**：与"脱敏失败降级 LOCAL"对称——都属于**系统侧配置缺失/故障，绝不应让 user 的 PII 上云**（即便没 PII，强制上云也会失败；与其抛错不如悄悄路由到 local-qwen3-4b，至少 user 仍能用）。这正是 PROGRESS §7.22 + memory `sanitize-downgrade-policy.md` 立下的"配置缺失视为降级触发"原则的扩展。
+
+**修复**（`src/dsh-adapter/input-guard.ts`）：
+
+1. **Config 新增 `cloudApiKeyEnv`**（schema default `'DEEPSEEK_API_KEY'`，运行时被 `DSH_EDGE_CLOUD_KEY_ENV` 覆盖——`apply()` 在 line 950-955 补一刀，保证 schema 求值后 export env 也生效）。与 cordis.patch.yml:41 的 `!!js process.env.DSH_EDGE_CLOUD_KEY_ENV ?? 'DEEPSEEK_API_KEY'` 保持一致。
+
+2. **新增 `hasCloudCredentials()` 私有方法**（line 209-216）：读 `process.env[cloudApiKeyEnv]`，空/不存在 → false。
+
+3. **handlePreStep 新增早分支**（line 577-616，位于 `input-guard.routed` audit 之后、`shouldSanitize` 判断之前）：
+
+   ```typescript
+   if ((category === 'CLOUD' || category === 'SANITIZED') && !this.hasCloudCredentials()) {
+     const routeSource = hasRawEdgeRoute ? 'http-api' : 'webui'
+     this.audit('security', 'input-guard.cloud-key.missing', {
+       sessionId, category, envSlot: this.config.cloudApiKeyEnv,
+       originalProvider: edgeRoute?.provider, originalModel: edgeRoute?.model,
+       originalRealm: edgeRoute?.realm, routeSource,
+       targetProvider: this.config.localProvider, targetModel: this.config.localModel,
+     })
+     this.stepState.set(sessionId, {
+       sanitized: false, replacements: 0, sessionId, timestamp: Date.now(),
+       downgraded: true,
+       downgradeReason: `cloud-key-missing:${this.config.cloudApiKeyEnv}`,
+       originalProvider: edgeRoute?.provider, ...,
+       routeSource,
+     })
+     return decision
+   }
+   ```
+
+   **关键：早于 sanitize 执行**——避免 sanitize 跑完一遍才发现根本送不出去，浪费算力+延迟。降级后 messages 不动（LOCAL LLM 不上云，不需要脱敏），由 `handleAgentRequest` 改写 route。
+
+**新 audit kind**：`input-guard.cloud-key.missing`（security 级别）。包含 `envSlot`（让 user 一眼看出哪个 env slot 缺失）+ `category`（原始分类）+ `targetProvider/Model`（降级目标）+ `routeSource`（'http-api'/'webui'，与 §7.34 对齐）。
+
+**§7.34 + §7.35 关系**：§7.34 修"intent=LOCAL 也走 CLOUD"；§7.35 修"intent=CLOUD 但走不了 CLOUD"。两者都用同一套 downgraded=true + handleAgentRequest 改写机制，对调用方完全透明。
+
+**测试**（`tests/unit/input-guard.test.ts` §7.35 describe block，4 个新 case）：
+
+| case | 期望 |
+|---|---|
+| CLOUD intent + missing key | `downgraded=true`、`downgradeReason` 匹配 `/^cloud-key-missing:DEEPSEEK_API_KEY$/u`、`sanitize` 不被调用、audit 发出 `input-guard.cloud-key.missing` |
+| SANITIZED intent + missing key | 同样降级 LOCAL |
+| LOCAL intent + missing key | 不触发 cloud-key-missing（LOCAL 不需要 key），仅走 §7.34 intent-local 分支 |
+| CLOUD intent + key present | 走 sanitize（不被降级短路）|
+
+外加 3 个测试文件（`input-guard.test.ts`、`input-guard-e2e.test.ts`、`input-guard-http-api-integration.test.ts`）的 `defaultConfig` / `guardConfig` 都补 `cloudApiKeyEnv: 'DEEPSEEK_API_KEY'` 字段，并在模块顶部 `process.env.DEEPSEEK_API_KEY = ORIGINAL_TEST_KEY ?? 'sk-test-...-default'`——避免 §7.35 新逻辑把老的 CLOUD 测试短路。
+
+**验证**：
+
+- `npx vitest run`：668/668 pass（was 661 → +4 新增 §7.35 case + 3 个文件补 cloudApiKeyEnv 字段）
+- `npm run build`：verify 链全绿（含 verify:bundle-mount，bundle 在 `web` + `dsh-tui` 双 profile）
+
+**deploy**：需要 `./install.sh --skip-pnpm` 一次让 TUI profile 的 input-guard 拿到新版本（schema default 在 `apply()` 时才求值，老进程仍按 `cloudApiKeyEnv=undefined` 跑）。
+
+**lesson**：
+
+**降级触发要列穷尽**。PROGRESS §7.22 立"脱敏失败降级 LOCAL"原则时漏了"配置缺失"这一族（api key / network / DB），§7.35 补齐这一族。未来新加降级触发时，先问：是 user 行为不端（→ REJECT）？是系统故障（→ 降级 LOCAL）？是配置缺失（→ 降级 LOCAL + 审计 envSlot 让 user 知道配哪）？
+
+### §7.36 — 合并 `~/.dsh-edge-agent-web/` 到 `~/.dsh-edge-agent/`（2026-09-03，单 bundle root）
+
+**触发**：user 问"为什么有 dsh-edge-agent-web"——梳理出 web profile 因为历史 §7.25.x 双 profile 隔离用了 `~/.dsh-edge-agent-web/` 后缀，§7.33 删 headless 后已无意义。user 决定执行选项 B（合并到单一 root）。
+
+**改动**：
+
+| 操作 | 文件 / 路径 |
+|---|---|
+| **stop** | `dsh --profile web` (PID 634480) — user 显式授权"停止 dsh-web" |
+| **merge** | `cat ~/.dsh-edge-agent-web/audit/audit.plain.jsonl >> ~/.dsh-edge-agent/audit/audit.plain.jsonl`（103 → 163 lines）|
+| **merge** | `cat ~/.dsh-edge-agent-web/log/dsh-edge-agent.log >> ~/.dsh-edge-agent/log/dsh-edge-agent.log`（481 → 740 lines）|
+| **merge** | `cp -r ~/.dsh-edge-agent-web/sessions/* ~/.dsh-edge-agent/sessions/`（含 web profile 112K live session JSONL.zstd）|
+| **edit** | `~/.dsh/profiles/web/.env.sh` — 删 6 行 DSH_EDGE_*_ROOT export，保留 source repo .env 块 |
+| **edit** | `cordis.patch.yml:438-444` privacy-policy fallback `~/.dsh-edge-agent-web/` → `~/.dsh-edge-agent/` |
+| **delete** | `rm -rf ~/.dsh-edge-agent-web/`（user 授权"日志可以清理，不用保留"——含 sessions 一起）|
+
+**新增数据校验**：
+
+- 合并后 `~/.dsh-edge-agent/` 仍是单 root 6 个 channel
+- audit: 103 web + 60 tui = 163 lines（JSONL append-only，时间顺序保留）
+- log: 481 web + 259 tui = 740 lines
+- sessions: 1 web + 2 tui = 3 个 workspace/session（不同 sessionId，无 ID 冲突）
+- privacy-policy.json: 3547 bytes（已早 cp 过，diff 同）
+
+**新 memory + 文档**：
+
+- `memory/dsh-edge-agent-data-path.md` 标题改 `~/.dsh-edge-agent-web/...` → `~/.dsh-edge-agent/<channel>`；新增 §7.36 历史段；6 channel 表改单 root；新增 `privacy-policy.json` 行
+- `docs/skills/deploy-dsh-edge-agent.md` §10 web `.env.sh` 模板简化（删 6 行 redirect export）
+- `cordis.patch.yml:438-444` 注释更新到 §7.36
+
+**前提假设**：DSH CLI 一次只跑一个 profile（user 当前用法：要么 web 要么 tui，不会并发），单 root 无并发写冲突。如未来真有 web+tui 双开场景，profile `.env.sh` 可重新加 DSH_EDGE_*_ROOT 重定向（env override 链路完整保留）——但 §7.36 删了是常态简化，并发时再开。
+
+**TUI 仍存活**（PID 647880，user "当前只测试 TUI"），需重启一次让 cordis.patch.yml:444 改动生效；用户测 chat 后观察 audit 路径仍是 `~/.dsh-edge-agent/audit/` 即验证完成。
+
+**lesson**：
+
+**单 bundle 单 root 简化心智**。bundle 的 6 个 channel 跟 profile 共享 DSH CLI 的 `~/.dsh/` 是两个不同的隔离模型。前者对齐"第三方 fork bundle 风格"（`~/.dsh-tui/` 历史、`@xmanrui/dsh-im` 意图），独立 root 干净；后者破坏这个约定。§7.33 → §7.36 这条路走反了（先 redirect → 后合并），但**结论方向正确**——单 root 始终更简单，前提是 profile 不并发。

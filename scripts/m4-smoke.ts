@@ -88,7 +88,7 @@ const runs: RunSpec[] = [
 ]
 
 // Surface any obvious environment gaps before launching dsh.
-const profilePath = `${homedir()}/.dsh-home/profiles/dsh-edge-agent/cordis.yml`
+const profilePath = `${homedir()}/.dsh-home/profiles/web/cordis.yml`
 if (!existsSync(profilePath)) {
   // Just a hint — dsh will fail loud if the profile is missing.
 }
@@ -97,7 +97,7 @@ async function runOnce(spec: RunSpec): Promise<{ exitCode: number; stdout: strin
   return new Promise((resolve, reject) => {
     const child = spawn(
       'dsh',
-      ['--profile', 'dsh-edge-agent', prompt],
+      ['--profile', 'web', prompt],
       {
         stdio: ['ignore', 'pipe', 'inherit'],
         env: {

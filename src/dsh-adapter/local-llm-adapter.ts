@@ -258,7 +258,25 @@ class RealLocalAdapter extends LlmAdapter {
       throw new LlmError(`local-llm-adapter (${this.providerName}): HTTP ${response.status}: ${respBody.slice(0, 200)}`, 'PROVIDER_ERROR')
     }
 
-    yield { type: 'block-start', index: 0, blockType: 'text' }
+    // 2026-09-03 §7.34.2 fix: defer `block-start` until the first text-delta.
+    // 之前无条件 yield block-start → 如果 LLM 返回 0 token（completion_tokens=0
+    // 但 finish_reason='stop'，llama.cpp 在 24 条 message / 2535 tokens prompt
+    // 下实测会发生），BlockAssembler 拿到一个未关闭的 text block + finish，
+    // 状态机卡住、agent-loop 永远等不到 block-end。
+    //
+    // 实测数据：webui chat "查询下密盒有哪些图片文件"（17:20:40 +08:00），
+    // 远端 llama.cpp 192.168.1.121:11017 返回 completion_tokens=0 finish=stop
+    // （254ms），dsh 进入 idle 4+ 分钟无响应。
+    //
+    // 修复：block-start 改为 lazy（首次 text-delta 前 yield 一次），empty stream
+    // 不再 yield block-start → BlockAssembler 不创建 orphan block → finish
+    // 正常传递 → agent-loop 状态机清零。
+    let blockStartYielded = false
+    const yieldBlockStartOnce = (): boolean => {
+      if (blockStartYielded) return false
+      blockStartYielded = true
+      return true
+    }
     let assembledText = ''
     let finishKind: 'stop' | 'length' | 'tool-calls' | undefined
     const toolCalls = new Map<number, { id: string; name: string; arguments: string }>()
@@ -280,6 +298,10 @@ class RealLocalAdapter extends LlmAdapter {
         const result = sseEventToChunk(event, toolCalls)
         if (result === null) continue
         if (result.chunk.type === 'text-delta') {
+          // §7.34.2: yield block-start lazily before the first text-delta
+          if (yieldBlockStartOnce()) {
+            yield { type: 'block-start', index: 0, blockType: 'text' }
+          }
           assembledText += (result.chunk as { text: string }).text
           sawText = result.sawText
         } else if (result.chunk.type === 'tool-call-delta') {

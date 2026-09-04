@@ -23,7 +23,7 @@ NC='\033[0m'
 
 PORT="${DSH_EDGE_HTTP_PORT:-21017}"
 API_KEY="${EDGE_API_KEY:-test-secret-key}"
-PROFILE="dsh-edge-agent"
+PROFILE="web"
 BASE_URL="http://127.0.0.1:$PORT"
 SERVER_PID=""
 TESTS_PASSED=0
@@ -143,15 +143,12 @@ check_prereqs() {
         npm run compile > /dev/null 2>&1 || { log_fail "编译失败"; exit 1; }
         log_info "编译完成"
 
-        # 同步到 profile locations.
+        # 同步到 profile location.
         # PROFILE_DIR mirrors install.sh:36 pattern (env-overridable default).
-        # Override via DSH_EDGE_PROFILE_DIR when targeting a non-default profile.
-        PROFILE_DIR="${DSH_EDGE_PROFILE_DIR:-$HOME/.dsh/profiles/dsh-edge-agent}"
-        for dir in \
-          profiles/dsh-edge-agent/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent \
-          "$PROFILE_DIR/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent"; do
-          [ -d "$dir" ] && rsync -a --delete lib/ "$dir/lib/" 2>/dev/null || true
-        done
+        # 2026-09-03 (§7.31): dsh-edge-agent bundle 仅装 web profile (唯一).
+        # PROFILE_DIR 默认 web; bundle lib 同步到 web profile 的嵌套包.
+        PROFILE_DIR="${DSH_EDGE_PROFILE_DIR:-$HOME/.dsh/profiles/web}"
+        rsync -a --delete lib/ "$PROFILE_DIR/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/lib/" 2>/dev/null || true
         log_info "同步完成"
     fi
 }

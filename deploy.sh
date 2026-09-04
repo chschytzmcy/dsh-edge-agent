@@ -154,7 +154,7 @@ echo -e "${BLUE}[6/7] 同步到 DSH profile home...${NC}"
 ssh $SSH_OPTS "$TARGET" bash <<REMOTE_SCRIPT
 set -e
 
-PROFILE="dsh-edge-agent"
+PROFILE="web"
 DSH_HOME="\${DSH_HOME:-\$HOME/.dsh}"
 PROFILE_DIR="\$DSH_HOME/profiles/\$PROFILE"
 NESTED_PKG="\$PROFILE_DIR/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent"
@@ -170,9 +170,13 @@ fi
 mkdir -p "\$PROFILE_DIR"
 rsync -a --delete "$REMOTE_PATH/lib/" "\$NESTED_PKG/lib/"
 
-# 同步 profile 的 cordis.patch.yml（含 tool-web / web-search-guard 等插件挂载）
-if [ -f "$REMOTE_PATH/profiles/\$PROFILE/cordis.patch.yml" ]; then
-    cp "$REMOTE_PATH/profiles/\$PROFILE/cordis.patch.yml" "\$PROFILE_DIR/cordis.patch.yml"
+# 同步 repo 根 cordis.patch.yml 到嵌套包（bundle-level patch）
+# 2026-09-03 (§7.31): bundle 自带完整 patch, 不再走 profiles/$PROFILE overlay
+if [ -f "$REMOTE_PATH/cordis.patch.yml" ]; then
+    if ! diff -q "$REMOTE_PATH/cordis.patch.yml" "\$NESTED_PKG/cordis.patch.yml" >/dev/null 2>&1; then
+        cp "$REMOTE_PATH/cordis.patch.yml" "\$NESTED_PKG/cordis.patch.yml"
+        echo "  -> synced bundle cordis.patch.yml → nested pkg"
+    fi
 fi
 
 # 注意：不同步 profiles/\$PROFILE/package.json — `dsh plugin add` 已经
@@ -184,24 +188,18 @@ if [ -f "$REMOTE_PATH/.env" ]; then
     cp "$REMOTE_PATH/.env" "\$PROFILE_DIR/.env"
 fi
 
-# 同步 privacy-policy.json（privacy-policy 插件的热加载策略文件）
-if [ -f "$REMOTE_PATH/profiles/\$PROFILE/privacy-policy.json" ]; then
-    cp "$REMOTE_PATH/profiles/\$PROFILE/privacy-policy.json" "\$PROFILE_DIR/privacy-policy.json"
-fi
+# privacy-policy.json：2026-09-03 (§7.31) 改为走 channel root（DSH_EDGE_PRIVACY_POLICY_PATH
+# 环境变量，由 web profile 的 .env.sh 控制）。不再同步到 profile overlay。
+# 远端使用前请先在 web profile .env.sh 设置 DSH_EDGE_PRIVACY_POLICY_PATH。
 
-# 安装上游 web search + skill 包。
-# web search 链：dsh-tool-web → web_search / web_fetch 工具
-#               dsh-web → ctx.web 服务
-#               dsh-web-search-deepseek → DeepSeek 搜索 provider
-# skill 链：  dsh-skill → ctx.skills 注册表
-#             dsh-tool-skill → model-facing skill 工具 + catalog 注入
-#             dsh-skill-filesystem → ~/.agents/skills/ 自动发现
-# web UI / IM：2026-09-01 卸载。默认 headless profile（容器名跟
-#               dsh-edge-agent bundle 同名）现只暴露自研 http-api (:21017)，
-#               不需要 dsh-host-webserver / dsh-web-app / dsh-web-frontend /
-#               @xmanrui/dsh-im / @linxin666/dsh-web-ui-all 中的任何一个。
+# 安装上游 web search + skill 包 + dsh-web-app + dsh-im。
+# 2026-09-03 (§7.31): web profile 现在是唯一 profile，需要 dsh-web-app
+# （webui 入口 :3080）和 dsh-im。webui 链：dsh-tool-web → web_search /
+# web_fetch 工具, dsh-web → ctx.web 服务, dsh-web-search-deepseek → DeepSeek 搜索 provider。
+# skill 链：dsh-skill → ctx.skills 注册表, dsh-tool-skill → model-facing skill
+# 工具 + catalog 注入, dsh-skill-filesystem → ~/.agents/skills/ 自动发现。
 # 缺任何一个都会导致对应功能不可用。`dsh plugin add` 是幂等的。
-echo "  -> install upstream web-search + skill packages (no web-ui, no im)"
+echo "  -> install upstream web-search + skill + webui + im packages"
 for _pkg in \\
     @deepseek-ai/dsh-agent-loop \\
     @deepseek-ai/dsh-tool-web \\
@@ -209,7 +207,10 @@ for _pkg in \\
     @deepseek-ai/dsh-web-search-deepseek \\
     @deepseek-ai/dsh-skill \\
     @deepseek-ai/dsh-tool-skill \\
-    @deepseek-ai/dsh-skill-filesystem; do
+    @deepseek-ai/dsh-skill-filesystem \\
+    @deepseek-ai/dsh-web-app \\
+    @xmanrui/dsh-im \\
+    @linxin666/dsh-web-ui-all; do
     dsh plugin --profile "\$PROFILE" add "\$_pkg" >/dev/null 2>&1 || {
         echo "  warning: failed to add \$_pkg" >&2
     }
@@ -233,19 +234,19 @@ if [ ! -f .env ]; then
 fi
 
 # 停止旧服务（如果有）
-pkill -f 'dsh --profile dsh-edge-agent' 2>/dev/null || true
+pkill -f 'dsh --profile web' 2>/dev/null || true
 sleep 2
 
-# 启动服务
-source .env.sh
-setsid bash -c 'source .env.sh && dsh --profile dsh-edge-agent' > /tmp/dsh.log 2>&1 < /dev/null &
-sleep 3
+# 启动服务（cd 到 web profile 容器，用 profile 自带的 .env.sh 加载 secrets + channel root）
+mkdir -p ~/.dsh/profiles/web 2>/dev/null || true
+setsid bash -c 'cd ~/.dsh/profiles/web && source .env.sh && exec dsh --profile web' > /tmp/dsh.log 2>&1 < /dev/null &
+sleep 5
 
-# 验证
-if curl -s http://127.0.0.1:21017/v1/health | grep -q '"status":"ok"'; then
-    echo "✓ 服务启动成功"
+# 验证（dsh-web-app 监听 :3080；老 http-api :21017 已 disabled）
+if curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://127.0.0.1:3080/ | grep -q '200\|301\|302'; then
+    echo "✓ web profile 启动成功 (dsh-web-app :3080)"
 else
-    echo "⚠ 服务可能未完全启动，请检查日志: tail -f /tmp/dsh.log"
+    echo "⚠ web profile 可能未完全启动，请检查日志: tail -f /tmp/dsh.log"
 fi
 REMOTE_SCRIPT
 
@@ -257,12 +258,11 @@ echo -e "${BLUE}========================================${NC}"
 echo ""
 echo "后续步骤:"
 echo "  1. SSH 到设备: ssh $TARGET"
-echo "  2. 进入目录: cd $REMOTE_PATH"
-echo "  3. 编辑配置: \$EDITOR .env"
-echo "  4. 重启服务: pkill -f 'dsh --profile' && source .env.sh && dsh --profile dsh-edge-agent &"
+echo "  2. 编辑配置: \$EDITOR .env"
+echo "  3. 重启服务: ssh $TARGET 'pkill -f dsh --profile; cd ~/.dsh/profiles/web && setsid bash -c \"source .env.sh && exec dsh --profile web\" &'"
 echo ""
 echo "验证服务:"
-echo "  ssh $TARGET 'curl http://127.0.0.1:21017/v1/health'"
+echo "  ssh $TARGET 'curl -s -o /dev/null -w \"%{http_code}\\\\n\" http://127.0.0.1:3080/'"
 echo ""
 
 # 清理本地打包文件

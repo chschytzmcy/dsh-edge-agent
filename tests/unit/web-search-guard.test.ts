@@ -179,7 +179,7 @@ describe('web-search-guard (Phase 5)', () => {
   // These cases drive the public `handleToolsResult` directly — they exercise
   // the same code path the `tools/result` observer fires in production, but
   // without spinning up the full Cordis loader. The M5 *integration* smoke
-  // (in `scripts/`) drives a real `dsh --profile dsh-edge-agent` session.
+  // (in `scripts/`) drives a real `dsh --profile web` session.
 
   it('M5: clean web_search query emits exactly one info-level audit (tool.web-search.executed)', async () => {
     const { service, audit } = buildService()

@@ -39,7 +39,7 @@ NC='\033[0m'
 
 PORT="${DSH_EDGE_HTTP_PORT:-21018}"
 API_KEY="${EDGE_API_KEY:-test-secret-key}"
-PROFILE="dsh-edge-agent"
+PROFILE="web"
 BASE_URL="http://127.0.0.1:$PORT"
 SERVER_PID=""
 TESTS_PASSED=0
@@ -1399,18 +1399,16 @@ run_p0_supplementary_tests() {
 }
 
 # ─── 定位审计日志文件 ───────────────────────────────────────────────
-# audit-log 插件（见 repo-root cordis.patch.yml:230-239 — 旧 ref
-# profiles/dsh-edge-agent/cordis.patch.yml 已 §7.25 翻转后归零）的
-# filename=audit.plain.jsonl + root=$DSH_EDGE_AUDIT_ROOT 或 ~/.dsh-edge-agent/audit。
-# 这里按环境变量→默认值依次尝试，与插件内部行为对齐。
-# 2026-09-03: -m1 是 pre-§7.25 历史 milestone 命名；当前主路径是
-# `~/.dsh-edge-agent/audit`，m1 路径作为 legacy fallback 保留。
+# audit-log 插件（见 repo-root cordis.patch.yml:230-239）的
+# filename=audit.plain.jsonl + root=$DSH_EDGE_AUDIT_ROOT。
+# 2026-09-03 (§7.31): web profile 默认 audit root 是
+# `~/.dsh-edge-agent-web/audit`（隔离 headless 命名空间）；web profile 启动时
+# 已经 source ~/.dsh/profiles/web/.env.sh export DSH_EDGE_AUDIT_ROOT。
+# 这里按环境变量→web 默认→headless 历史→m1 历史 fallback。
 find_audit_log() {
     local root="${DSH_EDGE_AUDIT_ROOT:-}"
     if [ -z "$root" ]; then
-        # 2026-09-03: 默认 audit root 是 ~/.dsh-edge-agent/audit（当前 bundle 命名）。
-        # m1 是 pre-§7.25 legacy，保留为最终 fallback。
-        root="${USERPROFILE:-${HOME:-/home/$(id -un)}}/.dsh-edge-agent/audit"
+        root="${USERPROFILE:-${HOME:-/home/$(id -un)}}/.dsh-edge-agent-web/audit"
     fi
     local candidate="$root/audit.plain.jsonl"
     if [ -f "$candidate" ]; then
