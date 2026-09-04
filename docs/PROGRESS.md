@@ -3864,3 +3864,97 @@ if (result.chunk.type === 'text-delta') {
 **lesson**：
 
 **单 bundle 单 root 简化心智**。bundle 的 6 个 channel 跟 profile 共享 DSH CLI 的 `~/.dsh/` 是两个不同的隔离模型。前者对齐"第三方 fork bundle 风格"（`~/.dsh-tui/` 历史、`@xmanrui/dsh-im` 意图），独立 root 干净；后者破坏这个约定。§7.33 → §7.36 这条路走反了（先 redirect → 后合并），但**结论方向正确**——单 root 始终更简单，前提是 profile 不并发。
+
+### §7.37 — Layer 1 方案 B 不可达，Layer 3 足以封堵 CLOUD 工具（2026-09-04）
+
+**触发**：研究 fail-open 根因（LOCAL LLM 调 web_search / web_fetch）—— §7.36 已修 input-guard 注册 session-realm 让 Layer 3 有 `agentRealm` 可用，但 LLM 已经能看到完整 `<available_skills>` catalog + 11 个 tools，pick 错 tool 才被 Layer 3 拦。能否在 llm/stream 阶段把 CLOUD tools 直接从 LLM 视野里摘掉？
+
+**方案 B 思路**：在 `llm/stream` waterfall hook 读 `payload.tools`（含 11 个 tool schema），按 session-realm 过滤后改写 payload，让 LLM 永远 pick 不到 web_search / web_fetch。
+
+**关键障碍：dsh-llm 0.1.2-rc.1 deepFreeze 整个 options payload**。
+
+证据：`/home/etsme/.npm-global/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-llm/lib/index.js:1658` `adapterStream(options, prepared)` 调 `dispatch(forAdapter(projectedOptions, ...))` 之前 `deepFreeze(structuredClone(options))`。`deepFreeze` 是 `dsh-util-values` 递归冻结（对象 + 每个数组 index）。
+
+实测验证：
+
+| mutation 策略 | 错误 |
+|---|---|
+| `payload.tools = filtered` | `Cannot assign to read only property 'tools'` |
+| `payload.tools.splice(0, length, ...filtered)` | `Cannot delete property 'N' of [object Array]`（index 也 frozen）|
+| `Object.defineProperty(payload, 'tools', {...})` | `Cannot redefine property: tools`（configurable: false）|
+
+**改动**：把 Layer 1.5 llm/stream hook 从 splice 改成只读 audit probe——记录 `agentRealm` + `toolsCount`，让用户能从 audit 一眼看出 LLM 在哪条 session 上看到了哪些 tool。Layer 1.5 filter 自身完全不写 payload。文件 `src/dsh-adapter/realm-skill-bridge.ts:716-755`。
+
+**layer 1.5 hook 现状**：
+```ts
+const disposeStream = ctx.on?.('llm/stream', async (payload, next) => {
+  const p = payload as { sessionId?: string; tools?: ReadonlyArray<unknown> } | undefined
+  if (p !== undefined && typeof p.sessionId === 'string') {
+    const agentRealm = service.getSessionRealm(p.sessionId)
+    service.auditLog?.log({
+      level: 'info', kind: 'realm-skill-bridge.hook.probe', source: 'realm-skill-bridge',
+      payload: {
+        hook: 'llm/stream', sessionId: p.sessionId,
+        toolsCount: Array.isArray(p.tools) ? p.tools.length : 0,
+        agentRealm: agentRealm ?? null,
+        note: 'frozen-payload: tools filter skipped; Layer 3 enforces',
+      },
+    })
+  }
+  return next()
+}, { global: true })
+```
+
+**新 memory**：新增 `memory/dsh-llm-payload-deepfreeze.md`，记到 `MEMORY.md` 索引。详细列举 3 种 mutation 失败模式，避免后续重蹈覆辙。
+
+**关键设计修正**：`sessionId` path mismatch —— `payload.sessionId`（top-level，水fall 注入）和 `payload.agent.session.id` 是不同 reference。在 dsh 0.1.2-rc.1 必须用 `payload.sessionId`，否则 getAgentRealm 永远 undefined → filter no-op。新增 `getSessionRealm(sessionId)` public method 直接读 `sessionRealms.get()` 绕过 path。
+
+**验证（session `layer15-final-local`，2026-09-04）**：
+
+```
+http.chat.start
+  → http.chat.route {intent: LOCAL}
+  → input-guard.routed {category: LOCAL}
+  → input-guard.session-realm.registered {category: LOCAL, routeSource: http-api}
+  → realm-skill-bridge.hook.probe {
+      hook: llm/stream, toolsCount: 11, agentRealm: LOCAL,
+      note: frozen-payload: tools filter skipped; Layer 3 enforces
+    }
+```
+
+audit probe 确认 LLM 在 LOCAL session 上看到了 11 个 tool（含 web_search / web_fetch），但因为 §7.36 已经把 session-realm=LOCAL 注册了，**Layer 3 (`tools/pre-execute`) 在 execute 阶段会 deny**——历史 audit `tool.realm.denied` 证据：`{tool: web_search, toolRealms: [CLOUD], agentRealm: LOCAL}`。
+
+**Chain 一致性**（session `layer15-cloud-1`，intent=CLOUD，2026-09-04）：
+
+```
+input-guard.session-realm.registered {category: CLOUD, routeSource: http-api}
+  → realm-skill-bridge.hook.probe {toolsCount: 11, agentRealm: CLOUD}
+  → http.chat.end {durationMs: 2272, resultLen: 0}
+```
+
+CLOUD session 看 11 个 tool 是正确的（Layer 1.5 注释里也是 `note: frozen-payload: tools filter skipped`，所有 realm 都不过滤——CLOUD 工具在 CLOUD realm 不该被摘）。
+
+**Layer 1 现状总结**：
+
+| Layer | 状态 | 作用 |
+|---|---|---|
+| Layer 1 (`agent/pre-step` catalog filter) | 永远 no-op（`decision.messages === undefined`，msgCount=0） | 历史遗留：catalog 注入在 hook surface 之下，已知不可达 |
+| Layer 1.5 (`llm/stream` tools filter) | **不可达**（frozen payload，2026-09-04 结论）| 改成只读 audit probe，留 trace |
+| Layer 2 (tool schema) | 不存在（没有 dsh 钩子点）| — |
+| **Layer 3 (`tools/pre-execute` deny)** | **权威 gate** | input-guard §7.36 注册 session-realm → realm-skill-bridge Layer 3 deny |
+
+**fail-open 真正根因**（再次强调）：input-guard 没注册 session-realm → Layer 3 `agentRealm === undefined` → `checkToolRealm` 短路返回 undefined（allow）→ 全部放行。§7.36 已修。Layer 1.5 是优化（让 LLM 根本不选 CLOUD 工具），不是 correctness 关键路径。
+
+**TODO（暂不做）**：
+
+- **prompt-guard model-detect stream Promise unwrap**：2026-09-04 回归。`this.llm.stream()` 返回 `Promise<AsyncIterable<StreamChunk>>` 而非 `AsyncIterable`，必须 await thenable。已修 `prompt-guard.ts:555` + `intent-router.ts:484`。否则 prompt-guard "stream is not async iterable" 阻断所有 model-detect + intent-classify 调用。
+- **dsh-tui 主 chat 空 result**：agent 没挂 preset → tool/skill layers 空 → agent loop 不动。属于 dsh-agent-presets plugin 装配问题（TUI 没正确注入），与 Layer 1/3 无关，待 dsh-tui 升级。
+- **CLOUD session realm-skill-bridge.hook.probe 没出 tools.filtered**：因为 default skill-realms.json 只 tag 了 `web_search` 和 `web_fetch` 两个 CLOUD tool；其他 9 个 tool 没 tag → `filterToolsField` 当 `toolRealms === undefined` 保留（pass-through，Layer 3 兜底）。如需 Layer 1.5 真正剔除更多 tool，先扩 templates/skill-realms.default.json 的 `tools` 段。
+
+**deploy**：`npx tsc -p tsconfig.json && rsync -a --delete lib/types/ ~/.dsh/profiles/dsh-tui/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/lib/types/`（DSH Profile Overlay，profile node_modules 不会自动同步）。
+
+**lesson**：
+
+**deepFreeze 是 dsh-llm 的 invariant，不是 bug**。所有 dsh-llm 0.1.2-rc.1+ 的 llm/stream listener 都面对 frozen payload。任何想 mutate payload 字段的"方案"在协议层被否决。Layer 1 想 work 必须遵守这个 invariant——要么 listener 只读 + audit（当前方案），要么 listener 是 trusted upstream（hook 在 dsh-llm 之前注入 payload）。
+
+**不要重复在 model-detect 上踩同一个坑**。dsh-llm 的 stream / forAdapter 链路返回 Promise<AsyncIterable> 不是 AsyncIterable。任何 await 必须先 thenable-check 再 await。`this.llm.stream(...).then ? await : ...` 是 dsh 0.1.2-rc.1 的事实契约。

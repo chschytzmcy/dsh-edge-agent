@@ -25,6 +25,11 @@ export const inject = [
   'intentRouter',
   'sanitizer',
   'auditLog',
+  // §7.36 (2026-09-04): 必须 inject realmSkillBridge，否则 this.ctx.realmSkillBridge
+  // 永远 undefined。Cordis Context 只暴露 inject 列出的依赖,setSessionRealm 块
+  // 就被 if 跳过。Boot 顺序无死锁:realm-skill-bridge 在 cordis.patch.yml
+  // 排在 http-api 之前(已确认 line 317),input-guard 同样靠后启动。
+  'realmSkillBridge',
 ] as const
 
 export interface Config {
@@ -115,6 +120,17 @@ interface AuditLogLike {
     source: string
     payload: Record<string, unknown>
   }): Promise<unknown>
+}
+
+/** Minimal realm-skill-bridge 接口（§7.36,2026-09-04）。
+ *  非 inject 依赖,通过 `this.ctx.realmSkillBridge` 取 ——
+ *  cordis plugin 顺序未保证 realmSkillBridge 先于 inputGuard boot,
+ *  缺失时 setSessionRealm 调用静默 no-op。*/
+interface RealmSkillBridgeLike {
+  setSessionRealm(
+    sessionId: string,
+    realm: 'LOCAL' | 'CLOUD' | 'SANITIZED',
+  ): void
 }
 
 /** StreamChunk 形状（来自 @deepseek-ai/dsh-llm，避免深层依赖）。*/
@@ -620,6 +636,37 @@ export class InputGuardServiceImpl extends Service {
     this.audit('info', 'input-guard.routed', {
       sessionId, category, edgeRouteUsed,
     })
+
+    // §7.36 (2026-09-04): 注册 session realm 给 realm-skill-bridge,
+    // 让 webui / tui / dsh-tui chat 入口也能被 Layer 3 tool-realm gating 守卫。
+    //
+    // 之前 setSessionRealm 只在 http-api 入口调用（http-api.ts:511 / 717）。
+    // dsh-web-app / dsh-tui chat 入口走 dsh-agent-loop 时不挂 _edgeRoute,
+    // realmSkillBridge.sessionRealms 没有这个 sessionId →
+    // checkToolRealm 走 fail-open 分支（agentRealm === undefined）→
+    // web_search / web_fetch 等 CLOUD tool 不被 deny,LOCAL LLM 自由上云搜。
+    //
+    // input-guard 在分类后立即补一次 setSessionRealm,使 webui/tui 入口的
+    // session 也能被 realm-skill-bridge 识别。REJECT 不注册（后续 turn 不跑）。
+    // 失败/缺失时静默 no-op（realmSkillBridge 是可选依赖）。
+    if (category !== 'REJECT') {
+      const bridge = (this.ctx as unknown as { realmSkillBridge?: RealmSkillBridgeLike }).realmSkillBridge
+      if (bridge && typeof bridge.setSessionRealm === 'function') {
+        try {
+          bridge.setSessionRealm(sessionId, category)
+          this.audit('info', 'input-guard.session-realm.registered', {
+            sessionId,
+            category,
+            edgeRouteUsed,
+            routeSource: edgeRouteUsed ? 'http-api' : 'webui',
+          })
+        } catch (err: any) {
+          this.audit('warn', 'input-guard.session-realm.failed', {
+            sessionId, error: err?.message ?? String(err),
+          })
+        }
+      }
+    }
 
     // §7.35 (2026-09-03): Cloud API key 缺失 → 降级 LOCAL，绝不抛 MISSING_CREDENTIAL。
     // 场景：TUI profile 没 source repo .env.sh → DEEPSEEK_API_KEY 空。

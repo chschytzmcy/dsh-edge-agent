@@ -212,9 +212,25 @@ export class RealmSkillBridgeService extends Service {
     this.sessionRealms.set(sessionId, realm)
   }
 
-  /** Resolve the realm for an agent by looking up its session. */
+  /** Resolve the realm for an agent by looking up its session.
+   *  §7.36 / §7.37 (2026-09-04): prefer `session.id` — input-guard registers
+   *  via `payload.agent.session.id` (input-guard.ts:537) and that is the
+   *  only key under which sessionRealms holds the realm. Reading
+   *  `session.header.id` first was a wrong assumption that caused layer-1.5
+   *  (llm/stream tools filter) to silently no-op: getAgentRealm returned
+   *  undefined → filterToolsField skipped → tools.filtered never fired. */
   getAgentRealm(agent: AgentLike | undefined): RealmTag | undefined {
-    const sessionId = agent?.session?.header?.id
+    const sessionId = agent?.session?.id
+    if (!sessionId) return undefined
+    return this.sessionRealms.get(sessionId)
+  }
+
+  /**
+   * Resolve realm directly from a sessionId string. Used by llm/stream hook
+   * where the agent's session.id path is unreliable and payload.sessionId
+   * is the canonical key.
+   */
+  getSessionRealm(sessionId: string | undefined): RealmTag | undefined {
     if (!sessionId) return undefined
     return this.sessionRealms.get(sessionId)
   }
@@ -389,42 +405,164 @@ export class RealmSkillBridgeService extends Service {
   // ── Layer 1: Skill catalog filtering ────────────────────────────────────────
 
   /**
-   * Filter the <available_skills> catalog injected by dsh-tool-skill so the
-   * agent only sees skills in its realm. Skills tagged 'hidden' are removed
-   * from every agent's catalog.
+   * Filter the <available_skills> catalog so the agent only sees skills in
+   * its realm. Skills tagged 'hidden' are removed from every agent's catalog.
    *
-   * The catalog is a UserMessage with source.kind === 'skill-catalog'.
-   * Its content is a <system-reminder> block containing one line per skill:
+   * §7.37 (2026-09-04): Two message shapes carry the catalog:
+   *   (a) standalone UserMessage with source.kind === 'skill-catalog'
+   *       (string content).
+   *   (b) dsh-system-prompt plugin snapshot with
+   *       source.kind === 'plugin' && source.plugin ===
+   *       '@deepseek-ai/dsh-system-prompt' (array content blocks,
+   *       one of which is type:'text' containing `<available_skills>`).
+   * Both must be filtered or the catalog leaks. (a) is the canonical
+   * skill-catalog shape; (b) is what TUI / WebUI actually see because
+   * dsh-system-prompt co-locates the catalog with sandbox/approval policy
+   * snapshots — without this filter, LLM sees ALL 32 skills regardless
+   * of realm.
    *
-   *   - `skill-name`: Description text
-   *
-   * We parse each line, look up the skill's realm, and drop disallowed ones.
+   * We parse each ` - \`skill-name\`: Description` line, look up the skill's
+   * realm, and drop disallowed ones.
    */
   filterSkillCatalog(messages: readonly MessageLike[], agentRealm: RealmTag): readonly MessageLike[] {
     if (agentRealm === 'hidden') return messages
     return messages.map((msg) => {
       if (!isCatalogMessage(msg)) return msg
-      const content = typeof msg.content === 'string' ? msg.content : ''
-      if (!content.includes('<available_skills>')) return msg
-      const filtered = this.filterCatalogContent(content, agentRealm)
-      if (filtered === content) return msg
-      return { ...msg, content: filtered }
+
+      // (a) string content
+      if (typeof msg.content === 'string') {
+        if (!msg.content.includes('<available_skills>')) return msg
+        const result = this.filterCatalogText(msg.content, agentRealm)
+        if (!result.changed) return msg
+        return { ...msg, content: result.text }
+      }
+
+      // (b) array content blocks (dsh-system-prompt snapshot shape)
+      if (Array.isArray(msg.content)) {
+        let changed = false
+        const newBlocks = msg.content.map((block: unknown) => {
+          if (!isTextBlock(block) || typeof block.text !== 'string') return block
+          if (!block.text.includes('<available_skills>')) return block
+          const result = this.filterCatalogText(block.text, agentRealm)
+          if (!result.changed) return block
+          changed = true
+          return { ...block, text: result.text }
+        })
+        if (!changed) return msg
+        return { ...msg, content: newBlocks }
+      }
+
+      return msg
     })
   }
 
-  private filterCatalogContent(content: string, agentRealm: RealmTag): string {
+  /**
+   * Pure function: parse `<available_skills>` content, drop lines whose
+   * skill name resolves to a realm other than `agentRealm` (or 'hidden').
+   * Returns `{ text, changed }` so the caller can short-circuit on no-op.
+   */
+  private filterCatalogText(content: string, agentRealm: RealmTag): { text: string; changed: boolean } {
     const lines = content.split('\n')
     const out: string[] = []
+    let changed = false
+    let droppedCount = 0
     for (const line of lines) {
       const m = line.match(/^-\s+`([^`]+)`:\s*(.*)$/)
       if (m !== null) {
         const skillName = m[1]
         const realm = this.skillRealm(skillName)
-        if (realm === 'hidden' || realm !== agentRealm) continue
+        if (realm === 'hidden' || realm !== agentRealm) {
+          changed = true
+          droppedCount++
+          continue
+        }
       }
       out.push(line)
     }
-    return out.join('\n')
+    if (droppedCount > 0) {
+      try {
+        (this as unknown as { auditLog?: AuditLogLike }).auditLog?.log?.({
+          level: 'info',
+          kind: 'realm-skill-bridge.catalog.filtered',
+          source: 'realm-skill-bridge',
+          payload: { agentRealm, droppedCount },
+        })
+      } catch { /* debug only */ }
+    }
+    return { text: out.join('\n'), changed }
+  }
+
+  // ── Layer 1.5: Filter LLM-visible tools list by agent realm ────────────────
+  // §7.37 (2026-09-04): <available_skills> catalog text is injected by
+  // dsh-system-prompt plugin BELOW the dsh hook surface — none of
+  // agent/pre-step, agent/request, llm/stream sees it. The only tool-level
+  // surface in any hook is `payload.tools` on llm/stream, so we filter
+  // CLOUD tools out of LLM's view there. LLM doesn't see web_search /
+  // web_fetch as available → won't pick them when LOCAL realm is set.
+  // Layer 3 (tools/pre-execute) remains the authoritative gate.
+
+  /**
+   * Pure function: filter the `tools` array carried on llm/stream payload so
+   * that the LLM does not see tools whose realm set does not include
+   * `agentRealm`. Tools whose realm is undefined (not in our config) are
+   * preserved (fail-closed: we only restrict what we explicitly tagged).
+   * Returns `{ tools, changed, removed }` so callers can short-circuit.
+   *
+   * SANITIZED special case: an agent whose input was sanitized may safely
+   * use both LOCAL tools (file ops don't leak) and CLOUD tools (input was
+   * already redacted). So SANITIZED agents see every non-hidden tool.
+   */
+  filterToolsField(
+    tools: ReadonlyArray<unknown>,
+    agentRealm: RealmTag,
+  ): { tools: unknown[]; changed: boolean; removed: string[] } {
+    const kept: unknown[] = []
+    const removed: string[] = []
+    for (const t of tools) {
+      const name = typeof t === 'string'
+        ? t
+        : ((t as { name?: string; type?: { name?: string } })?.name
+          ?? (t as { type?: { name?: string } })?.type?.name
+          ?? null)
+      if (name === null) {
+        kept.push(t)
+        continue
+      }
+      const toolRealms = this.toolRealm(name)
+      // Unknown tool (no realm tag) — pass through; Layer 3 has final say
+      if (toolRealms === undefined) {
+        kept.push(t)
+        continue
+      }
+      // hidden tools are never visible
+      if (toolRealms.has('hidden')) {
+        removed.push(name)
+        continue
+      }
+      // §7.37: SANITIZED agents see all non-hidden tools (LOCAL + CLOUD).
+      if (agentRealm === 'SANITIZED') {
+        kept.push(t)
+        continue
+      }
+      if (toolRealms.has(agentRealm)) {
+        kept.push(t)
+      }
+      else {
+        removed.push(name)
+      }
+    }
+    if (removed.length > 0) {
+      try {
+        this.auditLog?.log({
+          level: 'info',
+          kind: 'realm-skill-bridge.tools.filtered',
+          source: 'realm-skill-bridge',
+          payload: { agentRealm, removedCount: removed.length, removed },
+        })
+      }
+      catch { /* debug only */ }
+    }
+    return { tools: kept, changed: removed.length > 0, removed }
   }
 
   // ── Layer 3: Tool execution gating ──────────────────────────────────────────
@@ -464,17 +602,60 @@ export class RealmSkillBridgeService extends Service {
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface AgentLike {
-  session?: { header?: { id?: string; cwd?: string } }
+  session?: { header?: { id?: string; cwd?: string }; id?: string }
 }
 
 interface MessageLike {
   content?: unknown
-  source?: { kind?: string; form?: string; entries?: ReadonlyArray<{ name?: string }> }
+  source?: {
+    kind?: string
+    form?: string
+    plugin?: string
+    entries?: ReadonlyArray<{ name?: string }>
+  }
   role?: string
 }
 
+/** Minimal shape of a dsh-agent content block we care about (text only). */
+interface TextBlockLike {
+  type?: string
+  text?: string
+  [k: string]: unknown
+}
+
+function isTextBlock(block: unknown): block is TextBlockLike {
+  return typeof block === 'object' && block !== null && (block as TextBlockLike).type === 'text'
+}
+
+/**
+ * Recognise a message as a carrier of `<available_skills>` catalog content.
+ *
+ * Two shapes are accepted (§7.37):
+ *   - `source.kind === 'skill-catalog'` — canonical dsh-tool-skill message
+ *     (string content).
+ *   - `source.kind === 'plugin' && source.plugin === '@deepseek-ai/dsh-system-prompt'`
+ *     — dsh-system-prompt snapshot that bundles the catalog alongside
+ *     sandbox/approval policy text. Content is array of text blocks; one
+ *     block contains `<available_skills>`.
+ *
+ * Both must be filtered or LLM sees the full skill catalog and ignores
+ * realm boundaries.
+ */
 function isCatalogMessage(msg: MessageLike): boolean {
-  return msg.source?.kind === 'skill-catalog'
+  const src = msg.source
+  if (!src) return false
+  if (src.kind === 'skill-catalog') return true
+  if (src.kind === 'plugin' && src.plugin === '@deepseek-ai/dsh-system-prompt') {
+    // Cheap probe: any text in the message that mentions <available_skills>?
+    const c = msg.content
+    if (typeof c === 'string') return c.includes('<available_skills>')
+    if (Array.isArray(c)) {
+      return c.some(
+        (b) => isTextBlock(b) && typeof b.text === 'string' && b.text.includes('<available_skills>'),
+      )
+    }
+  }
+  return false
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -503,8 +684,24 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
   })
 
   // ── Layer 1: Filter skill catalog on every agent step ─────────────────────
+  // §7.36 (2026-09-04): 必须传 { global: true } —— agent/pre-step 默认 per-agent,
+  // 只在注册时的 agent 实例上生效。http-api /v1/chat 路径上的 record.agent 是
+  // 动态创建的(每次 followup 新 agent),per-agent 注册的 hook 收不到,导致
+  // Layer 1 catalog filter 和 Layer 3 tool gating 永远不触发 → fail-open。
+  // input-guard 用了 { global: true },realm-skill-bridge 之前漏了 → 整个
+  // fail-open 链路"hook 在,但 agent 收不到"。
+  //
+  // §7.37 (2026-09-04): catalog filter on agent/pre-step is currently a no-op
+  // because decision.messages is empty (msgCount=0) — <available_skills> is
+  // injected by dsh-system-prompt plugin below the hook surface. Kept as a
+  // no-op hook (decision.messages filter still runs in case future DSH
+  // versions populate it) and supplemented by Layer 1.5 (llm/stream tools).
   const disposePreStep = (ctx as unknown as {
-    on?: (event: string, fn: (payload: unknown, next: () => Promise<unknown>) => Promise<unknown>) => () => void
+    on?: (
+      event: string,
+      fn: (payload: unknown, next: () => Promise<unknown>) => Promise<unknown>,
+      options?: { global?: boolean },
+    ) => () => void
   }).on?.('agent/pre-step', async (payload: unknown, next: () => Promise<unknown>) => {
     const decision = (await next()) as { kind: string; messages?: MessageLike[] }
     if (decision.kind === 'reject') return decision
@@ -514,11 +711,63 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
     const filtered = service.filterSkillCatalog(decision.messages, agentRealm)
     if (filtered === decision.messages) return decision
     return { ...decision, messages: filtered }
-  })
+  }, { global: true })
+
+  // ── Layer 1.5: Filter tools list on llm/stream (§7.37) — DISABLED ────────
+  //
+  // llm/stream payload carries [provider, model, messages, system, tools,
+  // sessionId, signal]. The catalog text (<available_skills>) lives outside
+  // any reachable dsh hook, so the only LLM-visible realm leak is the
+  // `tools` array. Filtering it would let LOCAL LLM sessions never see
+  // web_search / web_fetch — but dsh-llm 0.1.2-rc.1 deep-freezes the entire
+  // payload (object + array + every index) before waterfall dispatches it,
+  // so we cannot splice / reassign / Object.defineProperty `payload.tools`
+  // without throwing "Cannot delete property N of [object Array]" (or
+  // "Cannot redefine property: tools"). Every mutation strategy breaks
+  // dsh boot.
+  //
+  // The actual fix (§7.36) is upstream: input-guard now registers session
+  // realm before llm/stream fires, so Layer 3 (tools/pre-execute, see
+  // disposePreExec below) sees agentRealm=LOCAL and DENIES web_search /
+  // web_fetch at execution time. We keep the same probe here so that the
+  // audit log records every llm/stream invocation and which session it
+  // belongs to — useful for debugging "LLM chose wrong tool" complaints
+  // even though we don't filter the array.
+  const disposeStream = (ctx as unknown as {
+    on?: (
+      event: string,
+      fn: (payload: unknown, next: () => Promise<unknown>) => Promise<unknown>,
+      options?: { global?: boolean },
+    ) => () => void
+  }).on?.('llm/stream', async (payload: unknown, next: () => Promise<unknown>) => {
+    // Read-only audit probe — payload is frozen by dsh-llm.
+    const p = payload as { sessionId?: string; tools?: ReadonlyArray<unknown> } | undefined
+    if (p !== undefined && typeof p.sessionId === 'string') {
+      const agentRealm = service.getSessionRealm(p.sessionId)
+      try { (service as unknown as { auditLog?: AuditLogLike }).auditLog?.log?.({
+        level: 'info',
+        kind: 'realm-skill-bridge.hook.probe',
+        source: 'realm-skill-bridge',
+        payload: {
+          hook: 'llm/stream',
+          sessionId: p.sessionId,
+          toolsCount: Array.isArray(p.tools) ? p.tools.length : 0,
+          agentRealm: agentRealm ?? null,
+          note: 'frozen-payload: tools filter skipped; Layer 3 enforces',
+        },
+      }) }
+      catch { /* ignore */ }
+    }
+    return next()
+  }, { global: true })
 
   // ── Layer 3: Gate tool execution by realm ─────────────────────────────────
   const disposePreExec = (ctx as unknown as {
-    on?: (event: string, fn: (exec: unknown, next: () => Promise<unknown>) => Promise<unknown>) => () => void
+    on?: (
+      event: string,
+      fn: (exec: unknown, next: () => Promise<unknown>) => Promise<unknown>,
+      options?: { global?: boolean },
+    ) => () => void
   }).on?.('tools/pre-execute', async (exec: unknown, next: () => Promise<unknown>) => {
     const e = exec as { name: string; agent?: AgentLike }
     const agentRealm = service.getAgentRealm(e.agent)
@@ -529,13 +778,14 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
       return { kind: 'deny', reason: denyReason }
     }
     return next()
-  })
+  }, { global: true })
 
   return async () => {
     service.stop()
     disposeSkillsChange?.()
     disposeToolsChange?.()
     disposePreStep?.()
+    disposeStream?.()
     disposePreExec?.()
   }
 }

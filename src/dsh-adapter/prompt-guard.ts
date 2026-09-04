@@ -552,7 +552,7 @@ export class PromptGuardServiceImpl extends Service implements PromptGuardServic
     const MAX_ASSEMBLED = cfg.modelDetectionMaxInputLength * 4   // default 8000 chars
 
     try {
-      const stream = this.llm.stream({
+      const streamRaw = this.llm.stream({
         provider: cfg.modelDetectionProvider,
         model: cfg.modelDetectionModel,
         messages: [userMessage],
@@ -561,6 +561,11 @@ export class PromptGuardServiceImpl extends Service implements PromptGuardServic
         temperature: 0,
         maxTokens: 256,
       })
+      // §7.37: this.llm.stream() returns Promise<AsyncIterable<StreamChunk>>
+      // since dsh-llm 0.1.2-rc.1 — await if thenable, otherwise use directly.
+      const stream = (streamRaw != null && typeof (streamRaw as { then?: unknown }).then === 'function')
+        ? await (streamRaw as unknown as Promise<AsyncIterable<{ type: string; text?: string }>>)
+        : streamRaw as AsyncIterable<{ type: string; text?: string }>
       for await (const chunk of stream) {
         chunks++
         if (chunk.type === 'text-delta' && responseText.length < MAX_ASSEMBLED) {

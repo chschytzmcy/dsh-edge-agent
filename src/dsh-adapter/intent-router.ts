@@ -481,12 +481,17 @@ confidence 含义：
     const timer = setTimeout(() => controller.abort(), this.llmTimeoutMs)
 
     try {
-      const stream = this.llm.stream({
+      const streamRaw = this.llm.stream({
         provider,
         model,
         messages: [userMessage],
         signal: controller.signal,
       })
+      // §7.37: this.llm.stream() returns Promise<AsyncIterable<StreamChunk>>
+      // since dsh-llm 0.1.2-rc.1 — await if thenable, otherwise use directly.
+      const stream = (streamRaw != null && typeof (streamRaw as { then?: unknown }).then === 'function')
+        ? await (streamRaw as unknown as Promise<AsyncIterable<{ type: string; text?: string }>>)
+        : streamRaw as AsyncIterable<{ type: string; text?: string }>
 
       for await (const chunk of stream) {
         chunks++

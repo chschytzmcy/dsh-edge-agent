@@ -94,15 +94,9 @@
 # parentage and registers into that scope's skill-registry layer.
 #
 # 2026-08-31: `agent-presets` config row pins the default preset to
-# `dsh-edge-agent`. The composer hardcodes `roots: [SHIPPED]`, so custom
-# presets must live under `$DSH_HOME/.agent-presets/<name>/` (the
-# `includeUserRoot: true` default auto-discovers them).
-- id: agent-presets
-  config:
-    default: dsh-edge-agent
-    # includeUserRoot defaults to true; explicitly set so future DSH
-    # version changes don't silently disable our preset discovery.
-    includeUserRoot: true
+# `dsh-edge-agent`. Moved to insert block (line 269) because TUI/headless
+# profiles don't load dsh-web-app, so agent-presets must be inserted, not
+# patched. See insert block for the active configuration.
 
 # ── upstream-disabled rows ──────────────────────────────────────────────────────
 # 2026-09-02: keep the disabled rows for the 7 stub plugins so any future
@@ -257,6 +251,16 @@
   disabled: true
 
 # ── new plugin inserts ─────────────────────────────────────────────────────────
+
+# ── 2026-09-04: agent-presets — per-session agent composition.
+# dsh-web-app registers this for web profile; TUI/headless profiles need it
+# inserted so tool-skill can load skills via the preset's agent.cordis.yml.
+- insert:
+    - id: agent-presets
+      name: '@deepseek-ai/dsh-agent-presets'
+      config:
+        default: dsh-edge-agent
+        includeUserRoot: true
 
 # ── 2026-09-01 (M6): file-logger — durable ops log exporter.
 # Must mount FIRST so every other plugin's ctx.logger.* call (audit-log
