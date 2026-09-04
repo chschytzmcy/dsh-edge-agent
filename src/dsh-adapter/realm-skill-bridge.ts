@@ -28,7 +28,7 @@ import { Service } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
 
 export const name = 'realm-skill-bridge'
-export const inject = ['auditLog'] as const
+export const inject = ['auditLog', 'skills'] as const
 
 /** Realm tag for skills and tools. 'hidden' means invisible to all agents. */
 export type RealmTag = 'LOCAL' | 'CLOUD' | 'SANITIZED' | 'hidden'
@@ -320,13 +320,37 @@ export class RealmSkillBridgeService extends Service {
   private async tagSkillsAsync(): Promise<void> {
     this.skillRealms.clear()
     try {
+      // Debug: check if ctx.skills exists
+      const skillsService = (this.ctx as unknown as { skills?: unknown }).skills
+      this.ctx.logger?.info?.(`[realm-skill-bridge] ctx.skills exists: ${skillsService !== undefined}`)
+
+      // Debug: check ctx.skills methods
+      if (skillsService && typeof skillsService === 'object') {
+        const methods = Object.keys(skillsService as object)
+        this.ctx.logger?.info?.(`[realm-skill-bridge] ctx.skills methods: ${methods.join(', ')}`)
+      }
+
+      // Try calling list() with and without cwd
       const list = await this.ctx.skills.list()
+      this.ctx.logger?.info?.(`[realm-skill-bridge] ctx.skills.list() returned ${list.length} skills`)
+      if (list.length > 0) {
+        this.ctx.logger?.info?.(`[realm-skill-bridge] first 5 skills: ${list.slice(0, 5).map(s => s.name).join(', ')}`)
+      }
+
+      // Try with cwd parameter
+      try {
+        const listWithCwd = await this.ctx.skills.list({ cwd: process.cwd() })
+        this.ctx.logger?.info?.(`[realm-skill-bridge] ctx.skills.list({cwd}) returned ${listWithCwd.length} skills`)
+      } catch (err) {
+        this.ctx.logger?.info?.(`[realm-skill-bridge] ctx.skills.list({cwd}) error: ${err}`)
+      }
+
       for (const skill of list) {
         const realm = this.resolveSkillRealm(skill.name)
         this.skillRealms.set(skill.name, realm)
       }
-    } catch {
-      // skills service not yet available — will retry on skills/change.
+    } catch (err) {
+      this.ctx.logger?.info?.(`[realm-skill-bridge] tagSkillsAsync error: ${err}`)
     }
     this.logTaggingResult()
   }

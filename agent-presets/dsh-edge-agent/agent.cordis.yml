@@ -74,8 +74,12 @@
 # preset, and `tool-skill` gives them the catalog and loader; the merged
 # catalog also carries whatever the deployment registered globally
 # (repository plugins).
+# 2026-09-04: skill-filesystem disabled here — moved to host plane so
+# realm-skill-bridge can access ctx.skills at boot. Leaving both enabled
+# throws "a skill provider named 'filesystem' is already registered".
 - id: skill-filesystem
   name: '@deepseek-ai/dsh-skill-filesystem'
+  disabled: true
 
 - id: tool-skill
   name: '@deepseek-ai/dsh-tool-skill'

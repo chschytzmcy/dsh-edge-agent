@@ -50,7 +50,6 @@
     "tool-workflow",
     "tool-ralph",
     "tool-goal",
-    "skill-filesystem",
     "skill-badge",
     "workflow-worker-thread",
     "session-title-llm",

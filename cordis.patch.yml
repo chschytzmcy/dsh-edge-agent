@@ -215,15 +215,14 @@
 - id: tool-goal
   disabled: true
 - id: skill-filesystem
-  # 2026-09-01: Disabled at host — the dsh-edge-agent agent preset registers
-  # its own skill-filesystem row (see repo-root agent-presets/dsh-edge-agent/
-  # agent.cordis.yml). Leaving both enabled throws "a skill provider named
-  # 'filesystem' is already registered" at session start, blocking every
-  # new chat in the Web UI. Mirrors the tool-skill pattern just above:
-  # host owns the registry, preset owns the provider entries, realm-skill-
-  # bridge filters the merged catalog per realm regardless of which row
-  # registered the tool.
-  disabled: true
+  name: '@deepseek-ai/dsh-skill-filesystem'
+  # 2026-09-04: ENABLED at host plane so realm-skill-bridge can access
+  # ctx.skills.list() at boot. Previously disabled here because preset
+  # registered its own skill-filesystem row, causing "a skill provider
+  # named 'filesystem' is already registered" error. Now preset disables
+  # its row to avoid conflict. realm-skill-bridge needs skills available
+  # at host plane for Layer 1 catalog filtering.
+  disabled: false
 - id: skill-badge
   disabled: true
 - id: workflow-worker-thread
@@ -313,7 +312,7 @@
     # Must mount before http-api (which injects realmSkillBridge).
     - id: realm-skill-bridge
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/realm-skill-bridge'
-      inject: [auditLog]
+      inject: [auditLog, skills]
       config:
         configPath: !!js process.env.DSH_EDGE_REALM_CONFIG ?? ((process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent/skill-realms.json')
         hotReload: !!js process.env.DSH_EDGE_REALM_HOT_RELOAD !== 'false'
