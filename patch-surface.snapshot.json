@@ -1,6 +1,5 @@
 {
   "inserts": [
-    "agent-presets",
     "file-logger",
     "tcm",
     "td-bus",
@@ -28,7 +27,8 @@
     "sandbox-policy",
     "agent-default-model",
     "tool-web",
-    "web"
+    "web",
+    "dsh-tui-agent-presets"
   ],
   "disablesBeyondWebApp": [
     "llm-deepseek",

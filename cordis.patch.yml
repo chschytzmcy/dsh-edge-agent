@@ -258,14 +258,27 @@
 # ── new plugin inserts ─────────────────────────────────────────────────────────
 
 # ── 2026-09-04: agent-presets — per-session agent composition.
-# dsh-web-app registers this for web profile; TUI/headless profiles need it
-# inserted so tool-skill can load skills via the preset's agent.cordis.yml.
-- insert:
-    - id: agent-presets
-      name: '@deepseek-ai/dsh-agent-presets'
-      config:
-        default: dsh-edge-agent
-        includeUserRoot: true
+# dsh-web-app inserts this for web profile; dsh-tui inserts a scoped copy
+# (`dsh-tui-agent-presets`) for TUI/headless. We do NOT re-insert here —
+# that produces either "service agentPresets has been registered" (when
+# both rows enabled) or "duplicate loader entry id" (when both rows use
+# the same id in an insert block). Instead we config-override the
+# existing dsh-tui-agent-presets entry to flip its default from
+# 'standard' to 'dsh-edge-agent', so TUI agents compose our preset (with
+# ets-* skills) instead of dsh-base's standard one.
+#
+# §7.40.3 detail: top-level `- id:` rows with the same id as an existing
+# entry are Cordis Loader config overrides (last-write-wins on config,
+# single entry per id, dedup at parse time — vs insert block which adds
+# new entries). This is the standard "user skin overrides bundle default"
+# pattern. On web profile (no dsh-tui bundle), this id is unknown to the
+# loader; Cordis silently no-ops the override, leaving dsh-web-app's
+# own agent-presets insert as the source — which already sets
+# default=dsh-edge-agent (verified in dsh-web-app bundle).
+- id: dsh-tui-agent-presets
+  config:
+    default: dsh-edge-agent
+    includeUserRoot: true
 
 # ── 2026-09-01 (M6): file-logger — durable ops log exporter.
 # Must mount FIRST so every other plugin's ctx.logger.* call (audit-log
