@@ -8,9 +8,9 @@
 # self-contained — `dsh plugin --profile web add -w $LOCAL_PKG` picks up every
 # plugin in a single bundle layer with no profile overlay needed.
 #
-# 2026-09-03: http-api plugin disabled (P-structural refactor). web profile
-# uses dsh-web-app native chat plugin; no need for the standalone HTTP entry.
-# Code in src/dsh-adapter/http-api.ts is preserved for future revival.
+# 2026-09-04: http-api plugin re-enabled. Provides standalone HTTP entry
+# point at :21017 for external consumers (mobile apps, third-party services).
+# Web profile still uses dsh-web-app native chat (:3080) alongside http-api.
 #
 # Load order:
 #   dsh-base → ...other bundles... → @deepseek-harness-edge-agent/dsh-edge-agent (this)
@@ -316,17 +316,15 @@
         watchIntervalMs: !!js parseInt(process.env.DSH_EDGE_REALM_WATCH_MS ?? '5000', 10)
 
     - id: http-api
-      disabled: true
-      # 2026-09-03 (§7.31): disabled per P-structural refactor. dsh-edge-agent
-      # bundle 现在仅装 web profile；web profile 自带 dsh-web-app 提供 webui
-      # chat 入口 (:3080)，不需要自研 http-api (:21017)。
-      # 代码保留（src/dsh-adapter/http-api.ts），未来若需要 standalone HTTP
-      # 入口可重新启用或迁出到独立 chat-gateway bundle。
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/http-api'
-      # inject + config 块省略（disabled 后 cordis 不会 apply）；保留为参考：
-      #   inject: [agents, intentRouter, promptGuard, auditLog, sanitizer, realmSkillBridge, edgeTools]
-      #   config: host=0.0.0.0, port=21017, bearerToken=EDGE_API_KEY,
-      #           sessionIdleTimeoutMs=1800000, maxActiveSessions=100
+      inject: [agents, intentRouter, auditLog, tdBus, realmSkillBridge, edgeTools]
+      config:
+        host: !!js process.env.DSH_EDGE_HTTP_HOST ?? '127.0.0.1'
+        port: !!js parseInt(process.env.DSH_EDGE_HTTP_PORT ?? '21017', 10)
+        bearerToken: !!js process.env.EDGE_API_KEY ?? undefined
+        sessionIdleTimeoutMs: !!js parseInt(process.env.DSH_EDGE_SESSION_IDLE_MS ?? '1800000', 10)
+        maxActiveSessions: !!js parseInt(process.env.DSH_EDGE_MAX_SESSIONS ?? '100', 10)
+        maxRequestBodyBytes: !!js parseInt(process.env.DSH_EDGE_MAX_BODY_BYTES ?? '1048576', 10)
 
     - id: cloud-llm-adapter
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/cloud-llm-adapter'
