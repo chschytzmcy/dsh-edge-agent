@@ -142,11 +142,15 @@
 # re-declaring them here (last-write-wins), dsh-edge-agent overrides that
 # disable with the upstream default. Standalone usage is unaffected.
 
-# 启用的工具
+# 启用的工具（明确 disabled: false 覆盖 dsh-web-app 的禁用）
 - id: tool-bash
+  disabled: false
 - id: tool-fs
+  disabled: false
 - id: tool-fs-search
+  disabled: false
 - id: tool-web
+  disabled: false
   config:
     search: true
     fetch: true
@@ -165,7 +169,9 @@
     searchProvider: deepseek-official
     fetchProvider: http
 - id: tool-todo
+  disabled: false
 - id: tool-str-replace-editor
+  disabled: false
 - id: web-search-deepseek
   # 2026-09-04: RE-ENABLED. The 2026-09-03 comment claimed peer dep
   # `@deepseek-ai/dsh-environment` was missing. Wrong — actual peer deps are

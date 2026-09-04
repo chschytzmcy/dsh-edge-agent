@@ -7,12 +7,10 @@
     "dws": "CLOUD",
     "lark-*": "CLOUD",
     "find-skills": "CLOUD",
-    "ima-skill": "CLOUD",
-    "claude-model-switch": "CLOUD"
+    "ima-skill": "CLOUD"
   },
 
   "tools": {
-    "skill": "LOCAL",
     "web_search": "CLOUD",
     "web_fetch": "CLOUD"
   },

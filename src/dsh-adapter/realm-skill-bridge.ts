@@ -299,24 +299,21 @@ export class RealmSkillBridgeService extends Service {
   /** Re-scan ctx.skills.list() and tag each skill by realm. */
   private tagSkills(): void {
     this.skillRealms.clear()
-    let skills: ReadonlyArray<{ name: string }>
-    try {
-      // ctx.skills.list() is async; we fire-and-forget here because tagging
-      // runs on a timer and on skills/change events. The next tick will
-      // converge. For the initial boot, apply() awaits this separately.
-      skills = []
-      void (async () => {
+    // ctx.skills.list() is async; we fire-and-forget here because tagging
+    // runs on a timer and on skills/change events. The next tick will
+    // converge. For the initial boot, apply() awaits this separately.
+    void (async () => {
+      try {
         const list = await this.ctx.skills.list()
         for (const skill of list) {
           const realm = this.resolveSkillRealm(skill.name)
           this.skillRealms.set(skill.name, realm)
         }
         this.logTaggingResult()
-      })()
-      return
-    } catch {
-      skills = []
-    }
+      } catch {
+        // skills service not yet injected — will retry on next tick or skills/change.
+      }
+    })()
   }
 
   /** Synchronous variant for await contexts. */
