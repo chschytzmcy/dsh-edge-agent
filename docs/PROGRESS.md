@@ -3959,16 +3959,16 @@ CLOUD session 看 11 个 tool 是正确的（Layer 1.5 注释里也是 `note: fr
 
 **不要重复在 model-detect 上踩同一个坑**。dsh-llm 的 stream / forAdapter 链路返回 Promise<AsyncIterable> 不是 AsyncIterable。任何 await 必须先 thenable-check 再 await。`this.llm.stream(...).then ? await : ...` 是 dsh 0.1.2-rc.1 的事实契约。
 
-### §7.38 — http-api agent-preset 装配 + 撞 dsh-agent-loop upstream bug（2026-09-04）
+### §7.38 — http-api agent-preset 装配 + 三层 root cause 链（2026-09-04）
 
-**触发**：user 用 dsh-tui 输入"列出密盒的文件"，`result=""` 空返回。`toolsCount` 从 §7.37 的 11 → 27（preset 生效），但 turn 仍失败 → 需要从 audit / session log / 上游 node_modules 三处交叉定位。
+**触发**：user 用 dsh-tui 输入"列出密盒的文件"，`result=""` 空返回。`toolsCount` 从 §7.37 的 11 → 27（preset 生效），但 turn 仍失败 → 需要从 audit / session log / 编译产物三处交叉定位。
 
 **前置 §7.37 修复未解决 turn/end 失败**：
 - §7.37 让 agent 加入 realm-skill-bridge session-realm，http-api 也注入了 realmSkillBridge
 - 但 user 实测 turn 仍 `result: ""`
 - audit `realm-skill-bridge.hook.probe{toolsCount: 11, agentRealm: "LOCAL"}`——tools 还是只有 11 个，少 preset 自带 bash/grep 等
 
-**根因 1：agent 没加入 preset**：
+**根因 A：agent 没加入 preset**：
 
 session log 警告：
 ```
@@ -4008,57 +4008,82 @@ const created = await ctx.agents.create({
 - session header `agentPreset: "standard"` 落库
 - "was published without joining an agent preset" 警告**消失**
 
-**根因 2：turn/end 仍报 `stream is not async iterable`**：
+**根因 B：turn 仍报 `stream is not async iterable`**——但实际不是 dsh-agent-loop 的锅：
 
 session log seq 14（turn/end）：
 ```json
 {"type":"turn/end","seq":14,"data":{"turn":1,"reason":{"kind":"error","error":{"message":"stream is not async iterable","code":"UNKNOWN"}}}}
 ```
 
-**这是上游 dsh-agent-loop@0.1.2-rc.1 的 bug**：
-- 文件 `/home/etsme/.npm-global/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-agent-loop/lib/index.js:624`
-- 代码：`const stream = preparedCall?.stream(request) ?? this.loopCtx.llm.stream(request); for await (const chunk of stream) {`
-- `llm.stream()` 在 dsh-llm@0.1.2-rc.1 返回 `Promise<AsyncIterable>`（waterfall 链路包了一层）
-- for-await 直接消费 Promise → babel `_asyncIterator(stream)` 抛 "Object is not async iterable"
-- 同 bug 在 dsh-agent-loop@0.1.0-rc.7（profiles/dsh-edge-agent/node_modules/）也存在
-- 0.1.2-rc.1 npm tarball 确认含同 bug
+§7.38 早期曾把这条错归到 `dsh-agent-loop@0.1.2-rc.1` line 624 的 for-await，但**§7.39 重新诊断后修正**——见下。
 
-**所有入口都中招**：dsh-tui / web / webui / http-api 直调 llm.stream 全部经过 dsh-agent-loop 这条路径。session log 证据：每条 turn 都以 `error.kind: "error", message: "stream is not async iterable"` 收尾。
+**根因 B 真实定位**：
 
-**修复尝试与限制**：
+dsh-llm 的 `adapterStream` 是 `async *`（async generator），调用返回 AsyncGenerator，不是 Promise（`lib/index.js:1658`）。
+Cordis waterfall 是**同步**的（`cordis/lib/index.js:317-323`），返回 listener 链的最外层结果。
+dsh-agent-loop 的 `for await (const chunk of stream)` 写在裸 AsyncGenerator 上能 work。
 
-| 方案 | 可行性 |
-|---|---|
-| 修 dsh-llm stream 改 AsyncIterable（去掉 waterfall 包 Promise）| breaking change，所有 listener 协议假设 Promise<AsyncIterable> |
-| 修 dsh-agent-loop 加 `await`（line 624）| 1 字符 fix，但 global node_modules out-of-repo，auto-mode 禁止改 |
-| 通过 realm-skill-bridge llm/stream listener 拦截 | listener 收到的是 waterfall 调用上下文；**dsh-agent-loop 直接调 `llm.stream()` 不走 waterfall listener**（dsh-llm 内部 waterfall 包裹），无法在 listener 层 unwrap |
-| fork dsh-agent-loop 进 edge-agent bundle | 工程量大，需要重写 dsh-agent-loop 全量 |
+**错的不是 dsh-agent-loop，错的是我们 §7.37 的 listener**。
 
-**已知 work-around（业务上可接受）**：
+§7.37 `realm-skill-bridge.ts:742` 注册的 `llm/stream` listener 是 `async (payload, next) => { ... return next() }`——async 函数**总是**把返回值包成 Promise。结果 cordis waterfall 链最外层返回 `Promise<AsyncGenerator>`，dsh-agent-loop 拿到 Promise → for-await 抛 "is not async iterable"。
 
-audit `resultLen:0` 是因为第 1 次 turn 失败 → §7.37 的"audit 埋点存在 ≠ enforce 生效"再次印证（即使 audit probe 一切正常，upstream bug 让 enforce 不可能 work）。http-api 仍然返回 HTTP 200 + `result:""`，client 端可以按 result 空决定重试或报错。
+**复现实验**（`/tmp/test-async-listener.mjs` 4 cases）：
 
-**§7.37 + §7.38 整体评估**：
+| Case | listener 形态 | waterfall 返回 | for-await |
+|---|---|---|---|
+| A | 无 listener | AsyncGenerator | ✅ PASS |
+| B | **async listener `return next()`** | **Promise<AsyncGenerator>** | **❌ FAIL "is not async iterable"** |
+| C | sync listener `return next()` | AsyncGenerator | ✅ PASS |
+| D | async listener `return inner()` | Promise<AsyncGenerator> | ❌ FAIL |
+
+**修复**（`src/dsh-adapter/realm-skill-bridge.ts:742`）：
+
+```diff
+-}).on?.('llm/stream', async (payload, next) => {
++}).on?.('llm/stream', (payload, next) => {  // sync, NOT async
+   ...
+   return next()
+ }, { global: true })
+```
+
+`AuditLogLike.log` 本来就返回 `void`（`realm-skill-bridge.ts:67`），没有 await 需求。listener 函数去掉 `async` 关键字，waterfall 链同步返回 AsyncGenerator，dsh-agent-loop for-await 直接 work。
+
+部署同 §7.37：`npx tsc && rsync --delete lib/types/ → ~/.dsh/profiles/{dsh-tui,web}/node_modules/...`。
+
+**修复后验证（session fix-async-listener-1，2026-09-04）**：
+
+```json
+{
+  "sessionId": "fix-async-listener-1",
+  "result": "⏵ 已完成目录初始查看\n\n这是一个 **dsh-edge-agent** 项目——一个基于 DSH (DeepSeek Harness) 的端侧私密智能体项目代码库。\n\n我注意到目录里有些散落的测试文件（如 `response`",
+  "intent": {"category": "CLOUD", "targetRealm": "cloud", "confidence": 0.99, "rationale": "llm-classified:cloud"},
+  "duration": 4757
+}
+```
+
+- ✅ `result` 不再为空字符串
+- ✅ LLM 真实输出关于项目结构的描述（"dsh-edge-agent" / "DSH DeepSeek Harness" / "端侧私密智能体"）
+- ✅ intent CLOUD 路由正确（http-api 把这条 turn 走 cloud-llm-adapter）
+- ✅ duration 4757ms 正常 LLM 调用时间
+- ✅ "stream is not async iterable" 错误**消失**
+
+**§7.36 / §7.37 / §7.38 整体评估**：
 
 | 层 | 状态 |
 |---|---|
 | input-guard session-realm 注册 (§7.36) | ✅ works |
 | realm-skill-bridge Layer 1.5 audit probe (§7.37) | ✅ works（只读）|
-| realm-skill-bridge Layer 3 tool deny (§7.36 + §7.37) | ⚠️ code 正确，**upstream bug 让 LLM turn 跑不到 tool execution** |
-| agent-preset 装配 (§7.38 本节 修复1) | ✅ works（toolsCount 11→27）|
-| agent turn 整体跑通 (§7.38 本节 bug2) | ❌ dsh-agent-loop@0.1.2-rc.1 upstream bug |
-
-**TODO（待 user 决策）**：
-
-- **等 dsh 上游修复 dsh-agent-loop**（PR 提交 / 升级 0.1.2-rc.2）：关注 `@deepseek-ai/dsh-agent-loop` releases。
-- **手动 patch global node_modules**（已确认 1 字符 fix 可 work）：需 user 显式授权。本地 `npm rebuild` 会冲掉。
-- **用 patch-package 持久化**：edge-agent 加 `patch-package` + patches dir，npm postinstall 钩子自动 reapply。最稳但需 user 同意。
-- **降级到 0.1.1-rc.x**：那版本 llm/stream 还是 AsyncIterable 直返，无 for-await 问题（但 0.1.2-rc.1 已经用 deepFreeze，rollback 失去 freeze invariant）。**不推荐**。
+| realm-skill-bridge Layer 3 tool deny (§7.36 + §7.37) | ✅ works（Layer 1.5 修复后终于 reach tool execution）|
+| agent-preset 装配 (§7.38 根因 A) | ✅ works（toolsCount 11→27）|
+| llm/stream listener sync (§7.38 根因 B) | ✅ works（AsyncGenerator 不再被包 Promise）|
+| agent turn 整体跑通 (§7.38 整体) | ✅ works（fix-async-listener-1 session 全链路通）|
 
 **lesson**：
 
-**fix-once 不等于 fix-always**。§7.37 改了 Layer 1.5 → §7.38 发现 Layer 1 (agent-pre-step) 之外的 Layer 1.5 (llm/stream) hook 实际触发了 → 但 turn 依然失败 → 根因回到 agent-loop 而非我们的 hook 链。每加一层防御都要重新 verify end-to-end，单层 audit 看不到上下游 bug。
+**async listener 包装 AsyncGenerator 是 cordis waterfall 经典陷阱**。async 函数返回值恒为 Promise<T>。当 listener 在 waterfall 链里 `return next()`，`next()` 的 AsyncGenerator 被包成 Promise → 异步消费者拿到的不是 AsyncIterable 而是 Promise<AsyncIterable> → babel `_asyncIterator` 抛 "is not async iterable"。**任何 cordis waterfall listener 返回 stream / AsyncIterable / AsyncGenerator 时必须保持 sync**，否则破坏 chain contract。
 
-**dsh-agent-loop 的 for-await-on-Promise 是已知反模式**。`@babel/runtime/helpers/asyncIterator.js` 抛的 "Object is not async iterable" 一定源自 for-await 一个非 AsyncIterable——Promise 是最常见罪犯。0.1.2-rc.1 这次 broken 同时影响 dsh-agent-loop、dsh-session-title-llm、dsh-tui sideQuestion、dsh-tui channel 等多个调用点。**任何 await 必须先 thenable-check** 这条 lesson（§7.37 末）现在要发给上游。
+**fix-once 不等于 fix-always**。§7.37 加 Layer 1.5 hook → §7.38 发现 hook 触发了但 turn 仍 fail → 根因回到 hook 写法而非 hook 概念本身。每加一层防御都要重新 verify end-to-end，单层 audit 看不到上下游 bug。
+
+**不要把 root cause 甩锅给上游**。§7.38 早期一句"for-await on Promise"扔给 dsh-agent-loop，差点导致走 patch-package / 等 rc.2 / 降级的弯路。**先在最小复现里隔离自己的代码再下结论**——`/tmp/test-async-listener.mjs` Case B 复现 → 锁定 listener 写法 → 同步改完即 work，1 字符级别 fix，self-contained。
 
 **agent-preset 装配是 http-api 的必修课**。dsh 0.1.2 引入 agent-presets 后，**所有**调用 `agents.create()` 的代码都必须传 `meta.agentPreset` + `setup` 回调，否则 agent 跑空 global layer。这条 invariant 应该在 dsh 文档里硬写明，但目前只在 dsh-tui/web 内部模块里提过——任何外部 bundle（如我们 dsh-edge-agent）都得自己抄一份 composePreset。

@@ -736,10 +736,18 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
   const disposeStream = (ctx as unknown as {
     on?: (
       event: string,
-      fn: (payload: unknown, next: () => Promise<unknown>) => Promise<unknown>,
+      // §7.39 (2026-09-04): SYNCHRONOUS listener — must NOT be `async`.
+      // Cordis waterfall returns the outermost listener's value verbatim.
+      // An async listener wraps the inner `next()` result (which is the
+      // AsyncGenerator returned by `dsh-llm.adapterStream`) in a Promise,
+      // and dsh-agent-loop's `for await (const chunk of stream)` then
+      // throws "stream is not async iterable" because it receives
+      // Promise<AsyncGenerator> instead of AsyncGenerator. AuditLogLike.log
+      // is declared `void` (sync), so no await is needed here.
+      fn: (payload: unknown, next: () => unknown) => unknown,
       options?: { global?: boolean },
     ) => () => void
-  }).on?.('llm/stream', async (payload: unknown, next: () => Promise<unknown>) => {
+  }).on?.('llm/stream', (payload: unknown, next: () => unknown) => {
     // Read-only audit probe — payload is frozen by dsh-llm.
     const p = payload as { sessionId?: string; tools?: ReadonlyArray<unknown> } | undefined
     if (p !== undefined && typeof p.sessionId === 'string') {
@@ -758,6 +766,8 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
       }) }
       catch { /* ignore */ }
     }
+    // Return the inner chain result synchronously so the AsyncGenerator
+    // reaches dsh-agent-loop unwrapped.
     return next()
   }, { global: true })
 
