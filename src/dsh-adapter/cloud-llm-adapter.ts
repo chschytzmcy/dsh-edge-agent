@@ -143,6 +143,18 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
         provider: this.providersList[0] ?? 'cloud',
         id: this.defaultModel,
         name: this.defaultModel,
+        // §7.43 (2026-09-07): mirror the local-llm-adapter §7.40 fix — declare
+        // contextWindow so basic-compaction-engine can compact long sessions.
+        // Without it, compaction logs
+        //   "compaction-basic: no context capacity for cloud-deepseek-v4/deepseek-chat"
+        // and refuses to compact, leaving promptLen to grow across turns
+        // (observed: 4910 chars on the second cloud call in session
+        // 5360189d-..., 5 tool-result blocks attached after web_search chain).
+        // 65536 (64K) is the documented context window for deepseek-chat
+        // (DeepSeek-V3/V4 variants); can be lifted if a future model ships
+        // with a larger window. No OOM concern on cloud (unlike local-qwen3-4b
+        // §7.40 where we kept 32768 to avoid local inference crashes).
+        contextWindow: 65536,
         inputModalities: ['text'],
       },
     ])
@@ -153,7 +165,16 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
     model: string,
     _signal?: AbortSignal,
   ): Promise<LlmResolvedModelInfo> {
-    return Promise.resolve({ provider, id: model, name: model })
+    // §7.43 (2026-09-07): see listModels comment — contextWindow must also
+    // surface through resolveModel so the runtime normalises it onto the
+    // active session's `info.context.contextWindow`. Without this the
+    // adapter's advertised contextWindow is ignored.
+    return Promise.resolve({
+      provider,
+      id: model,
+      name: model,
+      context: { contextWindow: 65536 },
+    })
   }
 
   override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
