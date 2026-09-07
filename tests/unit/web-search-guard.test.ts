@@ -180,6 +180,7 @@ describe('web-search-guard (Phase 5)', () => {
   // the same code path the `tools/result` observer fires in production, but
   // without spinning up the full Cordis loader. The M5 *integration* smoke
   // (in `scripts/`) drives a real `dsh --profile web` session.
+  // §7.43 (2026-09-05): web-only — 需要 ./install.sh --with-web 装过 web。
 
   it('M5: clean web_search query emits exactly one info-level audit (tool.web-search.executed)', async () => {
     const { service, audit } = buildService()

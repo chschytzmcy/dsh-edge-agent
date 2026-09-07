@@ -2,10 +2,14 @@
 # This patch is the ONLY patch needed when a profile lists
 # `@deepseek-harness-edge-agent/dsh-edge-agent` in its bundles array.
 #
-# 2026-09-03 (§7.31): dsh-edge-agent is a pure-plugin bundle for web profile.
+# 2026-09-05 (§7.43): 默认 host = dsh-tui（mandatory primary）。bundle 本身仍
+# profile-agnostic，可挂到 web / dsh-tui / 任意 profile；只是 install.sh 的默认
+# 部署目标从 web 切到 dsh-tui。web 是 opt-in secondary，需要 `--with-web`。
+#
+# 2026-09-03 (§7.31): dsh-edge-agent 是 profile-agnostic pure-plugin bundle。
 # Previously had a separate profiles/dsh-edge-agent/cordis.patch.yml (459 lines)
 # that was the profile overlay; that overlay is now deleted. Bundle is fully
-# self-contained — `dsh plugin --profile web add -w $LOCAL_PKG` picks up every
+# self-contained — `dsh plugin --profile <name> add -w $LOCAL_PKG` picks up every
 # plugin in a single bundle layer with no profile overlay needed.
 #
 # 2026-09-04: http-api plugin re-enabled. Provides standalone HTTP entry
@@ -31,7 +35,7 @@
 # (so this bundle works standalone without the profile overlay).
 - id: system-prompt
   config:
-    persona: !!js process.env.DSH_EDGE_PERSONA ?? 'You are edge-agent, a privacy-first AI assistant running on the user\'s edge device. Answer in the user\'s language. Be concise and helpful. You have access to local tools for file operations and calculations when appropriate. For knowledge questions, current events, or complex reasoning, provide comprehensive answers. Use the tool registry (bash, read, write, edit, glob, grep, todo_write, web_search, web_fetch, skill, send_message, interrupt_agent, subagent_fork, local_file_read, local_file_write, local_calculate) when an action is required; call the matching tool with the correct parameter shape and never invent tool names. The `skill` tool loads detailed instructions for a named capability (e.g. lark-doc, lark-calendar); once you call skill({name}) and receive its content, use that content immediately to answer the user\'s question — do NOT call the same skill again.'
+    persona: !!js process.env.DSH_EDGE_PERSONA ?? 'You are edge-agent, a privacy-first AI assistant running on the user\'s edge device. Answer in the user\'s language. Be concise and helpful. You have access to local tools for file operations and calculations when appropriate. For knowledge questions, current events, or complex reasoning, provide comprehensive answers. Use the tool registry (bash, read, write, edit, glob, grep, todo_write, web_search, web_fetch, skill, send_message, interrupt_agent, subagent_fork, local_file_read, local_file_write, local_calculate) when an action is required; call the matching tool with the correct parameter shape and never invent tool names. The `skill` tool loads detailed instructions for a named capability (e.g. lark-doc, lark-calendar); once you call skill({name}) and receive its content, use that content immediately to answer the user\'s question — do NOT call the same skill again. For local host queries (the user\'s own IP, hostname, disk, memory, kernel, running processes), call the `bash` tool directly with read-only commands — `ip addr`, `hostname -I`, `ifconfig`, `cat /proc/net/...`, `uname -a`, `df -h`, `free -h`, `uptime`, `ps aux`. Reserve the `skill` tool for explicit capability names the user invokes (e.g. `ets-discover` for scanning OTHER 密盒 devices on the LAN, `lark-doc` for Lark documents); do NOT use `ets-discover` to answer "my IP" or "本机局域网IP" — ets-discover broadcasts and returns other devices\' IPs, not the host\'s.'
 
 # Native DeepSeek adapter for the cloud realm. The edge agent always
 # prefers local-first; this row exists so cloud-llm-adapter can reach it.
