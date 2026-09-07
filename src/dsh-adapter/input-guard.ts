@@ -56,6 +56,18 @@ export interface Config {
    *  标记 downgraded=true 让 handleAgentRequest 把路由改写到 LOCAL——
    *  与"脱敏失败降级 LOCAL"对称：都是"系统配置缺失/故障，绝不上云"。*/
   cloudApiKeyEnv: string
+  /** 2026-09-07 §7.43 fix: TUI / dsh-web-app chat 入口不会写 agent._edgeRoute
+   *  （只有 http-api 写），所以 handlePreStep 拿不到"如果没降级本来会路由到
+   *  哪个 provider"。原来一直写 originalProvider=undefined，turn N+1 的
+   *  handleAgentRequest 恢复分支因此不会触发，TUI 上 CLOUD→LOCAL→CLOUD 序列
+   *  会被污染（session 20a78b87 turn 4 '查询英国最新的新闻' 实测）。
+   *
+   *  这里提供 fallback：env 镜像 cordis.patch.yml 的 DSH_EDGE_PROVIDER /
+   *  DSH_EDGE_MODEL（与上游 agent-loop 的"current provider"默认一致），
+   *  让 handlePreStep 即使没 _edgeRoute 也能写出一个可用的 originalProvider。
+   *  优先级：edgeRoute?.provider > defaultCloudProvider（http-api 已知更具体）。*/
+  defaultCloudProvider: string
+  defaultCloudModel: string
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -68,6 +80,13 @@ export const Config: Schema<Config> = Schema.object({
   cloudApiKeyEnv: Schema.string().default(
     // mirror cordis.patch.yml:41 的 !!js 表达式；apply() 里再尊重 DSH_EDGE_CLOUD_KEY_ENV 覆盖
     process.env.DSH_EDGE_CLOUD_KEY_ENV ?? 'DEEPSEEK_API_KEY',
+  ),
+  defaultCloudProvider: Schema.string().default(
+    // §7.43: mirror cordis.patch.yml:82 的 !!js；agent-loop 也用同一个值作"current provider"默认
+    process.env.DSH_EDGE_PROVIDER ?? 'cloud-deepseek-v4',
+  ),
+  defaultCloudModel: Schema.string().default(
+    process.env.DSH_EDGE_MODEL ?? 'deepseek-chat',
   ),
 })
 
@@ -510,6 +529,40 @@ export class InputGuardServiceImpl extends Service {
     return route
   }
 
+  /**
+   * §7.43 (2026-09-07): 解析"原始 provider/model/realm"，作为 stepState.originalProvider
+   *  的值写入，供 turn N+1 handleAgentRequest 的 recovery 分支使用。
+   *
+   *  优先级：http-api 写入的 _edgeRoute（更具体，知道是哪个 cloud 模型）
+   *          > TUI/webui 默认 fallback（mirror cordis.patch.yml 的 DSH_EDGE_PROVIDER）
+   *
+   *  没有 fallback 时，TUI 上的 CLOUD→LOCAL→CLOUD 序列会被污染：
+   *    turn N  (LOCAL)   → handlePreStep 写 originalProvider=undefined
+   *    turn N+1 (CLOUD)  → handleAgentRequest 看到 originalProvider=undefined，跳过恢复
+   *                      → return seedConfig（已被 agent-loop 锁成 local）
+   *                      → dispatch local-qwen3-4b ❌
+   *  用 fallback 后 turn N 写 originalProvider='cloud-deepseek-v4'，
+   *  turn N+1 恢复分支能正确识别并强制 restore 回 cloud-deepseek-v4。
+   *
+   *  返回 source 字段用于审计 forensics —— 'edge-route' 表示 http-api 设过，
+   *  'default-cloud-fallback' 表示我们用 config 默认值兜底（用户没明示偏好）。*/
+  private resolveOriginalRoute(edgeRoute: AgentEdgeRoute | undefined): {
+    provider: string | undefined
+    model: string | undefined
+    realm: AgentEdgeRoute['realm'] | undefined
+    source: 'edge-route' | 'default-cloud-fallback'
+  } {
+    if (edgeRoute && typeof edgeRoute.provider === 'string' && typeof edgeRoute.model === 'string') {
+      return { provider: edgeRoute.provider, model: edgeRoute.model, realm: edgeRoute.realm, source: 'edge-route' }
+    }
+    return {
+      provider: this.config.defaultCloudProvider,
+      model: this.config.defaultCloudModel,
+      realm: undefined, // 没有 _edgeRoute 时无从知道"原 realm 是什么"；CLOUD 是合理推断但不强写
+      source: 'default-cloud-fallback',
+    }
+  }
+
   /** 正向 hook：agent/pre-step handler。暴露给测试。*/
   async handlePreStep(
     payload: {
@@ -685,11 +738,13 @@ export class InputGuardServiceImpl extends Service {
     if ((category === 'CLOUD' || category === 'SANITIZED') && !this.hasCloudCredentials()) {
       const hasRawEdgeRoute = typeof (payload.agent as { _edgeRoute?: unknown })?._edgeRoute !== 'undefined'
       const routeSource: 'http-api' | 'webui' = hasRawEdgeRoute ? 'http-api' : 'webui'
+      const original = this.resolveOriginalRoute(edgeRoute) // §7.43: 用 fallback 让 TUI 也能写 originalProvider
       this.audit('security', 'input-guard.cloud-key.missing', {
         sessionId, category, envSlot: this.config.cloudApiKeyEnv,
-        originalProvider: edgeRoute?.provider,
-        originalModel: edgeRoute?.model,
-        originalRealm: edgeRoute?.realm,
+        originalProvider: original.provider,
+        originalModel: original.model,
+        originalRealm: original.realm,
+        originalProviderSource: original.source, // §7.43 forensics
         routeSource,
         targetProvider: this.config.localProvider,
         targetModel: this.config.localModel,
@@ -698,9 +753,9 @@ export class InputGuardServiceImpl extends Service {
         sanitized: false, replacements: 0, sessionId, timestamp: Date.now(),
         downgraded: true,
         downgradeReason: `cloud-key-missing:${this.config.cloudApiKeyEnv}`,
-        originalProvider: edgeRoute?.provider,
-        originalModel: edgeRoute?.model,
-        originalRealm: edgeRoute?.realm,
+        originalProvider: original.provider,
+        originalModel: original.model,
+        originalRealm: original.realm,
         routeSource,
       })
       return decision
@@ -731,21 +786,23 @@ export class InputGuardServiceImpl extends Service {
       const wantsDowngradeToLocal = category === 'LOCAL'
       const hasRawEdgeRoute = typeof (payload.agent as { _edgeRoute?: unknown })?._edgeRoute !== 'undefined'
       const routeSource: 'http-api' | 'webui' = hasRawEdgeRoute ? 'http-api' : 'webui'
+      const original = this.resolveOriginalRoute(edgeRoute) // §7.43: TUI 不设 _edgeRoute 时用 fallback
       this.stepState.set(sessionId, {
         sanitized: false, replacements: 0, sessionId, timestamp: Date.now(),
         downgraded: wantsDowngradeToLocal,
         downgradeReason: wantsDowngradeToLocal ? 'intent-local' : undefined,
-        originalProvider: edgeRoute?.provider,
-        originalModel: edgeRoute?.model,
-        originalRealm: edgeRoute?.realm,
+        originalProvider: original.provider,
+        originalModel: original.model,
+        originalRealm: original.realm,
         routeSource,
       })
       if (wantsDowngradeToLocal) {
         this.audit('security', 'input-guard.intent.downgraded', {
           sessionId, category, reason: 'intent-local', routeSource,
-          originalProvider: edgeRoute?.provider,
-          originalModel: edgeRoute?.model,
-          originalRealm: edgeRoute?.realm,
+          originalProvider: original.provider,
+          originalModel: original.model,
+          originalRealm: original.realm,
+          originalProviderSource: original.source, // §7.43 forensics
           targetProvider: this.config.localProvider,
           targetModel: this.config.localModel,
         })
@@ -756,15 +813,16 @@ export class InputGuardServiceImpl extends Service {
     try {
       const result = await this.sanitizer.sanitize(originalLastUser.text, { sessionId })
       const replacements = result.replacements.length
+      const original = this.resolveOriginalRoute(edgeRoute) // §7.43: TUI 不设 _edgeRoute 时用 fallback
       if (replacements > 0) {
         // 替换 decision.messages 里 originalLastUser.index 位置的消息（不是最后一条 user，
         // 因为 dsh-agent-instructions 可能在末尾追加了 user-role 注入）。
         const newMessages = replaceAtUserIndex(decision.messages ?? payload.messages, originalLastUser.index, result.sanitizedText)
         this.stepState.set(sessionId, {
           sanitized: true, replacements, sessionId, timestamp: Date.now(),
-          originalProvider: edgeRoute?.provider,
-          originalModel: edgeRoute?.model,
-          originalRealm: edgeRoute?.realm,
+          originalProvider: original.provider,
+          originalModel: original.model,
+          originalRealm: original.realm,
         })
         this.audit('info', 'input-guard.sanitized', {
           sessionId, replacementCount: replacements, category,
@@ -774,9 +832,9 @@ export class InputGuardServiceImpl extends Service {
       // 没替换：状态标记 sanitized=false
       this.stepState.set(sessionId, {
         sanitized: false, replacements: 0, sessionId, timestamp: Date.now(),
-        originalProvider: edgeRoute?.provider,
-        originalModel: edgeRoute?.model,
-        originalRealm: edgeRoute?.realm,
+        originalProvider: original.provider,
+        originalModel: original.model,
+        originalRealm: original.realm,
       })
       return decision
     } catch (err: any) {
@@ -802,18 +860,20 @@ export class InputGuardServiceImpl extends Service {
 
       // 标记降级：让后续 agent/request 钩子把 route 改写到 LOCAL。
       // messages 不修改（保留原文，LOCAL LLM 不上云无需脱敏）。
+      const original = this.resolveOriginalRoute(edgeRoute) // §7.43: TUI 不设 _edgeRoute 时用 fallback
       this.stepState.set(sessionId, {
         sanitized: false, replacements: 0, sessionId, timestamp: Date.now(),
         downgraded: true, downgradeReason: reason,
-        originalProvider: edgeRoute?.provider,
-        originalModel: edgeRoute?.model,
-        originalRealm: edgeRoute?.realm,
+        originalProvider: original.provider,
+        originalModel: original.model,
+        originalRealm: original.realm,
       })
       this.audit('security', 'input-guard.sanitize.downgraded', {
         sessionId, error: reason, category,
-        originalProvider: edgeRoute?.provider,
-        originalModel: edgeRoute?.model,
-        originalRealm: edgeRoute?.realm,
+        originalProvider: original.provider,
+        originalModel: original.model,
+        originalRealm: original.realm,
+        originalProviderSource: original.source, // §7.43 forensics
         targetProvider: this.config.localProvider,
         targetModel: this.config.localModel,
       })
@@ -843,21 +903,77 @@ export class InputGuardServiceImpl extends Service {
     if (!sessionId) return seedConfig
 
     const state = this.stepState.get(sessionId)
-    if (!state?.downgraded) return seedConfig
-
-    // 改写 route 到 LOCAL。保留 reasoningEffort / maxTokens 等其他字段。
-    const downgraded: AgentRequestConfig = {
-      ...seedConfig,
-      provider: this.config.localProvider,
-      model: this.config.localModel,
+    if (state?.downgraded) {
+      // 改写 route 到 LOCAL。保留 reasoningEffort / maxTokens 等其他字段。
+      const downgraded: AgentRequestConfig = {
+        ...seedConfig,
+        provider: this.config.localProvider,
+        model: this.config.localModel,
+      }
+      this.audit('info', 'input-guard.route.overridden', {
+        sessionId,
+        from: { provider: seedConfig.provider, model: seedConfig.model },
+        to: { provider: downgraded.provider, model: downgraded.model },
+        reason: state.downgradeReason,
+      })
+      return downgraded
     }
-    this.audit('info', 'input-guard.route.overridden', {
-      sessionId,
-      from: { provider: seedConfig.provider, model: seedConfig.model },
-      to: { provider: downgraded.provider, model: downgraded.model },
-      reason: state.downgradeReason,
-    })
-    return downgraded
+
+    // §7.43 (2026-09-07): Recovery from a previous turn's downgrade.
+    //
+    // Background: handleAgentRequest is an `agent/request` waterfall listener.
+    // The upstream agent-loop builds seedConfig by reading the agent's
+    // "current provider" — which it persists across turns. When we returned
+    // a downgraded config in a prior turn (e.g. turn N intent=LOCAL), that
+    // downgraded provider stuck on the agent. On turn N+1 (intent=CLOUD),
+    // handlePreStep correctly writes state.downgraded=false, but seedConfig
+    // arriving here still has provider=localProvider. handleAgentRequest
+    // would then return seedConfig unchanged → agent-loop dispatches the
+    // CLOUD-classified query to the LOCAL LLM, where web_search is in a
+    // different realm (and qwen3-4b often hallucinates empty replies when
+    // asked for something it doesn't know how to fetch).
+    //
+    // Observed: session 20a78b87 turn 4 ('查询英国最新的新闻') was classified
+    // CLOUD by intent-router (confidence 0.99), input-guard.session-realm
+    // correctly registered CLOUD, but actual LLM call was local-qwen3-4b
+    // (audit shows `local-llm-adapter llm.local.start messageCount=26`,
+    // no `route.overridden` event — confirming handleAgentRequest was a
+    // pass-through with seedConfig.provider already stuck on local).
+    //
+    // Fix: when not downgrading THIS turn, AND we have a saved
+    // originalProvider from a prior downgrade AND current seedConfig is
+    // pointing at the local provider, restore to originalProvider. This is
+    // the symmetric inverse of the override above.
+    if (
+      state?.originalProvider &&
+      typeof state.originalProvider === 'string' &&
+      state.originalProvider !== this.config.localProvider &&
+      seedConfig.provider === this.config.localProvider
+    ) {
+      const restored: AgentRequestConfig = {
+        ...seedConfig,
+        provider: state.originalProvider,
+        model: state.originalModel ?? seedConfig.model,
+      }
+      this.audit('info', 'input-guard.route.restored', {
+        sessionId,
+        from: { provider: seedConfig.provider, model: seedConfig.model },
+        to: { provider: restored.provider, model: restored.model },
+        reason: 'recovery-from-previous-downgrade',
+        originalTurn: state.timestamp,
+      })
+      // Clear originalProvider after recovery so we don't keep restoring
+      // even when the agent-loop itself has moved past the contamination.
+      // Next downgrade will re-set it via handlePreStep.
+      this.stepState.set(sessionId, {
+        ...state,
+        originalProvider: undefined,
+        originalModel: undefined,
+      })
+      return restored
+    }
+
+    return seedConfig
   }
 
   /** 反向 hook：llm/stream handler。暴露给测试。*/
