@@ -41,6 +41,19 @@ export const name = 'local-llm-adapter'
 
 export const inject = ['llm', 'auditLog', 'inputGuard'] as const
 
+/**
+ * §7.42 (2026-09-05) P0-2: per-session runaway guard. If the local LLM emits
+ * more than this many consecutive REAL tool-call responses (finishKind=
+ * 'tool-calls' with toolCalls.size > 0 — malformed cases are handled by P0-1
+ * above and rewritten to finishKind='stop' before reaching the counter), the
+ * adapter throws `LlmError('MAX_TURNS_EXCEEDED')` to terminate the agent loop.
+ * 20 is conservative: a healthy tool-use turn rarely exceeds 3-5 iterations;
+ * 20 catches runaways without tripping on legitimate long chains.
+ */
+const MAX_CONSECUTIVE_TOOL_CALLS = 20
+const _sessionToolCallRuns = new Map<string, { count: number; lastSeen: number }>()
+let _toolCallRunPruneCounter = 0
+
 /** Minimal interface our adapter needs from the audit-log service. */
 interface AuditLike {
   log(entry: { level: 'debug' | 'info' | 'warn' | 'error' | 'security'; kind: string; source: string; payload: Record<string, unknown> }): Promise<unknown>
@@ -198,10 +211,14 @@ class RealLocalAdapter extends LlmAdapter {
         // completions after the second or third call (observed in session
         // 7eb91d59-...: call 1=19s/61 chars/tool-calls, call 2=1s/12 chars/
         // malformed `</tool_call>`, call 3=218ms/0 chars/finishKind=unknown).
-        // 32768 is conservative for qwen3-4b (officially supports 128K but
-        // local inference often OOMs past 32K); can be lifted once we
-        // measure the local server's actual capacity.
-        contextWindow: 32768,
+        // 16384 is the user-reported hard cap for this local qwen3-4b
+        // server (16K OOMs observed at higher settings; this machine is
+        // shared with other workloads, so a conservative ceiling is the
+        // only safe choice). Can be lifted once we measure the local
+        // server's actual capacity. §7.40.1 (2026-09-07): lowered from
+        // 32768 → 16384 after operator confirmed the local server's
+        // effective context window is 16K, not 32K.
+        contextWindow: 16384,
         inputModalities: ['text'],
       },
     ])
@@ -219,7 +236,7 @@ class RealLocalAdapter extends LlmAdapter {
       provider: this.providerName,
       id: model,
       name: model,
-      context: { contextWindow: 32768 },
+      context: { contextWindow: 16384 },
     })
   }
 
@@ -351,6 +368,114 @@ class RealLocalAdapter extends LlmAdapter {
       // debug level (mirrors cloud-llm-adapter).
       this.logger?.debug?.(`[local-llm-adapter] LLM_RESPONSE provider=${options.provider} durationMs=${durationMs} resultLen=${assembledText.length} finishKind=${finishKind ?? 'unknown'}`)
       this.logger?.debug?.(`[local-llm-adapter] LLM_RESPONSE_TEXT ${JSON.stringify({ text: assembledText })}`)
+    }
+
+    // §7.42 (2026-09-05) P0-1: malformed-tool-call detection.
+    // qwen3-4b-instruct-2507 @ OpenAI-compatible endpoints sometimes emit
+    // ~12 bytes of XML tag fragments (e.g. `\n<think>\n`) as plain-text
+    // content while setting finish_reason=tool_calls. Two patterns observed:
+    //
+    // Pattern A (rare, ~1%): toolCalls.size === 0, no real tool call accumulated.
+    //   Agent loop sees "tool-calls" but nothing to dispatch -> runaway (152
+    //   iterations observed in tui-probe-1). Fix: rewrite finishKind='stop'.
+    //
+    // Pattern B (dominant, ~99%): toolCalls.size >= 1, real tool call also emitted.
+    //   Agent loop dispatches the tool call, but the XML fragment text confuses
+    //   the model -> loop retries a few times then terminates (5 iterations, 70s
+    //   observed in p0-local test). Fix: strip the XML fragment from assembledText
+    //   so it doesn't pollute the session context, but let the tool call proceed.
+    //
+    // Both patterns logged at WARN + audit for ops visibility.
+    const MALFORMED_TOOL_CALL_TEXT_RE = /^[\s<>\/a-z_]{0,30}$/u
+    if (
+      finishKind === 'tool-calls' &&
+      assembledText.length > 0 &&
+      assembledText.length <= 30 &&
+      MALFORMED_TOOL_CALL_TEXT_RE.test(assembledText)
+    ) {
+      const hasRealToolCalls = toolCalls.size > 0
+      audit(this.auditLog, 'warn', 'llm.local.malformed_tool_call', {
+        provider: options.provider,
+        model: options.model,
+        resultLen: assembledText.length,
+        assembledTextPreview: assembledText.slice(0, 100),
+        messageCount: sanitizedMessages.length,
+        toolCallCount: toolCalls.size,
+        pattern: hasRealToolCalls ? 'B' : 'A',
+      })
+      this.logger?.warn?.(
+        `[local-llm-adapter] malformed tool-call response detected (pattern=${hasRealToolCalls ? 'B' : 'A'}, toolCallCount=${toolCalls.size}, text=${JSON.stringify(assembledText.slice(0, 40))})`,
+      )
+      if (!hasRealToolCalls) {
+        // Pattern A: no real tool call -> rewrite to stop, loop terminates
+        finishKind = 'stop'
+        sawToolCall = false
+      } else {
+        // Pattern B: real tool call present -> strip XML fragment text, let tool proceed
+        // Note: text-delta chunks already yielded, can't un-yield. But we clear
+        // assembledText so subsequent context doesn't include the fragment.
+        assembledText = ''
+        sawText = false
+      }
+    }
+
+    // §7.42 (2026-09-05) P0-2: per-session max-turns guard.
+    // If the local LLM keeps returning tool-calls without making progress
+    // (no text content, no stop/length finish), bound the resource usage
+    // by throwing after MAX_CONSECUTIVE_TOOL_CALLS consecutive tool-call
+    // responses. The counter resets on stop/length (agent loop terminates
+    // naturally) or on text-bearing tool-call responses (progress signal).
+    //
+    // Trigger: finishKind === 'tool-calls' && !sawText (no text content).
+    //   - Pattern B malformed (P0-1 above) sets assembledText='' and sawText=false,
+    //     so it also increments this counter — correct, since it's not making progress.
+    //   - Real tool-call with text (e.g. model explains what it's doing) does NOT
+    //     increment — that's a progress signal.
+    //
+    // Session tracking via module-level Map, keyed by sessionId (falls back to
+    // 'default' if absent — single shared counter for non-session callers).
+    // Stale entries pruned every 100 calls (keep those seen in last 5 minutes).
+    const sessionKey = typeof options.sessionId === 'string' && options.sessionId.length > 0
+      ? options.sessionId
+      : 'default'
+    if (finishKind === 'tool-calls') {
+      if (!sawText) {
+        const now = Date.now()
+        const entry = _sessionToolCallRuns.get(sessionKey) ?? { count: 0, lastSeen: now }
+        entry.count += 1
+        entry.lastSeen = now
+        _sessionToolCallRuns.set(sessionKey, entry)
+        // Periodic prune: every 100 calls, drop entries older than 5 minutes.
+        if (++_toolCallRunPruneCounter % 100 === 0) {
+          const cutoff = now - 5 * 60 * 1000
+          for (const [k, v] of _sessionToolCallRuns) {
+            if (v.lastSeen < cutoff) _sessionToolCallRuns.delete(k)
+          }
+        }
+        if (entry.count > MAX_CONSECUTIVE_TOOL_CALLS) {
+          audit(this.auditLog, 'warn', 'llm.local.max_turns_exceeded', {
+            provider: options.provider,
+            model: options.model,
+            sessionId: sessionKey,
+            consecutiveCount: entry.count,
+          })
+          this.logger?.error?.(
+            `[local-llm-adapter] per-session max-turns exceeded (session=${sessionKey}, count=${entry.count}/${MAX_CONSECUTIVE_TOOL_CALLS})`,
+          )
+          // Reset counter so next call starts fresh (agent loop may retry).
+          _sessionToolCallRuns.delete(sessionKey)
+          throw new LlmError(
+            `local-llm-adapter (${this.providerName}): per-session max-turns exceeded (count=${entry.count})`,
+            'MAX_TURNS_EXCEEDED',
+          )
+        }
+      } else {
+        // Tool-call response with text content -> progress, reset counter.
+        _sessionToolCallRuns.delete(sessionKey)
+      }
+    } else if (finishKind === 'stop' || finishKind === 'length') {
+      // Natural termination -> reset counter.
+      _sessionToolCallRuns.delete(sessionKey)
     }
 
     yield* terminalChunks(sawText, assembledText, toolCalls, finishKind, sawToolCall)

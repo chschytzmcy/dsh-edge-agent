@@ -153,7 +153,7 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
         // 65536 (64K) is the documented context window for deepseek-chat
         // (DeepSeek-V3/V4 variants); can be lifted if a future model ships
         // with a larger window. No OOM concern on cloud (unlike local-qwen3-4b
-        // §7.40 where we kept 32768 to avoid local inference crashes).
+        // §7.40 / §7.40.1 where we kept 16384 to avoid local inference OOM).
         contextWindow: 65536,
         inputModalities: ['text'],
       },

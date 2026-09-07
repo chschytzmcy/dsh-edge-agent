@@ -298,4 +298,170 @@ describe('local-llm-adapter (M4, real-only)', () => {
     assert.equal(types.filter((t) => t === 'block-start').length, 1)
     restoreFetch()
   })
+
+  // §7.42 (2026-09-05) P0-1: malformed-tool-call detection.
+  // qwen3-4b sometimes emits ~12 bytes of pure XML tag fragments as
+  // plain-text content while setting finish_reason='tool_calls'. Without
+  // detection, dsh-agent-loop enters a runaway (152 iterations observed).
+  // The adapter must detect this pattern and rewrite finishKind to 'stop'.
+  it('malformed tool-call response (XML fragment + finish_reason=tool_calls) → rewrite to stop (§7.42 P0-1)', async () => {
+    // Build the XML fragment at runtime to avoid embedding the literal in source.
+    // Real-world value: 12 bytes = `\n</think>\n`.
+    const xmlFragment = '\n' + String.fromCharCode(60) + '/think' + String.fromCharCode(62) + '\n'
+
+    const auditEvents: Array<{ level: string; kind: string; payload: Record<string, unknown> }> = []
+    const warnMessages: string[] = []
+    const auditLog = {
+      async log(entry: { level: string; kind: string; source: string; payload: Record<string, unknown> }): Promise<void> {
+        auditEvents.push({ level: entry.level, kind: entry.kind, payload: entry.payload })
+      },
+    }
+    const logger = {
+      info: () => {},
+      warn: (msg: string) => { warnMessages.push(msg) },
+      error: () => {},
+      debug: () => {},
+    }
+
+    installFetchMock(() => sseResponse([
+      // Model emits the XML fragment as content (text-delta) ...
+      { choices: [{ delta: { content: xmlFragment }, finish_reason: null }] },
+      // ... but claims finish_reason=tool_calls (wire format uses underscore;
+      // the parser normalizes it to the internal 'tool-calls' form).
+      { choices: [{ delta: {}, finish_reason: 'tool_calls' }] },
+    ]))
+    const adapter = new LocalLlmAdapterImpl(
+      {
+        providers: ['local-qwen3-4b'],
+        baseUrl: 'http://127.0.0.1:8080/v1',
+        defaultModel: 'qwen3-4b',
+      },
+      auditLog,
+      undefined, // inputGuard
+      logger,
+    )
+
+    const chunks: Array<{ type: string; [k: string]: unknown }> = []
+    for await (const chunk of adapter.stream({
+      provider: 'local-qwen3-4b',
+      model: 'qwen3-4b',
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+    })) {
+      chunks.push(chunk as { type: string })
+    }
+
+    const types = chunks.map((c) => c.type)
+    // After P0-1 rewrite, the stream should look like a normal text response:
+    // block-start (lazy) → text-delta (the fragment) → block-end → finish
+    assert.deepEqual(types, ['block-start', 'text-delta', 'block-end', 'finish'])
+
+    // Critical: finish reason must be 'stop', NOT 'tool-calls'.
+    const finishChunk = chunks[chunks.length - 1] as { type: string; reason?: { kind: string } }
+    assert.equal(finishChunk.reason?.kind, 'stop', 'malformed tool-call must be rewritten to stop')
+
+    // The text-delta should carry the original fragment (so the user sees what the model emitted).
+    const textChunk = chunks[1] as { type: string; text: string }
+    assert.equal(textChunk.text, xmlFragment)
+
+    // Verify the audit event was emitted with warn level.
+    const malformedEvent = auditEvents.find((e) => e.kind === 'llm.local.malformed_tool_call')
+    assert.ok(malformedEvent, 'must emit llm.local.malformed_tool_call audit event')
+    assert.equal(malformedEvent.level, 'warn')
+
+    // Verify the ops log got a warn message.
+    assert.ok(warnMessages.some((m) => m.includes('malformed tool-call response')), 'must log warn about malformed tool-call')
+
+    restoreFetch()
+  })
+
+  // §7.42 (2026-09-05) P0-2: per-session max-turns guard.
+  // If the local LLM emits >20 REAL tool-call responses in a row, the
+  // adapter must throw LlmError('MAX_TURNS_EXCEEDED') to bound the runaway.
+  it('max-turns guard: >20 consecutive tool-call responses → throw MAX_TURNS_EXCEEDED (§7.42 P0-2)', async () => {
+    // Real tool-call SSE stream (model emits proper tool-call JSON, not malformed).
+    // The OpenAI SSE format for tool calls:
+    //   delta.tool_calls[0] = { index: 0, id: 'call_1', function: { name: 'list_files', arguments: '' } }
+    //   delta.tool_calls[0] = { index: 0, function: { arguments: '{"pa' } }
+    //   ... then finish_reason='tool-calls'
+    const realToolCallEvents = [
+      { choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'list_files', arguments: '' } }] }, finish_reason: null }] },
+      { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '{"path":"/tmp"}' } }] }, finish_reason: null }] },
+      { choices: [{ delta: {}, finish_reason: 'tool_calls' }] },
+    ]
+
+    const auditEvents: Array<{ level: string; kind: string }> = []
+    const auditLog = {
+      async log(entry: { level: string; kind: string; source: string; payload: Record<string, unknown> }): Promise<void> {
+        auditEvents.push({ level: entry.level, kind: entry.kind })
+      },
+    }
+    const logger = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }
+
+    const adapter = new LocalLlmAdapterImpl(
+      { providers: ['local-qwen3-4b'], baseUrl: 'http://127.0.0.1:8080/v1', defaultModel: 'qwen3-4b' },
+      auditLog,
+      undefined,
+      logger,
+    )
+
+    const sessionId = 'p0-maxturns-test-' + Date.now()
+
+    // First 20 calls: succeed (tool-calls finish, counter increments).
+    for (let i = 0; i < 20; i++) {
+      installFetchMock(() => sseResponse(realToolCallEvents))
+      const chunks: unknown[] = []
+      for await (const chunk of adapter.stream({
+        provider: 'local-qwen3-4b',
+        model: 'qwen3-4b',
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+        sessionId,
+      } as unknown as Parameters<typeof adapter.stream>[0])) {
+        chunks.push(chunk)
+      }
+      // Each call should produce a tool-calls finish.
+      const finish = chunks[chunks.length - 1] as { reason?: { kind: string } }
+      assert.equal(finish.reason?.kind, 'tool-calls', `call ${i + 1} should finish with tool-calls`)
+    }
+
+    // 21st call: must throw MAX_TURNS_EXCEEDED.
+    installFetchMock(() => sseResponse(realToolCallEvents))
+    await assert.rejects(
+      (async () => {
+        for await (const _ of adapter.stream({
+          provider: 'local-qwen3-4b',
+          model: 'qwen3-4b',
+          messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+          sessionId,
+        } as unknown as Parameters<typeof adapter.stream>[0])) {
+          // drain
+        }
+      })(),
+      (error: unknown) => {
+        assert.ok(error instanceof Error)
+        assert.equal((error as { code?: string }).code, 'MAX_TURNS_EXCEEDED')
+        return true
+      },
+    )
+
+    // Verify audit event was emitted.
+    assert.ok(auditEvents.some((e) => e.kind === 'llm.local.max_turns_exceeded'), 'must emit max_turns_exceeded audit')
+
+    // After the throw, counter is reset. Next call should succeed.
+    installFetchMock(() => sseResponse([
+      { choices: [{ delta: { content: 'ok' }, finish_reason: 'stop' }] },
+    ]))
+    const chunks: unknown[] = []
+    for await (const chunk of adapter.stream({
+      provider: 'local-qwen3-4b',
+      model: 'qwen3-4b',
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+      sessionId,
+    } as unknown as Parameters<typeof adapter.stream>[0])) {
+      chunks.push(chunk)
+    }
+    const finish = chunks[chunks.length - 1] as { reason?: { kind: string } }
+    assert.equal(finish.reason?.kind, 'stop', 'after throw + reset, next call should terminate cleanly')
+
+    restoreFetch()
+  })
 })
