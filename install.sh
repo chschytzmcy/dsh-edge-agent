@@ -311,6 +311,59 @@ if [ -n "$pids" ]; then
   done
 fi
 
+# §7.43 (2026-09-07): inline DSH_EDGE_HTTP_PORT per profile + port-wait loop.
+# Three failure modes that the previous code allowed when restarting a
+# profile whose port collided with a sibling:
+#   1. PROFILE_ENV_SH missing → fell back to repo .env.sh → port default
+#      21017 (caused EADDRINUSE when another profile already on 21017).
+#   2. PROFILE_ENV_SH present but had a bash syntax error → `source` returned
+#      non-zero, port override never applied.
+#   3. Old process killed but port still in TIME_WAIT → new process binds,
+#      EADDRINUSE on the next restart.
+# We (a) FORCE the port per-profile after the source, and (b) wait for
+# the actual port to be free (not just the process exit) before launching.
+# Map: dsh-tui → 21018 (the tui host lives here; web/others stay on 21017).
+INLINE_PORT=21017
+case "$PROFILE" in
+  dsh-tui) INLINE_PORT=21018 ;;
+esac
+
+# Wait for the target port to actually be free. TIME_WAIT can hold a
+# TCP port for ~60s after the socket closes; net.Server has no graceful
+# close, so kill → close lag is typically 1-5s. We poll the port (not
+# just the process) for up to 10s before launching.
+port_is_free() {
+  local _p="$1"
+  if command -v ss >/dev/null 2>&1; then
+    ss -tln 2>/dev/null | awk '{print $4}' | grep -qE "(127\.0\.0\.1|0\.0\.0\.0|\*):${_p}$" && return 1
+    return 0
+  elif command -v netstat >/dev/null 2>&1; then
+    netstat -tln 2>/dev/null | awk '{print $4}' | grep -qE "(127\.0\.0\.1|0\.0\.0\.0|\*):${_p}$" && return 1
+    return 0
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 - "$_p" <<'PYEOF' || return 1
+import socket, sys
+p = int(sys.argv[1])
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+try:
+    s.bind(("127.0.0.1", p))
+    s.close()
+    sys.exit(0)
+except OSError:
+    sys.exit(1)
+PYEOF
+  fi
+  return 0  # can't probe — assume free
+}
+echo "      waiting for port $INLINE_PORT to be free …"
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  if port_is_free "$INLINE_PORT"; then
+    echo "      port $INLINE_PORT is free"
+    break
+  fi
+  sleep 1
+done
+
 DSH_BIN="${DSH_EDGE_BIN:-$(command -v dsh 2>/dev/null || echo /home/etsme/.npm-global/bin/dsh)}"
 if [ ! -x "$DSH_BIN" ]; then
   echo "error: dsh binary not found (tried \$DSH_EDGE_BIN, PATH, /home/etsme/.npm-global/bin/dsh)" >&2
@@ -324,12 +377,17 @@ mkdir -p "$(dirname "$LOG")"
 # web profile 自带 .env.sh（设 6 个 channel env override + source repo .env）；
 # 优先 source 它（web profile 常见 case），fallback 到 repo .env.sh。其他 profile
 # 如果有自己 .env.sh 也会被优先 source。
+# §7.43: after sourcing, FORCE DSH_EDGE_HTTP_PORT to the per-profile value.
+# Source may fail (syntax error, missing file) or apply the wrong default;
+# the inline export below is the last word and prevents EADDRINUSE on
+# restart of a profile whose sibling is already bound to the default port.
 PROFILE_ENV_SH="$PROFILE_DIR/.env.sh"
 if [ -f "$PROFILE_ENV_SH" ]; then
-  _LAUNCH_ENV="source '$PROFILE_ENV_SH'"
+  _LAUNCH_ENV="source '$PROFILE_ENV_SH' 2>/dev/null || true; export DSH_EDGE_HTTP_PORT=${INLINE_PORT}"
 else
-  _LAUNCH_ENV="source '$REPO_ROOT/.env.sh' 2>/dev/null || true"
+  _LAUNCH_ENV="source '$REPO_ROOT/.env.sh' 2>/dev/null || true; export DSH_EDGE_HTTP_PORT=${INLINE_PORT}"
 fi
+echo "      DSH_EDGE_HTTP_PORT=${INLINE_PORT} (profile=${PROFILE}, forced inline)"
 nohup bash -c "$_LAUNCH_ENV && exec '$DSH_BIN' --profile $PROFILE" \
   > "$LOG" 2>&1 &
 NEW_PID=$!
