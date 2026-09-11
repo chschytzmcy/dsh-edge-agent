@@ -659,14 +659,21 @@ export class InputGuardServiceImpl extends Service {
     // 3. 意图分类 — 优先读 agent._edgeRoute（http-api 已分类），否则 fallback classify
     let category: 'LOCAL' | 'CLOUD' | 'SANITIZED' | 'REJECT' = 'CLOUD'
     let edgeRouteUsed = false
+    let intentConfidence = 0
+    let intentRationale: string | undefined
+    let targetRealm: 'LOCAL' | 'CLOUD' = 'CLOUD'
     const edgeRoute = this.readEdgeRoute(payload.agent)
     if (edgeRoute) {
       category = edgeRoute.category === 'REJECT' ? 'CLOUD' : edgeRoute.category
       edgeRouteUsed = true
+      intentConfidence = edgeRoute.confidence ?? 0
+      intentRationale = edgeRoute.rationale
     } else if (this.intentRouter) {
       try {
         const intent = await this.intentRouter.classify(originalLastUser.text, { sessionId })
         category = intent.category
+        intentConfidence = intent.confidence ?? 0
+        intentRationale = intent.rationale
         if (category === 'REJECT') {
           this.audit('warn', 'input-guard.blocked.intent', {
             sessionId, confidence: intent.confidence, rationale: intent.rationale,
@@ -686,6 +693,15 @@ export class InputGuardServiceImpl extends Service {
         // 分类失败用默认 CLOUD（fail-open）
       }
     }
+    // §7.46 (2026-09-11): ops log 让"为什么路由到 SANITIZED/LOCAL/CLOUD"
+    // 在每个 chat 都可见；TUI 路径之前只能靠 audit log 翻 JSONL，operator
+    // 调 ops log 完全看不到 routing 决策。
+    targetRealm = category === 'LOCAL' ? 'LOCAL' : (category === 'SANITIZED' ? 'LOCAL' : 'CLOUD')
+    try {
+      this.ctx.logger?.info?.(
+        `[input-guard] preflight intent sessionId=${sessionId} category=${category} confidence=${intentConfidence} rationale=${intentRationale ?? 'n/a'} targetRealm=${targetRealm}`,
+      )
+    } catch { /* debug only */ }
     this.audit('info', 'input-guard.routed', {
       sessionId, category, edgeRouteUsed,
     })

@@ -4312,3 +4312,102 @@ grep "745-santize" audit.plain.jsonl | grep catalog.filtered
 - memory [[log-level-flip-followup]] — §7.44.1 TUI flow log 补齐，跟 §7.45 串联
 
 
+
+
+### §7.46 全链路 flow log — "每个关键环节都在 ops log 体现"（2026-09-11）
+
+**症状**：§7.44.1 加了 TUI 路径的 chat received/finished log 后，用户反馈"日志里看不出意图识别的结果"。再深一步：用户原话"本项目的每个关键环节，都要在日志里有所体现"。一个 chat round-trip 涉及 5-7 个决策点（intent 分类 / skill 过滤 / tool 允许 / tool 拒绝 / 路由 realm / 完成耗时），但 ops log 只露出 2 个（chat received + finished），其余都埋到 audit-log JSONL 里，operator 翻 ops log 看不出"为什么这条 chat 走了 SANITIZED / 为什么只有 ets-auth 被允许"。
+
+**根因**：每个 plugin 只 emit 自己 phase 的 log，但 plugin 之间没有共享"同一个 chat round-trip 的上下文"——单点 log 行堆在 ops log 里，operator 拿不到时间顺序和因果链。具体缺：
+
+1. **input-guard** 完成 intent 分类后只写 audit `input-guard.routed`，ops log 看不到 `category=` / `confidence=` / `rationale=` / `targetRealm=`。
+2. **realm-skill-bridge pre-step** filter 完 `<available_skills>` 只写 audit `realm-skill-bridge.catalog.filtered`，ops log 看不到 `catalogDropped=`（SANITIZED 还是 0 重要，SANITIZED 后 drop=33 同样重要）。
+3. **realm-skill-bridge tools/pre-execute** allow 路径完全没 log（deny 路径有 audit + 但 ops log 也没有）。LLM 调了哪个 tool、用了什么 realm，每个 call 都应该留痕。
+4. **realm-skill-bridge session/event finished** 行只有 `sessionId/turn/reason`，没 `realm=`（路由到哪个 realm）、没 `duration=`（这条 chat 用了多久）。
+
+**修复**：
+
+A. **input-guard.ts:706** — 在 `input-guard.routed` audit 之前 emit preflight intent log：
+```ts
+this.ctx.logger?.info?.(
+  `[input-guard] preflight intent sessionId=${sessionId} category=${category} confidence=${intentConfidence} rationale=${intentRationale ?? 'n/a'} targetRealm=${targetRealm}`,
+)
+```
+
+B. **realm-skill-bridge.ts filterCatalogText / filterSkillCatalog** — 拆出 `filterSkillCatalogDetailed` 返回 `{messages, droppedCount}`，pre-step listener 用它取 droppedCount emit：
+```ts
+ctx.logger?.info?.(
+  `[realm-skill-bridge] pre-step filter sessionId=${sessionId} realm=${agentRealm} catalogDropped=${result.droppedCount}`,
+)
+```
+**保留** `filterSkillCatalog` 老 API 不变（返 messages），测试和老调用方零改动。`filterSkillCatalogDetailed` 是新增的 public method。
+
+C. **realm-skill-bridge.ts tools/pre-execute** — 在 allow/deny 两条路径各 emit 一行：
+```ts
+// allow
+ctx.logger?.info?.(`[realm-skill-bridge] tool allow sessionId=${sessionId} tool=${name} realm=${realm}`)
+// deny
+ctx.logger?.info?.(`[realm-skill-bridge] tool deny sessionId=${sessionId} tool=${name} realm=${realm} reason=${denyReason}`)
+```
+sessionId 从 `e.agent.session.id` 拿（沿用 input-guard 写入的同一份 session 引用）。
+
+D. **realm-skill-bridge.ts session/event listener** — `chat finished` 行加 `realm=` + `duration=`：
+- 加 `sessionStartTimes: Map<sessionId, number>` 在 closure 内（per-plugin-instance）
+- `request/header` 时 `sessionStartTimes.set(sessionId, Date.now())`
+- `turn/end` 时 `Date.now() - startMs` 算 duration（ms），`service.getSessionRealm(sessionId) ?? 'unset'` 拿 realm
+- dispose 时 `sessionStartTimes.clear()`（防 plugin 重启时 map 泄漏）
+```ts
+ctx.logger?.info?.(
+  `[realm-skill-bridge] chat finished sessionId=${sessionId} turn=${turn} reason=${reason} realm=${realm} duration=${durationMs}ms`,
+)
+```
+
+**端到端验证**（curl 21018 + sessionId=sec7.46-verify-001，"查询密盒登录状态"）：
+```
+17:47:35 INFO [input-guard] preflight intent sessionId=sec7.46-verify-001 category=SANITIZED confidence=0.5 rationale=default:sanitized targetRealm=LOCAL
+17:47:35 INFO [input-guard] hasCloudCredentials: slot=DEEPSEEK_API_KEY envValueLen=35
+17:47:35 INFO [realm-skill-bridge] pre-step filter sessionId=sec7.46-verify-001 realm=SANITIZED catalogDropped=0
+17:47:35 INFO [realm-skill-bridge] chat received sessionId=sec7.46-verify-001 reason=initial
+17:47:36 INFO [realm-skill-bridge] tool allow sessionId=sec7.46-verify-001 tool=skill realm=SANITIZED
+17:47:36 INFO [realm-skill-bridge] pre-step filter sessionId=sec7.46-verify-001 realm=SANITIZED catalogDropped=0
+17:47:37 INFO [realm-skill-bridge] tool allow sessionId=sec7.46-verify-001 tool=bash realm=SANITIZED
+17:47:37 INFO [realm-skill-bridge] tool allow sessionId=sec7.46-verify-001 tool=bash realm=SANITIZED
+17:47:38 INFO [realm-skill-bridge] pre-step filter sessionId=sec7.46-verify-001 realm=SANITIZED catalogDropped=0
+17:47:38 INFO [realm-skill-bridge] chat finished sessionId=sec7.46-verify-001 turn=1 reason=unknown realm=SANITIZED duration=2824ms
+17:47:38 INFO [http-api] POST /v1/chat 200 11061ms cloud-deepseek-v4/cloud-deepseek-v4 intent=SANITIZED
+```
+
+10 行 log 自包含解释："query → SANITIZED 路由 → local-qwen3-4b 分类 → 33 个 skill 全部可见（§7.45 fix 验证）→ LLM 调 skill + bash 各 1-2 次 → 2.8s 完成"。operator 不需要翻 audit JSONL 就能 reconstruct。
+
+**单元测试**（`tests/unit/realm-skill-bridge.test.ts` §7.46 新增 3 个 describe）：
+
+1. `pre-step filter emits ops log (§7.46)` — 验证 `agent/pre-step` listener 被注册；`filterSkillCatalogDetailed` 返回正确的 `droppedCount`（LOCAL realm + lark-* skill → droppedCount=2）。
+2. `tools/pre-execute emits allow/deny ops log (§7.46)` — 验证 listener 被注册 + allow 路径 emit `tool allow sessionId=... tool=web_search`。
+3. 已有 `session/event flow log (§7.44.1)` 测试扩展 `realm=unset` + `duration=Nms` 断言。
+
+**已知 gaps**（不在本次修复内，**后续 §7.46.1 续做**）：
+
+- **cloud/local-llm-adapter** per-call log 缺失——只有 boot log（`apply() called with providers: ...` / `Adapter registered successfully`），没有"哪个 provider/model 被调用 / 用了多久 / token 数"。当前 http-api POST 200 行覆盖 curl 路径的 provider/model + duration，但 TUI 路径只能靠 audit JSONL 翻 `llm.call.*` 事件。**本节暂时跳过**，等用户验证 §7.46 已覆盖的 4 个环节是否足够，再决定要不要扩到 §7.46.1。
+- **sanitize call log**（input-guard 的 sanitizer plugin invoke）同样只有 audit，没有 ops log。**本节跳过**。
+- 入口点（tui / http-api / future-webui）目前没在 log 里区分。session metadata 是否有 `entry` 字段需要确认。
+
+**改动文件**：
+
+- `src/dsh-adapter/realm-skill-bridge.ts` — filterSkillCatalogDetailed 新增 + 3 处 listener emit
+- `src/dsh-adapter/input-guard.ts` — preflight intent log
+- `tests/unit/realm-skill-bridge.test.ts` — 2 新 describe + §7.44.1 测试扩展
+
+**测试结果**：684 unit pass / 2 pre-existing fail（baseline 也 fail，跟本次改动无关）。
+
+**Lesson**：
+
+- **"关键环节"不是一个 stable list**——它随着用户 trust 模型演进。这次 §7.44.1 觉得"chat received/finished 两行够了"，到 §7.46 用户实际跑起来才发现 intent 分类 + skill 过滤 + tool 决策 + duration 都要在 ops log 才有用。每次扩 ops log 都应该重新读几条真实 chat 的 ops log 看缺什么，而不是按 plugin 边界划分。
+- **每个 plugin emit 自己的 log 容易出现"在 ops log 里看不到 audit 里看得到的信息"**。audit JSONL 是 by-event 索引的；ops log 是 by-time 索引的——两类 log 服务不同的查询路径，operator 在 ops log 里 grep 时希望拿到跟 audit 等价的全量信息。**future work**：考虑把 audit 事件里 info 级别的也 mirror 到 ops log（自动 bridge），减少每个 plugin 各自维护两套 emit 的负担。
+- **filterSkillCatalog vs filterSkillCatalogDetailed** 双 API 暴露是为了不破坏已有测试 + 已有 caller。filterSkillCatalog 只返 messages（适合"我要替换 messages"的场景），filterSkillCatalogDetailed 返 messages + droppedCount（适合"我要记录 filter 量"的场景）。后续如果 §7.46.1 扩 LLM adapter log 时也用同款 pattern（"快速路径" + "诊断路径"）会更一致。
+
+**相关**：
+
+- PROGRESS §7.44.1 — TUI 路径 flow log 起点（chat received/finished 两行）
+- PROGRESS §7.45 — SANITIZED 例外修复让 §7.46 的 pre-step filter log 才有意义（之前 catalogDropped=33 现在=0 是 §7.45 修复的标志）
+- PROGRESS §7.44 — ops log 默认 level 翻 info 是这一切的前提
+- memory [[log-level-flip-followup]] — §7.44.1 memory entry；§7.46 是它的 §7.46 续

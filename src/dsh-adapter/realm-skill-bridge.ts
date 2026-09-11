@@ -425,14 +425,29 @@ export class RealmSkillBridgeService extends Service {
    * realm, and drop disallowed ones.
    */
   filterSkillCatalog(messages: readonly MessageLike[], agentRealm: RealmTag): readonly MessageLike[] {
-    if (agentRealm === 'hidden') return messages
-    return messages.map((msg) => {
+    return this.filterSkillCatalogDetailed(messages, agentRealm).messages
+  }
+
+  /**
+   * §7.46 (2026-09-11): 返回 `{ messages, droppedCount }` 让 pre-step
+   * listener 能 emit `catalogDropped=N` 到 ops log（§7.44.1 chat-finished
+   * line 加 realm/duration 时同步加的；详见 PROGRESS §7.46）。返回 messages
+   * 是 filterSkillCatalog 的同一引用，方便测试不破坏。
+   */
+  filterSkillCatalogDetailed(
+    messages: readonly MessageLike[],
+    agentRealm: RealmTag,
+  ): { messages: readonly MessageLike[]; droppedCount: number } {
+    if (agentRealm === 'hidden') return { messages, droppedCount: 0 }
+    let totalDropped = 0
+    const newMessages = messages.map((msg) => {
       if (!isCatalogMessage(msg)) return msg
 
       // (a) string content
       if (typeof msg.content === 'string') {
         if (!msg.content.includes('<available_skills>')) return msg
         const result = this.filterCatalogText(msg.content, agentRealm)
+        totalDropped += result.droppedCount
         if (!result.changed) return msg
         return { ...msg, content: result.text }
       }
@@ -444,6 +459,7 @@ export class RealmSkillBridgeService extends Service {
           if (!isTextBlock(block) || typeof block.text !== 'string') return block
           if (!block.text.includes('<available_skills>')) return block
           const result = this.filterCatalogText(block.text, agentRealm)
+          totalDropped += result.droppedCount
           if (!result.changed) return block
           changed = true
           return { ...block, text: result.text }
@@ -454,6 +470,7 @@ export class RealmSkillBridgeService extends Service {
 
       return msg
     })
+    return { messages: newMessages, droppedCount: totalDropped }
   }
 
   /**
@@ -471,7 +488,7 @@ export class RealmSkillBridgeService extends Service {
    * realm tag is fail-closed (default 'hidden'), so SANITIZED must
    * explicitly opt out of the strict-equality check.
    */
-  private filterCatalogText(content: string, agentRealm: RealmTag): { text: string; changed: boolean } {
+  private filterCatalogText(content: string, agentRealm: RealmTag): { text: string; changed: boolean; droppedCount: number } {
     const lines = content.split('\n')
     const out: string[] = []
     let changed = false
@@ -508,7 +525,7 @@ export class RealmSkillBridgeService extends Service {
         })
       } catch { /* debug only */ }
     }
-    return { text: out.join('\n'), changed }
+    return { text: out.join('\n'), changed, droppedCount }
   }
 
   // ── Layer 1.5: Filter LLM-visible tools list by agent realm ────────────────
@@ -727,9 +744,19 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
     const p = payload as { agent?: AgentLike }
     const agentRealm = service.getAgentRealm(p.agent)
     if (agentRealm === undefined || decision.messages === undefined) return decision
-    const filtered = service.filterSkillCatalog(decision.messages, agentRealm)
-    if (filtered === decision.messages) return decision
-    return { ...decision, messages: filtered }
+    // §7.46 (2026-09-11): 用 detailed 版本拿到 droppedCount,
+    // emit ops log 让"哪些 skill 被 filter 掉"在每个 chat 都可见
+    const result = service.filterSkillCatalogDetailed(decision.messages, agentRealm)
+    if (result.messages === decision.messages) return decision
+    if (result.droppedCount > 0 || agentRealm !== 'hidden') {
+      const sessionId = (p.agent as { session?: { id?: string } } | undefined)?.session?.id ?? 'unknown'
+      try {
+        ctx.logger?.info?.(
+          `[realm-skill-bridge] pre-step filter sessionId=${sessionId} realm=${agentRealm} catalogDropped=${result.droppedCount}`,
+        )
+      } catch { /* debug only */ }
+    }
+    return { ...decision, messages: result.messages }
   }, { global: true })
 
   // ── Layer 1.5: Filter tools list on llm/stream (§7.37) — DISABLED ────────
@@ -800,7 +827,21 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
   }).on?.('tools/pre-execute', async (exec: unknown, next: () => Promise<unknown>) => {
     const e = exec as { name: string; agent?: AgentLike }
     const agentRealm = service.getAgentRealm(e.agent)
+    const sessionId = (e.agent as { session?: { id?: string } } | undefined)?.session?.id ?? 'unknown'
     const denyReason = service.checkToolRealm(e.name, agentRealm)
+    // §7.46 (2026-09-11): ops log 标记每个 tool call 的 allow/deny 决策,
+    // 配合 chat-received/finished/preflight/pre-step 形成完整 flow log
+    try {
+      if (denyReason !== undefined) {
+        ctx.logger?.info?.(
+          `[realm-skill-bridge] tool deny sessionId=${sessionId} tool=${e.name} realm=${agentRealm ?? 'unknown'} reason=${denyReason}`,
+        )
+      } else {
+        ctx.logger?.info?.(
+          `[realm-skill-bridge] tool allow sessionId=${sessionId} tool=${e.name} realm=${agentRealm ?? 'unknown'}`,
+        )
+      }
+    } catch { /* debug only */ }
     if (denyReason !== undefined) {
       const toolRealms = service.toolRealm(e.name) ?? new Set<RealmTag>(['hidden' as RealmTag])
       service['auditDeny'](e.name, toolRealms, agentRealm ?? 'hidden')
@@ -821,6 +862,10 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
   // 这里 emit 单行 info（metadata only：session id + turn + reason），
   // 不带任何 user PII；body capture 仍走 audit-log + opt-in
   // DSH_EDGE_LOG_LEVEL=debug。
+  // §7.46 (2026-09-11): per-session start time map 算 chat duration,
+  // 配合 chat finished line 的 realm= 让"这条 chat 路由了哪个 realm /
+  // 用了多久"在 ops log 一目了然。
+  const sessionStartTimes = new Map<string, number>()
   const disposeSessionEvents = (ctx as unknown as {
     on?: (
       event: string,
@@ -851,12 +896,20 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
       const data = e.data as { reason?: string; startsSeries?: boolean } | undefined
       const reason = typeof data?.reason === 'string' ? data.reason : 'unknown'
       const ss = data?.startsSeries === true ? ' series-start' : ''
+      sessionStartTimes.set(sessionId, Date.now())
       ctx.logger?.info?.(`[realm-skill-bridge] chat received sessionId=${sessionId} reason=${reason}${ss}`)
     } else if (e.type === 'turn/end') {
       const data = e.data ?? {}
       const turn = typeof data.turn === 'number' ? data.turn : -1
       const reason = typeof data.reason === 'string' ? data.reason : 'unknown'
-      ctx.logger?.info?.(`[realm-skill-bridge] chat finished sessionId=${sessionId} turn=${turn} reason=${reason}`)
+      const startMs = sessionStartTimes.get(sessionId)
+      const durationMs = startMs !== undefined ? Date.now() - startMs : -1
+      const realm = service.getSessionRealm(sessionId) ?? 'unset'
+      const durationStr = durationMs >= 0 ? ` duration=${durationMs}ms` : ' duration=-1'
+      ctx.logger?.info?.(
+        `[realm-skill-bridge] chat finished sessionId=${sessionId} turn=${turn} reason=${reason} realm=${realm}${durationStr}`,
+      )
+      sessionStartTimes.delete(sessionId)
     }
   })
 
@@ -868,5 +921,6 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
     disposeStream?.()
     disposePreExec?.()
     disposeSessionEvents?.()
+    sessionStartTimes.clear()
   }
 }
