@@ -357,6 +357,7 @@ Some footer text.
       assert.ok(content.includes('Some footer text.'))
       assert.ok(content.includes('sys-monitor'))
     })
+
   })
 
   // ── Layer 3: tool execution gating ─────────────────────────────────────────
@@ -655,6 +656,75 @@ ${allSkillLines.join('\n')}
       assert.ok(localContent.includes('ets-auth'), 'LOCAL should see ets-auth')
 
       service.stop()
+    })
+  })
+
+  // §7.44.1 (2026-09-11): session/event listener emits flow-level info
+  // log so TUI / future-webui entry points get visible chat round-trip
+  // traces (http-api has its own POST 200 log; TUI doesn't). Build a fake
+  // ctx with on() capture, call apply(), then drive a request/header +
+  // turn/end sequence to verify the info logs fire.
+  describe('session/event flow log (§7.44.1)', () => {
+    it('logs chat received on request/header and chat finished on turn/end', async () => {
+      const { apply } = await import('../../src/dsh-adapter/realm-skill-bridge.ts')
+      const calls: Array<{ event: string; fn: (session: unknown, evt: unknown) => void }> = []
+      const infoLines: string[] = []
+      const fakeCtx: unknown = {
+        reflect: { provide(_n: string, _v: unknown) { return () => {} } },
+        provide(_n: string, _v: unknown) { return () => {} },
+        skills: {
+          async list() { return [] },
+          async snapshot() { return { skills: [], complete: true } },
+        },
+        logger: {
+          info: (line: string) => infoLines.push(line),
+          warn: () => {},
+          error: () => {},
+          debug: () => {},
+        },
+        on(event: string, fn: (session: unknown, evt: unknown) => void) {
+          calls.push({ event, fn })
+          return () => {}
+        },
+      }
+      const config = {
+        skills: {},
+        tools: {},
+        defaultRealm: 'hidden',
+        intentDefaultRealm: 'hidden',
+        sessionRealmHeader: 'x-edge-realm',
+      }
+      const dispose = await (apply as (ctx: unknown, cfg: unknown) => Promise<() => Promise<void>>)(fakeCtx, config)
+      // Find the session/event listener
+      const sessionListener = calls.find((c) => c.event === 'session/event')
+      assert.ok(sessionListener, 'session/event listener should be registered')
+      const fn = sessionListener.fn
+      const session = { id: 'test-sess-1' }
+
+      // Drive request/header (with startsSeries)
+      fn(session, { type: 'request/header', data: { reason: 'initial', startsSeries: true } })
+      // Drive request/header (without startsSeries — current dsh-agent-loop emits this way)
+      fn(session, { type: 'request/header', data: { reason: 'followup' } })
+      // Drive turn/end
+      fn(session, { type: 'turn/end', data: { turn: 1, reason: 'completed' } })
+      // Drive an unrelated event — should NOT log
+      fn(session, { type: 'user/message', data: {} })
+
+      // Two chat received (one per request/header, regardless of startsSeries)
+      // + one chat finished
+      const received = infoLines.filter((l) => l.includes('chat received'))
+      const finished = infoLines.filter((l) => l.includes('chat finished'))
+      assert.equal(received.length, 2, `expected 2 chat received lines, got ${received.length}: ${JSON.stringify(received)}`)
+      assert.equal(finished.length, 1, `expected 1 chat finished line, got ${finished.length}: ${JSON.stringify(finished)}`)
+      assert.ok(received[0].includes('sessionId=test-sess-1'), 'chat received should carry sessionId')
+      assert.ok(received[0].includes('reason=initial'), 'chat received should carry reason')
+      assert.ok(received[0].includes('series-start'), 'startsSeries=true should append " series-start" tag')
+      assert.ok(received[1].includes('reason=followup'), 'second request/header should log too')
+      assert.ok(!received[1].includes('series-start'), 'followup without startsSeries should not have tag')
+      assert.ok(finished[0].includes('turn=1'), 'chat finished should carry turn number')
+      assert.ok(finished[0].includes('reason=completed'), 'chat finished should carry reason')
+
+      await dispose()
     })
   })
 })

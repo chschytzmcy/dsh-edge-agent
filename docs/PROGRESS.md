@@ -4090,6 +4090,53 @@ dsh-agent-loop 的 `for await (const chunk of stream)` 写在裸 AsyncGenerator 
 
 ---
 
+### §7.43 — TUI-first deploy：install.sh / deploy.sh 默认改 dsh-tui，web 是 --with-web（2026-09-05）
+
+**动机**：2026-09-03 §7.33 把 web 设为 install.sh 默认 + primary 文档案例。2026-09-03 同日 user feedback 撤回"web-only" overreach（[[dsh-edge-agent-bundle-host-flexibility]]），明确 bundle 是 profile-agnostic，可装 web / tui / 任意 profile。**但 install.sh / deploy.sh 仍然默认装 web**——用户实操上每次都得显式 `--to-profile=dsh-tui` 才能保证 TUI 端受 bundle 保护。本节把默认翻成 dsh-tui，让"每次部署强制覆盖 TUI"成为 install/deploy 的内置行为，而不是依赖用户记忆 flag。
+
+**用户决策**（2026-09-05）：
+- 默认 PROFILE = `dsh-tui`（mandatory primary；启动失败 = exit 1）
+- `web` = opt-in secondary（`--with-web` 触发；启动失败 = warning，exit 0 if TUI OK）
+- profile 名 = `dsh-tui`（不是 `tui`；跟上游 `@deepseek-harness-tui/dsh-tui` bundle 对齐）
+
+**改动范围**：
+
+| 文件 | 变更 |
+|---|---|
+| `install.sh` | `PROFILE="${DSH_EDGE_PROFILE:-dsh-tui}"`；新增 `DO_WEB=0` + `--with-web` flag；§2-§4 抽成 `_deploy_profile()` 函数；§5 restart 抽成 `_restart_profile()`；主流程两次调用（primary mandatory / secondary best-effort）|
+| `deploy.sh` | Step 6 加 `DO_WEB` flag；heredoc 内 `_deploy_one_profile PROFILE WITH_WEBUI` 函数（webui/im 包只装 web）；Step 7 双 profile launch + 双 verify |
+| `scripts/dev-restart.sh` | header 注释更新；`"$@"` 透传 flag 给 install.sh |
+| `scripts/verify-bundle-mounted-in-web.sh` | git mv → `verify-bundle-mounted.sh`（名字误导，逻辑本来就是 profile-agnostic） |
+| `scripts/sync-bundle.sh` | header + error hint 改成 dsh-tui 优先 |
+| `scripts/reinstall-dsh.sh` | `Step 6` 验证 dsh-tui primary；web 仅当 `~/.dsh/profiles/web/package.json` 存在时 best-effort 验证 |
+| `scripts/launch-dev.sh` | legacy `dsh-edge-agent` profile → `dsh-tui` |
+| `package.json` | `verify:bundle-mount` 引用新文件名 |
+| `.env.sh` / `Makefile` / `cordis.patch.yml` / `pnpm-workspace.yaml` / `katex-shim.js` | header 注释 / install hint 同步 |
+| `scripts/m5-e2e-test.sh` / `scripts/m5-webui-smoke.sh` / `scripts/m4-smoke.ts` / `scripts/m6-smoke.ts` | 加 header 注释："web-only — 需要 `./install.sh --with-web` 装过" |
+| `tests/unit/web-search-guard.test.ts:182` | 注释更新（web-only 标注）|
+| `.github/workflows/ci.yml` | CI bootstrap 切到 dsh-tui；web 通过 `Bootstrap DSH web profile` 独立 step（best-effort）|
+| `README.md` / `.claude/skills/.../SKILL.md` (= `docs/skills/.../SKILL.md` 软链) | install / 验证 / 故障排查 / 入口架构 / Webui smoke 段全部更新 |
+
+**端口规划保持现状**（§7.43 不改端口）：
+- TUI profile：`:21018`（dsh-tui/.env.sh 强制覆盖 repo .env.sh 默认 21017）
+- Web profile：`:21017`（http-api，§7.33 disabled）+ `:3080`（webui，自带）
+- TUI profile 不需要 webui/im 包——Step 6 的 `WITH_WEBUI=0` 只装 agent-loop + web-search + skill；web profile 才装 dsh-web-app + dsh-im + dsh-web-ui-all。
+
+**为什么 §7.43 不是架构 overreach**：
+- §7.33 P-structural 已删 `bin/dsh-edge-agent.js`、headless profile、overlay（headless 路径已清零）——bundle 不再有任何"必须装某 profile"的架构约束
+- §7.43 只动**默认部署目标**（用户偏好），不动 bundle 自身——bundle 仍是 profile-agnostic 的纯 plugins
+- verifier `verify-bundle-mounted.sh` 仍 informational 报告；install.sh `--to-profile <任意名>` 仍接受任意 profile
+
+**端口不冲突**：`~/.dsh/profiles/web/.env.sh` 当前不存在；web 启动 fallback 到 repo `.env.sh`（port 21017）→ 与 TUI 的 21018 不冲突。如果 web profile 后续创建了 `.env.sh`，需要确保显式 `export DSH_EDGE_HTTP_PORT=21017`（不能用 `${DSH_EDGE_HTTP_PORT:-21017}` 的默认值写法——repo .env.sh 已设 21017，会让默认值失效，详见 [[tui-port-override]]）。
+
+**lesson**：
+
+**部署偏好 ≠ 架构立场**。§7.33 "bundle 默认 web" 是当时 install.sh 的便利选择（web 是 primary 文档案例），user feedback 撤回后改成 profile-agnostic。但 user 实际使用 TUI 多于 web——把默认翻成 dsh-tui 让"默认部署 = 用户实际用的部署"，不需要每次 `--to-profile=dsh-tui`。这条改动不影响 bundle 自身（profile-agnostic 保持），只改 deploy UX。
+
+**web 是 secondary，不是 disabled**。用户原话"web 可以先其次"——意思是 web 是 nice-to-have，不应该 fail 整个 deploy。所以 web 失败仅 warn + exit 0 if TUI OK。这跟 [[cloud-key-missing-downgrade]] 的"DEEPSEEK_API_KEY 缺失也降级 LOCAL"是同款降级语义——非 mandatory 能力失败时不阻断 primary 路径。
+
+**抽函数让"同一逻辑跑两次"变得 trivial**。§2-§4 的 deploy pipeline 和 §5 的 restart 流程都基于单一 profile。重构前是顶层线性代码，要跑两次得复制粘贴；抽成 `_deploy_profile PROFILE PROFILE_DIR NESTED_PKG` + `_restart_profile PROFILE LOG LABEL DO_REQUIRE` 后，主流程两次调用即可。`DO_REQUIRE` 参数让同一函数既能 mandatory exit 1 又能 best-effort warning——一个函数 + 一个 boolean flag，比写两份 fork 简洁。
+
 ### §7.44 ops log 默认 level 翻转：debug → info（用户反馈"log 太冗余"，2026-09-11）
 
 **目的**：把 ops log 默认从 `debug` 翻回 `info`，过滤掉每条 LLM 调用的 4 行 body debug（LLM_REQUEST / LLM_MESSAGES / LLM_RESPONSE / LLM_RESPONSE_TEXT），log 只剩"agent started / LLM call returned / tool invoked / chat finished"这种流程事件。
@@ -4143,5 +4190,58 @@ kill <dsh-pid>
 DSH_EDGE_LOG_LEVEL=debug dsh --profile dsh-tui &
 # 同样 curl + tail，预期 4 条 body 行重新出现
 ```
+
+### §7.44.1 TUI / 任何非 http-api 入口加 flow-level info log（2026-09-11 续）
+
+**目的**：§7.44 把 ops log 默认翻 info 后，TUI 上输入的请求在 log 里没有记录 —— 因为 TUI 不走 http-api（http-api 才有 flow info log 'POST /v1/chat 200 ...ms'），TUI 直接走 dsh-agent-loop + Session。session/event 上加 listener 给所有 entry point 统一的 chat round-trip 痕迹。
+
+**触发**：用户在 §7.44 翻转后反馈 "在TUI上输入了请求，但日志里没有记录"。验证 15:14:17 用户发 TUI 后 ops log 只剩 input-guard 的 preflight 一行（"hasCloudCredentials"），chat 完成没有任何 log。
+
+**改动面**：
+
+| 文件 | 改动 |
+|---|---|
+| `src/dsh-adapter/realm-skill-bridge.ts` | `apply()` 里新增 `disposeSessionEvents` listener，监听 `session/event`，对 `'request/header'` 和 `'turn/end'` 各 emit 单行 info。`request/header` 是 agent-loop 在每个 chat round-trip 起点 emit 的事件（实测恰好 fire 1 次 / chat，不像 user/message 那种 N 次 hydration）。`turn/end` 是 agent turn 结束。两个事件加起来正好 2 行 / chat round-trip。 |
+| `tests/unit/realm-skill-bridge.test.ts` | 新 describe `'session/event flow log (§7.44.1)'`：用 fake ctx 调 `apply()`，捕获 `on()` 注册列表，drive `request/header`（with/without startsSeries）+ `turn/end` + `user/message`（应 NOT log），断言 (a) `chat received` fire 2 次（每个 request/header 一次），`chat finished` fire 1 次，`user/message` 不 log；(b) log 行含 `sessionId=test-sess-1` / `reason=initial` / `series-start` tag 等 metadata；(c) 第二次 `request/header` 没 `startsSeries` 时不带 `series-start` 后缀。|
+
+**event 选型经验**：
+
+- 最初想 listen `request/header` with `startsSeries=true` —— SessionEventMap 标注 `startsSeries?: true` 是 "新 request series 起点"。实测：dsh-agent-loop 偶尔 emit 时 `data` 里**不带 `startsSeries` 字段**（data shape 跟 SessionEventMap 声明不完全一致），`data.startsSeries === true` 过滤永远不命中，0 行 → 不工作。
+- 改用无条件 listen 每个 `request/header` 事件 → 实测每个 chat 恰好 fire 1 次。比起 `user/message`（实测每个 chat fire 3 次：session hydration + 实际处理 + 重注入），`request/header` 是更精确的 "user prompt 起点" marker。
+- 临时 TEMP-DIAG `[flow-diag]` 在调试期 emit 全 session/event 类型，调试完已删。验证后实际只 listen `request/header` + `turn/end` 两个 type。
+
+**为什么放 realm-skill-bridge 而不是新开 plugin**：
+
+- realm-skill-bridge 已经有 `agent/pre-step` + `llm/stream` + `tools/pre-execute` 三个 waterfall listener（每个 chat 多次 fire），是整个 dsh-edge-agent 里 hook surface 最密集的 plugin。
+- 加一个 `session/event` listener 跟现有 `on(...)` 模式一致，不引入新 plugin id（cordis.patch.yml 无需新增 entry）。
+- 唯一缺点：listener 跟 realm 路由没关系，listener 名 `disposeSessionEvents` 在代码 review 时容易让人困惑；改用 JSDoc 把意图写清楚。
+
+**验证结果**：
+
+```bash
+# 单元测试
+npx vitest run tests/unit/realm-skill-bridge.test.ts -t "session/event flow log"
+# ✓ 1 passed
+
+# 端到端：2 次 chat round-trip
+curl -X POST .../v1/chat -d '{"message":"first","sessionId":"finalA"}'
+curl -X POST .../v1/chat -d '{"message":"second","sessionId":"finalB"}'
+
+# ops log 增量：
+# 2026-09-11T15:29:53.278 INFO [realm-skill-bridge] chat received sessionId=finalA reason=initial series-start
+# 2026-09-11T15:29:55.338 INFO [realm-skill-bridge] chat finished sessionId=finalA turn=1 reason=unknown
+# 2026-09-11T15:29:55.340 INFO [http-api] POST /v1/chat 200 9711ms cloud-deepseek-v4 ...
+# 2026-09-11T15:30:04.468 INFO [realm-skill-bridge] chat received sessionId=finalB reason=initial series-start
+# 2026-09-11T15:30:07.006 INFO [realm-skill-bridge] chat finished sessionId=finalB turn=1 reason=unknown
+# 2026-09-11T15:30:07.007 INFO [http-api] POST /v1/chat 200 10645ms ...
+# 6 行 / 2 chat = 3 行 / chat（http-api 路径：received + finished + POST 200）
+# TUI 路径只会看到 received + finished = 2 行 / chat
+```
+
+**跟 §7.44 翻转的语义对齐**：
+
+- §7.44 把 ops log 默认翻 info 后，**只**留流程事件，drop LLM body 细节（LLM_REQUEST / LLM_MESSAGES / LLM_RESPONSE / LLM_RESPONSE_TEXT 那 4 行）
+- §7.44.1 给所有 entry point 加上"chat 起点 + chat 终点"两条 info
+- 合并效果：每次 chat round-trip 在 ops log 留下 2 行（received + finished）— TUI 路径 2 行、http-api 路径 3 行（多 1 行 POST 200）。每个 chat 都是"能看到的"，但 noise 不回归（不重复 step / chunk / message）。
 
 

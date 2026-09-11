@@ -460,7 +460,7 @@ export class RealmSkillBridgeService extends Service {
    * Pure function: parse `<available_skills>` content, drop lines whose
    * skill name resolves to a realm other than `agentRealm` (or 'hidden').
    * Returns `{ text, changed }` so the caller can short-circuit on no-op.
-   */
+   *
   private filterCatalogText(content: string, agentRealm: RealmTag): { text: string; changed: boolean } {
     const lines = content.split('\n')
     const out: string[] = []
@@ -471,7 +471,12 @@ export class RealmSkillBridgeService extends Service {
       if (m !== null) {
         const skillName = m[1]
         const realm = this.skillRealm(skillName)
-        if (realm === 'hidden' || realm !== agentRealm) {
+        if (realm === 'hidden') {
+          changed = true
+          droppedCount++
+          continue
+        }
+        if (realm !== agentRealm) {
           changed = true
           droppedCount++
           continue
@@ -790,6 +795,57 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
     return next()
   }, { global: true })
 
+  // ── Flow-level ops log for every chat round-trip (§7.44.1) ───────────────
+  //
+  // 用户反馈 §7.44 把 ops log 默认从 debug 翻到 info 后，TUI 输入的请求
+  // 在 log 里没有记录 —— 因为 TUI 不走 http-api（http-api 才有 flow
+  // info log 'POST /v1/chat 200 ...ms'），TUI 直接走 dsh-agent-loop +
+  // Session。session/event 上的 request/header 和 turn/end 是 user
+  // prompt lifecycle 的最稳两个 marker（每个 chat round-trip 各 fire
+  // 一次，TUI / http-api / 未来 webui 都覆盖）。
+  //
+  // 这里 emit 单行 info（metadata only：session id + turn + reason），
+  // 不带任何 user PII；body capture 仍走 audit-log + opt-in
+  // DSH_EDGE_LOG_LEVEL=debug。
+  const disposeSessionEvents = (ctx as unknown as {
+    on?: (
+      event: string,
+      fn: (session: unknown, evt: unknown) => void,
+      options?: { global?: boolean },
+    ) => () => void
+  }).on?.('session/event', (session: unknown, evt: unknown) => {
+    const e = evt as { type?: string; data?: Record<string, unknown> } | undefined
+    if (e === undefined || typeof e.type !== 'string') return
+    const sessionId = (session as { id?: string })?.id ?? 'unknown'
+    // §7.44.1 (2026-09-11): 为 TUI / 任何非 http-api 入口加 flow-level
+    // info log —— §7.44 把 ops log 默认翻 info 后，TUI 走 dsh-agent-loop
+    // 不再被 file-logger 默认捕到（http-api 才有自己的 POST /v1/chat 200
+    // 行），整轮 chat 在 log 里无痕迹。session/event 是 dsh 内部一套
+    // per-session 事件流，覆盖所有 entry point（TUI / http-api / 未来
+    // webui 都走）。每个 chat round-trip fire 一次 'request/header'
+    // （agent-loop 在 user prompt 起点 emit，see
+    // @deepseek-ai/dsh-agent-loop/lib/index.js）和一次 'turn/end'，
+    // 我们在 info 级各 emit 单行（metadata only：不带 user 文本 / PII），
+    // 让 ops log 始终能看到"什么时候来了什么请求、什么时候结束"。
+    if (e.type === 'request/header') {
+      // 之前的 'startsSeries=true' 过滤在本路径下永远不命中（实测 data
+      // 里不带 startsSeries 字段，session/event 的 data shape 跟
+      // SessionEventMap 声明不完全一致），改成无条件 log 每个 request/
+      // header 事件 —— 实测每个 chat 恰好 fire 1 次（user/message 那
+      // 种 N 次是因为 session hydration / 重注入，与 request series
+      // 不是一回事）。
+      const data = e.data as { reason?: string; startsSeries?: boolean } | undefined
+      const reason = typeof data?.reason === 'string' ? data.reason : 'unknown'
+      const ss = data?.startsSeries === true ? ' series-start' : ''
+      ctx.logger?.info?.(`[realm-skill-bridge] chat received sessionId=${sessionId} reason=${reason}${ss}`)
+    } else if (e.type === 'turn/end') {
+      const data = e.data ?? {}
+      const turn = typeof data.turn === 'number' ? data.turn : -1
+      const reason = typeof data.reason === 'string' ? data.reason : 'unknown'
+      ctx.logger?.info?.(`[realm-skill-bridge] chat finished sessionId=${sessionId} turn=${turn} reason=${reason}`)
+    }
+  })
+
   return async () => {
     service.stop()
     disposeSkillsChange?.()
@@ -797,5 +853,6 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
     disposePreStep?.()
     disposeStream?.()
     disposePreExec?.()
+    disposeSessionEvents?.()
   }
 }
