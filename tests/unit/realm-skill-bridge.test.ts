@@ -358,6 +358,34 @@ Some footer text.
       assert.ok(content.includes('sys-monitor'))
     })
 
+    // §7.45 (2026-09-11): regression — SANITIZED agents used to drop the
+    // entire catalog because skillRealm() never returns 'SANITIZED' and
+    // the strict-equality check rejected every line (observed in TUI
+    // session 468e0157-… droppedCount=33). Mirrors filterToolsField's
+    // SANITIZED branch.
+    it('keeps every non-hidden skill for SANITIZED agent (§7.45)', () => {
+      const messages = [
+        {
+          source: { kind: 'skill-catalog' },
+          content: `<system-reminder>
+<available_skills>
+- \`lark-im\`: Send messages
+- \`lark-calendar\`: Manage calendar
+- \`sys-monitor\`: Monitor system
+- \`device-ctrl\`: Control devices
+- \`hidden-skill\`: Secret
+</available_skills>
+</system-reminder>`,
+        },
+      ]
+      const filtered = service.filterSkillCatalog(messages, 'SANITIZED')
+      const content = (filtered[0] as any).content
+      assert.ok(content.includes('lark-im'))
+      assert.ok(content.includes('lark-calendar'))
+      assert.ok(content.includes('sys-monitor'))
+      assert.ok(content.includes('device-ctrl'))
+      assert.ok(!content.includes('hidden-skill'))
+    })
   })
 
   // ── Layer 3: tool execution gating ─────────────────────────────────────────

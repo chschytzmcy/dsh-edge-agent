@@ -4244,4 +4244,71 @@ curl -X POST .../v1/chat -d '{"message":"second","sessionId":"finalB"}'
 - §7.44.1 给所有 entry point 加上"chat 起点 + chat 终点"两条 info
 - 合并效果：每次 chat round-trip 在 ops log 留下 2 行（received + finished）— TUI 路径 2 行、http-api 路径 3 行（多 1 行 POST 200）。每个 chat 都是"能看到的"，但 noise 不回归（不重复 step / chunk / message）。
 
+### §7.45 SANITIZED agents 看 `<available_skills>` 整体 drop 修复（2026-09-11 续）
+
+**症状**：用户 TUI 发"查询密盒的状态"，audit log 显示 LLM 没调任何 ets skill、`toolsCount=27` 但 catalog 整个没了。LLM 也没真正调 ets-auth（直接走 bash 拿数据，回答里也有"PII/host 全部明文泄到云端"风险）。
+
+**根因**：`src/dsh-adapter/realm-skill-bridge.ts:filterCatalogText`（第 464 行）的过滤条件是 `realm === 'hidden' || realm !== agentRealm` —— 对 SANITIZED agent，skill 的 realm 只可能是 `LOCAL` / `CLOUD` / `hidden`（`skillRealm()` 永不返回 `'SANITIZED'`），所以 `realm !== agentRealm` 永远为 true → **全部 33 个 skill 都 drop**。
+
+**对照**：`filterToolsField`（同文件 542-543 行）有正确的 SANITIZED 例外（"§7.37: SANITIZED agents see all non-hidden tools"），但 `filterCatalogText` 是更早写的，漏了同样的例外。
+
+**证据**（audit JSONL）：
+
+```json
+{"ts":1789112188733,"level":"info","kind":"realm-skill-bridge.catalog.filtered",
+ "source":"realm-skill-bridge",
+ "payload":{"agentRealm":"SANITIZED","droppedCount":33}}
+```
+
+33 个 skill（含 ets-auth / ets-chat / ets-discover）全 drop。LLM 看到的 prompt 里 `<available_skills>` 段是空的 → 不会调 ets skill，自然"查不到密盒的状态"。
+
+**改动**：
+
+| 文件 | 改动 |
+|---|---|
+| `src/dsh-adapter/realm-skill-bridge.ts` | `filterCatalogText`：把 `realm !== agentRealm` 的单分支拆成 3 段：(1) `realm === 'hidden'` → drop；(2) `agentRealm === 'SANITIZED'` → **保留**（跟 `filterToolsField` 对齐）；(3) `realm !== agentRealm` → drop。JSDoc 加 §7.45 段说明对称逻辑 + bug 实测引用 session 468e0157-336a-44f6-8634-7af8fc6587d9。|
+| `tests/unit/realm-skill-bridge.test.ts` | 新 `it('keeps every non-hidden skill for SANITIZED agent (§7.45)')`：catalog 含 lark-*（CLOUD）+ sys-monitor / device-ctrl（LOCAL）+ hidden-skill，断言 SANITIZED agent 看到前 4 个、看不到 hidden-skill。|
+
+**验证**：
+
+```bash
+# 单元
+npx vitest run tests/unit/realm-skill-bridge.test.ts -t "filterSkillCatalog"
+# ✓ 6 passed | 33 skipped (39)
+
+# 全套（2 个 fail 跟 §7.45 无关，git stash 后仍 fail，是 pre-existing）
+# Tests  2 failed | 681 passed | 1 skipped (684)
+
+# 端到端：TUI 路径发"查询密盒的状态"
+curl -X POST http://127.0.0.1:21017/v1/chat -d '{"message":"查询密盒的状态","sessionId":"745-santize-1789112604"}'
+# 返回真实密盒状态：主机 etsme-ubuntu / 11G 内存 / 磁盘 95% / Docker 容器清单 / 主动建议下一步
+# durationMs=13977
+```
+
+**audit log 对比**：
+
+```bash
+# 修复前（468e0157 session）：
+grep "468e0157" audit.plain.jsonl | grep catalog.filtered
+# → droppedCount=33
+
+# 修复后（745-santize-1789112604 session）：
+grep "745-santize" audit.plain.jsonl | grep catalog.filtered
+# → 0 行（因为新逻辑下 SANITIZED 0 drop，audit emit 被短路）
+```
+
+**Lesson**：
+
+- `filterCatalogText` 和 `filterToolsField` 是同一个 plugin 里的两个对称函数（一个是 catalog text filter、一个是 tools array filter），**任何一个加 SANITIZED 例外时另一个必须同步加**。§7.37 加 SANITIZED 例外只改了 `filterToolsField`（因为当时修的是 LLM 看到的 tools 数组），没注意到 `<available_skills>` 这条独立路径也有同样的 bug。
+- 教训 1：对称函数加 opt-in 分支要画 Venn 图覆盖所有交叉点。
+- 教训 2：fail-closed default + 严格相等检查（`realm !== agentRealm`）遇上 enum-as-label 的 tagging 方案，必有一个边界 case 漏（`'SANITIZED'` 永远找不到匹配的 skill realm）。如果用 `Set<RealmTag>` 替代单值 tag，filter 写 `set.has(agentRealm) || agentRealm === 'SANITIZED'` 会更明确。
+- 教训 3：audit log 是定位 root cause 的关键——`droppedCount=33` 一行就把锅锁定到 `filterCatalogText`，否则会误判为 LLM 没调 tool（症状一样）。
+
+**相关**：
+
+- PROGRESS §7.37 — 加 SANITIZED 例外时的源头（只改了 `filterToolsField`，漏了 catalog）
+- PROGRESS §7.21 + §7.22 — defaultCategory=SANITIZED 兜底（SANITIZED 是 dsh-tui 默认 routing 决定；现在 catalog 也正确显示，ets skill 能真正被 LLM 看到并调）
+- PROGRESS §7.43 — tui / web /任意 profile 同款可用，跟 §7.45 无直接关系
+- memory [[log-level-flip-followup]] — §7.44.1 TUI flow log 补齐，跟 §7.45 串联
+
 

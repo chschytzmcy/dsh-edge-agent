@@ -461,6 +461,16 @@ export class RealmSkillBridgeService extends Service {
    * skill name resolves to a realm other than `agentRealm` (or 'hidden').
    * Returns `{ text, changed }` so the caller can short-circuit on no-op.
    *
+   * §7.45 (2026-09-11): SANITIZED agents see every non-hidden skill —
+   * matches `filterToolsField`'s SANITIZED branch below. Before this
+   * fix, `skillRealm(name)` only returns `LOCAL`/`CLOUD`/`hidden` (never
+   * `'SANITIZED'`), so `realm !== agentRealm` was always true for SANITIZED
+   * agents and the entire catalog was dropped (audit observed
+   * `droppedCount=33` for a session whose agentRealm=SANITIZED — LLM saw
+   * zero skills and silently answered "no mibao tool available"). Skill
+   * realm tag is fail-closed (default 'hidden'), so SANITIZED must
+   * explicitly opt out of the strict-equality check.
+   */
   private filterCatalogText(content: string, agentRealm: RealmTag): { text: string; changed: boolean } {
     const lines = content.split('\n')
     const out: string[] = []
@@ -474,6 +484,10 @@ export class RealmSkillBridgeService extends Service {
         if (realm === 'hidden') {
           changed = true
           droppedCount++
+          continue
+        }
+        if (agentRealm === 'SANITIZED') {
+          out.push(line)
           continue
         }
         if (realm !== agentRealm) {
