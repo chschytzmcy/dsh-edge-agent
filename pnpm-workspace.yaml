@@ -5,9 +5,10 @@ nodeLinker: hoisted
 autoInstallPeers: false
 allowBuilds:
   # 2026-09-02: when dsh-edge-agent is added as a bundle to a webui-based
-  # profile (e.g. `dsh plugin --profile web add -w $LOCAL_PKG`), the
+  # profile (e.g. `dsh plugin --profile web add -w $LOCAL_PKG`)，the
   # transitive deps may pull node-pty (linux-x64 prebuild blocker).
-  # See PROGRESS §7.25.
+  # §7.43 (2026-09-05): 默认 host = dsh-tui；这条仍适用于 web (--with-web)。
+  # See PROGRESS §7.25 + §7.43.
   node-pty: true
   # 2026-09-02: cloudflared / cpu-features / ssh2 already required by
   # the dsh-tui and dsh-edge-agent profiles (e.g. dsh-tui's pnpm-workspace

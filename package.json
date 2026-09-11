@@ -157,7 +157,7 @@
     "verify:contract": "node --import tsx/esm scripts/verify-upstream-contract.ts",
     "verify:patch-surface": "node --import tsx/esm scripts/verify-patch-surface.ts",
     "verify:plugin-spec": "node --import tsx/esm scripts/verify-plugin-spec.ts",
-    "verify:bundle-mount": "bash scripts/verify-bundle-mounted-in-web.sh",
+    "verify:bundle-mount": "bash scripts/verify-bundle-mounted.sh",
     "verify:package": "npm pack --dry-run --json --ignore-scripts | node scripts/verify-package.mjs"
   },
   "peerDependencies": {

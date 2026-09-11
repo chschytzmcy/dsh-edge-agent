@@ -181,10 +181,11 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
     // 2026-09-02: per-call request/response body logging to ops log at
     // debug level. CLOUD prompts are pre-sanitized by input-guard before
     // egress so the captured prompt is already placeholder-text for
-    // sensitive spans; response text is NOT redacted. Set
-    // `DSH_EDGE_LOG_LEVEL=info` to suppress bodies entirely (the LLM_REQUEST
-    // / LLM_MESSAGES / LLM_RESPONSE / LLM_RESPONSE_TEXT lines below all
-    // gate on Cordis's per-exporter level filter — see file-logger.ts).
+    // sensitive spans; response text is NOT redacted. 2026-09-11 default
+    // flipped to `info` — these 4 body lines are filtered by Cordis and
+    // don't reach the ops log unless operator sets
+    // `DSH_EDGE_LOG_LEVEL=debug`. The lines below still gate on
+    // Cordis's per-exporter level filter — see file-logger.ts.
     this.logger?.debug?.(`[cloud-llm-adapter] LLM_REQUEST provider=${options.provider} model=${options.model} messageCount=${options.messages.length} promptLen=${options.messages.reduce((n, m) => n + extractText(m.content).length, 0)}`)
     const apiKey = readApiKey(this.apiKeyEnv)
     if (!apiKey) {

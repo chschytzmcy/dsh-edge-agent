@@ -4087,3 +4087,61 @@ dsh-agent-loop 的 `for await (const chunk of stream)` 写在裸 AsyncGenerator 
 **不要把 root cause 甩锅给上游**。§7.38 早期一句"for-await on Promise"扔给 dsh-agent-loop，差点导致走 patch-package / 等 rc.2 / 降级的弯路。**先在最小复现里隔离自己的代码再下结论**——`/tmp/test-async-listener.mjs` Case B 复现 → 锁定 listener 写法 → 同步改完即 work，1 字符级别 fix，self-contained。
 
 **agent-preset 装配是 http-api 的必修课**。dsh 0.1.2 引入 agent-presets 后，**所有**调用 `agents.create()` 的代码都必须传 `meta.agentPreset` + `setup` 回调，否则 agent 跑空 global layer。这条 invariant 应该在 dsh 文档里硬写明，但目前只在 dsh-tui/web 内部模块里提过——任何外部 bundle（如我们 dsh-edge-agent）都得自己抄一份 composePreset。
+
+---
+
+### §7.44 ops log 默认 level 翻转：debug → info（用户反馈"log 太冗余"，2026-09-11）
+
+**目的**：把 ops log 默认从 `debug` 翻回 `info`，过滤掉每条 LLM 调用的 4 行 body debug（LLM_REQUEST / LLM_MESSAGES / LLM_RESPONSE / LLM_RESPONSE_TEXT），log 只剩"agent started / LLM call returned / tool invoked / chat finished"这种流程事件。
+
+**触发**：用户在 TUI 跑 "查询密盒登录状态" 后看 ops log，嫌 log 行数太多（一次 chat 8 轮 × 4 行 = 32 行 body debug + 几十行 metadata）。用户原话："log里的日志太多了，简化，只记录每个流程做到事情"。
+
+**改动面**：
+
+| 文件 | 改动 |
+|---|---|
+| `src/dsh-adapter/file-logger.ts` | (a) `Config.level` Schema default `'debug'` → `'info'`（line 148）。(b) `parseLogLevel` fallback `'debug'` → `'info'`（line 109）。(c) JSDoc 翻转：line 130-137 字段注释从 "default flipped info → debug" 改成 "default flipped debug → info"；line 398-401 `resolveLoggerConfig` JSDoc 同步。(d) 顶部 discipline block line 42-49 "default since 2026-09-02" 改为 "2026-09-11 default flipped debug → info"。 |
+| `cordis.patch.yml` | file-logger row line 311 `level: !!js process.env.DSH_EDGE_LOG_LEVEL ?? 'debug'` → `?? 'info'`。注释块 line 305-310 同步翻转。 |
+| `.env.sh` | line 50 后加 `export DSH_EDGE_LOG_LEVEL="${DSH_EDGE_LOG_LEVEL:-info}"`（与 `DSH_EDGE_AUDIT_MIN_LEVEL=info` 对称）。注：`DSH_EDGE_AUDIT_MIN_LEVEL` 是 **audit 通道**过滤，不影响 ops log；这俩独立。 |
+| `src/dsh-adapter/cloud-llm-adapter.ts` | line 181-187 JSDoc 注释补 "2026-09-11 default flipped to info — these 4 body lines are filtered by Cordis"。 |
+| `tests/unit/file-logger.test.ts` | (a) line 280-289 "exposes the agreed defaults" 断言从 `level === 'debug'` 改成 `level === 'info'`，注释改为 "2026-09-11 default level flipped debug → info"。(b) line 300-307 "falls back to debug for invalid DSH_EDGE_LOG_LEVEL values" 改名 "falls back to info" + 断言全部 `→ 'info'`。 |
+| `docs/PROGRESS.md` | 本节 §7.44。 |
+
+**为什么这次翻转没破坏 §7.23 的"let operator see LLM body"**：
+
+- §7.23 (2026-09-02) 翻转 info→debug 是当时的需求：诊断 mibao 空返回（详见 [[mibao-empty-result-diagnosis]]）时需要在 ops log 看到完整 prompt / response 才能复盘。当时那个 bug 修完后，"默认带 body"的功能就退化成噪声。
+- §7.44 把默认翻回 info，但**保留 `DSH_EDGE_LOG_LEVEL=debug` opt-in 开关**——operator 真要复盘某次调用时仍能 `export DSH_EDGE_LOG_LEVEL=debug && dsh --profile X`，不需要改任何源码。
+- §7.23 那段（"为什么打破 MUST NOT contain bodies discipline"）的隐私理由（input-guard 已脱敏 + 本地 operator 看）依旧成立，没变。
+
+**对所有 profile 的影响**（用户选 scope=所有 profile）：
+
+- bundle 是 profile-agnostic（§7.33 确认），repo 根 `cordis.patch.yml` 是 single source of truth。改这一处，dsh-tui / web / 任何 custom profile 全部生效。
+- `~/.dsh/profiles/*/cordis.patch.yml`（profile-local overlay）当前没有任何 profile 显式覆盖 `level` 字段（grep 0 hit），所以这一翻转直接生效，无需同步改 overlay。
+- `.env.sh` 加 `DSH_EDGE_LOG_LEVEL=info` 是 belt-and-braces：即便将来某 profile 把 `level` 行覆盖成别的（理论上不可能，因为 schema default 已收口），env 也会兜住。
+
+**验证步骤**（计划）：
+
+```bash
+# 1. compile + unit test
+cd /home/etsme/cy/agent/dsh-edge-agent
+npm run compile
+npx vitest run tests/unit/file-logger.test.ts
+
+# 2. restart dsh, send chat, tail log
+./install.sh --profiles=dsh-tui
+sleep 5
+curl -s --max-time 30 -X POST http://127.0.0.1:21018/v1/chat \
+  -H "Authorization: Bearer test-secret-key" \
+  -H "Content-Type: application/json" \
+  -d '{"message":"ping","sessionId":"log-level-verify"}' >/dev/null
+sleep 2
+tail -30 ~/.dsh-edge-agent/log/dsh-edge-agent.log | grep -c 'LLM_REQUEST\|LLM_MESSAGES\|LLM_RESPONSE\|LLM_RESPONSE_TEXT'
+# 预期：0（之前默认 debug 时是 4 条）
+
+# 3. opt-in 路径验证
+kill <dsh-pid>
+DSH_EDGE_LOG_LEVEL=debug dsh --profile dsh-tui &
+# 同样 curl + tail，预期 4 条 body 行重新出现
+```
+
+

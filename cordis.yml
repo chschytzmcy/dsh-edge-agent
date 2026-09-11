@@ -212,14 +212,25 @@
     localModels: !!js (process.env.DSH_EDGE_LOCAL_MODELS ?? 'local-qwen3-4b,local-llama3-8b').split(',').filter(Boolean)
     cloudModels: !!js (process.env.DSH_EDGE_CLOUD_MODELS ?? 'cloud-deepseek-v4,cloud-deepseek-v3').split(',').filter(Boolean)
 
-# Local LLM adapter (on-device inference).
+# Local LLM adapter (OpenAI-compatible endpoint).
+#
+# NOTE: Pre-fix (2026-09-11), this row passed `modelPath` / `contextSize` /
+# `threads` which are NOT in the plugin's Schema — Schemastery silently dropped
+# them. Meanwhile `baseUrl` / `defaultModel` / `apiKeyEnv` were never wired,
+# so .env.sh's DSH_EDGE_LOCAL_LLM_BASEURL etc. never reached the adapter.
+# Rewritten to match `Schema.object({providers, baseUrl, defaultModel, apiKeyEnv})`
+# in src/dsh-adapter/local-llm-adapter.ts.
+#
+# `apiKeyEnv` lets the adapter read a bearer from any env var (e.g. for
+# cloud-hosted OpenAI-compatible endpoints like DashScope, OpenRouter, etc).
+# Leave undefined to skip the Authorization header (plain llama.cpp server).
 - id: local-llm-adapter
   name: '@deepseek-harness-edge-agent/dsh-edge-agent/local-llm-adapter'
   config:
     providers: !!js (process.env.DSH_EDGE_LOCAL_MODELS ?? 'local-qwen3-4b').split(',').filter(Boolean)
-    modelPath: !!js process.env.DSH_EDGE_LOCAL_MODEL_PATH ?? ((process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent/models/qwen3-4b.gguf')
-    contextSize: !!js parseInt(process.env.DSH_EDGE_LOCAL_CTX ?? '8192', 10)
-    threads: !!js parseInt(process.env.DSH_EDGE_LOCAL_THREADS ?? '4', 10)
+    baseUrl: !!js process.env.DSH_EDGE_LOCAL_LLM_BASEURL ?? 'http://127.0.0.1:8080/v1'
+    defaultModel: !!js process.env.DSH_EDGE_LOCAL_LLM_MODEL ?? 'qwen3-4b'
+    apiKeyEnv: !!js process.env.DSH_EDGE_LOCAL_LLM_APIKEY_ENV ?? undefined
 
 # Cloud LLM adapter (DeepSeek / other providers). Routes through secure-bridge.
 - id: cloud-llm-adapter

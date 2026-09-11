@@ -284,9 +284,10 @@ describe('resolveLoggerConfig', () => {
     assert.equal(cfg.maxFileSizeBytes, 50 * 1024 * 1024)
     assert.equal(cfg.maxFileAgeDays, 0)
     assert.equal(cfg.maxRotatedFiles, 5)
-    // 2026-09-02: default level flipped info → debug so LLM body
-    // debug calls reach the ops log.
-    assert.equal(cfg.level, 'debug')
+    // 2026-09-11: default level flipped debug → info per user feedback
+    // "log 太冗余" — ops log was drowning in 4 body lines per LLM call.
+    // Previously 2026-09-02 info → debug (PROGRESS §7.23).
+    assert.equal(cfg.level, 'info')
   })
 
   // 2026-09-02: DSH_EDGE_LOG_LEVEL env var overrides the default.
@@ -297,13 +298,14 @@ describe('resolveLoggerConfig', () => {
     assert.equal(resolveLoggerConfig({ HOME: '/tmp', DSH_EDGE_LOG_LEVEL: 'debug' }).level, 'debug')
   })
 
-  // 2026-09-02: invalid env value falls back to 'debug' (silent recovery;
-  // operators see no obvious error but bodies stop logging because Cordis
-  // filters by the wrong level — but they will still get the loud default).
-  it('falls back to debug for invalid DSH_EDGE_LOG_LEVEL values', () => {
-    assert.equal(resolveLoggerConfig({ HOME: '/tmp', DSH_EDGE_LOG_LEVEL: 'verbose' }).level, 'debug')
-    assert.equal(resolveLoggerConfig({ HOME: '/tmp', DSH_EDGE_LOG_LEVEL: '' }).level, 'debug')
-    assert.equal(resolveLoggerConfig({ HOME: '/tmp', DSH_EDGE_LOG_LEVEL: 'TRACE' }).level, 'debug')
+  // 2026-09-11: invalid env value falls back to 'info' (the new default,
+  // flipped from 'debug' per user feedback "log 太冗余"). Operators
+  // who set a bogus value get the same quiet ops log as before; set
+  // DSH_EDGE_LOG_LEVEL=debug explicitly to re-enable body capture.
+  it('falls back to info for invalid DSH_EDGE_LOG_LEVEL values', () => {
+    assert.equal(resolveLoggerConfig({ HOME: '/tmp', DSH_EDGE_LOG_LEVEL: 'verbose' }).level, 'info')
+    assert.equal(resolveLoggerConfig({ HOME: '/tmp', DSH_EDGE_LOG_LEVEL: '' }).level, 'info')
+    assert.equal(resolveLoggerConfig({ HOME: '/tmp', DSH_EDGE_LOG_LEVEL: 'TRACE' }).level, 'info')
   })
 })
 

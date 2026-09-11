@@ -41,12 +41,13 @@
  *  │                                                                   │
  *  │         **debug entries MAY carry LLM call bodies** (request     │
  *  │         messages + response text) for offline triage — opt-in    │
- *  │         via `DSH_EDGE_LOG_LEVEL=debug` (the default since        │
- *  │         2026-09-02). CLOUD prompts are pre-sanitized by          │
- *  │         input-guard before egress, so the captured prompt is     │
- *  │         already placeholder-text for sensitive spans. CLOUD      │
- *  │         response text is NOT redacted — set                       │
- *  │         `DSH_EDGE_LOG_LEVEL=info` to suppress bodies entirely.    │
+ *  │         via `DSH_EDGE_LOG_LEVEL=debug`. 2026-09-11 default       │
+ *  │         flipped from `debug` to `info` (users said log was too   │
+ *  │         noisy — every LLM call landed 4 body lines). Re-enable   │
+ *  │         with `DSH_EDGE_LOG_LEVEL=debug`. CLOUD prompts are       │
+ *  │         pre-sanitized by input-guard before egress, so the       │
+ *  │         captured prompt is already placeholder-text for         │
+ *  │         sensitive spans. CLOUD response text is NOT redacted.   │
  *  │         Call sites: cloud-llm-adapter.ts, local-llm-adapter.ts.  │
  *  │         Used by operators to triage service flow, failures, and  │
  *  │         LLM call replay.                                         │
@@ -106,7 +107,7 @@ const LEVEL_NUMERIC: Record<LogLevel, number> = {
 }
 
 /** Reverse lookup for `resolveLoggerConfig` env validation. */
-function parseLogLevel(value: string | undefined, fallback: LogLevel = 'debug'): LogLevel {
+function parseLogLevel(value: string | undefined, fallback: LogLevel = 'info'): LogLevel {
   if (value === 'debug' || value === 'info' || value === 'warn' || value === 'error') return value
   return fallback
 }
@@ -127,12 +128,14 @@ export interface Config {
   /** Maximum number of rotated files to keep. */
   maxRotatedFiles: number
   /**
-   * Minimum logger level emitted to disk. 2026-09-02: default flipped
-   * from `info` to `debug` so LLM body debug calls
-   * (`cloud-llm-adapter.ts` / `local-llm-adapter.ts` LLM_REQUEST /
-   * LLM_MESSAGES / LLM_RESPONSE / LLM_RESPONSE_TEXT) reach the ops log.
-   * Set `DSH_EDGE_LOG_LEVEL=info` to revert to the pre-change quiet
-   * behavior.
+   * Minimum logger level emitted to disk. 2026-09-11: default flipped
+   * from `debug` back to `info` (per user feedback "log 太冗余") so the
+   * LLM body debug calls in `cloud-llm-adapter.ts` /
+   * `local-llm-adapter.ts` (LLM_REQUEST / LLM_MESSAGES / LLM_RESPONSE
+   * / LLM_RESPONSE_TEXT) are filtered by Cordis and don't reach the
+   * ops log. Set `DSH_EDGE_LOG_LEVEL=debug` to re-enable body capture
+   * for offline triage. Previously flipped 2026-09-02 info→debug; see
+   * PROGRESS §7.23 for the original flip.
    */
   level: LogLevel
 }
@@ -145,7 +148,7 @@ export const Config: Schema<Config> = Schema.object({
   maxFileSizeBytes: Schema.natural().default(50 * 1024 * 1024), // 50MB
   maxFileAgeDays: Schema.number().default(0),
   maxRotatedFiles: Schema.natural().default(5),
-  level: Schema.union(['debug', 'info', 'warn', 'error'] as const).default('debug'),
+  level: Schema.union(['debug', 'info', 'warn', 'error'] as const).default('info'),
 })
 
 declare module '@deepseek-ai/cordis' {
@@ -395,9 +398,11 @@ export interface ResolvedLoggerConfig {
  * then `HOME` (POSIX). File name is fixed (`dsh-edge-agent.log`) so
  * operators always know what file to tail.
  *
- * Level resolution: `DSH_EDGE_LOG_LEVEL` wins, otherwise `debug`. The
- * `debug` default is what makes the LLM body debug calls in
- * `cloud-llm-adapter.ts` / `local-llm-adapter.ts` visible in the ops log.
+ * Level resolution: `DSH_EDGE_LOG_LEVEL` wins, otherwise `info`. The
+ * `info` default (2026-09-11, flipped from `debug` per user feedback
+ * "log 太冗余") suppresses LLM body debug calls in
+ * `cloud-llm-adapter.ts` / `local-llm-adapter.ts` — set
+ * `DSH_EDGE_LOG_LEVEL=debug` to re-enable.
  */
 export function resolveLoggerConfig(env: NodeJS.ProcessEnv = process.env): ResolvedLoggerConfig {
   const homeBase = (env.USERPROFILE ?? env.HOME ?? '').toString()
@@ -412,7 +417,7 @@ export function resolveLoggerConfig(env: NodeJS.ProcessEnv = process.env): Resol
     maxFileSizeBytes: 50 * 1024 * 1024,
     maxFileAgeDays: 0,
     maxRotatedFiles: 5,
-    level: parseLogLevel(env.DSH_EDGE_LOG_LEVEL, 'debug'),
+    level: parseLogLevel(env.DSH_EDGE_LOG_LEVEL, 'info'),
   }
 }
 

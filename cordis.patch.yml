@@ -4,7 +4,7 @@
 #
 # 2026-09-05 (§7.43): 默认 host = dsh-tui（mandatory primary）。bundle 本身仍
 # profile-agnostic，可挂到 web / dsh-tui / 任意 profile；只是 install.sh 的默认
-# 部署目标从 web 切到 dsh-tui。web 是 opt-in secondary，需要 `--with-web`。
+# 部署目标从 web 切到 dsh-tui。2026-09-11 进一步改 install.sh 为 --profiles=dsh-tui,web 并存启动，--with-web 完全弃用。
 #
 # 2026-09-03 (§7.31): dsh-edge-agent 是 profile-agnostic pure-plugin bundle。
 # Previously had a separate profiles/dsh-edge-agent/cordis.patch.yml (459 lines)
@@ -302,13 +302,14 @@
         maxFileSizeBytes: 52428800  # 50MB
         maxFileAgeDays: 0
         maxRotatedFiles: 5
-        # 2026-09-02: default flipped info → debug so LLM body debug
-        # calls (LLM_REQUEST / LLM_MESSAGES / LLM_RESPONSE /
+        # 2026-09-11: default flipped debug → info per user feedback
+        # "log 太冗余" — ops log was drowning in 4 body lines per LLM
+        # call (LLM_REQUEST / LLM_MESSAGES / LLM_RESPONSE /
         # LLM_RESPONSE_TEXT in cloud-llm-adapter.ts and
-        # local-llm-adapter.ts) pass through to the ops log. Set
-        # `DSH_EDGE_LOG_LEVEL=info` to revert to the pre-change quiet
-        # behavior (no LLM body content on disk).
-        level: !!js process.env.DSH_EDGE_LOG_LEVEL ?? 'debug'
+        # local-llm-adapter.ts). Re-enable body capture with
+        # `DSH_EDGE_LOG_LEVEL=debug`. Originally flipped 2026-09-02
+        # info→debug (PROGRESS §7.23); this is the second flip.
+        level: !!js process.env.DSH_EDGE_LOG_LEVEL ?? 'info'
 
     # tcm: prompt-guard injects this; must mount first
     - id: tcm
