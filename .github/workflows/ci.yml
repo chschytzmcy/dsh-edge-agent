@@ -142,19 +142,31 @@ jobs:
         run: npm install -g @deepseek-ai/dsh
         # dsh CLI 启动时读取 ~/.dsh/profiles/<name>/cordis.yml + bundles 列表，
         # 缺 bundle 注册会回到 vanilla 配置跑（缺少 dsh-edge-agent 全部 plugins）。
-        # 2026-09-03 (§7.31): CI 跑 web profile (唯一 profile).
+        # §7.43 (2026-09-11): CI bootstrap 切到 dsh-tui（mandatory primary）。
+        # web profile 通过后续步骤 bootstrap（同 dsh-tui，独立步骤）。
 
-      - name: Bootstrap DSH web profile
+      - name: Bootstrap DSH dsh-tui profile
         run: |
-          # 2026-09-03 (§7.31): web profile is the only profile.
-          # CI 创建 web profile + 注册 dsh-edge-agent bundle, 把 repo 根
-          # cordis.patch.yml 同步到嵌套包, 确保 19 个 plugins 加载.
+          # §7.43 (2026-09-11): dsh-tui 是 mandatory primary。CI 先建 dsh-tui
+          # profile + 注册 dsh-edge-agent bundle + 同步 cordis.patch.yml，
+          # 确保 19 个 plugins 加载。
+          mkdir -p "$HOME/.dsh/profiles/dsh-tui"
+          dsh plugin --profile dsh-tui add @deepseek-harness-edge-agent/dsh-edge-agent || true
+          NESTED="$HOME/.dsh/profiles/dsh-tui/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent"
+          mkdir -p "$NESTED"
+          cp cordis.patch.yml "$NESTED/cordis.patch.yml"
+          cp cordis.yml "$NESTED/cordis.yml" 2>/dev/null || true
+          echo "已同步 bundle patch → $NESTED/cordis.patch.yml"
+
+      - name: Bootstrap DSH web profile (web-only e2e)
+        run: |
+          # §7.43: install.sh --profiles=dsh-tui,web 并存；web-only e2e
+          # (e2e-privacy-precheck.sh 等) 需要 web profile。bootstrap 同 dsh-tui，best-effort。
           mkdir -p "$HOME/.dsh/profiles/web"
           dsh plugin --profile web add @deepseek-harness-edge-agent/dsh-edge-agent || true
           NESTED="$HOME/.dsh/profiles/web/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent"
           mkdir -p "$NESTED"
           cp cordis.patch.yml "$NESTED/cordis.patch.yml"
-          cp cordis.yml "$NESTED/cordis.yml" 2>/dev/null || true
           echo "已同步 bundle patch → $NESTED/cordis.patch.yml"
 
       - name: Run privacy precheck e2e (must report 19/19)

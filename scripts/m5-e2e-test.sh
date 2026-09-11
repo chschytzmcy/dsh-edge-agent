@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # M5 端到端测试脚本 — 基于真实 dsh 的完整验证
 #
+# §7.43: web-only — 本脚本测 webui (`:3080`) + http-api (`:21017`)；
+# web profile 是并存部署的一部分，跑前需要 `./install.sh --profiles=web`（默认已并存）。
+#
 # 用法：
 #   ./scripts/m5-e2e-test.sh              # 使用默认配置
 #   DSH_EDGE_PROVIDER=cloud-deepseek-v4 ./scripts/m5-e2e-test.sh

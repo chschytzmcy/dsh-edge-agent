@@ -3,6 +3,8 @@
  * M4 manual smoke — verify the local-llm-adapter (mock + real) and
  * cloud-llm-adapter dispatch through the same `ctx.llm` runtime.
  *
+ * §7.43: web-only — 本 smoke 用 `dsh --profile web`，需要 `--with-web`。
+ *
  * Three runs share the `dsh-edge-agent` profile and only differ in env:
  *
  *   1. `mock`   — `DSH_EDGE_PROVIDER=local-qwen3-4b-mock` (no network).

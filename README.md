@@ -115,72 +115,80 @@ cd dsh-edge-agent
 pnpm install
 pnpm run compile
 
-# 默认装到 web profile（也可装到 tui 或任意自定义 profile）
-./install.sh                       # 默认 PROFILE=web
-./install.sh --to-profile tui     # 装到 tui profile（如有）
-DSH_EDGE_PROFILE=my-edge ./install.sh   # 装到自定义 profile
+# §7.43 (2026-09-11): 默认只同步不启动；用 --with= 显式启。
+./install.sh                            # 默认：只同步 dsh-tui + web，不启动（已运行的进程保持）
+./install.sh --with                     # 同步 + 启动 dsh-tui + web（并存）
+./install.sh --with=web                 # 同步两个 + 只启动 web
+./install.sh --with=tui                 # 同步两个 + 只启动 dsh-tui
+./install.sh --with=web,tui             # 同步两个 + 都启
+./install.sh --profiles=dsh-tui         # 只同步 dsh-tui（不启）
 
-# 启动宿主 profile（默认 web）
-cd ~/.dsh/profiles/web
-setsid nohup dsh --profile web > run.log 2>&1 < /dev/null &
+# 手动启动某个 profile（开发循环）
+cd ~/.dsh/profiles/dsh-tui
+setsid nohup dsh --profile dsh-tui > run.log 2>&1 < /dev/null &
 disown
 ```
 
-### 方式二：把 bundle 装到现有 web profile（默认 + primary 文档案例）
+### 方式二：把 bundle 装到现有 dsh-tui / web profile（profile-agnostic）
 
-适用于「web profile 已存在（DSH 上游 webui 已装）」，只装 dsh-edge-agent bundle：
+新 install.sh 把 bundle 同步到所有目标 profile 的嵌套包 + 重启对应 dsh：
 
 ```bash
-dsh plugin --profile web add @deepseek-harness-edge-agent/dsh-edge-agent
+# 默认：并存部署 dsh-tui + web
+./install.sh
 
-# 然后 rsync + sync bundle patch + 注册 bundles + 重启
-cd /path/to/dsh-edge-agent
-./install.sh --skip-pnpm
+# 只装一个
+./install.sh --profiles=web
+
+# 装自定义 profile
+./install.sh --profiles=my-edge
 ```
 
-> bundle 是 profile-agnostic 的——同样模式可装到任何 DSH profile（`--to-profile <name>` 或 `DSH_EDGE_PROFILE=<name>`）。web 是默认 + primary 文档案例，因为它自带 DSH 上游 webui / IM。
+> bundle 是 profile-agnostic 的——`--profiles=` 接受任何 DSH profile 名（dsh-tui / web / 自定义）。端口在 install.sh 里的 `port_for_profile()` 映射，未来加新 profile 必须在那里同步登记。
 
 ### 方式三：Windows
 
 ```cmd
 :: PowerShell 或 cmd
 :: （Windows 上 dsh CLI 行为一致；具体启动命令参考 DSH 官方 Windows 文档）
-dsh plugin --profile web add @deepseek-harness-edge-agent/dsh-edge-agent
+dsh plugin --profile dsh-tui add @deepseek-harness-edge-agent/dsh-edge-agent
 :: 或装到任意 profile：dsh plugin --profile <name> add @deepseek-harness-edge-agent/dsh-edge-agent
+:: §7.43: 想并存启动 dsh-tui + web 用 ./install.sh
 ```
 
 ### 首次启动流程
 
-首次运行 `install.sh` 会执行：
+首次运行 `install.sh`（默认 `--profiles=dsh-tui,web`）会执行：
 
 1. 检测 dsh CLI / pnpm 是否已安装
-2. `dsh plugin --profile web add` 注册本 bundle 到 web profile 的 `dsh.profile.bundles` 列表
-3. pnpm 装 7 个上游包（dsh-agent-loop / dsh-tool-web / dsh-web / dsh-web-search-deepseek / dsh-skill / dsh-tool-skill / dsh-skill-filesystem）
-4. rsync `lib/` → web profile 嵌套包
+2. `dsh plugin add @deepseek-harness-edge-agent/dsh-edge-agent` 注册本 bundle 到每个目标 profile 的 `dsh.profile.bundles` 列表
+3. pnpm 装 7 个上游包（dsh-agent-loop / dsh-tool-web / dsh-web / dsh-web-search-deepseek / dsh-skill / dsh-tool-skill / dsh-skill-filesystem）— 每个 profile 各装一次
+4. rsync `lib/` → profile 嵌套包
 5. 同步 `cordis.patch.yml` 到嵌套包（**bundle-level patch**，§7.31 fix）
-6. 创建 6 个 channel 目录（默认 `~/.dsh-edge-agent-web/`，由 web profile `.env.sh` 设置）
+6. 创建 6 个 channel 目录（默认 `~/.dsh-edge-agent-<profile>/`，由各 profile `.env.sh` 设置；dsh-tui 用 `~/.dsh-edge-agent-dsh-tui/`，web 用 `~/.dsh-edge-agent-web/`）
 7. 加载默认策略 `tests/fixtures/privacy-policy.json`（也可由 `DSH_EDGE_PRIVACY_POLICY_PATH` 覆盖）
-8. 启动 web profile → `dsh web: http://127.0.0.1:3080/`
+8. 顺序启动 dsh-tui (port 21018) → web (port 21017)：每个 profile 独立 pkill → port-wait → nohup launch
 
-完成后浏览器访问 `:3080` 即可使用 webui chat。
+完成后 TUI 进入终端交互；浏览器访问 `:3080` 即可使用 webui chat。
 
 ### 验证安装
 
 ```bash
-# 1. bundle 已注册到 web profile？
+# 1. bundle 已注册到 dsh-tui 和 web profile？
+grep '@deepseek-harness-edge-agent/dsh-edge-agent' ~/.dsh/profiles/dsh-tui/package.json
 grep '@deepseek-harness-edge-agent/dsh-edge-agent' ~/.dsh/profiles/web/package.json
 
 # 2. 19 个 plugin 全部挂载？
-dsh --profile web --dump-config | grep -E 'input-guard|file-logger|intent-router|sanitizer' | wc -l
+dsh --profile dsh-tui --dump-config | grep -E 'input-guard|file-logger|intent-router|sanitizer' | wc -l
 # 期望：≥4
 
-# 3. webui listen？
-curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:3080/
-# 期望：200
+# 3. 双 profile 并存运行？
+pgrep -af 'dsh --profile (dsh-tui|web)' | grep -v pgrep
+ss -tlnp | grep -E '21017|21018'   # 期望：两个端口都在听
 
-# 4. http-api 已 disabled（§7.33）
+# 4. http-api（tui 21018 / web 21017）
+curl -s --max-time 3 http://127.0.0.1:21018/v1/health
 curl -s --max-time 3 http://127.0.0.1:21017/v1/health
-# 期望：连接拒绝（:21017 不 listen）
 ```
 
 ### 故障排查
@@ -189,23 +197,27 @@ curl -s --max-time 3 http://127.0.0.1:21017/v1/health
 |---|---|
 | `未检测到 dsh CLI` | `npm install -g @deepseek-ai/dsh` 后 `hash -r` |
 | `未检测到 pnpm` | `npm install -g pnpm` 或 `corepack enable pnpm` |
+| dsh-tui 启动失败 | `tail -50 ~/.dsh/profiles/dsh-tui/run.log` 看 `intentRouter: found` 行 |
 | web profile 启动后 `:3080` 不 listen | `tail -50 ~/.dsh/profiles/web/run.log` 看 `dsh web:` 行；可能是 webui 包未装，跑 `dsh plugin --profile web add @deepseek-ai/dsh-web @deepseek-ai/dsh-web-ui-all` |
-| 19 个 plugin 只挂载 dsh-base 的 30 个（bundle 没生效） | `dsh plugin --profile web add @deepseek-harness-edge-agent/dsh-edge-agent` 重装；或者 `install.sh §3.5 + §3.6` 没跑，手动 cp `cordis.patch.yml` 到嵌套包根 |
+| 19 个 plugin 只挂载 dsh-base 的 30 个（bundle 没生效） | `dsh plugin --profile dsh-tui add @deepseek-harness-edge-agent/dsh-edge-agent` 重装；或者 `install.sh §2.6 + §2.7` 没跑，手动 cp `cordis.patch.yml` 到嵌套包根 |
 | `adapter boundary violated` | 把 `@deepseek-ai/*` 的 import 移到 `src/dsh-adapter/` 内（或经 `src/dsh-adapter/types.ts` 重新导出） |
 | `upstream contract violated` | DSH 依赖版本与 `UPSTREAM_VALIDATED_VERSION`（`0.1.2-rc.1`）不匹配；运行 `pnpm install` 或 `pnpm update @deepseek-ai/dsh-agent @deepseek-ai/dsh-llm ...` |
 
 ### 卸载
 
 ```bash
-# 1. 停 web profile
+# 1. 停所有 dsh profile
+pkill -f 'node.*dsh --profile dsh-tui' || true
 pkill -f 'node.*dsh --profile web' || true
 
-# 2. 从 web profile bundles 列表移除 bundle
-# （CLI：dsh plugin --profile web remove <bundle> — 如 dsh CLI 0.1.0-rc.x 提供）
-# 或手动编辑 ~/.dsh/profiles/web/package.json 删除 bundles + dependencies 中的 dsh-edge-agent
+# 2. 从 profile bundles 列表移除 bundle
+# （CLI：dsh plugin --profile dsh-tui remove <bundle> — 如 dsh CLI 提供）
+# 或手动编辑 ~/.dsh/profiles/dsh-tui/package.json 删除 bundles + dependencies 中的 dsh-edge-agent
+# §7.43: dsh-tui + web 都要处理（如果都装过）
 
 # 3. 移除嵌套包
-rm -rf ~/.dsh/profiles/web/node_modules/@deepseek-harness-edge-agent/
+rm -rf ~/.dsh/profiles/dsh-tui/node_modules/@deepseek-harness-edge-agent/
+rm -rf ~/.dsh/profiles/web/node_modules/@deepseek-harness-edge-agent/   # 若 web 装过
 
 # 4. 移除 bundle 数据（注意：会删除所有会话和加密数据！）
 rm -rf ~/.dsh-edge-agent-web/
@@ -230,16 +242,16 @@ export PATH="$HOME/.npm-global/bin:$PATH"
 cp .env.example .env
 $EDITOR .env   # 填入 DEEPSEEK_API_KEY、EDGE_API_KEY 等
 
-# 3. cordis patch 已由 ./install.sh §3.5 自动同步到 web profile 嵌套包；手动开发期改完 bundle 也可重跑：
+# 3. cordis patch 已由 ./install.sh §3.5 自动同步到 dsh-tui profile 嵌套包；手动开发期改完 bundle 也可重跑：
 ./install.sh --skip-pnpm
 
-# 4. 启动（web profile 自己 source 自己的 .env.sh；无需 source repo 根 .env.sh）
-cd ~/.dsh/profiles/web
-setsid nohup dsh --profile web > run.log 2>&1 < /dev/null &
+# 4. 启动（§7.43 默认 = dsh-tui；dsh-tui profile 自己 source 自己的 .env.sh）
+cd ~/.dsh/profiles/dsh-tui
+setsid nohup dsh --profile dsh-tui > run.log 2>&1 < /dev/null &
 disown
 
 # 或前台（debug 用）
-source .env.sh && dsh --profile web
+source .env.sh && dsh --profile dsh-tui
 ```
 
 `.env.sh` 会打印加载的变量（脱敏）便于调试。
@@ -269,9 +281,9 @@ export DSH_EDGE_LOCAL_LLM_MODE=real
 export DSH_EDGE_LOCAL_LLM_BASEURL=http://192.168.66.195:8701/v1
 export DSH_EDGE_LOCAL_LLM_MODEL=qwen3-4b-instruct-2507
 
-# bundle 自带完整 cordis.patch.yml，无需 cp profile overlay
-cd ~/.dsh/profiles/web
-dsh --profile web
+# §7.43: bundle 自带完整 cordis.patch.yml，无需 cp profile overlay
+cd ~/.dsh/profiles/dsh-tui
+dsh --profile dsh-tui
 ```
 
 ### LLM 路由机制
@@ -378,9 +390,10 @@ dsh-edge-agent 通过**环境变量**和 `cordis.yml` 进行配置。所有环�
 | `DSH_EDGE_LOCAL_MODEL_PATH` | `~/.dsh-edge-agent/models/qwen3-4b.gguf` | GGUF 模型文件路径 |
 | `DSH_EDGE_LOCAL_CTX` | `8192` | 上下文窗口大小 |
 | `DSH_EDGE_LOCAL_THREADS` | `4` | 推理线程数 |
-| `DSH_EDGE_LOCAL_LLM_BASEURL` | `http://127.0.0.1:8080/v1`（Schema）/`http://192.168.1.121:11017/v1`（部署） | OpenAI 兼容端点 URL（实际使用） |
-| `DSH_EDGE_LOCAL_LLM_MODEL` | `qwen3-4b`（Schema）/`qwen3-4b-instruct-2507`（部署） | 端点 model id |
+| `DSH_EDGE_LOCAL_LLM_BASEURL` | `https://coding.dashscope.aliyuncs.com/v1`（2026-09-11 起） / `http://192.168.1.121:11017/v1`（旧部署） | OpenAI 兼容端点 URL（实际使用） |
+| `DSH_EDGE_LOCAL_LLM_MODEL` | `qwen3.7-plus`（2026-09-11 起） / `qwen3-4b-instruct-2507`（旧部署） | 端点 model id |
 | `DSH_EDGE_LOCAL_LLM_MODE` | `mock`（Schema）/`real`（部署） | `mock` / `real`（是否走真实端点） |
+| `DSH_EDGE_LOCAL_LLM_APIKEY_ENV` | `DASHSCOPE_API_KEY`（DashScope 模式）/ 空（本地 llama.cpp） | env 变量名，指向存放 bearer 的槽位。设为 `DASHSCOPE_API_KEY` 让 adapter 读 `.env` 里的 DashScope key。留空表示不发 `Authorization` header |
 
 **云端 LLM**
 
@@ -510,17 +523,18 @@ dsh-edge-agent 通过**环境变量**和 `cordis.yml` 进行配置。所有环�
 
 ---
 
-## 🌐 入口架构（§7.33 重构后：bundle 默认挂到 web profile）
+## 🌐 入口架构（§7.43 重构后：--profiles=dsh-tui,web 默认并存启动）
 
-> **2026-09-03 §7.33 重要变更**：dsh-edge-agent 不再是独立 profile + 自研 http-api `:21017` 入口。bundle 是"纯 plugins"——在 **web profile（默认 / primary 宿主）** 下，所有用户交互走 **DSH 官方 Web UI `:3080`**（web profile 自带）。`http-api` plugin 当前 **disabled**（代码保留，未来可手动启用）。
+> **2026-09-11 §7.43 修订**：install.sh 重写后默认 `--profiles=dsh-tui,web` 并存启动。dsh-tui 用 :21018，web 用 :21017，两个 profile 同时在跑。`--all` / `--profiles=<csv>` / `--to-profile=<name>` (deprecated) 控制部署范围。
 >
-> bundle 是 **profile-agnostic** 的——可以同样模式挂到 tui / 任意自定义 profile；web 是默认 + primary 文档案例（自带 DSH 上游 webui / IM），不是唯一合法宿主。
+> §7.33 仍然有效：dsh-edge-agent 是"纯 plugins" bundle。http-api plugin 当前 **disabled**（代码保留，未来可手动启用）。
 
-**默认入口（web profile 宿主）**：
+**默认入口（§7.43 dsh-tui profile 宿主）**：
 
 | 入口 | 端口 | 鉴权 | 目标用户 | 状态 |
 |---|---|---|---|---|
-| **DSH 官方 Web UI**（SPA + apiproxy） | `:3080` | loopback trust + pairing | 浏览器 / 真人用户 / IM 渠道 | ✅ enabled |
+| **TUI**（dsh-tui bundle） | `:21018` | loopback trust | 终端用户 / 开发者 | ✅ enabled（§7.43 primary） |
+| **DSH 官方 Web UI**（SPA + apiproxy） | `:3080` | loopback trust + pairing | 浏览器 / 真人用户 / IM 渠道 | ✅ 默认并存启动 |
 
 **已 disabled 的可选入口**（代码保留，未来手动启用见下文 §"重新启用 http-api"）：
 
@@ -556,7 +570,7 @@ dsh-edge-agent 通过**环境变量**和 `cordis.yml` 进行配置。所有环�
 $EDITOR cordis.patch.yml
 
 # 2. 同步到嵌套包 + 重启 web profile
-./install.sh --skip-pnpm
+./install.sh --skip-pnpm --profiles=web
 ```
 
 启用后，http-api 会在 `:21017` 重新 listen（与 `:3080` webui 并存）。代码路径完全保留，下面是 REST API 文档存档（§7.33 之前是主入口，现在为 advanced option）：
@@ -618,13 +632,14 @@ curl http://127.0.0.1:21017/v1/openapi.json
 
 ## 🧪 手动测试
 
-### Webui smoke（推荐，§7.33 后默认入口）
+### Webui smoke（推荐，web profile 默认已装并启动）
 
 ```bash
-# 1. 启动 web profile
-cd ~/.dsh/profiles/web
-setsid nohup dsh --profile web > run.log 2>&1 < /dev/null &
-disown
+# 0. §7.43: 默认 --all 已装 web profile；如未装：
+./install.sh --profiles=web
+
+# 1. web 默认已在 :21017 listen；UI 在 :3080
+# （如需手动启动：cd ~/.dsh/profiles/web && setsid nohup dsh --profile web > run.log 2>&1 < /dev/null & disown）
 
 # 2. 等 5-10s（webui 首次加载慢）
 sleep 10
@@ -646,24 +661,44 @@ curl -s --max-time 3 http://127.0.0.1:21017/v1/health
 # 期望：连接拒绝
 ```
 
+### Tui smoke（§7.43 primary；**默认就装**）
+
+```bash
+# 1. 启动 dsh-tui（install.sh 默认装；并存启动 dsh-tui + web）
+cd ~/.dsh/profiles/dsh-tui
+setsid nohup dsh --profile dsh-tui > run.log 2>&1 < /dev/null &
+disown
+
+# 2. 等 3-5s
+sleep 5
+
+# 3. 验证 dsh-tui 进程在跑
+pgrep -f 'dsh --profile dsh-tui'   # 期望：返回 PID
+
+# 4. 跟 audit log 验证 input-guard hook 注册
+tail -10 ~/.dsh-edge-agent-dsh-tui/audit/audit.plain.jsonl \
+  | jq -c 'select(.kind | test("registered|loaded"))' | head -5
+# 期望：input-guard.hook.registered 等事件
+```
+
 ### http-api 手动测试（advanced，**需先启用**）
 
-> ⚠️ §7.33 后 http-api 默认 disabled。如要跑以下 curl 示例，先 `cordis.patch.yml:313` 删 `disabled: true` 并 `./install.sh --skip-pnpm` 重启 web profile。
+> ⚠️ §7.33 后 http-api 默认 disabled。如要跑以下 curl 示例，先 `cordis.patch.yml:313` 删 `disabled: true` 并 `./install.sh --skip-pnpm --profiles=web` 重启 web profile。
 
 假设服务器运行在 `http://127.0.0.1:21017`，API Key 为 `test-secret-key`。
 
 ### 启动服务
 
 ```bash
-# 方式 1: 使用启动脚本（推荐）
+# 方式 1: 使用启动脚本（推荐；§7.43 默认 dsh-tui）
 ./scripts/launch-dev.sh
 
 # 方式 2: 手动启动
 source .env.sh
-dsh --profile web
+dsh --profile dsh-tui
 
 # 方式 3: 后台运行
-setsid bash -c 'source .env.sh && dsh --profile web' > /tmp/dsh.log 2>&1 < /dev/null &
+setsid bash -c 'source .env.sh && dsh --profile dsh-tui' > /tmp/dsh.log 2>&1 < /dev/null &
 ```
 
 ### Health Check

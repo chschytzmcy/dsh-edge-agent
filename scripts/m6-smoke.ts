@@ -4,6 +4,8 @@
  * adversarial samples against the LAN llama.cpp endpoint and verify the
  * expected audit-log kind appears for each sample.
  *
+ * §7.43: web-only — 本 smoke 用 `dsh --profile web`，需要 `--with-web`。
+ *
  * L0 has three hard-rule tiers (length / rate-limit / regex / PII) plus
  * the new model-based tier (Qwen3-4B JSON verdict). The adversarial
  * samples here are designed to **bypass** the regex rules so the model

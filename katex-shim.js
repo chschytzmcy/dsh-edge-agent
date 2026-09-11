@@ -11,6 +11,8 @@
 // Usage (in your web profile launcher):
 //   NODE_OPTIONS='--import /home/etsme/cy/agent/dsh-edge-agent/katex-shim.js' \
 //     dsh --profile web --port 3080
+// §7.43 (2026-09-05): katex-shim 是 webui 专用，仅 web profile 需要；dsh-tui
+// 不加载。TUI profile 默认 launcher 不需要这个 NODE_OPTIONS。
 //
 // 2026-09-02: initial shim. See PROGRESS §7.25.
 import { register } from 'node:module'

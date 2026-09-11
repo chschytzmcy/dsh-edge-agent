@@ -70,7 +70,7 @@ done
 echo ""
 if [ -z "$MOUNTED_IN" ]; then
   echo "⚠️  bundle is not mounted in any profile"
-  echo "       fix: ./install.sh --skip-pnpm    # installs into default PROFILE=web"
+  echo "       fix: ./install.sh --skip-pnpm    # installs into default PROFILE=dsh-tui"
   echo "             ./install.sh --to-profile <name> --skip-pnpm   # into a specific profile"
 else
   echo "✅ bundle mounted in profile(s):$MOUNTED_IN"

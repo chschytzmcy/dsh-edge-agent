@@ -26,12 +26,10 @@ help:
 	@echo "  $(GREEN)make install$(NC)       - 安装到本地系统"
 	@echo "  $(GREEN)make clean$(NC)         - 清理构建产物"
 	@echo ""
-	@echo "远程部署:"
-	@echo "  $(GREEN)./deploy.sh$(NC) <user@host> [port]"
-	@echo ""
-	@echo "示例:"
-	@echo "  ./deploy.sh rockchip@192.168.1.121"
-	@echo "  ./deploy.sh root@192.168.1.100 2222"
+	@echo "本地部署到 DSH profile:"
+	@echo "  $(GREEN)./install.sh$(NC)                # 默认并存部署 dsh-tui + web"
+	@echo "  $(GREEN)./install.sh --profiles=dsh-tui$(NC)   # 只部署 dsh-tui"
+	@echo "  $(GREEN)./install.sh --profiles=web$(NC)       # 只部署 web"
 
 # 构建
 build:
@@ -90,7 +88,7 @@ install: package
 	@echo "下一步:"
 	@echo "  1. 进入目录: cd $(INSTALL_DIR)"
 	@echo "  2. 配置环境: cp .env.example .env && \$$EDITOR .env"
-	@echo "  3. 启动服务: source .env.sh && dsh --profile web"
+	@echo "  3. 启动服务: ./install.sh    # 默认并存启动 dsh-tui + web"
 
 # 清理
 clean:

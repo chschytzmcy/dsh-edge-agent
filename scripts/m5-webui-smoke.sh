@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # M5 webui 烟囱脚本 — webui (:21018) + http-api (:21017) 双入口活体检查
 #
+# §7.43: web-only — 本脚本测 webui 双入口；需要 `./install.sh --profiles=web`。
+#
 # 与 m5-e2e-test.sh 的区别：
 #   - m5-e2e 跑完整 :21017 HTTP API（鉴权/会话/SSE/CRUD）—— 侧重后端协议
 #   - m5-webui-smoke 只跑 :21018 SPA + 双入口"开门即通"探测 —— 侧重 web 入口存活
