@@ -367,4 +367,60 @@ describe('cloud-llm-adapter (M2 tool-calls)', () => {
     assert.equal((chunks[0] as { reason?: { kind: string } }).reason?.kind, 'stop')
     restoreFetch()
   })
+
+  // §7.46.1 (2026-09-11): cloud-llm-adapter per-call info log
+  // 让"TUI 路径调了哪个 cloud LLM / 多久 / 多少 token"在 ops log 里可见。
+  // start 行 + done 行成对，配合 realm-skill-bridge pre-step / tool allow
+  // 形成完整 trace。
+  describe('per-call ops log (§7.46.1)', () => {
+    it('emits LLM call start + done with sessionId, provider, model, duration', async () => {
+      installFetchMock(() => sseResponse([
+        { choices: [{ delta: { content: 'hi' }, finish_reason: null }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] },
+      ]))
+      process.env.DEEPSEEK_API_KEY = 'sk-sec7461-test'
+      const infoLines: string[] = []
+      const fakeLogger = {
+        info: (line: string) => infoLines.push(line),
+        warn: () => {},
+        error: () => {},
+        debug: () => {},
+      }
+      const adapter = new CloudLlmAdapterImpl(
+        {
+          providers: ['cloud-deepseek-v4'],
+          baseUrl: 'https://api.example.test',
+          apiKeyEnv: 'DEEPSEEK_API_KEY',
+          defaultModel: 'deepseek-chat',
+        },
+        undefined,
+        undefined,
+        fakeLogger,
+      )
+      for await (const _ of adapter.stream({
+        provider: 'cloud-deepseek-v4',
+        model: 'deepseek-chat',
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
+        sessionId: 'sec7461-cloud',
+      } as any)) {
+        // drain
+      }
+      const start = infoLines.find((l) => l.includes('LLM call start'))
+      const done = infoLines.find((l) => l.includes('LLM call done'))
+      assert.ok(start, `expected LLM call start line, got: ${JSON.stringify(infoLines)}`)
+      assert.ok(done, `expected LLM call done line, got: ${JSON.stringify(infoLines)}`)
+      assert.ok(start!.includes('sessionId=sec7461-cloud'), 'start should include sessionId')
+      assert.ok(start!.includes('provider=cloud-deepseek-v4'), 'start should include provider')
+      assert.ok(start!.includes('model=deepseek-chat'), 'start should include model')
+      assert.ok(start!.includes('messageCount=1'), 'start should include messageCount')
+      assert.ok(done!.includes('sessionId=sec7461-cloud'), 'done should include sessionId')
+      assert.ok(done!.includes('provider=cloud-deepseek-v4'), 'done should include provider')
+      assert.ok(done!.includes('model=deepseek-chat'), 'done should include model')
+      assert.match(done!, /durationMs=\d+/, 'done should include durationMs=N')
+      assert.match(done!, /resultLen=\d+/, 'done should include resultLen=N')
+      assert.ok(done!.includes('finishKind=stop'), 'done should include finishKind=stop')
+      delete process.env.DEEPSEEK_API_KEY
+      restoreFetch()
+    })
+  })
 })

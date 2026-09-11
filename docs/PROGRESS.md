@@ -4411,3 +4411,77 @@ ctx.logger?.info?.(
 - PROGRESS §7.45 — SANITIZED 例外修复让 §7.46 的 pre-step filter log 才有意义（之前 catalogDropped=33 现在=0 是 §7.45 修复的标志）
 - PROGRESS §7.44 — ops log 默认 level 翻 info 是这一切的前提
 - memory [[log-level-flip-followup]] — §7.44.1 memory entry；§7.46 是它的 §7.46 续
+
+### §7.46.1 cloud/local-llm-adapter per-call log — "哪个 LLM / 多久 / 多少 token 都在 ops log"（2026-09-11）
+
+**承接**：§7.46 已覆盖 input-guard preflight / realm-skill-bridge pre-step / tool allow+deny / chat finished（realm+duration）四类 ops log，但 cloud/local-llm-adapter 仍只有 boot log（`apply() called with providers` / `Adapter registered successfully`）。http-api POST 200 行在 curl 路径里有 provider/model+duration，TUI 路径只能靠 audit JSONL 翻 `llm.cloud.start` / `llm.cloud.end` 事件——这违背 §7.46 总原则"每个关键环节都要在 ops log 体现"。本次补上。
+
+**症状**：跑 TUI 测试查询时 ops log 只看到 `chat received` / `preflight intent` / `pre-step filter` / `tool allow`，但 audit JSONL 里 `llm.cloud.start` / `llm.cloud.end` 事件对运维来说是关键（durationMs / resultLen / finishKind / toolCallCount），却埋在 audit 里。
+
+**修复**：
+
+`src/dsh-adapter/cloud-llm-adapter.ts` `stream(options)`：
+
+- start 行（在 `Date.now()` 之后、`fetch` 之前）：
+  ```ts
+  this.logger?.info?.(
+    `[cloud-llm-adapter] LLM call start sessionId=${sessionId} provider=${options.provider} model=${options.model} messageCount=${messageCount} promptLen=${promptLen} baseUrl=${this.baseUrl}`,
+  )
+  ```
+- done 行（在 `finally` 块、audit emit 之后）：
+  ```ts
+  this.logger?.info?.(
+    `[cloud-llm-adapter] LLM call done sessionId=${sessionId} provider=${options.provider} model=${options.model} durationMs=${durationMs} resultLen=${assembledText.length} toolCallCount=${toolCalls.size} finishKind=${finishKind ?? 'unknown'}${wireError !== undefined ? ` wireError=${wireError}` : ''}`,
+  )
+  ```
+- sessionId 从 `options.sessionId`（chat session id，不是 llm session id）读出，缺省 `'unknown'`（intent classifier 调用 `stream()` 时不传 sessionId）。
+
+`src/dsh-adapter/local-llm-adapter.ts` 同款 pattern（start + done）。
+
+try/catch 包 logger emit，防止 logger 实现抛错时把整条 stream 打断——logger 是 optional 注入，跟 §7.46 其它 emit 风格一致。
+
+**E2E 验证**（dsh-tui，sessionId=`sec7.46.1-verify-2`，query="查询密盒登录状态"）：
+
+ops log 关键片段（按时间序）：
+
+```
+18:14:23.880  [input-guard]    preflight intent sessionId=sec7.46.1-verify-2 category=SANITIZED confidence=0.5 rationale=default:sanitized targetRealm=LOCAL
+18:14:23.890  [realm-skill-bridge] pre-step filter sessionId=sec7.46.1-verify-2 realm=SANITIZED catalogDropped=0
+18:14:23.897  [realm-skill-bridge] chat received sessionId=sec7.46.1-verify-2 reason=initial
+18:14:23.898  [local-llm-adapter]  LLM call start sessionId=unknown provider=local-qwen3-4b model=local-qwen3-4b messageCount=1 promptLen=351 baseUrl=https://coding.dashscope.aliyuncs.com/v1
+18:14:23.898  [cloud-llm-adapter]  LLM call start sessionId=sec7.46.1-verify-2 provider=cloud-deepseek-v4 model=cloud-deepseek-v4 messageCount=3 promptLen=6134 baseUrl=https://api.deepseek.com
+18:14:25.150  [cloud-llm-adapter]  LLM call done  sessionId=sec7.46.1-verify-2 provider=cloud-deepseek-v4 ... durationMs=1251 resultLen=21 toolCallCount=1 finishKind=tool-calls
+18:14:25.190  [cloud-llm-adapter]  LLM call start sessionId=sec7.46.1-verify-2 ... messageCount=5
+18:14:25.170  [realm-skill-bridge] tool allow sessionId=sec7.46.1-verify-2 tool=skill realm=SANITIZED
+18:14:25.961  [realm-skill-bridge] tool allow sessionId=sec7.46.1-verify-2 tool=bash realm=SANITIZED
+18:14:26.125  [realm-skill-bridge] chat finished sessionId=sec7.46.1-verify-2 turn=1 reason=unknown realm=SANITIZED duration=2228ms
+```
+
+完整 trace 现在能串起来：意图分类（input-guard，category=SANITIZED 降级到 LOCAL）→ 本地 LLM 调一次（intent classifier，sessionId=unknown 因为 classifier 不传）→ cloud LLM 调三次（第一次 reply、第二次带 tool_call、第三次后续）→ tool 决策 → chat finished。operator 在 ops log grep sessionId 就拿到整条链路。
+
+**单元测试**：
+
+- `tests/unit/cloud-llm-adapter.test.ts` 新增 `describe('per-call ops log (§7.46.1)')` — mock fetch + 注入 fakeLogger，验证 start 行含 sessionId/provider/model/messageCount，done 行含 sessionId/provider/model/durationMs/resultLen/finishKind。
+- `tests/unit/local-llm-adapter.test.ts` 同款新增（同测试结构）。
+
+**测试结果**：686 unit pass / 2 pre-existing fail（baseline 也 fail，跟本次改动无关）。
+
+**改动文件**：
+
+- `src/dsh-adapter/cloud-llm-adapter.ts` — start + done 两行 emit（`LLM call start` / `LLM call done`）
+- `src/dsh-adapter/local-llm-adapter.ts` — 同款
+- `tests/unit/cloud-llm-adapter.test.ts` — 新增 `describe('per-call ops log (§7.46.1)')`
+- `tests/unit/local-llm-adapter.test.ts` — 同款
+
+**Lesson**：
+
+- **sessionId 缺失不要 panic**——intent classifier 调 LLM 时不传 sessionId（classifier 自己不需要 trace 到 chat session），让它走 `'unknown'` 字面量，不要强行造个假的 session id 反而误导调试。日志里看 `sessionId=unknown` 一眼就知道是 classifier / 主动脱敏检测 之类的内部调用，跟用户 chat 区分开。
+- **wireError 字段**——`SSE stream interrupted` 跟 `finishReason=tool-calls` 是两个不同语义：`finishKind` 是 LLM 主动给的终止原因，`wireError` 是传输层异常（fetch reject / abort signal / SSE parse 异常）。done 行两个字段并存，遇到 `finishKind=unknown wireError=...` 一眼能定位是传输问题不是 LLM 决策——这点在 §7.46.1 验证里很关键，第一次 local-llm-adapter done 行 `finishKind=unknown wireError=... This operation was aborted`，立刻看出是 abort signal 不是 LLM 决定停。
+- **try/catch 包 logger emit 仍然是必须的**——logger 实现是 optional duck-type，理论上可能 throw；stream 路径上 throw 会被 `cordis waterfall` 吃掉但 ops log 这一行就没了。多 5 行代码买"调试时 ops log 永远不丢"。
+- **本地/云 adapter 同款 pattern**——两个文件同一份改动模式（start + done、sessionId 缺省 'unknown'、wireError 条件 append）。后续如果再加 §7.46.x（sanitize call log、entry point 区分）建议也是同款双 adapter 同步改，避免一边漏一边有导致 ops log 信息密度不对齐。
+
+**相关**：
+
+- PROGRESS §7.46 — "每个关键环节都在 ops log 体现"是 §7.46.1 的依据；§7.46 末尾"已知 gaps"已点名"cloud/local-llm-adapter per-call log 缺失"
+- PROGRESS §7.44.1 — TUI 路径 flow log 起点
+- memory [[log-level-flip-followup]] — ops log 默认 info 是这一切的前提

@@ -464,4 +464,52 @@ describe('local-llm-adapter (M4, real-only)', () => {
 
     restoreFetch()
   })
+
+  // §7.46.1 (2026-09-11): local-llm-adapter per-call info log 同 cloud。
+  describe('per-call ops log (§7.46.1)', () => {
+    it('emits LLM call start + done with sessionId, provider, model, duration', async () => {
+      installFetchMock(() => sseResponse([
+        { choices: [{ delta: { content: 'pong' }, finish_reason: null }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] },
+      ]))
+      const infoLines: string[] = []
+      const fakeLogger = {
+        info: (line: string) => infoLines.push(line),
+        warn: () => {},
+        error: () => {},
+        debug: () => {},
+      }
+      const adapter = new LocalLlmAdapterImpl(
+        {
+          providers: ['local-qwen3-4b'],
+          baseUrl: 'http://127.0.0.1:11017',
+          apiKeyEnv: undefined,
+          defaultModel: 'qwen3-4b-instruct-2507',
+        },
+        undefined,
+        undefined,
+        fakeLogger,
+      )
+      for await (const _ of adapter.stream({
+        provider: 'local-qwen3-4b',
+        model: 'qwen3-4b-instruct-2507',
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
+        sessionId: 'sec7461-local',
+      } as any)) {
+        // drain
+      }
+      const start = infoLines.find((l) => l.includes('LLM call start'))
+      const done = infoLines.find((l) => l.includes('LLM call done'))
+      assert.ok(start, `expected LLM call start line, got: ${JSON.stringify(infoLines)}`)
+      assert.ok(done, `expected LLM call done line, got: ${JSON.stringify(infoLines)}`)
+      assert.ok(start!.includes('sessionId=sec7461-local'), 'start should include sessionId')
+      assert.ok(start!.includes('provider=local-qwen3-4b'), 'start should include provider')
+      assert.ok(start!.includes('model=qwen3-4b-instruct-2507'), 'start should include model')
+      assert.ok(done!.includes('sessionId=sec7461-local'), 'done should include sessionId')
+      assert.match(done!, /durationMs=\d+/, 'done should include durationMs=N')
+      assert.match(done!, /resultLen=\d+/, 'done should include resultLen=N')
+      assert.ok(done!.includes('finishKind=stop'), 'done should include finishKind=stop')
+      restoreFetch()
+    })
+  })
 })

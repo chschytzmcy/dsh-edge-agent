@@ -216,6 +216,17 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
     const promptLen = promptText.length
     const messageCount = sanitizedMessages.length
     const start = Date.now()
+    // §7.46.1 (2026-09-11): ops log 让"TUI 路径调了哪个 LLM / 多少
+    // token / 多久"在 ops log 里可见。http-api POST 200 行有 provider/model
+    // + duration，但 TUI 路径之前只能靠 audit JSONL。start 行 + done
+    // 行成对，配合 realm-skill-bridge 的 pre-step / tool-allow 形成
+    // 完整 trace。
+    const sessionId = (options as { sessionId?: string }).sessionId ?? 'unknown'
+    try {
+      this.logger?.info?.(
+        `[cloud-llm-adapter] LLM call start sessionId=${sessionId} provider=${options.provider} model=${options.model} messageCount=${messageCount} promptLen=${promptLen} baseUrl=${this.baseUrl}`,
+      )
+    } catch { /* debug only */ }
     // 2026-09-02: dump the full sanitized messages array to the ops log
     // at debug level. JSON.stringify keeps the entry single-line so
     // file-logger's `formatLine` newline-collapse doesn't kick in.
@@ -310,6 +321,12 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
         sawToolCall,
         ...(wireError !== undefined ? { wireError } : {}),
       })
+      // §7.46.1: ops log done 行,跟 start 行配对
+      try {
+        this.logger?.info?.(
+          `[cloud-llm-adapter] LLM call done sessionId=${sessionId} provider=${options.provider} model=${options.model} durationMs=${durationMs} resultLen=${assembledText.length} toolCallCount=${toolCalls.size} finishKind=${finishKind ?? 'unknown'}${wireError !== undefined ? ` wireError=${wireError}` : ''}`,
+        )
+      } catch { /* debug only */ }
       // 2026-09-02: dump response summary + full text to the ops log at
       // debug level. Splits into two entries (header + body) so grepping
       // for `LLM_RESPONSE_TEXT` can isolate the body without parsing JSON.

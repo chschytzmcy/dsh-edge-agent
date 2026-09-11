@@ -265,6 +265,15 @@ class RealLocalAdapter extends LlmAdapter {
     const promptText = sanitizedMessages.map((m) => `${m.role}:${extractText(m.content)}`).join('\n')
     const promptLen = promptText.length
     const start = Date.now()
+    // §7.46.1 (2026-09-11): ops log 让 TUI 路径调哪个 local LLM / 多久 / 多少
+    // token 在 ops log 里可见。配合 realm-skill-bridge pre-step + tool allow
+    // 形成完整 trace。
+    const sessionId = (options as { sessionId?: string }).sessionId ?? 'unknown'
+    try {
+      this.logger?.info?.(
+        `[local-llm-adapter] LLM call start sessionId=${sessionId} provider=${options.provider} model=${options.model} messageCount=${sanitizedMessages.length} promptLen=${promptLen} baseUrl=${this.baseUrl}`,
+      )
+    } catch { /* debug only */ }
     // 2026-09-02: per-call request/response body logging to ops log at
     // debug level (mirrors cloud-llm-adapter). LOCAL content never
     // leaves the device, so this is purely a local-debug aid; CLOUD
@@ -352,6 +361,12 @@ class RealLocalAdapter extends LlmAdapter {
       throw err
     } finally {
       const durationMs = Date.now() - start
+      // §7.46.1: ops log done 行
+      try {
+        this.logger?.info?.(
+          `[local-llm-adapter] LLM call done sessionId=${sessionId} provider=${options.provider} model=${options.model} durationMs=${durationMs} resultLen=${assembledText.length} toolCallCount=${toolCalls.size} finishKind=${finishKind ?? 'unknown'}${wireError !== undefined ? ` wireError=${wireError}` : ''}`,
+        )
+      } catch { /* debug only */ }
       audit(this.auditLog, 'info', 'llm.local.end', {
         provider: options.provider,
         model: options.model,
