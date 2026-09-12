@@ -12,7 +12,7 @@ GREEN := \033[0;32m
 YELLOW := \033[1;33m
 NC := \033[0m
 
-.PHONY: help build test verify package install clean
+.PHONY: help build test verify e2e-coverage package install clean
 
 # 默认目标
 help:
@@ -22,6 +22,7 @@ help:
 	@echo "  $(GREEN)make build$(NC)         - 构建 TypeScript 代码"
 	@echo "  $(GREEN)make test$(NC)          - 运行单元测试"
 	@echo "  $(GREEN)make verify$(NC)        - 运行构建验证"
+	@echo "  $(GREEN)make e2e-coverage$(NC)  - ops log 21 节点覆盖回归（3 重点用例）"
 	@echo "  $(GREEN)make package$(NC)       - 打包部署文件"
 	@echo "  $(GREEN)make install$(NC)       - 安装到本地系统"
 	@echo "  $(GREEN)make clean$(NC)         - 清理构建产物"
@@ -48,6 +49,13 @@ verify:
 	@echo "$(BLUE)==> 运行构建验证$(NC)"
 	@pnpm run verify:build
 	@echo "$(GREEN)✓ 验证完成$(NC)"
+
+# E2E ops log 覆盖回归（21 节点 + 3 重点用例断言）
+# 前置：dsh-edge-agent HTTP API 已起（web profile :21017 或 TUI :21018）
+e2e-coverage:
+	@echo "$(BLUE)==> 运行 ops log 覆盖回归（3 重点用例）$(NC)"
+	@bash scripts/e2e-ops-log-coverage.sh
+	@echo "$(GREEN)✓ ops log 覆盖回归通过$(NC)"
 
 # 打包部署文件
 package: build

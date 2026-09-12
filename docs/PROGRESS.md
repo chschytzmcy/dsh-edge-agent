@@ -5101,3 +5101,72 @@ HTTP API 修复后虽然正常 200 + 全节点 emit，但最终响应 `resultLen
 - PROGRESS §7.44 / §7.44.1 / §7.46 / §7.46.1 / §7.46.2 / §7.46.3 / §7.46.4 / §7.46.5+§7.46.6 / §7.46.7 — 8 节累计到 21 节点 + 关键字段；§7.46.8 让 web 入口 21 节点全覆盖
 - PROGRESS §7.43 — install.sh 默认覆盖 dsh-tui；web 是 secondary（**未来 install.sh 应该自动跑 fix-profile-duplicates.sh 对所有 profile，避免下次新 profile 又踩坑**）
 
+### §7.46.9 ops log 3 重点用例固化回归 — 防"log 看不出 X"反复（2026-09-12 续）
+
+**动机**：§7.46 → §7.46.8 累积 6 个 commit 把 ops log 推到 21 节点 + 关键字段（`intentSource`/`skillName`/`routeSource`），全是 user "log 看不出 X" 反馈驱动。每次 user 反馈都临时跑场景→ grep→ 补节点→ 再跑同一场景验证。如果新改动者没意识，再次破坏覆盖，user 又得喊一遍。
+
+**目标**：把这 3 个核心场景固化为回归测试，任何后续改动必须保持这 3 条场景的 ops log 形态不变。
+
+**3 个重点用例**（固定命名 / query / 期望断言）：
+
+| key | query | sessionId | 验证什么 | 期望 ops log 关键节点 |
+|---|---|---|---|---|
+| `mibao` | `查询密盒的登录状态` | `opslog-canary-mibao` | ets-auth skill 调用链路 | `tool allow skillName=ets-auth` + `LLM call done ≥2` + `chat reply status=200` |
+| `news` | `查询最新的AI新闻` | `opslog-canary-news` | Layer 3 gate 拒绝 CLOUD 工具 | `tool deny tool=web_search reason=...SANITIZED` + `tool deny tool=web_fetch` |
+| `local-ip` | `查询本机的局域网IP` | `opslog-canary-local-ip` | 本地 bash 调用链路 | `preflight intent intentSource=http-api-classified` + `tool allow tool=bash ≥1` |
+
+**21 节点覆盖断言**（每个用例都跑）：
+- 13 个基础节点：`chat received` / `prompt-guard done` / `privacy-policy done` / `preflight intent` / `sanitize start`+`done` / `pre-step filter` / `chat received` / `chat finished` / `tool allow|deny`（OR）/ `LLM call start`+`done` / `chat reply`
+- 4 个关键字段：`preflight intent intentSource=` / `tool allow realm=` / `tool deny reason=` / `LLM call start baseUrl=`
+
+**用法**：
+
+```bash
+# 全部 3 个用例（开发完成后必跑）
+bash scripts/e2e-ops-log-coverage.sh
+
+# 单用例（调试特定场景）
+bash scripts/e2e-ops-log-coverage.sh --only mibao
+bash scripts/e2e-ops-log-coverage.sh --only news
+bash scripts/e2e-ops-log-coverage.sh --only local-ip
+
+# Makefile target
+make e2e-coverage
+
+# dry-run（不发请求，仅对照 ops log）
+bash scripts/e2e-ops-log-coverage.sh --dry-run --only news
+```
+
+**CI 接入**：`.github/workflows/ci.yml` 新增 `e2e-opslog` job，跑在 `build` 之后、`smoke` 之前，复用 web profile bootstrap：
+1. install DSH CLI + 注册 `dsh-edge-agent` bundle
+2. 跑 `fix-profile-duplicates.sh --profile=web`（§7.46.8 修复必须保留）
+3. `nohup dsh --profile web > /tmp/dsh-web.log &`，等待 HTTP API 就绪
+4. `bash scripts/e2e-ops-log-coverage.sh`
+5. 失败时 upload canary log 切片（3 个 sessionId 的 grep 结果）
+
+CI 现状：6 stage = build → verify → unit → e2e-privacy → e2e-opslog → smoke。任何 stage 失败 PR block。
+
+**验收**（本次实际跑）：
+
+| 用例 | ops log 行数 | 关键断言 | 状态 |
+|---|---|---|---|
+| mibao | 70 | skillName=ets-auth + LLM≥2 + status=200 | ✅ |
+| news | 40 | tool deny web_search/web_fetch + reason= + chat finished turn=1 | ✅ |
+| local-ip | 36 | intentSource=http-api-classified + tool allow bash≥1 + chat finished turn=1 | ✅ |
+
+**注**：
+- `resultLen` / `tool=bash fallback 次数` 属 LLM 行为范畴（不同 prompt / 时刻走不同路径），不归本脚本管；本脚本只验证 ops log **如实记录**每一步：deny 行有 reason、allow 行有 realm、reply 有 status。
+- mibao 用例在 web profile 下 `resultLen=0`（bash 找不到 mibao CLI，容器网络隔离），TUI 环境下 resultLen=273——这是行为差异不是 ops log 差异。
+
+**新增/修改文件**：
+
+- `scripts/e2e-ops-log-coverage.sh`（新增，~250 行）— 21 节点断言 + 3 用例专属断言 + dry-run 模式
+- `Makefile` — 加 `e2e-coverage` target（PHONY + help + 实现）
+- `.github/workflows/ci.yml` — 加 `e2e-opslog` job（~70 行）
+
+**相关**：
+
+- memory [[ops-log-coverage-principle]] — 21 节点清单 + 3 种 emit pattern（21 节点断言模板的来源）
+- memory [[tui-unscoped-context-diagnosis]] §7.46.8 节 — web profile preset scope 修复（CI job 必跑 fix-profile-duplicates.sh）
+- PROGRESS §7.46 → §7.46.8 — 6 commit 累积到 21 节点；§7.46.9 把 3 重点用例固化
+

@@ -1,17 +1,20 @@
-# dsh-edge-agent CI — five stages: build → verify → unit → e2e-privacy → smoke.
+# dsh-edge-agent CI — six stages: build → verify → unit → e2e-privacy → e2e-opslog → smoke.
 #
 # Triggered on every push to master and every PR. The full sequence is:
 #   1. install (pnpm install --frozen-lockfile)
 #   2. compile (tsc -p tsconfig.json → lib/types/)
 #   3. verify  (verify:build = boundary + contract + patch-surface + plugin-spec + package)
 #   4. unit    (vitest unit tests; asserts exact count via JSON reporter)
-#   5. e2e     (bash scripts/e2e-privacy-precheck.sh; spins up real dsh server,
-#               runs 19 注入 / 业务 / 路由 用例, must report 19/19 PASS)
-#   6. smoke   (smoke.ts 冒烟)
+#   5. e2e-privacy (bash scripts/e2e-privacy-precheck.sh; spins up real dsh server,
+#                  runs 19 注入 / 业务 / 路由 用例, must report 19/19 PASS)
+#   6. e2e-opslog  (bash scripts/e2e-ops-log-coverage.sh; §7.46.9 回归,
+#                  21 节点 ops log 覆盖 + 3 重点用例（mibao/news/local-ip）断言)
+#   7. smoke   (smoke.ts 冒烟)
 #
 # 任一阶段失败 → PR block。Gate 总数：
 #   - 单元测试：必须 629 PASS（含 1 跳过）、0 FAIL（实际 628 用例 + 1 跳过）
 #   - 隐私 E2E：必须 19/19 PASS（9 注入 → 400 + 5 业务 → 403 + 5 路由 → 200）
+#   - ops log 覆盖：必须 3/3 用例通过（mibao + news + local-ip）+ 21 节点全绿
 
 name: ci
 
@@ -174,3 +177,85 @@ jobs:
           EDGE_API_KEY: test-secret-key
           DSH_EDGE_HTTP_PORT: '21017'
         run: bash scripts/e2e-privacy-precheck.sh
+
+  e2e-opslog:
+    name: ops log coverage (3 cases)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: build
+    # §7.46.9: 21 节点 ops log 覆盖 + 3 重点用例（mibao/news/local-ip）回归。
+    # 复用 e2e-privacy 的 web profile bootstrap（步骤相同）。
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.20'
+          cache: 'pnpm'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Compile
+        run: pnpm run compile
+
+      - name: Install DSH CLI
+        run: npm install -g @deepseek-ai/dsh
+
+      - name: Bootstrap DSH web profile (含 dsh-edge-agent bundle)
+        run: |
+          mkdir -p "$HOME/.dsh/profiles/web"
+          dsh plugin --profile web add @deepseek-harness-edge-agent/dsh-edge-agent || true
+          NESTED="$HOME/.dsh/profiles/web/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent"
+          mkdir -p "$NESTED"
+          cp cordis.patch.yml "$NESTED/cordis.patch.yml"
+          echo "已同步 bundle patch → $NESTED/cordis.patch.yml"
+
+      - name: Trim web profile duplicate @deepseek-ai/* (§7.46.8)
+        run: |
+          # §7.46.8（2026-09-12）— web profile preset scope fix。
+          # 删除 install.sh 自动加的 15 个重复 @deepseek-ai/*，避免 Symbol('dsh.scope') 双实例。
+          bash scripts/fix-profile-duplicates.sh --profile=web
+
+      - name: Start dsh web profile (background)
+        env:
+          EDGE_API_KEY: test-secret-key
+          DEEPSEEK_API_KEY: test-fake-deepseek-key-for-opslog-fixture
+          DSH_EDGE_HTTP_PORT: '21017'
+        run: |
+          cd "$HOME/.dsh/profiles/web"
+          nohup dsh --profile web > /tmp/dsh-web.log 2>&1 &
+          echo $! > /tmp/dsh-web.pid
+          # 等待端口就绪
+          for i in $(seq 1 30); do
+            if curl -s --max-time 2 http://127.0.0.1:21017/health > /dev/null 2>&1; then
+              echo "web profile ready after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+
+      - name: Run ops log coverage regression (3 重点用例)
+        env:
+          EDGE_API_KEY: test-secret-key
+          DEEPSEEK_API_KEY: test-fake-deepseek-key-for-opslog-fixture
+          DSH_EDGE_HTTP_PORT: '21017'
+        run: bash scripts/e2e-ops-log-coverage.sh
+
+      - name: Upload ops log for debugging
+        if: always()
+        run: |
+          echo "=== last 50 lines of dsh-web.log ==="
+          tail -50 /tmp/dsh-web.log || true
+          echo "=== canary log slices ==="
+          for sid in opslog-canary-mibao opslog-canary-news opslog-canary-local-ip; do
+            echo "--- $sid ---"
+            grep "$sid" ~/.dsh-edge-agent/log/dsh-edge-agent.log 2>/dev/null || echo "(no log)"
+          done
