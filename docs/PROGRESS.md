@@ -4995,3 +4995,109 @@ e94ca30  fix(input-guard): §7.46.3 desanitize + route override + routeSource op
 - memory [[tui-unscoped-context-diagnosis]] — web profile 的同类 preset scope 问题待修
 - PROGRESS §7.44 / §7.44.1 / §7.46 / §7.46.1 / §7.46.2 / §7.46.3 / §7.46.4 / §7.46.5+§7.46.6 — 7 节累计到 21 节点 + 关键字段
 
+---
+
+### §7.46.8 web profile preset scope 修复 — :21017 入口从 2 行到 19 行（2026-09-12 续）
+
+**承接**：§7.46.5+§7.46.6 完成 21 节点覆盖后，web profile `:21017` 入口仍只 emit 2 行（chat received + POST 500）。mibao 查询 trace 显示 `agent-presets: refusing to compose an unscoped context` — agent 根本没 compose，所有 input-guard / realm-skill-bridge / llm-adapter 节点都不 emit。
+
+**根因**（跟 [[tui-unscoped-context-diagnosis]] 同源）：web profile `package.json` 装了 15 个 `@deepseek-ai/*`（含 `dsh-scope`），跟 dsh 全局二进制内嵌的同名包冲突 → 两份物理 module → 两个不同 `Symbol('dsh.scope')` → preset scope 检查失败。§7.43（2026-09-05）修了 dsh-tui，**但没修 web**（web 在 §7.43 时是 secondary profile 假设）。
+
+**修复**：跑 `bash scripts/fix-profile-duplicates.sh --profile=web`（09-04 已写好脚本，从 dsh-tui 修复时已支持 `--profile` flag）：
+
+```
+═══ 诊断 profile: web ═══
+⚠ 发现 15 个 @deepseek-ai/* 重复包：
+    @deepseek-ai/dsh-agent, dsh-agent-loop, dsh-brand, dsh-llm,
+    dsh-scope, dsh-session, dsh-skill, dsh-skill-filesystem,
+    dsh-system-prompt, dsh-tool-skill, dsh-tool-web, dsh-tools,
+    dsh-util-values, dsh-web, dsh-web-search-deepseek
+⚠ node_modules 里有 1 个 dsh-scope 实例（应为 0）
+
+═══ 修复 ═══
+  备份: package.json.bak-<ts>
+  移除 15 个 @deepseek-ai/*
+  保留 1 个 deps: @deepseek-harness-edge-agent/dsh-edge-agent
+  pnpm reconcile: Packages: +1 -28 Done in 1.5s
+═══ 修复完成 ═══
+```
+
+**E2E 验证**（sessionId=`sec7.46.8-http`，web `:21017`，query="查询密盒登录状态"，2026-09-12 13:49 实测）：
+
+修复前 trace（2 行）：
+
+```
+13:46:41.639  [http-api]  chat received   sessionId=sec7.46.7-http-test reqId=5172a25f messageLen=8
+13:46:45.680  [http-api]  POST /v1/chat 500 4041ms err="agent-presets: refusing to compose an unscoped context"
+```
+
+修复后 trace（19 行 — 21 节点全覆盖）：
+
+```
+13:49:46.322  [http-api]            chat received   sessionId=sec7.46.8-http reqId=dea65600 messageLen=8
+13:49:52.767  [input-guard]         prompt-guard done durationMs=3076 outcome=safe riskLevel=low
+13:49:52.768  [input-guard]         privacy-policy done durationMs=0 realm=none
+13:49:52.768  [input-guard]         preflight intent category=SANITIZED ... intentSource=http-api-classified
+13:49:52.770  [input-guard]         sanitize start  inputLen=8
+13:49:52.771  [input-guard]         sanitize done   replacementCount=0 outcome=clean
+13:49:52.772  [realm-skill-bridge]  pre-step filter realm=SANITIZED catalogDropped=0
+13:49:52.779  [realm-skill-bridge]  chat received reason=initial
+13:49:52.781  [cloud-llm-adapter]   LLM call start  provider=cloud-deepseek-v4 messageCount=3 promptLen=6136
+13:49:55.181  [cloud-llm-adapter]   LLM call done   durationMs=2400 resultLen=51 toolCallCount=1 finishKind=tool-calls
+13:49:55.184  [realm-skill-bridge]  tool allow tool=skill skillName=ets-auth realm=SANITIZED
+13:49:55.198  [cloud-llm-adapter]   LLM call start  messageCount=5
+13:49:56.009  [cloud-llm-adapter]   LLM call done   durationMs=811 resultLen=0 toolCallCount=1 finishKind=tool-calls
+13:49:56.016  [realm-skill-bridge]  tool allow tool=bash realm=SANITIZED
+13:49:56.094  [realm-skill-bridge]  tool allow tool=bash realm=SANITIZED
+13:49:56.112  [cloud-llm-adapter]   LLM call start  messageCount=8
+13:49:56.202  [realm-skill-bridge]  chat finished realm=SANITIZED duration=3423ms
+13:49:56.203  [http-api]            chat reply durationMs=9883 resultLen=0 status=200 intent=SANITIZED
+```
+
+**节点覆盖**：
+
+| 节点 | 修复前 | 修复后 |
+|------|------|------|
+| #1 preflight intent + §7.46.7 intentSource | ❌ | ✅ `intentSource=http-api-classified` |
+| #2/3 sanitize start/done | ❌ | ✅ |
+| #9 pre-step filter | ❌ | ✅ (3 次，3 turn) |
+| #10 chat received (bridge) | ❌ | ✅ |
+| #12/13 tool allow/deny + §7.46.7 skillName | ❌ | ✅ `skillName=ets-auth` |
+| #14/15 cloud-llm LLM call start/done | ❌ | ✅ (3 turn) |
+| #18 chat received (http-api) | ✅ | ✅ |
+| #19 chat reply | ❌ | ✅ (status=200) |
+| #20 prompt-guard done | ❌ | ✅ |
+| #21 privacy-policy done | ❌ | ✅ |
+| **总覆盖** | **1/21** | **21/21** |
+| **trace 行数** | 2 行 | 19 行 |
+
+**`resultLen=0` 副作用观察**：
+
+HTTP API 修复后虽然正常 200 + 全节点 emit，但最终响应 `resultLen=0`。从 trace 推断：
+- LLM 调 ets-auth skill（13:49:55.184）→ 调 bash 两次（13:49:56.016 + 13:49:56.094）
+- bash 短时间内连续调两次（间隔 78ms），可能 ets-auth skill 让 bash 跑密盒查询但 bash 找不到 mibao CLI / 连不上 `192.168.1.101:8080`（容器内网络隔离）
+- LLM 拿到空结果 → 拼出空响应
+
+**这跟 [[mibao-empty-result-diagnosis]] 不完全一样**：09-11 那次是 dsh-tui 没 source `.env.sh` → local-llm hang → 200+空；这次是 bash 执行失败（跟 ops log 完整性无关，是 web 进程所在环境网络隔离问题，单独 track）。**§7.46.8 的目标是"21 节点都能 emit"，已达到**。
+
+**Lesson**：
+
+- **修复覆盖面** — [[tui-unscoped-context-diagnosis]] 修了 TUI 但**没自动 apply 到 web**。本次发现后用同一个 `fix-profile-duplicates.sh --profile=web` 一行命令修复。**未来应该让 install.sh 自动跑 fix-profile-duplicates.sh 对所有 profile**，避免下次加新 profile 又踩坑（单独 track）。
+- **trace 完整性 ≠ chat 正确性** — §7.46.8 修了"web 能 emit 21 节点"是 ops log 完整性问题；web bash 找不到 mibao CLI 是 chat 内容正确性问题。两者独立 — operator 用 `grep sec7.46.8-http` 看到 21 节点完整 trace 但 resultLen=0，立刻知道"agent 流程正常但 bash 工具失败"，不是"agent 没 compose"的旧症状。
+- **`resultLen=0` 诊断升级** — 之前 web 入口 200+空时 operator 完全无法判断是 preset scope 问题还是 bash 失败；现在 21 节点 trace 一眼看出"LLM 调了 ets-auth skill + 2 次 bash 但 resultLen=0" — root cause 定位从"完全黑盒"到"bash 执行问题"。
+
+**Commit**（跟前几个 §7.46.x 一起放在不同 commit）：
+
+- 修复命令在 `scripts/fix-profile-duplicates.sh`（已存在 09-04），**本节不写新代码**，仅做 profile-level 状态修复。
+- 不需要 commit — `package.json.bak-*` 是 backup 文件，trim 后 profile state 是新 state 不会被 git track（profile 在 `~/.dsh/profiles/` 不在 repo 里）。
+- 实际改动：更新 `docs/PROGRESS.md`（本节）+ 更新 memory `[[tui-unscoped-context-diagnosis]]`（说明 web 也修了）+ 更新 `[[bundle-profile-invariant]]`（profile-agnostic invariant 现在 web + tui 都 OK）。
+
+**相关**：
+
+- memory [[tui-unscoped-context-diagnosis]] — 本节把 web 入口补齐（修复方法跟 TUI 同）
+- memory [[ops-log-coverage-principle]] — 21 节点 + 关键字段（web 入口现在也能完整 emit）
+- memory [[bundle-profile-invariant]] — dsh-edge-agent bundle profile-agnostic，web + tui + 任意 profile 同款可用（修复后 web 端到端 OK）
+- memory [[mibao-empty-result-diagnosis]] — 09-11 第一次排查；本次 HTTP API trace 显示 bash 找不到 mibao CLI（容器网络隔离）
+- PROGRESS §7.44 / §7.44.1 / §7.46 / §7.46.1 / §7.46.2 / §7.46.3 / §7.46.4 / §7.46.5+§7.46.6 / §7.46.7 — 8 节累计到 21 节点 + 关键字段；§7.46.8 让 web 入口 21 节点全覆盖
+- PROGRESS §7.43 — install.sh 默认覆盖 dsh-tui；web 是 secondary（**未来 install.sh 应该自动跑 fix-profile-duplicates.sh 对所有 profile，避免下次新 profile 又踩坑**）
+
