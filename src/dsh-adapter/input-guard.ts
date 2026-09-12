@@ -705,14 +705,20 @@ export class InputGuardServiceImpl extends Service {
     // §7.46 (2026-09-11): ops log 让"为什么路由到 SANITIZED/LOCAL/CLOUD"
     // 在每个 chat 都可见；TUI 路径之前只能靠 audit log 翻 JSONL，operator
     // 调 ops log 完全看不到 routing 决策。
+    // §7.46.3 (2026-09-12): routeSource 字段加在 preflight 行 — 'http-api'
+    // 表示 _edgeRoute 由 http-api 写入（含 category / confidence / rationale
+    // 等已分类信息），'webui' 表示 dsh-web-app / dsh-tui chat 入口没写
+    // _edgeRoute（intent-router fallback classify）。operator 看 ops log
+    // 一眼区分这两种入口，便于排查"哪个入口配的路由决策"。
     targetRealm = category === 'LOCAL' ? 'LOCAL' : (category === 'SANITIZED' ? 'LOCAL' : 'CLOUD')
+    const routeSource: 'http-api' | 'webui' = edgeRouteUsed ? 'http-api' : 'webui'
     try {
       this.ctx.logger?.info?.(
-        `[input-guard] preflight intent sessionId=${sessionId} category=${category} confidence=${intentConfidence} rationale=${intentRationale ?? 'n/a'} targetRealm=${targetRealm}`,
+        `[input-guard] preflight intent sessionId=${sessionId} category=${category} confidence=${intentConfidence} rationale=${intentRationale ?? 'n/a'} targetRealm=${targetRealm} routeSource=${routeSource}`,
       )
     } catch { /* debug only */ }
     this.audit('info', 'input-guard.routed', {
-      sessionId, category, edgeRouteUsed,
+      sessionId, category, edgeRouteUsed, routeSource,
     })
 
     // §7.36 (2026-09-04): 注册 session realm 给 realm-skill-bridge,
@@ -969,6 +975,16 @@ export class InputGuardServiceImpl extends Service {
         provider: this.config.localProvider,
         model: this.config.localModel,
       }
+      // §7.46.3 (2026-09-12): 路由改写在 ops log 留一行 — 让 operator
+      // grep sessionId 就能看到 "原本 cloud-deepseek-v4 / cloud-deepseek
+      // → 实际走 local-qwen3-4b / qwen3-4b-instruct-2507 + reason"，不
+      // 用翻 audit JSONL。配合 preflight intent 行的 routeSource +
+      // category 形成完整 trace。
+      try {
+        this.ctx?.logger?.info?.(
+          `[input-guard] route override sessionId=${sessionId} fromProvider=${seedConfig.provider} fromModel=${seedConfig.model} toProvider=${downgraded.provider} toModel=${downgraded.model} reason=${state.downgradeReason ?? 'unknown'}`,
+        )
+      } catch { /* debug only */ }
       this.audit('info', 'input-guard.route.overridden', {
         sessionId,
         from: { provider: seedConfig.provider, model: seedConfig.model },
@@ -1014,6 +1030,12 @@ export class InputGuardServiceImpl extends Service {
         provider: state.originalProvider,
         model: state.originalModel ?? seedConfig.model,
       }
+      // §7.46.3: 路由恢复（前一 turn downgrade 后这一 turn 回到原始 cloud）
+      try {
+        this.ctx?.logger?.info?.(
+          `[input-guard] route restore sessionId=${sessionId} fromProvider=${seedConfig.provider} fromModel=${seedConfig.model} toProvider=${restored.provider} toModel=${restored.model} reason=recovery-from-previous-downgrade`,
+        )
+      } catch { /* debug only */ }
       this.audit('info', 'input-guard.route.restored', {
         sessionId,
         from: { provider: seedConfig.provider, model: seedConfig.model },
@@ -1052,6 +1074,21 @@ export class InputGuardServiceImpl extends Service {
     const sessionId = state.sessionId
     const auditLog = this.auditLog
 
+    // §7.46.3 (2026-09-12): desanitize ops log — 让"LLM reply 里把占位符
+    // 还原回 PII"在 ops log 可见。operator 看到 reply 含 PII 时，ops log
+    // 直接 grep sessionId 就能知道这是 desanitize 还原的结果（新泄漏 vs
+    // 还原回原文）。每个 step 只 emit 一行 summary（不是 per-call）—
+    // 因为 text-delta 阶段 desanitize 被 flushBuffer 拆成多次小调用，
+    // per-call 会刷 spam；step 结束后汇总一次更合适。
+    let desanitizeChunkCount = 0
+    let desanitizeErrorCount = 0
+    let desanitizeRestoredBytes = 0
+    // §7.46.3: capture ctx logger 引用 — wrapped 是匿名 async generator
+    // function，内部 this 不继承外层 class this，必须在外层拿到 logger
+    // 再传进去；直接用 `this.ctx?.logger?.info?.(...)` 在 async generator
+    // body 里 TS 报 'this' implicitly has type 'any'.
+    const loggerForDesanitize = this.ctx?.logger
+
     // 包装 stream：对 text-delta 调 desanitize，其他 chunk 透传
     //
     // 注意：占位符（如 [PHONE_1]）可能被 LLM 流式输出时拆成多个 chunk
@@ -1077,8 +1114,13 @@ export class InputGuardServiceImpl extends Service {
             textDeltaCount++
             try {
               const restored = await flushBuffer(sanitizer, sessionId, streamingPlaceholderBuffer, chunk.text)
-              if (restored.length > 0) yield { ...chunk, text: restored }
+              if (restored.length > 0) {
+                desanitizeRestoredBytes += restored.length
+                desanitizeChunkCount++
+                yield { ...chunk, text: restored }
+              }
             } catch (err: any) {
+              desanitizeErrorCount++
               if (auditLog) {
                 void auditLog.log({
                   level: 'error',
@@ -1098,8 +1140,11 @@ export class InputGuardServiceImpl extends Service {
             if (block && typeof block.text === 'string' && block.text.length > 0) {
               try {
                 const restored = await sanitizer.desanitize(block.text, sessionId)
+                desanitizeRestoredBytes += restored.length
+                desanitizeChunkCount++
                 yield { ...chunk, block: { ...block, text: restored } }
               } catch (err: any) {
+                desanitizeErrorCount++
                 yield chunk
               }
             } else {
@@ -1113,13 +1158,28 @@ export class InputGuardServiceImpl extends Service {
         if (streamingPlaceholderBuffer.value.length > 0) {
           try {
             const tail = await sanitizer.desanitize(streamingPlaceholderBuffer.value, sessionId)
+            desanitizeRestoredBytes += tail.length
+            desanitizeChunkCount++
             yield { type: 'text-delta', text: tail } as StreamChunkLike
           } catch {
+            desanitizeErrorCount++
             yield { type: 'text-delta', text: streamingPlaceholderBuffer.value } as StreamChunkLike
           }
           streamingPlaceholderBuffer.value = ''
         }
       } finally {
+        // §7.46.3: step 结束 emit desanitize summary（仅在至少还原过一次
+        // 时输出，避免无 PII 的 chat 也刷 spam；errorCount > 0 时也输出
+        // 让 operator 立刻看到 desanitize 失败）。replacedCount 是
+        // sanitize done 行 outcome=replaced 时的 N，配合 grep 能完整
+        // 看到 "sanitize 替换 N → LLM 看到 N → desanitize 还原 N"。
+        if (desanitizeChunkCount > 0 || desanitizeErrorCount > 0) {
+          try {
+            loggerForDesanitize?.info?.(
+              `[input-guard] desanitize done sessionId=${sessionId} chunkCount=${desanitizeChunkCount} errorCount=${desanitizeErrorCount} restoredBytes=${desanitizeRestoredBytes}`,
+            )
+          } catch { /* debug only */ }
+        }
         // step 结束，清除状态（避免下一 step 错配）
         // 注：agent-loop 在 step 完成后会再次进入 agent/pre-step，那里会重置状态
       }

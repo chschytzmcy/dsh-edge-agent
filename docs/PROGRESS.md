@@ -4579,3 +4579,119 @@ ops log 关键片段（按时间序）：
 - PROGRESS §7.46 — "每个关键环节都在 ops log 体现"是 §7.46.2 的依据；§7.46 末尾"已知 gaps"已点名 sanitize call log + entry point 区分（剩 entry point 区分）
 - PROGRESS §7.46.1 — LLM call start/done pattern 是 §7.46.2 的对齐模板（durationMs / wireError 字段）
 - memory [[log-level-flip-followup]] — ops log 默认 info 是这一切的前提
+
+### §7.46.3 desanitize + route override + routeSource ops log（2026-09-12）
+
+**承接**：用户反馈"本项目的每个关键环节，都要在日志里有所体现"。§7.46 / §7.46.1 / §7.46.2 已覆盖 input-guard preflight / sanitize / realm-skill-bridge / LLM call，但还有 3 个关键环节缺 ops log：
+
+1. **desanitize**（input-guard 反向脱敏）— LLM 流式 reply 里把 `[EMAIL_1]` 占位符还原回原文，ops log 完全无 trace。排查"用户看到的是不是真 PII / 是 desanitize 还原还是新泄漏" 只能翻 audit JSONL。
+2. **handleAgentRequest 路由改写** — `stepState.downgraded=true` 时把 `provider/model` 从 `cloud-*` 改写到 `local-*`，或反向从 `local-*` 恢复到 `cloud-*`。改写在 ops log 无 trace，只能看 audit。
+3. **入口点 routeSource** — TUI / http-api / webui 三种入口走的代码路径不一样（_edgeRoute 有/没有、stepState 是否被读），ops log 不区分这三种入口就排查不到根因。
+
+本次补齐这三个。
+
+**修复**：
+
+**desanitize** — `src/dsh-adapter/input-guard.ts` `handleLlmStream`：
+
+`text-delta` / `block-end` / stream-end 三处 desanitize 成功后累加计数器，stream finally 块 emit 一行 summary（**只在 chunkCount>0 || errorCount>0 时输出**，避免每个 chat 都刷 spam；只 replaceCount > 0 的 chat 才有 desanitize 步骤，所以无 PII chat 不会输出）：
+```ts
+let desanitizeChunkCount = 0
+let desanitizeErrorCount = 0
+let desanitizeRestoredBytes = 0
+// ... 每成功一次累加对应计数器 ...
+// stream 结束时：
+if (desanitizeChunkCount > 0 || desanitizeErrorCount > 0) {
+  this.ctx?.logger?.info?.(
+    `[input-guard] desanitize done sessionId=${sessionId} chunkCount=${N} errorCount=${N} restoredBytes=${N}`,
+  )
+}
+```
+
+`wrapped` 是匿名 `async function* ()`，内部 `this` 不继承 class `this`。外层提前 `const loggerForDesanitize = this.ctx?.logger` 捕获引用，finally 块用 `loggerForDesanitize?.info?.(...)` 而非 `this.ctx?.logger?.info?.(...)`（TS 2683 修复）。
+
+**route override + restore** — `handleAgentRequest` 两处：
+
+- 改写分支（state.downgraded=true）：
+  ```ts
+  this.ctx?.logger?.info?.(
+    `[input-guard] route override sessionId=${sessionId} fromProvider=${seedConfig.provider} fromModel=${seedConfig.model} toProvider=${downgraded.provider} toModel=${downgraded.model} reason=${state.downgradeReason ?? 'unknown'}`,
+  )
+  ```
+- 恢复分支（state.originalProvider 恢复）：
+  ```ts
+  this.ctx?.logger?.info?.(
+    `[input-guard] route restore sessionId=${sessionId} fromProvider=... fromModel=... toProvider=... toModel=... reason=recovery-from-previous-downgrade`,
+  )
+  ```
+
+**routeSource 加到 preflight intent** — `handlePreStep` preflight emit 处：
+
+```ts
+const routeSource: 'http-api' | 'webui' = edgeRouteUsed ? 'http-api' : 'webui'
+this.ctx.logger?.info?.(
+  `[input-guard] preflight intent sessionId=${sessionId} category=${...} confidence=${...} rationale=${...} targetRealm=${...} routeSource=${routeSource}`,
+)
+```
+
+audit 事件 `input-guard.routed` 也加上 `routeSource` 字段（一致性）。
+
+所有 emit 都用 `try { this.ctx?.logger?.info?.(...) } catch { /* debug only */ }` 双保险，跟 §7.46 / §7.46.1 / §7.46.2 同款 pattern。
+
+**E2E 验证**（dsh-tui 21018，三个 sessionId 覆盖三个 emit 点）：
+
+**test A — PII + desanitize**（sessionId=`sec7.46.3-A`，query=`please echo back: my email is user@example.com`）：
+
+```
+10:34:30.405  preflight intent category=SANITIZED ... routeSource=http-api
+10:34:30.412  sanitize done outcome=replaced (1 PII replaced)
+10:34:30.438  [cloud-llm-adapter] LLM call start
+10:34:31.254  [cloud-llm-adapter] LLM call done resultLen=33
+10:34:31.255  [input-guard] desanitize done chunkCount=15 errorCount=0 restoredBytes=80  ← §7.46.3
+10:34:31.257  chat finished duration=822ms
+```
+
+reply `result` 里包含原文 `user@example.com`，ops log grep sessionId 立刻看到 `desanitize done` 行，知道 PII 是 desanitize 还原的而不是新泄漏。
+
+**test D — route override**（sessionId=`sec7.46.3-D`，query=`读 /etc/hostname`，intent=LOCAL）：
+
+```
+10:34:49.977  preflight intent category=LOCAL ... routeSource=http-api
+10:34:49.980  [input-guard] route override fromProvider=local-qwen3-4b fromModel=local-qwen3-4b toProvider=local-qwen3-4b toModel=qwen3-4b-instruct-2507 reason=intent-local  ← §7.46.3
+10:34:49.982  [local-llm-adapter] LLM call start model=qwen3-4b-instruct-2507
+... (每个 step 一次 route override)
+```
+
+每个 step 都会触发 route override（TUI 不写 _edgeRoute → seedConfig 是 default cloud；handlePreStep 把 stepState.downgraded=true → handleAgentRequest 改写到 local-*；本例原本 seedConfig 就是 local-qwen3-4b 已是 local，但 model 从 generic name 改写到具体 qwen3-4b-instruct-2507，所以仍有 override 痕迹）。
+
+**test C — routeSource=webui / http-api 区分**：通过 `_edgeRoute` 注入实现，test C 在 http-api 路径所以显示 `routeSource=http-api`；TUI 路径下 `readEdgeRoute` 返回 undefined → 显示 `routeSource=webui`。E2E unit test 覆盖两个分支。
+
+**单元测试**：
+
+`tests/unit/input-guard.test.ts` 新增 `describe('§7.46.3 — desanitize + route override + routeSource')` — 3 个测试：
+
+1. `preflight intent line carries routeSource=http-api when _edgeRoute present` — 注入 `_edgeRoute` 模拟 http-api 已分类，验证 preflight 行含 `routeSource=http-api`
+2. `preflight intent line carries routeSource=webui when _edgeRoute absent` — 不设 `_edgeRoute`，验证 preflight 行含 `routeSource=webui`
+3. `route override: handleAgentRequest emits override line when state.downgraded=true` — category=LOCAL 触发 handlePreStep 设 downgraded=true，再调 handleAgentRequest 验证 emit `route override` 行 + provider 改写到 local-qwen3-4b
+
+**测试结果**：692 unit pass / 2 pre-existing fail（baseline 也 fail，跟本次改动无关）；76 input-guard tests pass（含新增 3 个 + §7.46.2 三个）。
+
+**改动文件**：
+
+- `src/dsh-adapter/input-guard.ts` — handleLlmStream desanitize summary + handleAgentRequest route override/restore emit + handlePreStep preflight 加 routeSource 字段
+- `tests/unit/input-guard.test.ts` — 新增 `describe('§7.46.3 — ...')` 3 个测试
+
+**Lesson**：
+
+- **匿名 async generator function 不继承 class `this`** — `wrapped = (async function* () { ... })()` 这种 pattern 在 desanitize emit 时遇到 `this` 隐式 any 错误。修复：外层提前 `const loggerForDesanitize = this.ctx?.logger` 捕获引用。**教训**：class method 里嵌 anonymous async generator 时，所有需要 this 的状态都提前 capture 到 const，不要让 this 穿过 generator boundary。
+- **desanitize summary 用"step 结束一行"而非 "per-call 一行"** — `flushBuffer` 会把一个长 reply 拆成多个小调用（占位符跨 chunk 累积 + 切片），per-call emit 会刷 spam。每个 step finally 一次 summary（chunkCount + restoredBytes + errorCount）正好：operator grep sessionId 看到一行就知道"这个 step 还原了 N 个字符"，per-call 信息只在 audit JSONL。**这是 §7.46 系列第一个"非 start/done 配对" + "summary 行"组合**。
+- **每个 step 一次 route override（即使 provider 没变）** — handleAgentRequest 在 agent-loop 每个 step 都跑，所以多 step 的 chat 会 emit 多次 `route override` 行。这是 dsh 上游 agent-loop 设计决定的，不是 input-guard bug。operator 看 ops log 一次 chat 看到 N 个 route override 行是正常的（N = step 数）。如果觉得刷，可以在 stepState.downgraded 第一次写入时记个 `downgradeEmitted` 标志避免重复 emit，但本期不加复杂度。
+- **routeSource 跟 §7.34 §7.43 修复路径直接相关** — 之前 `routeSource` 只在 audit `input-guard.intent.downgraded` / `input-guard.sanitize.downgraded` 事件里有，ops log 没暴露。把它推到 preflight intent 行让 operator 一眼看到 "这个 chat 是 http-api 已经分类过的（routeSource=http-api）还是 TUI/webui 走 intent-router fallback classify（routeSource=webui）"。排查"为什么同一个 chat 分类结果不一样" 时直接 grep routeSource。
+- **§7.46 系列已基本覆盖所有关键环节** — 当前 ops log 节点：preflight intent（含 routeSource） + sanitize start/done/failed + orphan-tool-call summary + desanitize done + route override/restore + realm-skill-bridge pre-step filter + chat received/finished + tool allow/deny + LLM call start/done × 2 adapter。剩下次要可考虑项：session/event 的 `reason=unknown`（dsh 上游 API 没传，不是 ops log 问题）+ intent router 自定义标记（现在已经通过 local-llm-adapter start/done 看到 LLM 调，但没标记"这是 classify 调用 vs 普通 chat"，暂时不必要）。
+
+**相关**：
+
+- PROGRESS §7.46 — "每个关键环节都在 ops log 体现" 是 §7.46.3 的依据；本节实现后该总原则基本达成
+- PROGRESS §7.46.1 / §7.46.2 — 同款 try/catch + info pattern
+- memory [[log-level-flip-followup]] — ops log 默认 info 是这一切的前提
+- PROGRESS §7.34 / §7.43 — routeSource / handleAgentRequest 的语义依据

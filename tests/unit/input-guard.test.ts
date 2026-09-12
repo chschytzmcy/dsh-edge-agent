@@ -498,6 +498,9 @@ describe('handlePreStep — sanitization', () => {
   })
 })
 
+// §7.46.3 (2026-09-12): ops log 让"desanitize 还原占位符 / 路由改写 / 入口点"
+// 在 ops log 里可见。三段新 emit：desanitize done (handleLlmStream) + route
+// override/restore (handleAgentRequest) + preflight intent routeSource 字段。
 // §7.46.2 (2026-09-12): ops log 让"调了 sanitizer / 替换几个 PII /
 // 多久 / 失败原因"在 ops log 里可见。start/done/failed 三段，跟
 // cloud/local-llm-adapter §7.46.1 done 行的 wireError 字段对齐。
@@ -562,6 +565,64 @@ describe('handlePreStep — §7.46.2 sanitize call ops log', () => {
     assert.ok(failed, 'failed should fire when sanitizer throws')
     assert.ok(failed!.includes('wireError=sanitize crashed'), 'failed should include wireError from thrown error')
     assert.match(failed!, /durationMs=\d+/, 'failed should include durationMs')
+  })
+})
+
+describe('§7.46.3 — desanitize + route override + routeSource', () => {
+  it('preflight intent line carries routeSource=http-api when _edgeRoute present', async () => {
+    const ir = fakeIntentRouter({ category: 'CLOUD' })
+    const san = fakeSanitizer({ replacements: 0 })
+    const { ctx, infoLines } = fakeCtxWithLogger()
+    const svc = new InputGuardServiceImpl(
+      ctx as any, defaultConfig(),
+      undefined, undefined, ir.api as any, san.api as any,
+    )
+    // 注入 _edgeRoute 模拟 http-api 已分类（含 realm 字段 — readEdgeRoute 要求）
+    const payload = makePreStepPayload('test http-api entry')
+    ;(payload.agent as any)._edgeRoute = { provider: 'cloud-deepseek-v4', model: 'deepseek-chat', realm: 'CLOUD', category: 'CLOUD', confidence: 0.9, rationale: 'http-api-classified' }
+    await svc.handlePreStep(payload as any, makeNext(payload.messages))
+
+    const preflight = infoLines.find((l) => l.includes('preflight intent'))
+    assert.ok(preflight, 'preflight should fire')
+    assert.ok(preflight!.includes('routeSource=http-api'), 'routeSource should be http-api when _edgeRoute is set')
+  })
+
+  it('preflight intent line carries routeSource=webui when _edgeRoute absent', async () => {
+    const ir = fakeIntentRouter({ category: 'CLOUD' })
+    const san = fakeSanitizer({ replacements: 0 })
+    const { ctx, infoLines } = fakeCtxWithLogger()
+    const svc = new InputGuardServiceImpl(
+      ctx as any, defaultConfig(),
+      undefined, undefined, ir.api as any, san.api as any,
+    )
+    // 不设 _edgeRoute，模拟 TUI / dsh-web-app chat 入口
+    const payload = makePreStepPayload('test webui entry')
+    await svc.handlePreStep(payload as any, makeNext(payload.messages))
+
+    const preflight = infoLines.find((l) => l.includes('preflight intent'))
+    assert.ok(preflight, 'preflight should fire')
+    assert.ok(preflight!.includes('routeSource=webui'), 'routeSource should be webui when _edgeRoute is absent')
+  })
+
+  it('route override: handleAgentRequest emits override line when state.downgraded=true', async () => {
+    const ir = fakeIntentRouter({ category: 'LOCAL' })  // LOCAL 让 handlePreStep 设 downgraded=true
+    const { ctx, infoLines } = fakeCtxWithLogger()
+    const svc = new InputGuardServiceImpl(
+      ctx as any, defaultConfig({ sanitizeLocalTraffic: false }),
+      undefined, undefined, ir.api as any, undefined,  // no sanitizer, skip sanitize path
+    )
+    // 跑 handlePreStep 让它把 stepState.downgraded=true + originalProvider=cloud-*
+    const payload = makePreStepPayload('test override')
+    await svc.handlePreStep(payload as any, makeNext(payload.messages))
+    // 然后 handleAgentRequest 看到 downgraded → 改写 route
+    const seedConfig = { provider: 'cloud-deepseek-v4', model: 'deepseek-chat' }
+    const result = await svc.handleAgentRequest(payload as any, seedConfig as any, async () => seedConfig as any)
+    const override = infoLines.find((l) => l.includes('route override'))
+    assert.ok(override, 'route override should fire')
+    assert.ok(override!.includes('fromProvider=cloud-deepseek-v4'), `should show original provider, got: ${override}`)
+    assert.ok(override!.includes('toProvider=local-qwen3-4b'), 'should show downgraded provider')
+    assert.ok(override!.includes('reason=intent-local'), 'should show downgrade reason')
+    assert.equal((result as any).provider, 'local-qwen3-4b')
   })
 })
 
