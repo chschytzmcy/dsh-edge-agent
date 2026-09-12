@@ -900,5 +900,133 @@ ${allSkillLines.join('\n')}
       assert.ok(allowLogs[0].includes('sessionId=tools-test-sess'), 'tool allow should include sessionId')
       await dispose()
     })
+
+    // §7.46.7 (2026-09-12): tool=skill 时从 exec.input/args/arguments 抽 skill name —
+    // 让 operator 在 ops log 看到 LLM 实际选了哪个 skill（之前只报 tool=skill，
+    // mibao-empty-result-diagnosis 排查时根本不知道 LLM 是选错 skill 还是
+    // skill 执行失败）。
+    it('tool=skill + exec.input.name=ets-auth → log includes skillName=ets-auth', async () => {
+      const infoLines: string[] = []
+      const calls: Array<{ event: string; fn: (...args: unknown[]) => void }> = []
+      const fakeCtx: unknown = {
+        reflect: { provide() { return () => {} } },
+        provide() { return () => {} },
+        skills: { async list() { return [] }, async snapshot() { return { skills: [], complete: true } } },
+        logger: { info: (l: string) => infoLines.push(l), warn: () => {}, error: () => {}, debug: () => {} },
+        on(event: string, fn: (...args: unknown[]) => void) { calls.push({ event, fn }); return () => {} },
+      }
+      const { apply } = await import('../../src/dsh-adapter/realm-skill-bridge.ts')
+      const dispose = await (apply as (ctx: unknown, cfg: unknown) => Promise<() => Promise<void>>)(fakeCtx, {
+        skills: { 'ets-auth': 'LOCAL' },
+        tools: { skill: 'LOCAL' },
+        defaultRealm: 'hidden',
+        intentDefaultRealm: 'hidden',
+        sessionRealmHeader: 'x-edge-realm',
+      })
+      const preExecListener = calls.find((c) => c.event === 'tools/pre-execute')!
+      const fn = preExecListener.fn as (e: unknown, n: () => Promise<unknown>) => Promise<unknown>
+      const fakeAgent = { session: { id: 'skill-name-test-1' } }
+      // dsh-agent-loop 旧版用 args / 新版用 input — input 是最常见的字段名
+      const fakeExec = { name: 'skill', input: { name: 'ets-auth' }, agent: fakeAgent }
+      await fn(fakeExec, async () => ({ ok: true }))
+      const allowLogs = infoLines.filter((l) => l.includes('tool allow'))
+      assert.equal(allowLogs.length, 1)
+      assert.ok(allowLogs[0].includes('tool=skill'), 'tool name should still be skill')
+      assert.ok(allowLogs[0].includes('skillName=ets-auth'),
+        `tool allow should include skillName=ets-auth when input.name=ets-auth, got: ${allowLogs[0]}`)
+      await dispose()
+    })
+
+    it('tool=skill + exec.args.name (legacy dsh shape) → also extracts skillName', async () => {
+      // 兼容 dsh 旧版把 args 放在 args 而不是 input 的情况
+      const infoLines: string[] = []
+      const calls: Array<{ event: string; fn: (...args: unknown[]) => void }> = []
+      const fakeCtx: unknown = {
+        reflect: { provide() { return () => {} } },
+        provide() { return () => {} },
+        skills: { async list() { return [] }, async snapshot() { return { skills: [], complete: true } } },
+        logger: { info: (l: string) => infoLines.push(l), warn: () => {}, error: () => {}, debug: () => {} },
+        on(event: string, fn: (...args: unknown[]) => void) { calls.push({ event, fn }); return () => {} },
+      }
+      const { apply } = await import('../../src/dsh-adapter/realm-skill-bridge.ts')
+      const dispose = await (apply as (ctx: unknown, cfg: unknown) => Promise<() => Promise<void>>)(fakeCtx, {
+        skills: { 'ets-chat': 'LOCAL' },
+        tools: { skill: 'LOCAL' },
+        defaultRealm: 'hidden',
+        intentDefaultRealm: 'hidden',
+        sessionRealmHeader: 'x-edge-realm',
+      })
+      const preExecListener = calls.find((c) => c.event === 'tools/pre-execute')!
+      const fn = preExecListener.fn as (e: unknown, n: () => Promise<unknown>) => Promise<unknown>
+      const fakeExec = { name: 'skill', args: { name: 'ets-chat' }, agent: { session: { id: 's2' } } }
+      await fn(fakeExec, async () => ({ ok: true }))
+      const allowLogs = infoLines.filter((l) => l.includes('tool allow'))
+      assert.equal(allowLogs.length, 1)
+      assert.ok(allowLogs[0].includes('skillName=ets-chat'),
+        `should extract skillName from exec.args.name, got: ${allowLogs[0]}`)
+      await dispose()
+    })
+
+    it('tool=skill but no name in args → no skillName suffix (degrade gracefully)', async () => {
+      // 兼容老 dsh / 边界情况：args 缺失或没有 name 字段时不要 emit skillName=
+      // （避免看到 skillName=undefined 这种 garbage）
+      const infoLines: string[] = []
+      const calls: Array<{ event: string; fn: (...args: unknown[]) => void }> = []
+      const fakeCtx: unknown = {
+        reflect: { provide() { return () => {} } },
+        provide() { return () => {} },
+        skills: { async list() { return [] }, async snapshot() { return { skills: [], complete: true } } },
+        logger: { info: (l: string) => infoLines.push(l), warn: () => {}, error: () => {}, debug: () => {} },
+        on(event: string, fn: (...args: unknown[]) => void) { calls.push({ event, fn }); return () => {} },
+      }
+      const { apply } = await import('../../src/dsh-adapter/realm-skill-bridge.ts')
+      const dispose = await (apply as (ctx: unknown, cfg: unknown) => Promise<() => Promise<void>>)(fakeCtx, {
+        skills: {},
+        tools: { skill: 'LOCAL' },
+        defaultRealm: 'hidden',
+        intentDefaultRealm: 'hidden',
+        sessionRealmHeader: 'x-edge-realm',
+      })
+      const preExecListener = calls.find((c) => c.event === 'tools/pre-execute')!
+      const fn = preExecListener.fn as (e: unknown, n: () => Promise<unknown>) => Promise<unknown>
+      const fakeExec = { name: 'skill', agent: { session: { id: 's3' } } }
+      await fn(fakeExec, async () => ({ ok: true }))
+      const allowLogs = infoLines.filter((l) => l.includes('tool allow'))
+      assert.equal(allowLogs.length, 1)
+      assert.ok(!allowLogs[0].includes('skillName='),
+        `should NOT emit skillName= when args missing, got: ${allowLogs[0]}`)
+      assert.ok(allowLogs[0].includes('tool=skill'), 'tool name still skill')
+      await dispose()
+    })
+
+    it('tool=web_search (non-skill tool) → no skillName suffix (only skill triggers)', async () => {
+      // 非 skill 工具不应该带 skillName= 字段（避免污染 ops log）
+      const infoLines: string[] = []
+      const calls: Array<{ event: string; fn: (...args: unknown[]) => void }> = []
+      const fakeCtx: unknown = {
+        reflect: { provide() { return () => {} } },
+        provide() { return () => {} },
+        skills: { async list() { return [] }, async snapshot() { return { skills: [], complete: true } } },
+        logger: { info: (l: string) => infoLines.push(l), warn: () => {}, error: () => {}, debug: () => {} },
+        on(event: string, fn: (...args: unknown[]) => void) { calls.push({ event, fn }); return () => {} },
+      }
+      const { apply } = await import('../../src/dsh-adapter/realm-skill-bridge.ts')
+      const dispose = await (apply as (ctx: unknown, cfg: unknown) => Promise<() => Promise<void>>)(fakeCtx, {
+        skills: {},
+        tools: { web_search: 'CLOUD' },
+        defaultRealm: 'hidden',
+        intentDefaultRealm: 'hidden',
+        sessionRealmHeader: 'x-edge-realm',
+      })
+      const preExecListener = calls.find((c) => c.event === 'tools/pre-execute')!
+      const fn = preExecListener.fn as (e: unknown, n: () => Promise<unknown>) => Promise<unknown>
+      const fakeExec = { name: 'web_search', input: { query: 'x' }, agent: { session: { id: 's4' } } }
+      await fn(fakeExec, async () => ({ ok: true }))
+      const allowLogs = infoLines.filter((l) => l.includes('tool allow'))
+      assert.equal(allowLogs.length, 1)
+      assert.ok(!allowLogs[0].includes('skillName='),
+        `non-skill tool should not emit skillName=, got: ${allowLogs[0]}`)
+      await dispose()
+    })
   })
 })

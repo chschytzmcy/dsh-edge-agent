@@ -740,11 +740,22 @@ export class InputGuardServiceImpl extends Service {
     // 等已分类信息），'webui' 表示 dsh-web-app / dsh-tui chat 入口没写
     // _edgeRoute（intent-router fallback classify）。operator 看 ops log
     // 一眼区分这两种入口，便于排查"哪个入口配的路由决策"。
+    // §7.46.7 (2026-09-12): intentSource 字段加在 preflight 行 — 区分
+    // 意图分类的三条来源路径：(a) 'http-api-classified' _edgeRoute 由
+    // http-api resolveRoute 写入；(b) 'llm-classified' intentRouter.classify()
+    // 跑了 local-llm-adapter；(c) 'default-fallback' 两者都没跑（intentRouter
+    // 抛错 / 不存在）。operator 一眼区分"intent 实际怎么来的"——
+    // 之前只能靠 rationale 字段反推（default:sanitized / llm-classified:* /
+    // http-api-classified:*），mibao trace 看到 default:sanitized 时 root cause
+    // 不明显（是 local-llm hang fallback？还是 http-api resolveRoute 返回？）
     targetRealm = category === 'LOCAL' ? 'LOCAL' : (category === 'SANITIZED' ? 'LOCAL' : 'CLOUD')
     const routeSource: 'http-api' | 'webui' = edgeRouteUsed ? 'http-api' : 'webui'
+    const intentSource: 'http-api-classified' | 'llm-classified' | 'default-fallback' = edgeRouteUsed
+      ? 'http-api-classified'
+      : (this.intentRouter ? 'llm-classified' : 'default-fallback')
     try {
       this.ctx.logger?.info?.(
-        `[input-guard] preflight intent sessionId=${sessionId} category=${category} confidence=${intentConfidence} rationale=${intentRationale ?? 'n/a'} targetRealm=${targetRealm} routeSource=${routeSource}`,
+        `[input-guard] preflight intent sessionId=${sessionId} category=${category} confidence=${intentConfidence} rationale=${intentRationale ?? 'n/a'} targetRealm=${targetRealm} routeSource=${routeSource} intentSource=${intentSource}`,
       )
     } catch { /* debug only */ }
     this.audit('info', 'input-guard.routed', {

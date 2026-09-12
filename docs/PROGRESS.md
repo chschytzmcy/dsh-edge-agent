@@ -4880,5 +4880,118 @@ e94ca30  fix(input-guard): §7.46.3 desanitize + route override + routeSource op
 - memory [[tui-unscoped-context-diagnosis]] — web profile 的同类 preset scope 问题待修
 - PROGRESS §7.44 — ops log 默认 level 翻转是这一切的起点
 - PROGRESS §7.44.1 — TUI 路径 flow log 起点（chat received/finished 两行）
-- PROGRESS §7.46 / §7.46.1 / §7.46.2 / §7.46.3 / §7.46.4 — 5 节累计到 21 节点
+- PROGRESS §7.46 / §7.46.1 / §7.46.2 / §7.46.3 / §7.46.4 / §7.46.5+§7.46.6 — 6 节累计到 21 节点
+
+---
+
+### §7.46.7 preflight intentSource + tool allow skillName（2026-09-12 续）
+
+**承接**：§7.46.5+§7.46.6 完成 21 节点覆盖后，用户跑 mibao 查询 trace 暴露两个隐藏缺口：
+1. `preflight intent` 行用 `rationale=default:sanitized` 表示"intent 分类来源"——但这个字段实际**承担了多个语义**：http-api resolveRoute 返回的 default / local-llm 分类结果 / fallback 默认值。operator 看 trace 时无法一眼区分"是 local-llm hang fallback 还是 http-api resolveRoute 返回 SANITIZED"。
+2. `tool allow tool=skill` 行**不报具体 skill 名字**——LLM 选错 skill 还是 skill 执行失败完全无法判断。
+
+**改动**：**不改节点总数（21 不变），但给两个已有节点加 1 个新字段**：
+
+| 节点 | 新字段 | 位置 | 取值 |
+|------|--------|------|------|
+| #1 input-guard preflight intent | `intentSource=http-api-classified\|llm-classified\|default-fallback` | input-guard.ts:756 | 三态区分意图来源 |
+| #12/13 realm-skill-bridge tool allow/deny | `skillName=<name>`（仅当 `tool=skill` 时） | realm-skill-bridge.ts:842-845 | 从 `exec.input.name` / `exec.args.name` / `exec.arguments.name` 取（dsh 不同版本字段名不同） |
+
+**为什么用 3 态 intentSource**：
+
+- `http-api-classified`：`edgeRouteUsed=true` — http-api resolveRoute 已分类，agent._edgeRoute 写入。这是 mibao 真实路径（trace 看到 `routeSource=http-api intentSource=http-api-classified`，category 来自 resolveRoute）。
+- `llm-classified`：`edgeRouteUsed=false && this.intentRouter` — 没 http-api 兜底，intentRouter.classify() 跑了（即使抛错 fallback 也算"尝试过 llm classify"，operator 看到 `llm-classified + rationale=n/a + audit error` 就能定位）。
+- `default-fallback`：`!edgeRouteUsed && !this.intentRouter` — 完全没 classifier，category=CLOUD 是 input-guard 硬编码默认。TUI 没装 intentRouter 会走这条（少见，但 operator 能立刻识别"配置缺失"）。
+
+**为什么 tool allow 加 skillName**：
+
+dsh-tool-skill 的参数 schema 是 `{ name: '<skill>' }`（lib/index.js:62），LLM 实际调用如：
+```
+{ name: 'skill', input: { name: 'ets-auth' } }
+```
+之前 ops log 只报 `tool=skill`，operator 排查时必须翻 audit JSONL 才能看到 LLM 选了哪个 skill。`mibao-empty-result-diagnosis` 09-11 修过同类问题（local-llm hang → classifier fallback → 200+空），但当时没动 ops log 字段——trace 还是不报 skill 名字。
+
+**E2E 验证**（sessionId=`sec7.46.7-mibao`，query="查询密盒登录状态"，2026-09-12 实测 via tui :21018）：
+
+完整 trace 关键行（带新字段）：
+
+```
+12:16:45.555  [http-api]            chat received ... messageLen=8
+12:16:53.726  [input-guard]         preflight intent sessionId=sec7.46.7-mibao category=SANITIZED confidence=0.5 rationale=default:sanitized targetRealm=LOCAL routeSource=http-api intentSource=http-api-classified   ← §7.46.7 intentSource 字段
+12:16:53.726  [input-guard]         prompt-guard done ... outcome=safe
+12:16:53.726  [input-guard]         privacy-policy done ... realm=none
+12:16:53.726  [input-guard]         sanitize start  inputLen=8
+12:16:53.728  [input-guard]         sanitize done   replacementCount=0 outcome=clean
+12:16:53.729  [realm-skill-bridge]  pre-step filter realm=SANITIZED catalogDropped=0
+12:16:53.735  [realm-skill-bridge]  chat received reason=initial
+12:16:53.737  [cloud-llm-adapter]   LLM call start  provider=cloud-deepseek-v4
+12:16:54.703  [cloud-llm-adapter]   LLM call done   durationMs=965 toolCallCount=1 finishKind=tool-calls
+12:16:54.710  [realm-skill-bridge]  tool allow sessionId=sec7.46.7-mibao tool=skill skillName=ets-auth realm=SANITIZED   ← §7.46.7 skillName 字段
+12:16:54.721  [cloud-llm-adapter]   LLM call start  messageCount=5
+12:16:55.574  [cloud-llm-adapter]   LLM call done   durationMs=853 toolCallCount=1 finishKind=tool-calls
+12:16:55.581  [realm-skill-bridge]  tool allow ... tool=bash realm=SANITIZED
+12:16:55.623  [cloud-llm-adapter]   LLM call start  messageCount=7
+12:16:56.493  [cloud-llm-adapter]   LLM call done   durationMs=870 resultLen=273 finishKind=stop
+12:16:56.504  [realm-skill-bridge]  chat finished ... realm=SANITIZED duration=2769ms
+12:16:56.506  [http-api]            chat reply ... resultLen=273 status=200 intent=SANITIZED
+```
+
+**关键观测**：
+- ✅ `intentSource=http-api-classified` 一眼区分：本会话的 SANITIZED 是 http-api resolveRoute 返回的（不是 local-llm hang fallback）。之前只能反推 `rationale=default:sanitized` 是不是 local-llm 问题；现在不需要反推。
+- ✅ `tool allow ... tool=skill skillName=ets-auth` 一眼看出：LLM 选了 ets-auth skill（不是别的）。配合"先 tool allow skill=ets-auth → 再 tool allow bash"可推断出 LLM 调用链：load ets-auth skill → 内部跑 bash → 返回结果。
+- 真实响应：`resultLen=273` 含"密盒已登录 / Profile=default / 服务地址=192.168.1.101:8080 / Token 类型=bearer"等表格内容。**这次 mibao 查询不再返回空**——上次（09-11 [[mibao-empty-result-diagnosis]]）是 local-llm hang 导致的空响应，这次 dsh-tui 正常 source 了 .env.sh（DSH_EDGE_LOCAL_LLM_BASEURL 已设），所以 intent classifier 走默认 fallback 但不影响最终查询（因为 intent 走 http-api resolveRoute 不依赖 local-llm）。
+
+**测试覆盖**（新增 8 个 unit case）：
+
+- `tests/unit/input-guard.test.ts` §7.46.7 describe 4 case：
+ - `intentSource=http-api-classified` when `_edgeRoute` present
+ - `intentSource=llm-classified` when `intentRouter.classify()` called (no `_edgeRoute`)
+ - `intentSource=default-fallback` when no `_edgeRoute` AND no `intentRouter`
+ - `intentSource=llm-classified` even after `intentRouter` throws（fallback 但仍标 llm-classified，因为尝试过）
+- `tests/unit/realm-skill-bridge.test.ts` §7.46.7 describe 4 case：
+ - `tool=skill + exec.input.name=ets-auth → log includes skillName=ets-auth`（最常见 dsh 版本）
+ - `tool=skill + exec.args.name=ets-chat → log includes skillName=ets-chat`（兼容旧 dsh 版本）
+ - `tool=skill + no args → no skillName suffix`（graceful degrade，避免 `skillName=undefined`）
+ - `tool=web_search (non-skill) → no skillName suffix`（只有 skill 工具才加字段，不污染其他工具）
+- 总测试：711 unit pass / 2 pre-existing fail（realm-skill-bridge baseline）。本节净增 8 测试 pass。
+
+**代码改动**（2 files, +52/-4 lines）：
+- `src/dsh-adapter/input-guard.ts` line 744-757 — preflight intent emit 加 `intentSource` 字段
+- `src/dsh-adapter/realm-skill-bridge.ts` line 832-849 — tool allow/deny emit 加 skillName 字段（仅当 tool=skill 时）+ 三字段兼容（input/args/arguments）
+- `tests/unit/input-guard.test.ts` +114 lines（4 case）
+- `tests/unit/realm-skill-bridge.test.ts` +149 lines（4 case）
+
+**Lesson**：
+
+- **字段增量优于节点新增**：本节两个缺口都是"已有节点字段不够细"，而不是"节点缺了"。加 1 个字段比加 1 个新节点对 operator 更友好（trace 行数不变，但信息密度翻倍）。后续排查时优先看"已有节点能不能多带 1 个字段"而非"是不是要加新节点"。
+- **意图分类 3 态 = 入口 2 态 × 来源 3 态的交叉**：routeSource 是入口（http-api vs webui），intentSource 是分类来源（http-api classified vs llm classified vs default fallback）。两个维度**正交**——既要带 routeSource 又要带 intentSource，operator 才能区分"http-api 入口 + http-api resolveRoute 分类" vs "http-api 入口 + local-llm 分类" vs "webui 入口 + local-llm 分类" vs "webui 入口 + fallback"。本节两个字段都补上才能完整覆盖这 4 种组合。
+- **dsh tool exec 字段名版本差异**：`exec.input.name` 是 dsh-agent-loop 0.1.2-rc.1 的字段名（看了 dsh-tool-skill lib/index.js），但 dsh 早期版本用 `exec.args.name`。加 `input ?? args ?? arguments` 三字段兼容是必要的——单字段硬编码会在某次 dsh 升级时炸。
+- **graceful empty 而非 `skillName=undefined`**：当 tool=skill 但 args 没有 name 字段时，**不要** emit `skillName=undefined`（看起来是 bug）。直接不 emit `skillName=` 后缀，让 ops log 保持干净——operator 看到 `tool=skill` 但没 skillName 就知道 args 缺失，比看到 garbage 字符串好。
+- **trace 暴露配置缺失**：`intentSource=default-fallback` 比 audit JSONL 翻 `input-guard.intent-router.error` 直观——一眼看到"default-fallback"就知道 intentRouter 没装或抛错，不用翻 audit。
+
+**§7.46 系列 commit 链**（累计 6 个 commit）：
+
+```
+5e0b58a  feat(log): §7.46 ops log 关键环节全链路 (preflight+filter+tool+duration+realm)
+956fa4c  fix(llm-adapter): §7.46.1 cloud/local per-call info log (start/done)
+96dfdac  fix(input-guard): §7.46.2 sanitize call ops log (start/done/failed)
+e94ca30  fix(input-guard): §7.46.3 desanitize + route override + routeSource ops log
+4a1a47d  fix(ops-log): §7.46.5+§7.46.6 chat 端点 + prompt-guard/policy 子步骤 ops log
+         §7.46.7 (this commit) preflight intentSource + tool allow skillName
+```
+
+**节点 / 字段总览**：
+
+- 节点总数：21（§7.46.7 不变）
+- 关键字段：preflight `routeSource` (§7.46.3) + `intentSource` (§7.46.7)；tool allow `skillName` (§7.46.7)
+- 已知缺口：dsh session/event turn/end reason、intent router 自定义标记、per-turn pre-step（仍是 dsh 上游/设计层面，非 ops log 范畴）
+- **mibeno 排查路径升级**：之前 `default:sanitized` + `tool=skill` 完全无法定位（09-11 [[mibao-empty-result-diagnosis]]）；现在 `intentSource=http-api-classified` + `skillName=ets-auth` 一眼定位（intent 来源 + skill 选择）——同一 trace 信息密度 ×4
+
+**相关**：
+
+- memory [[ops-log-coverage-principle]] — 21 节点 + 关键字段总览（更新）
+- memory [[log-level-flip-followup]] — ops log 默认 info 是这一切前提
+- memory [[mibao-empty-result-diagnosis]] — 09-11 第一次排查，本节把 trace 字段补齐
+- memory [[tui-unscoped-context-diagnosis]] — web profile 的同类 preset scope 问题待修
+- PROGRESS §7.44 / §7.44.1 / §7.46 / §7.46.1 / §7.46.2 / §7.46.3 / §7.46.4 / §7.46.5+§7.46.6 — 7 节累计到 21 节点 + 关键字段
 

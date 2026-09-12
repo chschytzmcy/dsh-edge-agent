@@ -740,6 +740,94 @@ describe('handlePreStep — §7.46.6 prompt-guard + privacy-policy ops log', () 
   })
 })
 
+// §7.46.7 (2026-09-12): preflight intent 加 intentSource 字段 —
+// 让 operator 区分意图来源的三条路径：(a) http-api 已分类（_edgeRoute）；
+// (b) local-llm 跑 classify 分类；(c) 两者都没（intentRouter 抛错 / 不存在）
+// fallback。mibao-empty-result-diagnosis 之前 trace 看到 rationale=default:sanitized
+// 时 root cause 不明显（是 local-llm hang fallback？还是 http-api resolveRoute
+// 返回 SANITIZED？），加 intentSource 字段一眼区分。
+describe('handlePreStep — §7.46.7 preflight intentSource field', () => {
+  it('intentSource=http-api-classified when _edgeRoute is present', async () => {
+    const ir = fakeIntentRouter({ category: 'CLOUD' })
+    const { ctx, infoLines } = fakeCtxWithLogger()
+    const svc = new InputGuardServiceImpl(
+      ctx as any, defaultConfig(),
+      undefined, undefined, ir.api as any, undefined,
+    )
+    const payload = makePreStepPayload('http-api classified')
+    ;(payload.agent as any)._edgeRoute = { provider: 'cloud-deepseek-v4', model: 'deepseek-chat', realm: 'CLOUD', category: 'CLOUD', confidence: 0.9, rationale: 'http-api-resolved' }
+    await svc.handlePreStep(payload as any, makeNext(payload.messages))
+
+    const preflight = infoLines.find((l) => l.includes('preflight intent'))
+    assert.ok(preflight, 'preflight should fire')
+    assert.ok(preflight!.includes('intentSource=http-api-classified'),
+      `intentSource should be http-api-classified when _edgeRoute present, got: ${preflight}`)
+    // routeSource + intentSource 必须共存且分别表示不同维度：
+    // routeSource 是入口类型（http-api / webui），intentSource 是分类来源
+    assert.ok(preflight!.includes('routeSource=http-api'))
+  })
+
+  it('intentSource=llm-classified when intentRouter is used (no _edgeRoute)', async () => {
+    const ir = fakeIntentRouter({ category: 'LOCAL', rationale: 'llm-classified:local' })
+    const { ctx, infoLines } = fakeCtxWithLogger()
+    const svc = new InputGuardServiceImpl(
+      ctx as any, defaultConfig(),
+      undefined, undefined, ir.api as any, undefined,
+    )
+    const payload = makePreStepPayload('webui entry — needs LLM classify')
+    await svc.handlePreStep(payload as any, makeNext(payload.messages))
+
+    const preflight = infoLines.find((l) => l.includes('preflight intent'))
+    assert.ok(preflight, 'preflight should fire')
+    assert.ok(preflight!.includes('intentSource=llm-classified'),
+      `intentSource should be llm-classified when intentRouter.classify() called, got: ${preflight}`)
+    assert.ok(preflight!.includes('routeSource=webui'),
+      'routeSource=webui when no _edgeRoute set')
+  })
+
+  it('intentSource=default-fallback when no _edgeRoute AND no intentRouter', async () => {
+    // 这是 mibao-empty-result-diagnosis 的根因之一：dsh-tui 裸启没 source .env.sh
+    // → local-llm-adapter hang → intentRouter 抛错 → input-guard 走 fallback 路径
+    // （但 intentRouter 本身存在配置，只是不工作）。本测试覆盖"完全没 intentRouter"
+    // 这种 fallback 路径，跟 llm-classified 区分开。
+    const { ctx, infoLines } = fakeCtxWithLogger()
+    const svc = new InputGuardServiceImpl(
+      ctx as any, defaultConfig(),
+      undefined, undefined, undefined /* no intentRouter */, undefined,
+    )
+    const payload = makePreStepPayload('no classifier available')
+    await svc.handlePreStep(payload as any, makeNext(payload.messages))
+
+    const preflight = infoLines.find((l) => l.includes('preflight intent'))
+    assert.ok(preflight, 'preflight should still fire even without intentRouter')
+    assert.ok(preflight!.includes('intentSource=default-fallback'),
+      `intentSource should be default-fallback when no intentRouter, got: ${preflight}`)
+    // fallback 默认 category=CLOUD，rationale='n/a'
+    assert.ok(preflight!.includes('category=CLOUD'))
+    assert.ok(preflight!.includes('rationale=n/a'))
+  })
+
+  it('intentSource=llm-classified when intentRouter throws (fell back after error)', async () => {
+    // intentRouter 抛错 → input-guard 走 fallback 但本会话已尝试 llm-classify，
+    // intentSource 仍标 'llm-classified'（不是 'default-fallback'）。
+    // operator 一眼看出"intent router 跑了但抛错"——比 default-fallback 更精确
+    const ir = fakeIntentRouter({ throwErr: true })
+    const { ctx, infoLines } = fakeCtxWithLogger()
+    const svc = new InputGuardServiceImpl(
+      ctx as any, defaultConfig(),
+      undefined, undefined, ir.api as any, undefined,
+    )
+    const payload = makePreStepPayload('classifier throws')
+    await svc.handlePreStep(payload as any, makeNext(payload.messages))
+
+    const preflight = infoLines.find((l) => l.includes('preflight intent'))
+    assert.ok(preflight, 'preflight should fire after intentRouter error')
+    assert.ok(preflight!.includes('intentSource=llm-classified'),
+      `intentSource should remain llm-classified even after error (operator 看到 llm-classified + rationale=n/a + audit error 即知), got: ${preflight}`)
+    assert.ok(preflight!.includes('rationale=n/a'))
+  })
+})
+
 describe('handlePreStep — sanitize failure policy', () => {
   it('downgradeOnSanitizeFailure=true (default) → pass-through with downgraded state', async () => {
     const ir = fakeIntentRouter({ category: 'CLOUD' })

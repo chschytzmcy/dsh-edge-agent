@@ -825,20 +825,34 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
       options?: { global?: boolean },
     ) => () => void
   }).on?.('tools/pre-execute', async (exec: unknown, next: () => Promise<unknown>) => {
-    const e = exec as { name: string; agent?: AgentLike }
+    const e = exec as { name: string; agent?: AgentLike; input?: Record<string, unknown>; args?: Record<string, unknown>; arguments?: Record<string, unknown> }
     const agentRealm = service.getAgentRealm(e.agent)
     const sessionId = (e.agent as { session?: { id?: string } } | undefined)?.session?.id ?? 'unknown'
     const denyReason = service.checkToolRealm(e.name, agentRealm)
+    // §7.46.7 (2026-09-12): 尝试从 exec.args/input/arguments 抽出 skill name —
+    // 当 tool=skill 时，ops log 应该报具体 skill 名（ets-auth 等），而不是只报 tool=skill。
+    // dshtool-skill 的参数是 { name: '<skill>' }（lib/index.js:62），但 dsh-agent-loop
+    // 把 args 放在哪个字段（input / args / arguments）随版本变，所以三个都试。
+    // mibao-empty-result-diagnosis 排查时就是因为 ops log 只报 tool=skill
+    // 看不出 LLM 实际选了哪个 skill（"查密盒登录状态"应该选 ets-auth，
+    // 但 trace 完全看不到 skill 名字，无法判断是选错 skill 还是 skill 执行失败）。
+    let skillName: string | undefined
+    if (e.name === 'skill') {
+      const argsObj = e.input ?? e.args ?? e.arguments
+      const raw = argsObj && typeof argsObj === 'object' ? (argsObj as Record<string, unknown>).name : undefined
+      skillName = typeof raw === 'string' ? raw : undefined
+    }
     // §7.46 (2026-09-11): ops log 标记每个 tool call 的 allow/deny 决策,
     // 配合 chat-received/finished/preflight/pre-step 形成完整 flow log
     try {
+      const skillSuffix = skillName ? ` skillName=${skillName}` : ''
       if (denyReason !== undefined) {
         ctx.logger?.info?.(
-          `[realm-skill-bridge] tool deny sessionId=${sessionId} tool=${e.name} realm=${agentRealm ?? 'unknown'} reason=${denyReason}`,
+          `[realm-skill-bridge] tool deny sessionId=${sessionId} tool=${e.name}${skillSuffix} realm=${agentRealm ?? 'unknown'} reason=${denyReason}`,
         )
       } else {
         ctx.logger?.info?.(
-          `[realm-skill-bridge] tool allow sessionId=${sessionId} tool=${e.name} realm=${agentRealm ?? 'unknown'}`,
+          `[realm-skill-bridge] tool allow sessionId=${sessionId} tool=${e.name}${skillSuffix} realm=${agentRealm ?? 'unknown'}`,
         )
       }
     } catch { /* debug only */ }
