@@ -413,3 +413,82 @@ describe('http-api resolveRoute (modelRouter wiring)', () => {
     expect(r.provider).toBe('local-qwen3-4b')
   })
 })
+
+// §7.46.5 (2026-09-12): 在 ops log 留 chat received/reply 两行 —
+// 让 operator 看 trace 时知道消息何时到达、何时回包。
+// 这是 source-level smoke test：构造一个最小 HttpApiServiceImpl 触发
+// handleChat，捕获 ctx.logger.info emit 行。
+// (inline mock-server 不走真实 HttpApiServiceImpl，所以另外构造。)
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
+// (handleChat 端到端测试需要完整 req/res/intentRouter/agents，由 E2E
+// curl POST 覆盖；这里是 source-level smoke test 验证 emit 格式)
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = dirname(__filename)
+const httpApiSource = readFileSync(
+  join(__dirname, '../../src/dsh-adapter/http-api.ts'),
+  'utf-8',
+)
+
+describe('http-api §7.46.5 — chat received/reply ops log source presence', () => {
+  it('source contains [http-api] chat received emit (post-receive entry log)', () => {
+    // §7.46.5: 在 handleChat 内 sessionId 解析后、intentRouter 之前 emit
+    // messageLen（不是 message 内容 — 避免 PII 落 ops log）
+    const match = httpApiSource.match(/\[\s*http-api\s*\]\s*chat received\s+sessionId=/)
+    expect(match, 'expected `[http-api] chat received sessionId=...` emit line in http-api.ts').toBeTruthy()
+  })
+
+  it('source contains [http-api] chat reply emit with provider/model/durationMs/resultLen/status', () => {
+    // §7.46.5: 在 handleChat 200 响应前 emit，含 provider/model/durationMs
+    // /resultLen/status=200/intent — 让 operator grep 知道 chat round-trip 完成
+    const match = httpApiSource.match(
+      /\[\s*http-api\s*\]\s*chat reply\s+sessionId=[^\n]*provider=[^\n]*model=[^\n]*durationMs=[^\n]*resultLen=[^\n]*status=200/,
+    )
+    expect(
+      match,
+      'expected `[http-api] chat reply sessionId=... provider=... model=... durationMs=... resultLen=... status=200 intent=...` emit line in http-api.ts',
+    ).toBeTruthy()
+  })
+
+  it('chat received line uses try/catch + optional-chained logger (per ops-log-coverage-principle pattern)', () => {
+    // 验证 try { this.ctx.logger?.info?.(...) } catch 兜底在 chat received 附近
+    // 不能让 logger throw 中断 chat round-trip
+    const idx = httpApiSource.indexOf('[http-api] chat received')
+    expect(idx).toBeGreaterThan(-1)
+    // 向前走到上一个 'try {' 行（最多 400 chars）
+    const window = httpApiSource.slice(Math.max(0, idx - 400), idx)
+    expect(window).toMatch(/\btry\s*\{/)
+    // 向后走到 catch
+    const after = httpApiSource.slice(idx, idx + 400)
+    expect(after).toMatch(/\}\s*catch\s*\{/)
+  })
+
+  it('chat reply line uses try/catch + optional-chained logger', () => {
+    const idx = httpApiSource.indexOf('[http-api] chat reply')
+    expect(idx).toBeGreaterThan(-1)
+    const window = httpApiSource.slice(Math.max(0, idx - 400), idx)
+    expect(window).toMatch(/\btry\s*\{/)
+    const after = httpApiSource.slice(idx, idx + 400)
+    expect(after).toMatch(/\}\s*catch\s*\{/)
+  })
+
+  it('chat received/reply do NOT echo raw message body (PII safety)', () => {
+    // 不能让 message 内容（可能含 PII）落 ops log — messageLen 而非 message
+    const receivedWindow = httpApiSource.slice(
+      httpApiSource.indexOf('[http-api] chat received'),
+      httpApiSource.indexOf('[http-api] chat received') + 300,
+    )
+    const replyWindow = httpApiSource.slice(
+      httpApiSource.indexOf('[http-api] chat reply'),
+      httpApiSource.indexOf('[http-api] chat reply') + 400,
+    )
+    // 模板里只能出现 messageLen / message.length，不能出现裸 message=
+    expect(receivedWindow).toContain('messageLen=')
+    expect(receivedWindow).not.toMatch(/message=\$\{/)
+    // reply 用 resultLen 而非 result 内容
+    expect(replyWindow).toContain('resultLen=')
+    expect(replyWindow).not.toMatch(/result=\$\{/)
+  })
+})

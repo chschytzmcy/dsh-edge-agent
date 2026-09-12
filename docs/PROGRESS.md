@@ -4777,3 +4777,108 @@ e94ca30  fix(input-guard): §7.46.3 desanitize + route override + routeSource op
 - PROGRESS §7.44 — ops log 默认 level 翻转是这一切的起点
 - PROGRESS §7.44.1 — TUI 路径 flow log 起点（chat received/finished 两行）
 - PROGRESS §7.46 / §7.46.1 / §7.46.2 / §7.46.3 — 4 个 commit 累积到 17 个节点
+
+---
+
+### §7.46.5+§7.46.6 chat 端点 + prompt-guard/policy 子步骤 ops log（2026-09-12 续）
+
+**承接**：§7.46.4 final summary 列出"已知 gap：chat 接收端点、chat 响应出口、prompt-guard / privacy-policy sub-step"。本节把这 4 个缺口补齐，节点总数从 17 → 21。
+
+**新增 4 个节点**：
+
+| # | 节点 | 何时 emit | 触发条件 | 字段 |
+|---|------|----------|---------|------|
+| 18 | http-api chat received | handleChat 进入（sessionId 解析后） | 每次 POST /v1/chat | sessionId/reqId/messageLen |
+| 19 | http-api chat reply | handleChat 200 响应前 | 每次 chat 成功（status=200） | sessionId/reqId/provider/model/durationMs/resultLen/status/intent |
+| 20 | input-guard prompt-guard done | handlePreStep step1 | 每次 prompt-guard.checkInput 跑完 | sessionId/durationMs/outcome=safe\|unsafe\|error/reason/riskLevel |
+| 21 | input-guard privacy-policy done | handlePreStep step2 | 每次 privacy-policy.matchRouting 跑完 | sessionId/durationMs/realm=LOCAL\|CLOUD\|SANITIZED\|REJECT\|none/rationale |
+
+**Why 4 个补齐**：
+
+- **节点 18+19（chat 端点）**：之前 ops log 起点是 `[realm-skill-bridge] chat received`（dispatch request/header），但 `[http-api]` 入口没有标记 — operator 看不出"user 几时发的消息"。同理 chat 响应出口也缺 — `POST /v1/chat 200` 在 accessLog 里有，但 `[http-api]` 自己没 emit 一行 chat reply。补齐后入口+出口两端点都被 ops log 看到。
+- **节点 20+21（input-guard sub-step）**：之前 input-guard preflight intent 是 input-guard handlePreStep 的"总览"行，但 prompt-guard / privacy-policy 这俩子步骤只有 audit JSONL 留事件。operator 看 ops log 时区分不出"policy 跑没 / prompt-guard 跑没 / 多少 ms" — 只能在 audit 翻。补齐后 input-guard 子步骤也进入 ops log，配合 preflight intent 形成"每个子步骤都在 ops log"的形态。
+
+**emit 位置 + 格式**：
+
+- `[http-api] chat received sessionId=... reqId=... messageLen=N` — line 435（handleChat 内 sessionId 解析后、intentRouter 之前）；只 emit messageLen 不 emit message 内容（避免 PII 落 ops log）。
+- `[http-api] chat reply sessionId=... reqId=... provider=... model=... durationMs=N resultLen=N status=200 intent=...` — line 637（handleChat 200 响应前）；rejection 路径由 accessLog line 482/599 覆盖 status code + reason，不重复 emit。
+- `[input-guard] prompt-guard done sessionId=... durationMs=N outcome=safe|unsafe|error${reason ? ` reason=...` : ''}${riskLevel ? ` riskLevel=...` : ''}` — line 622（handlePreStep step1 prompt-guard.checkInput 之后）；`outcome=error` 出现在 try 块外（catch 时不进 done 行，但 audit 留 `input-guard.prompt-guard.error`）。
+- `[input-guard] privacy-policy done sessionId=... durationMs=N realm=LOCAL|CLOUD|SANITIZED|REJECT|none${rationale ? ` rationale=...` : ''}` — line 668（handlePreStep step2 privacy-policy.matchRouting 之后）；`realm=none` 表示没装 privacy-policy（graceful empty state）。
+
+**E2E 验证**（2 条 chat via TUI 入口 `:21018`，2026-09-12 实测）：
+
+sessionId=`sec7.46.6-TUI-A`（query="读 README.md 的开头两段"）完整 trace：
+
+```
+11:41:58.607  [http-api]      chat received sessionId=sec7.46.6-TUI-A reqId=d5922198 messageLen=17     ← 节点 18 ✓
+11:42:06.089  [input-guard]   prompt-guard done sessionId=sec7.46.6-TUI-A durationMs=3823 outcome=safe riskLevel=low    ← 节点 20 ✓
+11:42:06.089  [input-guard]   privacy-policy done sessionId=sec7.46.6-TUI-A durationMs=0 realm=none    ← 节点 21 ✓ (TUI 没装 privacy-policy)
+11:42:06.090  [input-guard]   preflight intent ... category=LOCAL ... routeSource=http-api            ← 节点 1
+11:42:06.094  [realm-skill-bridge] pre-step filter realm=LOCAL catalogDropped=23                       ← 节点 9
+11:42:06.111  [input-guard]   route override fromProvider=local-qwen3-4b toProvider=local-qwen3-4b reason=intent-local   ← 节点 7
+11:42:06.118  [realm-skill-bridge] chat received sessionId=sec7.46.6-TUI-A reason=initial                ← 节点 10
+11:42:06.121  [local-llm-adapter] LLM call start provider=local-qwen3-4b                                  ← 节点 16
+11:42:09.327  [local-llm-adapter] LLM call done durationMs=3206 finishKind=tool-calls                     ← 节点 17
+11:42:16.912  [local-llm-adapter] LLM call done durationMs=7532 finishKind=stop                          ← 节点 17 (turn 2)
+11:42:16.922  [realm-skill-bridge] chat finished turn=1 reason=unknown realm=LOCAL duration=10804ms       ← 节点 11
+11:42:16.924  [http-api]      chat reply sessionId=sec7.46.6-TUI-A reqId=d5922198 provider=local-qwen3-4b model=local-qwen3-4b durationMs=18318 resultLen=480 status=200 intent=LOCAL  ← 节点 19 ✓
+```
+
+sessionId=`sec7.46.6-TUI-B`（query="帮我查一下北京天气，我的邮箱是 user@example.com"）— 走 CLOUD → 降级 SANITIZED → LOCAL 路径，验证 sanitize + desanitize 链条：
+
+```
+11:42:30.587  [http-api]       chat received ... messageLen=32                                            ← 节点 18 ✓
+11:42:38.686  [input-guard]    prompt-guard done ... outcome=safe riskLevel=low                           ← 节点 20 ✓
+11:42:38.686  [input-guard]    privacy-policy done ... realm=none                                         ← 节点 21 ✓
+11:42:38.686  [input-guard]    preflight intent ... category=SANITIZED ... routeSource=http-api          ← 节点 1
+11:42:38.688  [input-guard]    sanitize start ... inputLen=32                                              ← 节点 2
+11:42:38.695  [input-guard]    sanitize done ... replacementCount=1 outcome=replaced                      ← 节点 3
+11:42:38.709  [realm-skill-bridge] chat received ... reason=initial                                       ← 节点 10
+11:42:38.714  [cloud-llm-adapter] LLM call start ... baseUrl=https://api.deepseek.com                    ← 节点 14
+11:42:39.977  [input-guard]    desanitize done chunkCount=6 restoredBytes=14                              ← 节点 6 (turn 1)
+11:42:41.153  [input-guard]    desanitize done chunkCount=7 restoredBytes=18                              ← 节点 6 (turn 2)
+11:42:47.656  [input-guard]    desanitize done chunkCount=297 restoredBytes=938                           ← 节点 6 (turn 5)
+11:42:47.657  [realm-skill-bridge] chat finished ... realm=SANITIZED duration=8948ms                       ← 节点 11
+11:42:47.657  [http-api]       chat reply ... provider=cloud-deepseek-v4 model=cloud-deepseek-v4 durationMs=17071 resultLen=469 status=200 intent=SANITIZED   ← 节点 19 ✓
+```
+
+5 turn / 4 个 desanitize 累计还原 988 字节（PII token→原值）— 全部在 ops log 可见。
+
+**Web 入口额外观察**：`http://127.0.0.1:21017/v1/chat`（web profile）目前返回 `agent-presets: refusing to compose an unscoped context` — 跟 [[tui-unscoped-context-diagnosis]] 是同源问题（dsh 上游 preset scope 校验），但 web profile 还没修（§7.43 的修复只对 tui 生效）。`[http-api] chat received` 在 web 也照样 emit（11:40:39 sec7.46.6-A），但 `[http-api] chat reply` 不 emit（500 异常路径走 accessLog 不走 emit）。**这是 web profile 已知 bug，本次不动**。
+
+**测试覆盖**（新增 11 个 unit case）：
+
+- `tests/unit/input-guard.test.ts` §7.46.6 describe 6 个 case：safe prompt-guard、unsafe prompt-guard + reason + riskLevel、prompt-guard throws (fail-open) 验证 audit 而非 ops log、privacy-policy realm=LOCAL + rationale、privacy-policy realm=REJECT、privacy-policy 未注入不 emit。
+- `tests/unit/http-api.test.ts` §7.46.5 describe 5 个 source-level case：chat received emit 存在、chat reply emit 含全字段、try/catch 兜底（received+reply 各一）、PII 安全（只用 messageLen/resultLen 不出现裸 message=/result=）。
+- 总测试：703 unit pass / 2 pre-existing fail（realm-skill-bridge baseline）。本节净增 11 测试 pass。
+
+**§7.46 系列 commit 链**（累计 6 个 commit）：
+
+```
+5e0b58a  feat(log): §7.46 ops log 关键环节全链路 (preflight+filter+tool+duration+realm)                节点 1-13
+956fa4c  fix(llm-adapter): §7.46.1 cloud/local per-call info log (start/done)                            节点 14-17
+96dfdac  fix(input-guard): §7.46.2 sanitize call ops log (start/done/failed)                             节点 2-4+5
+e94ca30  fix(input-guard): §7.46.3 desanitize + route override + routeSource ops log                     节点 6-8+routeSource 字段
+         §7.46.4 (无 commit) final summary + memory entry                                               文档
+         §7.46.5+§7.46.6 (this commit) chat 端点 + prompt-guard/policy 子步骤 ops log                    节点 18-21
+```
+
+**Lesson**：
+
+- **chat 入口/出口两端点是 ops log 第一/最后节点** — 之前只覆盖"中间 LLM 调用 + 过滤 + 路由"，入口（user 何时发消息）和出口（user 何时收到回复）也必须在 ops log 看到。`[http-api] chat received/reply` 是两端点。
+- **input-guard 子步骤也必须进 ops log** — preflight intent 是"总览"行，但子步骤（prompt-guard / privacy-policy）的执行状态对排查"为啥这个 query 被分到 LOCAL"很关键。补齐后 input-guard 8 个 ops log 行（preflight + sanitize 3 + desanitize + orphan + route override/restore + prompt-guard done + privacy-policy done）。
+- **graceful empty state** — privacy-policy 没装时仍 emit 一行 `realm=none`，让 operator 知道"policy 步骤跑了但配置是 none"，跟"policy 步骤跑了且 realm=LOCAL"区分开。这比"不 emit"更有诊断价值（"policy 跳过了" vs "policy 不存在"）。
+- **rejection 路径不重复 emit** — `[http-api] chat reply` 只在 200 成功路径 emit。rejection (400/403/503) 由 `[http-api][reqId] POST /v1/chat 403/503 ms reject:kind:reason`（accessLog line 482/599）覆盖，避免双重日志污染 trace。
+- **web profile preset scope 仍坏** — `[http-api] chat received` 在 web 正常 emit 但 `[http-api] chat reply` 不 emit（500 异常走 accessLog 不走 emit）。这是 dsh 上游 preset scope 问题在 web 还没修，跟 ops log 节点完整性无关，单独 track。
+
+**节点总数演进**：§7.46 (13) → §7.46.1 (17) → §7.46.2 (17+3 sanitize 节点) → §7.46.3 (新增 desanitize/override/restore + routeSource 字段) → §7.46.4 (memory anchor) → **§7.46.5+§7.46.6 (21，4 新节点)**。**已知缺口清零**（chat 入口/出口/子步骤都已覆盖）；剩余 §7.46.4 列的"次要可考虑"（dsh 上游 reason、intent router 标记、per-turn pre-step）维持原判，不在本次范围。
+
+**相关**：
+
+- memory [[ops-log-coverage-principle]] — 本总原则的长期锚定（节点清单更新到 21 个）
+- memory [[log-level-flip-followup]] — ops log 默认 info 是这一切的前提
+- memory [[tui-unscoped-context-diagnosis]] — web profile 的同类 preset scope 问题待修
+- PROGRESS §7.44 — ops log 默认 level 翻转是这一切的起点
+- PROGRESS §7.44.1 — TUI 路径 flow log 起点（chat received/finished 两行）
+- PROGRESS §7.46 / §7.46.1 / §7.46.2 / §7.46.3 / §7.46.4 — 5 节累计到 21 节点
+

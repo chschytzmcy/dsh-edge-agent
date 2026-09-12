@@ -605,8 +605,24 @@ export class InputGuardServiceImpl extends Service {
 
     // 1. 攻击检测 — 最便宜、最先阻断
     if (this.promptGuard) {
+      // §7.46.6 (2026-09-12): prompt-guard checkInput 在 ops log 留一行 — 让
+      // "prompt-guard 跑了没 / 多少 ms / safe 还是 unsafe" 在 ops log
+      // 可见（之前只在 audit JSONL）。safe=true 时 summary 行；unsafe
+      // 时单独发一行带 reason + riskLevel 便于 grep 排查。
+      const pgStart = Date.now()
+      let pgOutcome: 'safe' | 'unsafe' | 'error' = 'safe'
+      let pgReason: string | undefined
+      let pgRiskLevel: string | undefined
       try {
         const attackCheck = await this.promptGuard.checkInput(originalLastUser.text, sessionId)
+        pgOutcome = attackCheck.safe ? 'safe' : 'unsafe'
+        pgReason = attackCheck.reason
+        pgRiskLevel = attackCheck.riskLevel
+        try {
+          this.ctx?.logger?.info?.(
+            `[input-guard] prompt-guard done sessionId=${sessionId} durationMs=${Date.now() - pgStart} outcome=${pgOutcome}${pgReason ? ` reason=${pgReason}` : ''}${pgRiskLevel ? ` riskLevel=${pgRiskLevel}` : ''}`,
+          )
+        } catch { /* debug only */ }
         if (!attackCheck.safe) {
           this.audit('security', 'input-guard.blocked.attack', {
             sessionId,
@@ -637,8 +653,22 @@ export class InputGuardServiceImpl extends Service {
 
     // 2. 策略判定 — privacy-policy REJECT
     if (this.privacyPolicy) {
+      // §7.46.6 (2026-09-12): privacy-policy matchRouting 在 ops log 留一行
+      // — 让 "privacy-policy 跑没 / 多少 ms / realm=LOCAL|CLOUD|SANITIZED|REJECT"
+      // 在 ops log 可见（之前只在 audit）。配合 preflight intent 让
+      // operator 看 trace 知道 policy 路由分类（不是 LLM 分类 intent）。
+      const ppStart = Date.now()
+      let ppRealm: string | undefined
+      let ppRationale: string | undefined
       try {
         const routing = this.privacyPolicy.matchRouting(originalLastUser.text)
+        ppRealm = routing?.realm
+        ppRationale = routing?.rationale
+        try {
+          this.ctx?.logger?.info?.(
+            `[input-guard] privacy-policy done sessionId=${sessionId} durationMs=${Date.now() - ppStart} realm=${ppRealm ?? 'none'}${ppRationale ? ` rationale=${ppRationale}` : ''}`,
+          )
+        } catch { /* debug only */ }
         if (routing?.realm === 'REJECT') {
           this.audit('security', 'input-guard.blocked.policy', {
             sessionId,

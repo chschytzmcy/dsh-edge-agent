@@ -427,6 +427,15 @@ export class HttpApiServiceImpl extends Service {
     }
 
     const sessionId = requestedSessionId ?? randomUUID()
+    // §7.46.5 (2026-09-12): ops log 入口端点 — 让 "user 几时发的消息"
+    // 在 ops log 可见。配对 [input-guard] preflight intent + chat finished
+    // 形成完整 trace：收到 → 路由 → 调 LLM → 回复。messageLen 而非
+    // message 内容（避免 PII 落 ops log）。
+    try {
+      this.ctx.logger?.info?.(
+        `[http-api] chat received sessionId=${sessionId} reqId=${reqId} messageLen=${message.length}`,
+      )
+    } catch { /* debug only */ }
     // Defense-in-depth: redact PII from the audit preview. audit-log's own
     // enablePIIRedaction also redacts, but this survives misconfiguration of
     // that setting. redactString is synchronous and cheap. (2026-08-24 fix)
@@ -621,6 +630,14 @@ export class HttpApiServiceImpl extends Service {
     // 以便 Web UI / CLI / SDK 所有入口统一受益。http-api 不再做安全过滤。
 
     const duration = Date.now() - start
+    // §7.46.5 (2026-09-12): ops log 响应端点 — 让 "user 几时收到回复" 在
+    // ops log 可见。resultLen 而非 result 内容；rejection 路径有
+    // accessLog (line 482/599) 已覆盖 status code + reason。
+    try {
+      this.ctx.logger?.info?.(
+        `[http-api] chat reply sessionId=${sessionId} reqId=${reqId} provider=${provider} model=${model} durationMs=${duration} resultLen=${result.length} status=200 intent=${intent.category}`,
+      )
+    } catch { /* debug only */ }
     this.audit('info', 'http.chat.end', { reqId, sessionId, provider, model, durationMs: duration, resultLen: result.length })
     this.accessLog(reqId, 'POST', '/v1/chat', 200, duration, `${provider}/${model} intent=${intent.category}`)
 
