@@ -238,7 +238,7 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
   // input-guard's §7.35 may downgrade CLOUD → LOCAL on a key miss; if that
   // downgrade is wrong (false positive) we still refuse here so the LLM
   // never actually fires a request. Without this hook, a misclassified
-  // CLOUD intent lands on local-qwen3-4b, which still has web_search in
+  // CLOUD intent lands on local-llm, which still has web_search in
   // its tool list (tools are global), and qwen wastes DeepSeek API quota
   // on a task the local model can't usefully answer.
   //

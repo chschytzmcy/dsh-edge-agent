@@ -1,13 +1,13 @@
 # edge-m1 — M4 profile: multi-model + routing. Run:
 #
 #   pnpm dsh --config profiles/edge-m1.cordis.yml "你好"
-#   pnpm dsh --config profiles/edge-m1.cordis.yml --provider local-qwen3-4b-mock "你好"
+#   pnpm dsh --config profiles/edge-m1.cordis.yml --provider local-llm-mock "你好"
 #   DSH_EDGE_LOCAL_LLM_MODE=real DSH_EDGE_LOCAL_LLM_BASEURL=http://192.168.66.195:8701/v1 \
-#     pnpm dsh --config profiles/edge-m1.cordis.yml --provider local-qwen3-4b "你好"
+#     pnpm dsh --config profiles/edge-m1.cordis.yml --provider local-llm "你好"
 #
 # Requires `DEEPSEEK_API_KEY` in the launching environment. Override the
 # base URL with `DEEPSEEK_BASE_URL` (default `https://api.deepseek.com`).
-# Set `DSH_EDGE_LOCAL_LLM_MODE` to `real` to route `local-qwen3-4b` to
+# Set `DSH_EDGE_LOCAL_LLM_MODE` to `real` to route `local-llm` to
 # the LAN endpoint named by `DSH_EDGE_LOCAL_LLM_BASEURL` (default
 # `http://127.0.0.1:8080/v1`).
 #
@@ -30,19 +30,19 @@
 - id: cloud-llm-adapter
   name: '@deepseek-harness-edge-agent/dsh-edge-agent/cloud-llm-adapter'
   config:
-    providers: [cloud-deepseek-v4]
+    providers: [cloud-llm]
     baseUrl: !!js process.env.DEEPSEEK_BASE_URL ?? 'https://api.deepseek.com'
     apiKeyEnv: DEEPSEEK_API_KEY
     defaultModel: deepseek-chat
 
-# M4: local LLM adapter — owns the `local-qwen3-4b` provider route
+# M4: local LLM adapter — owns the `local-llm` provider route
 # (real OpenAI-compatible `/chat/completions`). No in-process mock;
 # every call leaves the process.
 - id: local-llm-adapter
   name: '@deepseek-harness-edge-agent/dsh-edge-agent/local-llm-adapter'
   inject: [llm]
   config:
-    providers: [local-qwen3-4b]
+    providers: [local-llm]
     baseUrl: !!js process.env.DSH_EDGE_LOCAL_LLM_BASEURL ?? 'http://127.0.0.1:8080/v1'
     defaultModel: !!js process.env.DSH_EDGE_LOCAL_LLM_MODEL ?? 'qwen3-4b'
     apiKeyEnv: !!js process.env.DSH_EDGE_LOCAL_LLM_KEY_ENV ?? undefined
@@ -51,9 +51,9 @@
   name: '@deepseek-harness-edge-agent/dsh-edge-agent/model-router'
   inject: [llm]
   config:
-    defaultModel: cloud-deepseek-v4
-    localModels: [local-qwen3-4b]
-    cloudModels: [cloud-deepseek-v4]
+    defaultModel: cloud-llm
+    localModels: [local-llm]
+    cloudModels: [cloud-llm]
 
 - id: intent-router
   name: '@deepseek-harness-edge-agent/dsh-edge-agent/intent-router'
@@ -132,7 +132,7 @@
   config:
     agents:
       - id: main
-        provider: !!js process.env.DSH_EDGE_PROVIDER ?? 'cloud-deepseek-v4'
+        provider: !!js process.env.DSH_EDGE_PROVIDER ?? 'cloud-llm'
         model: !!js process.env.DSH_EDGE_MODEL ?? 'deepseek-chat'
         cwd: !!js process.cwd()
     persona: |
@@ -145,10 +145,10 @@
       a shell, or sandboxing beyond what the tool schemas declare.
 
       The active LLM provider is whatever `DSH_EDGE_PROVIDER` selects:
-        - `cloud-deepseek-v4` (default) — DeepSeek Chat Completions, requires
+        - `cloud-llm` (default) — DeepSeek Chat Completions, requires
           `DEEPSEEK_API_KEY`.
-        - `local-qwen3-4b-mock` — in-process echo, no network.
-        - `local-qwen3-4b`     — LAN endpoint at `DSH_EDGE_LOCAL_LLM_BASEURL`
+        - `local-llm-mock` — in-process echo, no network.
+        - `local-llm`     — LAN endpoint at `DSH_EDGE_LOCAL_LLM_BASEURL`
           (default `http://127.0.0.1:8080/v1`); turn it on with
           `DSH_EDGE_LOCAL_LLM_MODE=real`.
       Stay within whichever model the user picked; do not switch providers

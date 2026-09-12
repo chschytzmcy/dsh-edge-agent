@@ -96,7 +96,7 @@ export interface Config {
 }
 
 export const Config: Schema<Config> = Schema.object({
-  providers: Schema.array(Schema.string()).default(['local-qwen3-4b']),
+  providers: Schema.array(Schema.string()).default(['local-llm']),
   baseUrl: Schema.string().default('http://127.0.0.1:8080/v1'),
   defaultModel: Schema.string().default('qwen3-4b'),
   apiKeyEnv: Schema.string().description('Optional env-slot name carrying an auth bearer.'),
@@ -205,7 +205,7 @@ class RealLocalAdapter extends LlmAdapter {
         name: this.defaultModel,
         // §7.40 (2026-09-04): advertise contextWindow so basic-compaction-engine
         // can compact long conversations. Without this, compaction logs
-        //   "compaction-basic: no context capacity for local-qwen3-4b/qwen3-4b-instruct-2507"
+        //   "compaction-basic: no context capacity for local-llm/qwen3-4b-instruct-2507"
         // and refuses to compact, leaving messageCount/promptLen to grow
         // across turns. The local model then degrades to empty/garbled
         // completions after the second or third call (observed in session

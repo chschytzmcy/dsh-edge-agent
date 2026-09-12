@@ -75,7 +75,7 @@ export const Config: Schema<Config> = Schema.object({
   sanitizeLocalTraffic: Schema.boolean().default(false),
   rejectOnPolicyViolation: Schema.boolean().default(true),
   downgradeOnSanitizeFailure: Schema.boolean().default(true),
-  localProvider: Schema.string().default('local-qwen3-4b'),
+  localProvider: Schema.string().default('local-llm'),
   localModel: Schema.string().default('qwen3-4b-instruct-2507'),
   cloudApiKeyEnv: Schema.string().default(
     // mirror cordis.patch.yml:41 的 !!js 表达式；apply() 里再尊重 DSH_EDGE_CLOUD_KEY_ENV 覆盖
@@ -83,7 +83,7 @@ export const Config: Schema<Config> = Schema.object({
   ),
   defaultCloudProvider: Schema.string().default(
     // §7.43: mirror cordis.patch.yml:82 的 !!js；agent-loop 也用同一个值作"current provider"默认
-    process.env.DSH_EDGE_PROVIDER ?? 'cloud-deepseek-v4',
+    process.env.DSH_EDGE_PROVIDER ?? 'cloud-llm',
   ),
   defaultCloudModel: Schema.string().default(
     process.env.DSH_EDGE_MODEL ?? 'deepseek-chat',
@@ -549,9 +549,9 @@ export class InputGuardServiceImpl extends Service {
    *    turn N  (LOCAL)   → handlePreStep 写 originalProvider=undefined
    *    turn N+1 (CLOUD)  → handleAgentRequest 看到 originalProvider=undefined，跳过恢复
    *                      → return seedConfig（已被 agent-loop 锁成 local）
-   *                      → dispatch local-qwen3-4b ❌
-   *  用 fallback 后 turn N 写 originalProvider='cloud-deepseek-v4'，
-   *  turn N+1 恢复分支能正确识别并强制 restore 回 cloud-deepseek-v4。
+   *                      → dispatch local-llm ❌
+   *  用 fallback 后 turn N 写 originalProvider='cloud-llm'，
+   *  turn N+1 恢复分支能正确识别并强制 restore 回 cloud-llm。
    *
    *  返回 source 字段用于审计 forensics —— 'edge-route' 表示 http-api 设过，
    *  'default-cloud-fallback' 表示我们用 config 默认值兜底（用户没明示偏好）。*/
@@ -839,10 +839,10 @@ export class InputGuardServiceImpl extends Service {
       // 2026-09-03 §7.26 + 2026-09-03 §7.34 fix. intent=category=LOCAL means
       // the user's request is fully resolvable on-device (file/local/system
       // query) — PII must not egress. Two entry points feed into pre-step:
-      //   - http-api: sets _edgeRoute (provider='cloud-deepseek-v4', category='LOCAL').
+      //   - http-api: sets _edgeRoute (provider='cloud-llm', category='LOCAL').
       //     §7.26 covered this; wantsDowngradeToLocal=true → rewrite.
       //   - webui (dsh-web-app chat): does NOT set _edgeRoute; default provider
-      //     is cloud-deepseek-v4 from cordis.patch.yml. Without §7.34 fix,
+      //     is cloud-llm from cordis.patch.yml. Without §7.34 fix,
       //     intent=LOCAL only changes audit events but the actual LLM call still
       //     goes to cloud, leaking file content (observed: 9 cloud calls, 6841
       //     → 7419 promptLen for "查询密盒里有哪些文件", 2026-09-03).
@@ -1017,8 +1017,8 @@ export class InputGuardServiceImpl extends Service {
         model: this.config.localModel,
       }
       // §7.46.3 (2026-09-12): 路由改写在 ops log 留一行 — 让 operator
-      // grep sessionId 就能看到 "原本 cloud-deepseek-v4 / cloud-deepseek
-      // → 实际走 local-qwen3-4b / qwen3-4b-instruct-2507 + reason"，不
+      // grep sessionId 就能看到 "原本 cloud-llm / cloud-deepseek
+      // → 实际走 local-llm / qwen3-4b-instruct-2507 + reason"，不
       // 用翻 audit JSONL。配合 preflight intent 行的 routeSource +
       // category 形成完整 trace。
       try {
@@ -1051,7 +1051,7 @@ export class InputGuardServiceImpl extends Service {
     //
     // Observed: session 20a78b87 turn 4 ('查询英国最新的新闻') was classified
     // CLOUD by intent-router (confidence 0.99), input-guard.session-realm
-    // correctly registered CLOUD, but actual LLM call was local-qwen3-4b
+    // correctly registered CLOUD, but actual LLM call was local-llm
     // (audit shows `local-llm-adapter llm.local.start messageCount=26`,
     // no `route.overridden` event — confirming handleAgentRequest was a
     // pass-through with seedConfig.provider already stuck on local).

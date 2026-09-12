@@ -63,7 +63,7 @@ cleanup() {
 trap cleanup EXIT
 
 # ─── 发送聊天请求，返回 HTTP 状态码和响应体 ─────────────────────────────
-# 默认 curl 超时 90s：覆盖 local-qwen3-4b 推理最长 ~48s + 安全余量（2026-08-24
+# 默认 curl 超时 90s：覆盖 local-llm 推理最长 ~48s + 安全余量（2026-08-24
 # 第三轮校准：原 60s 在第二组数学计算测试中触发 exit=28，提前终止）。
 #
 # 可选第三参数 sessionId：传入则覆盖请求体里的 sessionId 字段，用于会话
@@ -970,7 +970,7 @@ run_focused_tests() {
     # 一票否决（HTTP 400），不能到达 intent-router 的 sanitize 路径。
     # 审计端到端验证 http-api 层的 http.chat.sanitized（而非
     # intent.llm.sanitized——后者仅在 classification LLM 解析到 realm=CLOUD
-    # 时触发；当前默认 classificationProvider='local-qwen3-4b' → LOCAL，
+    # 时触发；当前默认 classificationProvider='local-llm' → LOCAL，
     # 故 intent.llm.sanitized 不会触发，验证 http-api 层更准确）。
     echo ""
     echo "─── 第十一组：CLOUD 路径脱敏 + session 隔离 ───"
@@ -1078,7 +1078,7 @@ run_focused_tests() {
 
     # 端到端脱敏证据：审计日志中应有 http.chat.sanitized 事件
     # （intent.llm.sanitized 仅在 classificationProvider 解析到 realm=CLOUD
-    # 时触发，默认 'local-qwen3-4b' → LOCAL，永远不发）
+    # 时触发，默认 'local-llm' → LOCAL，永远不发）
     log_test "CLOUD 脱敏: 审计日志记录 http.chat.sanitized 事件"
     local audit_file sanitize_count
     audit_file=$(find_audit_log)

@@ -50,7 +50,7 @@ trap cleanup EXIT
 # ─── 发送聊天请求，返回 HTTP 状态码和响应体 ─────────────────────────────
 send_chat() {
     local message="$1"
-    # 默认 90s：覆盖 local-qwen3-4b 流式分类最长 ~47s + 余量；HTTP 000 即 curl
+    # 默认 90s：覆盖 local-llm 流式分类最长 ~47s + 余量；HTTP 000 即 curl
     # 超时（exit=28），会被 assert_status 计为 FAIL。
     local timeout="${2:-90}"
 

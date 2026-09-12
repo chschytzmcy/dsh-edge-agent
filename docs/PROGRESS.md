@@ -285,7 +285,7 @@ http-api:
 **背景**：L0 之前只有 `regex + PII + 限流` 三道硬规则，对**变形注入**（同形字 / 零宽字符 / base64）和**语义注入**（多轮 persona 接管）完全无感。`prompt-guard.ts:319` 处的模型检测位只是一段 stub。设计文档（`v6 §2.6`）已把模型辅助检测列为预期特性，但代码层缺位。
 
 **实现**（`src/dsh-adapter/prompt-guard.ts`）：
-- `modelBasedCheck()` 真正接上 `ctx.llm.stream()`，复用 `local-qwen3-4b / qwen3-4b`（同 intent-router，无需新增依赖）
+- `modelBasedCheck()` 真正接上 `ctx.llm.stream()`，复用 `local-llm / qwen3-4b`（同 intent-router，无需新增依赖）
 - 流式解析 JSON verdict：`{ safe, threats[], dataClass, rationale }`
 - **Fail-open**：禁用 / 无 llm handle / 输入过长 / 网络错 / AbortController 触发 / JSON 解析失败 → 返回 `null`，regex + PII 判定保留生效
 - 仅 `safe:false` 才会短路成 high-risk block 返回给调用方
@@ -306,7 +306,7 @@ http-api:
 | env | 默认 | 说明 |
 |---|---|---|
 | `DSH_EDGE_GUARD_MODEL` | `false` | 总开关 |
-| `DSH_EDGE_GUARD_MODEL_PROVIDER` | `local-qwen3-4b` | provider route |
+| `DSH_EDGE_GUARD_MODEL_PROVIDER` | `local-llm` | provider route |
 | `DSH_EDGE_GUARD_MODEL_MODEL` | `qwen3-4b` | model id |
 | `DSH_EDGE_GUARD_MODEL_TIMEOUT_MS` | `4000` | 单次超时 |
 | `DSH_EDGE_GUARD_MODEL_MAX_INPUT` | `2000` | 输入上限 |
@@ -396,7 +396,7 @@ http-api:
 
 ### 7.8 model-router 接进 intent-router（v6 §2.15，2026-08-23）
 
-**背景**：`intent-router.classifyWithLlm()` 之前**完全绕过** `model-router`，直接用 `config.classificationProvider` + `config.classificationModel`（写死 `'local-qwen3-4b'` / `'qwen3-4b'`）调 `ctx.llm.stream()`。model-router 插件存在并提供 `resolve(modelId): {realm, provider, model}`，但**生产环境零调用**。改 routing model 必须改 yml + 重启；路由表（localModels / cloudModels）对分类调用无约束力。v6 §2.15 设计明确要求 intent-router 通过 model-router 选 model。
+**背景**：`intent-router.classifyWithLlm()` 之前**完全绕过** `model-router`，直接用 `config.classificationProvider` + `config.classificationModel`（写死 `'local-llm'` / `'qwen3-4b'`）调 `ctx.llm.stream()`。model-router 插件存在并提供 `resolve(modelId): {realm, provider, model}`，但**生产环境零调用**。改 routing model 必须改 yml + 重启；路由表（localModels / cloudModels）对分类调用无约束力。v6 §2.15 设计明确要求 intent-router 通过 model-router 选 model。
 
 **实现**（`src/dsh-adapter/intent-router.ts:151-173`）：在 `classifyWithLlm()` 内每次调用前**懒查** `ctx.modelRouter`（不缓存）：
 
@@ -430,7 +430,7 @@ this.audit('debug', 'intent.llm.route', {
 
 **⚠️ Sharp edge — `classificationProvider` 必须用 provider route id**：
 
-`resolveRoute('qwen3-4b')` 返回 `{realm: 'CLOUD'}`（无 `local-` 前缀 → 落 CLOUD 分支，model-router.ts:103）。当前配置 `local-qwen3-4b` OK；若用户改成裸 `qwen3-4b` 会被悄悄翻成 CLOUD realm。**始终用 `local-xxx` / `cloud-xxx` 形式的 route id，不要用裸 model id。**
+`resolveRoute('qwen3-4b')` 返回 `{realm: 'CLOUD'}`（无 `local-` 前缀 → 落 CLOUD 分支，model-router.ts:103）。当前配置 `local-llm` OK；若用户改成裸 `qwen3-4b` 会被悄悄翻成 CLOUD realm。**始终用 `local-xxx` / `cloud-xxx` 形式的 route id，不要用裸 model id。**
 
 **新 audit kind**：
 | kind | level | 触发 |
@@ -572,7 +572,7 @@ if (matchedRule) {
 
 ### 7.11 intent-router 接入 sanitizer-pipeline：PII 在 prompt 前脱敏（v6 §2.6，2026-08-23）
 
-**背景**：完成 #7.8 (model-router 路由) + #7.10 (privacy-policy 路由规则) 后，intent-router 把 `classificationProvider='local-qwen3-4b'` 路由成 `{realm: 'CLOUD', provider: 'cloud-deepseek-v4', model: 'deepseek-chat'}`（model-router.ts:103 裸 id 落 CLOUD 分支；但 `local-qwen3-4b` 是 provider route id，按配置默认仍然走 LOCAL）——**用户可改 yml 让分类 LLM 走云端**（如 qwen3-4b 不可用时降级到 deepseek-v4-fast）。此时**用户的原始 PII（手机/身份证/银行卡/邮箱/api-key）会跟着分类 prompt 一起发送到云端**，即便下游真实请求在 http-api 层会被 sanitizer 拦截。
+**背景**：完成 #7.8 (model-router 路由) + #7.10 (privacy-policy 路由规则) 后，intent-router 把 `classificationProvider='local-llm'` 路由成 `{realm: 'CLOUD', provider: 'cloud-llm', model: 'deepseek-chat'}`（model-router.ts:103 裸 id 落 CLOUD 分支；但 `local-llm` 是 provider route id，按配置默认仍然走 LOCAL）——**用户可改 yml 让分类 LLM 走云端**（如 qwen3-4b 不可用时降级到 deepseek-v4-fast）。此时**用户的原始 PII（手机/身份证/银行卡/邮箱/api-key）会跟着分类 prompt 一起发送到云端**，即便下游真实请求在 http-api 层会被 sanitizer 拦截。
 
 **实现**（`src/dsh-adapter/intent-router.ts:classifyWithLlm`）：把 model-router resolve + sanitizer.sanitize 提到 prompt 构造之前：
 
@@ -1610,7 +1610,7 @@ audit/audit.plain.jsonl          # 6.2 MB
 log/dsh-edge-agent.log            # 23 KB, 88 lines
 
 $ tail -3 ~/.dsh-edge-agent/log/dsh-edge-agent.log
-2026-09-01T06:50:50.637Z INFO  [http-api] [http-api] Creating agent with provider=local-qwen3-4b, model=local-qwen3-4b
+2026-09-01T06:50:50.637Z INFO  [http-api] [http-api] Creating agent with provider=local-llm, model=local-llm
 2026-09-01T06:50:50.662Z INFO  [http-api] [http-api] Agent created successfully
 2026-09-01T06:50:18.081Z ERROR [preset-tree] Error: a skill provider named "filesystem" is already registered ⏎ ...
 
@@ -1619,7 +1619,7 @@ $ tail -1 ~/.dsh-edge-agent/audit/audit.plain.jsonl | jq
   "ts": 1788245481818, "level": "info", "kind": "llm.local.start",
   "source": "local-llm-adapter",
   "payload": {
-    "provider": "local-qwen3-4b", "model": "local-qwen3-4b",
+    "provider": "local-llm", "model": "local-llm",
     "messageCount": 74, "promptLen": 1601,
     "baseUrl": "http://192.168.***.***:11017/v1"   ← 脱敏
   }
@@ -2066,7 +2066,7 @@ Layer  3: 规则兜底             → keyword + default（零 token）
 
 **审视日期**:2026-08-26  
 **审视对象**:`scripts/e2e-llm-classification.sh` + shipped `privacy-policy.json` v1.2.0  
-**运行环境**:dsh-edge-agent bundle @ 默认 headless profile (`127.0.0.1:21017` 自研 http-api 或 web profile `:21018` webui)，LLM = `local-qwen3-4b`,`SKIP_BUILD=true`,`confidenceThreshold=0.6`
+**运行环境**:dsh-edge-agent bundle @ 默认 headless profile (`127.0.0.1:21017` 自研 http-api 或 web profile `:21018` webui)，LLM = `local-llm`,`SKIP_BUILD=true`,`confidenceThreshold=0.6`
 
 ---
 
@@ -2260,7 +2260,7 @@ Layer  3: 规则兜底             → keyword + default（零 token）
 ### 4.4 修复后已知遗留问题
 
 1. **license-plate 路径仍依赖 LLM 偏好** —— 措辞必须含"介绍/解释"等远程推理信号,否则 LLM 倾向 LOCAL。E2E 接受 `CLOUD` 或 `LOCAL` 两种结果(都以审计事件为佐证)。
-2. **流式响应可能缺少 assistant/chunk 帧** —— 本地 qwen3-4b 调用速度太快,已 done 还没来得及发 chunk,远程 cloud-deepseek-v4 流式才有 chunk。E2E 仍可断言"不含原 PII"(sanitization 在 sanitize() 入口已完成,不依赖回填)。
+2. **流式响应可能缺少 assistant/chunk 帧** —— 本地 qwen3-4b 调用速度太快,已 done 还没来得及发 chunk,远程 cloud-llm 流式才有 chunk。E2E 仍可断言"不含原 PII"(sanitization 在 sanitize() 入口已完成,不依赖回填)。
 3. **占位符序号 E2E 层不可证** —— E2E 响应已被 desanitize 回填(或 LLM 不重复 PII),无法 grep 到 `[PHONE_1]`。序号行为由 `sanitizer-pipeline.test.ts` 单元测试覆盖。
 
 ---
@@ -2959,7 +2959,7 @@ input-guard.ts:572 原写 `this.audit('debug', 'input-guard.routed', ...)` → d
 
 #### Bug B：input-guard intent=LOCAL 没真正降级
 
-input-guard.handlePreStep line 589-596 (`shouldSanitize=false` 分支) **只在 sanitize 失败时**设 `stepState.downgraded=true`。如果 category=LOCAL（不 sanitize）、edgeRoute.provider=`'cloud-deepseek-v4'`（默认 cloud），没分支处理 → 走 `return decision` → messages 透传 → agent/request hook 不知道要降级 → 仍然调 cloud。
+input-guard.handlePreStep line 589-596 (`shouldSanitize=false` 分支) **只在 sanitize 失败时**设 `stepState.downgraded=true`。如果 category=LOCAL（不 sanitize）、edgeRoute.provider=`'cloud-llm'`（默认 cloud），没分支处理 → 走 `return decision` → messages 透传 → agent/request hook 不知道要降级 → 仍然调 cloud。
 
 **修法**（input-guard.ts:585-606）：
 
@@ -2978,16 +2978,16 @@ if (wantsDowngradeToLocal) {
 }
 ```
 
-agent/request hook（line 1033-1037）读 stepState.downgraded 改写 provider/model 到 `local-qwen3-4b` / `qwen3-4b-instruct-2507`。
+agent/request hook（line 1033-1037）读 stepState.downgraded 改写 provider/model 到 `local-llm` / `qwen3-4b-instruct-2507`。
 
 **验证结果**（web profile + 真实 chat）：
 
 | 测试 | chat | audit 关键事件 | 实际 LLM 调用 |
 |---|---|---|---|
-| LOCAL intent | `查询本地设备的ip` | `input-guard.routed {category:LOCAL, edgeRouteUsed:true}` | local-qwen3-4b |
-| CLOUD intent + PII | `我的手机号是 13800000000 帮我查一下` | `input-guard.routed {category:CLOUD}` + `input-guard.sanitized {replacementCount:1}` | cloud-deepseek-v4，但 prompt 是 sanitized 占位符（不是 13800000000） |
+| LOCAL intent | `查询本地设备的ip` | `input-guard.routed {category:LOCAL, edgeRouteUsed:true}` | local-llm |
+| CLOUD intent + PII | `我的手机号是 13800000000 帮我查一下` | `input-guard.routed {category:CLOUD}` + `input-guard.sanitized {replacementCount:1}` | cloud-llm，但 prompt 是 sanitized 占位符（不是 13800000000） |
 
-**第二个 chat 的关键证据**：sanitizer 把 13800000000 → `[PHONE_1]` 占位符；cloud-deepseek-v4 收到 sanitized prompt；返回结果 desanitize 回明文。
+**第二个 chat 的关键证据**：sanitizer 把 13800000000 → `[PHONE_1]` 占位符；cloud-llm 收到 sanitized prompt；返回结果 desanitize 回明文。
 
 **新增 audit 事件清单**（input-guard）：
 
@@ -3126,10 +3126,10 @@ verify:plugin-spec     plugin-spec OK (23 adapter plugins scanned, 29 subpath ex
 
 | chat | 关键 audit 事件 | LLM 调用 |
 |---|---|---|
-| `查询本地设备的ip` | `input-guard.routed {category:LOCAL, edgeRouteUsed:true}` | local-qwen3-4b |
-| `我的手机号是 13800000000帮我查一下` | `input-guard.routed {category:CLOUD}` + `input-guard.sanitized {replacementCount:1}` | cloud-deepseek-v4 收到 sanitized 占位符 |
+| `查询本地设备的ip` | `input-guard.routed {category:LOCAL, edgeRouteUsed:true}` | local-llm |
+| `我的手机号是 13800000000帮我查一下` | `input-guard.routed {category:CLOUD}` + `input-guard.sanitized {replacementCount:1}` | cloud-llm 收到 sanitized 占位符 |
 
-注：第 1 条没触发 `input-guard.intent.downgraded`，因为 http-api 已经把 `_edgeRoute.provider` 设成 `local-qwen3-4b`（命中 `wantsDowngradeToLocal` 检查里的 `provider.startsWith('cloud-')` 为 false），不需要降级。`intent.downgraded` 的实际触发场景：webui RPC 路径绕过 http-api 直接发 `agent.followup()`，那时 agent 还没 `_edgeRoute`，input-guard 读完 edgeRoute 还是 cloud-*。
+注：第 1 条没触发 `input-guard.intent.downgraded`，因为 http-api 已经把 `_edgeRoute.provider` 设成 `local-llm`（命中 `wantsDowngradeToLocal` 检查里的 `provider.startsWith('cloud-')` 为 false），不需要降级。`intent.downgraded` 的实际触发场景：webui RPC 路径绕过 http-api 直接发 `agent.followup()`，那时 agent 还没 `_edgeRoute`，input-guard 读完 edgeRoute 还是 cloud-*。
 
 ---
 
@@ -3190,7 +3190,7 @@ it('output parses back to the same epoch ms (round-trip)', ...)
 
 ```bash
 $ tail -3 ~/.dsh-edge-agent/log/dsh-edge-agent.log
-2026-09-03T09:47:54.990+08:00 DEBUG [cloud-llm-adapter] [cloud-llm-adapter] LLM_RESPONSE provider=cloud-deepseek-v4 ...
+2026-09-03T09:47:54.990+08:00 DEBUG [cloud-llm-adapter] [cloud-llm-adapter] LLM_RESPONSE provider=cloud-llm ...
 2026-09-03T09:47:54.991+08:00 DEBUG [cloud-llm-adapter] [cloud-llm-adapter] LLM_RESPONSE_TEXT {"text":"..."}
 2026-09-03T09:47:55.006+08:00 INFO  [http-api] [http-api][f8568ecf] POST /v1/chat 200 4789ms ...
 
@@ -3611,7 +3611,7 @@ npm run verify:bundle-mounted-in-web
 
 ### 7.34 input-guard §7.26 修复不彻底：webui 路径 intent=LOCAL 仍 leak 到 cloud（2026-09-03）
 
-**背景**：§7.26 修复 input-guard 在 `category=LOCAL` + edgeRoute=cloud 时降级到 LOCAL provider。修复后 webui chat "查询本地设备的ip" 验证通过（audit `input-guard.routed {category:LOCAL}` + agent/request 改写到 local-qwen3-4b）。但 webui 实际日常使用中发现一个 chat **仍 leak 到 cloud**：用户在 webui 输 "查询密盒里有哪些文件"，intent-router 正确分类 LOCAL @ 0.95，audit 也记 `input-guard.routed {category:LOCAL}`，但紧接着 9 次 cloud-deepseek-v4 调用 + tool-call 循环。
+**背景**：§7.26 修复 input-guard 在 `category=LOCAL` + edgeRoute=cloud 时降级到 LOCAL provider。修复后 webui chat "查询本地设备的ip" 验证通过（audit `input-guard.routed {category:LOCAL}` + agent/request 改写到 local-llm）。但 webui 实际日常使用中发现一个 chat **仍 leak 到 cloud**：用户在 webui 输 "查询密盒里有哪些文件"，intent-router 正确分类 LOCAL @ 0.95，audit 也记 `input-guard.routed {category:LOCAL}`，但紧接着 9 次 cloud-llm 调用 + tool-call 循环。
 
 **根因**：
 
@@ -3624,18 +3624,18 @@ const wantsDowngradeToLocal =
   edgeRoute.provider.startsWith('cloud-')
 ```
 
-`edgeRoute` 来自 `agent._edgeRoute`（input-guard.ts:439-445 `readEdgeRoute`）。**只有 http-api 路径写入 `_edgeRoute`**（http-api.ts:564-566 + 823）；dsh-web-app chat plugin（webui 路径）**不写** `_edgeRoute`，所以 `readEdgeRoute` 返回 undefined → `wantsDowngradeToLocal=false` → 不走降级 → 走默认 cloud-deepseek-v4（cordis.patch.yml:75 `agent-default-model`）。
+`edgeRoute` 来自 `agent._edgeRoute`（input-guard.ts:439-445 `readEdgeRoute`）。**只有 http-api 路径写入 `_edgeRoute`**（http-api.ts:564-566 + 823）；dsh-web-app chat plugin（webui 路径）**不写** `_edgeRoute`，所以 `readEdgeRoute` 返回 undefined → `wantsDowngradeToLocal=false` → 不走降级 → 走默认 cloud-llm（cordis.patch.yml:75 `agent-default-model`）。
 
 **实测 leak 数据**（2026-09-03 chat 2）：
 
 | 时间 | 事件 | provider | promptLen | 备注 |
 |---|---|---|---|---|
 | `1788424605543` | `input-guard.routed` | — | — | `category:LOCAL, edgeRouteUsed:false` |
-| `1788424605553` | `llm.cloud.start` | cloud-deepseek-v4 | 6841 | 第 1 次云端调用（应改写到 local） |
-| `1788424606815` | `llm.cloud.end` | cloud-deepseek-v4 | 6841 | tool-callCount=2 |
-| `1788424606837` | `llm.cloud.start` | cloud-deepseek-v4 | 6888 | 第 2 次 |
-| `…` | … | cloud-deepseek-v4 | → 7419 | 8 次 tool-call loop，最后 stop |
-| `1788424631319` | `llm.cloud.end` | cloud-deepseek-v4 | 7419 | resultLen=1287 |
+| `1788424605553` | `llm.cloud.start` | cloud-llm | 6841 | 第 1 次云端调用（应改写到 local） |
+| `1788424606815` | `llm.cloud.end` | cloud-llm | 6841 | tool-callCount=2 |
+| `1788424606837` | `llm.cloud.start` | cloud-llm | 6888 | 第 2 次 |
+| `…` | … | cloud-llm | → 7419 | 8 次 tool-call loop，最后 stop |
+| `1788424631319` | `llm.cloud.end` | cloud-llm | 7419 | resultLen=1287 |
 
 messageCount 5→22（每 tool result 追加 1 条 user-role message），promptLen 6841→7419（每次 +47~155 bytes，文件名 / 文件内容片段）。**9 次 cloud API 调用** + 密盒文件列表 + 内容片段全部上送到 `https://api.deepseek.com`。
 
@@ -3668,7 +3668,7 @@ handleAgentRequest 的 seedConfig 在 pre-step 之后才可用，无法在 pre-s
 **新增测试**（input-guard.test.ts）：
 
 1. `LOCAL intent WITHOUT _edgeRoute (webui path) → downgraded=true` — 复现 Chat 2 场景，断言 downgraded=true + routeSource='webui' + audit `input-guard.intent.downgraded` 带 `routeSource:'webui'`。
-2. `LOCAL intent without _edgeRoute → handleAgentRequest rewrites provider (end-to-end, §7.34)` — 端到端：pre-step 跑完 webui 路径后，agent/request hook 改写 seedConfig.provider='local-qwen3-4b'，audit `input-guard.route.overridden` 记录 from/to。
+2. `LOCAL intent without _edgeRoute → handleAgentRequest rewrites provider (end-to-end, §7.34)` — 端到端：pre-step 跑完 webui 路径后，agent/request hook 改写 seedConfig.provider='local-llm'，audit `input-guard.route.overridden` 记录 from/to。
 
 **验证**：
 
@@ -3684,13 +3684,13 @@ handleAgentRequest 的 seedConfig 在 pre-step 之后才可用，无法在 pre-s
 
 ### 7.34.2 §7.34 修复暴露下游 bug：empty stream 让 BlockAssembler 卡死（2026-09-03）
 
-**背景**：§7.34 把 webui chat 路由到 local-qwen3-4b 后，用户在 webui 再输 "查询下密盒有哪些图片文件"（17:20:40 +08:00）。audit 链路完美：
+**背景**：§7.34 把 webui chat 路由到 local-llm 后，用户在 webui 再输 "查询下密盒有哪些图片文件"（17:20:40 +08:00）。audit 链路完美：
 
 ```
 input-guard.routed {category:LOCAL, edgeRouteUsed:false}
-input-guard.intent.downgraded {routeSource:'webui', targetProvider:'local-qwen3-4b'}
-input-guard.route.overridden {from:cloud-deepseek-v4, to:local-qwen3-4b, reason:intent-local}
-llm.local.start {provider:local-qwen3-4b, model:qwen3-4b-instruct-2507, messageCount:24, promptLen:8735}
+input-guard.intent.downgraded {routeSource:'webui', targetProvider:'local-llm'}
+input-guard.route.overridden {from:cloud-llm, to:local-llm, reason:intent-local}
+llm.local.start {provider:local-llm, model:qwen3-4b-instruct-2507, messageCount:24, promptLen:8735}
 llm.local.end   {durationMs:253, resultLen:0, finishKind:unknown}    ← 空响应
 [agent-loop 之后无任何事件，dsh ep_poll idle 4+ 分钟]
 ```
@@ -3769,7 +3769,7 @@ if (result.chunk.type === 'text-delta') {
 
 **症状**：TUI 用户发 chat 触发意图分类，intent-router 分到 `CLOUD` 时 cloud-llm-adapter 在 stream 阶段抛 `MISSING_CREDENTIAL`（`src/dsh-adapter/cloud-llm-adapter.ts:172`），user 看到 error，chat 中断。
 
-**原则**：与"脱敏失败降级 LOCAL"对称——都属于**系统侧配置缺失/故障，绝不应让 user 的 PII 上云**（即便没 PII，强制上云也会失败；与其抛错不如悄悄路由到 local-qwen3-4b，至少 user 仍能用）。这正是 PROGRESS §7.22 + memory `sanitize-downgrade-policy.md` 立下的"配置缺失视为降级触发"原则的扩展。
+**原则**：与"脱敏失败降级 LOCAL"对称——都属于**系统侧配置缺失/故障，绝不应让 user 的 PII 上云**（即便没 PII，强制上云也会失败；与其抛错不如悄悄路由到 local-llm，至少 user 仍能用）。这正是 PROGRESS §7.22 + memory `sanitize-downgrade-policy.md` 立下的"配置缺失视为降级触发"原则的扩展。
 
 **修复**（`src/dsh-adapter/input-guard.ts`）：
 
@@ -4230,7 +4230,7 @@ curl -X POST .../v1/chat -d '{"message":"second","sessionId":"finalB"}'
 # ops log 增量：
 # 2026-09-11T15:29:53.278 INFO [realm-skill-bridge] chat received sessionId=finalA reason=initial series-start
 # 2026-09-11T15:29:55.338 INFO [realm-skill-bridge] chat finished sessionId=finalA turn=1 reason=unknown
-# 2026-09-11T15:29:55.340 INFO [http-api] POST /v1/chat 200 9711ms cloud-deepseek-v4 ...
+# 2026-09-11T15:29:55.340 INFO [http-api] POST /v1/chat 200 9711ms cloud-llm ...
 # 2026-09-11T15:30:04.468 INFO [realm-skill-bridge] chat received sessionId=finalB reason=initial series-start
 # 2026-09-11T15:30:07.006 INFO [realm-skill-bridge] chat finished sessionId=finalB turn=1 reason=unknown
 # 2026-09-11T15:30:07.007 INFO [http-api] POST /v1/chat 200 10645ms ...
@@ -4374,10 +4374,10 @@ ctx.logger?.info?.(
 17:47:37 INFO [realm-skill-bridge] tool allow sessionId=sec7.46-verify-001 tool=bash realm=SANITIZED
 17:47:38 INFO [realm-skill-bridge] pre-step filter sessionId=sec7.46-verify-001 realm=SANITIZED catalogDropped=0
 17:47:38 INFO [realm-skill-bridge] chat finished sessionId=sec7.46-verify-001 turn=1 reason=unknown realm=SANITIZED duration=2824ms
-17:47:38 INFO [http-api] POST /v1/chat 200 11061ms cloud-deepseek-v4/cloud-deepseek-v4 intent=SANITIZED
+17:47:38 INFO [http-api] POST /v1/chat 200 11061ms cloud-llm/cloud-llm intent=SANITIZED
 ```
 
-10 行 log 自包含解释："query → SANITIZED 路由 → local-qwen3-4b 分类 → 33 个 skill 全部可见（§7.45 fix 验证）→ LLM 调 skill + bash 各 1-2 次 → 2.8s 完成"。operator 不需要翻 audit JSONL 就能 reconstruct。
+10 行 log 自包含解释："query → SANITIZED 路由 → local-llm 分类 → 33 个 skill 全部可见（§7.45 fix 验证）→ LLM 调 skill + bash 各 1-2 次 → 2.8s 完成"。operator 不需要翻 audit JSONL 就能 reconstruct。
 
 **单元测试**（`tests/unit/realm-skill-bridge.test.ts` §7.46 新增 3 个 describe）：
 
@@ -4448,9 +4448,9 @@ ops log 关键片段（按时间序）：
 18:14:23.880  [input-guard]    preflight intent sessionId=sec7.46.1-verify-2 category=SANITIZED confidence=0.5 rationale=default:sanitized targetRealm=LOCAL
 18:14:23.890  [realm-skill-bridge] pre-step filter sessionId=sec7.46.1-verify-2 realm=SANITIZED catalogDropped=0
 18:14:23.897  [realm-skill-bridge] chat received sessionId=sec7.46.1-verify-2 reason=initial
-18:14:23.898  [local-llm-adapter]  LLM call start sessionId=unknown provider=local-qwen3-4b model=local-qwen3-4b messageCount=1 promptLen=351 baseUrl=https://coding.dashscope.aliyuncs.com/v1
-18:14:23.898  [cloud-llm-adapter]  LLM call start sessionId=sec7.46.1-verify-2 provider=cloud-deepseek-v4 model=cloud-deepseek-v4 messageCount=3 promptLen=6134 baseUrl=https://api.deepseek.com
-18:14:25.150  [cloud-llm-adapter]  LLM call done  sessionId=sec7.46.1-verify-2 provider=cloud-deepseek-v4 ... durationMs=1251 resultLen=21 toolCallCount=1 finishKind=tool-calls
+18:14:23.898  [local-llm-adapter]  LLM call start sessionId=unknown provider=local-llm model=local-llm messageCount=1 promptLen=351 baseUrl=https://coding.dashscope.aliyuncs.com/v1
+18:14:23.898  [cloud-llm-adapter]  LLM call start sessionId=sec7.46.1-verify-2 provider=cloud-llm model=cloud-llm messageCount=3 promptLen=6134 baseUrl=https://api.deepseek.com
+18:14:25.150  [cloud-llm-adapter]  LLM call done  sessionId=sec7.46.1-verify-2 provider=cloud-llm ... durationMs=1251 resultLen=21 toolCallCount=1 finishKind=tool-calls
 18:14:25.190  [cloud-llm-adapter]  LLM call start sessionId=sec7.46.1-verify-2 ... messageCount=5
 18:14:25.170  [realm-skill-bridge] tool allow sessionId=sec7.46.1-verify-2 tool=skill realm=SANITIZED
 18:14:25.961  [realm-skill-bridge] tool allow sessionId=sec7.46.1-verify-2 tool=bash realm=SANITIZED
@@ -4543,7 +4543,7 @@ ops log 关键片段（按时间序）：
 10:24:53.542  [input-guard]          sanitize done  sessionId=sec7.46.2-verify category=SANITIZED durationMs=1 replacementCount=1 outcome=replaced
 10:24:53.543  [realm-skill-bridge]   pre-step filter sessionId=sec7.46.2-verify realm=SANITIZED catalogDropped=0
 10:24:53.549  [realm-skill-bridge]   chat received sessionId=sec7.46.2-verify reason=initial
-10:24:53.550  [cloud-llm-adapter]    LLM call start sessionId=sec7.46.2-verify provider=cloud-deepseek-v4 ...
+10:24:53.550  [cloud-llm-adapter]    LLM call start sessionId=sec7.46.2-verify provider=cloud-llm ...
 10:24:55.085  [cloud-llm-adapter]    LLM call done  durationMs=1535 resultLen=64 toolCallCount=1 finishKind=tool-calls
 ... (多次 LLM 调 + tool allow)
 10:25:03.119  [realm-skill-bridge]   chat finished sessionId=sec7.46.2-verify turn=1 reason=unknown realm=SANITIZED duration=9570ms
@@ -4657,12 +4657,12 @@ reply `result` 里包含原文 `user@example.com`，ops log grep sessionId 立�
 
 ```
 10:34:49.977  preflight intent category=LOCAL ... routeSource=http-api
-10:34:49.980  [input-guard] route override fromProvider=local-qwen3-4b fromModel=local-qwen3-4b toProvider=local-qwen3-4b toModel=qwen3-4b-instruct-2507 reason=intent-local  ← §7.46.3
+10:34:49.980  [input-guard] route override fromProvider=local-llm fromModel=local-llm toProvider=local-llm toModel=qwen3-4b-instruct-2507 reason=intent-local  ← §7.46.3
 10:34:49.982  [local-llm-adapter] LLM call start model=qwen3-4b-instruct-2507
 ... (每个 step 一次 route override)
 ```
 
-每个 step 都会触发 route override（TUI 不写 _edgeRoute → seedConfig 是 default cloud；handlePreStep 把 stepState.downgraded=true → handleAgentRequest 改写到 local-*；本例原本 seedConfig 就是 local-qwen3-4b 已是 local，但 model 从 generic name 改写到具体 qwen3-4b-instruct-2507，所以仍有 override 痕迹）。
+每个 step 都会触发 route override（TUI 不写 _edgeRoute → seedConfig 是 default cloud；handlePreStep 把 stepState.downgraded=true → handleAgentRequest 改写到 local-*；本例原本 seedConfig 就是 local-llm 已是 local，但 model 从 generic name 改写到具体 qwen3-4b-instruct-2507，所以仍有 override 痕迹）。
 
 **test C — routeSource=webui / http-api 区分**：通过 `_edgeRoute` 注入实现，test C 在 http-api 路径所以显示 `routeSource=http-api`；TUI 路径下 `readEdgeRoute` 返回 undefined → 显示 `routeSource=webui`。E2E unit test 覆盖两个分支。
 
@@ -4672,7 +4672,7 @@ reply `result` 里包含原文 `user@example.com`，ops log grep sessionId 立�
 
 1. `preflight intent line carries routeSource=http-api when _edgeRoute present` — 注入 `_edgeRoute` 模拟 http-api 已分类，验证 preflight 行含 `routeSource=http-api`
 2. `preflight intent line carries routeSource=webui when _edgeRoute absent` — 不设 `_edgeRoute`，验证 preflight 行含 `routeSource=webui`
-3. `route override: handleAgentRequest emits override line when state.downgraded=true` — category=LOCAL 触发 handlePreStep 设 downgraded=true，再调 handleAgentRequest 验证 emit `route override` 行 + provider 改写到 local-qwen3-4b
+3. `route override: handleAgentRequest emits override line when state.downgraded=true` — category=LOCAL 触发 handlePreStep 设 downgraded=true，再调 handleAgentRequest 验证 emit `route override` 行 + provider 改写到 local-llm
 
 **测试结果**：692 unit pass / 2 pre-existing fail（baseline 也 fail，跟本次改动无关）；76 input-guard tests pass（含新增 3 个 + §7.46.2 三个）。
 
@@ -4730,7 +4730,7 @@ reply `result` 里包含原文 `user@example.com`，ops log grep sessionId 立�
 10:34:30.412  [input-guard]         sanitize done outcome=replaced (1 PII)               ← 节点 3
 10:34:30.414  [realm-skill-bridge]  pre-step filter catalogDropped=0                    ← 节点 9
 10:34:30.435  [realm-skill-bridge]  chat received reason=initial                        ← 节点 10
-10:34:30.438  [cloud-llm-adapter]   LLM call start provider=cloud-deepseek-v4           ← 节点 14
+10:34:30.438  [cloud-llm-adapter]   LLM call start provider=cloud-llm           ← 节点 14
 10:34:31.254  [cloud-llm-adapter]   LLM call done durationMs=816 resultLen=33           ← 节点 15
 10:34:31.255  [input-guard]         desanitize done chunkCount=15 restoredBytes=80       ← 节点 6
 10:34:31.257  [realm-skill-bridge]  chat finished duration=822ms                        ← 节点 11
@@ -4815,13 +4815,13 @@ sessionId=`sec7.46.6-TUI-A`（query="读 README.md 的开头两段"）完整 tra
 11:42:06.089  [input-guard]   privacy-policy done sessionId=sec7.46.6-TUI-A durationMs=0 realm=none    ← 节点 21 ✓ (TUI 没装 privacy-policy)
 11:42:06.090  [input-guard]   preflight intent ... category=LOCAL ... routeSource=http-api            ← 节点 1
 11:42:06.094  [realm-skill-bridge] pre-step filter realm=LOCAL catalogDropped=23                       ← 节点 9
-11:42:06.111  [input-guard]   route override fromProvider=local-qwen3-4b toProvider=local-qwen3-4b reason=intent-local   ← 节点 7
+11:42:06.111  [input-guard]   route override fromProvider=local-llm toProvider=local-llm reason=intent-local   ← 节点 7
 11:42:06.118  [realm-skill-bridge] chat received sessionId=sec7.46.6-TUI-A reason=initial                ← 节点 10
-11:42:06.121  [local-llm-adapter] LLM call start provider=local-qwen3-4b                                  ← 节点 16
+11:42:06.121  [local-llm-adapter] LLM call start provider=local-llm                                  ← 节点 16
 11:42:09.327  [local-llm-adapter] LLM call done durationMs=3206 finishKind=tool-calls                     ← 节点 17
 11:42:16.912  [local-llm-adapter] LLM call done durationMs=7532 finishKind=stop                          ← 节点 17 (turn 2)
 11:42:16.922  [realm-skill-bridge] chat finished turn=1 reason=unknown realm=LOCAL duration=10804ms       ← 节点 11
-11:42:16.924  [http-api]      chat reply sessionId=sec7.46.6-TUI-A reqId=d5922198 provider=local-qwen3-4b model=local-qwen3-4b durationMs=18318 resultLen=480 status=200 intent=LOCAL  ← 节点 19 ✓
+11:42:16.924  [http-api]      chat reply sessionId=sec7.46.6-TUI-A reqId=d5922198 provider=local-llm model=local-llm durationMs=18318 resultLen=480 status=200 intent=LOCAL  ← 节点 19 ✓
 ```
 
 sessionId=`sec7.46.6-TUI-B`（query="帮我查一下北京天气，我的邮箱是 user@example.com"）— 走 CLOUD → 降级 SANITIZED → LOCAL 路径，验证 sanitize + desanitize 链条：
@@ -4839,7 +4839,7 @@ sessionId=`sec7.46.6-TUI-B`（query="帮我查一下北京天气，我的邮箱�
 11:42:41.153  [input-guard]    desanitize done chunkCount=7 restoredBytes=18                              ← 节点 6 (turn 2)
 11:42:47.656  [input-guard]    desanitize done chunkCount=297 restoredBytes=938                           ← 节点 6 (turn 5)
 11:42:47.657  [realm-skill-bridge] chat finished ... realm=SANITIZED duration=8948ms                       ← 节点 11
-11:42:47.657  [http-api]       chat reply ... provider=cloud-deepseek-v4 model=cloud-deepseek-v4 durationMs=17071 resultLen=469 status=200 intent=SANITIZED   ← 节点 19 ✓
+11:42:47.657  [http-api]       chat reply ... provider=cloud-llm model=cloud-llm durationMs=17071 resultLen=469 status=200 intent=SANITIZED   ← 节点 19 ✓
 ```
 
 5 turn / 4 个 desanitize 累计还原 988 字节（PII token→原值）— 全部在 ops log 可见。
@@ -4924,7 +4924,7 @@ dsh-tool-skill 的参数 schema 是 `{ name: '<skill>' }`（lib/index.js:62）�
 12:16:53.728  [input-guard]         sanitize done   replacementCount=0 outcome=clean
 12:16:53.729  [realm-skill-bridge]  pre-step filter realm=SANITIZED catalogDropped=0
 12:16:53.735  [realm-skill-bridge]  chat received reason=initial
-12:16:53.737  [cloud-llm-adapter]   LLM call start  provider=cloud-deepseek-v4
+12:16:53.737  [cloud-llm-adapter]   LLM call start  provider=cloud-llm
 12:16:54.703  [cloud-llm-adapter]   LLM call done   durationMs=965 toolCallCount=1 finishKind=tool-calls
 12:16:54.710  [realm-skill-bridge]  tool allow sessionId=sec7.46.7-mibao tool=skill skillName=ets-auth realm=SANITIZED   ← §7.46.7 skillName 字段
 12:16:54.721  [cloud-llm-adapter]   LLM call start  messageCount=5
@@ -5042,7 +5042,7 @@ e94ca30  fix(input-guard): §7.46.3 desanitize + route override + routeSource op
 13:49:52.771  [input-guard]         sanitize done   replacementCount=0 outcome=clean
 13:49:52.772  [realm-skill-bridge]  pre-step filter realm=SANITIZED catalogDropped=0
 13:49:52.779  [realm-skill-bridge]  chat received reason=initial
-13:49:52.781  [cloud-llm-adapter]   LLM call start  provider=cloud-deepseek-v4 messageCount=3 promptLen=6136
+13:49:52.781  [cloud-llm-adapter]   LLM call start  provider=cloud-llm messageCount=3 promptLen=6136
 13:49:55.181  [cloud-llm-adapter]   LLM call done   durationMs=2400 resultLen=51 toolCallCount=1 finishKind=tool-calls
 13:49:55.184  [realm-skill-bridge]  tool allow tool=skill skillName=ets-auth realm=SANITIZED
 13:49:55.198  [cloud-llm-adapter]   LLM call start  messageCount=5
@@ -5169,4 +5169,75 @@ CI 现状：6 stage = build → verify → unit → e2e-privacy → e2e-opslog �
 - memory [[ops-log-coverage-principle]] — 21 节点清单 + 3 种 emit pattern（21 节点断言模板的来源）
 - memory [[tui-unscoped-context-diagnosis]] §7.46.8 节 — web profile preset scope 修复（CI job 必跑 fix-profile-duplicates.sh）
 - PROGRESS §7.46 → §7.46.8 — 6 commit 累积到 21 节点；§7.46.9 把 3 重点用例固化
+
+### §7.46.10 provider route id 改名 — local-qwen3-4b → local-llm + cloud-deepseek-v4 → cloud-llm（2026-09-12 续）
+
+**动机**：原 provider route id 是历史命名遗留——
+
+- `local-qwen3-4b` 是 route id（adapter key），但 `.env.sh` 实际跑的模型是 `qwen3.7-plus`（阿里云 DashScope），命名不一致
+- `cloud-deepseek-v4` 同理——实际底层是 `deepseek-chat`，route id 写了"v4"误导
+
+user 反馈（2026-09-12）："local-qwen3-4b 这个是在哪里定义的？local llm 不一定就是 qwen3-4b"——明确指出 route id 不该绑死模型。
+
+**改名方案**（user 拍板）：
+
+| 旧 provider route id | 新 provider route id | 说明 |
+|---|---|---|
+| `local-qwen3-4b` | `local-llm` | 与 adapter 名 `local-llm-adapter` 对齐 |
+| `cloud-deepseek-v4` | `cloud-llm` | 与 adapter 名 `cloud-llm-adapter` 对齐 |
+| `local-qwen3-4b-mock` | `local-llm-mock` | 测试 fixture |
+| `local-qwen3-4b-tuned` / `local-qwen3-4b-alt` | `local-llm-tuned` / `local-llm-alt` | 测试 fixture |
+| `cloud-deepseek-v3` | `cloud-llm-v3` | 备选 cloud provider |
+| `local-llama3-8b`（虚构数据，无 adapter 注册） | `local-llm-llama3` | 避免误导 |
+
+**改名范围（40 个文件）**：
+
+| 类别 | 文件数 | 例子 |
+|---|---|---|
+| 生产代码 | 9 个 src/dsh-adapter/*.ts | `model-router.ts` `intent-router.ts` `input-guard.ts` |
+| Cordis config | 5 个 yml | `cordis.yml` `cordis.patch.yml` `profiles/edge-{m1,minimal,full}.cordis.yml` |
+| 环境变量 | 1 个 | `.env.sh` |
+| 单元测试 | 12 个 tests/unit/*.test.ts | fixture 字符串全部同步 |
+| 脚本 | 6 个 scripts/*.sh / scripts/m*.ts | `e2e-privacy-precheck.sh` `m4-smoke.ts` 等 |
+| 文档 | 4 个 md | `README.md` `M5-TESTING.md` `docs/intent-and-sanitization.md` `docs/architecture.md` |
+| 回归脚本 | 1 个 | `scripts/e2e-ops-log-coverage.sh`（加 provider-route-id 断言） |
+
+**`§7.46.9` 回归保护升级**：
+
+`scripts/e2e-ops-log-coverage.sh` 加一条断言：
+```bash
+# provider route id 必须用新名字（防回退）
+local latest_reply
+latest_reply=$(grep '\[http-api\] chat reply' "$log" | tail -1)
+if echo "$latest_reply" | grep -qE 'provider=(local-qwen3-4b|cloud-deepseek-v4|local-llama3-8b)'; then
+  misses+=('provider-route-id-must-use-local-llm-or-cloud-llm')
+fi
+```
+
+只看本次 session 的 chat reply 行（不查历史）——历史 session 的旧字符串是改名前的合理 log，不算 FAIL。
+
+**部署注意**：install.sh 重启 profile 时只 `rsync lib/`，**不会**覆盖 `cordis.patch.yml`（手动 sync）。改名后必须手动 `cp cordis.patch.yml ~/.dsh/profiles/<p>/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/cordis.patch.yml`，否则 cordis patch 层还在用旧字符串（`classificationProvider ?? 'local-qwen3-4b'`）。
+
+**验收**：
+
+| 项 | 结果 |
+|---|---|
+| `pnpm run compile` | ✅ 无错 |
+| `pnpm test` | ✅ 711 PASS / 2 pre-existing FAIL（与 HEAD baseline 一致） |
+| `make e2e-coverage`（3 用例） | ✅ 3/3 通过 |
+| 真实 ops log 新 session | ✅ `provider=cloud-llm` / `provider=local-llm` |
+| `e2e-privacy-precheck.sh` | ⚠️ 16/19 PASS（3 FAIL 是 prompt-guard LLM 精度问题，与改名无关，HEAD baseline 同样 fail）|
+
+**Lesson**：
+
+- provider route id 跟模型名是两件事——route id 是 adapter key（dispatch table 的索引），模型名是 endpoint 返回的实际模型
+- 命名一致性比"看着直观"更重要——`local-llm-adapter` / `cloud-llm-adapter` adapter 名跟 `local-llm` / `cloud-llm` route id 完全对齐，operator 看 ops log 一眼就知道是哪个 adapter 跑的
+- 未来加新模型（gpt-oss、llama、mistral）只需要换 `DSH_EDGE_LOCAL_LLM_BASEURL/MODEL`，route id 不动
+
+**变更**：40 files changed, +150/-150（纯字符串替换）
+
+**相关**：
+
+- memory [[ops-log-coverage-principle]] — 21 节点 + 关键字段；本节加 provider-route-id 断言
+- PROGRESS §7.46 → §7.46.9 — 7 commit 累积；§7.46.10 是命名一致性收尾
 

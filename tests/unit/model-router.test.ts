@@ -3,7 +3,7 @@
  *
  * The route classifier is a pure function so the realm logic does not
  * need a real Cordis context. M4 adds explicit catalog lookup (so the
- * router can distinguish `local-qwen3-4b` from arbitrary `local-*`
+ * router can distinguish `local-llm` from arbitrary `local-*`
  * strings) and a service-level `listAvailable` / `isAvailable` surface.
  *
  * Run via `pnpm test -t model-router`.
@@ -31,15 +31,15 @@ describe('model-router (M1 + M4)', () => {
   })
 
   it('routes local-* catalog routes to the LOCAL realm', () => {
-    const r = resolveRoute('local-qwen3-4b')
+    const r = resolveRoute('local-llm')
     assert.equal(r.realm, 'LOCAL')
-    assert.equal(r.provider, 'local-qwen3-4b')
+    assert.equal(r.provider, 'local-llm')
   })
 
   it('routes cloud-* catalog routes to the CLOUD realm', () => {
-    const r = resolveRoute('cloud-deepseek-v4')
+    const r = resolveRoute('cloud-llm')
     assert.equal(r.realm, 'CLOUD')
-    assert.equal(r.provider, 'cloud-deepseek-v4')
+    assert.equal(r.provider, 'cloud-llm')
   })
 
   it('falls back to CLOUD for unknown prefixes', () => {
@@ -51,7 +51,7 @@ describe('model-router (M1 + M4)', () => {
   it('falls back to CLOUD when model is an empty string', () => {
     const r = resolveRoute('')
     assert.equal(r.realm, 'CLOUD')
-    assert.equal(r.provider, 'cloud-deepseek-v4')
+    assert.equal(r.provider, 'cloud-llm')
   })
 
   it('M4: catalog membership decides realm before prefix matching', () => {
@@ -70,15 +70,15 @@ describe('model-router (M1 + M4)', () => {
   it('M4: ModelRouterServiceImpl exposes listAvailable + isAvailable', () => {
     const svc = new ModelRouterServiceImpl(
       fakeCtx(),
-      ['local-qwen3-4b'],
-      ['cloud-deepseek-v4'],
+      ['local-llm'],
+      ['cloud-llm'],
     )
     const all = svc.listAvailable()
-    assert.ok(all.includes('local-qwen3-4b'))
-    assert.ok(all.includes('cloud-deepseek-v4'))
+    assert.ok(all.includes('local-llm'))
+    assert.ok(all.includes('cloud-llm'))
 
-    assert.equal(svc.isAvailable('local-qwen3-4b'), true)
-    assert.equal(svc.isAvailable('cloud-deepseek-v4'), true)
+    assert.equal(svc.isAvailable('local-llm'), true)
+    assert.equal(svc.isAvailable('cloud-llm'), true)
     assert.equal(svc.isAvailable('gpt-4'), false)
     assert.equal(svc.isAvailable(''), false)
   })

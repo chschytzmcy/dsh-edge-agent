@@ -145,7 +145,7 @@ function runOne(prompt: string): Promise<{ exitCode: number; stdout: string; std
         env: {
           ...process.env,
           DSH_EDGE_GUARD_MODEL: 'true',
-          DSH_EDGE_GUARD_MODEL_PROVIDER: 'local-qwen3-4b',
+          DSH_EDGE_GUARD_MODEL_PROVIDER: 'local-llm',
           DSH_EDGE_GUARD_MODEL_MODEL: realModel,
           DSH_EDGE_LOCAL_LLM_BASEURL: baseUrl,
           DSH_EDGE_LOCAL_LLM_MODEL: realModel,

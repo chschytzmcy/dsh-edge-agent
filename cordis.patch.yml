@@ -79,7 +79,7 @@
 # default in dsh-base is `deepseek-official`, which we just disabled.
 - id: agent-default-model
   config:
-    provider: !!js process.env.DSH_EDGE_PROVIDER ?? 'cloud-deepseek-v4'
+    provider: !!js process.env.DSH_EDGE_PROVIDER ?? 'cloud-llm'
     model: !!js process.env.DSH_EDGE_MODEL ?? 'deepseek-chat'
 
 # Persona + agent-presets delegation
@@ -360,7 +360,7 @@
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/cloud-llm-adapter'
       inject: [llm, auditLog]
       config:
-        providers: [cloud-deepseek-v4]
+        providers: [cloud-llm]
         baseUrl: !!js process.env.DEEPSEEK_BASE_URL ?? 'https://api.deepseek.com'
         apiKeyEnv: DEEPSEEK_API_KEY
         defaultModel: !!js process.env.DSH_EDGE_MODEL ?? 'deepseek-chat'
@@ -369,7 +369,7 @@
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/local-llm-adapter'
       inject: [llm, auditLog]
       config:
-        providers: [local-qwen3-4b]
+        providers: [local-llm]
         baseUrl: !!js process.env.DSH_EDGE_LOCAL_LLM_BASEURL ?? 'http://192.168.1.121:11017/v1'
         defaultModel: !!js process.env.DSH_EDGE_LOCAL_LLM_MODEL ?? 'Qwen3-4B-Instruct-2507'
         apiKeyEnv: !!js process.env.DSH_EDGE_LOCAL_LLM_KEY_ENV ?? undefined
@@ -378,9 +378,9 @@
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/model-router'
       inject: [llm]
       config:
-        defaultModel: !!js process.env.DSH_EDGE_MODEL_ROUTER_DEFAULT ?? 'cloud-deepseek-v4'
-        localModels: [local-qwen3-4b]
-        cloudModels: [cloud-deepseek-v4]
+        defaultModel: !!js process.env.DSH_EDGE_MODEL_ROUTER_DEFAULT ?? 'cloud-llm'
+        localModels: [local-llm]
+        cloudModels: [cloud-llm]
 
     - id: intent-router
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/intent-router'
@@ -391,7 +391,7 @@
         # through input-guard sanitizer first; sanitize failure downgrades to
         # LOCAL (fail-closed). See intent-router.ts:60 schema default.
         defaultCategory: SANITIZED
-        classificationProvider: !!js process.env.DSH_EDGE_INTENT_PROVIDER ?? 'local-qwen3-4b'
+        classificationProvider: !!js process.env.DSH_EDGE_INTENT_PROVIDER ?? 'local-llm'
         classificationModel: !!js process.env.DSH_EDGE_INTENT_MODEL ?? 'Qwen3-4B-Instruct-2507'
         confidenceThreshold: !!js parseFloat(process.env.DSH_EDGE_INTENT_CONFIDENCE_THRESHOLD ?? '0.6')
         llmTimeoutMs: !!js parseInt(process.env.DSH_EDGE_INTENT_LLM_TIMEOUT_MS ?? '4000', 10)
@@ -453,7 +453,7 @@
         enableInjectionDetection: true
         enableRateLimit: true
         enableModelDetection: !!js process.env.DSH_EDGE_GUARD_MODEL !== 'false'
-        modelDetectionProvider: !!js process.env.DSH_EDGE_GUARD_MODEL_PROVIDER ?? 'local-qwen3-4b'
+        modelDetectionProvider: !!js process.env.DSH_EDGE_GUARD_MODEL_PROVIDER ?? 'local-llm'
         modelDetectionModel: !!js process.env.DSH_EDGE_GUARD_MODEL_MODEL ?? 'Qwen3-4B-Instruct-2507'
         modelDetectionTimeoutMs: !!js parseInt(process.env.DSH_EDGE_GUARD_MODEL_TIMEOUT_MS ?? '4000', 10)
         modelDetectionMaxInputLength: !!js parseInt(process.env.DSH_EDGE_GUARD_MODEL_MAX_INPUT ?? '2000', 10)
@@ -522,5 +522,5 @@
         rejectOnPolicyViolation: !!js process.env.DSH_EDGE_REJECT_POLICY !== 'false'
         # sanitize 失败 → 降级 LOCAL（系统故障而非 user 错；fail-closed + 可用）
         downgradeOnSanitizeFailure: !!js process.env.DSH_EDGE_SANITIZE_DOWNGRADE !== 'false'
-        localProvider: !!js process.env.DSH_EDGE_LOCAL_PROVIDER ?? 'local-qwen3-4b'
+        localProvider: !!js process.env.DSH_EDGE_LOCAL_PROVIDER ?? 'local-llm'
         localModel: !!js process.env.DSH_EDGE_LOCAL_MODEL ?? 'qwen3-4b-instruct-2507'

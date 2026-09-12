@@ -2,7 +2,7 @@
  * M4 unit tests — local-llm-adapter real-mode dispatch.
  *
  * Every provider route the adapter owns hits the network. The
- * `local-qwen3-4b` route is exercised against a stubbed `fetch`
+ * `local-llm` route is exercised against a stubbed `fetch`
  * that returns the same SSE shape as the cloud tests. Provider
  * routing asserts the inner adapter picked by route id.
  *
@@ -80,14 +80,14 @@ describe('local-llm-adapter (M4, real-only)', () => {
     ]))
 
     const adapter = new LocalLlmAdapterImpl({
-      providers: ['local-qwen3-4b'],
+      providers: ['local-llm'],
       baseUrl: 'http://127.0.0.1:8080/v1',
       defaultModel: 'qwen3-4b',
     })
 
     const chunks: unknown[] = []
     for await (const chunk of adapter.stream({
-      provider: 'local-qwen3-4b',
+      provider: 'local-llm',
       model: '',
       messages: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
     })) {
@@ -118,12 +118,12 @@ describe('local-llm-adapter (M4, real-only)', () => {
     ]))
 
     const adapter = new LocalLlmAdapterImpl({
-      providers: ['local-qwen3-4b'],
+      providers: ['local-llm'],
       baseUrl: 'http://192.168.66.195:8701/v1',
       defaultModel: 'qwen3-4b',
     })
     for await (const _ of adapter.stream({
-      provider: 'local-qwen3-4b',
+      provider: 'local-llm',
       model: 'qwen3-4b',
       messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
     })) {
@@ -144,13 +144,13 @@ describe('local-llm-adapter (M4, real-only)', () => {
     ]))
 
     const adapter = new LocalLlmAdapterImpl({
-      providers: ['local-qwen3-4b'],
+      providers: ['local-llm'],
       baseUrl: 'http://192.168.66.195:8701/v1',
       defaultModel: 'qwen3-4b',
       apiKeyEnv: 'DSH_EDGE_LOCAL_LLM_KEY',
     })
     for await (const _ of adapter.stream({
-      provider: 'local-qwen3-4b',
+      provider: 'local-llm',
       model: 'qwen3-4b',
       messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
     })) {
@@ -172,7 +172,7 @@ describe('local-llm-adapter (M4, real-only)', () => {
     ]))
 
     const adapter = new LocalLlmAdapterImpl({
-      providers: ['local-qwen3-4b', 'local-qwen3-4b-alt'],
+      providers: ['local-llm', 'local-llm-alt'],
       baseUrl: 'http://192.168.66.195:8701/v1',
       defaultModel: 'qwen3-4b',
     })
@@ -180,7 +180,7 @@ describe('local-llm-adapter (M4, real-only)', () => {
     // First route hits the network (signal-pulled landing).
     const firstChunks: unknown[] = []
     for await (const chunk of adapter.stream({
-      provider: 'local-qwen3-4b',
+      provider: 'local-llm',
       model: 'qwen3-4b',
       messages: [{ role: 'user', content: [{ type: 'text', text: 'first' }] }],
     })) {
@@ -193,7 +193,7 @@ describe('local-llm-adapter (M4, real-only)', () => {
     // Second route hits the network too (no in-process mock).
     const secondChunks: unknown[] = []
     for await (const chunk of adapter.stream({
-      provider: 'local-qwen3-4b-alt',
+      provider: 'local-llm-alt',
       model: 'qwen3-4b',
       messages: [{ role: 'user', content: [{ type: 'text', text: 'second' }] }],
     })) {
@@ -208,7 +208,7 @@ describe('local-llm-adapter (M4, real-only)', () => {
   it('throws UNKNOWN_PROVIDER for routes the adapter does not own', async () => {
     installFetchMock(() => sseResponse([]))
     const adapter = new LocalLlmAdapterImpl({
-      providers: ['local-qwen3-4b'],
+      providers: ['local-llm'],
       baseUrl: 'http://127.0.0.1:8080/v1',
       defaultModel: 'qwen3-4b',
     })
@@ -216,7 +216,7 @@ describe('local-llm-adapter (M4, real-only)', () => {
     await assert.rejects(
       (async () => {
         for await (const _ of adapter.stream({
-          provider: 'cloud-deepseek-v4',
+          provider: 'cloud-llm',
           model: 'deepseek-chat',
           messages: [],
         })) {
@@ -248,14 +248,14 @@ describe('local-llm-adapter (M4, real-only)', () => {
       { choices: [{ delta: {}, finish_reason: 'stop' }] },
     ]))
     const adapter = new LocalLlmAdapterImpl({
-      providers: ['local-qwen3-4b'],
+      providers: ['local-llm'],
       baseUrl: 'http://127.0.0.1:8080/v1',
       defaultModel: 'qwen3-4b',
     })
 
     const chunks: Array<{ type: string; [k: string]: unknown }> = []
     for await (const chunk of adapter.stream({
-      provider: 'local-qwen3-4b',
+      provider: 'local-llm',
       model: 'qwen3-4b',
       messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
     })) {
@@ -278,14 +278,14 @@ describe('local-llm-adapter (M4, real-only)', () => {
       { choices: [{ delta: {}, finish_reason: 'stop' }] },
     ]))
     const adapter = new LocalLlmAdapterImpl({
-      providers: ['local-qwen3-4b'],
+      providers: ['local-llm'],
       baseUrl: 'http://127.0.0.1:8080/v1',
       defaultModel: 'qwen3-4b',
     })
 
     const chunks: Array<{ type: string; [k: string]: unknown }> = []
     for await (const chunk of adapter.stream({
-      provider: 'local-qwen3-4b',
+      provider: 'local-llm',
       model: 'qwen3-4b',
       messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
     })) {
@@ -332,7 +332,7 @@ describe('local-llm-adapter (M4, real-only)', () => {
     ]))
     const adapter = new LocalLlmAdapterImpl(
       {
-        providers: ['local-qwen3-4b'],
+        providers: ['local-llm'],
         baseUrl: 'http://127.0.0.1:8080/v1',
         defaultModel: 'qwen3-4b',
       },
@@ -343,7 +343,7 @@ describe('local-llm-adapter (M4, real-only)', () => {
 
     const chunks: Array<{ type: string; [k: string]: unknown }> = []
     for await (const chunk of adapter.stream({
-      provider: 'local-qwen3-4b',
+      provider: 'local-llm',
       model: 'qwen3-4b',
       messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
     })) {
@@ -398,7 +398,7 @@ describe('local-llm-adapter (M4, real-only)', () => {
     const logger = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }
 
     const adapter = new LocalLlmAdapterImpl(
-      { providers: ['local-qwen3-4b'], baseUrl: 'http://127.0.0.1:8080/v1', defaultModel: 'qwen3-4b' },
+      { providers: ['local-llm'], baseUrl: 'http://127.0.0.1:8080/v1', defaultModel: 'qwen3-4b' },
       auditLog,
       undefined,
       logger,
@@ -411,7 +411,7 @@ describe('local-llm-adapter (M4, real-only)', () => {
       installFetchMock(() => sseResponse(realToolCallEvents))
       const chunks: unknown[] = []
       for await (const chunk of adapter.stream({
-        provider: 'local-qwen3-4b',
+        provider: 'local-llm',
         model: 'qwen3-4b',
         messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
         sessionId,
@@ -428,7 +428,7 @@ describe('local-llm-adapter (M4, real-only)', () => {
     await assert.rejects(
       (async () => {
         for await (const _ of adapter.stream({
-          provider: 'local-qwen3-4b',
+          provider: 'local-llm',
           model: 'qwen3-4b',
           messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
           sessionId,
@@ -452,7 +452,7 @@ describe('local-llm-adapter (M4, real-only)', () => {
     ]))
     const chunks: unknown[] = []
     for await (const chunk of adapter.stream({
-      provider: 'local-qwen3-4b',
+      provider: 'local-llm',
       model: 'qwen3-4b',
       messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
       sessionId,
@@ -481,7 +481,7 @@ describe('local-llm-adapter (M4, real-only)', () => {
       }
       const adapter = new LocalLlmAdapterImpl(
         {
-          providers: ['local-qwen3-4b'],
+          providers: ['local-llm'],
           baseUrl: 'http://127.0.0.1:11017',
           apiKeyEnv: undefined,
           defaultModel: 'qwen3-4b-instruct-2507',
@@ -491,7 +491,7 @@ describe('local-llm-adapter (M4, real-only)', () => {
         fakeLogger,
       )
       for await (const _ of adapter.stream({
-        provider: 'local-qwen3-4b',
+        provider: 'local-llm',
         model: 'qwen3-4b-instruct-2507',
         messages: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
         sessionId: 'sec7461-local',
@@ -503,7 +503,7 @@ describe('local-llm-adapter (M4, real-only)', () => {
       assert.ok(start, `expected LLM call start line, got: ${JSON.stringify(infoLines)}`)
       assert.ok(done, `expected LLM call done line, got: ${JSON.stringify(infoLines)}`)
       assert.ok(start!.includes('sessionId=sec7461-local'), 'start should include sessionId')
-      assert.ok(start!.includes('provider=local-qwen3-4b'), 'start should include provider')
+      assert.ok(start!.includes('provider=local-llm'), 'start should include provider')
       assert.ok(start!.includes('model=qwen3-4b-instruct-2507'), 'start should include model')
       assert.ok(done!.includes('sessionId=sec7461-local'), 'done should include sessionId')
       assert.match(done!, /durationMs=\d+/, 'done should include durationMs=N')

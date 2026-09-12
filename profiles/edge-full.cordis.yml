@@ -77,14 +77,14 @@
   name: '@deepseek-harness-edge-agent/dsh-edge-agent/model-router'
   inject: [llm, privacyPolicy, auditLog]
   config:
-    defaultModel: local-qwen3-4b
-    localModels: [local-qwen3-4b, local-llama3-8b]
-    cloudModels: [cloud-deepseek-v4, cloud-deepseek-v3]
+    defaultModel: local-llm
+    localModels: [local-llm, local-llm-llama3]
+    cloudModels: [cloud-llm, cloud-llm-v3]
 
 - id: local-llm-adapter
   name: '@deepseek-harness-edge-agent/dsh-edge-agent/local-llm-adapter'
   config:
-    providers: [local-qwen3-4b, local-llama3-8b]
+    providers: [local-llm, local-llm-llama3]
     modelPath: !!js (process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent-full/models/qwen3-4b.gguf'
     contextSize: 16384
     threads: 8
@@ -93,7 +93,7 @@
   name: '@deepseek-harness-edge-agent/dsh-edge-agent/cloud-llm-adapter'
   inject: [secureBridge, auditLog]
   config:
-    providers: [cloud-deepseek-v4, cloud-deepseek-v3]
+    providers: [cloud-llm, cloud-llm-v3]
     baseUrl: !!js process.env.DEEPSEEK_BASE_URL ?? 'https://api.deepseek.com'
     apiKeyEnv: !!js process.env.DSH_EDGE_CLOUD_KEY_ENV ?? 'DEEPSEEK_API_KEY'
 

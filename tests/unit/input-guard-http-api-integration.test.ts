@@ -221,7 +221,7 @@ function guardConfig(overrides: Partial<GuardConfig> = {}): GuardConfig {
     sanitizeLocalTraffic: false,
     rejectOnPolicyViolation: true,
     downgradeOnSanitizeFailure: true,
-    localProvider: 'local-qwen3-4b',
+    localProvider: 'local-llm',
     localModel: 'qwen3-4b-instruct-2507',
     cloudApiKeyEnv: 'DEEPSEEK_API_KEY',
     ...overrides,
@@ -463,11 +463,11 @@ describe('input-guard ↔ http-api integration', () => {
 
     // agents.create 收到的仍是原始 CLOUD route（http-api 不感知降级）
     assert.equal(agentsCreateCalls.length, 1)
-    assert.equal(agentsCreateCalls[0].agentOptions.provider, 'cloud-deepseek-v4')
+    assert.equal(agentsCreateCalls[0].agentOptions.provider, 'cloud-llm')
 
     // 但 LLM 实际调用用的是 agent/request waterfall 的 result（input-guard 已改写为 LOCAL）
     assert.equal(llmCallLog.length, 1)
-    assert.equal(llmCallLog[0].route.provider, 'local-qwen3-4b',
+    assert.equal(llmCallLog[0].route.provider, 'local-llm',
       'agent/request 把 route 改写到 LOCAL provider')
     assert.equal(llmCallLog[0].route.model, 'qwen3-4b-instruct-2507')
 

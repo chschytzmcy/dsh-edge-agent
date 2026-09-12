@@ -158,8 +158,8 @@ start_server() {
     export DSH_EDGE_HTTP_PORT="$PORT"
     # 关掉 prompt-guard 模型层
     export DSH_EDGE_GUARD_MODEL="${DSH_EDGE_GUARD_MODEL:-false}"
-    # 强制使用 cloud-deepseek-v4
-    export DSH_EDGE_PROVIDER="cloud-deepseek-v4"
+    # 强制使用 cloud-llm
+    export DSH_EDGE_PROVIDER="cloud-llm"
     export DSH_EDGE_MODEL="deepseek-chat"
 
     local dsh_bin

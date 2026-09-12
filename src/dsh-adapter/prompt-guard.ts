@@ -55,7 +55,7 @@ export interface Config {
   // 模型辅助检测（cordis.yml 已声明）
   enableModelDetection: boolean
 
-  // 模型辅助检测配置（fail-open；与 intent-router 共享 local-qwen3-4b 路由）
+  // 模型辅助检测配置（fail-open；与 intent-router 共享 local-llm 路由）
   modelDetectionProvider: string
   modelDetectionModel: string
   modelDetectionTimeoutMs: number
@@ -74,7 +74,7 @@ export const Config: Schema<Config> = Schema.object({
     action: Schema.union(['block', 'warn', 'sanitize'] as const).default('block'),
   })).default([]),
   enableModelDetection: Schema.boolean().default(true),
-  modelDetectionProvider: Schema.string().default('local-qwen3-4b'),
+  modelDetectionProvider: Schema.string().default('local-llm'),
   modelDetectionModel: Schema.string().default('qwen3-4b'),
   modelDetectionTimeoutMs: Schema.natural().default(4000),
   modelDetectionMaxInputLength: Schema.natural().default(2000),

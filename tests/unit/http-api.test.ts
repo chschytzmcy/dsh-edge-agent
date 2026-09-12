@@ -355,14 +355,14 @@ describe('http-api resolveRoute (modelRouter wiring)', () => {
     delete process.env.DSH_EDGE_LOCAL_LLM_MODEL
     const r = resolveRoute({}, true)
     expect(r.resolved).toBe(false)
-    expect(r.provider).toBe('local-qwen3-4b')
+    expect(r.provider).toBe('local-llm')
     expect(r.model).toBe('qwen3-4b-instruct-2507')
   })
 
   it('falls back to hardcoded cloud provider+model when modelRouter is absent', () => {
     const r = resolveRoute({}, false)
     expect(r.resolved).toBe(false)
-    expect(r.provider).toBe('cloud-deepseek-v4')
+    expect(r.provider).toBe('cloud-llm')
     expect(r.model).toBe('deepseek-chat')
   })
 
@@ -379,14 +379,14 @@ describe('http-api resolveRoute (modelRouter wiring)', () => {
       modelRouter: {
         resolve: (preferred: string) => {
           calledWith = preferred
-          return { realm: 'LOCAL', provider: 'local-qwen3-4b-tuned', model: 'qwen3-4b-ft-2026-08' }
+          return { realm: 'LOCAL', provider: 'local-llm-tuned', model: 'qwen3-4b-ft-2026-08' }
         },
       },
     }
     const r = resolveRoute(ctx, true)
-    expect(calledWith).toBe('local-qwen3-4b')
+    expect(calledWith).toBe('local-llm')
     expect(r.resolved).toBe(true)
-    expect(r.provider).toBe('local-qwen3-4b-tuned')
+    expect(r.provider).toBe('local-llm-tuned')
     expect(r.model).toBe('qwen3-4b-ft-2026-08')
   })
 
@@ -398,7 +398,7 @@ describe('http-api resolveRoute (modelRouter wiring)', () => {
     }
     const r = resolveRoute(ctx, false)
     expect(r.resolved).toBe(false)
-    expect(r.provider).toBe('cloud-deepseek-v4')
+    expect(r.provider).toBe('cloud-llm')
     expect(r.model).toBe('deepseek-chat')
   })
 
@@ -410,7 +410,7 @@ describe('http-api resolveRoute (modelRouter wiring)', () => {
     }
     const r = resolveRoute(ctx, true)
     expect(r.resolved).toBe(false)
-    expect(r.provider).toBe('local-qwen3-4b')
+    expect(r.provider).toBe('local-llm')
   })
 })
 

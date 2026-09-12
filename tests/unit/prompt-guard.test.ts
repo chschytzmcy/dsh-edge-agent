@@ -91,7 +91,7 @@ function createGuard(
     enableRateLimit: true,
     rules: [],
     enableModelDetection: false,
-    modelDetectionProvider: 'local-qwen3-4b',
+    modelDetectionProvider: 'local-llm',
     modelDetectionModel: 'qwen3-4b',
     modelDetectionTimeoutMs: 4000,
     modelDetectionMaxInputLength: 2000,
@@ -134,7 +134,7 @@ describe('prompt-guard plugin', () => {
       maxInputLength: 10000, maxRequestsPerMinute: 20,
       enablePIIRedaction: true, enableInjectionDetection: true,
       enableRateLimit: true, rules: [], enableModelDetection: false,
-      modelDetectionProvider: 'local-qwen3-4b', modelDetectionModel: 'qwen3-4b',
+      modelDetectionProvider: 'local-llm', modelDetectionModel: 'qwen3-4b',
       modelDetectionTimeoutMs: 4000, modelDetectionMaxInputLength: 2000,
     })
     assert.equal(typeof dispose, 'function')
@@ -770,7 +770,7 @@ function createGuardWithLlm(
     enableRateLimit: true,
     rules: [],
     enableModelDetection: true,
-    modelDetectionProvider: 'local-qwen3-4b',
+    modelDetectionProvider: 'local-llm',
     modelDetectionModel: 'qwen3-4b',
     modelDetectionTimeoutMs: 4000,
     modelDetectionMaxInputLength: 2000,

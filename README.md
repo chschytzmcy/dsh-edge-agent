@@ -267,7 +267,7 @@ export DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx
 
 # DSH_EDGE_* 必须是 export（不能放进 .env）
 export DSH_EDGE_HTTP_PORT=21017
-export DSH_EDGE_PROVIDER=cloud-deepseek-v4
+export DSH_EDGE_PROVIDER=cloud-llm
 export DSH_EDGE_MODEL=deepseek-chat
 export DSH_EDGE_LOCAL_LLM_MODE=real
 export DSH_EDGE_LOCAL_LLM_BASEURL=http://192.168.66.195:8701/v1
@@ -275,7 +275,7 @@ export DSH_EDGE_LOCAL_LLM_MODEL=qwen3-4b-instruct-2507
 
 # DSH_EDGE_HTTP_PORT 仅在重新启用 http-api（cordis.patch.yml:313 disabled: false）时有效
 export DSH_EDGE_HTTP_PORT=21017  # §7.33 后默认 disabled，本变量无副作用
-export DSH_EDGE_PROVIDER=cloud-deepseek-v4
+export DSH_EDGE_PROVIDER=cloud-llm
 export DSH_EDGE_MODEL=deepseek-chat
 export DSH_EDGE_LOCAL_LLM_MODE=real
 export DSH_EDGE_LOCAL_LLM_BASEURL=http://192.168.66.195:8701/v1
@@ -292,8 +292,8 @@ dsh-edge-agent 通过**意图路由**自动选择 LLM，无需手动指定 provi
 
 | 用户消息类型 | 触发关键词 | 路由到 | 示例 |
 |---|---|---|---|
-| **LOCAL** | 文件、读取、写入、计算、设备、本地 | `local-qwen3-4b`（真实 OpenAI 兼容端点） | `"帮我读取文件"` → 真实 qwen3-4b 回答 |
-| **CLOUD** | 解释、什么是、知识问答 | `cloud-deepseek-v4` | `"量子力学是什么"` → DeepSeek 真实回答 |
+| **LOCAL** | 文件、读取、写入、计算、设备、本地 | `local-llm`（真实 OpenAI 兼容端点） | `"帮我读取文件"` → 真实 qwen3-4b 回答 |
+| **CLOUD** | 解释、什么是、知识问答 | `cloud-llm` | `"量子力学是什么"` → DeepSeek 真实回答 |
 
 > ⚠️ `DSH_EDGE_PROVIDER` 环境变量**仅**影响 system prompt 文本，不会改变实际路由。
 > 实际路由由 `http-api.handleChat()` 根据意图分类结果硬编码选择。
@@ -364,11 +364,11 @@ dsh-edge-agent 通过**环境变量**和 `cordis.yml` 进行配置。所有环�
 | `DSH_EDGE_ROUTER_THRESHOLD` | `0.6` | 规则匹配置信度阈值 |
 | `DSH_EDGE_INTENT_CONFIDENCE_THRESHOLD` | `0.6` | LLM 分类置信度门槛；低于此值降级到 keyword 规则 |
 | `DSH_EDGE_GUARD_MODEL` | `false` | 是否启用 prompt-guard 模型辅助检测 |
-| `DSH_EDGE_GUARD_MODEL_PROVIDER` | `local-qwen3-4b` | 模型辅助检测 provider route |
+| `DSH_EDGE_GUARD_MODEL_PROVIDER` | `local-llm` | 模型辅助检测 provider route |
 | `DSH_EDGE_GUARD_MODEL_MODEL` | `Qwen3-4B-Instruct-2507` | 模型辅助检测 model id（部署默认） |
 | `DSH_EDGE_GUARD_MODEL_TIMEOUT_MS` | `4000` | 模型辅助检测单次超时（毫秒） |
 | `DSH_EDGE_GUARD_MODEL_MAX_INPUT` | `2000` | 超过此字符数则跳过模型检测（fail-open） |
-| `DSH_EDGE_INTENT_PROVIDER` | `local-qwen3-4b` | 意图分类 provider |
+| `DSH_EDGE_INTENT_PROVIDER` | `local-llm` | 意图分类 provider |
 | `DSH_EDGE_INTENT_MODEL` | `Qwen3-4B-Instruct-2507` | 意图分类 model id |
 | `DSH_EDGE_INTENT_LLM_TIMEOUT_MS` | `4000` | 意图分类单次 LLM 超时（毫秒） |
 | `DSH_EDGE_INTENT_RECENT_LIMIT` | `3` | 上下文 recent-messages 数量 |
@@ -379,9 +379,9 @@ dsh-edge-agent 通过**环境变量**和 `cordis.yml` 进行配置。所有环�
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `DSH_EDGE_DEFAULT_MODEL` | `local-qwen3-4b` | 默认模型 |
-| `DSH_EDGE_LOCAL_MODELS` | `local-qwen3-4b,local-llama3-8b` | 本地模型列表（逗号分隔） |
-| `DSH_EDGE_CLOUD_MODELS` | `cloud-deepseek-v4,cloud-deepseek-v3` | 云端模型列表（逗号分隔） |
+| `DSH_EDGE_DEFAULT_MODEL` | `local-llm` | 默认模型 |
+| `DSH_EDGE_LOCAL_MODELS` | `local-llm,local-llm-llama3` | 本地模型列表（逗号分隔） |
+| `DSH_EDGE_CLOUD_MODELS` | `cloud-llm,cloud-llm-v3` | 云端模型列表（逗号分隔） |
 
 **本地 LLM**
 
@@ -754,7 +754,7 @@ curl -X POST http://127.0.0.1:21017/v1/chat \
 }
 ```
 
-> LOCAL intent 路由到本地 LLM（`local-qwen3-4b`），直连真实 OpenAI 兼容端点（不消耗云端 API 配额）。
+> LOCAL intent 路由到本地 LLM（`local-llm`），直连真实 OpenAI 兼容端点（不消耗云端 API 配额）。
 
 **CLOUD Intent**（云端处理 — 知识问答、创意）
 
@@ -779,7 +779,7 @@ curl -X POST http://127.0.0.1:21017/v1/chat \
 }
 ```
 
-> CLOUD intent 路由到 `cloud-deepseek-v4`，需要 `DEEPSEEK_API_KEY` 环境变量。
+> CLOUD intent 路由到 `cloud-llm`，需要 `DEEPSEEK_API_KEY` 环境变量。
 
 ### 工具调用测试
 

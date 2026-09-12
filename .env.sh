@@ -36,12 +36,12 @@ set +a
 #    ↓↓↓ 当前：阿里云 DashScope qwen3.7-plus（2026-09-11 切换） ↓↓↓
 #    切回本地 llama.cpp 时改 LOCAL_LLM_BASEURL/MODEL，KEY_ENV 留空。
 export DSH_EDGE_HTTP_PORT="${DSH_EDGE_HTTP_PORT:-21017}"
-export DSH_EDGE_PROVIDER="${DSH_EDGE_PROVIDER:-cloud-deepseek-v4}"
+export DSH_EDGE_PROVIDER="${DSH_EDGE_PROVIDER:-cloud-llm}"
 export DSH_EDGE_MODEL="${DSH_EDGE_MODEL:-deepseek-chat}"
 export DSH_EDGE_LOCAL_LLM_BASEURL="${DSH_EDGE_LOCAL_LLM_BASEURL:-https://coding.dashscope.aliyuncs.com/v1}"
 export DSH_EDGE_LOCAL_LLM_MODEL="${DSH_EDGE_LOCAL_LLM_MODEL:-qwen3.7-plus}"
 export DSH_EDGE_LOCAL_LLM_KEY_ENV="${DSH_EDGE_LOCAL_LLM_KEY_ENV:-DASHSCOPE_API_KEY}"
-export DSH_EDGE_INTENT_PROVIDER="${DSH_EDGE_INTENT_PROVIDER:-local-qwen3-4b}"
+export DSH_EDGE_INTENT_PROVIDER="${DSH_EDGE_INTENT_PROVIDER:-local-llm}"
 export DSH_EDGE_INTENT_MODEL="${DSH_EDGE_INTENT_MODEL:-qwen3-4b-instruct-2507}"
 export DSH_EDGE_LOCAL_TOOLS_WRITABLE="${DSH_EDGE_LOCAL_TOOLS_WRITABLE:-true}"
 export DSH_EDGE_LOCAL_TOOLS_ALLOWLIST="${DSH_EDGE_LOCAL_TOOLS_ALLOWLIST:-/tmp,/home/etsme/cy/agent/dsh-edge-agent}"

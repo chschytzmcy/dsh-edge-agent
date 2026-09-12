@@ -165,6 +165,16 @@ check_node_presence() {
     misses+=('llm-call-start-baseUrl-field')
   fi
 
+  # provider route id 必须用新名字 local-llm / cloud-llm（§7.46.10 改名约定）
+  # 防止后续改动者回退到老名字 local-qwen3-4b / cloud-deepseek-v4
+  # 注：只看本次 chat reply 行（grep sessionId 的最新一条），不查历史
+  #      历史 session 的旧字符串是改名前的合理 log，不算 FAIL
+  local latest_reply
+  latest_reply=$(grep '\[http-api\] chat reply' "$log" | tail -1)
+  if echo "$latest_reply" | grep -qE 'provider=(local-qwen3-4b|cloud-deepseek-v4|local-llama3-8b)'; then
+    misses+=('provider-route-id-must-use-local-llm-or-cloud-llm')
+  fi
+
   if [ ${#misses[@]} -gt 0 ]; then
     echo "  ✗ 21 节点覆盖不全，缺失:"
     for m in "${misses[@]}"; do echo "      - $m"; done

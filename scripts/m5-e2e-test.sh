@@ -6,10 +6,10 @@
 #
 # 用法：
 #   ./scripts/m5-e2e-test.sh              # 使用默认配置
-#   DSH_EDGE_PROVIDER=cloud-deepseek-v4 ./scripts/m5-e2e-test.sh
+#   DSH_EDGE_PROVIDER=cloud-llm ./scripts/m5-e2e-test.sh
 #
 # 环境变量：
-#   DSH_EDGE_PROVIDER     - LLM provider (default: local-qwen3-4b-mock)
+#   DSH_EDGE_PROVIDER     - LLM provider (default: local-llm-mock)
 #   DSH_EDGE_HTTP_PORT    - HTTP 端口 (default: 21017)
 #   EDGE_API_KEY          - API 密钥 (default: test-secret-key)
 #   DEEPSEEK_API_KEY      - DeepSeek API key (cloud provider 必需)
@@ -29,7 +29,7 @@ NC='\033[0m' # No Color
 PROFILE="web"
 PORT="${DSH_EDGE_HTTP_PORT:-21017}"
 API_KEY="${EDGE_API_KEY:-test-secret-key}"
-PROVIDER="${DSH_EDGE_PROVIDER:-local-qwen3-4b-mock}"
+PROVIDER="${DSH_EDGE_PROVIDER:-local-llm-mock}"
 BASE_URL="http://127.0.0.1:$PORT"
 SERVER_PID=""
 TESTS_PASSED=0
@@ -139,8 +139,8 @@ check_prerequisites() {
     fi
 
     # 检查 API key (cloud provider)
-    if [ "$PROVIDER" = "cloud-deepseek-v4" ] && [ -z "${DEEPSEEK_API_KEY:-}" ]; then
-        log_error "使用 cloud-deepseek-v4 需要设置 DEEPSEEK_API_KEY"
+    if [ "$PROVIDER" = "cloud-llm" ] && [ -z "${DEEPSEEK_API_KEY:-}" ]; then
+        log_error "使用 cloud-llm 需要设置 DEEPSEEK_API_KEY"
         exit 1
     fi
 

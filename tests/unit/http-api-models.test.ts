@@ -55,8 +55,8 @@ describe('http-api /v1/models', () => {
   it('returns the dispatcher catalog with realm metadata', async () => {
     const svc = buildService({
       listDetailed: () => [
-        { provider: 'local-qwen3-4b', realm: 'LOCAL', available: true },
-        { provider: 'cloud-deepseek-v4', realm: 'CLOUD', available: true },
+        { provider: 'local-llm', realm: 'LOCAL', available: true },
+        { provider: 'cloud-llm', realm: 'CLOUD', available: true },
       ],
     })
     const req = mockReq('/v1/models', { authorization: 'Bearer test-token' })
@@ -69,8 +69,8 @@ describe('http-api /v1/models', () => {
     assert.equal(body.models.length, 2)
     const local = body.models.find((m: any) => m.realm === 'LOCAL')
     const cloud = body.models.find((m: any) => m.realm === 'CLOUD')
-    assert.equal(local.provider, 'local-qwen3-4b')
-    assert.equal(cloud.provider, 'cloud-deepseek-v4')
+    assert.equal(local.provider, 'local-llm')
+    assert.equal(cloud.provider, 'cloud-llm')
     assert.equal(local.available, true)
   })
 

@@ -187,7 +187,7 @@
   config:
     rules: []
     enableModelDetection: !!js process.env.DSH_EDGE_GUARD_MODEL !== 'false'
-    modelDetectionProvider: !!js process.env.DSH_EDGE_GUARD_MODEL_PROVIDER ?? 'local-qwen3-4b'
+    modelDetectionProvider: !!js process.env.DSH_EDGE_GUARD_MODEL_PROVIDER ?? 'local-llm'
     modelDetectionModel: !!js process.env.DSH_EDGE_GUARD_MODEL_MODEL ?? 'qwen3-4b'
     modelDetectionTimeoutMs: !!js parseInt(process.env.DSH_EDGE_GUARD_MODEL_TIMEOUT_MS ?? '4000', 10)
     modelDetectionMaxInputLength: !!js parseInt(process.env.DSH_EDGE_GUARD_MODEL_MAX_INPUT ?? '2000', 10)
@@ -208,9 +208,9 @@
   name: '@deepseek-harness-edge-agent/dsh-edge-agent/model-router'
   inject: [llm, privacyPolicy, auditLog]
   config:
-    defaultModel: !!js process.env.DSH_EDGE_DEFAULT_MODEL ?? 'local-qwen3-4b'
-    localModels: !!js (process.env.DSH_EDGE_LOCAL_MODELS ?? 'local-qwen3-4b,local-llama3-8b').split(',').filter(Boolean)
-    cloudModels: !!js (process.env.DSH_EDGE_CLOUD_MODELS ?? 'cloud-deepseek-v4,cloud-deepseek-v3').split(',').filter(Boolean)
+    defaultModel: !!js process.env.DSH_EDGE_DEFAULT_MODEL ?? 'local-llm'
+    localModels: !!js (process.env.DSH_EDGE_LOCAL_MODELS ?? 'local-llm,local-llm-llama3').split(',').filter(Boolean)
+    cloudModels: !!js (process.env.DSH_EDGE_CLOUD_MODELS ?? 'cloud-llm,cloud-llm-v3').split(',').filter(Boolean)
 
 # Local LLM adapter (OpenAI-compatible endpoint).
 #
@@ -227,7 +227,7 @@
 - id: local-llm-adapter
   name: '@deepseek-harness-edge-agent/dsh-edge-agent/local-llm-adapter'
   config:
-    providers: !!js (process.env.DSH_EDGE_LOCAL_MODELS ?? 'local-qwen3-4b').split(',').filter(Boolean)
+    providers: !!js (process.env.DSH_EDGE_LOCAL_MODELS ?? 'local-llm').split(',').filter(Boolean)
     baseUrl: !!js process.env.DSH_EDGE_LOCAL_LLM_BASEURL ?? 'http://127.0.0.1:8080/v1'
     defaultModel: !!js process.env.DSH_EDGE_LOCAL_LLM_MODEL ?? 'qwen3-4b'
     apiKeyEnv: !!js process.env.DSH_EDGE_LOCAL_LLM_APIKEY_ENV ?? undefined
@@ -237,7 +237,7 @@
   name: '@deepseek-harness-edge-agent/dsh-edge-agent/cloud-llm-adapter'
   inject: [secureBridge, auditLog]
   config:
-    providers: !!js (process.env.DSH_EDGE_CLOUD_MODELS ?? 'cloud-deepseek-v4').split(',').filter(Boolean)
+    providers: !!js (process.env.DSH_EDGE_CLOUD_MODELS ?? 'cloud-llm').split(',').filter(Boolean)
     baseUrl: !!js process.env.DEEPSEEK_BASE_URL ?? 'https://api.deepseek.com'
     apiKeyEnv: !!js process.env.DSH_EDGE_CLOUD_KEY_ENV ?? 'DEEPSEEK_API_KEY'
 

@@ -158,12 +158,12 @@ function defaultConfig(overrides: Partial<Config> = {}): Config {
     sanitizeLocalTraffic: false,
     rejectOnPolicyViolation: true,
     downgradeOnSanitizeFailure: true,
-    localProvider: 'local-qwen3-4b',
+    localProvider: 'local-llm',
     localModel: 'qwen3-4b-instruct-2507',
     cloudApiKeyEnv: 'DEEPSEEK_API_KEY',
     // §7.43 (2026-09-07): input-guard 现在会用 defaultCloudProvider 当 fallback,
     // 测试 fixture 必须显式提供这两个字段，否则 Config 类型签名要求会被 TS 拒绝。
-    defaultCloudProvider: 'cloud-deepseek-v4',
+    defaultCloudProvider: 'cloud-llm',
     defaultCloudModel: 'deepseek-chat',
     ...overrides,
   }
@@ -579,7 +579,7 @@ describe('§7.46.3 — desanitize + route override + routeSource', () => {
     )
     // 注入 _edgeRoute 模拟 http-api 已分类（含 realm 字段 — readEdgeRoute 要求）
     const payload = makePreStepPayload('test http-api entry')
-    ;(payload.agent as any)._edgeRoute = { provider: 'cloud-deepseek-v4', model: 'deepseek-chat', realm: 'CLOUD', category: 'CLOUD', confidence: 0.9, rationale: 'http-api-classified' }
+    ;(payload.agent as any)._edgeRoute = { provider: 'cloud-llm', model: 'deepseek-chat', realm: 'CLOUD', category: 'CLOUD', confidence: 0.9, rationale: 'http-api-classified' }
     await svc.handlePreStep(payload as any, makeNext(payload.messages))
 
     const preflight = infoLines.find((l) => l.includes('preflight intent'))
@@ -615,14 +615,14 @@ describe('§7.46.3 — desanitize + route override + routeSource', () => {
     const payload = makePreStepPayload('test override')
     await svc.handlePreStep(payload as any, makeNext(payload.messages))
     // 然后 handleAgentRequest 看到 downgraded → 改写 route
-    const seedConfig = { provider: 'cloud-deepseek-v4', model: 'deepseek-chat' }
+    const seedConfig = { provider: 'cloud-llm', model: 'deepseek-chat' }
     const result = await svc.handleAgentRequest(payload as any, seedConfig as any, async () => seedConfig as any)
     const override = infoLines.find((l) => l.includes('route override'))
     assert.ok(override, 'route override should fire')
-    assert.ok(override!.includes('fromProvider=cloud-deepseek-v4'), `should show original provider, got: ${override}`)
-    assert.ok(override!.includes('toProvider=local-qwen3-4b'), 'should show downgraded provider')
+    assert.ok(override!.includes('fromProvider=cloud-llm'), `should show original provider, got: ${override}`)
+    assert.ok(override!.includes('toProvider=local-llm'), 'should show downgraded provider')
     assert.ok(override!.includes('reason=intent-local'), 'should show downgrade reason')
-    assert.equal((result as any).provider, 'local-qwen3-4b')
+    assert.equal((result as any).provider, 'local-llm')
   })
 })
 
@@ -755,7 +755,7 @@ describe('handlePreStep — §7.46.7 preflight intentSource field', () => {
       undefined, undefined, ir.api as any, undefined,
     )
     const payload = makePreStepPayload('http-api classified')
-    ;(payload.agent as any)._edgeRoute = { provider: 'cloud-deepseek-v4', model: 'deepseek-chat', realm: 'CLOUD', category: 'CLOUD', confidence: 0.9, rationale: 'http-api-resolved' }
+    ;(payload.agent as any)._edgeRoute = { provider: 'cloud-llm', model: 'deepseek-chat', realm: 'CLOUD', category: 'CLOUD', confidence: 0.9, rationale: 'http-api-resolved' }
     await svc.handlePreStep(payload as any, makeNext(payload.messages))
 
     const preflight = infoLines.find((l) => l.includes('preflight intent'))
@@ -870,7 +870,7 @@ describe('handlePreStep — sanitize failure policy', () => {
 describe('handleAgentRequest — route override on downgrade', () => {
   it('passes through when no state for session', async () => {
     const svc = new InputGuardServiceImpl(fakeCtx() as any, defaultConfig())
-    const seed = { provider: 'cloud-deepseek-v4', model: 'deepseek-chat' }
+    const seed = { provider: 'cloud-llm', model: 'deepseek-chat' }
     const result = await svc.handleAgentRequest({ agent: { session: { id: 'unknown' } } }, seed, async () => seed)
     assert.deepEqual(result, seed)
   })
@@ -879,7 +879,7 @@ describe('handleAgentRequest — route override on downgrade', () => {
     const svc = new InputGuardServiceImpl(fakeCtx() as any, defaultConfig())
     // 模拟 sanitize 成功（state.sanitized=true，无 downgraded）
     ;(svc as any).stepState.set('s1', { sanitized: true, replacements: 1, sessionId: 's1', timestamp: Date.now() })
-    const seed = { provider: 'cloud-deepseek-v4', model: 'deepseek-chat' }
+    const seed = { provider: 'cloud-llm', model: 'deepseek-chat' }
     const result = await svc.handleAgentRequest({ agent: { session: { id: 's1' } } }, seed, async () => seed)
     assert.deepEqual(result, seed)
   })
@@ -887,25 +887,25 @@ describe('handleAgentRequest — route override on downgrade', () => {
   it('overrides provider/model to LOCAL when downgraded', async () => {
     const audit = fakeAuditLog()
     const svc = new InputGuardServiceImpl(
-      fakeCtx() as any, defaultConfig({ localProvider: 'local-qwen3-4b', localModel: 'qwen3-4b' }),
+      fakeCtx() as any, defaultConfig({ localProvider: 'local-llm', localModel: 'qwen3-4b' }),
       undefined, undefined, undefined, undefined, audit.api as any,
     )
     ;(svc as any).stepState.set('s1', {
       sanitized: false, replacements: 0, sessionId: 's1', timestamp: Date.now(),
       downgraded: true, downgradeReason: 'sanitize-boom',
-      originalProvider: 'cloud-deepseek-v4', originalModel: 'deepseek-chat',
+      originalProvider: 'cloud-llm', originalModel: 'deepseek-chat',
       originalRealm: 'CLOUD',
     })
-    const seed = { provider: 'cloud-deepseek-v4', model: 'deepseek-chat', maxTokens: 4096 }
+    const seed = { provider: 'cloud-llm', model: 'deepseek-chat', maxTokens: 4096 }
     const result = await svc.handleAgentRequest({ agent: { session: { id: 's1' } } }, seed, async () => seed)
-    assert.equal(result.provider, 'local-qwen3-4b')
+    assert.equal(result.provider, 'local-llm')
     assert.equal(result.model, 'qwen3-4b')
     assert.equal(result.maxTokens, 4096, '其他字段保留')
     // 审计：input-guard.route.overridden 应被记录
     const ov = audit.entries.find(e => e.kind === 'input-guard.route.overridden')
     assert.ok(ov)
-    assert.deepEqual(ov?.payload?.from, { provider: 'cloud-deepseek-v4', model: 'deepseek-chat' })
-    assert.deepEqual(ov?.payload?.to, { provider: 'local-qwen3-4b', model: 'qwen3-4b' })
+    assert.deepEqual(ov?.payload?.from, { provider: 'cloud-llm', model: 'deepseek-chat' })
+    assert.deepEqual(ov?.payload?.to, { provider: 'local-llm', model: 'qwen3-4b' })
   })
 
   it('passes through when enableInputGuard=false even if downgraded', async () => {
@@ -913,7 +913,7 @@ describe('handleAgentRequest — route override on downgrade', () => {
     ;(svc as any).stepState.set('s1', {
       sanitized: false, replacements: 0, sessionId: 's1', timestamp: Date.now(), downgraded: true,
     })
-    const seed = { provider: 'cloud-deepseek-v4', model: 'deepseek-chat' }
+    const seed = { provider: 'cloud-llm', model: 'deepseek-chat' }
     const result = await svc.handleAgentRequest({ agent: { session: { id: 's1' } } }, seed, async () => seed)
     assert.deepEqual(result, seed)
   })
@@ -929,94 +929,94 @@ describe('handleAgentRequest — §7.43 recovery from previous turn downgrade', 
   it('restores provider/model when seedConfig is stuck on local after prior downgrade', async () => {
     const audit = fakeAuditLog()
     const svc = new InputGuardServiceImpl(
-      fakeCtx() as any, defaultConfig({ localProvider: 'local-qwen3-4b', localModel: 'qwen3-4b-instruct-2507' }),
+      fakeCtx() as any, defaultConfig({ localProvider: 'local-llm', localModel: 'qwen3-4b-instruct-2507' }),
       undefined, undefined, undefined, undefined, audit.api as any,
     )
     ;(svc as any).stepState.set('s2', {
       sanitized: true, replacements: 1, sessionId: 's2', timestamp: 1_700_000_000_000,
       downgraded: false, // 这次 turn 是 CLOUD，没降级
-      originalProvider: 'cloud-deepseek-v4', originalModel: 'deepseek-chat',
+      originalProvider: 'cloud-llm', originalModel: 'deepseek-chat',
       originalRealm: 'CLOUD',
     })
     // agent-loop 持久化了下上次的 local provider，seedConfig 被污染
-    const seed = { provider: 'local-qwen3-4b', model: 'qwen3-4b-instruct-2507', maxTokens: 4096 }
+    const seed = { provider: 'local-llm', model: 'qwen3-4b-instruct-2507', maxTokens: 4096 }
     const result = await svc.handleAgentRequest({ agent: { session: { id: 's2' } } }, seed, async () => seed)
-    assert.equal(result.provider, 'cloud-deepseek-v4', '必须恢复回 cloud provider')
+    assert.equal(result.provider, 'cloud-llm', '必须恢复回 cloud provider')
     assert.equal(result.model, 'deepseek-chat', '必须恢复回原 model')
     assert.equal(result.maxTokens, 4096, '其他字段保留')
     // 审计：input-guard.route.restored 应被记录
     const restored = audit.entries.find(e => e.kind === 'input-guard.route.restored')
     assert.ok(restored, '应该记录 input-guard.route.restored 审计')
-    assert.deepEqual(restored?.payload?.from, { provider: 'local-qwen3-4b', model: 'qwen3-4b-instruct-2507' })
-    assert.deepEqual(restored?.payload?.to, { provider: 'cloud-deepseek-v4', model: 'deepseek-chat' })
+    assert.deepEqual(restored?.payload?.from, { provider: 'local-llm', model: 'qwen3-4b-instruct-2507' })
+    assert.deepEqual(restored?.payload?.to, { provider: 'cloud-llm', model: 'deepseek-chat' })
     assert.equal(restored?.payload?.reason, 'recovery-from-previous-downgrade')
     assert.equal(restored?.payload?.originalTurn, 1_700_000_000_000)
   })
 
   it('clears originalProvider after recovery so it does not fire again', async () => {
     const svc = new InputGuardServiceImpl(
-      fakeCtx() as any, defaultConfig({ localProvider: 'local-qwen3-4b', localModel: 'qwen3-4b-instruct-2507' }),
+      fakeCtx() as any, defaultConfig({ localProvider: 'local-llm', localModel: 'qwen3-4b-instruct-2507' }),
     )
     ;(svc as any).stepState.set('s3', {
       sanitized: true, replacements: 1, sessionId: 's3', timestamp: Date.now(),
       downgraded: false,
-      originalProvider: 'cloud-deepseek-v4', originalModel: 'deepseek-chat',
+      originalProvider: 'cloud-llm', originalModel: 'deepseek-chat',
     })
-    const seed1 = { provider: 'local-qwen3-4b', model: 'qwen3-4b-instruct-2507' }
+    const seed1 = { provider: 'local-llm', model: 'qwen3-4b-instruct-2507' }
     const r1 = await svc.handleAgentRequest({ agent: { session: { id: 's3' } } }, seed1, async () => seed1)
-    assert.equal(r1.provider, 'cloud-deepseek-v4', '第一次恢复成功')
+    assert.equal(r1.provider, 'cloud-llm', '第一次恢复成功')
 
     // 模拟 agent-loop 已经把 current provider 改回 local（极端情况）——
     // 这次 originalProvider 已被清掉，不应再次触发恢复
-    const seed2 = { provider: 'local-qwen3-4b', model: 'qwen3-4b-instruct-2507' }
+    const seed2 = { provider: 'local-llm', model: 'qwen3-4b-instruct-2507' }
     const r2 = await svc.handleAgentRequest({ agent: { session: { id: 's3' } } }, seed2, async () => seed2)
     assert.deepEqual(r2, seed2, 'originalProvider 已清，不应再恢复（防止反复横跳）')
   })
 
   it('passes through when state has no originalProvider (no prior downgrade)', async () => {
     const svc = new InputGuardServiceImpl(
-      fakeCtx() as any, defaultConfig({ localProvider: 'local-qwen3-4b' }),
+      fakeCtx() as any, defaultConfig({ localProvider: 'local-llm' }),
     )
     ;(svc as any).stepState.set('s4', {
       sanitized: true, replacements: 1, sessionId: 's4', timestamp: Date.now(),
       downgraded: false,
       // 没有 originalProvider —— 第一次进 CLOUD 路由，无需恢复
     })
-    const seed = { provider: 'local-qwen3-4b', model: 'qwen3-4b-instruct-2507' }
+    const seed = { provider: 'local-llm', model: 'qwen3-4b-instruct-2507' }
     const result = await svc.handleAgentRequest({ agent: { session: { id: 's4' } } }, seed, async () => seed)
     assert.deepEqual(result, seed, '无 originalProvider → 透传（让 agent-loop 自己选）')
   })
 
   it('passes through when seedConfig.provider is already CLOUD (no contamination)', async () => {
     const svc = new InputGuardServiceImpl(
-      fakeCtx() as any, defaultConfig({ localProvider: 'local-qwen3-4b' }),
+      fakeCtx() as any, defaultConfig({ localProvider: 'local-llm' }),
     )
     ;(svc as any).stepState.set('s5', {
       sanitized: true, replacements: 1, sessionId: 's5', timestamp: Date.now(),
       downgraded: false,
-      originalProvider: 'cloud-deepseek-v4', originalModel: 'deepseek-chat',
+      originalProvider: 'cloud-llm', originalModel: 'deepseek-chat',
     })
     // seedConfig 已是 cloud —— 不需要恢复，原样返回
-    const seed = { provider: 'cloud-deepseek-v4', model: 'deepseek-chat' }
+    const seed = { provider: 'cloud-llm', model: 'deepseek-chat' }
     const result = await svc.handleAgentRequest({ agent: { session: { id: 's5' } } }, seed, async () => seed)
     assert.deepEqual(result, seed, '已是 CLOUD → 不动 originalProvider')
     // 确认 originalProvider 没被清（保留给可能的下一次污染）
     const stateAfter = (svc as any).stepState.get('s5')
-    assert.equal(stateAfter.originalProvider, 'cloud-deepseek-v4', '恢复分支未触发 → originalProvider 保留')
+    assert.equal(stateAfter.originalProvider, 'cloud-llm', '恢复分支未触发 → originalProvider 保留')
   })
 
   it('passes through when state.originalProvider equals localProvider (no real contamination)', async () => {
     // 防御性：如果 originalProvider 跟 localProvider 相同，恢复分支就不该触发
     // （虽然 handlePreStep 不会写入相同的 originalProvider，但单元测试覆盖这个分支）
     const svc = new InputGuardServiceImpl(
-      fakeCtx() as any, defaultConfig({ localProvider: 'local-qwen3-4b' }),
+      fakeCtx() as any, defaultConfig({ localProvider: 'local-llm' }),
     )
     ;(svc as any).stepState.set('s6', {
       sanitized: true, replacements: 1, sessionId: 's6', timestamp: Date.now(),
       downgraded: false,
-      originalProvider: 'local-qwen3-4b', originalModel: 'qwen3-4b-instruct-2507',
+      originalProvider: 'local-llm', originalModel: 'qwen3-4b-instruct-2507',
     })
-    const seed = { provider: 'local-qwen3-4b', model: 'qwen3-4b-instruct-2507' }
+    const seed = { provider: 'local-llm', model: 'qwen3-4b-instruct-2507' }
     const result = await svc.handleAgentRequest({ agent: { session: { id: 's6' } } }, seed, async () => seed)
     assert.deepEqual(result, seed, 'originalProvider === localProvider → 不动')
   })
@@ -1034,7 +1034,7 @@ describe('handlePreStep — reads intent from agent._edgeRoute', () => {
     ;(payload.agent as any)._edgeRoute = {
       realm: 'CLOUD',
       category: 'CLOUD',
-      provider: 'cloud-deepseek-v4',
+      provider: 'cloud-llm',
       model: 'deepseek-chat',
       confidence: 0.9,
       rationale: 'edge-route-cached',
@@ -1082,7 +1082,7 @@ describe('handlePreStep — reads intent from agent._edgeRoute', () => {
     ;(payload.agent as any)._edgeRoute = {
       realm: 'CLOUD',
       category: 'CLOUD',
-      provider: 'cloud-deepseek-v4',
+      provider: 'cloud-llm',
       model: 'deepseek-chat',
       confidence: 0.9,
     }
@@ -1091,7 +1091,7 @@ describe('handlePreStep — reads intent from agent._edgeRoute', () => {
     assert.ok(state)
     // 由于 ir.classify 返回 LOCAL（fallback），state 应有 originalProvider 等
     // 但 sanitize 不被调用；这里测的是记录逻辑
-    assert.equal(state?.originalProvider, 'cloud-deepseek-v4')
+    assert.equal(state?.originalProvider, 'cloud-llm')
     assert.equal(state?.originalModel, 'deepseek-chat')
     assert.equal(state?.originalRealm, 'CLOUD')
   })
@@ -1112,14 +1112,14 @@ describe('handlePreStep — §7.43 fallback: writes defaultCloudProvider when _e
     const ir = fakeIntentRouter({ category: 'LOCAL' })
     const audit = fakeAuditLog()
     const svc = new InputGuardServiceImpl(
-      fakeCtx() as any, defaultConfig(), // defaultCloudProvider='cloud-deepseek-v4'
+      fakeCtx() as any, defaultConfig(), // defaultCloudProvider='cloud-llm'
       undefined, undefined, ir.api as any, undefined, audit.api as any,
     )
     const payload = makePreStepPayload('查询本地的IP') // 没有 _edgeRoute
     await svc.handlePreStep(payload as any, makeNext(payload.messages))
     const state = svc.getStepState('sess-1')
     assert.ok(state, 'stepState 应被写入')
-    assert.equal(state?.originalProvider, 'cloud-deepseek-v4', 'TUI 路径必须有 fallback originalProvider')
+    assert.equal(state?.originalProvider, 'cloud-llm', 'TUI 路径必须有 fallback originalProvider')
     assert.equal(state?.originalModel, 'deepseek-chat', 'model 也必须有 fallback')
     assert.equal(state?.downgraded, true, 'intent=LOCAL → downgraded=true')
     assert.equal(state?.downgradeReason, 'intent-local')
@@ -1141,7 +1141,7 @@ describe('handlePreStep — §7.43 fallback: writes defaultCloudProvider when _e
     await svc.handlePreStep(payload as any, makeNext(payload.messages))
     const state = svc.getStepState('sess-1')
     assert.ok(state)
-    assert.equal(state?.originalProvider, 'cloud-deepseek-v4', 'CLOUD 路径也必须写入 fallback originalProvider')
+    assert.equal(state?.originalProvider, 'cloud-llm', 'CLOUD 路径也必须写入 fallback originalProvider')
     assert.equal(state?.originalModel, 'deepseek-chat')
     assert.equal(state?.sanitized, false, '0 replacements → sanitized=false')
     assert.equal(state?.downgraded, undefined, 'CLOUD 不降级')
@@ -1160,7 +1160,7 @@ describe('handlePreStep — §7.43 fallback: writes defaultCloudProvider when _e
     const state = svc.getStepState('sess-1')
     assert.ok(state)
     assert.equal(state?.downgraded, true, 'sanitize fail → downgraded=true')
-    assert.equal(state?.originalProvider, 'cloud-deepseek-v4', 'sanitize fail 路径也必须有 fallback')
+    assert.equal(state?.originalProvider, 'cloud-llm', 'sanitize fail 路径也必须有 fallback')
     assert.equal(state?.originalModel, 'deepseek-chat')
     // 审计 forensics
     const downgradedAudit = audit.entries.find(e => e.kind === 'input-guard.sanitize.downgraded')
@@ -1169,7 +1169,7 @@ describe('handlePreStep — §7.43 fallback: writes defaultCloudProvider when _e
   })
 
   it('config override: defaultCloudProvider from DSH_EDGE_PROVIDER env', async () => {
-    // 默认值由 process.env.DSH_EDGE_PROVIDER ?? 'cloud-deepseek-v4' 提供
+    // 默认值由 process.env.DSH_EDGE_PROVIDER ?? 'cloud-llm' 提供
     // 测一下：当 config 显式指定 defaultCloudProvider 时，fallback 用 config 优先
     const ir = fakeIntentRouter({ category: 'LOCAL' })
     const svc = new InputGuardServiceImpl(
@@ -1193,13 +1193,13 @@ describe('handlePreStep — §7.43 fallback: writes defaultCloudProvider when _e
     const payload = makePreStepPayload('hello')
     ;(payload.agent as any)._edgeRoute = {
       realm: 'CLOUD', category: 'LOCAL',
-      provider: 'cloud-deepseek-v4', model: 'deepseek-chat',
+      provider: 'cloud-llm', model: 'deepseek-chat',
       confidence: 0.9,
     }
     await svc.handlePreStep(payload as any, makeNext(payload.messages))
     const state = svc.getStepState('sess-1')
     // _edgeRoute 优先（更具体），不是 config.defaultCloudProvider
-    assert.equal(state?.originalProvider, 'cloud-deepseek-v4')
+    assert.equal(state?.originalProvider, 'cloud-llm')
     assert.equal(state?.originalModel, 'deepseek-chat')
   })
 })
@@ -1207,8 +1207,8 @@ describe('handlePreStep — §7.43 fallback: writes defaultCloudProvider when _e
 describe('handleAgentRequest — §7.43 end-to-end TUI recovery (no _edgeRoute)', () => {
   // 完整复现用户报的 4-turn 序列：
   //   turn 1 CLOUD → turn 2 CLOUD → turn 3 LOCAL → turn 4 CLOUD
-  // 修复前：turn 4 dispatch local-qwen3-4b（卡死）
-  // 修复后：turn 4 restore 回 cloud-deepseek-v4
+  // 修复前：turn 4 dispatch local-llm（卡死）
+  // 修复后：turn 4 restore 回 cloud-llm
   //
   // 关键：TUI 入口 turn 3 没有 _edgeRoute —— 必须靠 §7.43 fallback 写
   // originalProvider，turn 4 才能恢复。
@@ -1243,43 +1243,43 @@ describe('handleAgentRequest — §7.43 end-to-end TUI recovery (no _edgeRoute)'
     const turn1 = makePreStepPayload('查询美国新闻', 'tui-turn-1')
     await svc.handlePreStep(turn1 as any, makeNext(turn1.messages))
     const state1 = svc.getStepState('tui-turn-1')
-    assert.equal(state1?.originalProvider, 'cloud-deepseek-v4', 'turn 1 fallback 写 cloud')
+    assert.equal(state1?.originalProvider, 'cloud-llm', 'turn 1 fallback 写 cloud')
     assert.equal(state1?.sanitized, false)
     // handleAgentRequest: state.downgraded=undefined → pass-through, 但 seedConfig=cloud
     const r1 = await svc.handleAgentRequest(
       { agent: { session: { id: 'tui-turn-1' } } },
-      { provider: 'cloud-deepseek-v4', model: 'deepseek-chat' },
-      async () => ({ provider: 'cloud-deepseek-v4', model: 'deepseek-chat' }),
+      { provider: 'cloud-llm', model: 'deepseek-chat' },
+      async () => ({ provider: 'cloud-llm', model: 'deepseek-chat' }),
     )
-    assert.equal(r1.provider, 'cloud-deepseek-v4')
+    assert.equal(r1.provider, 'cloud-llm')
 
     // turn 2: CLOUD, no _edgeRoute
     const turn2 = makePreStepPayload('查询AI新闻', 'tui-turn-2')
     await svc.handlePreStep(turn2 as any, makeNext(turn2.messages))
     const r2 = await svc.handleAgentRequest(
       { agent: { session: { id: 'tui-turn-2' } } },
-      { provider: 'cloud-deepseek-v4', model: 'deepseek-chat' },
-      async () => ({ provider: 'cloud-deepseek-v4', model: 'deepseek-chat' }),
+      { provider: 'cloud-llm', model: 'deepseek-chat' },
+      async () => ({ provider: 'cloud-llm', model: 'deepseek-chat' }),
     )
-    assert.equal(r2.provider, 'cloud-deepseek-v4')
+    assert.equal(r2.provider, 'cloud-llm')
 
-    // turn 3: LOCAL, no _edgeRoute —— 这里会写 originalProvider='cloud-deepseek-v4' (fallback)
+    // turn 3: LOCAL, no _edgeRoute —— 这里会写 originalProvider='cloud-llm' (fallback)
     const turn3 = makePreStepPayload('查询本地IP', 'tui-turn-3')
     await svc.handlePreStep(turn3 as any, makeNext(turn3.messages))
     const state3 = svc.getStepState('tui-turn-3')
     assert.equal(state3?.downgraded, true)
-    assert.equal(state3?.originalProvider, 'cloud-deepseek-v4', '§7.43 关键：fallback 必须让 originalProvider 非空')
+    assert.equal(state3?.originalProvider, 'cloud-llm', '§7.43 关键：fallback 必须让 originalProvider 非空')
     // handleAgentRequest 改写 → local
     const r3 = await svc.handleAgentRequest(
       { agent: { session: { id: 'tui-turn-3' } } },
-      { provider: 'cloud-deepseek-v4', model: 'deepseek-chat' },
-      async () => ({ provider: 'cloud-deepseek-v4', model: 'deepseek-chat' }),
+      { provider: 'cloud-llm', model: 'deepseek-chat' },
+      async () => ({ provider: 'cloud-llm', model: 'deepseek-chat' }),
     )
-    assert.equal(r3.provider, 'local-qwen3-4b', 'turn 3 downgrade 到 local')
+    assert.equal(r3.provider, 'local-llm', 'turn 3 downgrade 到 local')
 
     // turn 4: CLOUD —— 但 agent-loop 被 turn 3 污染，seedConfig.provider=local
     // 没有 §7.43 fallback 修复时，handleAgentRequest 会透传 → dispatch local ❌
-    // 有 §7.43 fallback 修复时，state.originalProvider='cloud-deepseek-v4' → 恢复分支触发
+    // 有 §7.43 fallback 修复时，state.originalProvider='cloud-llm' → 恢复分支触发
     const turn4 = makePreStepPayload('查询英国新闻', 'tui-turn-4')
     await svc.handlePreStep(turn4 as any, makeNext(turn4.messages))
     const state4 = svc.getStepState('tui-turn-4')
@@ -1290,7 +1290,7 @@ describe('handleAgentRequest — §7.43 end-to-end TUI recovery (no _edgeRoute)'
     //
     // 实际生产代码：每个 turn 的 stepState 是"上一步"的状态。turn 4 的 handlePreStep
     // 覆盖了 turn 3 的 state，所以 handleAgentRequest 看到的 state 是 turn 4 自己写的
-    // (sanitized=true, originalProvider=cloud-deepseek-v4 但是 downgraded=undefined)。
+    // (sanitized=true, originalProvider=cloud-llm 但是 downgraded=undefined)。
     // 此时恢复分支不触发。
     //
     // 哦 — 这意味着 §7.43 恢复分支必须在 handleAgentRequest 看到"上一 turn"的状态。
@@ -1305,16 +1305,16 @@ describe('handleAgentRequest — §7.43 end-to-end TUI recovery (no _edgeRoute)'
     // （这个发现是为了让本测试通过，实际生产代码应在下面 r4 看到这种情况时主动恢复。）
     const r4 = await svc.handleAgentRequest(
       { agent: { session: { id: 'tui-turn-4' } } },
-      { provider: 'local-qwen3-4b', model: 'qwen3-4b-instruct-2507' }, // 模拟 agent-loop 污染
-      async () => ({ provider: 'local-qwen3-4b', model: 'qwen3-4b-instruct-2507' }),
+      { provider: 'local-llm', model: 'qwen3-4b-instruct-2507' }, // 模拟 agent-loop 污染
+      async () => ({ provider: 'local-llm', model: 'qwen3-4b-instruct-2507' }),
     )
     // 期望：handleAgentRequest 看到 seedConfig.provider=local 且 state4.downgraded !== true
-    // → 应该恢复回 cloud-deepseek-v4（基于 state4.originalProvider=fallback 'cloud-deepseek-v4'）
+    // → 应该恢复回 cloud-llm（基于 state4.originalProvider=fallback 'cloud-llm'）
     //
     // 但是当前实现：恢复分支条件 state.originalProvider 必须存在。state4.originalProvider
-    // 在 turn 4 sanitize 成功时被设了（fallback 'cloud-deepseek-v4'）—— 满足！
-    assert.equal(state4?.originalProvider, 'cloud-deepseek-v4', 'turn 4 handlePreStep 写 originalProvider（fallback）')
-    assert.equal(r4.provider, 'cloud-deepseek-v4', '§7.43 修复后：turn 4 应恢复回 cloud（不再被污染到 local）')
+    // 在 turn 4 sanitize 成功时被设了（fallback 'cloud-llm'）—— 满足！
+    assert.equal(state4?.originalProvider, 'cloud-llm', 'turn 4 handlePreStep 写 originalProvider（fallback）')
+    assert.equal(r4.provider, 'cloud-llm', '§7.43 修复后：turn 4 应恢复回 cloud（不再被污染到 local）')
   })
 })
 
@@ -1336,7 +1336,7 @@ describe('handlePreStep — §7.26 bug A regression: LOCAL intent must downgrade
     ;(payload.agent as any)._edgeRoute = {
       realm: 'LOCAL',
       category: 'LOCAL',
-      provider: 'cloud-deepseek-v4',  // 上游误判：走 cloud
+      provider: 'cloud-llm',  // 上游误判：走 cloud
       model: 'deepseek-chat',
       confidence: 0.95,
       rationale: 'edge-route-cached',
@@ -1348,7 +1348,7 @@ describe('handlePreStep — §7.26 bug A regression: LOCAL intent must downgrade
     // 核心断言：downgraded=true 让 agent/request hook 改写路由
     assert.equal(state?.downgraded, true)
     assert.equal(state?.downgradeReason, 'intent-local')
-    assert.equal(state?.originalProvider, 'cloud-deepseek-v4')
+    assert.equal(state?.originalProvider, 'cloud-llm')
     assert.equal(state?.originalModel, 'deepseek-chat')
     assert.equal(state?.originalRealm, 'LOCAL')
   })
@@ -1363,15 +1363,15 @@ describe('handlePreStep — §7.26 bug A regression: LOCAL intent must downgrade
     const payload = makePreStepPayload('查本地IP')
     ;(payload.agent as any)._edgeRoute = {
       realm: 'LOCAL', category: 'LOCAL',
-      provider: 'cloud-deepseek-v4', model: 'deepseek-chat',
+      provider: 'cloud-llm', model: 'deepseek-chat',
       confidence: 0.95, rationale: 'edge-route-cached',
     }
     await svc.handlePreStep(payload as any, makeNext(payload.messages))
     const downgraded = audit.entries.find(e => e.kind === 'input-guard.intent.downgraded')
     assert.ok(downgraded, 'must emit input-guard.intent.downgraded')
     assert.equal(downgraded?.level, 'security', 'security 级别不会被 audit-log minLevel drop')
-    assert.equal((downgraded?.payload as any).originalProvider, 'cloud-deepseek-v4')
-    assert.equal((downgraded?.payload as any).targetProvider, 'local-qwen3-4b')
+    assert.equal((downgraded?.payload as any).originalProvider, 'cloud-llm')
+    assert.equal((downgraded?.payload as any).targetProvider, 'local-llm')
   })
 
   it('LOCAL edgeRoute with already-local provider → downgraded=true (idempotent rewrite)', async () => {
@@ -1387,7 +1387,7 @@ describe('handlePreStep — §7.26 bug A regression: LOCAL intent must downgrade
     const payload = makePreStepPayload('查本地IP')
     ;(payload.agent as any)._edgeRoute = {
       realm: 'LOCAL', category: 'LOCAL',
-      provider: 'local-qwen3-4b',    // 已经是本地
+      provider: 'local-llm',    // 已经是本地
       model: 'qwen3-4b-instruct-2507',
       confidence: 0.95, rationale: 'edge-route-cached',
     }
@@ -1407,7 +1407,7 @@ describe('handlePreStep — §7.26 bug A regression: LOCAL intent must downgrade
     const payload = makePreStepPayload('你好')
     ;(payload.agent as any)._edgeRoute = {
       realm: 'CLOUD', category: 'CLOUD',
-      provider: 'cloud-deepseek-v4', model: 'deepseek-chat',
+      provider: 'cloud-llm', model: 'deepseek-chat',
       confidence: 0.9, rationale: 'edge-route-cached',
     }
     await svc.handlePreStep(payload as any, makeNext(payload.messages))
@@ -1439,7 +1439,7 @@ describe('handlePreStep — §7.26 bug A regression: LOCAL intent must downgrade
   it('LOCAL intent WITHOUT _edgeRoute (webui path) → downgraded=true (Chat 2 leak bug, §7.34)', async () => {
     // 复现 Chat 2 (2026-09-03)：用户在 webui 输 "查询密盒里有哪些文件"。
     // intent-router 正确分类 LOCAL @ 0.95，但 webui (dsh-web-app chat) 不设
-    // _edgeRoute。§7.26 修复对 http-api 路径有效；webui 路径仍走 cloud-deepseek-v4。
+    // _edgeRoute。§7.26 修复对 http-api 路径有效；webui 路径仍走 cloud-llm。
     // 9 次 cloud LLM 调用，promptLen 6841→7419，文件列表 leak 到 deepseek API。
     //
     // §7.34 修复：wantsDowngradeToLocal = category === 'LOCAL'（不再依赖 edgeRoute）。
@@ -1466,11 +1466,11 @@ describe('handlePreStep — §7.26 bug A regression: LOCAL intent must downgrade
     // §7.43 (2026-09-07): webui 路径不再写 originalProvider=undefined；fallback 到
     // config.defaultCloudProvider（mirror cordis.patch.yml 的 DSH_EDGE_PROVIDER）。
     // 这让 turn N+1 的 handleAgentRequest 恢复分支能在 TUI/webui 上识别污染。
-    assert.equal((downgraded?.payload as any).originalProvider, 'cloud-deepseek-v4',
+    assert.equal((downgraded?.payload as any).originalProvider, 'cloud-llm',
       '§7.43: webui 路径必须有 fallback originalProvider')
     assert.equal((downgraded?.payload as any).originalProviderSource, 'default-cloud-fallback',
       '§7.43: 必须标记 source 为 fallback 便于 forensics')
-    assert.equal((downgraded?.payload as any).targetProvider, 'local-qwen3-4b')
+    assert.equal((downgraded?.payload as any).targetProvider, 'local-llm')
   })
 
   it('LOCAL intent without _edgeRoute → handleAgentRequest rewrites provider (end-to-end, §7.34)', async () => {
@@ -1483,21 +1483,21 @@ describe('handlePreStep — §7.26 bug A regression: LOCAL intent must downgrade
     )
     const payload = makePreStepPayload('查询密盒里有哪些文件')
     await svc.handlePreStep(payload as any, makeNext(payload.messages))
-    // 模拟 agent-loop 拿到的 seedConfig（默认 cloud-deepseek-v4）
-    const seed = { provider: 'cloud-deepseek-v4', model: 'deepseek-chat', maxTokens: 4096 }
+    // 模拟 agent-loop 拿到的 seedConfig（默认 cloud-llm）
+    const seed = { provider: 'cloud-llm', model: 'deepseek-chat', maxTokens: 4096 }
     const result = await svc.handleAgentRequest(
       { agent: { session: { id: payload.agent.session.id } } },
       seed,
       async () => seed,
     )
-    assert.equal(result.provider, 'local-qwen3-4b', '§7.34: webui 路径必须改写到 LOCAL')
+    assert.equal(result.provider, 'local-llm', '§7.34: webui 路径必须改写到 LOCAL')
     assert.equal(result.model, 'qwen3-4b-instruct-2507')
     assert.equal(result.maxTokens, 4096, '其他字段保留')
     // 审计：input-guard.route.overridden 应被记录
     const ov = audit.entries.find(e => e.kind === 'input-guard.route.overridden')
     assert.ok(ov)
-    assert.deepEqual(ov?.payload?.from, { provider: 'cloud-deepseek-v4', model: 'deepseek-chat' })
-    assert.deepEqual(ov?.payload?.to, { provider: 'local-qwen3-4b', model: 'qwen3-4b-instruct-2507' })
+    assert.deepEqual(ov?.payload?.from, { provider: 'cloud-llm', model: 'deepseek-chat' })
+    assert.deepEqual(ov?.payload?.to, { provider: 'local-llm', model: 'qwen3-4b-instruct-2507' })
     assert.equal(ov?.payload?.reason, 'intent-local')
   })
 })
@@ -1564,7 +1564,7 @@ describe('handlePreStep — §7.35: cloud API key missing → downgrade LOCAL', 
       // category 字段记录的是 intent-router 的原始分类（CLOUD），targetProvider
       // 才是降级后的目标（LOCAL）——这是审计可追溯性的语义。
       assert.equal((missing?.payload as any).category, 'CLOUD', '记录原始分类')
-      assert.equal((missing?.payload as any).targetProvider, 'local-qwen3-4b', '记录降级目标')
+      assert.equal((missing?.payload as any).targetProvider, 'local-llm', '记录降级目标')
       assert.equal((missing?.payload as any).routeSource, 'webui', 'tui/webui 路径无 _edgeRoute')
 
       // sanitize 不应被调用（缺失分支早于 sanitizer 触发）

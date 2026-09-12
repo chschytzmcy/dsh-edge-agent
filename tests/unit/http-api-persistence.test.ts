@@ -36,11 +36,11 @@ function mockRes() {
 describe('http-api session persistence via HttpApiSessionsImpl', () => {
   it('createSession persists in memory', async () => {
     const helper = new HttpApiSessionsImpl(null)
-    const { sessionId } = await helper.createSession({ provider: 'local-qwen3-4b', model: 'qwen3-4b' })
+    const { sessionId } = await helper.createSession({ provider: 'local-llm', model: 'qwen3-4b' })
     assert.ok(sessionId)
     const meta = await helper.getSession(sessionId)
     assert.ok(meta)
-    assert.equal(meta?.provider, 'local-qwen3-4b')
+    assert.equal(meta?.provider, 'local-llm')
     assert.equal(meta?.title, null)
   })
 

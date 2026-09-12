@@ -20,13 +20,13 @@
 #
 # 前置:
 #   - DSH_EDGE_GUARD_MODEL=false (避免 prompt-guard 模型层干扰工具调用)
-#   - DSH_EDGE_PROVIDER=cloud-deepseek-v4 (强制用支持 tool-calling 的云端模型;
+#   - DSH_EDGE_PROVIDER=cloud-llm (强制用支持 tool-calling 的云端模型;
 #     本地 qwen3-4b 不发 tool_calls,本地 LLM 跑这套测试永远 soft-pass)
 #   - DEEPSEEK_API_KEY 必须可用 (web_search 走 DeepSeek chat-completions 调
 #     用 LLM 决策,然后调 web-search-deepseek Anthropic 端点执行搜索)
 #
 # 注: 不用 `set -e`——失败计数由 TESTS_FAILED 跟踪,print_summary 汇总。
-# v2 (2026-08-26): 强制 cloud-deepseek-v4 模型,硬断言 (audit 事件缺失即 FAIL)
+# v2 (2026-08-26): 强制 cloud-llm 模型,硬断言 (audit 事件缺失即 FAIL)
 #     而非 soft-pass。v1 软通过被审计为"LLM 未调 web_search 算 pass",对
 #     guard 链路没有验证力。
 
@@ -202,9 +202,9 @@ start_server() {
     export DSH_EDGE_HTTP_PORT="$PORT"
     # 关掉 prompt-guard 模型层(避免对测试输入误判 REJECT)
     export DSH_EDGE_GUARD_MODEL="${DSH_EDGE_GUARD_MODEL:-false}"
-    # 强制使用 cloud-deepseek-v4 (DeepSeek 官方模型) —— 本地 qwen3-4b 不发
+    # 强制使用 cloud-llm (DeepSeek 官方模型) —— 本地 qwen3-4b 不发
     # tool_calls,本地 LLM 跑这套测试永远 soft-pass,无法验证 web_search 链路
-    export DSH_EDGE_PROVIDER="cloud-deepseek-v4"
+    export DSH_EDGE_PROVIDER="cloud-llm"
     export DSH_EDGE_MODEL="deepseek-chat"
 
     local dsh_bin
@@ -213,7 +213,7 @@ start_server() {
     "$dsh_bin" --profile "$PROFILE" > /tmp/dsh-web-search-test.log 2>&1 &
     SERVER_PID=$!
     log_info "服务器 PID: $SERVER_PID, 日志: /tmp/dsh-web-search-test.log"
-    log_info "强制 provider=cloud-deepseek-v4 (model=deepseek-chat)"
+    log_info "强制 provider=cloud-llm (model=deepseek-chat)"
 
     local max_wait=60 waited=0
     while [ $waited -lt $max_wait ]; do
@@ -277,8 +277,8 @@ run_group_a() {
             log_pass "A.1 web_search 触发 (新增 $delta 条 tool.web-search.executed)"
             TESTS_PASSED=$((TESTS_PASSED + 1))
         else
-            # 硬断言:v2 起 web_search 必须真触发(cloud-deepseek-v4 支持 tool-calling)
-            log_fail "A.1 cloud-deepseek-v4 未触发 web_search (0 条新增;web-search 链路断裂)"
+            # 硬断言:v2 起 web_search 必须真触发(cloud-llm 支持 tool-calling)
+            log_fail "A.1 cloud-llm 未触发 web_search (0 条新增;web-search 链路断裂)"
             TESTS_FAILED=$((TESTS_FAILED + 1))
         fi
     else
@@ -352,7 +352,7 @@ run_group_b() {
             log_pass "B.1 PII 监控触发 ($leak_count 条 security 事件)"
             TESTS_PASSED=$((TESTS_PASSED + 1))
         else
-            # v2 硬断言:若 cloud-deepseek-v4 真的用 web_search,带 PII 的 query
+            # v2 硬断言:若 cloud-llm 真的用 web_search,带 PII 的 query
             # 会触发 leak。0 = 链路断裂 (PII 监控未生效 OR web_search 未触发)。
             # 先确认 web_search 是否真触发,区分两类失败
             local web_count
@@ -533,7 +533,7 @@ run_group_e() {
             log_pass "E.1 工具调用触发 ($delta 条)"
             TESTS_PASSED=$((TESTS_PASSED + 1))
         else
-            # v2 硬断言:给具体 URL,cloud-deepseek-v4 应触发 web_fetch
+            # v2 硬断言:给具体 URL,cloud-llm 应触发 web_fetch
             log_fail "E.1 给 URL 后未触发 web_fetch / web_search (web-search 链路断裂)"
             TESTS_FAILED=$((TESTS_FAILED + 1))
         fi

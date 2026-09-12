@@ -12,7 +12,7 @@ cd /home/etsme/cy/agent/dsh-edge-agent
 
 # 使用 cloud provider（需要 DEEPSEEK_API_KEY）
 DEEPSEEK_API_KEY=your-key-here \
-DSH_EDGE_PROVIDER=cloud-deepseek-v4 \
+DSH_EDGE_PROVIDER=cloud-llm \
 ./scripts/m5-e2e-test.sh
 
 # 保持服务器运行（手动测试）
@@ -34,7 +34,7 @@ cd /home/etsme/cy/agent/dsh-edge-agent
 npm run compile
 
 export EDGE_API_KEY=test-secret-key
-export DSH_EDGE_PROVIDER=local-qwen3-4b-mock
+export DSH_EDGE_PROVIDER=local-llm-mock
 
 # 启动（不传 task，保持运行）
 dsh --profile dsh-edge-agent &
@@ -77,7 +77,7 @@ curl -N -X POST http://127.0.0.1:21017/v1/chat/stream \
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `DSH_EDGE_PROVIDER` | `local-qwen3-4b-mock` | LLM provider |
+| `DSH_EDGE_PROVIDER` | `local-llm-mock` | LLM provider |
 | `DSH_EDGE_HTTP_PORT` | `21017` | HTTP 端口 |
 | `EDGE_API_KEY` | `test-secret-key` | API 密钥 |
 | `DEEPSEEK_API_KEY` | - | DeepSeek API key (cloud) |
@@ -201,5 +201,5 @@ jobs:
         run: ./scripts/m5-e2e-test.sh
         env:
           EDGE_API_KEY: test-key
-          DSH_EDGE_PROVIDER: local-qwen3-4b-mock
+          DSH_EDGE_PROVIDER: local-llm-mock
 ```

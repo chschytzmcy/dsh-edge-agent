@@ -7,16 +7,16 @@
  *
  * Three runs share the `dsh-edge-agent` profile and only differ in env:
  *
- *   1. `mock`   — `DSH_EDGE_PROVIDER=local-qwen3-4b-mock` (no network).
+ *   1. `mock`   — `DSH_EDGE_PROVIDER=local-llm-mock` (no network).
  *                 Asserts the assistant prints `[LOCAL-MOCK]` at least
  *                 once (the mock echoes its entire input back, so the
  *                 exact prompt text may be preceded by the headless
  *                 runner's system-preamble).
- *   2. `cloud`  — `DSH_EDGE_PROVIDER=cloud-deepseek-v4` (DeepSeek API).
+ *   2. `cloud`  — `DSH_EDGE_PROVIDER=cloud-llm` (DeepSeek API).
  *                 Requires `DEEPSEEK_API_KEY` to be in the launching
  *                 environment. Asserts the response is NOT the mock
  *                 echo, so the cloud path actually ran.
- *   3. `real`   — `DSH_EDGE_PROVIDER=local-qwen3-4b`,
+ *   3. `real`   — `DSH_EDGE_PROVIDER=local-llm`,
  *                 `DSH_EDGE_LOCAL_LLM_MODE=real`, and
  *                 `DSH_EDGE_MODEL=qwen3-4b-instruct-2507` (the wire-model
  *                 id reported by `GET /v1/models`) so the LAN endpoint
@@ -61,14 +61,14 @@ interface RunSpec {
 const runs: RunSpec[] = [
   {
     label: 'mock',
-    provider: 'local-qwen3-4b-mock',
-    model: 'local-qwen3-4b-mock',
+    provider: 'local-llm-mock',
+    model: 'local-llm-mock',
     extraEnv: {},
     mustContain: '[LOCAL-MOCK]',
   },
   {
     label: 'cloud',
-    provider: 'cloud-deepseek-v4',
+    provider: 'cloud-llm',
     model: 'deepseek-chat',
     extraEnv: {},
     mustNotContain: '[LOCAL-MOCK]',
@@ -76,7 +76,7 @@ const runs: RunSpec[] = [
   },
   {
     label: 'real',
-    provider: 'local-qwen3-4b',
+    provider: 'local-llm',
     model: realModel,
     extraEnv: {
       DSH_EDGE_LOCAL_LLM_MODE: 'real',

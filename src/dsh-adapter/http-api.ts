@@ -203,8 +203,8 @@ export class HttpApiServiceImpl extends Service {
 
   /**
    * Resolve the actual provider + model to use for a given intent verdict.
-   * Falls back to the legacy hardcoded pair (`local-qwen3-4b` /
-   * `cloud-deepseek-v4` plus env-overridable model) when:
+   * Falls back to the legacy hardcoded pair (`local-llm` /
+   * `cloud-llm` plus env-overridable model) when:
    *   - `modelRouter` is not registered on the cordis context (boot-order
    *     race: http-api boots before model-router in some configs)
    *   - `modelRouter.resolve` is unavailable
@@ -900,8 +900,8 @@ export class HttpApiServiceImpl extends Service {
       // Fallback: enumerate the legacy hardcoded pair so external clients
       // can still discover at least the default routes.
       models = [
-        { provider: 'local-qwen3-4b', realm: 'LOCAL', available: true },
-        { provider: 'cloud-deepseek-v4', realm: 'CLOUD', available: true },
+        { provider: 'local-llm', realm: 'LOCAL', available: true },
+        { provider: 'cloud-llm', realm: 'CLOUD', available: true },
       ]
     }
     res.writeHead(200, { 'Content-Type': 'application/json' })
@@ -1175,7 +1175,7 @@ export class HttpApiServiceImpl extends Service {
       const handle = await this.agents.create({
         sessionId: SessionId(sessionId),
         agentOptions: {
-          provider: provider ?? 'local-qwen3-4b',
+          provider: provider ?? 'local-llm',
           model: model ?? 'qwen3-4b',
         },
         meta: {
@@ -1624,7 +1624,7 @@ export function resolveRoute(
   ctx: any,
   isLocal: boolean,
 ): { provider: string; model: string; resolved: boolean } {
-  const preferred = isLocal ? 'local-qwen3-4b' : 'cloud-deepseek-v4'
+  const preferred = isLocal ? 'local-llm' : 'cloud-llm'
   const fallbackModel = isLocal
     ? (process.env.DSH_EDGE_LOCAL_LLM_MODEL ?? 'qwen3-4b-instruct-2507')
     : 'deepseek-chat'

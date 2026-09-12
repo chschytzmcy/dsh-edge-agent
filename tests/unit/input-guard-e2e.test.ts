@@ -119,7 +119,7 @@ function defaultConfig(overrides: Partial<Config> = {}): Config {
     sanitizeLocalTraffic: false,
     rejectOnPolicyViolation: true,
     downgradeOnSanitizeFailure: true,
-    localProvider: 'local-qwen3-4b',
+    localProvider: 'local-llm',
     localModel: 'qwen3-4b-instruct-2507',
     cloudApiKeyEnv: 'DEEPSEEK_API_KEY',
     ...overrides,
@@ -169,7 +169,7 @@ describe('input-guard E2E — PII round-trip', () => {
     const sessionId = 'e2e-1'
     const payload = makePayload('我的手机号是13812345678', sessionId, {
       realm: 'CLOUD', category: 'CLOUD',
-      provider: 'cloud-deepseek-v4', model: 'deepseek-chat',
+      provider: 'cloud-llm', model: 'deepseek-chat',
     })
 
     // 1. pre-step: sanitize + record state
@@ -215,7 +215,7 @@ describe('input-guard E2E — PII round-trip', () => {
     )
     const payload = makePayload('手机 13812345678 邮箱 alice@example.com', 'e2e-2', {
       realm: 'CLOUD', category: 'CLOUD',
-      provider: 'cloud-deepseek-v4', model: 'deepseek-chat',
+      provider: 'cloud-llm', model: 'deepseek-chat',
     })
     const decision = await svc.handlePreStep(
       payload as any,
@@ -236,14 +236,14 @@ describe('input-guard E2E — PII round-trip', () => {
     // 第一 turn：包含 13812345678
     const p1 = makePayload('我的手机号是 13812345678', sessionId, {
       realm: 'CLOUD', category: 'CLOUD',
-      provider: 'cloud-deepseek-v4', model: 'deepseek-chat',
+      provider: 'cloud-llm', model: 'deepseek-chat',
     })
     await svc.handlePreStep(p1 as any, async () => ({ kind: 'enter', messages: [...p1.messages] }))
 
     // 第二 turn：再次提到 13812345678 — 应映射到同一个 [PHONE_1]
     const p2 = makePayload('再确认一下手机 13812345678', sessionId, {
       realm: 'CLOUD', category: 'CLOUD',
-      provider: 'cloud-deepseek-v4', model: 'deepseek-chat',
+      provider: 'cloud-llm', model: 'deepseek-chat',
     })
     const d2 = await svc.handlePreStep(p2 as any, async () => ({ kind: 'enter', messages: [...p2.messages] }))
     const sentText2 = (d2.messages![1] as any).content
@@ -259,7 +259,7 @@ describe('input-guard E2E — PII round-trip', () => {
     )
     const payload = makePayload('hello world', 'e2e-3', {
       realm: 'CLOUD', category: 'CLOUD',
-      provider: 'cloud-deepseek-v4', model: 'deepseek-chat',
+      provider: 'cloud-llm', model: 'deepseek-chat',
     })
     const decision = await svc.handlePreStep(
       payload as any,
@@ -287,7 +287,7 @@ describe('input-guard E2E — downgrade semantics', () => {
     const sessionId = 'down-1'
     const payload = makePayload('alice@example.com', sessionId, {
       realm: 'CLOUD', category: 'CLOUD',
-      provider: 'cloud-deepseek-v4', model: 'deepseek-chat',
+      provider: 'cloud-llm', model: 'deepseek-chat',
     })
     // pre-step：sanitize 抛错，但 downgrade=true → pass-through + 标记降级
     const decision = await svc.handlePreStep(
@@ -301,18 +301,18 @@ describe('input-guard E2E — downgrade semantics', () => {
     const state = svc.getStepState(sessionId)
     assert.ok(state)
     assert.equal(state?.downgraded, true)
-    assert.equal(state?.originalProvider, 'cloud-deepseek-v4')
+    assert.equal(state?.originalProvider, 'cloud-llm')
     assert.equal(state?.originalModel, 'deepseek-chat')
     assert.equal(state?.originalRealm, 'CLOUD')
 
     // handleAgentRequest：改写 route 到 LOCAL
-    const seed = { provider: 'cloud-deepseek-v4', model: 'deepseek-chat', maxTokens: 4096 }
+    const seed = { provider: 'cloud-llm', model: 'deepseek-chat', maxTokens: 4096 }
     const result = await svc.handleAgentRequest(
       { agent: { session: { id: sessionId } } },
       seed,
       async () => seed,
     )
-    assert.equal(result.provider, 'local-qwen3-4b')
+    assert.equal(result.provider, 'local-llm')
     assert.equal(result.model, 'qwen3-4b-instruct-2507')
     assert.equal(result.maxTokens, 4096, '其他字段保留')
 
@@ -321,8 +321,8 @@ describe('input-guard E2E — downgrade semantics', () => {
     assert.ok(audit.entries.some(e => e.kind === 'input-guard.sanitize.downgraded' && e.level === 'security'))
     const routeAudit = audit.entries.find(e => e.kind === 'input-guard.route.overridden')
     assert.ok(routeAudit)
-    assert.equal(routeAudit?.payload?.from?.provider, 'cloud-deepseek-v4')
-    assert.equal(routeAudit?.payload?.to?.provider, 'local-qwen3-4b')
+    assert.equal(routeAudit?.payload?.from?.provider, 'cloud-llm')
+    assert.equal(routeAudit?.payload?.to?.provider, 'local-llm')
   })
 
   it('sanitize throws + downgradeOnSanitizeFailure=false → reject', async () => {
@@ -334,7 +334,7 @@ describe('input-guard E2E — downgrade semantics', () => {
     )
     const payload = makePayload('alice@example.com', 'down-2', {
       realm: 'CLOUD', category: 'CLOUD',
-      provider: 'cloud-deepseek-v4', model: 'deepseek-chat',
+      provider: 'cloud-llm', model: 'deepseek-chat',
     })
     const decision = await svc.handlePreStep(
       payload as any,
@@ -346,7 +346,7 @@ describe('input-guard E2E — downgrade semantics', () => {
     const state = svc.getStepState('down-2')
     assert.equal(state?.downgraded, undefined)
     // 路由不改写
-    const seed = { provider: 'cloud-deepseek-v4', model: 'deepseek-chat' }
+    const seed = { provider: 'cloud-llm', model: 'deepseek-chat' }
     const result = await svc.handleAgentRequest(
       { agent: { session: { id: 'down-2' } } },
       seed,
@@ -363,7 +363,7 @@ describe('input-guard E2E — downgrade semantics', () => {
     )
     const payload = makePayload('hello', 'down-3', {
       realm: 'CLOUD', category: 'CLOUD',
-      provider: 'cloud-deepseek-v4', model: 'deepseek-chat',
+      provider: 'cloud-llm', model: 'deepseek-chat',
     })
     const result = await svc.handlePreStep(
       payload as any,
@@ -525,7 +525,7 @@ describe('input-guard E2E — _edgeRoute bypass', () => {
     )
     const payload = makePayload('我的手机号是13812345678', 'edge-1', {
       realm: 'CLOUD', category: 'CLOUD',
-      provider: 'cloud-deepseek-v4', model: 'deepseek-chat',
+      provider: 'cloud-llm', model: 'deepseek-chat',
     })
     await svc.handlePreStep(
       payload as any,
@@ -574,7 +574,7 @@ describe('input-guard E2E — top-level bypass', () => {
     // pre-step: 不调 prompt-guard、不调 sanitize，messages 不变
     const payload = makePayload('alice@example.com', 'bypass-1', {
       realm: 'CLOUD', category: 'CLOUD',
-      provider: 'cloud-deepseek-v4', model: 'deepseek-chat',
+      provider: 'cloud-llm', model: 'deepseek-chat',
     })
     const decision = await svc.handlePreStep(
       payload as any,
@@ -589,7 +589,7 @@ describe('input-guard E2E — top-level bypass', () => {
       sanitized: false, replacements: 0, sessionId: 'bypass-1', timestamp: Date.now(),
       downgraded: true, originalProvider: 'cloud', originalModel: 'gpt',
     })
-    const seed = { provider: 'cloud-deepseek-v4', model: 'deepseek-chat' }
+    const seed = { provider: 'cloud-llm', model: 'deepseek-chat' }
     const reqResult = await svc.handleAgentRequest(
       { agent: { session: { id: 'bypass-1' } } },
       seed,
@@ -619,7 +619,7 @@ describe('input-guard E2E — multi-turn state isolation', () => {
     // turn 1: sanitize, replacements > 0
     const p1 = makePayload('手机 13812345678', sessionId, {
       realm: 'CLOUD', category: 'CLOUD',
-      provider: 'cloud-deepseek-v4', model: 'deepseek-chat',
+      provider: 'cloud-llm', model: 'deepseek-chat',
     })
     await svc.handlePreStep(p1 as any, async () => ({ kind: 'enter', messages: [...p1.messages] }))
     let state = svc.getStepState(sessionId)
@@ -629,7 +629,7 @@ describe('input-guard E2E — multi-turn state isolation', () => {
     // turn 2: no PII, replacements = 0
     const p2 = makePayload('读本地 README.md', sessionId, {
       realm: 'CLOUD', category: 'CLOUD',
-      provider: 'cloud-deepseek-v4', model: 'deepseek-chat',
+      provider: 'cloud-llm', model: 'deepseek-chat',
     })
     await svc.handlePreStep(p2 as any, async () => ({ kind: 'enter', messages: [...p2.messages] }))
     state = svc.getStepState(sessionId)
@@ -644,7 +644,7 @@ describe('input-guard E2E — multi-turn state isolation', () => {
     // turn 3: 又有 PII
     const p3 = makePayload('邮箱 alice@example.com', sessionId, {
       realm: 'CLOUD', category: 'CLOUD',
-      provider: 'cloud-deepseek-v4', model: 'deepseek-chat',
+      provider: 'cloud-llm', model: 'deepseek-chat',
     })
     await svc.handlePreStep(p3 as any, async () => ({ kind: 'enter', messages: [...p3.messages] }))
     state = svc.getStepState(sessionId)
@@ -662,7 +662,7 @@ describe('input-guard E2E — multi-turn state isolation', () => {
     // session A: sanitize 成功
     const pA = makePayload('手机 13812345678', 'sess-A', {
       realm: 'CLOUD', category: 'CLOUD',
-      provider: 'cloud-deepseek-v4', model: 'deepseek-chat',
+      provider: 'cloud-llm', model: 'deepseek-chat',
     })
     await svc.handlePreStep(pA as any, async () => ({ kind: 'enter', messages: [...pA.messages] }))
     const stateA = svc.getStepState('sess-A')
@@ -732,7 +732,7 @@ describe('input-guard E2E — additional PII types', () => {
     const sessionId = 'pII-ip'
     const payload = makePayload('服务器 IP 是 192.168.1.100', sessionId, {
       realm: 'CLOUD', category: 'CLOUD',
-      provider: 'cloud-deepseek-v4', model: 'deepseek-chat',
+      provider: 'cloud-llm', model: 'deepseek-chat',
     })
     const decision = await svc.handlePreStep(
       payload as any,
@@ -757,7 +757,7 @@ describe('input-guard E2E — additional PII types', () => {
     const sessionId = 'pII-mac'
     const payload = makePayload('网卡 AA:BB:CC:DD:EE:FF', sessionId, {
       realm: 'CLOUD', category: 'CLOUD',
-      provider: 'cloud-deepseek-v4', model: 'deepseek-chat',
+      provider: 'cloud-llm', model: 'deepseek-chat',
     })
     const decision = await svc.handlePreStep(
       payload as any,
@@ -775,7 +775,7 @@ describe('input-guard E2E — additional PII types', () => {
     )
     const payload = makePayload('IP 10.0.0.1 网卡 AA:BB:CC:DD:EE:FF', 'multi', {
       realm: 'CLOUD', category: 'CLOUD',
-      provider: 'cloud-deepseek-v4', model: 'deepseek-chat',
+      provider: 'cloud-llm', model: 'deepseek-chat',
     })
     const decision = await svc.handlePreStep(
       payload as any,
@@ -794,7 +794,7 @@ describe('input-guard E2E — edge cases', () => {
       undefined, undefined, undefined, san.api as any,
     )
     const payload = {
-      agent: { id: 'a1', session: { id: 'empty' }, _edgeRoute: { realm: 'CLOUD', category: 'CLOUD', provider: 'cloud-deepseek-v4', model: 'deepseek-chat' } },
+      agent: { id: 'a1', session: { id: 'empty' }, _edgeRoute: { realm: 'CLOUD', category: 'CLOUD', provider: 'cloud-llm', model: 'deepseek-chat' } },
       messages: [{ role: 'user', content: '' }],
       step: 1,
     }
@@ -817,7 +817,7 @@ describe('input-guard E2E — edge cases', () => {
     const longText = 'x'.repeat(15000) + ' 13812345678 ' + 'y'.repeat(15000)
     const payload = makePayload(longText, 'long-1', {
       realm: 'CLOUD', category: 'CLOUD',
-      provider: 'cloud-deepseek-v4', model: 'deepseek-chat',
+      provider: 'cloud-llm', model: 'deepseek-chat',
     })
     const decision = await svc.handlePreStep(
       payload as any,
@@ -836,7 +836,7 @@ describe('input-guard E2E — edge cases', () => {
     )
     const payload = makePayload('你好世界', 'unicode-1', {
       realm: 'CLOUD', category: 'CLOUD',
-      provider: 'cloud-deepseek-v4', model: 'deepseek-chat',
+      provider: 'cloud-llm', model: 'deepseek-chat',
     })
     const decision = await svc.handlePreStep(
       payload as any,
@@ -853,7 +853,7 @@ describe('input-guard E2E — edge cases', () => {
     )
     const payload = makePayload('我的电话 13812345678 请回拨', 'mix-1', {
       realm: 'CLOUD', category: 'CLOUD',
-      provider: 'cloud-deepseek-v4', model: 'deepseek-chat',
+      provider: 'cloud-llm', model: 'deepseek-chat',
     })
     const decision = await svc.handlePreStep(
       payload as any,
@@ -877,7 +877,7 @@ describe('input-guard E2E — full downgrade round-trip', () => {
     // ─ Phase 1: pre-step
     const payload = makePayload('alice@example.com', sessionId, {
       realm: 'CLOUD', category: 'CLOUD',
-      provider: 'cloud-deepseek-v4', model: 'deepseek-chat',
+      provider: 'cloud-llm', model: 'deepseek-chat',
       confidence: 0.92,
       rationale: 'cloud-classified',
     })
@@ -890,13 +890,13 @@ describe('input-guard E2E — full downgrade round-trip', () => {
       '原文保留 — LOCAL LLM 不需要脱敏')
 
     // ─ Phase 2: agent/request（模拟 agent-loop 的 buildRequest 阶段）
-    const seed = { provider: 'cloud-deepseek-v4', model: 'deepseek-chat', maxTokens: 4096 }
+    const seed = { provider: 'cloud-llm', model: 'deepseek-chat', maxTokens: 4096 }
     const reqResult = await svc.handleAgentRequest(
       { agent: { session: { id: sessionId } } },
       seed,
       async () => seed,
     )
-    assert.equal(reqResult.provider, 'local-qwen3-4b', 'route 改写到 LOCAL')
+    assert.equal(reqResult.provider, 'local-llm', 'route 改写到 LOCAL')
     assert.equal(reqResult.model, 'qwen3-4b-instruct-2507')
 
     // ─ Phase 3: llm/stream — sanitized=false，所以不调 desanitize
@@ -918,7 +918,7 @@ describe('input-guard E2E — full downgrade round-trip', () => {
     // ─ stepState 应仍保留原 route 信息，供响应体/上游观测
     const finalState = svc.getStepState(sessionId)
     assert.equal(finalState?.downgraded, true)
-    assert.equal(finalState?.originalProvider, 'cloud-deepseek-v4')
+    assert.equal(finalState?.originalProvider, 'cloud-llm')
     assert.equal(finalState?.originalRealm, 'CLOUD')
   })
 })

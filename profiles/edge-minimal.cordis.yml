@@ -57,7 +57,7 @@
 - id: local-llm-adapter
   name: '@deepseek-harness-edge-agent/dsh-edge-agent/local-llm-adapter'
   config:
-    providers: [local-qwen3-4b]
+    providers: [local-llm]
     modelPath: !!js (process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent-minimal/models/qwen3-4b.gguf'
     contextSize: 4096
     threads: 2

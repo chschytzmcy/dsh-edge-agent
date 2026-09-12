@@ -84,7 +84,7 @@ export interface Config {
 }
 
 export const Config: Schema<Config> = Schema.object({
-  providers: Schema.array(Schema.string()).default(['cloud-deepseek-v4']),
+  providers: Schema.array(Schema.string()).default(['cloud-llm']),
   baseUrl: Schema.string().default('https://api.deepseek.com'),
   apiKeyEnv: Schema.string().default('DEEPSEEK_API_KEY'),
   defaultModel: Schema.string().default('deepseek-chat'),
@@ -146,13 +146,13 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
         // §7.43 (2026-09-07): mirror the local-llm-adapter §7.40 fix — declare
         // contextWindow so basic-compaction-engine can compact long sessions.
         // Without it, compaction logs
-        //   "compaction-basic: no context capacity for cloud-deepseek-v4/deepseek-chat"
+        //   "compaction-basic: no context capacity for cloud-llm/deepseek-chat"
         // and refuses to compact, leaving promptLen to grow across turns
         // (observed: 4910 chars on the second cloud call in session
         // 5360189d-..., 5 tool-result blocks attached after web_search chain).
         // 65536 (64K) is the documented context window for deepseek-chat
         // (DeepSeek-V3/V4 variants); can be lifted if a future model ships
-        // with a larger window. No OOM concern on cloud (unlike local-qwen3-4b
+        // with a larger window. No OOM concern on cloud (unlike local-llm
         // §7.40 / §7.40.1 where we kept 16384 to avoid local inference OOM).
         contextWindow: 65536,
         inputModalities: ['text'],

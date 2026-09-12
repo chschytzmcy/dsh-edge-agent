@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # prompt-guard 模型辅助检测 e2e 测试
 #
-# 验证 Stage 6 模型辅助检测（local-qwen3-4b）能捕捉正则漏报的复杂攻击。
+# 验证 Stage 6 模型辅助检测（local-llm）能捕捉正则漏报的复杂攻击。
 # 测试用例刻意绕过 DEFAULT_INJECTION_PATTERNS 正则，依赖模型语义理解拦截。
 #
 # 用法：

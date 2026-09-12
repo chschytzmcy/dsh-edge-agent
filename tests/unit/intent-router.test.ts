@@ -42,7 +42,7 @@ describe('intent-router', () => {
     const mockCtx = { reflect: { provide: () => {} }, llm: null } as any
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
     })
 
@@ -56,7 +56,7 @@ describe('intent-router', () => {
     const mockCtx = { reflect: { provide: () => {} }, llm: null } as any
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
     })
 
@@ -69,7 +69,7 @@ describe('intent-router', () => {
     const mockCtx = { reflect: { provide: () => {} }, llm: null } as any
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
     })
 
@@ -89,7 +89,7 @@ describe('intent-router', () => {
     const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
     }, audit as any)
 
@@ -109,7 +109,7 @@ describe('intent-router', () => {
     const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
     }, audit as any)
 
@@ -128,7 +128,7 @@ describe('intent-router', () => {
     const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
     }, audit as any)
 
@@ -145,7 +145,7 @@ describe('intent-router', () => {
     const fakeMr = {
       resolve: (m: string) => {
         captured.input = m
-        return { realm: 'CLOUD', provider: 'cloud-deepseek-v4', model: 'deepseek-chat' }
+        return { realm: 'CLOUD', provider: 'cloud-llm', model: 'deepseek-chat' }
       },
     }
     let capturedOpts: any
@@ -161,18 +161,18 @@ describe('intent-router', () => {
     const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
     }, audit as any)
 
     await service.classify('hi')
-    assert.equal(captured.input, 'local-qwen3-4b')
-    assert.equal(capturedOpts.provider, 'cloud-deepseek-v4')
+    assert.equal(captured.input, 'local-llm')
+    assert.equal(capturedOpts.provider, 'cloud-llm')
     assert.equal(capturedOpts.model, 'deepseek-chat')
     const routeEntry = audit.entries.find((e: any) => e.kind === 'intent.llm.route')
     assert.ok(routeEntry, 'intent.llm.route audit kind should be present')
     assert.equal(routeEntry.payload.modelRouterMounted, true)
-    assert.equal(routeEntry.payload.resolvedProvider, 'cloud-deepseek-v4')
+    assert.equal(routeEntry.payload.resolvedProvider, 'cloud-llm')
   })
 
   it('falls back to config values when modelRouter is absent', async () => {
@@ -188,13 +188,13 @@ describe('intent-router', () => {
     const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       classificationModel: 'qwen3-4b',
       confidenceThreshold: 0.6,
     }, audit as any)
 
     await service.classify('hi')
-    assert.equal(capturedOpts.provider, 'local-qwen3-4b')
+    assert.equal(capturedOpts.provider, 'local-llm')
     assert.equal(capturedOpts.model, 'qwen3-4b')
     const routeEntry = audit.entries.find((e: any) => e.kind === 'intent.llm.route')
     assert.ok(routeEntry)
@@ -215,18 +215,18 @@ describe('intent-router', () => {
     const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       classificationModel: 'qwen3-4b',
       confidenceThreshold: 0.6,
     }, audit as any)
 
     await service.classify('hi')
-    assert.equal(capturedOpts.provider, 'local-qwen3-4b')
+    assert.equal(capturedOpts.provider, 'local-llm')
     assert.equal(capturedOpts.model, 'qwen3-4b')
     const routeEntry = audit.entries.find((e: any) => e.kind === 'intent.llm.route')
     assert.ok(routeEntry)
     assert.equal(routeEntry.payload.modelRouterMounted, true)
-    assert.equal(routeEntry.payload.resolvedProvider, 'local-qwen3-4b')
+    assert.equal(routeEntry.payload.resolvedProvider, 'local-llm')
   })
 
   // ─── timeout + multi-turn context ──────────────────────────────────────
@@ -264,7 +264,7 @@ describe('intent-router', () => {
     const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
       llmTimeoutMs: 50,   // 50ms timeout for the test
     }, audit as any)
@@ -296,7 +296,7 @@ describe('intent-router', () => {
     } as any
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
       llmTimeoutMs: 4000,
     })
@@ -321,7 +321,7 @@ describe('intent-router', () => {
     const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
     }, audit as any)
 
@@ -355,7 +355,7 @@ describe('intent-router', () => {
     const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
     }, audit as any)
 
@@ -384,7 +384,7 @@ describe('intent-router', () => {
     const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
     }, audit as any)
 
@@ -415,7 +415,7 @@ describe('intent-router', () => {
     const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
     }, audit as any)
 
@@ -435,7 +435,7 @@ describe('intent-router', () => {
     const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
     }, audit as any)
 
@@ -457,7 +457,7 @@ describe('intent-router', () => {
     const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
     }, audit as any)
 
@@ -497,14 +497,14 @@ describe('intent-router', () => {
         },
       },
       modelRouter: {
-        resolve: () => ({ realm: 'CLOUD', provider: 'cloud-deepseek-v4', model: 'deepseek-chat' }),
+        resolve: () => ({ realm: 'CLOUD', provider: 'cloud-llm', model: 'deepseek-chat' }),
       },
       sanitizer: fakeSanitizer,
     } as any
     const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
     }, audit as any)
 
@@ -536,14 +536,14 @@ describe('intent-router', () => {
         },
       },
       modelRouter: {
-        resolve: () => ({ realm: 'LOCAL', provider: 'local-qwen3-4b', model: 'qwen3-4b' }),
+        resolve: () => ({ realm: 'LOCAL', provider: 'local-llm', model: 'qwen3-4b' }),
       },
       sanitizer: fakeSanitizer,
     } as any
     const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
     }, audit as any)
 
@@ -565,14 +565,14 @@ describe('intent-router', () => {
         },
       },
       modelRouter: {
-        resolve: () => ({ realm: 'CLOUD', provider: 'cloud-deepseek-v4', model: 'deepseek-chat' }),
+        resolve: () => ({ realm: 'CLOUD', provider: 'cloud-llm', model: 'deepseek-chat' }),
       },
       // no sanitizer key
     } as any
     const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
     }, audit as any)
 
@@ -600,14 +600,14 @@ describe('intent-router', () => {
         },
       },
       modelRouter: {
-        resolve: () => ({ realm: 'CLOUD', provider: 'cloud-deepseek-v4', model: 'deepseek-chat' }),
+        resolve: () => ({ realm: 'CLOUD', provider: 'cloud-llm', model: 'deepseek-chat' }),
       },
       sanitizer: { sanitize: async () => { throw new Error('boom') } },
     } as any
     const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
     }, audit as any)
 
@@ -646,7 +646,7 @@ describe('intent-router', () => {
     const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
     }, audit as any)
 
@@ -690,7 +690,7 @@ describe('intent-router', () => {
     const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
     }, audit as any)
 
@@ -718,7 +718,7 @@ describe('intent-router', () => {
     const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
     }, audit as any)
 
@@ -741,7 +741,7 @@ describe('intent-router', () => {
     } as any
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'LOCAL',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
     })
 
@@ -766,7 +766,7 @@ describe('intent-router', () => {
     const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
       maxInputLength: 50,  // tiny cap for the test
     }, audit as any)
@@ -806,14 +806,14 @@ describe('intent-router', () => {
         },
       },
       modelRouter: {
-        resolve: () => ({ realm: 'CLOUD', provider: 'cloud-deepseek-v4', model: 'deepseek-chat' }),
+        resolve: () => ({ realm: 'CLOUD', provider: 'cloud-llm', model: 'deepseek-chat' }),
       },
       sanitizer: fakeSanitizer,
     } as any
     const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
       maxInputLength: 50,
     }, audit as any)
@@ -840,7 +840,7 @@ describe('intent-router', () => {
     const mockCtx = { reflect: { provide: () => {} }, llm: null } as any
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
     })
     const s = service.getStats()
@@ -867,7 +867,7 @@ describe('intent-router', () => {
     } as any
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
     })
     await service.classify('hi')
@@ -904,7 +904,7 @@ describe('intent-router', () => {
     const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
       llmTimeoutMs: 50,
     }, audit as any)
@@ -934,12 +934,12 @@ describe('intent-router', () => {
         stream(opts: any) { capturedOpts = opts; return chunksFromText(verdict) },
       },
       modelRouter: {
-        resolve: () => ({ realm: 'CLOUD', provider: 'cloud-deepseek-v4', model: 'deepseek-chat' }),
+        resolve: () => ({ realm: 'CLOUD', provider: 'cloud-llm', model: 'deepseek-chat' }),
       },
     } as any
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
     })
 
@@ -971,7 +971,7 @@ describe('intent-router', () => {
       },
     } as any
     const s1 = new IntentRouterServiceImpl(precheckCtx, {
-      defaultCategory: 'CLOUD', classificationProvider: 'local-qwen3-4b', confidenceThreshold: 0.6,
+      defaultCategory: 'CLOUD', classificationProvider: 'local-llm', confidenceThreshold: 0.6,
     })
     await s1.classify('bad')
     assert.equal(s1.getStats().rejected, 1)
@@ -981,7 +981,7 @@ describe('intent-router', () => {
   it('getStats() returns a copy (callers cannot mutate live state)', async () => {
     const mockCtx = { reflect: { provide: () => {} }, llm: null } as any
     const service = new IntentRouterServiceImpl(mockCtx, {
-      defaultCategory: 'CLOUD', classificationProvider: 'local-qwen3-4b', confidenceThreshold: 0.6,
+      defaultCategory: 'CLOUD', classificationProvider: 'local-llm', confidenceThreshold: 0.6,
     })
     await service.classify('')  // +1 empty, +1 total
     const snapshot = service.getStats()
@@ -1001,7 +1001,7 @@ describe('intent-router', () => {
 
   it('fresh service has empty confidenceHistogram', () => {
     const service = new IntentRouterServiceImpl({ reflect: { provide: () => {} }, llm: null } as any, {
-      defaultCategory: 'CLOUD', classificationProvider: 'local-qwen3-4b', confidenceThreshold: 0.6,
+      defaultCategory: 'CLOUD', classificationProvider: 'local-llm', confidenceThreshold: 0.6,
     })
     const stats = service.getStats()
     assert.deepEqual(stats.confidenceHistogram, {})
@@ -1014,7 +1014,7 @@ describe('intent-router', () => {
       llm: { stream: () => chunksFromText(verdict) },
     } as any
     const service = new IntentRouterServiceImpl(mockCtx, {
-      defaultCategory: 'CLOUD', classificationProvider: 'local-qwen3-4b', confidenceThreshold: 0.6,
+      defaultCategory: 'CLOUD', classificationProvider: 'local-llm', confidenceThreshold: 0.6,
     })
     await service.classify('hi')
     const stats = service.getStats()
@@ -1031,7 +1031,7 @@ describe('intent-router', () => {
       llm: { stream: () => chunksFromText(verdict) },
     } as any
     const service = new IntentRouterServiceImpl(mockCtx, {
-      defaultCategory: 'CLOUD', classificationProvider: 'local-qwen3-4b', confidenceThreshold: 0.6,
+      defaultCategory: 'CLOUD', classificationProvider: 'local-llm', confidenceThreshold: 0.6,
     })
     await service.classify('hi')
     const stats = service.getStats()
@@ -1053,7 +1053,7 @@ describe('intent-router', () => {
       },
     } as any
     const service = new IntentRouterServiceImpl(mockCtx, {
-      defaultCategory: 'CLOUD', classificationProvider: 'local-qwen3-4b', confidenceThreshold: 0.6,
+      defaultCategory: 'CLOUD', classificationProvider: 'local-llm', confidenceThreshold: 0.6,
     })
     for (let i = 0; i < verdicts.length; i++) await service.classify('hi')
     const h = service.getStats().confidenceHistogram
@@ -1071,7 +1071,7 @@ describe('intent-router', () => {
       llm: { stream: () => chunksFromText(verdict) },
     } as any
     const service = new IntentRouterServiceImpl(mockCtx, {
-      defaultCategory: 'CLOUD', classificationProvider: 'local-qwen3-4b', confidenceThreshold: 0.6,
+      defaultCategory: 'CLOUD', classificationProvider: 'local-llm', confidenceThreshold: 0.6,
     })
     await service.classify('hi')
     // Without the clamp, Math.floor(1.0 * 10) = 10, which would create a
@@ -1089,7 +1089,7 @@ describe('intent-router', () => {
       },
     } as any
     const service = new IntentRouterServiceImpl(mockCtx, {
-      defaultCategory: 'CLOUD', classificationProvider: 'local-qwen3-4b',
+      defaultCategory: 'CLOUD', classificationProvider: 'local-llm',
       confidenceThreshold: 0.6, llmTimeoutMs: 50,
     })
     await service.classify('hi')
@@ -1104,7 +1104,7 @@ describe('intent-router', () => {
       llm: { stream: () => chunksFromText('not json at all') },
     } as any
     const service = new IntentRouterServiceImpl(mockCtx, {
-      defaultCategory: 'CLOUD', classificationProvider: 'local-qwen3-4b', confidenceThreshold: 0.6,
+      defaultCategory: 'CLOUD', classificationProvider: 'local-llm', confidenceThreshold: 0.6,
     })
     await service.classify('hi')
     const stats = service.getStats()
@@ -1119,7 +1119,7 @@ describe('intent-router', () => {
       llm: { stream: () => chunksFromText(verdict) },
     } as any
     const service = new IntentRouterServiceImpl(mockCtx, {
-      defaultCategory: 'CLOUD', classificationProvider: 'local-qwen3-4b', confidenceThreshold: 0.6,
+      defaultCategory: 'CLOUD', classificationProvider: 'local-llm', confidenceThreshold: 0.6,
     })
     await service.classify('hi')
     const snap = service.getStats()
@@ -1148,7 +1148,7 @@ describe('intent-router', () => {
       llm: { stream: () => chunksFromText('category=LOCAL') },
     } as any
     const service = new IntentRouterServiceImpl(mockCtx, {
-      defaultCategory: 'CLOUD', classificationProvider: 'local-qwen3-4b', confidenceThreshold: 0.6,
+      defaultCategory: 'CLOUD', classificationProvider: 'local-llm', confidenceThreshold: 0.6,
     })
     const intent = await service.classify('something arbitrary')
     // No keyword match → defaultCategory
@@ -1168,7 +1168,7 @@ describe('intent-router', () => {
       llm: { stream: () => chunksFromText('I think category=CLOUD, confidence 0.8') },
     } as any
     const service = new IntentRouterServiceImpl(mockCtx, {
-      defaultCategory: 'LOCAL', classificationProvider: 'local-qwen3-4b', confidenceThreshold: 0.6,
+      defaultCategory: 'LOCAL', classificationProvider: 'local-llm', confidenceThreshold: 0.6,
     })
     const intent = await service.classify('something arbitrary')
     assert.equal(intent.category, 'CLOUD')
@@ -1186,13 +1186,13 @@ describe('intent-router', () => {
         stream(opts: any) { return chunksFromText(verdict) },
       },
       modelRouter: {
-        resolve: () => ({ realm: 'CLOUD', provider: 'cloud-deepseek-v4', model: 'deepseek-chat' }),
+        resolve: () => ({ realm: 'CLOUD', provider: 'cloud-llm', model: 'deepseek-chat' }),
       },
       sanitizer: { sanitize: async () => { throw new Error('boom') } },
     } as any
     const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
     const service = new IntentRouterServiceImpl(mockCtx, {
-      defaultCategory: 'CLOUD', classificationProvider: 'local-qwen3-4b', confidenceThreshold: 0.6,
+      defaultCategory: 'CLOUD', classificationProvider: 'local-llm', confidenceThreshold: 0.6,
     }, audit as any)
     await service.classify('查一下 13812345678')
     const errEntry = audit.entries.find((e: any) => e.kind === 'intent.llm.sanitize-error')
@@ -1207,7 +1207,7 @@ describe('intent-router', () => {
       reflect: { provide: () => {} },
       llm: { stream: () => chunksFromText('nonsense') },
     } as any, {
-      defaultCategory: 'CLOUD', classificationProvider: 'local-qwen3-4b', confidenceThreshold: 0.6,
+      defaultCategory: 'CLOUD', classificationProvider: 'local-llm', confidenceThreshold: 0.6,
     })
     assert.equal(service.getStats().parseFailure, 0, 'fresh service has parseFailure=0')
     await service.classify('hi')
@@ -1220,7 +1220,7 @@ describe('intent-router', () => {
       llm: { stream: () => chunksFromText(JSON.stringify({ category: 'CLOUD', confidence: 0.9 })) },
     } as any
     const goodService = new IntentRouterServiceImpl(goodMock, {
-      defaultCategory: 'CLOUD', classificationProvider: 'local-qwen3-4b', confidenceThreshold: 0.6,
+      defaultCategory: 'CLOUD', classificationProvider: 'local-llm', confidenceThreshold: 0.6,
     })
     await goodService.classify('hi')
     assert.equal(goodService.getStats().parseFailure, 0)
@@ -1249,7 +1249,7 @@ describe('intent-router', () => {
     const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
     }, audit as any)
 
@@ -1270,7 +1270,7 @@ describe('intent-router', () => {
     } as any
     const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
     const service = new IntentRouterServiceImpl(mockCtx, {
-      defaultCategory: 'CLOUD', classificationProvider: 'local-qwen3-4b', confidenceThreshold: 0.6,
+      defaultCategory: 'CLOUD', classificationProvider: 'local-llm', confidenceThreshold: 0.6,
     }, audit as any)
 
     await service.classify('hi')
@@ -1290,7 +1290,7 @@ describe('intent-router', () => {
     } as any
     const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
     const service = new IntentRouterServiceImpl(mockCtx, {
-      defaultCategory: 'CLOUD', classificationProvider: 'local-qwen3-4b', confidenceThreshold: 0.6,
+      defaultCategory: 'CLOUD', classificationProvider: 'local-llm', confidenceThreshold: 0.6,
     }, audit as any)
 
     await service.classify('hi')
@@ -1314,7 +1314,7 @@ describe('intent-router', () => {
     const mockCtx = { reflect: { provide: () => {} }, llm: null } as any
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
       fallbackKeywords: [],   // empty → built-in EN+CN
     })
@@ -1331,7 +1331,7 @@ describe('intent-router', () => {
     const mockCtx = { reflect: { provide: () => {} }, llm: null } as any
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
       fallbackKeywords: ['ファイル', '読み込み', '書き込み'],   // JA-only
     })
@@ -1353,7 +1353,7 @@ describe('intent-router', () => {
     const mockCtx = { reflect: { provide: () => {} }, llm: null } as any
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
       fallbackKeywords: ['文件', '本地'],   // CN-only
     })
@@ -1507,7 +1507,7 @@ describe('intent-router', () => {
     const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
     }, audit as any)
 
@@ -1528,7 +1528,7 @@ describe('intent-router', () => {
     } as any
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
     })
 
@@ -1547,7 +1547,7 @@ describe('intent-router', () => {
     } as any
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0,  // accept everything
     })
 
@@ -1573,7 +1573,7 @@ describe('intent-router', () => {
     } as any
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
     }, throwingAudit as any)
 
@@ -1594,7 +1594,7 @@ describe('intent-router', () => {
     } as any
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
     }, rejectingAudit as any)
 
@@ -1616,7 +1616,7 @@ describe('intent-router', () => {
     } as any
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
     })
 
@@ -1655,7 +1655,7 @@ describe('intent-router', () => {
     } as any
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
       llmTimeoutMs: 10,  // very short to guarantee timeout
     })
@@ -1681,13 +1681,13 @@ describe('intent-router', () => {
     } as any
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       classificationModel: 'qwen3-4b',
       confidenceThreshold: 0.6,
     })
 
     await service.classify('hi')
-    assert.equal(capturedOpts.provider, 'local-qwen3-4b')
+    assert.equal(capturedOpts.provider, 'local-llm')
     assert.equal(capturedOpts.model, 'qwen3-4b')
   })
 
@@ -1703,13 +1703,13 @@ describe('intent-router', () => {
     } as any
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       classificationModel: 'qwen3-4b',
       confidenceThreshold: 0.6,
     })
 
     await service.classify('hi')
-    assert.equal(capturedOpts.provider, 'local-qwen3-4b')
+    assert.equal(capturedOpts.provider, 'local-llm')
     assert.equal(capturedOpts.model, 'qwen3-4b')
   })
 
@@ -1759,7 +1759,7 @@ describe('intent-router', () => {
     } as any
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
       recentMessagesLimit: 2,  // only keep last 2
     })
@@ -1788,7 +1788,7 @@ describe('intent-router', () => {
     } as any
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
     })
 
@@ -1814,7 +1814,7 @@ describe('intent-router', () => {
     const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
     }, audit as any)
 
@@ -1862,14 +1862,14 @@ describe('intent-router', () => {
         },
       },
       modelRouter: {
-        resolve: () => ({ realm: 'CLOUD', provider: 'cloud-deepseek-v4', model: 'deepseek-chat' }),
+        resolve: () => ({ realm: 'CLOUD', provider: 'cloud-llm', model: 'deepseek-chat' }),
       },
       sanitizer: fakeSanitizer,
     } as any
     const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
     }, audit as any)
 
@@ -1908,7 +1908,7 @@ describe('intent-router', () => {
           return chunksFromText(verdict)
         },
       },
-      // LOCAL realm — no modelRouter override, defaults to local-qwen3-4b
+      // LOCAL realm — no modelRouter override, defaults to local-llm
       sanitizer: {
         sanitize: async (text: string) => {
           sanitizerCalls++
@@ -1919,7 +1919,7 @@ describe('intent-router', () => {
     const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'LOCAL',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
     }, audit as any)
 
@@ -1965,14 +1965,14 @@ describe('intent-router', () => {
         },
       },
       modelRouter: {
-        resolve: () => ({ realm: 'CLOUD', provider: 'cloud-deepseek-v4', model: 'deepseek-chat' }),
+        resolve: () => ({ realm: 'CLOUD', provider: 'cloud-llm', model: 'deepseek-chat' }),
       },
       sanitizer: fakeSanitizer,
     } as any
     const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
     }, audit as any)
 
@@ -2017,7 +2017,7 @@ describe('intent-router', () => {
     const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
     }, audit as any)
 
@@ -2042,7 +2042,7 @@ describe('intent-router', () => {
     const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
     }, audit as any)
 
@@ -2103,7 +2103,7 @@ describe('intent-router', () => {
     } as any
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
     })
 
@@ -2124,7 +2124,7 @@ describe('intent-router', () => {
     } as any
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
     })
 
@@ -2147,7 +2147,7 @@ describe('intent-router', () => {
     } as any
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'LOCAL',
-      classificationProvider: 'local-qwen3-4b',
+      classificationProvider: 'local-llm',
       confidenceThreshold: 0.6,
     })
 

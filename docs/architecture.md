@@ -700,7 +700,7 @@ sequenceDiagram
     HTTP->>Audit: info http.chat.start
     HTTP->>IR: classify(message)
     IR-->>HTTP: {category: CLOUD, confidence: 0.85}
-    HTTP->>MR: resolveRoute(cloud-deepseek-v4)
+    HTTP->>MR: resolveRoute(cloud-llm)
     MR-->>HTTP: provider+model
     HTTP->>AL: followup(userMessage)
 
@@ -2976,7 +2976,7 @@ export DSH_EDGE_PLUGINS_THIRD_PARTY=true
 
 # 基于 DSH 插件机制的端侧私密智能体设计
 
-> **合规性声明（v6.0 修订版）**：本设计**完全基于 DSH Cordis 插件机制**实现端侧智能体的所有能力，**不需要修改 DSH 核心代码**。所有 22 个核心专用插件 + 1 个可选 `http-api` 插件（§ 8.19；原文档 v6 起草时为 19 个，2026-08-27 起新增 `input-guard` / `realm-skill-bridge` / `web-search-guard`）均遵循标准的 `name` + `inject` + `Config` + `apply` 命名导出模式（参考 `packages/llm/llm-deepseek/src/index.ts:41-200`），通过 `ctx.effect` / `ctx.provide` / `ctx.llm.registerAdapter` / `ctx.tools.register` / `ctx.event.on` 等 Cordis 与 DSH 原生 API 协作；多 LLM provider 通过**在同一 `ctx.llm` 上注册多条适配器路由**（`ctx.llm.registerAdapter(['local-qwen3-4b'], adapter)`）实现，**不再依赖** `cordis:group` + `isolate: { llm: true }`（`isolate` 是 per-agent 隔离机制，宿主面 `inject` 拿不到子 realm service —— 见 `packages/preset/agent-presets/src/mount.ts:178-265`）；所有事件拦截点均为 DSH Cordis 已有标准事件（`agent/pre-step` 返回 `PreStepDecision`、`agent/request` 返回 `LlmCallConfig`、`llm/stream` 输出过滤、`tools/post-execute` 工具结果检查），未引入任何 DSH 不存在的事件。
+> **合规性声明（v6.0 修订版）**：本设计**完全基于 DSH Cordis 插件机制**实现端侧智能体的所有能力，**不需要修改 DSH 核心代码**。所有 22 个核心专用插件 + 1 个可选 `http-api` 插件（§ 8.19；原文档 v6 起草时为 19 个，2026-08-27 起新增 `input-guard` / `realm-skill-bridge` / `web-search-guard`）均遵循标准的 `name` + `inject` + `Config` + `apply` 命名导出模式（参考 `packages/llm/llm-deepseek/src/index.ts:41-200`），通过 `ctx.effect` / `ctx.provide` / `ctx.llm.registerAdapter` / `ctx.tools.register` / `ctx.event.on` 等 Cordis 与 DSH 原生 API 协作；多 LLM provider 通过**在同一 `ctx.llm` 上注册多条适配器路由**（`ctx.llm.registerAdapter(['local-llm'], adapter)`）实现，**不再依赖** `cordis:group` + `isolate: { llm: true }`（`isolate` 是 per-agent 隔离机制，宿主面 `inject` 拿不到子 realm service —— 见 `packages/preset/agent-presets/src/mount.ts:178-265`）；所有事件拦截点均为 DSH Cordis 已有标准事件（`agent/pre-step` 返回 `PreStepDecision`、`agent/request` 返回 `LlmCallConfig`、`llm/stream` 输出过滤、`tools/post-execute` 工具结果检查），未引入任何 DSH 不存在的事件。
 >
 > 本次（v6.0）修订基于对 DSH 真实源码的逐项复核（详见 § 十一 可行性复核），修正 v5 的以下不合规点：
 > 1. **LLM provider 注册**：v5 自定义 `LlmProvider { chat, chatStream }` 接口不符合 DSH `LlmAdapter { stream }` 抽象；v6.0 改为 `LlmAdapter` 子类 + `ctx.llm.registerAdapter`。
@@ -3106,7 +3106,7 @@ export DSH_EDGE_PLUGINS_THIRD_PARTY=true
 - ✅ 注入检测拦截（≥3 种模式，规则可配置 `action: block | warn | sanitize`）
 - ✅ PII 脱敏（手机号、邮箱、身份证、银行卡、API Key）
 - ✅ `intent-router` REJECT 命中 → http-api 403 短路（`intent.rules.rejected` 安全级审计）
-- ✅ **隐私预检三层防御 e2e 验证**（2026-08-24）：12 个恶意请求全拦截（3 个 prompt-guard 正则 HTTP 400 + 9 个 privacy-policy HTTP 403），5 个正常请求不误拦（HTTP 200，正确分类 LOCAL/CLOUD）。prompt-guard 模型辅助检测默认开启（local-qwen3-4b，fail-open）。详见 [intent-recognition-routing.md](./intent-and-sanitization.md) "真实环境 e2e 验证" 章节
+- ✅ **隐私预检三层防御 e2e 验证**（2026-08-24）：12 个恶意请求全拦截（3 个 prompt-guard 正则 HTTP 400 + 9 个 privacy-policy HTTP 403），5 个正常请求不误拦（HTTP 200，正确分类 LOCAL/CLOUD）。prompt-guard 模型辅助检测默认开启（local-llm，fail-open）。详见 [intent-recognition-routing.md](./intent-and-sanitization.md) "真实环境 e2e 验证" 章节
 - ✅ `td-bus.shouldBlock()` 命中 → http-api 503 短路（`http.chat.threat-blocked` 审计）
 - ✅ CLOUD 路径 sanitize → LLM → desanitize（或流式 `desanitizeSync`）端到端
 - ✅ Privacy-policy `matchRouting` 命中走规则，未命中走 LLM，再 fallback 关键词 → `defaultCategory`
@@ -3402,7 +3402,7 @@ Phase 7 (TEE) ─────→ Phase 8 (零信任通信，可选)
 
 6. **http-api 选择 provider/model 仍在两条 handler 内硬编码**（2026-08-23）
    - 设计意图（§ 4.2）：由 `modelRouter.resolve()` 决定
-   - 现状：`isLocal ? 'local-qwen3-4b' / 'qwen3-4b-instruct-2507' : 'cloud-deepseek-v4' / 'deepseek-chat'`
+   - 现状：`isLocal ? 'local-llm' / 'qwen3-4b-instruct-2507' : 'cloud-llm' / 'deepseek-chat'`
    - 影响：意图路由 verdict 决定了 realm，但 provider id 走硬编码
    - 待 Phase 5 后期合并时把两条 handler 内的硬编码换成 `modelRouter.resolve(intent)` 形式调用
 
@@ -3438,8 +3438,8 @@ Phase 7 (TEE) ─────→ Phase 8 (零信任通信，可选)
 
 **Phase 1 验证（基础功能）**：
 - [x] HTTP API 服务启动：`http-api` listen `:21017` by default ✅
-- [x] 本地 LLM 适配器：`local-qwen3-4b` 路由注册 ✅
-- [x] 云端 LLM 适配器：`cloud-deepseek-v4` 路由注册 ✅
+- [x] 本地 LLM 适配器：`local-llm` 路由注册 ✅
+- [x] 云端 LLM 适配器：`cloud-llm` 路由注册 ✅
 - [x] 意图路由基础分类（keyword fallback） ✅
 - [x] 工具注册表（Realm-aware view） ✅
 
@@ -4408,7 +4408,7 @@ export interface Config {
 
   // 模型辅助检测
   enableModelDetection: boolean
-  modelDetectionProvider: string    // 默认 'local-qwen3-4b'
+  modelDetectionProvider: string    // 默认 'local-llm'
   modelDetectionModel: string       // 默认 'qwen3-4b'
   modelDetectionTimeoutMs: number   // 默认 4000
   modelDetectionMaxInputLength: number  // 默认 2000
@@ -4441,7 +4441,7 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
 2. 速率限制（per-session + 全局；超限返回 safe=false, riskLevel=high）
 3. 注入正则（遍历 rules[]，命中按 action 分级：block/warn/sanitize）
 4. privacy-policy.classifyData()；最高级 ≥ secret → 输入 block（secret 一票否决）
-5. 模型辅助检测（默认开启）→ 调 ctx.llm.stream() 走 local-qwen3-4b 语义安全分类
+5. 模型辅助检测（默认开启）→ 调 ctx.llm.stream() 走 local-llm 语义安全分类
    - fail-open：超时/报错/解析失败 → 不阻断，依赖前序正则+PII 判定
    - 仅 explicit safe:false → block（riskLevel=high）
 最终：任一阶段 safe:false → HTTP 400 + 输入拦截
@@ -4473,8 +4473,8 @@ prompt-guard:
       pattern: "你现在(是|扮演|假装是)"
       action: "warn"
     # …可继续追加任意条；每个 action 独立审计
-  enableModelDetection: true        # 默认 true，使用 local-qwen3-4b 做语义安全分类（fail-open）
-  modelDetectionProvider: "local-qwen3-4b"
+  enableModelDetection: true        # 默认 true，使用 local-llm 做语义安全分类（fail-open）
+  modelDetectionProvider: "local-llm"
   modelDetectionModel: "qwen3-4b"
   modelDetectionTimeoutMs: 4000
 ```
@@ -5828,7 +5828,7 @@ inject:
 ```yaml
 intent-router:
   defaultCategory: 'CLOUD'                  # 兜底 category
-  classificationProvider: 'local-qwen3-4b'  # 必须是带前缀的路由 id(modelRouter 解析)
+  classificationProvider: 'local-llm'  # 必须是带前缀的路由 id(modelRouter 解析)
   classificationModel: 'qwen3-4b'
   confidenceThreshold: 0.6                  # 0..1 浮点(18d247d 修复)
   llmTimeoutMs: 4000
@@ -6492,7 +6492,7 @@ intent-router.classify(message, { sessionId })
   ↓
 isLocal = category === 'LOCAL'
   ↓
-provider/model = isLocal ? local-qwen3-4b : cloud-deepseek-v4
+provider/model = isLocal ? local-llm : cloud-llm
 (硬编码，**未**走 modelRouter.resolve()——见"实现侧限制")
   ↓
 if (!isLocal && sanitizer):
@@ -6612,7 +6612,7 @@ class HttpApiService {
 
     // 5. 决定 provider/model（**硬编码**，不走 modelRouter.resolve）
     const isLocal = intent.category === 'LOCAL'
-    const provider = isLocal ? 'local-qwen3-4b' : 'cloud-deepseek-v4'
+    const provider = isLocal ? 'local-llm' : 'cloud-llm'
     const model    = isLocal ? 'qwen3-4b'        : 'deepseek-chat'
 
     // 6. 脱敏（仅 CLOUD/SANITIZED，且 sanitizer 挂载时）
@@ -6654,7 +6654,7 @@ class HttpApiService {
 | `throw new SecurityError` | 决策对象 `{ status:403, body:{kind:'reject', reason} }` |
 | `ctx.event.on('agent/pre-step')` | `await this.intentRouter.classify(...)` 在 http-api 内同步调用 |
 | `ctx.event.on('tools/post-execute')` | 实装无此事件订阅；输出检查直接调 `promptGuard.checkOutput()` |
-| `modelRouter.selectModel(intent, dataLevel)` | 实装**硬编码** `isLocal ? local-qwen3-4b : cloud-deepseek-v4`（已知偏离 v6 §4.2 设计的硬编码点） |
+| `modelRouter.selectModel(intent, dataLevel)` | 实装**硬编码** `isLocal ? local-llm : cloud-llm`（已知偏离 v6 §4.2 设计的硬编码点） |
 | `ctx['local-llm-realm'].llm.chat()` | 统一 `ctx.llm.stream({ provider, model, ... })`，多 provider 通过 dsh-adapters 注册 |
 | `sanitizer-pipeline` 全局依赖 | `if (!isLocal && this.sanitizer)` 软依赖（fail-open） |
 | 单一 SANITIZED 路径特殊处理 | SANITIZED 与 CLOUD 在管线里走同一路径（`isLocal` 都为 false），区别仅在 `intent.category` 不同 |
@@ -7003,7 +7003,7 @@ graph TB
 
 > 示例：「帮我整理一下本地的会议纪要」（基于 `http-api.handleChat` 真实管道）
 >
-> **v6 修订**：移除 v6 初稿中的 `ctx['local-llm-realm'].llm.chat()` 概念；实装统一通过 `ctx.llm.stream({ provider: 'local-qwen3-4b', ... })` 调用本地 provider adapter。provider/model 当前在 http-api 内**硬编码**（不走 `modelRouter.resolve()`）——见 § 4.2 的"实现侧限制"。
+> **v6 修订**：移除 v6 初稿中的 `ctx['local-llm-realm'].llm.chat()` 概念；实装统一通过 `ctx.llm.stream({ provider: 'local-llm', ... })` 调用本地 provider adapter。provider/model 当前在 http-api 内**硬编码**（不走 `modelRouter.resolve()`）——见 § 4.2 的"实现侧限制"。
 
 ```mermaid
 sequenceDiagram
@@ -7014,7 +7014,7 @@ sequenceDiagram
     participant PG as prompt-guard
     participant IR as intent-router
     participant PP as privacy-policy
-    participant LLM as ctx.llm<br/>(local-qwen3-4b adapter)
+    participant LLM as ctx.llm<br/>(local-llm adapter)
     participant LT as local-tools
     participant LS as local-storage<br/>(AES-256-GCM)
     participant TCM as tcm
@@ -7036,9 +7036,9 @@ sequenceDiagram
     IR->>AL: 审计: intent-rules-hit<br/>{category:LOCAL, source:'privacy-policy'}
     IR-->>API: { category:'LOCAL', targetRealm:'local', requiresSanitization:false }
 
-    Note over API: isLocal=true<br/>provider='local-qwen3-4b'<br/>model='qwen3-4b'<br/>**硬编码**，不走 modelRouter
+    Note over API: isLocal=true<br/>provider='local-llm'<br/>model='qwen3-4b'<br/>**硬编码**，不走 modelRouter
 
-    API->>LLM: stream({ provider:'local-qwen3-4b', model:'qwen3-4b', messages:[...history, userMsg] })
+    API->>LLM: stream({ provider:'local-llm', model:'qwen3-4b', messages:[...history, userMsg] })
 
     LLM->>LT: tool_call: local_file_read<br/>{path:"/data/user/notes/*"}
     LT->>LS: 列出 workspace 文件
@@ -7079,7 +7079,7 @@ sequenceDiagram
     participant PG as prompt-guard
     participant IR as intent-router
     participant PP as privacy-policy
-    participant LLM as ctx.llm<br/>(cloud-deepseek-v4 adapter)
+    participant LLM as ctx.llm<br/>(cloud-llm adapter)
     participant WS as web-search
     participant SB as secure-bridge<br/>(mode: ohttp)
     participant OH as ohttp-gateway
@@ -7096,10 +7096,10 @@ sequenceDiagram
     PP-->>IR: "新闻" → CLOUD
     IR-->>API: { category:'CLOUD', targetRealm:'cloud', requiresSanitization:false }
 
-    Note over API: isLocal=false<br/>provider='cloud-deepseek-v4'<br/>model='deepseek-chat'<br/>**硬编码**
+    Note over API: isLocal=false<br/>provider='cloud-llm'<br/>model='deepseek-chat'<br/>**硬编码**
 
     Note over API: 无 sanitize（message 无 PII）
-    API->>LLM: stream({ provider:'cloud-deepseek-v4', model:'deepseek-chat', messages })
+    API->>LLM: stream({ provider:'cloud-llm', model:'deepseek-chat', messages })
     LLM->>WS: tool_call: web_search<br/>{query:"AI 领域 重要新闻 2026年8月"}
     WS->>SB: sendCloudRequest(search)
     SB->>OH: OHTTP 封装
@@ -7139,7 +7139,7 @@ sequenceDiagram
     participant IR as intent-router
     participant PP as privacy-policy
     participant SP as sanitizer-pipeline
-    participant LLM as ctx.llm<br/>(cloud-deepseek-v4 adapter)
+    participant LLM as ctx.llm<br/>(cloud-llm adapter)
     participant WS as web-search
     participant AL as audit-log
 
@@ -7161,7 +7161,7 @@ sequenceDiagram
     SP->>AL: 审计: sanitizer.sanitized<br/>{replacements:1, sessionId}
     SP-->>API: { sanitizedText:"帮我查一下[NAME_1]的公司...", wasSanitized:true }
 
-    API->>LLM: stream({ provider:'cloud-deepseek-v4', messages:[sanitizedText] })
+    API->>LLM: stream({ provider:'cloud-llm', messages:[sanitizedText] })
     LLM->>WS: tool_call: web_search<br/>{query:"[NAME_1]的公司 最新动态"}
     WS-->>LLM: 搜索结果
     LLM->>LLM: 生成回答<br/>"XX 科技最近..."
@@ -7296,7 +7296,7 @@ graph LR
 | Service 提供（`ctx.provide`） | ✅ 合规 | 使用 `ctx.effect` 包装，Fiber 卸载自动撤下 |
 | 服务消费（`ctx.foo` 经 Proxy） | ⚠️ 限定范围 | 仅在 `inject` 声明的依赖上使用 `ctx.foo`；未声明的可选 service 必须 `ctx.get(name)`（包 AGENTS.md 强制） |
 | 事件机制（`ctx.event.on` / `emit`） | ✅ 合规 | 仅使用 DSH Cordis 已有的标准事件点 |
-| 同名 service 冲突处理 | ✅ v6.0 重写 | **删除** `isolate: { llm: true }` 设计；改为在同一 `ctx.llm` 上注册多条 provider 路由（`ctx.llm.registerAdapter(['local-qwen3-4b'], adapter)`） |
+| 同名 service 冲突处理 | ✅ v6.0 重写 | **删除** `isolate: { llm: true }` 设计；改为在同一 `ctx.llm` 上注册多条 provider 路由（`ctx.llm.registerAdapter(['local-llm'], adapter)`） |
 | 事件拦截点选择 | ⚠️ v6.0 重写 | 输入拦截：`agent/pre-step`（返回 `PreStepDecision`）+ `agent/request`（返回 `LlmCallConfig`）；输出过滤：`llm/stream` waterfall（不是 `tools/post-execute`，LLM 不是 tool） |
 | 工具注册（`ctx.tools.register`） | ✅ 合规 | 加入 `ctx.tools` 目录（DSH 标准工具注册机制） |
 | 配置层（cordis.yml） | ⚠️ v6.0 修字段名 | 禁用条目用行级 `disabled: true`（Loader 真实字段），不是数组 `disable:`；其余字段（`name: cordis:group` + `group: true` + `isolate: { <key>: true }`）保持 |
@@ -7312,9 +7312,9 @@ graph LR
 | 1 | 4.1 节使用 `llm/before-call` 事件 | DSH Cordis 不存在该事件点 | 替换为 `agent/request`（waterfall，可在请求组装阶段拦截或改写） |
 | 2 | 4.1 节使用 `llm/after-call` 事件 | 同上 | 输出侧改挂到 `llm/stream` waterfall（**不是** `tools/post-execute`，因为 LLM 不是 tool）；本地工具结果拦截仍在 `tools/post-execute`，但签名是 `(exec, result, next)` 不是 `(payload, payload, next)` |
 | 3 | 4.1 节 `payload.toolName === 'llm' \|\| 'model-router'` 判断 | LLM 不在 `tools/post-execute` 事件族；该事件参数是 `(exec, result, next)`，没有 `toolName` 字段（应使用 `exec.name`） | 输出过滤改为在 `llm/stream` waterfall 中通过 `BlockAssembler` 拦截 `StreamChunk`；`tools/post-execute` 只用于本地工具结果检查 |
-| 4 | 2.13 / 2.14 / 2.7 自定义 `LlmProvider` 接口 + `model-router` provide `llm` | DSH 真实 LLM 形态是 `LlmAdapter` 抽象类（仅 `stream(options)` 方法），并通过 `ctx.llm.registerAdapter([provider], adapter)` 注册；`LlmRuntime` 是单例全局服务，不允许被覆盖 | 改为两个 adapter plugin：`local-llm-adapter` 与 `cloud-llm-adapter`，各自 `ctx.llm.registerAdapter(['local-qwen3-4b'], new LocalAdapter())`；选择路由由 agent 选项（`options.provider` / `options.model`）+ adapter 注册表完成，不需要 `model-router` 提供新的 `llm` service |
+| 4 | 2.13 / 2.14 / 2.7 自定义 `LlmProvider` 接口 + `model-router` provide `llm` | DSH 真实 LLM 形态是 `LlmAdapter` 抽象类（仅 `stream(options)` 方法），并通过 `ctx.llm.registerAdapter([provider], adapter)` 注册；`LlmRuntime` 是单例全局服务，不允许被覆盖 | 改为两个 adapter plugin：`local-llm-adapter` 与 `cloud-llm-adapter`，各自 `ctx.llm.registerAdapter(['local-llm'], new LocalAdapter())`；选择路由由 agent 选项（`options.provider` / `options.model`）+ adapter 注册表完成，不需要 `model-router` 提供新的 `llm` service |
 | 5 | 2.7 用 `cordis:group` + `isolate: { llm: true }` 解决同名 `llm` | `isolate` realm 的设计语义是**按会话/按 agent 隔离**（per-session scoping），不是用来"隐藏"主机面上的单例 service；agent-presets 文档明确说 `inject` 解析在会话存在之前完成，无法 `inject` 出一个 `isolate` realm 内的 service | 删除 isolated realm 设计；改用 § 4 的"adapter 注册"机制在同一 `llm` service 上注册多条路由 |
-| 6 | 2.15 `intent-router` 中 `ctx.llm.chat(messages, options)` 与 `collectStream(...)` | DSH `LlmRuntime` 没有 `chat()` 方法，只有 `stream(options: GenerateOptions): AsyncIterable<StreamChunk>`；`GenerateOptions` 不是 `messages[]` 而是包含 `messages / provider / model / signal` 的完整请求 | 改用 `ctx.llm.stream({ messages, provider: 'local-qwen3-4b', ... })`，通过 `BlockAssembler` 收集 chunk；本小节其余片段仅作语义说明保留 |
+| 6 | 2.15 `intent-router` 中 `ctx.llm.chat(messages, options)` 与 `collectStream(...)` | DSH `LlmRuntime` 没有 `chat()` 方法，只有 `stream(options: GenerateOptions): AsyncIterable<StreamChunk>`；`GenerateOptions` 不是 `messages[]` 而是包含 `messages / provider / model / signal` 的完整请求 | 改用 `ctx.llm.stream({ messages, provider: 'local-llm', ... })`，通过 `BlockAssembler` 收集 chunk；本小节其余片段仅作语义说明保留 |
 | 7 | 多处 `inject: ['config']` | Cordis 没有 `config` 服务；plugin 配置直接通过 `apply(ctx, config)` 第二参数传入（Loader 把 `entry.config` 解析后传给 apply） | 删除所有 `config` 注入项；plugin 的配置 schema 由 `export const Config: z<Config> = z.object(...)` 声明 |
 | 8 | 多处 `ctx['xxx']` 字符串下标访问 service | 包 AGENTS.md 明确规定：可选 service 必须用 `ctx.get('name')`（直读全局 store），`ctx.xxx` 保留给 `inject` 声明的依赖 | 在 4.1 / 8 节事件拦截中，把"非 inject 声明的 service"读取改为 `ctx.get('xxx')` 形式 |
 | 9 | `cordis.yml` 中 `disable: [dsh-*]` / `disable: true` 行字段 | Loader 真实字段是行级 `disabled: true`（单值布尔），不是数组形式；该字段支持 `!!js` 插值（例：`disabled: !!js process.platform === 'win32'`） | 全文 `disable: true` → `disabled: true`；禁用列表通过 patch 的"覆盖该行"实现，不是数组 disable |
@@ -7427,7 +7427,7 @@ DSH 当前实现相比论文理想保证有以下差距，本设计通过插件�
   - 调用 DeepSeek Chat Completions API（OpenAI 兼容）
   - 配置从 env 读 `DEEPSEEK_API_KEY`、`DEEPSEEK_BASE_URL`
 - [ ] 填实 `model-router`（最小版）：不创建 isolated realm，按 `options.providers` 数组选已注册的 adapter
-  - **修正 v6 S5**：v6 用 `cordis:group` + `isolate: { llm: true }` 隔离同名 llm，但 § 11.2 (3) 明确 `isolate` 是 per-agent scoping，宿主 `inject` 拿不到子 realm service。改用 DSH 原生 `LlmRuntime.registerAdapter(['cloud-deepseek-v4'], new CloudAdapter())`——所有 adapter 共享同一个 `ctx.llm` 单例，**根本不需要 isolate**
+  - **修正 v6 S5**：v6 用 `cordis:group` + `isolate: { llm: true }` 隔离同名 llm，但 § 11.2 (3) 明确 `isolate` 是 per-agent scoping，宿主 `inject` 拿不到子 realm service。改用 DSH 原生 `LlmRuntime.registerAdapter(['cloud-llm'], new CloudAdapter())`——所有 adapter 共享同一个 `ctx.llm` 单例，**根本不需要 isolate**
 - [ ] 填实 `intent-router`（最小版）：默认 `CLOUD`（不分类）
 - [ ] 在 `edge-minimal` profile 中只挂 `cloud-llm-adapter` / `model-router` / `intent-router`，跑通 `dsh run "你好"`
 
@@ -7502,27 +7502,27 @@ $ pnpm dsh --profile edge-minimal sessions list
 - [ ] 填实 `local-llm-adapter` 双模式：
   - `mode: 'mock'` —— 同步按用户最后一条 user 文本返回 `"[LOCAL-MOCK] {trim(prompt)}"`，无网络
   - `mode: 'real'` —— POST 到 `{baseUrl}/chat/completions`，复用 `cloud-llm-adapter` 的 SSE 解析逻辑（包含 tool-calls delta 透传）
-  - 两条路径都注册到同一个 `ctx.llm.registerAdapter(['local-qwen3-4b-mock', 'local-qwen3-4b'], adapter)`，route 名是 dispatch key
+  - 两条路径都注册到同一个 `ctx.llm.registerAdapter(['local-llm-mock', 'local-llm'], adapter)`，route 名是 dispatch key
 - [ ] `model-router` 升级：`options.provider` 命中 LOCAL 时返回 `realm='LOCAL'`；命不中返回错误；`options.model` 透传
 - [ ] 通过 `provider`/`model` 显式路由（system prompt 提示 + agent 配置两种暴露路径）
 - [ ] 单元测试：
-  - mock：route `local-qwen3-4b-mock` 命中 mock adapter，stream 出来 `[LOCAL-MOCK] 你好`
-  - real：route `local-qwen3-4b` 命中真后端，stub `fetch` 验证 wire body
-  - cloud：route `cloud-deepseek-v4` 命中 cloud-llm-adapter（回归 M1）
-  - model-router：`resolveRoute('local-qwen3-4b-mock')` → LOCAL；`'cloud-deepseek-v4'` → CLOUD
+  - mock：route `local-llm-mock` 命中 mock adapter，stream 出来 `[LOCAL-MOCK] 你好`
+  - real：route `local-llm` 命中真后端，stub `fetch` 验证 wire body
+  - cloud：route `cloud-llm` 命中 cloud-llm-adapter（回归 M1）
+  - model-router：`resolveRoute('local-llm-mock')` → LOCAL；`'cloud-llm'` → CLOUD
 
 **验证**：
 
 ```bash
-$ pnpm dsh --config profiles/edge-m1.cordis.yml --provider local-qwen3-4b-mock "今天天气"
+$ pnpm dsh --config profiles/edge-m1.cordis.yml --provider local-llm-mock "今天天气"
 ✅ [LOCAL-MOCK] 今天天气...
 
-$ pnpm dsh --config profiles/edge-m1.cordis.yml --provider cloud-deepseek-v4 "今天天气"
+$ pnpm dsh --config profiles/edge-m1.cordis.yml --provider cloud-llm "今天天气"
 ✅ DeepSeek 真实响应
 
 $ DSH_EDGE_LOCAL_LLM_MODE=real \
   DSH_EDGE_LOCAL_LLM_BASEURL=http://192.168.66.195:8701/v1 \
-  pnpm dsh --config profiles/edge-m1.cordis.yml --provider local-qwen3-4b "今天天气"
+  pnpm dsh --config profiles/edge-m1.cordis.yml --provider local-llm "今天天气"
 ✅ 真 llama.cpp 响应
 ```
 
@@ -7799,7 +7799,7 @@ A 段互相独立，按需取用
 | **M2** | 填实 `local-tools` 子集 | L1 | ❌ | `ctx.tools.register()` |
 | M2 | `tools` 注册表最小版 | L1 | ❌ | Realm 校验先 hardcode |
 | **M3** | `sessions` / `local-storage` / `audit-log` 明文版 | L1 | ❌ | SQLite 原文 |
-| **M4** | `local-llm-adapter` mock + 真后端（`mode` 切换） | L1 | ❌ | `ctx.llm.registerAdapter(['local-qwen3-4b-mock', 'local-qwen3-4b'], ...)` |
+| **M4** | `local-llm-adapter` mock + 真后端（`mode` 切换） | L1 | ❌ | `ctx.llm.registerAdapter(['local-llm-mock', 'local-llm'], ...)` |
 | M4 | `local-llm-adapter` 真模式 POST `{baseUrl}/chat/completions` | L1 | ❌ | OpenAI 兼容 SSE，HTTP 出端不加密（LAN only） |
 | M4 | `model-router` 按 `options.providers` 分发 | L1 | ❌ | 不替换 `ctx.llm` |
 | M4 | LAN 性能 bench（可选） | L3 | ❌ | 与 DSH 无关 |
@@ -8006,7 +8006,7 @@ private async handleChat(req, res, reqId, start) {
 
   // 5. provider/model 硬编码（**未**走 modelRouter.resolve()——实现侧限制）
   const isLocal = intent.category === 'LOCAL'
-  const provider = isLocal ? 'local-qwen3-4b' : 'cloud-deepseek-v4'
+  const provider = isLocal ? 'local-llm' : 'cloud-llm'
   const model    = isLocal ? 'qwen3-4b'        : 'deepseek-chat'
 
   // 6. CLOUD/SANITIZED → sanitize（fail-open）
@@ -8211,10 +8211,10 @@ describe('http-api', () => {
 
 | 序号 | v5 设计 | v5 错误类型 | v6.0 修正 | 涉及文件/章节 |
 |---|---|---|---|---|
-| 1 | 自定义 `LlmProvider { name, realm, chat, chatStream }` | 接口完全错误 | `LlmAdapter { stream(options) }` + `registerAdapter(['local-qwen3-4b'], new LocalAdapter())` | § 2.7 / § 2.13 / § 2.14 |
+| 1 | 自定义 `LlmProvider { name, realm, chat, chatStream }` | 接口完全错误 | `LlmAdapter { stream(options) }` + `registerAdapter(['local-llm'], new LocalAdapter())` | § 2.7 / § 2.13 / § 2.14 |
 | 2 | `model-router` 同时 provide `llm` | `LlmRuntime` 是单例全局 service，禁止被替换 | 删除 `model-router` 的 `llm` provide；adapters 通过 `ctx.llm.registerAdapter` 接入统一 service | § 2.7 |
 | 3 | `isolate: { llm: true }` 解决同名 llm 冲突 | `isolate` 是 per-agent 隔离，宿主面 `inject` 拿不到子 realm service | 删除 isolate 设计；用 adapter 注册路由代替 | § 2.7 / § 4.3 / § 七 |
-| 4 | `intent-router` 中 `ctx.llm.chat(messages, options)` + `collectStream(...)` | DSH `LlmRuntime` 无 `chat()` 方法，只有 `stream()` | 改用 `ctx.llm.stream({ messages, provider: 'local-qwen3-4b', signal })` | § 2.15 |
+| 4 | `intent-router` 中 `ctx.llm.chat(messages, options)` + `collectStream(...)` | DSH `LlmRuntime` 无 `chat()` 方法，只有 `stream()` | 改用 `ctx.llm.stream({ messages, provider: 'local-llm', signal })` | § 2.15 |
 | 5 | `tools/post-execute` 监听 `toolName === 'llm' \|\| 'model-router'` 并改写 LLM 输出 | LLM 不是 tool；该事件族不覆盖 LLM | 输出过滤改挂 `llm/stream` waterfall（通过 `BlockAssembler` 处理 chunk）；`tools/post-execute` 只用于本地工具结果 | § 4.1 / § 6.2-6.4 |
 | 6 | `throw new SecurityError(...)` 在 `agent/pre-step` / `agent/request` waterfall 中 | waterfall listener 应返回决策对象，抛错会绕过 agent loop 决策分支 | 返回 `{ kind: 'reject' }`（pre-step）或返回替换的 `LlmCallConfig`（request） | § 4.1 / § 4.2 |
 | 7 | 多处 `inject: ['config']` | DSH 无 `config` 服务；plugin 配置直接通过 `apply(ctx, config)` 第二参数传入 | 删除 `config` 注入项；plugin 必须 named-export `Config: z<Config>` zod schema | § 二 所有 § |
@@ -9039,10 +9039,10 @@ ctx.on('tools/pre-execute', async (exec, next) => {
   │
   ├─ prompt-guard.checkInput() → pass
   ├─ intent-router.classify() → CLOUD (知识/联网类任务)
-  ├─ model-router.resolve('CLOUD') → cloud-deepseek-v4
+  ├─ model-router.resolve('CLOUD') → cloud-llm
   ├─ sanitizer.sanitize(text) → 脱敏（如有 PII）
   │
-  ├─ ctx.agents.create({ model: 'cloud-deepseek-v4', realm: 'CLOUD' })
+  ├─ ctx.agents.create({ model: 'cloud-llm', realm: 'CLOUD' })
   │
   ├─ agent/pre-step:
   │   ├─ skill catalog 过滤 → 只展示 lark-* skills
@@ -9066,9 +9066,9 @@ ctx.on('tools/pre-execute', async (exec, next) => {
   │
   ├─ prompt-guard.checkInput() → pass
   ├─ intent-router.classify() → LOCAL (系统管理)
-  ├─ model-router.resolve('LOCAL') → local-qwen3-4b
+  ├─ model-router.resolve('LOCAL') → local-llm
   │
-  ├─ ctx.agents.create({ model: 'local-qwen3-4b', realm: 'LOCAL' })
+  ├─ ctx.agents.create({ model: 'local-llm', realm: 'LOCAL' })
   │
   ├─ agent/pre-step:
   │   ├─ skill catalog 过滤 → 只展示 sys-monitor, device-ctrl

@@ -261,7 +261,7 @@ http-api 不再需要包含脱敏逻辑 — 它变薄，只做协议适配。**�
   └── 命中 LOCAL/CLOUD 规则 或 未命中 → 穿透，继续
   │
   ▼
-[2] LLM 分类  ←── local-qwen3-4b（流式 stream，4s AbortController 硬超时）
+[2] LLM 分类  ←── local-llm（流式 stream，4s AbortController 硬超时）
   ├── CLOUD realm 时 → sanitizer.sanitize() 脱敏 PII 后再发 prompt
   │   ├── sanitizer 不可用/失败 → fail-closed throw → 降级到 [3]（脱不了敏就不上云）
   │   └── 审计 intent.llm.sanitized / intent.llm.sanitize-error / intent.llm.sanitize-unavailable（后两者 security 级别）
@@ -395,7 +395,7 @@ maxRequestsPerMinute = config.maxRequestsPerMinute  // 默认 20
 
 ### Stage 6: 模型辅助检测
 
-调用本地 LLM（`local-qwen3-4b`）做语义安全分类：
+调用本地 LLM（`local-llm`）做语义安全分类：
 
 ```typescript
 const systemPrompt = `You are a security classifier for an LLM edge-agent.
@@ -527,7 +527,7 @@ http-api.handleChat()
   → promptGuard.checkInput(text, sessionId)
     → Stage 6: modelBasedCheck(text)
       → this.llm.stream({
-          provider: 'local-qwen3-4b',
+          provider: 'local-llm',
           model: 'qwen3-4b',
           messages: [userMessage],
           system: systemPrompt,
@@ -668,7 +668,7 @@ function coerceSafetyObject(obj: unknown): SafetyVerdict | null {
 
 ### e2e 验证结果
 
-本地 LLM（Qwen3-4B-Instruct @ `local-qwen3-4b` provider）模型检测实测：
+本地 LLM（Qwen3-4B-Instruct @ `local-llm` provider）模型检测实测：
 
 | 输入 | HTTP | 检测到的威胁 |
 |------|------|-------------|
@@ -700,7 +700,7 @@ function coerceSafetyObject(obj: unknown): SafetyVerdict | null {
 | `enableInjectionDetection` | — | true | 注入检测开关 |
 | `enableRateLimit` | — | true | 频率限制开关 |
 | `enableModelDetection` | `DSH_EDGE_GUARD_MODEL` | **true** | 模型辅助检测开关（默认开启） |
-| `modelDetectionProvider` | `DSH_EDGE_GUARD_MODEL_PROVIDER` | `local-qwen3-4b` | 模型检测 provider |
+| `modelDetectionProvider` | `DSH_EDGE_GUARD_MODEL_PROVIDER` | `local-llm` | 模型检测 provider |
 | `modelDetectionModel` | `DSH_EDGE_GUARD_MODEL_MODEL` | `qwen3-4b` | 模型检测 model |
 | `modelDetectionTimeoutMs` | `DSH_EDGE_GUARD_MODEL_TIMEOUT_MS` | 4000 | 模型检测超时（ms） |
 | `modelDetectionMaxInputLength` | `DSH_EDGE_GUARD_MODEL_MAX_INPUT` | 2000 | 模型检测输入长度上限 |
@@ -1278,7 +1278,7 @@ const model = resolved?.model ?? this.classificationModel
 ```yaml
 - id: intent-router
   config:
-    classificationProvider: local-qwen3-4b  # 必须是 provider route id
+    classificationProvider: local-llm  # 必须是 provider route id
     classificationModel: qwen3-4b
 ```
 
@@ -1870,7 +1870,7 @@ private redactPreview(text: string): string | null {
 | 参数 | 环境变量 | 默认值 | 说明 |
 |------|---------|-------|------|
 | `defaultCategory` | — | `CLOUD` | 无匹配时的默认分类 |
-| `classificationProvider` | `DSH_EDGE_INTENT_PROVIDER` | `local-qwen3-4b` | 分类 LLM provider |
+| `classificationProvider` | `DSH_EDGE_INTENT_PROVIDER` | `local-llm` | 分类 LLM provider |
 | `classificationModel` | `DSH_EDGE_INTENT_MODEL` | `qwen3-4b` | 分类 LLM model |
 | `confidenceThreshold` | `DSH_EDGE_INTENT_CONFIDENCE_THRESHOLD` | `0.6` | 置信度门控阈值 |
 | `llmTimeoutMs` | `DSH_EDGE_INTENT_LLM_TIMEOUT_MS` | `4000` | LLM 超时（ms） |
@@ -1950,13 +1950,13 @@ file, read, write, delete, calculate, compute, local, device, disk, directory, f
 
 #### 关键性能指标
 
-**LOCAL 分类** (local-qwen3-4b):
+**LOCAL 分类** (local-llm):
 - 平均响应时间: ~17 秒
 - 范围: 9.8s - 47.8s
 - 置信度: 0.98-0.99（高置信度）
 - rationale: `llm-classified:local`
 
-**CLOUD 分类** (cloud-deepseek-v4):
+**CLOUD 分类** (cloud-llm):
 - 平均响应时间: ~1.6 秒
 - 范围: 1.5s - 1.7s
 - 置信度: 0.99（高置信度）
@@ -2025,12 +2025,12 @@ file, read, write, delete, calculate, compute, local, device, disk, directory, f
 从 `/tmp/dsh-llm-classification-test.log` 提取的关键事件：
 
 ```
-POST /v1/chat 200 12781ms local-qwen3-4b/local-qwen3-4b intent=LOCAL
-POST /v1/chat 200 47781ms local-qwen3-4b/local-qwen3-4b intent=LOCAL
-POST /v1/chat 200  9853ms local-qwen3-4b/local-qwen3-4b intent=LOCAL
-POST /v1/chat 200  1675ms cloud-deepseek-v4/cloud-deepseek-v4 intent=CLOUD
-POST /v1/chat 200  1621ms cloud-deepseek-v4/cloud-deepseek-v4 intent=CLOUD
-POST /v1/chat 200  1509ms cloud-deepseek-v4/cloud-deepseek-v4 intent=CLOUD
+POST /v1/chat 200 12781ms local-llm/local-llm intent=LOCAL
+POST /v1/chat 200 47781ms local-llm/local-llm intent=LOCAL
+POST /v1/chat 200  9853ms local-llm/local-llm intent=LOCAL
+POST /v1/chat 200  1675ms cloud-llm/cloud-llm intent=CLOUD
+POST /v1/chat 200  1621ms cloud-llm/cloud-llm intent=CLOUD
+POST /v1/chat 200  1509ms cloud-llm/cloud-llm intent=CLOUD
 POST /v1/chat 403     7ms reject:Destructive command pattern
 POST /v1/chat 403     1ms reject:Destructive command pattern
 POST /v1/chat 403     1ms reject:Dangerous system operation
@@ -2640,7 +2640,7 @@ dsh-im ────┘              统一执行管线
     sanitizeLocalTraffic: false
     rejectOnPolicyViolation: true   # 攻击 / REJECT → 阻断 step
     downgradeOnSanitizeFailure: true  # sanitize 失败 → 降级 LOCAL
-    localProvider: 'local-qwen3-4b'
+    localProvider: 'local-llm'
     localModel: 'qwen3-4b-instruct-2507'
 ```
 
@@ -2716,7 +2716,7 @@ async handleAgentRequest(payload, seedConfig, next) {
   // ...省略 sessionId/state 检查...
   const downgraded: AgentRequestConfig = {
     ...seedConfig,
-    provider: this.config.localProvider,    // 'local-qwen3-4b'
+    provider: this.config.localProvider,    // 'local-llm'
     model: this.config.localModel,          // 'qwen3-4b-instruct-2507'
   }
 this.audit('info', 'input-guard.route.overridden', {
@@ -3105,7 +3105,7 @@ export const inject = [
     sanitizeLocalTraffic: false   # LOCAL 路径是否仍走脱敏（默认 false，LOCAL LLM 看到原文）
     downgradeOnSanitizeFailure: true   # 脱敏失败时降级 LOCAL（fail-open：原始 PII 留本地）；
                                        # = false 时 fail-closed：REJECT step，user 看到空 result
-    localProvider: !!js process.env.DSH_EDGE_LOCAL_LLM_PROVIDER ?? 'local-qwen3-4b'
+    localProvider: !!js process.env.DSH_EDGE_LOCAL_LLM_PROVIDER ?? 'local-llm'
     localModel: !!js process.env.DSH_EDGE_LOCAL_LLM_MODEL ?? 'qwen3-4b-instruct-2507'
 ```
 
@@ -3298,7 +3298,7 @@ intent-router = **"前置威胁门禁 + 三层防御 + LLM 分类 + 规则兜底
 - **职责分离**：prompt-guard 专注攻击模式检测（注入/提词/越狱/角色覆盖/数据外传），privacy-policy REJECT 专注业务危险操作（破坏性命令/数据库删除），两层各司其职
 - **三层防御纵深**：prompt-guard 正则（零 token）+ prompt-guard 本地 LLM 模型检测（捕捉复杂攻击）+ privacy-policy REJECT（零 token，业务危险操作）三层独立拦截
 - **前置威胁门禁**：td-bus 在 prompt-guard 之前做流量型异常短路（≥80 req/min 触发 HTTP 503），不依赖 prompt-guard 的语义判定，可作为独立层防御暴力/恶意流量
-- **模型辅助检测默认开启**：prompt-guard Stage 6 使用 `local-qwen3-4b` 做安全语义分类，捕捉正则无法覆盖的间接注入、社会工程、同形字混淆、base64 编码等复杂攻击。fail-open 设计——模型超时/报错/解析失败时不阻断，仅依赖前序正则+PII 判定
+- **模型辅助检测默认开启**：prompt-guard Stage 6 使用 `local-llm` 做安全语义分类，捕捉正则无法覆盖的间接注入、社会工程、同形字混淆、base64 编码等复杂攻击。fail-open 设计——模型超时/报错/解析失败时不阻断，仅依赖前序正则+PII 判定
 - **fail-open 降级，fail-closed 隐私**：LLM 不确定时降级到规则而非直接拒绝，保证可用性（qwen3-4b 置信度抖动较大，fail-closed 误拒率不可接受）；但 CLOUD 路径的 sanitizer 失败时采用 fail-closed——脱不了敏就不上云，抛异常降级到规则兜底
 - **softService() 软依赖**：intent-router 对 privacyPolicy/modelRouter/sanitizer/piiUtils 采用 `softService()` 查找——Cordis 运行时用 `ctx.get()`（不在 inject 中时返回 undefined 而非 throw），单元测试裸 mock 用直接属性访问。保证在缺失或 mock 场景下均不崩溃
 - **全面可观测**：14 个计数器 + 1 个置信度直方图 + 完整审计日志，运维友好

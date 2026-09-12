@@ -31,12 +31,12 @@ describe('llm-adapters', () => {
       llm: { registerAdapter: (providers: string[], adapter: unknown) => { registered.push({ providers, adapter }); return () => {} } },
     } as never
     const dispose = await localAdapter.apply(fakeCtx, {
-      providers: ['local-qwen3-4b'],
+      providers: ['local-llm'],
       baseUrl: 'http://127.0.0.1:8080/v1',
       defaultModel: 'qwen3-4b',
     })
     assert.equal(registered.length, 1)
-    assert.deepEqual((registered[0] as { providers: string[] }).providers, ['local-qwen3-4b'])
+    assert.deepEqual((registered[0] as { providers: string[] }).providers, ['local-llm'])
     await dispose()
   })
 
@@ -47,12 +47,12 @@ describe('llm-adapters', () => {
       llm: { registerAdapter: (providers: string[], adapter: unknown) => { registered.push({ providers, adapter }); return () => {} } },
     } as never
     const dispose = await cloudAdapter.apply(fakeCtx, {
-      providers: ['cloud-deepseek-v4'],
+      providers: ['cloud-llm'],
       baseUrl: 'https://api.deepseek.com',
       apiKeyEnv: 'DEEPSEEK_API_KEY',
     })
     assert.equal(registered.length, 1)
-    assert.deepEqual((registered[0] as { providers: string[] }).providers, ['cloud-deepseek-v4'])
+    assert.deepEqual((registered[0] as { providers: string[] }).providers, ['cloud-llm'])
     await dispose()
   })
 })

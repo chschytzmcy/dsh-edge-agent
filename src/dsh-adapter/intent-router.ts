@@ -62,7 +62,7 @@ export const Config: Schema<Config> = Schema.object({
     // SANITIZED, the input-guard sanitizer-pipeline runs first; sanitize
     // failure triggers input-guard.sanitize.downgraded → LOCAL (fail-closed).
     .default('SANITIZED'),
-  classificationProvider: Schema.string().default('local-qwen3-4b'),
+  classificationProvider: Schema.string().default('local-llm'),
   classificationModel: Schema.string().default('qwen3-4b'),
   // confidenceThreshold is a 0..1 probability, NOT an integer. Pre-fix used
   // Schema.natural() which validates as "integer multiple of 1" — runtime
@@ -317,7 +317,7 @@ export class IntentRouterServiceImpl extends Service {
     // throwing modelRouter falls back to config values (fail-open).
     // ⚠️ classificationProvider MUST be a provider route id (with 'local-' /
     // 'cloud-' prefix); bare model ids resolve to realm: 'CLOUD' (see
-    // model-router.ts:103). Current default 'local-qwen3-4b' is fine.
+    // model-router.ts:103). Current default 'local-llm' is fine.
     const modelRouter = this.softService('modelRouter')
     const resolved = (() => {
       try { return modelRouter?.resolve?.(this.classificationProvider) }

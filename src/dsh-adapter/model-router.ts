@@ -10,7 +10,7 @@
  * M4 adds:
  *   - `listAvailable()` returns the union of `Config.localModels` and
  *     `Config.cloudModels` so callers can enumerate dispatch keys.
- *   - `resolve()` accepts either a provider route id (e.g. `local-qwen3-4b`)
+ *   - `resolve()` accepts either a provider route id (e.g. `local-llm`)
  *     or a free-form model id (e.g. `deepseek-chat`) and maps it to the
  *     correct route. The prefix rule still decides realm; a free-form
  *     model id without a prefix falls back to CLOUD.
@@ -38,11 +38,11 @@ export interface Config {
 }
 
 export const Config: Schema<Config> = Schema.object({
-  defaultModel: Schema.string().default('cloud-deepseek-v4'),
+  defaultModel: Schema.string().default('cloud-llm'),
   localModels: Schema.array(Schema.string()).default([
-    'local-qwen3-4b',
+    'local-llm',
   ]),
-  cloudModels: Schema.array(Schema.string()).default(['cloud-deepseek-v4']),
+  cloudModels: Schema.array(Schema.string()).default(['cloud-llm']),
 })
 
 export interface ResolvedRoute {
@@ -63,7 +63,7 @@ export interface ModelRouterService {
 }
 
 export interface ModelInfo {
-  /** Provider route id (e.g. `local-qwen3-4b`). */
+  /** Provider route id (e.g. `local-llm`). */
   provider: string
   /** Realm the provider belongs to. */
   realm: Realm
@@ -110,10 +110,10 @@ export class ModelRouterServiceImpl extends Service {
 /** Pure route classifier. Exported so unit tests can pin it without a Cordis ctx. */
 export function resolveRoute(
   model: string,
-  localModels: readonly string[] = ['local-qwen3-4b'],
-  cloudModels: readonly string[] = ['cloud-deepseek-v4'],
+  localModels: readonly string[] = ['local-llm'],
+  cloudModels: readonly string[] = ['cloud-llm'],
 ): ResolvedRoute {
-  const normalized = model.length > 0 ? model : 'cloud-deepseek-v4'
+  const normalized = model.length > 0 ? model : 'cloud-llm'
   if (localModels.includes(normalized)) {
     return { realm: 'LOCAL', provider: normalized, model: normalized }
   }

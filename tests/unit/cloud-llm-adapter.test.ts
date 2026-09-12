@@ -80,7 +80,7 @@ describe('cloud-llm-adapter (M1)', () => {
     ]))
 
     const adapter = new CloudLlmAdapterImpl({
-      providers: ['cloud-deepseek-v4'],
+      providers: ['cloud-llm'],
       baseUrl: 'https://api.example.test',
       apiKeyEnv: 'DEEPSEEK_API_KEY',
       defaultModel: 'deepseek-chat',
@@ -88,7 +88,7 @@ describe('cloud-llm-adapter (M1)', () => {
 
     const chunks: unknown[] = []
     for await (const chunk of adapter.stream({
-      provider: 'cloud-deepseek-v4',
+      provider: 'cloud-llm',
       model: 'deepseek-chat',
       messages: [{ role: 'user', content: [{ type: 'text', text: '你好' }] }],
     })) {
@@ -122,14 +122,14 @@ describe('cloud-llm-adapter (M1)', () => {
     ]))
 
     const adapter = new CloudLlmAdapterImpl({
-      providers: ['cloud-deepseek-v4'],
+      providers: ['cloud-llm'],
       baseUrl: 'https://api.example.test',
       apiKeyEnv: 'DEEPSEEK_API_KEY',
       defaultModel: 'deepseek-chat',
     })
 
     for await (const _ of adapter.stream({
-      provider: 'cloud-deepseek-v4',
+      provider: 'cloud-llm',
       model: 'deepseek-chat',
       system: 'be terse',
       messages: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
@@ -150,7 +150,7 @@ describe('cloud-llm-adapter (M1)', () => {
     installFetchMock(() => sseResponse([]))
 
     const adapter = new CloudLlmAdapterImpl({
-      providers: ['cloud-deepseek-v4'],
+      providers: ['cloud-llm'],
       baseUrl: 'https://api.example.test',
       apiKeyEnv: 'DEEPSEEK_API_KEY',
       defaultModel: 'deepseek-chat',
@@ -159,7 +159,7 @@ describe('cloud-llm-adapter (M1)', () => {
     await assert.rejects(
       (async () => {
         for await (const _ of adapter.stream({
-          provider: 'cloud-deepseek-v4',
+          provider: 'cloud-llm',
           model: 'deepseek-chat',
           messages: [],
         })) {
@@ -181,14 +181,14 @@ describe('cloud-llm-adapter (M1)', () => {
     ]))
 
     const adapter = new CloudLlmAdapterImpl({
-      providers: ['cloud-deepseek-v4'],
+      providers: ['cloud-llm'],
       baseUrl: 'https://api.example.test',
       apiKeyEnv: 'DEEPSEEK_API_KEY',
       defaultModel: 'deepseek-v4-flash',
     })
 
     for await (const _ of adapter.stream({
-      provider: 'cloud-deepseek-v4',
+      provider: 'cloud-llm',
       model: '',
       messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
     })) {
@@ -218,14 +218,14 @@ describe('cloud-llm-adapter (M2 tool-calls)', () => {
     ]))
 
     const adapter = new CloudLlmAdapterImpl({
-      providers: ['cloud-deepseek-v4'],
+      providers: ['cloud-llm'],
       baseUrl: 'https://api.example.test',
       apiKeyEnv: 'DEEPSEEK_API_KEY',
       defaultModel: 'deepseek-chat',
     })
 
     for await (const _ of adapter.stream({
-      provider: 'cloud-deepseek-v4',
+      provider: 'cloud-llm',
       model: 'deepseek-chat',
       messages: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
       tools: [
@@ -263,7 +263,7 @@ describe('cloud-llm-adapter (M2 tool-calls)', () => {
     ]))
 
     const adapter = new CloudLlmAdapterImpl({
-      providers: ['cloud-deepseek-v4'],
+      providers: ['cloud-llm'],
       baseUrl: 'https://api.example.test',
       apiKeyEnv: 'DEEPSEEK_API_KEY',
       defaultModel: 'deepseek-chat',
@@ -271,7 +271,7 @@ describe('cloud-llm-adapter (M2 tool-calls)', () => {
 
     const chunks: unknown[] = []
     for await (const chunk of adapter.stream({
-      provider: 'cloud-deepseek-v4',
+      provider: 'cloud-llm',
       model: 'deepseek-chat',
       messages: [{ role: 'user', content: [{ type: 'text', text: 'read /tmp/test.txt' }] }],
       tools: [
@@ -314,7 +314,7 @@ describe('cloud-llm-adapter (M2 tool-calls)', () => {
     ]))
 
     const adapter = new CloudLlmAdapterImpl({
-      providers: ['cloud-deepseek-v4'],
+      providers: ['cloud-llm'],
       baseUrl: 'https://api.example.test',
       apiKeyEnv: 'DEEPSEEK_API_KEY',
       defaultModel: 'deepseek-chat',
@@ -322,7 +322,7 @@ describe('cloud-llm-adapter (M2 tool-calls)', () => {
 
     const chunks: unknown[] = []
     for await (const chunk of adapter.stream({
-      provider: 'cloud-deepseek-v4',
+      provider: 'cloud-llm',
       model: 'deepseek-chat',
       messages: [{ role: 'user', content: [{ type: 'text', text: 'compute 2+2' }] }],
       tools: [{ name: 'local_calculate', description: 'c', parameters: {} }],
@@ -346,7 +346,7 @@ describe('cloud-llm-adapter (M2 tool-calls)', () => {
       { choices: [{ delta: {}, finish_reason: 'stop' }] },
     ]))
     const adapter = new CloudLlmAdapterImpl({
-      providers: ['cloud-deepseek-v4'],
+      providers: ['cloud-llm'],
       baseUrl: 'https://api.deepseek.com',
       apiKeyEnv: 'DEEPSEEK_API_KEY',
       defaultModel: 'deepseek-chat',
@@ -354,7 +354,7 @@ describe('cloud-llm-adapter (M2 tool-calls)', () => {
 
     const chunks: Array<{ type: string; [k: string]: unknown }> = []
     for await (const chunk of adapter.stream({
-      provider: 'cloud-deepseek-v4',
+      provider: 'cloud-llm',
       model: 'deepseek-chat',
       messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
     })) {
@@ -388,7 +388,7 @@ describe('cloud-llm-adapter (M2 tool-calls)', () => {
       }
       const adapter = new CloudLlmAdapterImpl(
         {
-          providers: ['cloud-deepseek-v4'],
+          providers: ['cloud-llm'],
           baseUrl: 'https://api.example.test',
           apiKeyEnv: 'DEEPSEEK_API_KEY',
           defaultModel: 'deepseek-chat',
@@ -398,7 +398,7 @@ describe('cloud-llm-adapter (M2 tool-calls)', () => {
         fakeLogger,
       )
       for await (const _ of adapter.stream({
-        provider: 'cloud-deepseek-v4',
+        provider: 'cloud-llm',
         model: 'deepseek-chat',
         messages: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
         sessionId: 'sec7461-cloud',
@@ -410,11 +410,11 @@ describe('cloud-llm-adapter (M2 tool-calls)', () => {
       assert.ok(start, `expected LLM call start line, got: ${JSON.stringify(infoLines)}`)
       assert.ok(done, `expected LLM call done line, got: ${JSON.stringify(infoLines)}`)
       assert.ok(start!.includes('sessionId=sec7461-cloud'), 'start should include sessionId')
-      assert.ok(start!.includes('provider=cloud-deepseek-v4'), 'start should include provider')
+      assert.ok(start!.includes('provider=cloud-llm'), 'start should include provider')
       assert.ok(start!.includes('model=deepseek-chat'), 'start should include model')
       assert.ok(start!.includes('messageCount=1'), 'start should include messageCount')
       assert.ok(done!.includes('sessionId=sec7461-cloud'), 'done should include sessionId')
-      assert.ok(done!.includes('provider=cloud-deepseek-v4'), 'done should include provider')
+      assert.ok(done!.includes('provider=cloud-llm'), 'done should include provider')
       assert.ok(done!.includes('model=deepseek-chat'), 'done should include model')
       assert.match(done!, /durationMs=\d+/, 'done should include durationMs=N')
       assert.match(done!, /resultLen=\d+/, 'done should include resultLen=N')
