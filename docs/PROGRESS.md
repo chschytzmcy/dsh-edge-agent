@@ -4695,3 +4695,85 @@ reply `result` 里包含原文 `user@example.com`，ops log grep sessionId 立�
 - PROGRESS §7.46.1 / §7.46.2 — 同款 try/catch + info pattern
 - memory [[log-level-flip-followup]] — ops log 默认 info 是这一切的前提
 - PROGRESS §7.34 / §7.43 — routeSource / handleAgentRequest 的语义依据
+
+### §7.46.4 关键环节 ops log 全覆盖收尾 + final summary（2026-09-12）
+
+**承接**：§7.46 / §7.46.1 / §7.46.2 / §7.46.3 累计 4 个 commit 把 ops log 节点从"input-guard preflight + realm-skill-bridge 三段"扩到"input-guard 8 节点 + realm-skill-bridge 4 节点 + LLM adapter 2×2 节点 = 14 节点"。本节做 final 总结 + 留一个 memory entry 锚定"每个关键环节都在 ops log 体现"作为长期参考。
+
+**§7.46 系列最终覆盖矩阵**：
+
+| # | 节点 | 何时 emit | commit | 触发条件 | 字段 |
+|---|------|----------|--------|---------|------|
+| 1 | input-guard preflight intent | handlePreStep | §7.46 | 每个 chat | sessionId/category/confidence/rationale/targetRealm/**routeSource(§7.46.3)** |
+| 2 | input-guard sanitize start | handlePreStep | §7.46.2 | 走 sanitize | sessionId/category/inputLen |
+| 3 | input-guard sanitize done | handlePreStep | §7.46.2 | sanitizer 跑完 | sessionId/category/durationMs/replacementCount/outcome=replaced\|clean |
+| 4 | input-guard sanitize failed | handlePreStep catch | §7.46.2 | sanitizer 抛错 | sessionId/category/durationMs/wireError |
+| 5 | input-guard orphan-tool-call summary | sanitizeOrphanToolCalls | §7.46.2 | orphanCount>0 \|\| DEBUG | sessionId/orphanCount/syntheticInjected/inputMessages/outputMessages |
+| 6 | input-guard desanitize done | handleLlmStream finally | §7.46.3 | 至少还原过 1 个 chunk | sessionId/chunkCount/errorCount/restoredBytes |
+| 7 | input-guard route override | handleAgentRequest | §7.46.3 | state.downgraded=true | sessionId/fromProvider/fromModel/toProvider/toModel/reason |
+| 8 | input-guard route restore | handleAgentRequest | §7.46.3 | state.originalProvider 恢复 | sessionId/fromProvider/fromModel/toProvider/toModel/reason=recovery-from-previous-downgrade |
+| 9 | realm-skill-bridge pre-step filter | dispatch pre-step | §7.46 | 每个 step | sessionId/realm/catalogDropped |
+| 10 | realm-skill-bridge chat received | dispatch request/header | §7.46 | 每个 chat | sessionId/reason |
+| 11 | realm-skill-bridge chat finished | session/event turn/end | §7.46 | 每个 chat | sessionId/turn/reason/realm/durationMs |
+| 12 | realm-skill-bridge tool allow | tools/pre-execute | §7.46 | 每个 tool call | sessionId/tool/realm |
+| 13 | realm-skill-bridge tool deny | tools/pre-execute | §7.46 | 每个拒绝 | sessionId/tool/realm/reason |
+| 14 | cloud-llm-adapter LLM call start | adapter stream | §7.46.1 | 每次 cloud LLM 调 | sessionId/provider/model/messageCount/promptLen/baseUrl |
+| 15 | cloud-llm-adapter LLM call done | adapter stream finally | §7.46.1 | 每次 cloud LLM 调 | sessionId/provider/model/durationMs/resultLen/toolCallCount/finishKind/wireError |
+| 16 | local-llm-adapter LLM call start | adapter stream | §7.46.1 | 每次 local LLM 调 | sessionId/provider/model/messageCount/promptLen/baseUrl |
+| 17 | local-llm-adapter LLM call done | adapter stream finally | §7.46.1 | 每次 local LLM 调 | sessionId/provider/model/durationMs/resultLen/toolCallCount/finishKind/wireError |
+
+**完整 trace 示例**（TUI 测试 query="please echo back: my email is user@example.com"，sessionId=`sec7.46.3-A`，2026-09-12 实测）：
+
+```
+10:34:30.405  [input-guard]         preflight intent ... routeSource=http-api          ← 节点 1
+10:34:30.412  [input-guard]         sanitize start                                      ← 节点 2
+10:34:30.412  [input-guard]         sanitize done outcome=replaced (1 PII)               ← 节点 3
+10:34:30.414  [realm-skill-bridge]  pre-step filter catalogDropped=0                    ← 节点 9
+10:34:30.435  [realm-skill-bridge]  chat received reason=initial                        ← 节点 10
+10:34:30.438  [cloud-llm-adapter]   LLM call start provider=cloud-deepseek-v4           ← 节点 14
+10:34:31.254  [cloud-llm-adapter]   LLM call done durationMs=816 resultLen=33           ← 节点 15
+10:34:31.255  [input-guard]         desanitize done chunkCount=15 restoredBytes=80       ← 节点 6
+10:34:31.257  [realm-skill-bridge]  chat finished duration=822ms                        ← 节点 11
+```
+
+10 个节点（1+3+9+10+14+15+6+11）覆盖整条 chat round-trip，operator grep `sec7.46.3-A` 一眼拿到全 trace，不用翻 audit JSONL。
+
+**仍未覆盖的环节**（确认是"次要可考虑"，不在本次范围）：
+
+- **session/event turn/end 的 `reason=unknown`** — 当前 dsh 上游 API 不传 turn/end reason；input-guard.handleLlmStream finally 也没办法拿到。不是 ops log 的问题，是 dsh 上游。
+- **intent router 自定义标记** — `intentRouter.classify()` 通过 local-llm-adapter LLM call start/done 已经能看到调用，但没标记"这是 classify 调用 vs 普通 chat 调用"。如果未来想区分，再加；目前不需要（local LLM 主要是 intent classifier）。
+- **per-turn pre-step emit** — realm-skill-bridge pre-step filter 在每个 step 都 emit（多 step chat 会看到 N 行），这是 dsh 设计（每个 step 一次 pre-step）决定的，不算缺口。
+
+**Memory entry**：
+
+新建 memory `[[ops-log-coverage-principle]]` 锚定本总原则（user 显式要求"每个关键环节都要在日志里有所体现"）：
+- 适用：当 user 反馈"log 看不出 X" 时，先用 `grep <sessionId>` 跑几条 chat 看 ops log 实际缺什么，而不是按 plugin 边界划分。
+- 已知节点清单：上面 17 行（1-17）。
+- 已知 gap：dsh session/event turn/end reason、intent router 自定义标记、per-turn pre-step。
+- 三种 ops log 模式：start/done 配对（cloud/local-llm-adapter §7.46.1、sanitize §7.46.2）/ step 结束 summary 一行（desanitize §7.46.3）/ 一次性行（preflight intent、orphan-tool-call summary、route override）。
+
+**总测试覆盖**：692 unit pass / 2 pre-existing fail（baseline 也 fail，跟本次改动无关）。input-guard tests 76 pass（73 + §7.46.2 三 + §7.46.3 三）。cloud/local-llm-adapter tests 各 1 个 §7.46.1 describe。realm-skill-bridge tests §7.46 三 describe。
+
+**§7.46 系列 commit 链**：
+```
+5e0b58a  feat(log): §7.46 ops log 关键环节全链路 (preflight+filter+tool+duration+realm)
+956fa4c  fix(llm-adapter): §7.46.1 cloud/local per-call info log (start/done)
+96dfdac  fix(input-guard): §7.46.2 sanitize call ops log (start/done/failed)
+e94ca30  fix(input-guard): §7.46.3 desanitize + route override + routeSource ops log
+         §7.46.4 (this commit) — final summary + memory entry
+```
+
+**Lesson（final）**：
+
+- **user 反馈"log 看不出 X" 时不要按 plugin 边界划分 ops log** — 应该按"operator 想在 ops log 看到什么" 来定义节点清单。本次走完一整个 cycle：§7.46 (preflight + filter + tool + finished) → §7.46.1 (LLM call) → §7.46.2 (sanitize) → §7.46.3 (desanitize + route override + routeSource)。每次扩 ops log 都重新读几条真实 chat 看缺什么。
+- **ops log 三种 emit pattern** — start/done 配对（有外部 plugin 调用，await 一段才完成）/ step 结束 summary 一行（desanitize 这种被 flushBuffer 切碎的多步操作）/ 一次性行（preflight intent / orphan summary / route override 这种瞬时决策）。后续再加 ops log 节点按这个分类选 pattern。
+- **每个 emit 都用 `try { ... } catch { /* debug only */ }` 双保险** — `this.ctx?.logger?.info?.(...)` + try 包住，logger 实现理论上可能 throw，throw 后 ops log 这一行没了但 stream 不会被中断。**这是 §7.46 系列所有 17 个节点的统一约定**。
+- **memory entry 锚定总原则** — user 给的"每个关键环节都在 ops log 体现"是 long-term 准则，不是本次特定修复。下次 user 反馈"log 看不出 X" 时先 recall 这个 memory，按本节 17 节点清单 grep 看缺哪个，再决定加 §7.46.x。
+
+**相关**：
+
+- memory [[ops-log-coverage-principle]] — 本总原则的长期锚定（新建）
+- memory [[log-level-flip-followup]] — ops log 默认 info 是这一切的前提
+- PROGRESS §7.44 — ops log 默认 level 翻转是这一切的起点
+- PROGRESS §7.44.1 — TUI 路径 flow log 起点（chat received/finished 两行）
+- PROGRESS §7.46 / §7.46.1 / §7.46.2 / §7.46.3 — 4 个 commit 累积到 17 个节点
