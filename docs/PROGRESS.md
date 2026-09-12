@@ -5241,3 +5241,183 @@ fi
 - memory [[ops-log-coverage-principle]] — 21 节点 + 关键字段；本节加 provider-route-id 断言
 - PROGRESS §7.46 → §7.46.9 — 7 commit 累积；§7.46.10 是命名一致性收尾
 
+### §7.46.11 HTTP API `/v1/chat` 完整响应形态（2026-09-12 续）
+
+**目的**：把 HTTP API 入口的 200/4xx/5xx 响应体全部示例化，给后续接入方（前端 / 第三方 SDK / 测试用例）一个权威 reference。**§7.46 → §7.46.10 都集中在 ops log 这一面**（operator 视角）；本节专注**响应体本身**（consumer 视角）。
+
+## 1. 成功响应（HTTP 200）——`/v1/chat`
+
+### 字段定义
+
+```typescript
+{
+  sessionId: string              // 用户传或自动生成的 UUID
+  result: string                  // LLM 完整输出（最终文本，无 streaming chunks）
+  intent: {
+    category: 'LOCAL' | 'CLOUD' | 'SANITIZED' | 'REJECT'  // 路由分类
+    targetRealm: 'local' | 'cloud' | 'sanitized'         // 实际进入的 realm
+    confidence: number             // 0.0 - 1.0
+    rationale: string              // 分类依据（keyword / llm-classified / default）
+  }
+  duration: number                // 端到端毫秒数（从 HTTP 接到请求到响应发出）
+}
+```
+
+来源：`src/dsh-adapter/http-api.ts:644-651` ——`res.end(JSON.stringify({...}))`。
+
+### 示例 1：纯文本查询（"hi"）
+
+请求：
+```bash
+curl -X POST http://127.0.0.1:21017/v1/chat \
+  -H "Authorization: Bearer test-secret-key" \
+  -H "Content-Type: application/json" \
+  -d '{"message":"hi","sessionId":"prog-1"}'
+```
+
+响应：
+```json
+{
+  "sessionId": "prog-1",
+  "result": "Hi! What can I help you with today?",
+  "intent": {
+    "category": "SANITIZED",
+    "targetRealm": "local",
+    "confidence": 0.5,
+    "rationale": "default:sanitized"
+  },
+  "duration": 9354
+}
+```
+
+特征：
+- `intentSource=http-api-classified`（rationale 前缀 `default:sanitized`）
+- `result` 短（无 tool call / 无文件操作）
+- `duration ~9s`（prompt-guard 4s 浪费 + cloud-llm 1-2s）
+
+### 示例 2：PII 查询（触发 sanitize + LLM classify）
+
+请求：`{"message":"我的电话是 13800000000","sessionId":"prog-pii"}`
+
+响应（关键字段）：
+```json
+{
+  "sessionId": "prog-pii",
+  "result": "你只提供了电话号码 `13800000000`...（LLM 完整文本，自动提到'号码已被脱敏为占位符'）",
+  "intent": {
+    "category": "CLOUD",
+    "targetRealm": "cloud",
+    "confidence": 1,
+    "rationale": "llm-classified:cloud"
+  },
+  "duration": 10115
+}
+```
+
+特征：
+- `intentSource=llm-classified`（rationale 前缀 `llm-classified:`）
+- LLM 主动回应了 PII 脱敏——说明 `<system_prompt>` 注入了 desanitize 还原提示，LLM 看到 `<DESENSITIZED:PHONE>13800000000</DESENSITIZED:PHONE>` 模板
+- `category=CLOUD` 因为 LLM 看到"电话" 判断为解释类查询
+- 这就是 §7.46.7 加 `intentSource` 字段的意义——区分"keyword 直接命中" vs "LLM 分类"
+
+### ops log 对照
+
+| 字段 | 来源（节点 #） | 示例对应行 |
+|---|---|---|
+| `sessionId` | 全部 21 节点 | `[http-api] chat received sessionId=prog-1` |
+| `result` 长度 | 19 | `resultLen=N` |
+| `intent.category` | 1 + 19 | `preflight intent category=CLOUD` + `chat reply intent=CLOUD` |
+| `intent.targetRealm` | 1 | `targetRealm=cloud` |
+| `intent.confidence` | 1 | `confidence=1` |
+| `intent.rationale` | 1 | `rationale=llm-classified:cloud` |
+| `duration` | 19 + access log | `chat reply durationMs=10115` + `POST /v1/chat 200 10115ms` |
+
+**关键不变量**：`response.intent.{category,confidence,rationale}` 必须跟 `ops log [input-guard] preflight intent` 那一行的同名字段**完全一致**。这两条数据源出现差异就是 bug。
+
+## 2. 其他端点
+
+### `/v1/health`（健康检查，无 auth）
+
+```json
+{"status":"ok"}
+```
+
+### `/v1/models`（route surface）
+
+请求：`curl -H "Authorization: Bearer ..." http://127.0.0.1:21017/v1/models`
+
+响应：
+```json
+{
+  "models": [
+    {"provider": "local-llm",  "realm": "LOCAL", "available": true},
+    {"provider": "cloud-llm",  "realm": "CLOUD", "available": true}
+  ]
+}
+```
+
+字段来源：`src/dsh-adapter/model-router.ts:94-103` —— `listDetailed()`。`available: true` 是 v1 占位（router 没 live ping；v1.1 加健康探测后会真正反映状态）。
+
+§7.46.10 改名后这里直接显示新名字（`local-llm` / `cloud-llm`），不再有 `local-qwen3-4b` / `cloud-deepseek-v4`。
+
+## 3. 错误响应
+
+| HTTP code | body | 触发条件 |
+|---|---|---|
+| 401 | `{"error":"Unauthorized"}` | 缺 `Authorization: Bearer <token>` 或 token 不匹配 `EDGE_API_KEY` |
+| 400 | `{"error":"message is required"}` | body 为空 / 缺 `message` 字段 |
+| 403 | `{"error":"...blocked..."}` | prompt-guard 判定 `outcome=unsafe`（实际触发场景：prompt injection / 系统提示词提取） |
+| 503 | `{"error":"...service unavailable..."}` | 上游 LLM 调用失败 / circuit breaker 打开 / session 超限 |
+
+来源：`src/dsh-adapter/http-api.ts` 多处 `res.writeHead(401/400/403/503, ...)`。
+
+### 注意：prompt-guard reject 是 403 不是 400
+
+测试常见误区——以为"危险内容 = 400 bad request"。实际是 **403 forbidden**（语义：你没权限要这个）。 400 留给"请求格式错"。这是 RFC 7231 标准，operator 看 audit log 时 4xx code 区分排查路径。
+
+## 4. 与 ops log 的对应关系（给测试 / debugger）
+
+### 完整 chat round-trip 字段映射
+
+```
+HTTP request
+   ↓
+[1] http-api.chat.received        → reqId, sessionId, messageLen
+   ↓
+[2] input-guard.prompt-guard      → durationMs, outcome, riskLevel
+[3] input-guard.privacy-policy    → durationMs, realm
+[4] input-guard.preflight.intent  → category, confidence, rationale, targetRealm, routeSource, intentSource   ← ★ 跟 response.intent 一致
+[5] input-guard.sanitize          → durationMs, replacementCount, outcome
+   ↓
+[6] realm-skill-bridge.chat       → reason=initial
+[7] cloud/local-llm-adapter.LLM    → provider, model, messageCount, promptLen, durationMs, resultLen, finishKind
+[8] realm-skill-bridge.chat.end   → turn, reason, realm, duration
+   ↓
+[9] http-api.chat.reply           → reqId, provider, model, durationMs, resultLen, status=200, intent       ← ★ 跟 response.intent 一致
+[10] http-api access log         → reqId, method, path, status, durationMs, provider/model
+   ↓
+HTTP response body
+```
+
+### 校验规则（写测试时）
+
+任何 chat reply 必须满足：
+1. `response.sessionId` == ops log 的所有 sessionId 行
+2. `response.intent.{category,targetRealm,confidence,rationale}` == `[input-guard] preflight intent` 那一行的同名字段
+3. `response.duration` - `[http-api] chat received` 时间戳 ≈ `[http-api] chat reply` 的 `durationMs`（±20ms 内，因为两个时间点都用 `Date.now()`）
+4. `response.result.length` == `chat reply` 的 `resultLen` 字段
+5. HTTP 200 时 `response.intent.category != 'REJECT'`（REJECT 路径应该返回 403）
+
+**How to apply**：写测试时用 `e2e-ops-log-coverage.sh` 的同样方式（grep sessionId → 对照 ops log 行），但**加上 HTTP 响应体字段断言**——这就是把 §7.46.9 推广到"ops log + response body"双源校验。
+
+**未来扩展**（不是这次任务）：
+- `/v1/chat/stream`（SSE）——当前代码已实现（`handleChatStream`，`src/dsh-adapter/http-api.ts` 后续行），下次 §7.47 文档化
+- `/v1/sessions/:id`（session metadata 查询）
+- `/v1/sessions/:id/messages`（message history 拉取）
+
+**相关**：
+
+- memory [[ops-log-coverage-principle]] — 21 节点；本节把 ops log 字段映射到 HTTP response 字段
+- memory [[prompt-guard-local-llm-waste]] — duration 9s 中 4s 是 prompt-guard 浪费
+- PROGRESS §7.46.10 — provider route id 改名（本节示例都是改名后形态）
+
