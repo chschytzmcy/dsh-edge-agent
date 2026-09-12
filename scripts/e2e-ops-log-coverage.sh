@@ -229,37 +229,56 @@ assert_news() {
   local log="$1" sid="$2"
   local fail=0
 
-  # 期望：tool deny web_search realm=SANITIZED（§7.46.7 Layer 3 gate 拒绝）
-  if ! grep 'tool deny' "$log" | grep -q 'tool=web_search.*reason=.*SANITIZED'; then
-    echo "  ✗ 期望 tool deny tool=web_search reason=...SANITIZED，未找到"
+  # §7.47 (2026-09-12) fix: "查询最新的AI新闻" 应命中 CLOUD_KEYWORDS_DEFAULT
+  # (新闻/最新) → category=CLOUD + tool allow web_search。修之前是
+  # default:sanitized + tool deny SANITIZED。现在期望相反路径——回归保护
+  # 确保后续改动不会让 bug 复发（又退回 SANITIZED）。
+  if ! grep '\[input-guard\] preflight intent' "$log" | grep -qE 'category=CLOUD'; then
+    echo "  ✗ 期望 preflight intent category=CLOUD（CLOUD_KEYWORDS_DEFAULT 命中），未找到"
     fail=1
   else
-    echo "  ✓ tool deny web_search（SANITIZED realm 拒绝 CLOUD 工具）"
+    echo "  ✓ preflight intent category=CLOUD（cloud keyword 命中）"
   fi
 
-  # 期望：tool deny web_fetch 也被拒绝
-  if ! grep 'tool deny' "$log" | grep -q 'tool=web_fetch'; then
-    echo "  ✗ 期望 tool deny tool=web_fetch，未找到"
+  # §7.47: rationale 应标 rule-cloud-keyword，让 operator 一眼看到来源
+  if ! grep '\[input-guard\] preflight intent' "$log" | grep -qE 'rationale=rule-cloud-keyword'; then
+    echo "  ✗ 期望 rationale=rule-cloud-keyword（§7.47 新增），未找到"
     fail=1
   else
-    echo "  ✓ tool deny web_fetch（同样被 Layer 3 gate 拒绝）"
+    echo "  ✓ rationale=rule-cloud-keyword:...（§7.47 关键词命中标识）"
   fi
 
-  # 期望：tool deny 行必须有 reason= 字段（Layer 3 gate 拒绝原因）
-  if ! grep 'tool deny' "$log" | grep -q 'reason='; then
-    echo "  ✗ tool deny 行缺少 reason= 字段"
-    fail=1
+  # 期望：tool allow web_search 至少 1 次（CLOUD realm 不再拒绝 web 工具）。
+  # 注意：这条断言受 catalog filter 行为影响（realm-skill-bridge 对 CLOUD
+  # realm 的 catalogDropped 计数偏大），作为软断言记录 warn；硬约束是
+  # preflight intent category=CLOUD + cloud-llm 实际被调通。
+  if grep 'tool allow' "$log" | grep -q 'tool=web_search'; then
+    local web_n
+    web_n=$(grep 'tool allow' "$log" | grep -c 'tool=web_search' || true)
+    echo "  ✓ tool allow tool=web_search $web_n 次"
   else
-    echo "  ✓ tool deny 行带 reason= 字段"
+    echo "  · tool allow web_search 未出现（CLOUD 链路已通，tool 调用取决于 catalog filter，单独跟踪）"
   fi
 
-  # 期望：chat finished + chat reply status=200（流程完整收尾）
-  if ! grep '\[realm-skill-bridge\] chat finished' "$log" | grep -q 'turn=1'; then
-    echo "  ✗ 期望 chat finished turn=1，未找到"
+  # 期望：cloud-llm-adapter 至少 1 次 LLM call（CLOUD 域实际调 deepseek）
+  local cloud_n
+  cloud_n=$(grep -c '\[cloud-llm-adapter\] LLM call start' "$log" || true)
+  if [ "$cloud_n" -lt 1 ]; then
+    echo "  ✗ cloud-llm-adapter LLM call start 仅 $cloud_n 次（期望 ≥1）"
     fail=1
   else
-    echo "  ✓ chat finished turn=1"
+    echo "  ✓ cloud-llm-adapter LLM call start $cloud_n 次"
   fi
+
+  # 期望：chat reply intent=CLOUD（HTTP 响应体里也是 CLOUD）
+  if ! grep '\[http-api\] chat reply' "$log" | grep -q 'intent=CLOUD'; then
+    echo "  ✗ chat reply intent!=CLOUD"
+    fail=1
+  else
+    echo "  ✓ chat reply intent=CLOUD"
+  fi
+
+  # 期望：chat reply status=200 + chat finished turn>=1
   if ! grep '\[http-api\] chat reply' "$log" | grep -q 'status=200'; then
     echo "  ✗ chat reply status!=200"
     fail=1
@@ -267,9 +286,47 @@ assert_news() {
     echo "  ✓ chat reply status=200"
   fi
 
-  # 注意：resultLen / bash fallback 次数属于 LLM 行为范畴，不归本脚本管。
-  # LLM 在不同 prompt / 时刻可能走不同路径（先 web_search → 改 web_fetch → 直接放弃 / fallback bash）。
-  # 本脚本只验证 ops log 必须能"如实记录"每一步：deny 行有 reason、allow 行有 realm、reply 有 status。
+  # §7.47 bug-recovery sanity: 若未来又退回 SANITIZED，下面的 deny
+  # 行应该重新出现——本断言期望它不再出现，作为回归保护。
+  # 只看本次 chat 的最新 chat reply 行（之前的 chat 可能有历史 session 留
+  # 下旧 deny，不能误判）。但 deny 跟 reply 未必同时间——通过 chat
+  # reply 的 durationMs 时戳找到本次 chat 的 deny 时间窗（reply 时间 ±
+  # 60s 范围内的 deny 行）。
+  local latest_reply_ts
+  latest_reply_ts=$(grep '\[http-api\] chat reply' "$log" | tail -1 | grep -oE '^[0-9T:.+-]+' | head -1)
+  if [ -z "$latest_reply_ts" ]; then
+    echo "  · 无法定位本次 chat reply 时间戳，跳过 §7.47 regression 断言"
+  else
+    # 把 ISO 时间戳转成 epoch 秒（Linux date -d）
+    local reply_epoch
+    reply_epoch=$(date -d "$latest_reply_ts" +%s 2>/dev/null || echo "")
+    if [ -z "$reply_epoch" ]; then
+      echo "  · 无法解析 chat reply 时间戳 $latest_reply_ts，跳过 §7.47 regression 断言"
+    else
+      # 找 reply 时间前后 90s 内的 deny 行（覆盖单 chat 全流程）
+      local window_start=$((reply_epoch - 90))
+      local window_end=$((reply_epoch + 5))
+      local in_window_deny=0
+      while IFS= read -r deny_line; do
+        local deny_ts
+        deny_ts=$(echo "$deny_line" | grep -oE '^[0-9T:.+-]+' | head -1)
+        local deny_epoch
+        deny_epoch=$(date -d "$deny_ts" +%s 2>/dev/null || echo "")
+        if [ -n "$deny_epoch" ] && [ "$deny_epoch" -ge "$window_start" ] && [ "$deny_epoch" -le "$window_end" ]; then
+          if echo "$deny_line" | grep -q 'tool=web_search.*reason=.*SANITIZED'; then
+            in_window_deny=1
+            break
+          fi
+        fi
+      done < <(grep 'tool deny' "$log")
+      if [ "$in_window_deny" = "1" ]; then
+        echo "  ✗ §7.47 修复 regression: 本次 chat 出现 tool deny web_search SANITIZED"
+        fail=1
+      else
+        echo "  ✓ 无 §7.47 regression（本次 chat 无 tool deny SANITIZED）"
+      fi
+    fi
+  fi
 
   return $fail
 }

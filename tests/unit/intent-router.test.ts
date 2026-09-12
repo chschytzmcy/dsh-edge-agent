@@ -78,6 +78,79 @@ describe('intent-router', () => {
     assert.match(intent.rationale, /default:cloud/u)
   })
 
+  // ─── §7.47 (2026-09-12): CLOUD keyword priority ───────────────────────
+
+  it('§7.47: CLOUD keyword matches before LOCAL keyword', async () => {
+    // §7.47 fix: "查询最新的AI新闻" should NOT fall through to defaultCategory
+    // (which was SANITIZED) — news/latest/search signals are CLOUD-bound.
+    const mockCtx = { reflect: { provide: () => {} }, llm: null } as any
+    const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'SANITIZED',  // would force SANITIZED without cloud keyword
+      classificationProvider: 'local-llm',
+      confidenceThreshold: 0.6,
+    }, audit as any)
+
+    const intent = await service.classify('查询最新的AI新闻')
+    assert.equal(intent.category, 'CLOUD')
+    assert.equal(intent.targetRealm, 'cloud')
+    assert.equal(intent.confidence, 0.8)
+    assert.match(intent.rationale, /^rule-cloud-keyword:/u)
+    // Source attribution in audit
+    const hit = audit.entries.find((e: any) => e.kind === 'intent.rules.hit')
+    assert.ok(hit)
+    assert.equal(hit.payload.source, 'cloud-keyword')
+  })
+
+  it('§7.47: CLOUD keyword matches English signals (news/latest/today)', async () => {
+    const mockCtx = { reflect: { provide: () => {} }, llm: null } as any
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'SANITIZED',
+      classificationProvider: 'local-llm',
+      confidenceThreshold: 0.6,
+    })
+
+    const intent = await service.classify('what is the latest news on AI?')
+    assert.equal(intent.category, 'CLOUD')
+    assert.match(intent.rationale, /^rule-cloud-keyword:/u)
+  })
+
+  it('§7.47: LOCAL keyword still wins over defaultCategory (no regression)', async () => {
+    // "读文件" still routes LOCAL even though "查询" is in cloud keywords
+    // — wait, that's the conflict case. Use a pure LOCAL signal here.
+    const mockCtx = { reflect: { provide: () => {} }, llm: null } as any
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-llm',
+      confidenceThreshold: 0.6,
+    })
+
+    const intent = await service.classify('读取本地文件内容')
+    assert.equal(intent.category, 'LOCAL')
+    assert.match(intent.rationale, /^rule-keyword-match/u)
+  })
+
+  it('§7.47: cloudKeywords config extends built-in (not replaces)', async () => {
+    // Env DSH_EDGE_INTENT_CLOUD_KEYWORDS should APPEND to built-in defaults,
+    // so the built-in "新闻" signal still works even if user adds custom words.
+    const mockCtx = { reflect: { provide: () => {} }, llm: null } as any
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'SANITIZED',
+      classificationProvider: 'local-llm',
+      confidenceThreshold: 0.6,
+      cloudKeywords: ['汇率行情'],  // user additions (no overlap with built-in)
+    })
+
+    // Built-in still hits
+    const newsIntent = await service.classify('查询新闻')
+    assert.equal(newsIntent.category, 'CLOUD')
+
+    // User-added word hits
+    const fxIntent = await service.classify('美元汇率行情')
+    assert.equal(fxIntent.category, 'CLOUD')
+    assert.match(fxIntent.rationale, /rule-cloud-keyword:汇率行情/u)
+  })
+
   // ─── Phase B: confidence gate ───────────────────────────────────────────
 
   it('adopts LLM verdict when confidence >= threshold', async () => {
@@ -580,9 +653,13 @@ describe('intent-router', () => {
     const intent = await service.classify(originalText)
     // classifyWithLlm must NOT call the LLM when sanitizer is unavailable
     assert.equal(llmCalled, false, 'LLM must NOT be called when sanitizer is missing')
-    // classifyWithLlm throws → classifyWithRules → no keyword match → defaultCategory
+    // classifyWithLlm throws → classifyWithRules → cloud keyword hit → CLOUD
+    // (§7.47 2026-09-12: "查" is in CLOUD_KEYWORDS_DEFAULT, so the query
+    // "查一下 ..." matches cloud-keyword BEFORE falling through to default.
+    // Behavior is equivalent: category=CLOUD, sanitize path still gates the
+    // actual LLM call. The rationale just identifies the source.)
     assert.equal(intent.category, 'CLOUD')
-    assert.match(intent.rationale, /^default:/u)
+    assert.match(intent.rationale, /^rule-cloud-keyword:查$/u)
     // Audit: security-level sanitize-unavailable (renamed from debug sanitize-skipped)
     const unavailEntry = audit.entries.find((e: any) => e.kind === 'intent.llm.sanitize-unavailable')
     assert.ok(unavailEntry, 'intent.llm.sanitize-unavailable audit kind should be present')
@@ -615,9 +692,13 @@ describe('intent-router', () => {
     const intent = await service.classify(originalText)
     // classifyWithLlm must NOT call the LLM when sanitizer throws
     assert.equal(llmCalled, false, 'LLM must NOT be called when sanitizer throws')
-    // classifyWithLlm throws → classifyWithRules → no keyword match → defaultCategory
+    // classifyWithLlm throws → classifyWithRules → cloud keyword hit → CLOUD
+    // (§7.47 2026-09-12: "查" is in CLOUD_KEYWORDS_DEFAULT, so the query
+    // "查一下 ..." matches cloud-keyword BEFORE falling through to default.
+    // Behavior is equivalent: category=CLOUD, sanitize path still gates the
+    // actual LLM call. The rationale just identifies the source.)
     assert.equal(intent.category, 'CLOUD')
-    assert.match(intent.rationale, /^default:/u)
+    assert.match(intent.rationale, /^rule-cloud-keyword:查$/u)
     // Audit: security-level sanitize-error still present
     const errEntry = audit.entries.find((e: any) => e.kind === 'intent.llm.sanitize-error')
     assert.ok(errEntry, 'intent.llm.sanitize-error audit kind should be present')

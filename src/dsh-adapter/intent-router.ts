@@ -53,6 +53,13 @@ export interface Config {
    *  ES / domain-specific terms without editing source. Replaces the
    *  built-in list entirely when set. */
   fallbackKeywords?: string[]
+  /** §7.47 (2026-09-12): CLOUD-keyword list matched BEFORE fallbackKeywords.
+   *  Catches queries that obviously need web/search/online info (新闻/news/
+   *  搜索/search/latest/最新/today/今天) and routes them to cloud LLM +
+   *  web tools — without waiting for the LLM classifier (which can hang
+   *  on Qwen3-4B). Default ships EN + CN built-in list. Override via env
+   *  DSH_EDGE_INTENT_CLOUD_KEYWORDS (comma-sep) — appended to built-in. */
+  cloudKeywords?: string[]
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -74,6 +81,7 @@ export const Config: Schema<Config> = Schema.object({
   recentMessagesLimit: Schema.natural().default(3),
   maxInputLength: Schema.natural().default(2000),
   fallbackKeywords: Schema.array(Schema.string()).default([] as string[]),
+  cloudKeywords: Schema.array(Schema.string()).default([] as string[]),
 })
 
 export interface Intent {
@@ -100,6 +108,25 @@ const LOCAL_KEYWORDS_DEFAULT: readonly string[] = [
   'local', 'device', 'disk', 'directory', 'folder',
 ]
 
+/** §7.47 (2026-09-12): Built-in CLOUD keyword list. Matched BEFORE
+ *  fallbackKeywords in classifyWithRules so queries that obviously need
+ *  web/search (新闻 / news / 搜索 / search / 最新 / latest / 今天 / today /
+ *  实时 / live / 趋势 / trend / 排行榜 / ranking) go straight to CLOUD,
+ *  without depending on the LLM classifier (which can hang on Qwen3-4B).
+ *  Users extend via env `DSH_EDGE_INTENT_CLOUD_KEYWORDS` (comma-sep) —
+ *  appended to built-in (NOT replaced). Lower priority than privacy-policy
+ *  rules (which can REJECT) but higher than fallbackKeywords (which is
+ *  LOCAL-only). */
+const CLOUD_KEYWORDS_DEFAULT: readonly string[] = [
+  // 中文: 信息获取类信号词
+  '新闻', '最新', '今天', '今日', '实时', '热搜', '趋势', '排行榜',
+  '搜索', '查询', '查找', '搜', '查', '资讯', '动态', '进展', '消息',
+  '网上', '互联网', '在线',
+  // English: information-acquisition signals
+  'news', 'latest', 'today', 'live', 'trending', 'ranking', 'search',
+  'online', 'internet', 'web search', 'web',
+]
+
 export class IntentRouterServiceImpl extends Service {
   private readonly defaultCategory: Intent['category']
   private readonly classificationProvider: string
@@ -109,6 +136,9 @@ export class IntentRouterServiceImpl extends Service {
   private readonly recentMessagesLimit: number
   private readonly maxInputLength: number
   private readonly fallbackKeywords: readonly string[]
+  /** §7.47 (2026-09-12): CLOUD keyword list, merged with built-in defaults.
+   *  Matched in classifyWithRules BEFORE fallbackKeywords. */
+  private readonly cloudKeywords: readonly string[]
   private readonly llm: any
   private readonly auditLog: AuditLike | undefined
   private readonly stats: IntentRouterStats = {
@@ -152,6 +182,10 @@ export class IntentRouterServiceImpl extends Service {
     this.fallbackKeywords = (config.fallbackKeywords && config.fallbackKeywords.length > 0)
       ? config.fallbackKeywords
       : LOCAL_KEYWORDS_DEFAULT
+    // §7.47 (2026-09-12): cloudKeywords APPENDED to built-in (not replaced)
+    // so the default safety net (新闻/news/search/...) always applies.
+    // Empty config → use built-in only.
+    this.cloudKeywords = CLOUD_KEYWORDS_DEFAULT.concat(config.cloudKeywords ?? [])
     this.llm = (ctx as any).llm
     this.auditLog = auditLog
   }
@@ -629,6 +663,24 @@ confidence 含义：
     // Fallback: configurable keyword list (defaults to built-in EN + CN).
     // Used only when privacy-policy is absent / has no matching rule.
     const lower = text.toLowerCase()
+    // §7.47 (2026-09-12): CLOUD keywords matched BEFORE LOCAL fallback.
+    // This catches queries that obviously need web/search/latest-news and
+    // would otherwise hit defaultCategory (SANITIZED, fail-closed) without
+    // any LLM call. Local keywords still take priority by inspection order
+    // is CLOUD → LOCAL → default — but if a query contains both CLOUD and
+    // LOCAL signals (e.g. "查本地文件的网络文档"), the CLOUD path wins
+    // because user explicitly asked for online content. Privacy-policy
+    // rules (above) can still REJECT.
+    const cloudMatched = this.cloudKeywords.find((kw) => lower.includes(kw.toLowerCase()))
+    if (cloudMatched !== undefined) {
+      this.audit('debug', 'intent.rules.hit', { source: 'cloud-keyword', matchedKeyword: cloudMatched })
+      return {
+        category: 'CLOUD',
+        confidence: 0.8,
+        targetRealm: 'cloud',
+        rationale: `rule-cloud-keyword:${cloudMatched}`,
+      }
+    }
     const matched = this.fallbackKeywords.find((kw) => lower.includes(kw.toLowerCase()))
 
     if (matched !== undefined) {

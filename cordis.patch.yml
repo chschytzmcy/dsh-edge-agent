@@ -398,6 +398,7 @@
         recentMessagesLimit: !!js parseInt(process.env.DSH_EDGE_INTENT_RECENT_LIMIT ?? '3', 10)
         maxInputLength: !!js parseInt(process.env.DSH_EDGE_INTENT_MAX_INPUT ?? '2000', 10)
         fallbackKeywords: !!js (process.env.DSH_EDGE_INTENT_FALLBACK_KEYWORDS ?? '').split(',').filter(Boolean)
+        cloudKeywords: !!js (process.env.DSH_EDGE_INTENT_CLOUD_KEYWORDS ?? '').split(',').filter(Boolean)
 
     # NOTE: id renamed from `tools` to avoid colliding with dsh-base.
     - id: edge-tools-registry
