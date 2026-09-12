@@ -492,6 +492,15 @@ export class InputGuardServiceImpl extends Service {
     }
 
     if (orphanCount > 0 || process.env.DSH_EDGE_INPUT_GUARD_DEBUG === 'true') {
+      // §7.46.2: orphan tool-call 清洗在 ops log 也开一行 — 跟主 sanitize
+      // 路径不同，这是同步纯本地操作（不调 sanitizer），所以只 emit 一行
+      // summary，不做 start/done 配对。orphanCount > 0 时输出，让 operator
+      // 在 ops log 里能直接 grep 'orphan-tool-call summary' 看到修复量。
+      try {
+        this.ctx?.logger?.info?.(
+          `[input-guard] orphan-tool-call summary sessionId=${sessionId ?? 'unknown'} orphanCount=${orphanCount} syntheticInjected=${syntheticInjected} inputMessages=${messages.length} outputMessages=${out.length}`,
+        )
+      } catch { /* debug only */ }
       this.audit('warn', 'input-guard.orphan-tool-call.recovered', {
         sessionId,
         orphanCount,
@@ -826,10 +835,23 @@ export class InputGuardServiceImpl extends Service {
       return decision
     }
 
+    // §7.46.2 (2026-09-12): sanitize call ops log — 让"调了 sanitizer /
+    // 替换了几个 PII / 多久 / 失败原因"在 ops log 里可见。start 在
+    // `sanitizer.sanitize()` 之前 emit；done 在 success 分支 emit（含
+    // replacementCount 和是否替换文本）；wireError 字段跟
+    // cloud/local-llm-adapter §7.46.1 done 行对齐。失败/降级由外层
+    // catch（handlePreStep 原结构）继续处理 sanitize-failed audit + 路由降级。
+    const sanitizeStart = Date.now()
+    try {
+      this.ctx?.logger?.info?.(
+        `[input-guard] sanitize start sessionId=${sessionId} category=${category} inputLen=${originalLastUser.text.length}`,
+      )
+    } catch { /* debug only */ }
     try {
       const result = await this.sanitizer.sanitize(originalLastUser.text, { sessionId })
       const replacements = result.replacements.length
       const original = this.resolveOriginalRoute(edgeRoute) // §7.43: TUI 不设 _edgeRoute 时用 fallback
+      const sanitizeDurationMs = Date.now() - sanitizeStart
       if (replacements > 0) {
         // 替换 decision.messages 里 originalLastUser.index 位置的消息（不是最后一条 user，
         // 因为 dsh-agent-instructions 可能在末尾追加了 user-role 注入）。
@@ -843,6 +865,12 @@ export class InputGuardServiceImpl extends Service {
         this.audit('info', 'input-guard.sanitized', {
           sessionId, replacementCount: replacements, category,
         })
+        // §7.46.2: sanitize done 行 (success, replaced) — 跟 start 行配对
+        try {
+          this.ctx?.logger?.info?.(
+            `[input-guard] sanitize done sessionId=${sessionId} category=${category} durationMs=${sanitizeDurationMs} replacementCount=${replacements} outcome=replaced`,
+          )
+        } catch { /* debug only */ }
         return { ...decision, messages: newMessages }
       }
       // 没替换：状态标记 sanitized=false
@@ -852,6 +880,13 @@ export class InputGuardServiceImpl extends Service {
         originalModel: original.model,
         originalRealm: original.realm,
       })
+      // §7.46.2: sanitize done 行 (success, no replacement) — sanitizer 跑了一
+      // 遍但没替换；区别 outcome=clean 跟 outcome=replaced
+      try {
+        this.ctx?.logger?.info?.(
+          `[input-guard] sanitize done sessionId=${sessionId} category=${category} durationMs=${sanitizeDurationMs} replacementCount=0 outcome=clean`,
+        )
+      } catch { /* debug only */ }
       return decision
     } catch (err: any) {
       // ── sanitize 失败 ────────────────────────────────────────
@@ -862,6 +897,14 @@ export class InputGuardServiceImpl extends Service {
       //   - downgradeOnSanitizeFailure=false：REJECT step，user 看到空
       //     result（保守降级，配置可选）。
       const reason = err?.message ?? String(err)
+      const sanitizeDurationMs = Date.now() - sanitizeStart
+      // §7.46.2: sanitize failed 行 — 让 operator 在 ops log 看到失败原因 +
+      // duration，外层 catch 仍按原逻辑处理 audit + 路由降级。
+      try {
+        this.ctx?.logger?.info?.(
+          `[input-guard] sanitize failed sessionId=${sessionId} category=${category} durationMs=${sanitizeDurationMs} wireError=${reason}`,
+        )
+      } catch { /* debug only */ }
       this.audit('security', 'input-guard.sanitize.failed', {
         sessionId, error: reason, category,
       })

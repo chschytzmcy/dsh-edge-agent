@@ -4485,3 +4485,97 @@ ops log 关键片段（按时间序）：
 - PROGRESS §7.46 — "每个关键环节都在 ops log 体现"是 §7.46.1 的依据；§7.46 末尾"已知 gaps"已点名"cloud/local-llm-adapter per-call log 缺失"
 - PROGRESS §7.44.1 — TUI 路径 flow log 起点
 - memory [[log-level-flip-followup]] — ops log 默认 info 是这一切的前提
+
+### §7.46.2 input-guard sanitize call ops log — "调了 sanitizer / 替换几个 / 多久"在 ops log（2026-09-12）
+
+**承接**：§7.46 末尾"已知 gaps"第二项——input-guard 的 sanitizer plugin invoke 只发 audit JSONL，不发 ops log。TUI 路径下 operator grep ops log 看不到"这个 chat 调了 sanitizer 没 / 替换了几个 PII / 多久 / 失败原因"，排查 PII 漏脱敏 / sanitizer 故障 时很被动。本次补上。
+
+**症状**：跑 TUI 含 PII 测试查询时，ops log 里 input-guard 只看到 `preflight intent`，但 sanitizer plugin 实际跑了（替换了 1 个 email）—— 这个动作只埋在 audit JSONL 的 `input-guard.sanitized` 事件里，ops log grep 不到。
+
+**修复**：
+
+`src/dsh-adapter/input-guard.ts` handlePreStep 主 sanitize 段：
+
+- start 行（在 `await this.sanitizer.sanitize()` 之前）：
+  ```ts
+  const sanitizeStart = Date.now()
+  this.ctx?.logger?.info?.(
+    `[input-guard] sanitize start sessionId=${sessionId} category=${category} inputLen=${originalLastUser.text.length}`,
+  )
+  ```
+- done 行（replacements > 0 分支 return 前）：
+  ```ts
+  this.ctx?.logger?.info?.(
+    `[input-guard] sanitize done sessionId=${sessionId} category=${category} durationMs=${sanitizeDurationMs} replacementCount=${replacements} outcome=replaced`,
+  )
+  ```
+- done 行（replacements = 0 分支 return 前）：
+  ```ts
+  this.ctx?.logger?.info?.(
+    `[input-guard] sanitize done sessionId=${sessionId} category=${category} durationMs=${sanitizeDurationMs} replacementCount=0 outcome=clean`,
+  )
+  ```
+- failed 行（在原 try/catch catch 块开头，audit 之前）：
+  ```ts
+  this.ctx?.logger?.info?.(
+    `[input-guard] sanitize failed sessionId=${sessionId} category=${category} durationMs=${sanitizeDurationMs} wireError=${reason}`,
+  )
+  ```
+
+`sanitizeOrphanToolCalls`（同步函数，无 await）—— 在已有的 audit emit 旁加一行 summary，只在 `orphanCount > 0 || DSH_EDGE_INPUT_GUARD_DEBUG=true` 时输出（避免每个 chat 都刷 spam）：
+```ts
+this.ctx?.logger?.info?.(
+  `[input-guard] orphan-tool-call summary sessionId=${sessionId ?? 'unknown'} orphanCount=${orphanCount} syntheticInjected=${syntheticInjected} inputMessages=${messages.length} outputMessages=${out.length}`,
+)
+```
+
+所有 emit 用 `this.ctx?.logger?.info?.(...)` + `try { ... } catch { /* debug only */ }` 双保险，跟 §7.46 + §7.46.1 同款 pattern。
+
+`outcome` 字段是 `replaced` vs `clean` 二值——前者意味着 sanitizer 改了文本（desanitize 流会跑），后者意味着 sanitizer 跑了一遍但没改（不消耗 desanitize）。这两种情况都要在 ops log 留痕，operator 排查"为什么这个 chat 没看到 desanitize 日志"时直接 grep `outcome=replaced|clean`。
+
+**E2E 验证**（dsh-tui 21018，sessionId=`sec7.46.2-verify`，query="send hello to user@example.com"）：
+
+ops log 关键片段（按时间序）：
+
+```
+10:24:53.539  [input-guard]          preflight intent sessionId=sec7.46.2-verify category=SANITIZED
+10:24:53.541  [input-guard]          sanitize start sessionId=sec7.46.2-verify category=SANITIZED inputLen=30
+10:24:53.542  [input-guard]          sanitize done  sessionId=sec7.46.2-verify category=SANITIZED durationMs=1 replacementCount=1 outcome=replaced
+10:24:53.543  [realm-skill-bridge]   pre-step filter sessionId=sec7.46.2-verify realm=SANITIZED catalogDropped=0
+10:24:53.549  [realm-skill-bridge]   chat received sessionId=sec7.46.2-verify reason=initial
+10:24:53.550  [cloud-llm-adapter]    LLM call start sessionId=sec7.46.2-verify provider=cloud-deepseek-v4 ...
+10:24:55.085  [cloud-llm-adapter]    LLM call done  durationMs=1535 resultLen=64 toolCallCount=1 finishKind=tool-calls
+... (多次 LLM 调 + tool allow)
+10:25:03.119  [realm-skill-bridge]   chat finished sessionId=sec7.46.2-verify turn=1 reason=unknown realm=SANITIZED duration=9570ms
+```
+
+完整 trace 现在能从头串到尾：preflight intent → sanitize start/done → pre-step filter → chat received → N× LLM call start/done → tool allow → chat finished。operator 排查 PII 漏脱敏只看 ops log 就够，不用翻 audit JSONL。
+
+**单元测试**：
+
+`tests/unit/input-guard.test.ts` 新增 `describe('handlePreStep — §7.46.2 sanitize call ops log')` — 3 个测试：
+
+1. `CLOUD + replacements > 0 → start + done (outcome=replaced)` — 验证 start 行含 category=CLOUD / inputLen=N，done 行含 category=CLOUD / replacementCount=1 / durationMs=N / outcome=replaced
+2. `CLOUD + 0 replacements → start + done (outcome=clean)` — 验证 outcome=clean + replacementCount=0
+3. `CLOUD + sanitize throws → start + failed (wireError=...)` — 验证 failed 行含 wireError=sanitize crashed（throw 抛错路径仍走外层 catch 处理 sanitize-failed audit + 路由降级）
+
+**测试结果**：689 unit pass / 2 pre-existing fail（baseline 也 fail，跟本次改动无关；73 input-guard tests pass 含新增 3 个）。
+
+**改动文件**：
+
+- `src/dsh-adapter/input-guard.ts` — handlePreStep 主 sanitize 段加 start/done/failed 三段 emit；sanitizeOrphanToolCalls 加 summary 行
+- `tests/unit/input-guard.test.ts` — 新增 fakeCtxWithLogger helper + `describe('handlePreStep — §7.46.2 sanitize call ops log')` 3 个测试
+
+**Lesson**：
+
+- **outcome 字段区分 replaced vs clean 比单纯 replacementCount > 0 表达力强**——replacementCount=0 也可能是 sanitizer 跑过；replacementCount=0 且 outcome=clean 让 operator 一眼看出"sanitizer 跑了但没找到 PII"，而不是误以为 sanitizer 没被调用。§7.46.1 的 LLM call done 用 `toolCallCount=N` 已经隐含了这个语义（`toolCallCount=0` 不代表 LLM 没调），所以 sanitize done 也照搬 outcome 字段对齐。
+- **wireError 字段跟 §7.46.1 LLM call done 对齐**——sanitize failed 的 wireError 跟 cloud-llm-adapter 的 wireError 语义一致（传输/调用层异常 vs 业务决策）。`finishKind=unknown wireError=...` 一眼能看出是 sanitizer 抛错而不是 sanitizer 决定"这个文本不需要脱敏"。
+- **try/catch 包 logger emit 是 §7.46 的标准 pattern**——`try { this.ctx?.logger?.info?.(...) } catch { /* debug only */ }`，三处 emit 都套了。Logger 实现是 optional duck-type，理论上可能 throw；stream 路径上 throw 会被 cordis waterfall 吃掉但 ops log 这一行就没了。这次 input-guard 是 handlePreStep 不是 stream，throw 会被外层 try-catch 接到做 sanitize-failed 处理——多套一层 try 是为了 logger 自身 throw 不掩盖真正的 sanitize 错误。
+- **sanitizeOrphanToolCalls 是同步函数（不调 sanitizer plugin）**——只 emit 一行 summary（不是 start/done 配对），且只在 `orphanCount > 0` 时输出，避免每个 chat 都刷一行 ops log 噪音。这是 §7.46 系列第一次出现"非 start/done 三段式"的 case，原因是这个函数没有外部 plugin 调用，仅本地纯函数操作。如果未来加别的同步 helper 也照此 pattern（结果非空才 emit / 失败单行）。
+- **跟 §7.46.1 一样：本地 LLM 调用 cluster（cloud/local-llm-adapter）+ input-guard sanitize 主路径 + orphan summary 都已覆盖 ops log**。后续若加 §7.46.x 应该重新跑一次真实 chat 看 ops log 缺什么，而不是按 plugin 边界划分。
+
+**相关**：
+
+- PROGRESS §7.46 — "每个关键环节都在 ops log 体现"是 §7.46.2 的依据；§7.46 末尾"已知 gaps"已点名 sanitize call log + entry point 区分（剩 entry point 区分）
+- PROGRESS §7.46.1 — LLM call start/done pattern 是 §7.46.2 的对齐模板（durationMs / wireError 字段）
+- memory [[log-level-flip-followup]] — ops log 默认 info 是这一切的前提

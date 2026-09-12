@@ -40,6 +40,27 @@ function fakeCtx() {
   }
 }
 
+/** §7.46.2 (2026-09-12): fakeCtx with logger — 让 test 收集 emit 的 info 行
+ *  验证 sanitize start/done/failed 三段都到位。Logger 是 Cordis ctx.logger
+ *  的 duck-type subset，input-guard 用 `this.ctx?.logger?.info?.(...)`。*/
+function fakeCtxWithLogger() {
+  const infoLines: string[] = []
+  const logger = {
+    info: (line: string) => { infoLines.push(line) },
+    warn: (_line: string) => {},
+    error: (_line: string) => {},
+    debug: (_line: string) => {},
+  }
+  return {
+    infoLines,
+    ctx: {
+      reflect: { provide(_n: string, _v: unknown) { return () => {} } },
+      provide(_n: string, _v: unknown) { return () => {} },
+      logger,
+    },
+  }
+}
+
 /** 默认全部 pass 的 prompt-guard（safe=true）。*/
 function fakePromptGuard(overrides: { safe?: boolean; reason?: string; throwErr?: boolean; riskLevel?: 'low' | 'medium' | 'high' } = {}) {
   const calls: Array<{ text: string; sessionId: string }> = []
@@ -474,6 +495,73 @@ describe('handlePreStep — sanitization', () => {
     const state = svc.getStepState(payload.agent.session.id ?? 'sess-1')
     assert.ok(state)
     assert.equal(state?.sanitized, false)
+  })
+})
+
+// §7.46.2 (2026-09-12): ops log 让"调了 sanitizer / 替换几个 PII /
+// 多久 / 失败原因"在 ops log 里可见。start/done/failed 三段，跟
+// cloud/local-llm-adapter §7.46.1 done 行的 wireError 字段对齐。
+describe('handlePreStep — §7.46.2 sanitize call ops log', () => {
+  it('CLOUD + replacements > 0 → start + done (outcome=replaced)', async () => {
+    const ir = fakeIntentRouter({ category: 'CLOUD' })
+    const san = fakeSanitizer({ replacements: 1 })
+    const { ctx, infoLines } = fakeCtxWithLogger()
+    const svc = new InputGuardServiceImpl(
+      ctx as any, defaultConfig(),
+      undefined, undefined, ir.api as any, san.api as any,
+    )
+    const payload = makePreStepPayload('send to user@example.com')
+    await svc.handlePreStep(payload as any, makeNext(payload.messages))
+
+    const start = infoLines.find((l) => l.includes('sanitize start'))
+    const done = infoLines.find((l) => l.includes('sanitize done'))
+    assert.ok(start, `expected sanitize start line, got: ${JSON.stringify(infoLines)}`)
+    assert.ok(done, `expected sanitize done line, got: ${JSON.stringify(infoLines)}`)
+    assert.ok(start!.includes('category=CLOUD'), 'start should include category=CLOUD')
+    assert.ok(start!.includes('inputLen='), 'start should include inputLen')
+    assert.ok(done!.includes('category=CLOUD'), 'done should include category=CLOUD')
+    assert.match(done!, /replacementCount=1/, 'done should include replacementCount=1')
+    assert.match(done!, /durationMs=\d+/, 'done should include durationMs=N')
+    assert.ok(done!.includes('outcome=replaced'), 'done should mark outcome=replaced')
+  })
+
+  it('CLOUD + 0 replacements → start + done (outcome=clean)', async () => {
+    const ir = fakeIntentRouter({ category: 'CLOUD' })
+    const san = fakeSanitizer({ replacements: 0 })
+    const { ctx, infoLines } = fakeCtxWithLogger()
+    const svc = new InputGuardServiceImpl(
+      ctx as any, defaultConfig(),
+      undefined, undefined, ir.api as any, san.api as any,
+    )
+    const payload = makePreStepPayload('hello world no pii here')
+    await svc.handlePreStep(payload as any, makeNext(payload.messages))
+
+    const start = infoLines.find((l) => l.includes('sanitize start'))
+    const done = infoLines.find((l) => l.includes('sanitize done'))
+    assert.ok(start, 'start should fire even with 0 replacements (sanitizer was called)')
+    assert.ok(done, 'done should fire even with 0 replacements')
+    assert.match(done!, /replacementCount=0/, 'done should include replacementCount=0')
+    assert.ok(done!.includes('outcome=clean'), 'done should mark outcome=clean')
+  })
+
+  it('CLOUD + sanitize throws → start + failed (wireError=...)', async () => {
+    const ir = fakeIntentRouter({ category: 'CLOUD' })
+    const san = fakeSanitizer({ throwOnSanitize: true })
+    const audit = fakeAuditLog()
+    const { ctx, infoLines } = fakeCtxWithLogger()
+    const svc = new InputGuardServiceImpl(
+      ctx as any, defaultConfig({ downgradeOnSanitizeFailure: true }),
+      undefined, undefined, ir.api as any, san.api as any, audit.api as any,
+    )
+    const payload = makePreStepPayload('boom')
+    await svc.handlePreStep(payload as any, makeNext(payload.messages))
+
+    const start = infoLines.find((l) => l.includes('sanitize start'))
+    const failed = infoLines.find((l) => l.includes('sanitize failed'))
+    assert.ok(start, 'start should fire before sanitize() throws')
+    assert.ok(failed, 'failed should fire when sanitizer throws')
+    assert.ok(failed!.includes('wireError=sanitize crashed'), 'failed should include wireError from thrown error')
+    assert.match(failed!, /durationMs=\d+/, 'failed should include durationMs')
   })
 })
 
