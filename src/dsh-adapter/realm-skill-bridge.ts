@@ -487,6 +487,19 @@ export class RealmSkillBridgeService extends Service {
    * zero skills and silently answered "no mibao tool available"). Skill
    * realm tag is fail-closed (default 'hidden'), so SANITIZED must
    * explicitly opt out of the strict-equality check.
+   *
+   * §7.47.1 (2026-09-12): Same dual fix for LOCAL/CLOUD. The catalog
+   * filter uses `skillRealm` (single realm), but tools are tagged with a
+   * realm SET (`toolRealms: Set<RealmTag>`). `bash` skill.realm = 'LOCAL'
+   * yet bash.toolRealms = {LOCAL, CLOUD}. Before this fix, a CLOUD agent
+   * (e.g. news query) saw every LOCAL skill dropped — `droppedCount=11`
+   * for news session, identical to the SANITIZED bug. Symmetric for
+   * LOCAL agent: CLOUD skill (e.g. web_search, web_fetch) was dropped.
+   * The fix extends SANITIZED's opt-in to ALL agent realms: any
+   * non-'hidden' skill is kept in the catalog. Layer 3 (tools/pre-execute)
+   * remains the authoritative gate, mirroring `filterToolsField`'s
+   * semantics where any non-hidden tool is offered to the LLM and only
+   * blocked at execution time.
    */
   private filterCatalogText(content: string, agentRealm: RealmTag): { text: string; changed: boolean; droppedCount: number } {
     const lines = content.split('\n')
@@ -503,15 +516,13 @@ export class RealmSkillBridgeService extends Service {
           droppedCount++
           continue
         }
-        if (agentRealm === 'SANITIZED') {
-          out.push(line)
-          continue
-        }
-        if (realm !== agentRealm) {
-          changed = true
-          droppedCount++
-          continue
-        }
+        // §7.45 + §7.47.1: ALL agent realms see every non-hidden skill.
+        // Layer 3 (tools/pre-execute) is the authoritative realm gate —
+        // see filterToolsField line ~578-588 + checkToolRealm line ~612.
+        // The catalog is a discovery surface; tool execution is the
+        // privacy boundary. Restricting catalog by realm left LLM
+        // without knowledge of tools it could otherwise safely call.
+        void agentRealm
       }
       out.push(line)
     }

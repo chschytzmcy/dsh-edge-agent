@@ -273,7 +273,13 @@ describe('realm-skill-bridge', () => {
 
     afterEach(() => { service.stop() })
 
-    it('filters catalog for LOCAL agent', () => {
+    it('§7.47.1: catalog filter is opt-out — keeps all non-hidden skills', () => {
+      // §7.47.1 (2026-09-12): filterCatalogText no longer drops skills by
+      // agentRealm. Skill.realm is single (LOCAL/CLOUD/hidden), but tools
+      // are multi-realm Set. `bash` is skill.realm=LOCAL yet toolRealms=
+      // {LOCAL, CLOUD}. Pre-fix, CLOUD agent saw every LOCAL skill dropped
+      // (droppedCount=11) — Layer 3 is the authoritative realm gate.
+      // Test: any agentRealm keeps visible skills; hidden-skill drops.
       const messages = [
         {
           source: { kind: 'skill-catalog' },
@@ -285,40 +291,38 @@ Skills available:
 - \`sys-monitor\`: Monitor system
 - \`device-ctrl\`: Control devices
 - \`hidden-skill\`: Secret
-- \`unknown\`: Something
 </available_skills>
 </system-reminder>`,
         },
       ]
-      const filtered = service.filterSkillCatalog(messages, 'LOCAL')
-      const content = (filtered[0] as any).content
-      // LOCAL should see sys-monitor, device-ctrl. Not lark-im (CLOUD),
-      // not hidden-skill (hidden), not unknown (hidden by defaultRealm).
-      assert.ok(content.includes('sys-monitor'))
-      assert.ok(content.includes('device-ctrl'))
-      assert.ok(!content.includes('lark-im'))
-      assert.ok(!content.includes('hidden-skill'))
-      assert.ok(!content.includes('unknown'))
+      for (const realm of ['LOCAL', 'CLOUD', 'SANITIZED'] as const) {
+        const filtered = service.filterSkillCatalog(messages, realm)
+        const content = (filtered[0] as any).content
+        // All visible skills kept regardless of realm
+        assert.ok(content.includes('lark-im'), `realm=${realm}: lark-im kept`)
+        assert.ok(content.includes('sys-monitor'), `realm=${realm}: sys-monitor kept`)
+        assert.ok(content.includes('device-ctrl'), `realm=${realm}: device-ctrl kept`)
+        // Hidden still dropped (security boundary)
+        assert.ok(!content.includes('hidden-skill'), `realm=${realm}: hidden-skill dropped`)
+      }
     })
 
-    it('filters catalog for CLOUD agent', () => {
+    it('§7.47.1: droppedCount=0 for non-hidden catalog regardless of realm', () => {
+      // Symmetric assertion: no realm drops visible skills. Only 'hidden'
+      // tag or default-unknown triggers dropCount > 0.
       const messages = [
         {
           source: { kind: 'skill-catalog' },
-          content: `<system-reminder>
-<available_skills>
-- \`lark-im\`: Send messages
-- \`lark-calendar\`: Manage calendar
-- \`sys-monitor\`: Monitor system
-</available_skills>
-</system-reminder>`,
+          content: `<available_skills>
+- \`lark-im\`: CLOUD skill
+- \`sys-monitor\`: LOCAL skill
+</available_skills>`,
         },
       ]
-      const filtered = service.filterSkillCatalog(messages, 'CLOUD')
-      const content = (filtered[0] as any).content
-      assert.ok(content.includes('lark-im'))
-      assert.ok(content.includes('lark-calendar'))
-      assert.ok(!content.includes('sys-monitor'))
+      for (const realm of ['LOCAL', 'CLOUD', 'SANITIZED'] as const) {
+        const result = (service as any).filterSkillCatalogDetailed(messages, realm)
+        assert.equal(result.droppedCount, 0, `realm=${realm} should drop 0 visible skills`)
+      }
     })
 
     it('returns all messages when realm is hidden', () => {
@@ -529,7 +533,14 @@ Some footer text.
       }
     })
 
-    it('CLOUD agent sees all lark skills, LOCAL sees none', () => {
+    it('§7.47.1: catalog filter opt-out — every realm sees all non-hidden skills', () => {
+      // §7.47.1 (2026-09-12): filterCatalogText no longer drops skills
+      // by agentRealm. Skill.realm is single (LOCAL/CLOUD/hidden), but
+      // tools are multi-realm Set. `bash` skill.realm=LOCAL yet
+      // bash.toolRealms={LOCAL, CLOUD}. Pre-fix, CLOUD agent saw every
+      // LOCAL skill dropped (droppedCount=11 for news session). Layer 3
+      // (tools/pre-execute) is the authoritative realm gate — see
+      // checkToolRealm line ~612 + filterToolsField line ~578.
       const allSkillLines = [
         ...LARK_SKILLS.map(n => `- \`${n}\`: Lark ${n}`),
         ...LOCAL_SKILLS.map(n => `- \`${n}\`: Local ${n}`),
@@ -544,30 +555,21 @@ ${allSkillLines.join('\n')}
 </system-reminder>`,
       }]
 
-      // CLOUD agent: only lark-* visible
-      const cloudFiltered = service.filterSkillCatalog(messages, 'CLOUD')
-      const cloudContent = (cloudFiltered[0] as any).content
-      for (const name of LARK_SKILLS) {
-        assert.ok(cloudContent.includes(name), `CLOUD should see ${name}`)
-      }
-      for (const name of LOCAL_SKILLS) {
-        assert.ok(!cloudContent.includes(name), `CLOUD should NOT see ${name}`)
-      }
-      for (const name of OTHER_SKILLS) {
-        assert.ok(!cloudContent.includes(name), `CLOUD should NOT see ${name}`)
-      }
-
-      // LOCAL agent: only sys-monitor/device-ctrl/file-organizer visible
-      const localFiltered = service.filterSkillCatalog(messages, 'LOCAL')
-      const localContent = (localFiltered[0] as any).content
-      for (const name of LOCAL_SKILLS) {
-        assert.ok(localContent.includes(name), `LOCAL should see ${name}`)
-      }
-      for (const name of LARK_SKILLS) {
-        assert.ok(!localContent.includes(name), `LOCAL should NOT see ${name}`)
-      }
-      for (const name of OTHER_SKILLS) {
-        assert.ok(!localContent.includes(name), `LOCAL should NOT see ${name}`)
+      for (const realm of ['CLOUD', 'LOCAL', 'SANITIZED'] as const) {
+        const filtered = service.filterSkillCatalog(messages, realm)
+        const content = (filtered[0] as any).content
+        for (const name of LARK_SKILLS) {
+          assert.ok(content.includes(name), `realm=${realm} should see ${name}`)
+        }
+        for (const name of LOCAL_SKILLS) {
+          assert.ok(content.includes(name), `realm=${realm} should see ${name}`)
+        }
+        // OTHER_SKILLS aren't in the realm config so they default to 'hidden'
+        // (fail-closed) and are dropped regardless of agent realm — the §7.47.1
+        // change only affects visible vs dropped for KNOWN non-hidden skills.
+        for (const name of OTHER_SKILLS) {
+          assert.ok(!content.includes(name), `realm=${realm} should NOT see ${name} (hidden)`)
+        }
       }
     })
 
@@ -665,20 +667,24 @@ ${allSkillLines.join('\n')}
         content: `<system-reminder>\n<available_skills>\n${catalogLines.join('\n')}\n</available_skills>\n</system-reminder>`,
       }]
 
-      // CLOUD agent: sees all lark skills, not sys-monitor or ets-auth
+      // §7.47.1 (2026-09-12): CLOUD agent sees ALL non-hidden skills
+      // (lark skills + sys-monitor + ets-auth). Catalog is discovery
+      // surface; Layer 3 (tools/pre-execute) is the authoritative realm
+      // gate. Pre-fix behavior (CLOUD hides sys-monitor) caused
+      // droppedCount=11 in production news queries.
       const cloudFiltered = service.filterSkillCatalog(messages, 'CLOUD')
       const cloudContent = (cloudFiltered[0] as { content: string }).content
       for (const name of larkSkills) {
         assert.ok(cloudContent.includes(name), `CLOUD agent should see ${name}`)
       }
-      assert.ok(!cloudContent.includes('sys-monitor'), 'CLOUD should NOT see sys-monitor')
-      assert.ok(!cloudContent.includes('ets-auth'), 'CLOUD should NOT see ets-auth')
+      assert.ok(cloudContent.includes('sys-monitor'), 'CLOUD should see sys-monitor (§7.47.1)')
+      assert.ok(cloudContent.includes('ets-auth'), 'CLOUD should see ets-auth (§7.47.1)')
 
-      // LOCAL agent: sees sys-monitor and ets-auth, NOT any lark skill
+      // LOCAL agent: also sees all non-hidden skills per §7.47.1
       const localFiltered = service.filterSkillCatalog(messages, 'LOCAL')
       const localContent = (localFiltered[0] as { content: string }).content
       for (const name of larkSkills) {
-        assert.ok(!localContent.includes(name), `LOCAL agent should NOT see ${name}`)
+        assert.ok(localContent.includes(name), `LOCAL agent should see ${name} (§7.47.1)`)
       }
       assert.ok(localContent.includes('sys-monitor'), 'LOCAL should see sys-monitor')
       assert.ok(localContent.includes('ets-auth'), 'LOCAL should see ets-auth')
@@ -814,9 +820,13 @@ ${allSkillLines.join('\n')}
       await dispose()
     })
 
-    it('pre-step listener emits ops log when realm/skill catalog interact (unit-level via direct filterSkillCatalogDetailed)', async () => {
-      // Direct test of filterSkillCatalogDetailed — proves droppedCount
-      // is computed correctly, which feeds the pre-step log line.
+    it('§7.47.1: pre-step listener — droppedCount is 0 for non-hidden catalog regardless of realm', async () => {
+      // §7.47.1 (2026-09-12): catalog filter is opt-out for ALL realms
+      // (not just SANITIZED). droppedCount=0 means the catalog passes
+      // through unchanged. Previously, LOCAL agent with lark-* in the
+      // catalog dropped 2 skills (lark-im + lark-doc) — that broke
+      // production news queries where CLOUD agent lost all LOCAL skills.
+      // Layer 3 (tools/pre-execute) is now the authoritative realm gate.
       const configPath = writeConfig('skill-realms.json', {
         skills: { 'ets-*': 'LOCAL', 'lark-*': 'CLOUD' },
         tools: {},
@@ -844,8 +854,49 @@ ${allSkillLines.join('\n')}
           content: '<available_skills>\n- `lark-im`: chat\n- `lark-doc`: doc\n- `ets-chat`: mibao\n- `ets-auth`: auth\n</available_skills>',
         },
       ] as any
-      const r = service.filterSkillCatalogDetailed(messages, 'LOCAL')
-      assert.equal(r.droppedCount, 2, `expected 2 dropped (lark-* when realm=LOCAL), got ${r.droppedCount}`)
+      // All non-hidden skills pass through for any agentRealm
+      for (const realm of ['LOCAL', 'CLOUD', 'SANITIZED'] as const) {
+        const r = service.filterSkillCatalogDetailed(messages, realm)
+        assert.equal(r.droppedCount, 0, `realm=${realm} should drop 0 visible skills (§7.47.1), got ${r.droppedCount}`)
+      }
+      service.stop()
+    })
+
+    it('§7.47.1: hidden skill still dropped — security boundary preserved', async () => {
+      // §7.47.1 only relaxes the realm-equality filter. The 'hidden' tag
+      // remains a hard drop — it's the security boundary for skills we
+      // never want surfaced (e.g. internal admin tools).
+      const configPath = writeConfig('skill-realms.json', {
+        skills: { 'ets-*': 'LOCAL', 'lark-*': 'CLOUD' },
+        tools: {},
+        defaultRealm: 'hidden',
+      })
+      const fakeCtx: unknown = {
+        reflect: { provide() { return () => {} } },
+        provide() { return () => {} },
+        skills: {
+          async list() { return [] },
+          async snapshot() { return { skills: [], complete: true } },
+        },
+        logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+      }
+      const service = new RealmSkillBridgeService(
+        fakeCtx as never,
+        { configPath, hotReload: false, watchIntervalMs: 5000 },
+        undefined,
+      )
+      await service.start()
+      const messages = [
+        {
+          source: { kind: 'plugin', plugin: '@deepseek-ai/dsh-system-prompt' },
+          role: 'system',
+          content: '<available_skills>\n- `lark-im`: chat\n- `secret-internal`: hidden\n</available_skills>',
+        },
+      ] as any
+      // secret-internal has no config match → defaults to 'hidden' → dropped
+      const r = service.filterSkillCatalogDetailed(messages, 'CLOUD')
+      assert.equal(r.droppedCount, 1, 'unknown config match defaults to hidden → dropped')
+      assert.ok(!r.messages[0].content.includes('secret-internal'))
       service.stop()
     })
   })

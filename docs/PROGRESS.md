@@ -5522,5 +5522,72 @@ HTTP 响应：
 - memory [[ops-log-coverage-principle]] — 21 节点清单不变；rationale 字段扩展为 5 种来源（policy-rule / rule-cloud-keyword / rule-keyword-match / llm-classified / default）
 - PROGRESS §7.22 — fail-closed 兜底到 SANITIZED 是有意设计（防 PII 上云）；§7.47 是给 SANITIZED 兜底加一条"看起来需要 web"的逃生通道
 - PROGRESS §7.45 — SANITIZED catalog filter 是 catalog 层的问题；§7.47 是 routing 层的问题，两者独立
+- PROGRESS §7.47.1 — §7.47 修复后立刻暴露的 catalog filter 对偶 bug（同一文件同一函数）
+
+### §7.47.1 realm-skill-bridge catalog filter 对偶 bug（CLOUD/LOCAL 互 drop）— 2026-09-13
+
+**症状**：§7.47 修完后跑 news 用例，ops log 显示：
+
+```
+pre-step filter sessionId=news-fix-v2-202717 realm=CLOUD catalogDropped=11
+cloud-llm-adapter LLM call done durationMs=195 resultLen=0
+```
+
+DeepSeek 195ms 返回 resultLen=0。catalogDropped=11 = 11 个 skill 全部 drop，CLOUD 域等价于"看不到任何 skill"。
+
+**根因**：`filterCatalogText` 第 510 行 `if (realm !== agentRealm)` 严格相等：
+
+- skill 注册为单 realm (`skillRealm` 返回 `'LOCAL' | 'CLOUD' | 'hidden'`)
+- tool 注册为多 realm Set (`toolRealms` 返回 `Set<RealmTag>`)
+- `bash` 是 `skillRealm='LOCAL'` 但 `toolRealms={LOCAL, CLOUD}`
+- CLOUD agent 调 catalog 时所有 skillRealm=LOCAL 的 skill（含 bash）都被 drop
+
+跟 §7.45 SANITIZED bug 同根——`realm !== agentRealm` 对单 realm agent + 单 realm skill 永远严格匹配失败。§7.45 已为 SANITIZED 加 opt-in，但 CLOUD/LOCAL 没补。
+
+**修复**：跟 §7.45 同款——让 catalog filter 对**所有** realm 都是 opt-out（保留所有非 hidden skill）。Layer 3 (`checkToolRealm`) 是权威 realm gate。
+
+**修改文件**：
+- `src/dsh-adapter/realm-skill-bridge.ts` — `filterCatalogText` 移除 `realm !== agentRealm` 严格匹配；保留 hidden drop；加 §7.47.1 注释解释为什么 opt-out
+- `tests/unit/realm-skill-bridge.test.ts` — 4 个测试更新（lark 测试、pre-step 测试）+ 2 个新测试（hidden 仍 drop + 三 realm 对照）
+
+**设计决策**：catalog = discovery surface，tool execution = privacy boundary。Layer 3 (`tools/pre-execute`) 仍按 `toolRealms.has(agentRealm)` 拦截——CLOUD agent 调 bash 在 Layer 1.5 filter 保留（filterToolsField 也 opt-out），但执行时被拒。
+
+**实测**（`sessionId=news-fix-v3-135034`，2026-09-13 13:50）：
+
+```
+13:50:40.577 preflight intent category=CLOUD rationale=rule-cloud-keyword:新闻
+13:50:40.587 pre-step filter realm=CLOUD catalogDropped=0    ← §7.47.1 修复生效
+13:50:40.615 cloud-llm-adapter LLM call start baseUrl=https://api.deepseek.com
+13:50:40.809 chat finished turn=1 duration=197ms
+```
+
+✅ `catalogDropped=0`（修前 11）。
+
+**3 个 canary 用例**（mibao/news/local-ip）：全 PASS，21 节点覆盖完整。local-ip 用例的 8 次 `tool allow tool=bash` 验证 LOCAL→LOCAL 路径未回归；mibao 用例的 `tool allow skillName=ets-auth` 验证 skill 调用未回归。
+
+**已知未解**（不在本任务）：
+1. `news` 用例 result 仍空字符串（DeepSeek 197ms 决定不调 web_search 直接回复）—— 这是 **DeepSeek 模型行为**，不是 catalog bug。可能需要更明确 query（如"搜索最新的 AI 新闻"含搜索动作信号），不在 §7.47.1 范围
+2. 2 个 pre-existing `realm-skill-bridge.test.ts` fail（baseline `git stash` 验证非本 PR 引入）：
+   - `exports the canonical plugin shape` — 期望 `plugin.inject = ['auditLog']`，实际含 `skills`
+   - `tracks session → realm mapping` — `getAgentRealm` 返回 undefined 应为 'LOCAL'
+   - 跟 catalog filter 逻辑无关，单独 fix
+
+**4 个测试改动 + 2 个新测试**：
+
+| 测试 | 改动 |
+|---|---|
+| `filters catalog for LOCAL agent` | 删除（§7.47.1 前假设已破），被 §7.47.1 三 realm 对照取代 |
+| `filters catalog for CLOUD agent` | 删除，同上 |
+| `CLOUD agent sees all lark skills, LOCAL sees none` | 重写：每个 realm 看到全部非 hidden skill |
+| `pre-step listener emits ops log` | 重写：droppedCount=0 三 realm 对照 |
+| `§7.47.1: hidden skill still dropped` | 新增：unknown config → hidden → drop（security 边界保留） |
+| `§7.47.1: droppedCount=0 for non-hidden regardless of realm` | 新增：filterSkillCatalogDetailed 数值断言 |
+
+**相关**：
+- memory [[sanitized-catalog-filter-bug]] — §7.45 首次暴露同根 bug，但只修了 SANITIZED 一侧
+- PROGRESS §7.45 — `realm !== agentRealm` 对偶 bug 的前半
+- PROGRESS §7.47 — 修 keyword 分类后立刻暴露本 bug（catalogDropped=11 是 §7.47 的 secondary symptom）
+- PROGRESS §7.37 — `filterToolsField` Layer 1.5 已正确（用 Set.has），证明 Set 语义是对的，catalog 应该跟它对齐
+- PROGRESS §7.46 — pre-step filter ops log（`catalogDropped=N`）让本 bug 一行可见
 
 
