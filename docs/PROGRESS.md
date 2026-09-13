@@ -5894,4 +5894,77 @@ src/dsh-adapter/local-llm-adapter.ts:470:        if (entry.count > MAX_CONSECUTI
 - memory [[ops-log-coverage-principle]] — 23 节点清单（升自 22）
 - dsh-agent-loop `/lib/index.js:533-604` — turnEnds 构造逻辑
 
+### §7.48 system-prompt augmentation — DeepSeek tool-call happy 缓解（2026-09-13）
+
+**症状**：§7.47.6 收尾时观察到 5x news 验证 3/5 kind=error abort，ops log 完整可见失败模式："DeepSeek 拿 tool 结果后不合成 answer，继续调 tool 直到 dsh-agent-loop 兜底 abort"。这不是 ops log bug，是 DeepSeek 模型行为问题。
+
+**根因分析**（基于 §7.47.6 5x 验证 ops log）：
+
+- 所有 tool `status=ok`（工具执行没问题）
+- LLM turn 2/3 `resultLen=0 finishKind=tool-calls`（不合成 text）
+- chat finished `reason=kind=error`（dsh-agent-loop 上层兜底 abort）
+
+DeepSeek V4.1 在 tool-call 模式下倾向于"持续 call more tools"而非"基于结果合成 answer"。§7.47.5 max-turns guard 是 backstop（20 turn 才 abort），实际 2-3 轮 dsh-agent-loop 就提前 abort。
+
+**修复**：在 `cloud-llm-adapter.stream()` 里，当 messages 包含 tool-result block 时，往 `options.system` 末尾 APPEND 一条合成引导（不动用户/runtime 已设的 system prompt）：
+
+```ts
+const hasToolResult = sanitizedMessages.some(
+  (m) => (m as unknown as { source?: { kind?: string } }).source?.kind === 'tool',
+)
+let augmentedSystem = typeof options.system === 'string' ? options.system : ''
+let systemInjected = false
+if (hasToolResult) {
+  const synthInstruction =
+    'You have received tool results above. Based on those results, synthesize a comprehensive answer in the user\'s language. Do not call additional tools unless the existing results are clearly insufficient. Avoid empty responses.'
+  augmentedSystem = augmentedSystem.length > 0
+    ? `${augmentedSystem}\n\n${synthInstruction}`
+    : synthInstruction
+  systemInjected = true
+}
+```
+
+注入策略：
+- **APPEND 而非 prepend**：保留用户/runtime 已设的 system prompt，避免覆盖
+- **检测 `source.kind === 'tool'`**：dsh-llm 的 Message.role 只有 `system|user|assistant`，tool result 是 user-role + source.kind='tool'（见 `node_modules/@deepseek-ai/dsh-llm/lib/types/message.d.ts:140`）
+- **仅 cloud 域**：local LLM 可能有不同 tool-call 模式，不污染
+
+注入位置：`GenerateOptions.system`（dsh-llm 顶层字段，由 `buildChatCompletionsBody` prepend 成 wire-level `{role:'system', content:string}` 消息——`openai-sse.ts:53-54`）。不需要改 messages 数组。
+
+**实测**（web 21017，5x news，2026-09-13 14:50-14:52）：
+
+| run | resultLen | 状态 | 解读 |
+|-----|-----------|------|------|
+| #1 | **3230** | ✅ | 合成完整 AI 新闻汇总 |
+| #2 | **2055** | ✅ | 合成完整 AI 新闻汇总 |
+| #3 | **4182** | ✅ | 合成完整 AI 新闻汇总 |
+| #4 | 0 | ❌ | DeepSeek 第 2 轮 SSE 流 137ms 内断开（**无 LLM call done**）|
+| #5 | 0 | ❌ | DeepSeek 第 1 轮 SSE 流 494ms 内断开（**无 LLM call done**）|
+
+**对比 §7.47.6 baseline**：
+- baseline 5x：2 成功 + 3 失败（DeepSeek 拿到 tool 结果不合成，调 tool 直到 abort）
+- §7.48 5x：**3 成功 + 2 失败**（失败性质已变化：DeepSeek 上游 SSE 间歇断开，与"是否合成"无关）
+
+**剩余 2 次失败的性质变化**（ops log 透明可见）：
+- run#4：14:52:15.098 LLM call start → 14:52:15.235 chat finished（137ms），**无 LLM call done** → DeepSeek 上游 SSE 立即断开，dsh-agent-loop 判 kind=error abort
+- run#5：14:52:21.591 LLM call start → 14:52:22.082 chat finished（494ms），**无 LLM call done** → 同上
+
+这是 dsh-llm + DeepSeek 间歇流异常，**system prompt 解决不了**（LLM 都没拿到响应）。
+
+**audit 字段**：新增 `systemInjected: boolean` 字段到 `llm.cloud.start` audit event，便于 ops 团队统计 system prompt 注入触发频率。本地 audit JSONL 暂无该字段（audit sink 未启用 file logger 输出），但 audit 内存层完整记录。
+
+**测试**：
+- `pnpm vitest run`：718 passed + 1 skipped + 0 failed（无新增 test，因为 §7.48 是行为 patch 而非 contract 变更）
+- 手动 5x news：3/5 成功（vs baseline 2/5）
+
+**修改文件**：
+- `src/dsh-adapter/cloud-llm-adapter.ts` — `stream()` 方法里追加 system-prompt augmentation + `audit('info', 'llm.cloud.start')` payload 加 `systemInjected` 字段
+
+**Lesson**：当 ops log 已能完整呈现失败模式但根因在模型行为层时，单纯修 SUT 边界无法解决；可选方向是改 prompt 引导（如本节）或加 retry/abort threshold 调整。**先尝试最便宜的引导（无 LLM 调用成本），再考虑更重的架构改动**。本次验证引导把 5x 成功率从 2/5 提到 3/5，剩余 2 次失败性质从"不合成"变成"流断开"——bug 类目升级到下一层（SSE 异常），已超出 SUT 边界。
+
+**相关**：
+- PROGRESS §7.47.6 — 上游 5x 验证观察的"3/5 kind=error"为本节 motivation
+- memory [[ops-log-coverage-principle]] — 23 节点清单让失败模式透明可分析
+- `node_modules/@deepseek-ai/dsh-llm/lib/types/message.d.ts:140` — ToolResultMessage.role='user' + source.kind='tool' 的类型契约
+
 

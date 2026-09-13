@@ -216,7 +216,45 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
       sanitizedMessages = result.messages as unknown as typeof options.messages
     }
 
-    const body = buildChatCompletionsBody({ ...options, messages: sanitizedMessages }, this.defaultModel, this.temperature)
+    // §7.48 (2026-09-13): system-prompt augmentation to nudge DeepSeek to
+    // synthesize answer after receiving tool results, instead of looping
+    // additional tool calls. 5x news verification (§7.47 followup):
+    // 3/5 runs aborted with kind=error because DeepSeek chose tool-calls
+    // over synthesis after gathering enough information. dsh-llm's
+    // buildChatCompletionsBody (openai-sse.ts:53) prepends options.system
+    // as a wire-level `{role:'system', content:string}` message — so we
+    // append (not replace) the existing system prompt when this stream
+    // is about to receive tool results.
+    // Inject only when:
+    //   1) messages already include a tool-result block — i.e. previous
+    //      turn triggered a tool call. First-turn text-only chats don't
+    //      need this guidance;
+    //   2) we don't disturb an already-set system prompt — we APPEND to
+    //      it so user/runtime-set instructions are preserved.
+    // Scope: cloud-llm-adapter only. Local LLMs may have different
+    // tool-call patterns; we don't want to disturb them.
+    // Detection uses `source.kind === 'tool'` because dsh-llm's Message
+    // type's `role` is `'system' | 'user' | 'assistant'` only — tool
+    // results surface as user-role messages with source.kind='tool'.
+    const hasToolResult = sanitizedMessages.some(
+      (m) => (m as unknown as { source?: { kind?: string } }).source?.kind === 'tool',
+    )
+    let augmentedSystem = typeof options.system === 'string' ? options.system : ''
+    let systemInjected = false
+    if (hasToolResult) {
+      const synthInstruction =
+        'You have received tool results above. Based on those results, synthesize a comprehensive answer in the user\'s language. Do not call additional tools unless the existing results are clearly insufficient. Avoid empty responses.'
+      augmentedSystem = augmentedSystem.length > 0
+        ? `${augmentedSystem}\n\n${synthInstruction}`
+        : synthInstruction
+      systemInjected = true
+    }
+
+    const body = buildChatCompletionsBody(
+      { ...options, messages: sanitizedMessages, system: augmentedSystem.length > 0 ? augmentedSystem : options.system },
+      this.defaultModel,
+      this.temperature,
+    )
     const promptText = sanitizedMessages.map((m) => `${m.role}:${extractText(m.content)}`).join('\n')
     const promptLen = promptText.length
     const messageCount = sanitizedMessages.length
@@ -236,7 +274,7 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
     // at debug level. JSON.stringify keeps the entry single-line so
     // file-logger's `formatLine` newline-collapse doesn't kick in.
     this.logger?.debug?.(`[cloud-llm-adapter] LLM_MESSAGES ${JSON.stringify({ messages: sanitizedMessages })}`)
-    this.audit('info', 'llm.cloud.start', { provider: options.provider, model: options.model, messageCount, promptLen, baseUrl: this.baseUrl })
+    this.audit('info', 'llm.cloud.start', { provider: options.provider, model: options.model, messageCount, promptLen, baseUrl: this.baseUrl, systemInjected })
 
     const headers: Record<string, string> = {
       'content-type': 'application/json',
