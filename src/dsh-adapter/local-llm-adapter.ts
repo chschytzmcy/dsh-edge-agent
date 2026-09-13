@@ -36,6 +36,11 @@ import {
   sseFinishReason,
   terminalChunks,
 } from './openai-sse.js'
+import {
+  bumpSessionToolCallCount,
+  MAX_CONSECUTIVE_TOOL_CALLS,
+  resetSessionToolCallCount,
+} from './llm-max-turns.js'
 
 export const name = 'local-llm-adapter'
 
@@ -49,10 +54,11 @@ export const inject = ['llm', 'auditLog', 'inputGuard'] as const
  * adapter throws `LlmError('MAX_TURNS_EXCEEDED')` to terminate the agent loop.
  * 20 is conservative: a healthy tool-use turn rarely exceeds 3-5 iterations;
  * 20 catches runaways without tripping on legitimate long chains.
+ *
+ * §7.47.5 (2026-09-13): shared with cloud-llm-adapter via ./llm-max-turns.ts
+ * so cross-adapter sessions (e.g. classifier fallback LOCAL → CLOUD) keep
+ * a single counter. See llm-max-turns.ts for the rationale.
  */
-const MAX_CONSECUTIVE_TOOL_CALLS = 20
-const _sessionToolCallRuns = new Map<string, { count: number; lastSeen: number }>()
-let _toolCallRunPruneCounter = 0
 
 /** Minimal interface our adapter needs from the audit-log service. */
 interface AuditLike {
@@ -447,50 +453,39 @@ class RealLocalAdapter extends LlmAdapter {
     //   - Real tool-call with text (e.g. model explains what it's doing) does NOT
     //     increment — that's a progress signal.
     //
-    // Session tracking via module-level Map, keyed by sessionId (falls back to
-    // 'default' if absent — single shared counter for non-session callers).
-    // Stale entries pruned every 100 calls (keep those seen in last 5 minutes).
-    const sessionKey = typeof options.sessionId === 'string' && options.sessionId.length > 0
-      ? options.sessionId
-      : 'default'
+    // Session tracking via shared module (./llm-max-turns.ts). Cross-adapter
+    // sessions keep a single counter so e.g. classifier fallback LOCAL → CLOUD
+    // doesn't reset the runaway count.
     if (finishKind === 'tool-calls') {
       if (!sawText) {
-        const now = Date.now()
-        const entry = _sessionToolCallRuns.get(sessionKey) ?? { count: 0, lastSeen: now }
-        entry.count += 1
-        entry.lastSeen = now
-        _sessionToolCallRuns.set(sessionKey, entry)
-        // Periodic prune: every 100 calls, drop entries older than 5 minutes.
-        if (++_toolCallRunPruneCounter % 100 === 0) {
-          const cutoff = now - 5 * 60 * 1000
-          for (const [k, v] of _sessionToolCallRuns) {
-            if (v.lastSeen < cutoff) _sessionToolCallRuns.delete(k)
-          }
-        }
-        if (entry.count > MAX_CONSECUTIVE_TOOL_CALLS) {
+        const consecutiveCount = bumpSessionToolCallCount(options.sessionId)
+        const sessionKeyForLog = typeof options.sessionId === 'string' && options.sessionId.length > 0
+          ? options.sessionId
+          : 'default'
+        if (consecutiveCount > MAX_CONSECUTIVE_TOOL_CALLS) {
           audit(this.auditLog, 'warn', 'llm.local.max_turns_exceeded', {
             provider: options.provider,
             model: options.model,
-            sessionId: sessionKey,
-            consecutiveCount: entry.count,
+            sessionId: sessionKeyForLog,
+            consecutiveCount,
           })
           this.logger?.error?.(
-            `[local-llm-adapter] per-session max-turns exceeded (session=${sessionKey}, count=${entry.count}/${MAX_CONSECUTIVE_TOOL_CALLS})`,
+            `[local-llm-adapter] per-session max-turns exceeded (session=${sessionKeyForLog}, count=${consecutiveCount}/${MAX_CONSECUTIVE_TOOL_CALLS})`,
           )
           // Reset counter so next call starts fresh (agent loop may retry).
-          _sessionToolCallRuns.delete(sessionKey)
+          resetSessionToolCallCount(options.sessionId)
           throw new LlmError(
-            `local-llm-adapter (${this.providerName}): per-session max-turns exceeded (count=${entry.count})`,
+            `local-llm-adapter (${this.providerName}): per-session max-turns exceeded (count=${consecutiveCount})`,
             'MAX_TURNS_EXCEEDED',
           )
         }
       } else {
         // Tool-call response with text content -> progress, reset counter.
-        _sessionToolCallRuns.delete(sessionKey)
+        resetSessionToolCallCount(options.sessionId)
       }
     } else if (finishKind === 'stop' || finishKind === 'length') {
       // Natural termination -> reset counter.
-      _sessionToolCallRuns.delete(sessionKey)
+      resetSessionToolCallCount(options.sessionId)
     }
 
     yield* terminalChunks(sawText, assembledText, toolCalls, finishKind, sawToolCall)

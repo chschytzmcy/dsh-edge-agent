@@ -131,6 +131,41 @@ function isValidRealm(value: unknown): value is RealmTag {
   return value === 'LOCAL' || value === 'CLOUD' || value === 'SANITIZED' || value === 'hidden'
 }
 
+/**
+ * §7.47.6 (2026-09-13): serialize the `turnEnds` object from dsh-agent-loop
+ * `turn/end` event into a compact ops-log-friendly string.
+ *
+ * Background: dsh-agent-loop appends `turnEnds = { kind, ...payload }` where
+ * kind ∈ { 'completed', 'max-tokens', 'blocked', 'aborted', 'unknown' }.
+ * For 'aborted' it also carries `reason: <AbortSignal.reason>`. The pre-fix
+ * code dropped any non-string to 'unknown' — silently hiding the actual
+ * termination cause. Now: stringify in `kind=key=value` form so the ops log
+ * reveals e.g. `kind=aborted reason=signal-aborted` or `kind=max-tokens`.
+ *
+ * Falls back to 'unknown' only when dsh-agent-loop emits no reason at all
+ * (truly undefined — should never happen in normal flow but guard anyway).
+ */
+function serializeTurnEndReason(reason: unknown): string {
+  if (typeof reason === 'string') return reason
+  if (reason === null || reason === undefined) return 'unknown'
+  if (typeof reason !== 'object') return `unknown(${String(reason)})`
+  const obj = reason as Record<string, unknown>
+  const kind = typeof obj.kind === 'string' ? obj.kind : 'unknown'
+  // Pull the 2 most useful fields besides kind. For 'aborted', include the
+  // nested reason text so ops log shows what actually aborted the signal.
+  const parts: string[] = [`kind=${kind}`]
+  if (obj.reason !== undefined) {
+    const r = obj.reason
+    if (typeof r === 'string') parts.push(`reason=${r}`)
+    else if (r !== null && typeof r === 'object') {
+      const rkind = (r as Record<string, unknown>).kind
+      if (typeof rkind === 'string') parts.push(`reason.kind=${rkind}`)
+    }
+  }
+  if (typeof obj.tokenCount === 'number') parts.push(`tokenCount=${obj.tokenCount}`)
+  return parts.join(' ')
+}
+
 /** Copy the bundled default template to configPath if the file does not exist. */
 async function ensureDefaultConfig(configPath: string): Promise<void> {
   if (existsSync(configPath)) return
@@ -889,6 +924,41 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
     return next()
   }, { global: true })
 
+  // ── Layer 3.5: tool execution result ops log (§7.47.6) ──────────────────
+  //
+  // user feedback 2026-09-13: "每次修BUG通过日志来修理，确保日志里有所有错误的信息"
+  //
+  // tools/pre-execute (Layer 3 above) only emits the realm check decision.
+  // The actual tool execution result (success / error / duration / signal-aborted)
+  // was completely invisible in ops log — 150 tool allow lines vs 3 tool result
+  // lines. Diagnosing "news query returned empty because web_search hung"
+  // required manual trace, not ops log. Now: subscribe to the serial
+  // `tools/result` event (dispatched by dsh-tools after `tools/post-execute`
+  // waterfall finishes — pure observation, no next chain so we can't break it).
+  //
+  // Payload shape (from dsh-tools): exec = { name, agent, signal, ... },
+  // result = { isError: boolean, message?: unknown, ... }. We emit metadata
+  // only — full result content stays in audit-log (opt-in via
+  // DSH_EDGE_LOG_LEVEL=debug).
+  const disposeToolResult = (ctx as unknown as {
+    on?: (event: string, fn: (exec: unknown, result: unknown) => void, options?: { global?: boolean }) => () => void
+  }).on?.('tools/result', (exec: unknown, result: unknown) => {
+    try {
+      const e = exec as { name?: string; agent?: AgentLike; args?: string; token?: string } | undefined
+      const r = result as { isError?: boolean; signalAborted?: boolean; message?: unknown } | undefined
+      const toolName = typeof e?.name === 'string' ? e.name : '<unknown>'
+      const sessionId = (e?.agent as { session?: { id?: string } } | undefined)?.session?.id ?? 'unknown'
+      const isError = r?.isError === true
+      const signalAborted = r?.signalAborted === true
+      const status = signalAborted ? 'aborted' : isError ? 'error' : 'ok'
+      try {
+        ctx.logger?.info?.(
+          `[realm-skill-bridge] tool result sessionId=${sessionId} tool=${toolName} status=${status}${isError ? ` errorKind=${typeof r?.message === 'string' ? r.message.slice(0, 100) : 'unknown'}` : ''}`,
+        )
+      } catch { /* debug only */ }
+    } catch { /* debug only */ }
+  }, { global: true })
+
   // ── Flow-level ops log for every chat round-trip (§7.44.1) ───────────────
   //
   // 用户反馈 §7.44 把 ops log 默认从 debug 翻到 info 后，TUI 输入的请求
@@ -940,7 +1010,13 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
     } else if (e.type === 'turn/end') {
       const data = e.data ?? {}
       const turn = typeof data.turn === 'number' ? data.turn : -1
-      const reason = typeof data.reason === 'string' ? data.reason : 'unknown'
+      // §7.47.6 (2026-09-13): serialize turnEnds object instead of dropping
+      // to 'unknown'. dsh-agent-loop emits `turnEnds = { kind: "aborted",
+      // reason: signal.reason }` (object, not string). Pre-§7.47.6 code
+      // checked `typeof === 'string'` and silently fell back to 'unknown',
+      // hiding abort reasons like max-turns / signal-abort / completed.
+      // Now: stringify object into compact key=value form for ops log.
+      const reason = serializeTurnEndReason(data.reason)
       const startMs = sessionStartTimes.get(sessionId)
       const durationMs = startMs !== undefined ? Date.now() - startMs : -1
       const realm = service.getSessionRealm(sessionId) ?? 'unset'
@@ -959,6 +1035,7 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
     disposePreStep?.()
     disposeStream?.()
     disposePreExec?.()
+    disposeToolResult?.()
     disposeSessionEvents?.()
     sessionStartTimes.clear()
   }

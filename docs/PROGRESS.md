@@ -5774,4 +5774,124 @@ const agent = { session: { id: 'sess-1' } }  // header.id → id
 - PROGRESS §7.46 — 21 节点清单（现在升 22 节点）
 - memory [[prompt-guard-local-llm-waste]] — probe 现在能精确定位每次 prompt-guard 调用的 model，为后续优化提供数据
 
+### §7.47.5 cloud-llm-adapter max-turns guard — §7.42 漏补 cloud 一侧（2026-09-13）
+
+**症状**：手动跑 news "查询最新的AI新闻" 3 次（真 key），1/3 成功、2/3 resultLen=0。trace 显示 5 turn 内 DeepSeek 反复 web_search/web_fetch 不合成 text，触发 dsh-agent-loop 上层 unknown abort → chat finished reason=unknown。user principle violation: "确保日志里有所有错误的信息" —— ops log 没明示 abort 原因。
+
+**根因**：§7.42 (2026-09-05) P0-2 max-turns guard 只在 `local-llm-adapter.ts`：
+
+```
+src/dsh-adapter/local-llm-adapter.ts:53:const MAX_CONSECUTIVE_TOOL_CALLS = 20
+src/dsh-adapter/local-llm-adapter.ts:470:        if (entry.count > MAX_CONSECUTIVE_TOOL_CALLS) {
+```
+
+`cloud-llm-adapter.ts` 没有同款 guard。所以 DeepSeek（cloud）反复 tool-call 不会被拦，agent loop 上层 abort 路径无 MAX_TURNS_EXCEEDED 标记。
+
+**修复**：
+1. 抽公共模块 `src/dsh-adapter/llm-max-turns.ts`（MAX_CONSECUTIVE_TOOL_CALLS=20 + Map + bumpSessionToolCallCount + resetSessionToolCallCount）
+2. `local-llm-adapter` + `cloud-llm-adapter` 都 import 同一份，**跨 adapter session 共享 counter**（e.g. classifier fallback LOCAL → CLOUD 计数不重置）
+3. cloud 端新增 `llm.cloud.max_turns_exceeded` audit + 同款 `throw LlmError(..., 'MAX_TURNS_EXCEEDED')`
+
+**实测**（手动 + e2e canary）：
+- 3 次手动跑 news：1 成功 (2 turn + 3 tool + stop) / 2 失败 (run#2/rerun#3)
+- 失败的 run 实际是 dsh-agent-loop 触发 **kind=error**（不是 MAX_TURNS_EXCEEDED，因为 DeepSeek 5 turn 内就 abort，先于 20 上限）
+- guard 是 backstop：5 turn 后没 abort 就 throw MAX_TURNS_EXCEEDED；本次没触发但有保护
+
+**测试**：
+- `pnpm vitest run`：718 passed + 1 skipped + 0 failed
+- e2e canary（mibao/news/local-ip）：全 PASS
+
+**修改文件**：
+- `src/dsh-adapter/llm-max-turns.ts` — 新建共享模块
+- `src/dsh-adapter/local-llm-adapter.ts` — 切到共享 module
+- `src/dsh-adapter/cloud-llm-adapter.ts` — 加同款 guard
+
+**Lesson**：§7.42 当时只修了 local-llm-adapter 是 scope 错配 —— "max-turns guard" 的语义是跨 provider 的，cloud 也需要。共享 module 而不是每个 adapter 各自实现一份，防止再次 drift。
+
+**相关**：
+- PROGRESS §7.42 — 原始 local-only guard
+- PROGRESS §7.47.6 — guard 没拦的另一种 abort 路径（dsh-agent-loop kind=error）的 ops log 修复
+
+### §7.47.6 turnEnds object serialize + tool execution ops log — chat finished reason + tool result 节点（2026-09-13）
+
+**症状**：§7.47.5 修完后 ops log 现状：
+
+- `tool allow` ops log lines: **150**
+- `tool result` ops log lines: **3**
+- `chat finished reason=unknown`（多次）
+
+工具执行结果完全 invisible，chat 终止原因永远是 `unknown`。dsh-agent-loop 把 abort 路径 emit 成 `turnEnds = { kind, ...payload }` object，但 `typeof === 'string'` 严格检查永远 false → silent fall back to 'unknown'。
+
+**根因**（双重 bug）：
+
+1. **`realm-skill-bridge.ts` turn/end handler 误用 string 检查**：
+
+   ```ts
+   const reason = typeof data.reason === 'string' ? data.reason : 'unknown'
+   ```
+
+   dsh-agent-loop append `turnEnds` 是 object 形态：
+   - `{ kind: "aborted", reason: <AbortSignal.reason> }`
+   - `{ kind: "completed" }`
+   - `{ kind: "max-tokens" }`
+   - `{ kind: "blocked" }`
+   - `{ kind: "error", ... }` (catch 分支 line 587)
+
+2. **`tools/result` ops log 完全没 hook**：`tools/pre-execute` (Layer 3 gate) 只 emit allow/deny，工具实际执行的 status (ok/error/aborted) 没节点。dsh-tools 的 `tools/post-execute` waterfall + `tools/result` serial event 都存在但没人订阅。
+
+**修复**：
+
+1. **`serializeTurnEndReason(reason: unknown)` helper**：把 object 展开成 `kind=completed` / `kind=aborted reason=signal-aborted` 等紧凑 key=value 形式。保留向后兼容（reason 是 string 时原样返回）。
+
+2. **新增 `tools/result` listener**：订阅 dsh-tools 的 serial event（pure observation，无 next chain），emit `tool result sessionId=... tool=... status=ok/error/aborted` 一行。metadata only，body 留给 audit-log opt-in。
+
+**实测**（手动 + e2e canary，2026-09-13 14:36-14:40）：
+
+**手动 news 4 次**：
+- run#1 (14:35): resultLen=2758, 8 tool result status=ok, chat finished reason=kind=completed
+- run#2 (14:36): resultLen=3065, chat finished reason=kind=completed
+- run#3 (14:37): resultLen=3095, chat finished reason=kind=completed
+- run#4 (14:38): resultLen=**0**（间歇性 abort）, tool result 4 行 status=ok, chat finished reason=**kind=error** ← 之前是 silent unknown
+
+**之前 run#3（R3 trace）vs 现在 run#4 对比**：
+
+```
+修前 R3:  chat finished reason=unknown  (silent drop)
+修后 R4:  chat finished reason=kind=error  (显式)
+        tool result tool=web_search status=ok
+        tool result tool=web_fetch status=ok
+        tool result tool=web_fetch status=ok
+        tool result tool=web_fetch status=ok
+        LLM call done resultLen=35 toolCallCount=1 finishKind=tool-calls
+        LLM call done resultLen=0  toolCallCount=2 finishKind=tool-calls
+        chat finished reason=kind=error
+```
+
+**根因确诊**：DeepSeek 在 tool-call 模式下偶尔决定不合成 text 直接 abort（dsh-agent-loop 判为 `kind=error`），工具本身全部成功。**这不是 bug**（修不了 LLM 行为），但 ops log 完整可见：
+- 工具成功 ✓
+- LLM 行为：resultLen=0 + 2 toolCall → 不合成 → kind=error
+
+**e2e 强化**：
+1. MUST[] 加 `tool result` 节点（22 → 23 节点）
+2. news 断言加 `chat reply resultLen ≥ 1`
+3. news 断言加 `chat finished reason != unknown`（用 reply 时间窗 ±90s 过滤历史 sessionId 噪声）
+
+**测试**：
+- `pnpm vitest run`：718 passed + 1 skipped + 0 failed
+- e2e canary（mibao/news/local-ip）：全 PASS
+  - news: resultLen=2550, tool result 12 次, chat finished reason=kind=completed
+  - 节点覆盖：22 → 23
+
+**修改文件**：
+- `src/dsh-adapter/realm-skill-bridge.ts` — `serializeTurnEndReason` helper + turn/end handler 用它 + 新增 `tools/result` listener + dispose 配套
+- `scripts/e2e-ops-log-coverage.sh` — MUST[] 加 tool result（22→23）+ resultLen ≥1 断言 + reason!=unknown 断言（时间窗过滤）+ 注释同步
+
+**Lesson**：序列化前必须看 upstream 真实 emit 形态，不能假设 string。`typeof === 'string'` 这种 strict check 在上游升级后 silently fail —— 应该写成"如果是 string 就用，否则安全 stringify"。本 bug 在 §7.44.1 (2026-09-11) 写代码时就埋下，但当时 focus 在 "emit metadata only"，没核对 dsh-agent-loop emit 的 reason 真实 shape。
+
+**相关**：
+- PROGRESS §7.44.1 — turn/end handler 初次引入，bug 同期埋下
+- PROGRESS §7.47.5 — guard 拦不住的 abort 路径这里补全
+- memory [[ops-log-coverage-principle]] — 23 节点清单（升自 22）
+- dsh-agent-loop `/lib/index.js:533-604` — turnEnds 构造逻辑
+
 

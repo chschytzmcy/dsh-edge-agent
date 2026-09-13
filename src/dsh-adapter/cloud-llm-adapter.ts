@@ -39,6 +39,11 @@ import {
   sseFinishReason,
   terminalChunks,
 } from './openai-sse.js'
+import {
+  bumpSessionToolCallCount,
+  MAX_CONSECUTIVE_TOOL_CALLS,
+  resetSessionToolCallCount,
+} from './llm-max-turns.js'
 
 export const name = 'cloud-llm-adapter'
 
@@ -332,6 +337,47 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
       // for `LLM_RESPONSE_TEXT` can isolate the body without parsing JSON.
       this.logger?.debug?.(`[cloud-llm-adapter] LLM_RESPONSE provider=${options.provider} durationMs=${durationMs} resultLen=${assembledText.length} finishKind=${finishKind ?? 'unknown'}`)
       this.logger?.debug?.(`[cloud-llm-adapter] LLM_RESPONSE_TEXT ${JSON.stringify({ text: assembledText })}`)
+    }
+
+    // §7.47.5 (2026-09-13): per-session runaway tool-call guard, mirrored
+    // from local-llm-adapter (§7.42) which only protected local models.
+    // cloud-llm-adapter previously had no guard, so DeepSeek looping
+    // web_search/web_fetch indefinitely (e.g. "查询最新的AI新闻" hits it
+    // deterministically — DeepSeek picks "call more tools" over
+    // "synthesize answer" until dsh-agent-loop upper layer aborts with
+    // reason=unknown → resultLen=0 → user sees empty reply). Now: emit
+    // audit + logger.error + throw MAX_TURNS_EXCEEDED so ops log records
+    // the runaway and agent loop terminates with a deterministic reason.
+    if (finishKind === 'tool-calls') {
+      if (!sawText) {
+        const consecutiveCount = bumpSessionToolCallCount(options.sessionId)
+        const sessionKeyForLog = typeof options.sessionId === 'string' && options.sessionId.length > 0
+          ? options.sessionId
+          : 'default'
+        if (consecutiveCount > MAX_CONSECUTIVE_TOOL_CALLS) {
+          this.audit('warn', 'llm.cloud.max_turns_exceeded', {
+            provider: options.provider,
+            model: options.model,
+            sessionId: sessionKeyForLog,
+            consecutiveCount,
+          })
+          this.logger?.error?.(
+            `[cloud-llm-adapter] per-session max-turns exceeded (session=${sessionKeyForLog}, count=${consecutiveCount}/${MAX_CONSECUTIVE_TOOL_CALLS})`,
+          )
+          // Reset counter so next call starts fresh (agent loop may retry).
+          resetSessionToolCallCount(options.sessionId)
+          throw new LlmError(
+            `cloud-llm-adapter: per-session max-turns exceeded (count=${consecutiveCount})`,
+            'MAX_TURNS_EXCEEDED',
+          )
+        }
+      } else {
+        // Tool-call response with text content -> progress, reset counter.
+        resetSessionToolCallCount(options.sessionId)
+      }
+    } else if (finishKind === 'stop' || finishKind === 'length') {
+      // Natural termination -> reset counter.
+      resetSessionToolCallCount(options.sessionId)
     }
 
     yield* terminalChunks(sawText, assembledText, toolCalls, finishKind, sawToolCall)

@@ -18,7 +18,7 @@
 #   local-ip  本机 IP 查询   sessionId=opslog-canary-local-ip
 #                           期望：tool allow bash 至少 1 次，preflight intentSource=http-api-classified
 #
-# 22 节点覆盖（来自 ops-log-coverage-principle.md）：
+# 23 节点覆盖（来自 ops-log-coverage-principle.md）：
 #   1-9:   input-guard 系列（preflight/sanitize/prompt-guard/privacy-policy/orphan/desanitize/route）
 #   10-13: realm-skill-bridge 系列（pre-step/chat received/finished/tool allow+deny）
 #   14-17: cloud/local-llm-adapter LLM call start/done
@@ -26,6 +26,7 @@
 #   20:    input-guard prompt-guard done
 #   21:    input-guard privacy-policy done
 #   22:    realm-skill-bridge llm/stream probe（§7.47.4，frozen-payload read-only 探针，每个 LLM call 必 emit）
+#   23:    realm-skill-bridge tool result（§7.47.6，工具执行全链路 ops log，每个 tool call 必 emit status=ok/error/aborted）
 # ───────────────────────────────────────────────────────────────────
 
 set -euo pipefail
@@ -157,6 +158,7 @@ check_node_presence() {
     'sanitize done'
     'pre-step filter'
     'llm/stream probe'  # §7.47.4 (2026-09-13): frozen-payload probe, every chat round-trip + prompt-guard call
+    'tool result'       # §7.47.6 (2026-09-13): tool execution ops log, every tool call must emit status
     'chat finished'
     'tool allow'
     'tool deny'
@@ -316,6 +318,71 @@ assert_news() {
     fail=1
   else
     echo "  ✓ chat reply status=200"
+  fi
+
+  # §7.47.6 (2026-09-13): chat reply 必须 resultLen>0。DeepSeek 在 tool-call
+  # 模式下偶尔会决定不合成 text 直接 abort (dsh-agent-loop reason=kind=error)
+  # —— ops log 显式报 kind=error 而不是 silent unknown，但 result 仍空。
+  # 这是**间歇性** bug，3 次复现约 1/3 空返回。e2e 期望 ≥1 表示单次稳过，
+  # ≥3 表示跨 run 都稳（人工跑也保证）。
+  local result_len
+  result_len=$(grep '\[http-api\] chat reply' "$log" | tail -1 | grep -oE 'resultLen=[0-9]+' | head -1 | grep -oE '[0-9]+')
+  if [ -z "$result_len" ] || [ "$result_len" -lt 1 ]; then
+    echo "  ✗ chat reply resultLen=$result_len（期望 ≥1，§7.47.6 dsh-agent-loop kind=error 间歇性空返回）"
+    fail=1
+  else
+    echo "  ✓ chat reply resultLen=$result_len"
+  fi
+
+  # §7.47.6 (2026-09-13): tool execution 全链路 ops log。修前 150 tool allow
+  # 但 0 tool result —— 工具执行结果完全 invisible。期望至少 1 行 tool result
+  # （覆盖 web_search 或 web_fetch 或 bash 任一）。
+  local tool_result_n
+  tool_result_n=$(grep -c 'realm-skill-bridge.*tool result' "$log" || true)
+  if [ "$tool_result_n" -lt 1 ]; then
+    echo "  ✗ tool result 节点缺失（§7.47.6 ops log 节点 22 → 23，工具执行结果必须可见）"
+    fail=1
+  else
+    echo "  ✓ tool result $tool_result_n 次（§7.47.6 工具执行全链路 ops log）"
+  fi
+
+  # §7.47.6 (2026-09-13): chat finished reason 不应该是 'unknown'。修前是
+  # silent unknown 因为 serializeTurnEndReason 没写。期望至少包含 kind=
+  # 前缀（completed / error / aborted / max-tokens）。
+  # 时间窗过滤：log 里有大量历史 sessionId 留有 'reason=unknown' 行（pre-§7.47.6），
+  # 用 chat reply 时间戳 ±90s 过滤本次 chat 的 chat finished 行。
+  local latest_reply_ts_cf
+  latest_reply_ts_cf=$(grep '\[http-api\] chat reply' "$log" | tail -1 | grep -oE '^[0-9T:.+-]+' | head -1)
+  if [ -n "$latest_reply_ts_cf" ]; then
+    local reply_epoch_cf
+    reply_epoch_cf=$(date -d "$latest_reply_ts_cf" +%s 2>/dev/null || echo "")
+    if [ -n "$reply_epoch_cf" ]; then
+      local window_start_cf=$((reply_epoch_cf - 90))
+      local window_end_cf=$((reply_epoch_cf + 5))
+      local unknown_in_window=0
+      while IFS= read -r cf_line; do
+        local cf_ts
+        cf_ts=$(echo "$cf_line" | grep -oE '^[0-9T:.+-]+' | head -1)
+        local cf_epoch
+        cf_epoch=$(date -d "$cf_ts" +%s 2>/dev/null || echo "")
+        if [ -n "$cf_epoch" ] && [ "$cf_epoch" -ge "$window_start_cf" ] && [ "$cf_epoch" -le "$window_end_cf" ]; then
+          if echo "$cf_line" | grep -q 'reason=unknown'; then
+            unknown_in_window=1
+            break
+          fi
+        fi
+      done < <(grep 'chat finished' "$log")
+      if [ "$unknown_in_window" = "1" ]; then
+        echo "  ✗ chat finished reason=unknown（§7.47.6 turnEnds object serialize bug 复发，时间窗内）"
+        fail=1
+      else
+        echo "  ✓ chat finished reason 不为 unknown（§7.47.6 turnEnds serialize 生效）"
+      fi
+    else
+      echo "  · 无法解析 chat reply 时间戳，跳过 §7.47.6 reason 断言"
+    fi
+  else
+    echo "  · 无法定位本次 chat reply 时间戳，跳过 §7.47.6 reason 断言"
   fi
 
   # §7.47 bug-recovery sanity: 若未来又退回 SANITIZED，下面的 deny
