@@ -6114,4 +6114,125 @@ curl https://api.deepseek.com/user/balance → {"is_available":false,"total_bala
 - `tests/unit/llm-max-turns.test.ts` — 7 测试覆盖 counter 模块
 - memory `deepseek-api-key-balance-2026-09-13` — 验证时的 key 余额耗尽根因记录
 
+### §7.51 http-api sanitizer inject crash — dsh-tui 启动 5s 内被 setInterval 杀掉（2026-09-13）
+
+**症状**：dsh-tui 启动 5 秒内突然死亡，stderr 抛 fatal error：
+
+```
+Error: cannot get property "sanitizer" without inject
+    at HttpApiServiceImpl.dropSessionBuffer (http-api.js:129:42)
+```
+
+进程被 Node v22 当作 unhandled timer exception 杀掉（setInterval 回调里 throw → process exit）。
+
+**根因**：
+- `http-api.ts:dropSessionBuffer`（cleanup 路径）想 soft-touch sanitizer：`(this.cordisCtx as { sanitizer?: ... }).sanitizer`
+- TS-level `as unknown as` cast **绕过不了** Cordis Proxy —— Proxy 在 runtime 拦截 property access
+- sanitizer 不在 http-api 的 `inject` 列表（sanitizer-pipeline plugin 是软依赖，某些 deployment 不挂载）
+- 结果：dropSessionBuffer → cleanupExpiredSessions setInterval → throw → Node v22 视为 fatal → dsh-tui 进程死
+
+**修复**（`src/dsh-adapter/http-api.ts:192-216`）：
+```typescript
+let sanitizer: { purge?(id: string): Promise<void> } | undefined
+try {
+  sanitizer = (this.cordisCtx as unknown as {
+    sanitizer?: { purge?(id: string): Promise<void> }
+  }).sanitizer
+} catch {
+  // soft dep missing — ignore
+  return
+}
+if (typeof sanitizer?.purge === 'function') {
+  void Promise.resolve(sanitizer.purge(sessionId)).catch(() => {
+    // 忽略：sanitizer 自身还有 TTL 清扫兜底
+  })
+}
+```
+
+**修复前 vs 修复后**：
+- 修前：dsh-tui 启动 5s 内被 setInterval 杀掉（重现率 100%）
+- 修后：dsh-tui 稳定运行，cleanupExpiredSessions 在 sanitizer 缺席时静默跳过 purge
+
+**Lesson**：
+1. **Cordis Proxy 拦截不可被 TS cast 绕过**：`(x as any).y` 在 Cordis ctx 上仍走 Proxy。访问软依赖必须 try/catch，或者显式声明在 inject 列表。
+2. **Node v22 timer exception 是 fatal**：setInterval / setTimeout 回调里 throw 等同 unhandled rejection → 进程退出。cordis 内部用了 setInterval 的话，被 throw 的 callback 同样会 kill 进程。
+3. **软依赖访问模式**：check 软依赖时永远 try/catch，不要假设 inject 列表完备。Sanitizer 自己有 cleanup backstop（TTL sweep），不依赖 http-api 的 purge 调用。
+
+**相关**：
+- `src/dsh-adapter/http-api.ts:192-216` — dropSessionBuffer try/catch
+- memory `prompt-guard-blocked-turn-bug` — 另一处 Cordis Proxy 拦截教训（metadata 传递链）
+
+### §7.52 ops log 数据质量 — sessionId + model 字段（2026-09-13）
+
+**症状**：user 问"现有两个问题：1.sessionId为什么是sessionId=\<none\> 和 sessionId=unknown   2.model为什么还是Qwen3-4B-Instruct-2507？配置的已经不是了"
+
+**调查 + 根因（4 处独立问题）**：
+
+**问题 A**：ops log `sessionId=<none>` / `sessionId=unknown` 误导 operator 以为有 bug
+- **真相**：每次 chat 触发 3 次 `llm/stream` waterfall listener（前 2 次是 input-guard prompt-guard + privacy-policy 分类器 call，第 3 次才是真 chat）。前 2 次**确实没有 sessionId** —— 它们在 session 创建之前跑（preflight gate），不能假造一个 sessionId 进去
+- **不是 bug，但 sentinel 命名误导**：`<none>` / `unknown` 让 operator 以为是数据丢失
+- **修复**：sentinel 改为 `<pre-session>`（`realm-skill-bridge.ts:865` + `local-llm-adapter.ts:277`）—— 明确"无 session 是预期的，不是丢失"
+
+**问题 B-1**：`input-guard.ts:1017` 的 `model: this.config.localModel` 永远显示 `qwen3-4b-instruct-2507`
+- **根因**：`cordis.patch.yml:527` 读 `process.env.DSH_EDGE_LOCAL_MODEL ?? 'qwen3-4b-instruct-2507'`，但 `.env.sh` **从不 export `DSH_EDGE_LOCAL_MODEL`**（它 export 的是 `DSH_EDGE_LOCAL_LLM_MODEL` 和 `DSH_EDGE_INTENT_MODEL`，命名空间不同）。env var undefined → fallback 永远命中 → 走 stale 字符串
+- **修复**：`.env.sh` 新增 `DSH_EDGE_LOCAL_MODEL=${DSH_EDGE_LOCAL_MODEL:-${DSH_EDGE_LOCAL_LLM_MODEL:-qwen3.7-plus}}`（mirror LOCAL_LLM_MODEL，三路命名收敛）
+
+**问题 B-2**：`prompt-guard` `guard.model-detect.start` 事件 `model=Qwen3-4B-Instruct-2507`
+- **根因**：`cordis.patch.yml:458` 读 `process.env.DSH_EDGE_GUARD_MODEL_MODEL ?? 'Qwen3-4B-Instruct-2507'`（**env var 名字有 "MODEL_MODEL" 重复** —— 看起来像 typo，但确实是 patch 检查的 key 名）。`.env.sh` 从不 export → 永远 fallback
+- **修复**：`.env.sh` 新增 `DSH_EDGE_GUARD_MODEL_MODEL=${DSH_EDGE_GUARD_MODEL_MODEL:-${DSH_EDGE_LOCAL_LLM_MODEL:-qwen3.7-plus}}`
+
+**问题 B-3**：`intent.classify.start` `model=qwen3-4b-instruct-2507`（lowercase）
+- **根因**：`intent-router.ts:73` Schema 默认 `'qwen3-4b'`。当 cordis.patch.yml:395 注入有效配置时不触发（patch 已用 `DSH_EDGE_INTENT_MODEL`）。但如果 patch 配置缺失，会从 schema default 走 → lowercase 字符串。但**当前 deployment 都有 patch 注入**，所以此路径不触发。**不动**。
+
+**实施**（3 files）：
+
+**1. `src/dsh-adapter/realm-skill-bridge.ts:865,873`** — sentinel 改为 `<pre-session>`：
+```typescript
+const sessionId = typeof p.sessionId === 'string' ? p.sessionId : '<pre-session>'
+const agentRealm = sessionId !== '<pre-session>' ? service.getSessionRealm(sessionId) : null
+```
+
+**2. `src/dsh-adapter/local-llm-adapter.ts:277`** — sentinel 改为 `<pre-session>`：
+```typescript
+const sessionId = (options as { sessionId?: string }).sessionId ?? '<pre-session>'
+```
+
+**3. `.env.sh`** — 新增两个 export：
+- `DSH_EDGE_LOCAL_MODEL`（mirror `DSH_EDGE_LOCAL_LLM_MODEL`）
+- `DSH_EDGE_GUARD_MODEL_MODEL`（mirror `DSH_EDGE_LOCAL_LLM_MODEL`）
+- echo 块新增两行 `DSH_EDGE_LOCAL_MODEL=...` / `DSH_EDGE_GUARD_MODEL_MODEL=...`（让 reload 时一眼能看到是否 export 成功）
+
+**验证**（sessionId=`verify-752-final-1789304272`，重启 dsh-tui 重新 source .env.sh）：
+
+```
+20:57:52 llm/stream probe sessionId=<pre-session> provider=local-llm model=local-llm toolsCount=0 agentRealm=null
+20:57:57 llm/stream probe sessionId=<pre-session> provider=local-llm model=qwen3.7-plus toolsCount=0 agentRealm=null
+20:58:01 llm/stream probe sessionId=verify-752-final-1789304272 provider=cloud-llm model=cloud-llm toolsCount=27 agentRealm=CLOUD
+20:58:07 llm/stream probe sessionId=verify-752-final-1789304272 provider=cloud-llm model=cloud-llm toolsCount=27 agentRealm=CLOUD
+20:58:15 llm/stream probe sessionId=verify-752-final-1789304272 provider=cloud-llm model=cloud-llm toolsCount=27 agentRealm=CLOUD
+```
+
+- ✓ 前 2 行 sentinel 改为 `<pre-session>`（明确"无 session 是预期的"）
+- ✓ 第 2 行 model=qwen3.7-plus（修前 Qwen3-4B-Instruct-2507）
+- ✓ 第 3-5 行真 chat sessionId 完整 + model=cloud-llm（LLM-adapter 自己的 wire-model 名，不是 bug）
+
+**audit log 交叉验证**：
+- `intent.classify.start model=qwen3.7-plus`（修前 `qwen3-4b-instruct-2507`）
+- `guard.model-detect.start model=qwen3.7-plus`（修前 `Qwen3-4B-Instruct-2507`）
+
+**Lesson**：
+1. **sentinel 命名是 ops log 设计的一等公民**：`<none>` / `unknown` 是 binary "有/没"，`<pre-session>` 是 semantic "为什么没"。前者把"预期的"和"丢失的"混在一起，后者让 operator 一眼分辨。
+2. **env var 拼写 typos 是 yaml-only config 的代价**：cordis.patch.yml 用 `process.env.X ?? 'fallback'` 模式 —— env 不存在时永远 fallback，operator 看到 fallback 字符串以为是配置错误，实际是 export 没接上。`.env.sh` 应该 mirror 所有 patch 读的 env var，**不要假设只有 export 出去的才会用**。
+3. **三路命名收敛是减少 drift 的关键**：`DSH_EDGE_LOCAL_LLM_MODEL` / `DSH_EDGE_LOCAL_MODEL` / `DSH_EDGE_GUARD_MODEL_MODEL` 三个 var 全部 default 到同一个字符串。哪天再换模型只改一处。
+4. **不修改 hardcoded fallback 字符串**：`cordis.patch.yml:527/458` 的 `'qwen3-4b-instruct-2507'` 是 2026-09-11 之前的真实值。改了 fallback 会让"裸启无 env"的 deployment 静默切到 qwen3.7-plus（可能不兼容 llama.cpp 后端）。保持 fallback 历史真实，把"现在用什么"约束放在 .env.sh。
+
+**相关**：
+- `src/dsh-adapter/realm-skill-bridge.ts:858-874` — llm/stream probe 监听器
+- `src/dsh-adapter/local-llm-adapter.ts:277` — local LLM call start 行的 sessionId
+- `src/dsh-adapter/intent-router.ts:305` — `intent.classify.start` audit emit
+- `src/dsh-adapter/prompt-guard.ts`（外部 plugin）— `guard.model-detect.start` audit emit，model 来自 patch config
+- `cordis.patch.yml:395/458/527` — 三处 env 读 + fallback 字符串
+- `.env.sh` — DSH_EDGE_* 配置 + .env secret 加载入口
+- memory `ops-log-coverage-principle` — user 总原则"每个关键环节都在 ops log 体现"
+
 
