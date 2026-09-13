@@ -191,9 +191,27 @@ export class HttpApiServiceImpl extends Service {
    *  purge 失败都不能影响会话删除本身。 */
   private dropSessionBuffer(sessionId: string): void {
     this.sessionBuffers.delete(sessionId)
-    const sanitizer = (this.cordisCtx as unknown as {
-      sanitizer?: { purge?(id: string): Promise<void> }
-    }).sanitizer
+    // §7.51 (2026-09-13): wrap sanitizer access in try/catch. Cordis
+    // Proxy throws "cannot get property 'sanitizer' without inject" if
+    // 'sanitizer' is not in this plugin's inject list. We don't declare
+    // 'sanitizer' in inject (it's a soft dep — the upstream
+    // sanitizer-pipeline plugin may not be mounted in every deployment),
+    // but the property access through `this.cordisCtx` is intercepted by
+    // the Proxy regardless of TS-level `as unknown as` casts. Without
+    // the try/catch, this throws and **crashes the dsh-tui process** when
+    // cleanupExpiredSessions fires from a setInterval timer (Node v22
+    // surfaces unhandled timer exceptions as fatal errors, killing the
+    // whole process). Sanitizer is best-effort: skip purge if it's not
+    // available; sanitizer has its own TTL sweep as the backstop.
+    let sanitizer: { purge?(id: string): Promise<void> } | undefined
+    try {
+      sanitizer = (this.cordisCtx as unknown as {
+        sanitizer?: { purge?(id: string): Promise<void> }
+      }).sanitizer
+    } catch {
+      // soft dep missing — ignore
+      return
+    }
     if (typeof sanitizer?.purge === 'function') {
       void Promise.resolve(sanitizer.purge(sessionId)).catch(() => {
         // 忽略：sanitizer 自身还有 TTL 清扫兜底
