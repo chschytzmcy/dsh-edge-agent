@@ -5648,4 +5648,130 @@ chat reply result='# 最新 AI 新闻汇总\nDeepSeek V4.1 Flash 正式发布...
 - PROGRESS §7.35 — DEEPSEEK_API_KEY 缺失时降级 LOCAL（同类：fake key 也是缺失的另一种形态）
 - PROGRESS §7.47.1 — 收尾误判的修正
 
+### §7.47.3 realm-skill-bridge test fixture 修正 — `inject=[auditLog, skills]` + `session.id`（2026-09-13）
+
+**症状**：§7.47.1 收尾提到的 2 个 pre-existing `realm-skill-bridge.test.ts` fail：
+
+```
+× exports the canonical plugin shape
+  Expected: ['auditLog']
+  Actual:   ['auditLog', 'skills']
+
+× tracks session → realm mapping
+  agent = { session: { header: { id: 'sess-1' } } }
+  Expected: 'LOCAL'
+  Actual:   undefined
+```
+
+`pnpm vitest run` 跑 38 个 test file，46 passed + 2 failed（+ 1 skipped）。baseline `git stash` 验证非 §7.47.1 引入，是 fixture 写错。
+
+**根因**：
+
+1. `plugin.inject` 加了 `'skills'` 是因为 `apply()` 调 `ctx.skills.list()` 和 `ctx.skills.on('change')`（catalog refresh）。test 还停留在 `['auditLog']` —— 旧 plugin 形态。
+2. `getAgentRealm` 在 §7.36 / §7.37（2026-09-04）从 `agent.session.header.id` 改成 `agent.session.id`（canonical session key）。test fixture 没跟上。
+
+**修复**：test fixture 跟 production 对齐：
+
+```typescript
+// exports the canonical plugin shape
+assert.deepEqual([...plugin.inject], ['auditLog', 'skills'])  // +skills
+
+// tracks session → realm mapping
+const agent = { session: { id: 'sess-1' } }  // header.id → id
+```
+
+每个改加引用 §7.36 / §7.37 / §7.47.1 的注释，便于未来追溯。
+
+**未动**：`ignores hidden realm for sessions`（同 describe 块）也用 `header.id`，但只测 `setSessionRealm('hidden')` 是 no-op（per production: `if (realm === 'hidden') return`），不调 `getAgentRealm` 取值，fixture 写哪个都 PASS。保持原状避免无关改动。
+
+**实测**：
+- `tests/unit/realm-skill-bridge.test.ts`：46 passed + 1 skipped（修复前 44 passed + 1 skipped + 2 failed）
+- `pnpm vitest run` 全量：718 passed + 1 skipped + **0 failed**（修复前 716 + 1 + 2）
+
+**修改文件**：
+- `tests/unit/realm-skill-bridge.test.ts` — 2 个 test fixture 修正 + 注释引用
+
+**Lesson**：fixture 跟 production contract 必须严格一致。`inject` 列表和 session key 路径是 plugin 契约的两大支柱——任一不同步，test silent pass 但 production silent broken（§7.37 layer-1.5 静默 no-op 就是同一个机制）。
+
+**相关**：
+- PROGRESS §7.36 / §7.37 — `session.id` 路径修正（input-guard payload.agent.session.id）
+- PROGRESS §7.37 — `apply()` 加 `ctx.skills.list()` 是 `inject=[..., 'skills']` 的来由
+- PROGRESS §7.47.1 — 收尾列这两个 fail 时没修（focus 在 catalog filter）
+
+### §7.47.4 llm/stream probe ops log 0 行 silent bug — sink 错 + sessionId gate（2026-09-13）
+
+**症状**：跑 §7.47 系列 canary 时查 ops log，14K 行 log 里 `realm-skill-bridge.hook.probe`（llm/stream 探针）= 0 行。但每个 chat 都触发 llm/stream 调用（cloud-llm-adapter 那边有 LLM call start/done 证明）。**违反 §7.46 ops log 节点覆盖原则 —— 用户 2026-09-13 反馈："每次修BUG通过日志来修理，确保日志里有所有错误的信息"。**
+
+**根因**（双重 bug）：
+
+```ts
+// pre-§7.47.4 in src/dsh-adapter/realm-skill-bridge.ts (apply 里 llm/stream listener):
+}).on?.('llm/stream', (payload, next) => {
+  const p = payload as { sessionId?: string; tools?: ReadonlyArray<unknown> } | undefined
+  if (p !== undefined && typeof p.sessionId === 'string') {  // ← gate #1
+    const agentRealm = service.getSessionRealm(p.sessionId)
+    try { (service as ...).auditLog?.log?.({  // ← sink #2
+      level: 'info', kind: 'realm-skill-bridge.hook.probe', ...
+    }) } catch { /* ignore */ }
+  }
+  return next()
+}, { global: true })
+```
+
+**Gate #1 — `typeof sessionId === 'string'` 永远 false**：GenerateOptions.sessionId 是 optional + branded（`<Branded<'SessionId'>>`），upstream dsh-agent-loop 不一定传。实测 stderr 加 `process.stderr.write` 探测：probe 函数**确实 fire**（每次 chat 3 次），但 `payload.sessionId` 是 `undefined`，gate 直接 skip。100% 跳过。
+
+**Sink #2 — `service.auditLog?.log?.()` 永远 no-op**：本类里其他 listener（tool allow / chat finished / pre-step filter）都用 **`ctx.logger?.info?.(...)`** 走 dsh logger 直接进 ops log。audit-log subsystem（`service.auditLog`）有 minLevel filter + buffer + flush 链，跟 ctx.logger 是两条独立路径。本 listener 走 audit-log 那条但没 emit —— 可能是 audit-log 内部 `LEVEL_ORDER[entry.level] < LEVEL_ORDER[this.minLevel]` 静默 drop，或 buffer 没 flush 到 file logger。**但 `ctx.logger?.info?.(...)` 路径稳定 work**（其他 5+ 行 ops log 都走它）。
+
+**修复**（双管齐下）：
+
+1. **去掉 gate #1**：每个 llm/stream 都记。sessionId 缺失就写 `<none>`，agentRealm 缺失就写 `null`。
+2. **换 sink 到 `ctx.logger?.info?.(...)`**：跟其他 realm-skill-bridge listener 对齐，保证 ops log 落地。
+3. **加 provider/model 字段**：诊断价值（"LLM 选错 provider" / "sessionId 没传" 一眼可见）。
+
+```ts
+}).on?.('llm/stream', (payload, next) => {
+  const p = payload as { sessionId?, tools?, provider?, model? } | undefined
+  if (p !== undefined) {
+    const sessionId = typeof p.sessionId === 'string' ? p.sessionId : '<none>'
+    const provider = typeof p.provider === 'string' ? p.provider : '<none>'
+    const model = typeof p.model === 'string' ? p.model : '<none>'
+    const toolsCount = Array.isArray(p.tools) ? p.tools.length : 0
+    const agentRealm = sessionId !== '<none>' ? service.getSessionRealm(sessionId) : null
+    try {
+      ;(ctx as ...).logger?.info?.(
+        `[realm-skill-bridge] llm/stream probe sessionId=${sessionId} provider=${provider} model=${model} toolsCount=${toolsCount} agentRealm=${agentRealm ?? 'null'} note=frozen-payload-Layer3-enforces`,
+      )
+    } catch { /* debug only */ }
+  }
+  return next()
+}, { global: true })
+```
+
+**实测**（`sessionId=probe-verify-2`，2026-09-13 14:11）：
+
+```
+14:11:46.927 llm/stream probe sessionId=<none> provider=local-llm model=Qwen3-4B-Instruct-2507 toolsCount=0 agentRealm=null note=frozen-payload-Layer3-enforces
+14:11:50.254 llm/stream probe sessionId=<none> provider=local-llm model=Qwen3-4B-Instruct-2507 toolsCount=0 agentRealm=null note=frozen-payload-Layer3-enforces
+14:11:53.354 llm/stream probe sessionId=probe-verify-2 provider=cloud-llm model=cloud-llm toolsCount=27 agentRealm=SANITIZED note=frozen-payload-Layer3-enforces
+```
+
+3 行 probe 落地。**意外收获**：prompt-guard 内部调 local-llm 的 2 次也露出来了（`sessionId=<none> provider=local-llm`），之前 ops log 只有 prompt-guard done 总览，没看到具体用哪个 LLM。"§7.47" 之前用户提到 prompt-guard 浪费 4s（memory [[prompt-guard-local-llm-waste]]），现在能精确定位每次 prompt-guard 调用的 model + toolsCount。
+
+**e2e 脚本强化**：把 `'llm/stream probe'` 加进 `MUST[]` 数组（22 节点覆盖，原来 21），防止后续改动者再 silently drop 这条。脚本头部注释 + 节点计数同步更新 21→22。
+
+**测试**：
+- `pnpm vitest run` 全量：718 passed + 1 skipped + 0 failed
+- e2e canary（mibao/news/local-ip）：全 PASS，ops log 行数从 ~190 涨到 ~250（多出 ~3 行 probe / chat）
+
+**修改文件**：
+- `src/dsh-adapter/realm-skill-bridge.ts` — `apply()` llm/stream listener 重写
+- `scripts/e2e-ops-log-coverage.sh` — MUST[] 加 `llm/stream probe` + 注释 21→22 节点
+
+**Lesson**：ops log 节点覆盖率是硬指标，silent drop = 违反 §7.46 原则。`ctx.logger?.info` vs `service.auditLog?.log` 是两个独立 sink —— 同 plugin 不同 listener 不能混用，否则 audit 路径里的 minLevel/buffer/flush 链路可能 silent drop（这次就是这种情况）。user feedback "每次修BUG通过日志来修理，确保日志里有所有错误的信息" 必须严格落地 —— silent failure 跟 actual failure 一样要暴露。
+
+**相关**：
+- PROGRESS §7.37 — llm/stream listener 首次引入，gate + sink 都选错了但当时 focus 在 catalog + Layer 3
+- PROGRESS §7.46 — 21 节点清单（现在升 22 节点）
+- memory [[prompt-guard-local-llm-waste]] — probe 现在能精确定位每次 prompt-guard 调用的 model，为后续优化提供数据
+
 

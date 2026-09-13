@@ -58,7 +58,10 @@ function writeConfig(name: string, config: Partial<RealmConfig>): string {
 describe('realm-skill-bridge', () => {
   it('exports the canonical plugin shape', () => {
     assert.equal(plugin.name, 'realm-skill-bridge')
-    assert.deepEqual([...plugin.inject], ['auditLog'])
+    // §7.36: `skills` was added to inject — apply() reads ctx.skills.list()
+    // and ctx.skills.on('change') for catalog refresh. auditLog is also
+    // required for ops log emission in start()/setSessionRealm().
+    assert.deepEqual([...plugin.inject], ['auditLog', 'skills'])
     assert.equal(typeof plugin.apply, 'function')
     assert.ok(plugin.Config)
   })
@@ -218,7 +221,11 @@ describe('realm-skill-bridge', () => {
       )
       await service.start()
 
-      const agent = { session: { header: { id: 'sess-1' } } }
+      // §7.36/§7.37 (2026-09-04): getAgentRealm reads `agent.session.id`
+      // (canonical key for sessionRealms map), NOT `session.header.id`.
+      // input-guard registers via `payload.agent.session.id`; header.id
+      // was a wrong-fixture assumption that broke Layer 1.5 silently.
+      const agent = { session: { id: 'sess-1' } }
       assert.equal(service.getAgentRealm(agent as any), undefined)
       service.setSessionRealm('sess-1', 'LOCAL')
       assert.equal(service.getAgentRealm(agent as any), 'LOCAL')

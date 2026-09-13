@@ -806,22 +806,36 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
     ) => () => void
   }).on?.('llm/stream', (payload: unknown, next: () => unknown) => {
     // Read-only audit probe — payload is frozen by dsh-llm.
-    const p = payload as { sessionId?: string; tools?: ReadonlyArray<unknown> } | undefined
-    if (p !== undefined && typeof p.sessionId === 'string') {
-      const agentRealm = service.getSessionRealm(p.sessionId)
-      try { (service as unknown as { auditLog?: AuditLogLike }).auditLog?.log?.({
-        level: 'info',
-        kind: 'realm-skill-bridge.hook.probe',
-        source: 'realm-skill-bridge',
-        payload: {
-          hook: 'llm/stream',
-          sessionId: p.sessionId,
-          toolsCount: Array.isArray(p.tools) ? p.tools.length : 0,
-          agentRealm: agentRealm ?? null,
-          note: 'frozen-payload: tools filter skipped; Layer 3 enforces',
-        },
-      }) }
-      catch { /* ignore */ }
+    //
+    // §7.47.4 (2026-09-13): drop the `typeof sessionId === 'string'` gate AND
+    // switch sink from `auditLog?.log` to `ctx.logger?.info`. Pre-§7.47.4
+    // called `service.auditLog?.log?.({level:'info',...})` — but for some
+    // reason that path silently no-ops on every chat call (probe fired per
+    // stderr, ops log had 0 lines). Other realm-skill-bridge listeners
+    // (tool allow, chat finished, etc.) use `ctx.logger?.info(...)` and
+    // those land reliably. Switch to the proven sink to satisfy the
+    // "every node in ops log" coverage principle (user feedback 2026-09-13:
+    // "每次修BUG通过日志来修理，确保日志里有所有错误的信息").
+    //
+    // Pre-§7.47.4 gate `if (typeof p.sessionId === 'string')` skipped 100%
+    // of calls because GenerateOptions.sessionId is optional + branded —
+    // upstream dsh-agent-loop doesn't always populate it. Now: log every
+    // call with whatever fields are present (sessionId may be '<none>').
+    const p = payload as
+      | { sessionId?: string; tools?: ReadonlyArray<unknown>; provider?: string; model?: string }
+      | undefined
+    if (p !== undefined) {
+      const sessionId = typeof p.sessionId === 'string' ? p.sessionId : '<none>'
+      const provider = typeof p.provider === 'string' ? p.provider : '<none>'
+      const model = typeof p.model === 'string' ? p.model : '<none>'
+      const toolsCount = Array.isArray(p.tools) ? p.tools.length : 0
+      const agentRealm = sessionId !== '<none>' ? service.getSessionRealm(sessionId) : null
+      try {
+        ;(ctx as unknown as { logger?: { info?: (...args: unknown[]) => void } }).logger?.info?.(
+          `[realm-skill-bridge] llm/stream probe sessionId=${sessionId} provider=${provider} model=${model} toolsCount=${toolsCount} agentRealm=${agentRealm ?? 'null'} note=frozen-payload-Layer3-enforces`,
+        )
+      }
+      catch { /* debug only */ }
     }
     // Return the inner chain result synchronously so the AsyncGenerator
     // reaches dsh-agent-loop unwrapped.

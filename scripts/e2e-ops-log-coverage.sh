@@ -18,13 +18,14 @@
 #   local-ip  本机 IP 查询   sessionId=opslog-canary-local-ip
 #                           期望：tool allow bash 至少 1 次，preflight intentSource=http-api-classified
 #
-# 21 节点覆盖（来自 ops-log-coverage-principle.md）：
+# 22 节点覆盖（来自 ops-log-coverage-principle.md）：
 #   1-9:   input-guard 系列（preflight/sanitize/prompt-guard/privacy-policy/orphan/desanitize/route）
 #   10-13: realm-skill-bridge 系列（pre-step/chat received/finished/tool allow+deny）
 #   14-17: cloud/local-llm-adapter LLM call start/done
 #   18-19: http-api chat received/reply
 #   20:    input-guard prompt-guard done
 #   21:    input-guard privacy-policy done
+#   22:    realm-skill-bridge llm/stream probe（§7.47.4，frozen-payload read-only 探针，每个 LLM call 必 emit）
 # ───────────────────────────────────────────────────────────────────
 
 set -euo pipefail
@@ -155,6 +156,7 @@ check_node_presence() {
     'sanitize start'
     'sanitize done'
     'pre-step filter'
+    'llm/stream probe'  # §7.47.4 (2026-09-13): frozen-payload probe, every chat round-trip + prompt-guard call
     'chat finished'
     'tool allow'
     'tool deny'
