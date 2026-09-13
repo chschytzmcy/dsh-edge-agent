@@ -520,6 +520,12 @@ confidence 含义：
         model,
         messages: [userMessage],
         signal: controller.signal,
+        // §7.53 (2026-09-13): propagate sessionId for ops log correlation.
+        // local-llm-adapter reads options.sessionId for its 'LLM call start'
+        // line; realm-skill-bridge probe reads p.sessionId from the
+        // llm/stream waterfall payload. Both go from <pre-session> to the
+        // real sessionId when this is set.
+        ...(sessionId ? { sessionId } : {}),
       })
       // §7.37: this.llm.stream() returns Promise<AsyncIterable<StreamChunk>>
       // since dsh-llm 0.1.2-rc.1 — await if thenable, otherwise use directly.

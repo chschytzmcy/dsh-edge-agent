@@ -392,7 +392,7 @@ export class PromptGuardServiceImpl extends Service implements PromptGuardServic
     }
 
     if (!skipModelDetection) {
-      const modelResult = await this.modelBasedCheck(text)
+      const modelResult = await this.modelBasedCheck(text, sessionId)
       if (modelResult && !modelResult.safe) {
         return modelResult
       }
@@ -444,7 +444,7 @@ export class PromptGuardServiceImpl extends Service implements PromptGuardServic
    * stands. Only an explicit `safe:false` verdict is returned to the
    * caller as a high-risk block.
    */
-  private async modelBasedCheck(text: string): Promise<InputCheckResult | null> {
+  private async modelBasedCheck(text: string, sessionId: string): Promise<InputCheckResult | null> {
     const cfg = this.config
     const t0 = Date.now()
 
@@ -460,6 +460,7 @@ export class PromptGuardServiceImpl extends Service implements PromptGuardServic
     }
     if (text.length > cfg.modelDetectionMaxInputLength) {
       await this.audit('debug', 'guard.model-detect.skipped', {
+        sessionId,
         reason: 'input-too-long',
         textLen: text.length,
         cap: cfg.modelDetectionMaxInputLength,
@@ -540,6 +541,7 @@ export class PromptGuardServiceImpl extends Service implements PromptGuardServic
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), cfg.modelDetectionTimeoutMs)
     await this.audit('info', 'guard.model-detect.start', {
+      sessionId,
       textLen: text.length,
       provider: cfg.modelDetectionProvider,
       model: cfg.modelDetectionModel,
@@ -560,6 +562,12 @@ export class PromptGuardServiceImpl extends Service implements PromptGuardServic
         signal: controller.signal,
         temperature: 0,
         maxTokens: 256,
+        // §7.53 (2026-09-13): propagate sessionId for ops log correlation.
+        // local-llm-adapter reads options.sessionId for its 'LLM call start'
+        // line; realm-skill-bridge probe reads p.sessionId from the
+        // llm/stream waterfall payload. Both go from <pre-session> to the
+        // real sessionId when this is set.
+        ...(sessionId ? { sessionId } : {}),
       })
       // §7.37: this.llm.stream() returns Promise<AsyncIterable<StreamChunk>>
       // since dsh-llm 0.1.2-rc.1 — await if thenable, otherwise use directly.
@@ -578,6 +586,7 @@ export class PromptGuardServiceImpl extends Service implements PromptGuardServic
       await this.audit('warn',
         isAbort ? 'guard.model-detect.timeout' : 'guard.model-detect.error',
         {
+          sessionId,
           durationMs,
           provider: cfg.modelDetectionProvider,
           error: (err?.message ?? String(err)).slice(0, 200),
@@ -593,6 +602,7 @@ export class PromptGuardServiceImpl extends Service implements PromptGuardServic
     const parsed = parseSafetyResponse(responseText)
     if (!parsed) {
       await this.audit('warn', 'guard.model-detect.error', {
+        sessionId,
         durationMs: Date.now() - t0,
         provider: cfg.modelDetectionProvider,
         reason: 'json-parse-failed',
@@ -608,6 +618,7 @@ export class PromptGuardServiceImpl extends Service implements PromptGuardServic
     const durationMs = Date.now() - t0
     if (!parsed.safe) {
       await this.audit('security', 'guard.model-detect.unsafe', {
+        sessionId,
         durationMs,
         provider: cfg.modelDetectionProvider,
         model: cfg.modelDetectionModel,
@@ -626,6 +637,7 @@ export class PromptGuardServiceImpl extends Service implements PromptGuardServic
       }
     }
     await this.audit('info', 'guard.model-detect.end', {
+      sessionId,
       durationMs,
       provider: cfg.modelDetectionProvider,
       model: cfg.modelDetectionModel,
