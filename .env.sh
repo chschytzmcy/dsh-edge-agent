@@ -42,7 +42,34 @@ export DSH_EDGE_LOCAL_LLM_BASEURL="${DSH_EDGE_LOCAL_LLM_BASEURL:-https://coding.
 export DSH_EDGE_LOCAL_LLM_MODEL="${DSH_EDGE_LOCAL_LLM_MODEL:-qwen3.7-plus}"
 export DSH_EDGE_LOCAL_LLM_KEY_ENV="${DSH_EDGE_LOCAL_LLM_KEY_ENV:-DASHSCOPE_API_KEY}"
 export DSH_EDGE_INTENT_PROVIDER="${DSH_EDGE_INTENT_PROVIDER:-local-llm}"
-export DSH_EDGE_INTENT_MODEL="${DSH_EDGE_INTENT_MODEL:-qwen3-4b-instruct-2507}"
+# §7.52 (2026-09-13): default now matches DSH_EDGE_LOCAL_LLM_MODEL
+# (qwen3.7-plus, 2026-09-11 switch). Pre-§7.52 default was the stale
+# "qwen3-4b-instruct-2507" string — when DSH_EDGE_INTENT_MODEL wasn't
+# explicitly exported, llm/stream probe logs showed model=Qwen3-4B-Instruct-2507
+# even though the real intent classifier was actually calling
+# qwen3.7-plus. Now the two stay in sync by default.
+export DSH_EDGE_INTENT_MODEL="${DSH_EDGE_INTENT_MODEL:-qwen3.7-plus}"
+# §7.52 (2026-09-13): input-guard's `localModel` is read from
+# DSH_EDGE_LOCAL_MODEL (NOT DSH_EDGE_INTENT_MODEL — see
+# cordis.patch.yml:527). Without this export, the patch's
+# `process.env.DSH_EDGE_LOCAL_MODEL ?? 'qwen3-4b-instruct-2507'`
+# always falls back to the stale string, and prompt-guard /
+# privacy-policy llm/stream probe logs show
+# model=qwen3-4b-instruct-2507 even though the real call goes
+# through qwen3.7-plus. Mirror DSH_EDGE_LOCAL_LLM_MODEL so the
+# three naming paths (intent / llm / input-guard downgrade)
+# converge by default.
+export DSH_EDGE_LOCAL_MODEL="${DSH_EDGE_LOCAL_MODEL:-${DSH_EDGE_LOCAL_LLM_MODEL:-qwen3.7-plus}}"
+# §7.52 (2026-09-13): prompt-guard's modelDetectionModel (the LLM
+# call used to detect "is user asking me to claim a different
+# identity?") reads DSH_EDGE_GUARD_MODEL_MODEL (yes, the name has
+# a duplicated "MODEL" — cordis.patch.yml:458). Without this
+# export, prompt-guard falls back to the stale
+# 'Qwen3-4B-Instruct-2507' string and guard.model-detect.start
+# events show model=Qwen3-4B-Instruct-2507 even though the real
+# LLM call goes through qwen3.7-plus. Mirror DSH_EDGE_LOCAL_LLM_MODEL
+# so the local classifier naming paths converge.
+export DSH_EDGE_GUARD_MODEL_MODEL="${DSH_EDGE_GUARD_MODEL_MODEL:-${DSH_EDGE_LOCAL_LLM_MODEL:-qwen3.7-plus}}"
 export DSH_EDGE_LOCAL_TOOLS_WRITABLE="${DSH_EDGE_LOCAL_TOOLS_WRITABLE:-true}"
 export DSH_EDGE_LOCAL_TOOLS_ALLOWLIST="${DSH_EDGE_LOCAL_TOOLS_ALLOWLIST:-/tmp,/home/etsme/cy/agent/dsh-edge-agent}"
 export DSH_PERMISSION_MODE="${DSH_PERMISSION_MODE:-workspace-write}"
@@ -67,3 +94,5 @@ echo "  DSH_EDGE_LOCAL_LLM_MODEL=${DSH_EDGE_LOCAL_LLM_MODEL:-<unset>}"
 echo "  DSH_EDGE_LOCAL_LLM_KEY_ENV=${DSH_EDGE_LOCAL_LLM_KEY_ENV:-<unset>}"
 echo "  DSH_EDGE_INTENT_PROVIDER=${DSH_EDGE_INTENT_PROVIDER:-<unset>}"
 echo "  DSH_EDGE_INTENT_MODEL=${DSH_EDGE_INTENT_MODEL:-<unset>}"
+echo "  DSH_EDGE_LOCAL_MODEL=${DSH_EDGE_LOCAL_MODEL:-<unset>}"
+echo "  DSH_EDGE_GUARD_MODEL_MODEL=${DSH_EDGE_GUARD_MODEL_MODEL:-<unset>}"

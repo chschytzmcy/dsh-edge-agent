@@ -274,7 +274,7 @@ class RealLocalAdapter extends LlmAdapter {
     // §7.46.1 (2026-09-11): ops log 让 TUI 路径调哪个 local LLM / 多久 / 多少
     // token 在 ops log 里可见。配合 realm-skill-bridge pre-step + tool allow
     // 形成完整 trace。
-    const sessionId = (options as { sessionId?: string }).sessionId ?? 'unknown'
+    const sessionId = (options as { sessionId?: string }).sessionId ?? '<pre-session>'
     try {
       this.logger?.info?.(
         `[local-llm-adapter] LLM call start sessionId=${sessionId} provider=${options.provider} model=${options.model} messageCount=${sanitizedMessages.length} promptLen=${promptLen} baseUrl=${this.baseUrl}`,

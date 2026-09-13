@@ -860,11 +860,18 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
       | { sessionId?: string; tools?: ReadonlyArray<unknown>; provider?: string; model?: string }
       | undefined
     if (p !== undefined) {
-      const sessionId = typeof p.sessionId === 'string' ? p.sessionId : '<none>'
+      // §7.52 (2026-09-13) finding: `sessionId=<none>` for the first 2
+      // probes per chat is **expected** — those are the input-guard
+      // prompt-guard + privacy-policy classifier calls (local-llm) that
+      // run BEFORE the session is created. They legitimately don't have
+      // a sessionId yet (the prompt-guard call decides CLOUD/SANITIZED,
+      // then the chat request gets a real sessionId). Distinguish in the
+      // log line so operators don't waste time chasing a phantom bug.
+      const sessionId = typeof p.sessionId === 'string' ? p.sessionId : '<pre-session>'
       const provider = typeof p.provider === 'string' ? p.provider : '<none>'
       const model = typeof p.model === 'string' ? p.model : '<none>'
       const toolsCount = Array.isArray(p.tools) ? p.tools.length : 0
-      const agentRealm = sessionId !== '<none>' ? service.getSessionRealm(sessionId) : null
+      const agentRealm = sessionId !== '<pre-session>' ? service.getSessionRealm(sessionId) : null
       try {
         ;(ctx as unknown as { logger?: { info?: (...args: unknown[]) => void } }).logger?.info?.(
           `[realm-skill-bridge] llm/stream probe sessionId=${sessionId} provider=${provider} model=${model} toolsCount=${toolsCount} agentRealm=${agentRealm ?? 'null'} note=frozen-payload-Layer3-enforces`,
