@@ -79,3 +79,70 @@ export function peekSessionToolCallCount(sessionId: unknown): number {
   const key = resolveSessionKey(sessionId)
   return _sessionToolCallRuns.get(key)?.count ?? 0
 }
+
+// ---------------------------------------------------------------------------
+// §7.50 (2026-09-13): per-session SSE-retry counter for cloud-llm-adapter.
+//
+// Different bug, same per-session accounting shape. Shared module so the
+// counter is co-located with the tool-call guard and follows the same
+// pruning rules.
+//
+// Background: §7.48 system-prompt augmentation moved news verification
+// success from 2/5 → 3/5. The remaining 2/5 failures changed nature from
+// "DeepSeek doesn't synthesize" to "DeepSeek SSE stream 137-494ms disconnect"
+// — short-circuit aborts where the upstream TCP/SSE connection dropped
+// before any chunk arrived. DeepSeek upstream is known to occasionally
+// reset connections early (provider-side hiccup); without a retry the user
+// sees an empty reply even though the request was valid.
+//
+// §7.49 explored retrying at the agent-loop layer and was reverted:
+// dsh-agent-loop's turn model can't rescue kind=error, and new turns are
+// fire-and-forget (don't flow back to http-api response). So retry must
+// happen at the LLM adapter layer — wrap fetch + SSE parse in a retry
+// loop. This counter enforces ≤1 retry per session to bound worst-case
+// latency and avoid amplifying provider-side pressure.
+// ---------------------------------------------------------------------------
+
+export const MAX_SSE_RETRIES_PER_SESSION = 1
+
+interface SseRetryRunEntry {
+  count: number
+  lastSeen: number
+}
+
+const _sessionSseRetries = new Map<string, SseRetryRunEntry>()
+
+/** Returns true when the session still has retry budget left and increments
+ *  the counter atomically; returns false when budget is exhausted.
+ *  Prune-on-counter-increment: piggyback on the same 100-call cadence as
+ *  the tool-call guard via a separate prune (cheap, one Map<10 entries). */
+export function tryConsumeSseRetryBudget(sessionId: unknown): boolean {
+  const key = resolveSessionKey(sessionId)
+  const now = Date.now()
+  const entry = _sessionSseRetries.get(key) ?? { count: 0, lastSeen: now }
+  if (entry.count >= MAX_SSE_RETRIES_PER_SESSION) return false
+  entry.count += 1
+  entry.lastSeen = now
+  _sessionSseRetries.set(key, entry)
+
+  if (++_pruneCounter % 100 === 0) {
+    const cutoff = now - 5 * 60 * 1000
+    for (const [k, v] of _sessionSseRetries) {
+      if (v.lastSeen < cutoff) _sessionSseRetries.delete(k)
+    }
+  }
+  return true
+}
+
+/** Reset counter when the LLM call completes successfully (terminalChunk
+ *  reached). Mirrors resetSessionToolCallCount. */
+export function resetSessionSseRetryCount(sessionId: unknown): void {
+  const key = resolveSessionKey(sessionId)
+  _sessionSseRetries.delete(key)
+}
+
+/** Read-only accessor for tests / ops log debugging. */
+export function peekSessionSseRetryCount(sessionId: unknown): number {
+  const key = resolveSessionKey(sessionId)
+  return _sessionSseRetries.get(key)?.count ?? 0
+}

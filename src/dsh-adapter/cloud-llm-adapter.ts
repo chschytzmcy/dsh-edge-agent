@@ -42,7 +42,10 @@ import {
 import {
   bumpSessionToolCallCount,
   MAX_CONSECUTIVE_TOOL_CALLS,
+  peekSessionSseRetryCount,
   resetSessionToolCallCount,
+  resetSessionSseRetryCount,
+  tryConsumeSseRetryBudget,
 } from './llm-max-turns.js'
 
 export const name = 'cloud-llm-adapter'
@@ -274,7 +277,7 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
     // at debug level. JSON.stringify keeps the entry single-line so
     // file-logger's `formatLine` newline-collapse doesn't kick in.
     this.logger?.debug?.(`[cloud-llm-adapter] LLM_MESSAGES ${JSON.stringify({ messages: sanitizedMessages })}`)
-    this.audit('info', 'llm.cloud.start', { provider: options.provider, model: options.model, messageCount, promptLen, baseUrl: this.baseUrl, systemInjected })
+    this.audit('info', 'llm.cloud.start', { provider: options.provider, model: options.model, messageCount, promptLen, baseUrl: this.baseUrl, systemInjected, retryBudgetUsed: peekSessionSseRetryCount(options.sessionId) })
 
     const headers: Record<string, string> = {
       'content-type': 'application/json',
@@ -283,98 +286,268 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
       ...attributionHeaders(),
     }
 
-    let response: Response
-    try {
-      response = await fetch(url, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(body),
-        signal: options.signal,
-      })
-    } catch (err: any) {
-      const durationMs = Date.now() - start
-      this.audit('error', 'llm.cloud.network_error', { provider: options.provider, model: options.model, durationMs, error: err?.message ?? String(err) })
-      throw err
-    }
-
-    if (!response.ok) {
-      const durationMs = Date.now() - start
-      let respBody = ''
-      try { respBody = await response.text() } catch { /* ignore */ }
-      this.audit('error', 'llm.cloud.http_error', { provider: options.provider, model: options.model, status: response.status, durationMs, respBody: respBody.slice(0, 500) })
-      throw new LlmError(`cloud-llm-adapter: HTTP ${response.status}: ${respBody.slice(0, 200)}`, 'PROVIDER_ERROR')
-    }
-
-    // 2026-09-03 §7.34.2 fix: defer `block-start` until the first text-delta.
-    // Same root cause as local-llm-adapter — empty stream (e.g. DeepSeek upstream
-    // returns finish=stop with 0 content) would leave BlockAssembler with an
-    // orphan text block + finish, agent-loop state machine hangs.
-    let blockStartYielded = false
-    const yieldBlockStartOnce = (): boolean => {
-      if (blockStartYielded) return false
-      blockStartYielded = true
-      return true
-    }
+    // §7.50 (2026-09-13): wrap fetch + SSE parsing in a per-session retry
+    // loop. Triggered when the upstream DeepSeek SSE stream disconnects
+    // before yielding any chunk (observed 137-494ms drop in §7.48 news
+    // verification, 2/5 runs aborted with kind=error after §7.48's
+    // system-prompt augmentation already cleared the synthesis-side issue).
+    //
+    // §7.49 had explored retrying at the dsh-agent-loop layer; reverted
+    // because (a) cordis ctx accessor requires extra inject, (b) Session.append
+    // reentrancy guard throws from listeners, (c) dsh-agent-loop's turn model
+    // doesn't rescue kind=error — new turns are fire-and-forget and don't
+    // flow back to http-api response. So retry must live at the LLM-adapter
+    // layer.
+    //
+    // Constraints:
+    //   - retry only when no chunk has been yielded yet across the whole
+    //     stream lifetime (avoids wasting tokens that upstream already
+    //     produced; mid-stream drops in attempt N>1 → throw because the
+    //     consumer has already consumed attempt 1's chunks)
+    //   - per-session counter ≤ 1 (tryConsumeSseRetryBudget) so worst-case
+    //     latency stays bounded and we don't amplify provider pressure
+    //   - emit ops log + audit events for retry triggered / retry exhausted
+    //     so the diagnostic matches the user principle "log should make
+    //     the bug reproducible"
+    //
+    // yield semantics: we cannot `yield` from inside a retry helper
+    // (generators can't yield across function boundaries). So we loop
+    // inline and track `sawAnyChunkAcrossAttempts` — set true the first
+    // time we yield a chunk; subsequent retry attempts bail on error.
+    let sawAnyChunkAcrossAttempts = false
+    let attemptIndex = 0
+    let lastAttemptError: string | undefined
+    // Hoisted so the post-loop runaway-tool-call guard + terminalChunks
+    // yield can read the FINAL attempt's state after `break outer`.
     let assembledText = ''
     let finishKind: 'stop' | 'length' | 'tool-calls' | undefined
     const toolCalls = new Map<number, { id: string; name: string; arguments: string }>()
     let sawText = false
     let sawToolCall = false
 
-    const throwOnWire = (message: string): never => {
-      throw new LlmError(`cloud-llm-adapter: SSE stream interrupted: ${message}`, 'PROVIDER_ERROR')
-    }
-
-    let wireError: string | undefined
-    try {
-      for await (const event of iterateSseFrames(response, throwOnWire)) {
-        const reason = sseFinishReason(event)
-        if (reason !== undefined) {
-          finishKind = reason
-          continue
-        }
-        const result = sseEventToChunk(event, toolCalls)
-        if (result === null) continue
-        if (result.chunk.type === 'text-delta') {
-          // §7.34.2: yield block-start lazily before the first text-delta
-          if (yieldBlockStartOnce()) {
-            yield { type: 'block-start', index: 0, blockType: 'text' }
-          }
-          assembledText += (result.chunk as { text: string }).text
-          sawText = result.sawText
-        } else if (result.chunk.type === 'tool-call-delta') {
-          sawToolCall = result.sawToolCall
-        }
-        yield result.chunk
-      }
-    } catch (err: any) {
-      wireError = err?.message ?? String(err)
-      throw err
-    } finally {
-      const durationMs = Date.now() - start
-      this.audit('info', 'llm.cloud.end', {
-        provider: options.provider,
-        model: options.model,
-        durationMs,
-        promptLen,
-        resultLen: assembledText.length,
-        toolCallCount: toolCalls.size,
-        finishKind,
-        sawText,
-        sawToolCall,
-        ...(wireError !== undefined ? { wireError } : {}),
-      })
-      // §7.46.1: ops log done 行,跟 start 行配对
+    outer: while (true) {
+      attemptIndex += 1
+      // Reset per-attempt state (assembledText etc. are scoped INSIDE
+      // the loop so they naturally discard on retry).
+      let response: Response
       try {
-        this.logger?.info?.(
-          `[cloud-llm-adapter] LLM call done sessionId=${sessionId} provider=${options.provider} model=${options.model} durationMs=${durationMs} resultLen=${assembledText.length} toolCallCount=${toolCalls.size} finishKind=${finishKind ?? 'unknown'}${wireError !== undefined ? ` wireError=${wireError}` : ''}`,
+        response = await fetch(url, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(body),
+          signal: options.signal,
+        })
+      } catch (err: any) {
+        const errMsg = err?.message ?? String(err)
+        lastAttemptError = `fetch: ${errMsg}`
+        const durationMs = Date.now() - start
+        this.audit('error', 'llm.cloud.network_error', {
+          provider: options.provider,
+          model: options.model,
+          durationMs,
+          attempt: attemptIndex,
+          error: errMsg,
+        })
+        // §7.50 followup: emit bookkeeping on fetch throw too. AbortError
+        // (signal aborted by dsh-agent-loop) is the common case — ops log
+        // previously showed only LLM call start, hiding the abort source.
+        try {
+          this.logger?.info?.(
+            `[cloud-llm-adapter] LLM call done sessionId=${sessionId} provider=${options.provider} model=${options.model} attempt=${attemptIndex} retried=false durationMs=${durationMs} resultLen=0 toolCallCount=0 finishKind=unknown fetchError=${errMsg}`,
+          )
+        } catch { /* debug only */ }
+        this.audit('info', 'llm.cloud.end', {
+          provider: options.provider,
+          model: options.model,
+          durationMs,
+          promptLen,
+          resultLen: 0,
+          toolCallCount: 0,
+          finishKind: undefined,
+          sawText: false,
+          sawToolCall: false,
+          attempt: attemptIndex,
+          retried: attemptIndex > 1,
+          fetchError: errMsg,
+        })
+        if (!tryConsumeSseRetryBudget(options.sessionId)) {
+          this.logger?.error?.(
+            `[cloud-llm-adapter] SSE retry exhausted sessionId=${sessionId} attempt=${attemptIndex} reason=fetch_throw error=${errMsg}`,
+          )
+          throw err
+        }
+        this.logger?.warn?.(
+          `[cloud-llm-adapter] SSE retry triggered sessionId=${sessionId} attempt=${attemptIndex} reason=fetch_throw error=${errMsg}`,
         )
-      } catch { /* debug only */ }
-      // 2026-09-02: dump response summary + full text to the ops log at
-      // debug level. Splits into two entries (header + body) so grepping
-      // for `LLM_RESPONSE_TEXT` can isolate the body without parsing JSON.
-      this.logger?.debug?.(`[cloud-llm-adapter] LLM_RESPONSE provider=${options.provider} durationMs=${durationMs} resultLen=${assembledText.length} finishKind=${finishKind ?? 'unknown'}`)
-      this.logger?.debug?.(`[cloud-llm-adapter] LLM_RESPONSE_TEXT ${JSON.stringify({ text: assembledText })}`)
+        this.audit('warn', 'llm.cloud.sse_retry_triggered', {
+          provider: options.provider,
+          model: options.model,
+          sessionId,
+          attempt: attemptIndex,
+          reason: 'fetch_throw',
+          error: errMsg,
+        })
+        continue
+      }
+
+      if (!response.ok) {
+        const durationMs = Date.now() - start
+        let respBody = ''
+        try { respBody = await response.text() } catch { /* ignore */ }
+        // HTTP 4xx/5xx — don't retry; the upstream rejected the request,
+        // and retrying identical body won't help (would only amplify 429s).
+        this.audit('error', 'llm.cloud.http_error', {
+          provider: options.provider,
+          model: options.model,
+          status: response.status,
+          durationMs,
+          respBody: respBody.slice(0, 500),
+        })
+        // §7.50 followup (2026-09-13): also emit the LLM call done / end
+        // bookkeeping on HTTP error so the ops log + audit pipeline
+        // always has a matching end-pair for the start. Without this,
+        // 4xx errors leave ops log showing only LLM call start (which
+        // made the §7.50 verification look like a 0/5 regression — it
+        // was actually a 402 Insufficient Balance).
+        try {
+          this.logger?.info?.(
+            `[cloud-llm-adapter] LLM call done sessionId=${sessionId} provider=${options.provider} model=${options.model} attempt=${attemptIndex} retried=false durationMs=${durationMs} resultLen=0 toolCallCount=0 finishKind=unknown httpError=${response.status}`,
+          )
+        } catch { /* debug only */ }
+        this.audit('info', 'llm.cloud.end', {
+          provider: options.provider,
+          model: options.model,
+          durationMs,
+          promptLen,
+          resultLen: 0,
+          toolCallCount: 0,
+          finishKind: undefined,
+          sawText: false,
+          sawToolCall: false,
+          attempt: attemptIndex,
+          retried: attemptIndex > 1,
+          httpError: response.status,
+        })
+        throw new LlmError(`cloud-llm-adapter: HTTP ${response.status}: ${respBody.slice(0, 200)}`, 'PROVIDER_ERROR')
+      }
+
+      // 2026-09-03 §7.34.2 fix: defer `block-start` until the first text-delta.
+      // Same root cause as local-llm-adapter — empty stream (e.g. DeepSeek upstream
+      // returns finish=stop with 0 content) would leave BlockAssembler with an
+      // orphan text block + finish, agent-loop state machine hangs.
+      let blockStartYielded = false
+      const yieldBlockStartOnce = (): boolean => {
+        if (blockStartYielded) return false
+        blockStartYielded = true
+        return true
+      }
+      // assembledText / finishKind / toolCalls / sawText / sawToolCall are
+      // hoisted to outer scope so post-loop logic can read the FINAL
+      // attempt's state. We reset them on each retry attempt so attempt 2
+      // starts fresh (discarding attempt 1's partial progress).
+      assembledText = ''
+      finishKind = undefined
+      toolCalls.clear()
+      sawText = false
+      sawToolCall = false
+
+      const throwOnWire = (message: string): never => {
+        throw new LlmError(`cloud-llm-adapter: SSE stream interrupted: ${message}`, 'PROVIDER_ERROR')
+      }
+
+      let wireError: string | undefined
+      try {
+        for await (const event of iterateSseFrames(response, throwOnWire)) {
+          const reason = sseFinishReason(event)
+          if (reason !== undefined) {
+            finishKind = reason
+            continue
+          }
+          const result = sseEventToChunk(event, toolCalls)
+          if (result === null) continue
+          if (result.chunk.type === 'text-delta') {
+            // §7.34.2: yield block-start lazily before the first text-delta
+            if (yieldBlockStartOnce()) {
+              yield { type: 'block-start', index: 0, blockType: 'text' }
+            }
+            assembledText += (result.chunk as { text: string }).text
+            sawText = result.sawText
+          } else if (result.chunk.type === 'tool-call-delta') {
+            sawToolCall = result.sawToolCall
+          }
+          if (!sawAnyChunkAcrossAttempts) sawAnyChunkAcrossAttempts = true
+          yield result.chunk
+        }
+        // Stream completed normally — break the outer retry loop.
+        // Reset the retry counter so future calls in this session start fresh.
+        resetSessionSseRetryCount(options.sessionId)
+        break outer
+      } catch (err: any) {
+        wireError = err?.message ?? String(err)
+        lastAttemptError = `sse: ${wireError}`
+        const durationMs = Date.now() - start
+        this.audit('error', 'llm.cloud.sse_interrupted', {
+          provider: options.provider,
+          model: options.model,
+          durationMs,
+          attempt: attemptIndex,
+          wireError,
+        })
+        if (sawAnyChunkAcrossAttempts) {
+          // Mid-stream drop on a later try after attempt 1 yielded some
+          // chunks — don't retry, the consumer has already consumed them.
+          throw err
+        }
+        if (!tryConsumeSseRetryBudget(options.sessionId)) {
+          this.logger?.error?.(
+            `[cloud-llm-adapter] SSE retry exhausted sessionId=${sessionId} attempt=${attemptIndex} reason=sse_wire_error wireError=${wireError}`,
+          )
+          throw err
+        }
+        this.logger?.warn?.(
+          `[cloud-llm-adapter] SSE retry triggered sessionId=${sessionId} attempt=${attemptIndex} reason=sse_wire_error wireError=${wireError}`,
+        )
+        this.audit('warn', 'llm.cloud.sse_retry_triggered', {
+          provider: options.provider,
+          model: options.model,
+          sessionId,
+          attempt: attemptIndex,
+          reason: 'sse_wire_error',
+          wireError,
+        })
+        // Note: assembledText is intentionally discarded on retry — we
+        // are retrying from scratch because no chunk has been yielded yet.
+        continue
+      } finally {
+        const durationMs = Date.now() - start
+        const retried = attemptIndex > 1
+        this.audit('info', 'llm.cloud.end', {
+          provider: options.provider,
+          model: options.model,
+          durationMs,
+          promptLen,
+          resultLen: assembledText.length,
+          toolCallCount: toolCalls.size,
+          finishKind,
+          sawText,
+          sawToolCall,
+          attempt: attemptIndex,
+          retried,
+          ...(wireError !== undefined ? { wireError } : {}),
+          ...(lastAttemptError !== undefined && wireError === undefined ? { lastAttemptError } : {}),
+        })
+        // §7.46.1: ops log done 行,跟 start 行配对
+        try {
+          this.logger?.info?.(
+            `[cloud-llm-adapter] LLM call done sessionId=${sessionId} provider=${options.provider} model=${options.model} attempt=${attemptIndex} retried=${retried} durationMs=${durationMs} resultLen=${assembledText.length} toolCallCount=${toolCalls.size} finishKind=${finishKind ?? 'unknown'}${wireError !== undefined ? ` wireError=${wireError}` : ''}`,
+          )
+        } catch { /* debug only */ }
+        // 2026-09-02: dump response summary + full text to the ops log at
+        // debug level. Splits into two entries (header + body) so grepping
+        // for `LLM_RESPONSE_TEXT` can isolate the body without parsing JSON.
+        this.logger?.debug?.(`[cloud-llm-adapter] LLM_RESPONSE provider=${options.provider} attempt=${attemptIndex} durationMs=${durationMs} resultLen=${assembledText.length} finishKind=${finishKind ?? 'unknown'}`)
+        this.logger?.debug?.(`[cloud-llm-adapter] LLM_RESPONSE_TEXT ${JSON.stringify({ text: assembledText })}`)
+      }
     }
 
     // §7.47.5 (2026-09-13): per-session runaway tool-call guard, mirrored

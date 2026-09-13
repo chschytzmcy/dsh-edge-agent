@@ -6033,4 +6033,85 @@ if (hasToolResult) {
 - `@deepseek-ai/dsh-agent-loop/lib/index.js:449` — `wakeDriver()` 只在 phase.kind === 'idle' 时启动 driver
 - `@deepseek-ai/dsh-session/lib/index.js:1415` — Session reentrancy guard 抛错处
 
+---
+
+### §7.50 cloud-llm-adapter SSE retry — DeepSeek 上游 SSE 断开自愈（2026-09-13）
+
+**目标**：承接 §7.48 + §7.49 失败模式分析。§7.49 证伪了 agent-loop 层 retry 路径（fire-and-forget turn 不回 http-api response），所以本节把 retry 下沉到 LLM-adapter 层：wrap `fetch` + SSE parse 在一个 retry 循环里，只对"还没 yield 出任何 chunk"的情况触发；per-session 预算 ≤1。
+
+**背景**：§7.48 5x news 验证后失败性质已从"DeepSeek 不合成"变为"DeepSeek 上游 SSE 流 137-494ms 断开"（provider-side 间歇性 reset）。§7.49 探索 agent-loop 层 retry 失败（4 root causes documented in §7.49），需要换层。LLM-adapter 层的优势：
+1. retry 结果能直接流回 generator consumer（realm-skill-bridge 的 for-await 循环），不绕 dsh-agent-loop
+2. retry 在 adapter 内自包含，不依赖跨 plugin ctx 注入
+3. retry 预算跟 session 走（per-session counter），自动 bound worst-case latency
+
+**实施**（3 files）：
+
+**1. `src/dsh-adapter/llm-max-turns.ts`** — 扩展共享 counter 模块，新增 §7.50 部分：
+- `MAX_SSE_RETRIES_PER_SESSION = 1`（per-session 上限，跟 `MAX_CONSECUTIVE_TOOL_CALLS` 同型）
+- `tryConsumeSseRetryBudget(sessionId)` → `boolean`：原子性消费预算（true=还有预算，false=已耗尽），prune 跟 tool-call counter 共用 100-call cadence
+- `resetSessionSseRetryCount(sessionId)`：成功完成（terminalChunk 到达）时重置
+- `peekSessionSseRetryCount(sessionId)`：测试 + ops log debug
+
+**2. `src/dsh-adapter/cloud-llm-adapter.ts`** — `stream()` 方法重构：
+- `outer: while (true)` retry 循环，`attemptIndex` 计数
+- fetch 抛异常：`tryConsumeSseRetryBudget` 检查 + 预算够则 `continue` 重试，不够则 `throw`
+- HTTP 4xx/5xx：**不 retry**（upstream 拒绝，重试相同 body 只会 amplify 429），但 emit `llm.cloud.http_error` audit
+- SSE parse 抛异常：mid-stream drop (`sawAnyChunkAcrossAttempts === true`) → `throw`（不浪费已发出的 token）；pre-chunk drop → 检查预算后 retry
+- 成功完成（for-await 正常退出）：`break outer`，重置 retry counter
+- 每个 attempt 内独立的 per-attempt 状态（`assembledText` / `finishKind` / `toolCalls` 等），hoist 到 outer scope 以便 post-loop 工具调用守卫（§7.47.5）能读到 FINAL attempt 状态
+- **Ops log 增强**（覆盖 §7.46.1 + §7.50 验证 needs）：
+  - `llm.cloud.start` audit payload 加 `retryBudgetUsed: peekSessionSseRetryCount()` —— 让 operator 一眼看到这次 call 进来时 retry 预算还剩多少
+  - retry 触发：`logger.warn('[cloud-llm-adapter] SSE retry triggered sessionId=... attempt=N reason=...')` + `audit('warn', 'llm.cloud.sse_retry_triggered', { reason: 'fetch_throw'|'sse_wire_error', error|wireError })`
+  - retry 耗尽：`logger.error('... SSE retry exhausted ...')` + 抛原异常（让上层 dsh-agent-loop 看到 kind=error）
+  - `llm.cloud.end` audit payload 加 `attempt: N`、`retried: boolean`
+- **Bookkeeping gap 修复**：HTTP 4xx/5xx + fetch throw 两个分支之前**不 emit** `LLM call done` ops log 行（因为 fetch throw 在 SSE try/finally 之外）—— 这次给两条分支都加了 manual `logger.info` + `audit('info', 'llm.cloud.end', ...)` 兜底，让 start/done 配对永远完整
+
+**3. `tests/unit/llm-max-turns.test.ts`** — 新文件：
+- 7 个测试覆盖 tool-call counter + SSE retry budget
+- 验证 ≤1 上限、reset 行为、跨 session 隔离、`undefined`/`''` 落到 `default` bucket
+
+**5x news 验证**（2026-09-13 18:40-18:41，dsh-tui:21018）：
+
+```
+run#1 verify-news-1-1789296056: resultLen=0 rationale=rule-cloud-keyword:新闻 wall=8s http=200
+run#2 verify-news-2-1789296065: resultLen=0 rationale=llm-classified:cloud wall=7s http=200
+run#3 verify-news-3-1789296073: resultLen=0 rationale=llm-classified:cloud wall=7s http=200
+run#4 verify-news-4-1789296080: resultLen=0 rationale=rule-cloud-keyword:新闻 wall=9s http=200
+run#5 verify-news-5-1789296089: resultLen=0 rationale=llm-classified:cloud wall=8s http=200
+```
+
+**表面看 0/5 退步**，但 audit log + ops log 揭示真实根因：
+
+```
+audit: llm.cloud.http_error status=402 respBody="Insufficient Balance"
+audit: llm.cloud.start retryBudgetUsed=0
+curl https://api.deepseek.com/user/balance → {"is_available":false,"total_balance":"-0.69"}
+```
+
+**DeepSeek API key 已耗尽**（-0.69 CNY，余额变负）。HTTP 402 是 account-level 问题，不在 retry 范畴：
+- HTTP 4xx/5xx 分支显式选择 **不 retry**（重试相同 body 不会让 402 变 200），所以 retry 逻辑没机会触发
+- 这个 5/5 失败不能跟 §7.48 baseline 3/5 直接对比 —— 后者当时 key 还有余额；§7.50 验证拿到的 5/5 是 key 已耗尽的"全错"基线
+- §7.50 真正的 ops-log 改进体现在 **HTTP error bookkeeping**：修前 ops log 只显示 `LLM call start` 不显示 done，operator 看不到 402；修后 ops log 现在显示 `LLM call done ... httpError=402 attempt=1 retried=false`，fail mode 第一次从 ops log 可诊断
+
+**Verification 后单次 sanity check**（`verify-bookkeeping-750`）：
+- ops log `LLM call start ...` → `LLM call done ... attempt=1 retried=false durationMs=466 resultLen=0 httpError=402` → `chat finished reason=kind=error realm=CLOUD`
+- start/done 配对完整，httpError 字段让 402 在 ops log 即可见（不再需要翻 audit JSONL）
+
+**pnpm vitest run**：725 passed + 1 skipped + 0 failed（718 → 725，新增 7 个 §7.50 单元测试）
+
+**Lesson**：
+1. **Generator yield 不能跨函数边界**：retry helper 函数无法 yield → 必须把 retry 循环 inline 在 generator 里。这是 JS async generator 的硬约束。
+2. **HTTP 4xx/5xx 默认不 retry 是对的**：upstream 拒绝的请求 retry 只会 amplify 429/402，不会变好。retry 只针对 transient 网络层问题（fetch throw + SSE wire drop）。
+3. **Mid-stream drop 不能 retry**：attempt 1 已 yield N chunks，attempt 2 中途再断 → consumer 已经拿到 part1 没法撤销。必须 throw。
+5. **try/finally 必须覆盖所有 exit path**：本节暴露了一个 ops-log gap —— HTTP error 分支没进 SSE try/finally，所以不 emit done 行。修法是手动补 bookkeeping。
+6. **Verification 依赖基础设施状态**：key 余额耗尽时 5x news 验证会失败 —— 但失败原因应该清晰出现在 ops log（HTTP 402 → user 一眼看到）。bookkeeping 兜底是 user 原则"每次修BUG通过日志来修理，确保日志里有所有错误的信息"的工程化体现。
+
+**相关**：
+- PROGRESS §7.48 — system-prompt augmentation（上游 2/5 kind=error 是本节 motivation）
+- PROGRESS §7.49 — agent-loop retry 失败记录（fire-and-forget turn 模型，4 root causes），本节通过下沉 retry 到 adapter 层绕过
+- `src/dsh-adapter/llm-max-turns.ts` — 共享 per-session counter 模块（tool-call + SSE retry）
+- `src/dsh-adapter/cloud-llm-adapter.ts:289-503` — §7.50 retry 循环实现
+- `tests/unit/llm-max-turns.test.ts` — 7 测试覆盖 counter 模块
+- memory `deepseek-api-key-balance-2026-09-13` — 验证时的 key 余额耗尽根因记录
+
 
