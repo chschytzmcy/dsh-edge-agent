@@ -32,9 +32,39 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 LOG_FILE="${LOG_FILE:-$HOME/.dsh-edge-agent/log/dsh-edge-agent.log}"
+
+# §7.47.2 (2026-09-13): source .env to use REAL keys for e2e.
+# Pre-§7.47.2 hardcoded `test-fake-deepseek-key-for-opslog-fixture` and
+# `test-secret-key`, which made cloud LLM paths return 401 in 134ms with
+# resultLen=0 — false signal that "Cloud path doesn't work". Real .env
+# keys let news + mibao cases verify actual DeepSeek round-trips.
+#
+# Override order (highest first):
+#   1. existing env var (e.g. user exported DSH_EDGE_HTTP_TOKEN=test)
+#   2. .env file at $REPO_ROOT/.env (REAL keys — required for meaningful
+#      cloud-llm coverage)
+#   3. hardcoded fallback (only for legacy dry-run / isolated CI)
+#
+# .env is in .gitignore (memory [[test-fixture-no-real-pii]] also notes
+# .env = secrets, never commit). If .env is missing AND no env override,
+# we WARN and fall back to fake keys — but cloud LLM cases will FAIL
+# their tool allow / cloud-call assertions as a result.
+if [ -z "${EDGE_API_KEY:-}" ] || [ -z "${DEEPSEEK_API_KEY:-}" ]; then
+  if [ -f "$REPO_ROOT/.env" ]; then
+    set -a
+    # shellcheck disable=SC1091
+    . "$REPO_ROOT/.env"
+    set +a
+  else
+    echo "[WARN] .env not found at $REPO_ROOT/.env — falling back to fake keys." >&2
+    echo "       Cloud LLM cases (news/mibao) will fail their cloud-call assertions." >&2
+    echo "       Export EDGE_API_KEY + DEEPSEEK_API_KEY to use real keys." >&2
+  fi
+fi
+
 HTTP_API_PORT="${DSH_EDGE_HTTP_PORT:-21017}"
 HTTP_API_URL="http://127.0.0.1:${HTTP_API_PORT}/v1/chat"
-AUTH_TOKEN="${DSH_EDGE_HTTP_TOKEN:-test-secret-key}"
+AUTH_TOKEN="${DSH_EDGE_HTTP_TOKEN:-${EDGE_API_KEY:-test-secret-key}}"
 TIMEOUT="${E2E_TIMEOUT:-90}"
 ONLY=""
 DRY_RUN=0

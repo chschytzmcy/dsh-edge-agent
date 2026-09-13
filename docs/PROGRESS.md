@@ -5590,4 +5590,62 @@ DeepSeek 195ms 返回 resultLen=0。catalogDropped=11 = 11 个 skill 全部 drop
 - PROGRESS §7.37 — `filterToolsField` Layer 1.5 已正确（用 Set.has），证明 Set 语义是对的，catalog 应该跟它对齐
 - PROGRESS §7.46 — pre-step filter ops log（`catalogDropped=N`）让本 bug 一行可见
 
+### §7.47.2 e2e-ops-log-coverage.sh 真 key 化 — 消除 news 空返回假信号（2026-09-13）
+
+**症状**：§7.47 + §7.47.1 修完后跑 news 用例，chat reply 仍 `result='' + duration=134ms`：
+
+```
+13:50:40.615 cloud-llm-adapter LLM call start baseUrl=https://api.deepseek.com
+13:50:40.749 cloud-llm-adapter LLM call done durationMs=134
+13:50:40.749 chat finished turn=1 duration=197ms resultLen=0
+```
+
+DeepSeek 134ms 返回空。运维直觉："DeepSeek 怎么不响应？"——实际是 401 fast-fail。
+
+**根因**：`scripts/e2e-ops-log-coverage.sh` 硬编码 fake key：
+
+```bash
+AUTH_TOKEN="${DSH_EDGE_HTTP_TOKEN:-test-secret-key}"
+# 内部 curl 调用 fake DEEPSEEK_API_KEY=test-fake-deepseek-key-for-opslog-fixture
+```
+
+fake key 让 cloud-llm-adapter 在 134ms 内 401 abort；§7.47.1 "news 空返回" 收尾其实是这个假信号，不是 DeepSeek 模型行为。
+
+**修复**（用户反馈："每次E2E测试都用真 key 测试"）：脚本顶部自动 source `$REPO_ROOT/.env`：
+
+```bash
+if [ -z "${EDGE_API_KEY:-}" ] || [ -z "${DEEPSEEK_API_KEY:-}" ]; then
+  if [ -f "$REPO_ROOT/.env" ]; then
+    set -a; . "$REPO_ROOT/.env"; set +a
+  else
+    echo "[WARN] .env not found — falling back to fake keys." >&2
+  fi
+fi
+AUTH_TOKEN="${DSH_EDGE_HTTP_TOKEN:-${EDGE_API_KEY:-test-secret-key}}"
+```
+
+**覆盖优先级**：1. 已 export env → 2. `$REPO_ROOT/.env`（real keys） → 3. fake fallback（仅 legacy dry-run / isolated CI）。`.env` 在 `.gitignore`，绝不 commit（memory [[test-fixture-no-real-pii]]）。
+
+**实测**（`sessionId=opslog-canary-news`，2026-09-13 14:03：真 key）：
+
+```
+14:03:19.685 preflight intent category=CLOUD rationale=rule-cloud-keyword:新闻
+14:03:19.703 tool allow tool=web_search 3x         ← 真调用 web 搜索
+14:03:19.703 cloud-llm-adapter LLM call start 25x
+14:03:53.107 chat finished turn=1 duration=34424ms
+chat reply result='# 最新 AI 新闻汇总\nDeepSeek V4.1 Flash 正式发布...'
+```
+
+✅ `duration=34424ms`（fake key 134ms） + `resultLen>0`（修前 0） + `web_search 3 次`（修前 0）。3 个 canary 全 PASS。
+
+**修改文件**：
+- `scripts/e2e-ops-log-coverage.sh` — 顶部 source `.env` 逻辑 + AUTH_TOKEN fallback chain
+
+**误判史 lesson**：§7.47.1 收尾写"news 空返回是 DeepSeek 模型行为"——实际是 fake key 的 401 假信号。修 fake key 后 DeepSeek 正常返回内容（V4.1 Flash 9月10日发布）。今后排查"模型空返回"先验 auth，不能默认是模型行为。
+
+**相关**：
+- memory [[deepseek-api-key]] — `.env` 里 EDGE_API_KEY / DEEPSEEK_API_KEY 实际值
+- PROGRESS §7.35 — DEEPSEEK_API_KEY 缺失时降级 LOCAL（同类：fake key 也是缺失的另一种形态）
+- PROGRESS §7.47.1 — 收尾误判的修正
+
 
