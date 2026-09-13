@@ -6235,4 +6235,74 @@ const sessionId = (options as { sessionId?: string }).sessionId ?? '<pre-session
 - `.env.sh` — DSH_EDGE_* 配置 + .env secret 加载入口
 - memory `ops-log-coverage-principle` — user 总原则"每个关键环节都在 ops log 体现"
 
+### §7.53 prompt-guard + intent-router 漏传 sessionId 到 llm/stream — probe 仍显示 <pre-session>（2026-09-13）
+
+**症状**：user 反馈"sessionId 还是 <pre-session>"。§7.52 修了 sentinel 命名后，operator 一眼能看出前 2 次 probe 是 pre-session gate，**但 user 觉得 pre-session 本身是 bug**——因为 session 已经在 21:00:06.807 由 http-api 创建（`[http-api] chat received sessionId=verify-752-round2-...`），而 21:00:06.810 的 llm/stream probe 还是 `<pre-session>`。
+
+**根因**：sessionId 在 call chain 里**有但没传进 llm/stream**：
+- `promptGuard.checkInput(text, sessionId)` 接 sessionId 作为参数（line 95 接口）
+- 但 `modelBasedCheck(text)` 内部调 `this.llm.stream({ provider, model, messages, signal })` —— **sessionId 在 closure 里但没塞进 options**
+- `intentRouter.classify(text, { sessionId })` 接 sessionId（line 117 接口）
+- `classifyWithLlm` 内部调 `this.llm.stream({ provider, model, messages, signal })` —— 同样**没传 sessionId**
+
+结果：`realm-skill-bridge.ts:858` 的 llm/stream probe 读 `p.sessionId` → undefined → `<pre-session>` sentinel。
+
+**实施**（2 files）：
+
+**1. `src/dsh-adapter/prompt-guard.ts`**：
+- `modelBasedCheck(text)` → `modelBasedCheck(text, sessionId)`
+- 调用点 `checkInput` line 395: `this.modelBasedCheck(text, sessionId)`
+- `llm.stream({ ... })` options 加 `...(sessionId ? { sessionId } : {})` —— 用 spread 而不是硬塞，保留 `sessionId: undefined` 的语义（pre-session 路径走旧 sentinel）
+- 5 个 audit emit 全补 `sessionId` 字段：
+  - `guard.model-detect.skipped` (line 462)
+  - `guard.model-detect.start` (line 542)
+  - `guard.model-detect.timeout` / `guard.model-detect.error` (line 586)
+  - `guard.model-detect.error` json-parse-failed (line 603)
+  - `guard.model-detect.unsafe` (line 619)
+  - `guard.model-detect.end` (line 638)
+
+**2. `src/dsh-adapter/intent-router.ts`**：
+- `classifyWithLlm` 已经有 `sessionId` 参数（line 341）
+- `llm.stream({ ... })` options 加 `...(sessionId ? { sessionId } : {})`
+
+**验证**（sessionId=`verify-753-1789304802`，重启 dsh-tui + rsync lib）：
+
+```
+21:06:42 llm/stream probe sessionId=verify-753-1789304802 provider=local-llm model=local-llm toolsCount=0 agentRealm=null
+21:06:46 llm/stream probe sessionId=verify-753-1789304802 provider=local-llm model=qwen3.7-plus toolsCount=0 agentRealm=CLOUD
+21:06:50 llm/stream probe sessionId=verify-753-1789304802 provider=cloud-llm model=cloud-llm toolsCount=27 agentRealm=CLOUD
+21:06:58 llm/stream probe sessionId=verify-753-1789304802 provider=cloud-llm model=cloud-llm toolsCount=27 agentRealm=CLOUD
+21:07:06 llm/stream probe sessionId=verify-753-1789304802 provider=cloud-llm model=cloud-llm toolsCount=27 agentRealm=CLOUD
+```
+
+- ✓ 5/5 probe 行全部 sessionId=verify-753-1789304802
+- ✓ 前 2 行 `agentRealm=null` (preflight gate) vs 后 3 行 `agentRealm=CLOUD` (real chat with realm resolved)
+- ✓ `toolsCount=0` 前 2 vs `toolsCount=27` 后 3 — classifier 不需要 tools, chat 需要 web_search 等 27 个
+
+audit JSONL 交叉验证：
+```
+guard.model-detect.start: {"sessionId":"verify-753-...","textLen":9,"provider":"local-llm","model":"qwen3.7-plus","timeoutMs":4000}
+guard.model-detect.error: {"sessionId":"verify-753-...","durationMs":4005,"reason":"json-parse-failed"}
+```
+audit 现在也带 sessionId —— 一个 grep 就能拉出整个 preflight trail。
+
+**注意**：stale `<pre-session>` 行（21:00:06.810 / 21:00:10.891）来自修复前的那次 chat，**不要误读**。新 chat 全部走新路径。
+
+**pnpm vitest run**：725 passed + 1 skipped + 0 failed（修 7.52 后无新增测试）
+
+**Lesson**：
+1. **sessionId 是 closure-relative 的标签，不是绝对 ID**：HTTP API 入口创建 → input-guard wrapper ctx 持有 → prompt-guard / intent-router 收到参数 → 但**调 llm/stream 时如果不显式塞进 options**，probe 就看不到。这是个 4 层传递链的最后一公里遗忘。
+2. **`{ ...(x ? { y: x } : {}) }` 是安全传播 optional field 的 idiom**：不想把 `sessionId: undefined` 写进 options（adapter 看到 undefined 跟没传一样，但 lint 不一定喜欢），又想保留 pre-session 路径（不让 caller 假造 ID）。spread + ternary 是最少惊讶的写法。
+3. **audit JSONL 跟 ops log 是两套独立字段集**：§7.52 修了 ops log sentinel，但 audit log 的 payload 是 audit plugin 自己 emit 的（prompt-guard.ts 直接写），不在 llm/stream waterfall 上。补 audit 字段要单点改每个 emit。
+4. **用户反馈"还显示 X" → 检查 call chain 全链路**：上一节只改了 sentinel 命名，user 立刻追问，说明根本问题是数据丢失不是命名。命名修不修，数据该有的还得有。
+
+**相关**：
+- `src/dsh-adapter/prompt-guard.ts:447,555` — modelBasedCheck + llm.stream sessionId 注入
+- `src/dsh-adapter/intent-router.ts:341,518` — classifyWithLlm + llm.stream sessionId 注入
+- `src/dsh-adapter/input-guard.ts:599,617,712` — sessionId 持有者（payload.agent.session.id → promptGuard.checkInput / intentRouter.classify）
+- `src/dsh-adapter/realm-skill-bridge.ts:858-874` — llm/stream probe 读 p.sessionId
+- `node_modules/@deepseek-ai/dsh-llm/lib/types/types.d.ts:409` — `GenerateOptions.sessionId?: Branded<'SessionId'>` 类型定义
+- §7.52 — ops log sentinel + .env.sh env var 镜像（前序修复）
+- memory `ops-log-coverage-principle` — "每个关键环节都在 ops log 体现"
+
 
