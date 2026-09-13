@@ -5967,4 +5967,70 @@ if (hasToolResult) {
 - memory [[ops-log-coverage-principle]] — 23 节点清单让失败模式透明可分析
 - `node_modules/@deepseek-ai/dsh-llm/lib/types/message.d.ts:140` — ToolResultMessage.role='user' + source.kind='tool' 的类型契约
 
+### §7.49 turn/end retry on kind=error — **attempted + reverted**（2026-09-13）
+
+**目标**：解决 §7.48 后 5x news 验证剩余的 2/5 kind=error 失败（DeepSeek 上游 SSE 间歇断开）。思路是 turn/end listener 检测 `kind=error` 后调 `agent.followup(userMsg)` 把同一条 user message enqueue 到 next-turn + wake driver，让 agent-loop 自动开启新一轮 turn。
+
+**实施过程**（4 轮 debug 才看清 agent-loop 行为）：
+
+1. **轮 1 — 第一次试**：在 turn/end listener 加 retry block。5x news 跑出来 0 retry triggered / 0 retry skipped（说明 listener 进 retry 块了但所有 early-return 都 fail 了）。
+
+2. **轮 2 — 加 trace 行**：`turn/end eval endKind=error` 是 emit 的，但 retry lookup / triggered / invoked 都不 emit → 说明 retry 块抛了未捕获异常。加 try/catch + retry threw 行。
+
+3. **轮 3 — 根因 1（inject 缺失）**：`retry threw error=cannot get property "agents" without inject`。
+   - **修**：plugin `inject` 数组加 `'agents'`；同步更新 `tests/unit/realm-skill-bridge.test.ts` fixture（`['auditLog', 'skills']` → `['auditLog', 'skills', 'agents']`）。
+   - 验证：retry triggered + retry invoked 都出现，但 `retry failed error=session append cannot reenter while another append is being published`。
+
+4. **轮 4 — 根因 2（reentrancy guard）**：`agent.followup()` 内部调 `session.append("user/message", ...)`，而 listener callback 还在 `session/event` publish phase 里 → Session reentrancy guard 抛错。
+   - **修**：把 followup 调用包到 `queueMicrotask(...)` → 错误依旧（microtask 边界不够，publish phase 还没结束）。
+   - **再修**：改成 `setTimeout(..., 0)` → retry invoked 成功。
+
+5. **轮 5 — 根因 3（agent-loop turn 模型不救活 kind=error）**：
+   - setTimeout 后 turn 2 启动了——但 turn 2 **立即 chat finished reason=kind=error**，**没有任何 LLM call start**。
+   - 同时 `retry skipped max-retries-exceeded count=1/1` 立刻触发（因为 turn 2 也 emit kind=error 触发同 listener）。
+   - 8s 后 ops log 仍无新 turn 痕迹。
+
+**根因**（dsh-agent-loop 行为约束）：
+
+`agent.followup()` 调 `this.inbox.splice("next-turn", ...)` + `wakeDriver()`：
+
+- ✅ message 进 next-turn inbox
+- ✅ wakeDriver 让 driver 进入 running phase
+- ✅ turn 2 启动（`kick()` 走 `while (await this.turn())`）
+- ❌ **turn 2 立即 return false**：fresh driver kick() 启动后，preStep 读到 inbox 但 agent-loop 的 `await this.turn()` 在原 chat 的 promise chain 里不会等 followup 触发的新 turn。新 turn 是 fire-and-forget，且由于某种状态（如 phase abort signal）立即 abort。
+
+更本质：dsh-agent-loop 的 driver 模型是**单次 chat 对应一次 driver kick**。kind=error 后 driver kick finally 块 setPhase(idle)，但 http-api 的 `await this.session.somehow()` 已经 resolve——新一轮 turn 的结果**不会流回**到原 http-api response 通道。user 仍然看到 empty reply。
+
+**结论**：在 dsh-agent-loop 现有 turn 模型下，**agent-loop 层的 retry 不能让 user 看到非空 reply**。retry 的 user-facing 行为没改善（5/5 仍 resultLen=0），仅 ops log 多了一堆 retry triggered/invoked 噪声。
+
+**Revert 决定**：用户决策 revert。
+
+**Revert 内容**（完整回滚）：
+- `src/dsh-adapter/realm-skill-bridge.ts`：删除 `MAX_RETRIES_PER_SESSION` 常量、`findLastUserMessageContent` helper、`retryCounters` Map + dispose .clear()、turn/end listener 整个 retry block + turn/end eval trace 行；`inject` 数组从 `['auditLog', 'skills', 'agents']` 改回 `['auditLog', 'skills']`
+- `tests/unit/realm-skill-bridge.test.ts`：fixture `['auditLog', 'skills']` 同步回滚；删除 §7.49 inject 注释
+- `git diff a5784d5..HEAD -- src/dsh-adapter/realm-skill-bridge.ts tests/unit/realm-skill-bridge.test.ts` 为空 diff（完全回到 §7.48 状态）
+
+**保留**：本 §7.49 chapter（作为"agent-loop retry 路径不可行"的知识资产），避免未来重蹈覆辙。
+
+**后续可选方向**（如想继续解决 kind=error 2/5 失败）：
+- **A**：在 `cloud-llm-adapter` 内 catch SSE 异常时 fetch retry（不绕 agent-loop）—— 真正让 user 看到非空 reply，但增加 LLM 调用次数
+- **B**：等 dsh 上游修 turn 模型（让 kind=error 后 driver 自动延续 next-turn 处理）
+- **C**：换 deepseek-reasoner（reasoning 模型流行为可能更稳定）
+
+**实测 timeline**（5 次 warmup / 单次 full）：
+- warmup run#verify-749f-162104（"hi"）：retry invoked 成功 + agent followup enqueued，但 turn 2 没启动
+- run#verify-749h-162448（"查询最新的AI新闻"）：setTimeout 后 turn 2 立即 abort（无 LLM call start）
+
+**Lesson**：
+1. **cordis ctx accessor 必须先 inject**：plugin inject 数组是 runtime 必需，加 retry 这种新 ctx property 访问时容易遗漏。
+2. **Session.append reentrancy guard**：从 listener callback 内调任何 `session.append()` 必须 defer；queueMicrotask 边界不够，setTimeout(0) 才够。
+3. **agent-loop turn 模型不救活 kind=error**：fire-and-forget retry 触发的 turn 不会流回原 http-api response。retry 必须在能"等结果"的层级做（cloud-llm-adapter 内的 fetch retry，或 http-api handler 层的 session restart）。
+4. **调试时用 `try/catch + retry threw` 行包整个 retry 块**：cordis listener throw 是 silent drop（不阻断其他 listener 但你自己看不到）。
+
+**相关**：
+- PROGRESS §7.48 — 上游 5x 验证（2/5 kind=error）为本节 motivation
+- `@deepseek-ai/dsh-agent-loop/lib/index.js:401` — `followup()` 实现（`send(input, "next-turn", true)`）
+- `@deepseek-ai/dsh-agent-loop/lib/index.js:449` — `wakeDriver()` 只在 phase.kind === 'idle' 时启动 driver
+- `@deepseek-ai/dsh-session/lib/index.js:1415` — Session reentrancy guard 抛错处
+
 
