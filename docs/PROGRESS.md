@@ -6306,3 +6306,100 @@ audit 现在也带 sessionId —— 一个 grep 就能拉出整个 preflight tra
 - memory `ops-log-coverage-principle` — "每个关键环节都在 ops log 体现"
 
 
+### §7.54 ops log 数据质量补完 — wire model 显示 + 路由回退 + 同步 timeout 调高（2026-09-14）
+
+**4 个子项，三个修了代码、一个保持现状**：
+
+#### §7.54.1 ops log 显示真实 wire model — local-llm 默认 `qwen3.7-plus` 不显示
+
+**症状**：ops log 里 prompt-guard 模型检测事件显示 `provider=local-llm model=local-llm`，但 llm/stream probe 显示 `model=qwen3.7-plus`。operator 看到两边不一致——一个说"调了 local-llm 模型"，一个说"调了 qwen3.7-plus"，不知道哪个是真的。
+
+**根因**：`local-llm-adapter.ts` 的 audit 事件 `llm.local.start/end` 等都从 `options.model` 拿 model 字段，而 caller 传的是路由键 `local-llm`。但实际 wire body 用的 `this.defaultModel`（qwen3.7-plus）。两个字段混用，没区分。
+
+**修复**（d458406）：所有 audit 事件改用 `model=${this.defaultModel} route=${options.model}` 双字段呈现——`model` 是真实 wire body，`route` 是路由键。operator 一眼能区分"配置上送的" vs "实际跑的"。
+
+```typescript
+this.logger?.info?.(
+  `[local-llm-adapter] LLM call start sessionId=${sessionId} provider=${options.provider} model=${this.defaultModel} route=${options.model} messageCount=${...}`,
+)
+```
+
+#### §7.54.2 第一轮 LLM call 4s 超时 — **未改代码**，user 决定保持同步 + 延 timeout
+
+**症状**：每次 chat 触发 4s 的 local-llm call（prompt-guard 模型辅助检测），即使意图已被 http-api classify 覆盖。
+
+**原计划**：3 个优化方向（env 异步 opt-in / 跳过 classified / 调高 timeout）都列了。
+
+**user 决定（2026-09-14）**："还是全部同步，这个简单，安全" → 保持同步设计 + 简单安全优先。async opt-in / skip classified / 延 timeout 三个方案都未采纳（只采纳了**调高 timeout** 的部分）。fail-open 浪费 43% latency 是 known cost，user 接受。
+
+详见 memory `prompt-guard-local-llm-waste.md` §7.54 决策记录。
+
+#### §7.54.3 model-router 路由键等于 provider id 时回退到 `fallbackModel`
+
+**症状**：`Creating agent with provider=cloud-llm, model=cloud-llm`——模型字段显示的是路由键 `cloud-llm`，不是真实的 wire 模型 `deepseek-chat`。
+
+**根因**：http-api 和 intent-router 用 `mr.resolve('cloud-llm')` 拿 router 返回值，router 的内部 mapping 是 `cloud-llm → {provider:'cloud-llm', model:'cloud-llm'}`（provider id 同时当 model 用，因为云路由不区分多模型）。但 caller 真正想要的是 `deepseek-chat`（deepseek-chat 是默认 model）。
+
+**修复**（d458406）：在 http-api.ts:1641-1661 (resolveRoute) 和 intent-router.ts:355-369 (classifyWithLlm) 都加 fallback 逻辑：
+
+```typescript
+const r = mr.resolve(preferred)
+if (r && typeof r.provider === 'string' && typeof r.model === 'string') {
+  const resolvedModel = (r.model === r.provider) ? fallbackModel : r.model
+  return { provider: r.provider, model: resolvedModel, resolved: true }
+}
+```
+
+当 router 返回的 `model === provider`（即路由键 == provider id）时，回退到 `fallbackModel`（如 `deepseek-chat` / `qwen3.7-plus`）。其他情况（如未来真有多模型 router）保留 router 输出。
+
+#### §7.54.4 同步 LLM timeout 4000 → 8000/10000ms
+
+**症状**：intent-router classify（345 字中文 prompt，DashScope qwen3.7-plus streaming）在 4s 内收不到完整 stream → abort at timeout。prompt-guard 模型检测（124 字英文 safety prompt）约 2.7s 完成但无 headroom，遇到 DashScope 限流就 abort。
+
+**修复**（本提交）：
+
+| 字段 | 旧 | 新 | 位置 |
+|---|---|---|---|
+| `intent-router.llmTimeoutMs` | 4000 | 10000 | `cordis.patch.yml:397` |
+| `prompt-guard.modelDetectionTimeoutMs` | 4000 | 8000 | `cordis.patch.yml:459` |
+
+```yaml
+# intent-router
+llmTimeoutMs: !!js parseInt(process.env.DSH_EDGE_INTENT_LLM_TIMEOUT_MS ?? '10000', 10)
+# prompt-guard
+modelDetectionTimeoutMs: !!js parseInt(process.env.DSH_EDGE_GUARD_MODEL_TIMEOUT_MS ?? '8000', 10)
+```
+
+`.env.sh` 也镜像默认值：
+
+```bash
+export DSH_EDGE_GUARD_MODEL_TIMEOUT_MS="${DSH_EDGE_GUARD_MODEL_TIMEOUT_MS:-8000}"
+export DSH_EDGE_INTENT_LLM_TIMEOUT_MS="${DSH_EDGE_INTENT_LLM_TIMEOUT_MS:-10000}"
+```
+
+**踩坑**：同步到 `~/.dsh/profiles/dsh-tui/cordis.patch.yml` 时把它**完整复制**了（27K bytes，包括 file-logger `insert:` 块）。结果 dsh 启动报 `duplicate loader entry id: file-logger`——cordis-plugin-loader EntryGroup.update:91 检测到 file-logger 被注册两次（profile patch + bundle patch）。
+
+**根因 + 修复**：profile patch 本应是**用户皮肤**（web profile 是 `[]` 空文件作为参考），但 tui profile 被错填成 bundle patch 的完整副本。修复：把 tui profile 的 `cordis.patch.yml` 替换成空 `[]`（web 模式），让 bundle patch 单层提供所有配置。env var override 路径仍在工作（bundle patch 的 `parseInt(process.env.X ?? '...')` 读 env）。comment 写明 §7.54.4 决策原因。
+
+**验证**：dsh-tui 重启后 chat 端到端 14-22s，ops log 显示：
+- 第一次 chat（22s）：intent-router 10s timeout 触发 → prompt-guard 8s timeout 触发 → cloud-llm 4s → fail-open safe → chat 200
+- 第二次 chat（14s）：intent-router 3.6s 成功（target=local, confidence=1.0）→ prompt-guard 8s timeout 触发 → sanitize 2.2s → cloud-llm
+
+两次 prompt-guard 都超时（DashScope qwen3.7-plus 今天 flaky），但**新的 8s 超时确实生效**（LLM call done 行显示 `durationMs=8007` → fail-open safe 而不是 4s 提前 abort）。Intent-router 时好时坏（取决于 DashScope 限流状态），但**新 10s 给了足够 headroom**。
+
+**Lesson**：
+1. **Profile-level cordis.patch.yml 是 user skin**，不应当是 bundle patch 的副本——它应该只放**用户级 overrides**（个人 port、secret 引用等），空 `[]` 是默认且正确的（web profile 就是 `[]`）。
+2. **Bundle patch + profile patch 同时含 `- insert: - id: X` 一定报 duplicate**——Cordis loader 不去重 insert，新条目直接 append。cordis-plugin-loader EntryGroup.update:91 抛错。
+3. **`!!js parseInt(process.env.X ?? 'fallback')` 是 bundle + env 双轨保险**：env 设了用 env，没设用 patch 默认值。Profile patch 完全可以删（如果它没真用户 override），env + bundle 已经够。
+4. **dashScope qwen3.7-plus 持续 flaky**：intent-router 时好时坏（3.6s ok / 10s abort），prompt-guard 这次 8s 都 abort。fail-open safe 设计救命（chat 不挂）。但生产环境应该考虑切回本地 llama.cpp 或加 retry。
+
+**相关**：
+- `cordis.patch.yml:397,459` — 两个 timeout 默认值
+- `.env.sh:80-81` — env var 镜像
+- `~/.dsh/profiles/dsh-tui/cordis.patch.yml` — 替换为 `[]`
+- `~/.dsh/profiles/dsh-tui/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/cordis.patch.yml` — cp 同步项目 patch
+- memory `prompt-guard-local-llm-waste.md` — §7.54.2 user 决策
+- memory `dsh-profile-overlay.md` — 两层 patch 架构
+- §7.43 — tui 默认 port 21018 强制覆盖
+
+

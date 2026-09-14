@@ -70,6 +70,15 @@ export DSH_EDGE_LOCAL_MODEL="${DSH_EDGE_LOCAL_MODEL:-${DSH_EDGE_LOCAL_LLM_MODEL:
 # LLM call goes through qwen3.7-plus. Mirror DSH_EDGE_LOCAL_LLM_MODEL
 # so the local classifier naming paths converge.
 export DSH_EDGE_GUARD_MODEL_MODEL="${DSH_EDGE_GUARD_MODEL_MODEL:-${DSH_EDGE_LOCAL_LLM_MODEL:-qwen3.7-plus}}"
+# §7.54.4 (2026-09-14): bump default timeout for synchronous LLM calls.
+# Pre-§7.54.4 default was 4000ms — intent-router classify (345-char Chinese
+# prompt) was being aborted at 4s on DashScope's streaming API; prompt-guard
+# model detection (124-char English safety prompt) was OK at ~2.7s but had
+# no headroom. New defaults: prompt-guard 8000ms (2x measured), intent-router
+# 10000ms (DashScope headroom). Override by exporting these env vars before
+# `source .env.sh`.
+export DSH_EDGE_GUARD_MODEL_TIMEOUT_MS="${DSH_EDGE_GUARD_MODEL_TIMEOUT_MS:-8000}"
+export DSH_EDGE_INTENT_LLM_TIMEOUT_MS="${DSH_EDGE_INTENT_LLM_TIMEOUT_MS:-10000}"
 export DSH_EDGE_LOCAL_TOOLS_WRITABLE="${DSH_EDGE_LOCAL_TOOLS_WRITABLE:-true}"
 export DSH_EDGE_LOCAL_TOOLS_ALLOWLIST="${DSH_EDGE_LOCAL_TOOLS_ALLOWLIST:-/tmp,/home/etsme/cy/agent/dsh-edge-agent}"
 export DSH_PERMISSION_MODE="${DSH_PERMISSION_MODE:-workspace-write}"
@@ -96,3 +105,5 @@ echo "  DSH_EDGE_INTENT_PROVIDER=${DSH_EDGE_INTENT_PROVIDER:-<unset>}"
 echo "  DSH_EDGE_INTENT_MODEL=${DSH_EDGE_INTENT_MODEL:-<unset>}"
 echo "  DSH_EDGE_LOCAL_MODEL=${DSH_EDGE_LOCAL_MODEL:-<unset>}"
 echo "  DSH_EDGE_GUARD_MODEL_MODEL=${DSH_EDGE_GUARD_MODEL_MODEL:-<unset>}"
+echo "  DSH_EDGE_GUARD_MODEL_TIMEOUT_MS=${DSH_EDGE_GUARD_MODEL_TIMEOUT_MS:-<unset>}"
+echo "  DSH_EDGE_INTENT_LLM_TIMEOUT_MS=${DSH_EDGE_INTENT_LLM_TIMEOUT_MS:-<unset>}"
