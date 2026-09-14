@@ -456,7 +456,7 @@
         enableModelDetection: !!js process.env.DSH_EDGE_GUARD_MODEL !== 'false'
         modelDetectionProvider: !!js process.env.DSH_EDGE_GUARD_MODEL_PROVIDER ?? 'local-llm'
         modelDetectionModel: !!js process.env.DSH_EDGE_GUARD_MODEL_MODEL ?? 'Qwen3-4B-Instruct-2507'
-        modelDetectionTimeoutMs: !!js parseInt(process.env.DSH_EDGE_GUARD_MODEL_TIMEOUT_MS ?? '15000', 10)
+        modelDetectionTimeoutMs: !!js parseInt(process.env.DSH_EDGE_GUARD_MODEL_TIMEOUT_MS ?? '20000', 10)
         modelDetectionMaxInputLength: !!js parseInt(process.env.DSH_EDGE_GUARD_MODEL_MAX_INPUT ?? '2000', 10)
 
     # ── Phase 4: 隐私策略引擎 + 脱敏管线 ──────────────────────────────────

@@ -78,9 +78,12 @@ export DSH_EDGE_GUARD_MODEL_MODEL="${DSH_EDGE_GUARD_MODEL_MODEL:-${DSH_EDGE_LOCA
 # §7.54.5 (2026-09-14): DashScope qwen3.7-plus streaming 限流时 server 保持
 # 连接但不发 chunk，10s/8s 仍 abort（2 次 chat 中 1 次 abort）。user 决定
 # 再延：intent-router 30000ms，prompt-guard 15000ms。Worst case 增加 ~20s
-# latency，但 fail-open safe 仍兜底。Override by exporting these env vars
-# before `source .env.sh`.
-export DSH_EDGE_GUARD_MODEL_TIMEOUT_MS="${DSH_EDGE_GUARD_MODEL_TIMEOUT_MS:-15000}"
+# latency，但 fail-open safe 仍兜底。
+# §7.54.6 (2026-09-14): TUI 实测 prompt-guard 仍 15s abort（15004ms 撞墙），
+# intent-router 9.2s 成功（30s budget 内）。prompt-guard 15000→20000ms，给
+# DashScope 限流更多 headroom；intent-router 30s 不动。Override by exporting
+# these env vars before `source .env.sh`.
+export DSH_EDGE_GUARD_MODEL_TIMEOUT_MS="${DSH_EDGE_GUARD_MODEL_TIMEOUT_MS:-20000}"
 export DSH_EDGE_INTENT_LLM_TIMEOUT_MS="${DSH_EDGE_INTENT_LLM_TIMEOUT_MS:-30000}"
 export DSH_EDGE_LOCAL_TOOLS_WRITABLE="${DSH_EDGE_LOCAL_TOOLS_WRITABLE:-true}"
 export DSH_EDGE_LOCAL_TOOLS_ALLOWLIST="${DSH_EDGE_LOCAL_TOOLS_ALLOWLIST:-/tmp,/home/etsme/cy/agent/dsh-edge-agent}"
