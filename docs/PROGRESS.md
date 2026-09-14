@@ -6542,4 +6542,167 @@ emit 格式：
 - memory `ops-log-coverage-principle` — "每个关键环节都在 ops log 体现"
 - memory `audit-presence-vs-enforce` — §7.34 audit 入口 + §7.54 字段补完共同构成完整 audit trail
 
+#### §7.54.8 HTTP API 路径 ops log 验证 — preflight 顺序反 + §7.54.6 部署状态 bug 暴露（2026-09-14）
+
+**症状**（user 测试 2026-09-14 18:45）："在TUI发了 查询最新的美国新闻"，HTTP API POST `/v1/chat` 到 dsh-tui port 21018（注意：走的是 dsh-tui 的 HTTP API 端点，**不是** TUI 交互入口）。44.8s 完成，200 响应 1395 字符。
+
+**HTTP API 路径 ops log 与之前 TUI 路径的关键差异**：
+
+| 维度 | TUI 路径（routeSource=webui） | HTTP API 路径（routeSource=http-api） |
+|---|---|---|
+| preflight 顺序 | prompt-guard → privacy-policy → intent | **intent → prompt-guard → privacy-policy** ⭐ |
+| intent 在哪跑 | input-guard.handlePreStep 内部 | **HTTP API 层直接调 intentRouter.classify** |
+| intentSource | `llm-classified` | **`http-api-classified`** |
+| agentRealm timing | prompt-guard 探针看到 `null`，chat 阶段才 `CLOUD` | **intent 探针已 `null`，prompt-guard 探针已 `CLOUD`** ⭐ |
+| reqId | 无 | **`reqId=5a7b073f` 在 chat received / chat reply 两行配对** |
+| LLM 调用次数 | 5 (2 local + 3 cloud) | 6 (2 local + 4 cloud) |
+| tool 调用次数 | 3 | 4 (1 error) |
+
+**HTTP API 加速的设计意图（§7.34 + §7.21）**：
+- HTTP API 层在 input-guard.handlePreStep 之前先调 `intentRouter.classify`（http-api.ts:492），把结果写到 `agent._edgeRoute`（line 705-710）
+- input-guard handlePreStep 读 `agent._edgeRoute` 跳过 intent LLM 调用（line 712-740）→ `intentSource=http-api-classified`
+- **trade-off**：HTTP API 加速（先 classify 决定 realm）；TUI safety-first（prompt-guard 先挡防 injection）
+
+**audit 字段指纹（operator 排查用）**：
+- `routeSource=http-api` + `intentSource=http-api-classified` + `reqId=...` 三件套 = HTTP API 入口
+- `agentRealm=CLOUD` 出现在 **prompt-guard 探针**（而不是 chat 阶段探针）= HTTP API 路径独有的 trace
+- `[http-api] chat received` 和 `[http-api] chat reply` 两行配对 = HTTP request 边界
+
+**6 次 LLM 调用分布**：
+| # | 调用 | model | systemLen | duration |
+|---|---|---|---:|---:|
+| 1 | intent-router | qwen3.7-plus | 0 | 6.600s |
+| 2 | prompt-guard | qwen3.7-plus | 2505 | **12.287s** ⚠️ |
+| 3 | DeepSeek #1 | deepseek-chat | 6349 | 1.771s |
+| 4 | DeepSeek #2 | deepseek-chat | 6576 | 1.584s |
+| 5 | DeepSeek #3 | deepseek-chat | 6576 | 1.160s |
+| 6 | DeepSeek #4 | deepseek-chat | 6576 | 5.888s |
+
+**4 次 tool 调用**：web_search × 2 + web_fetch × 2（**1 个 error**: `status=error errorKind=unknown`）
+
+---
+
+##### §7.54.8.1 ⚠️ §7.54.6 默认值修复**未生效** — dsh-tui 进程 env 仍是 15000
+
+**症状（关键 bug）**：audit.jsonl 显示 `guard.model-detect.start` 事件的 `timeoutMs=15000`，但 §7.54.6 已经把默认值改为 20000：
+
+```json
+{"kind":"guard.model-detect.start","payload":{"sessionId":"us-news-test-001",
+  "provider":"local-llm","model":"qwen3.7-plus","timeoutMs":15000, ...}}
+```
+
+**实测数据**：prompt-guard LLM call done `durationMs=12287`（12.287 秒）。如果 dashScope qwen3.7-plus 限流再严重 2-3 秒（撞到 13-14 秒），这个调用就会 abort，回到 §7.54.5 之前的状态。
+
+**根因**：**进程没重启** — `cordis.patch.yml:459` 和 `.env.sh:86` 都改成 20000 了，但 dsh-tui 进程是用旧 env var `DSH_EDGE_GUARD_MODEL_TIMEOUT_MS=15000` 启动的，env var 优先级高于 `.env.sh` 的 `:-20000` 默认值。
+
+```bash
+# cordis.patch.yml:459 — 期望生效
+modelDetectionTimeoutMs: !!js parseInt(process.env.DSH_EDGE_GUARD_MODEL_TIMEOUT_MS ?? '20000', 10)
+
+# .env.sh:86 — 但 .env.sh 不覆盖已设置的 env var
+export DSH_EDGE_GUARD_MODEL_TIMEOUT_MS="${DSH_EDGE_GUARD_MODEL_TIMEOUT_MS:-20000}"
+#       ↑ 如果 shell 里已 export 过 15000，这里不会变成 20000
+```
+
+**验证**：
+```bash
+$ cat /proc/2806146/environ | tr '\0' '\n' | grep GUARD_MODEL_TIMEOUT
+DSH_EDGE_GUARD_MODEL_TIMEOUT_MS=15000   ← 旧值，未 pick up §7.54.6
+
+$ grep GUARD_MODEL_TIMEOUT cordis.patch.yml .env.sh
+cordis.patch.yml:459: ?? '20000'         ← 新值
+.env.sh:86: :-20000                     ← 新值
+```
+
+**修复**（部署层，不是代码）：
+```bash
+# 方式 1：unset env var 让 .env.sh 默认值生效
+unset DSH_EDGE_GUARD_MODEL_TIMEOUT_MS
+# 重启 dsh-tui（install.sh 或手动）
+./install.sh --profile=dsh-tui
+
+# 方式 2：显式 export 新值
+export DSH_EDGE_GUARD_MODEL_TIMEOUT_MS=20000
+# 重启 dsh-tui
+```
+
+**Lesson**：
+1. **`.env.sh` 的 `:-default` 不会覆盖已设置的 env var**——一旦 shell 里有旧 env，启动新进程就 pick 旧值。这是 `:-` 默认值语义的"陷阱"。
+2. **代码默认值改了 ≠ 部署生效**——需要重启进程才能 pick up 新默认值。install.sh 的重启步骤不能跳过。
+3. **audit.jsonl 的 `timeoutMs` 是真相来源**——比 `.env.sh` 默认值更可靠，因为 prompt-guard 直接读 `process.env`，如果 env 有旧值就用旧值。
+4. **`durationMs=12287` 撞 15000 墙剩 2.7 秒**——dashScope qwen3.7-plus 限流稳定时长 ~10-13 秒，再限流一点就会 abort。重启前 dsh-tui 的 prompt-guard 实际处于"半崩溃"状态。
+
+**相关**：
+- 需重启 dsh-tui 让 §7.54.6 真正生效
+- §7.54.5 — 30s intent-router 这次未撞墙（4.2-7s 实测），30s budget OK
+- §7.54.6 — 20s prompt-guard 设计正确，但**部署状态没跟上**
+
+---
+
+##### §7.54.8.2 `errorKind=unknown` 数据质量未细化
+
+**症状**：DeepSeek #3 调了 2 个 web_fetch 并行（不同 URL），1 个成功 1 个失败，audit 只 emit：
+```json
+{"kind":"tool.result","payload":{"tool":"web_fetch","status":"error","errorKind":"unknown"}}
+```
+
+`errorKind=unknown` 没区分**网络错误 / 4xx / 5xx / 超时 / DNS 失败 / SSL 错误 / 目标拒绝连接**等。
+
+**修复方向**（§7.54+ 待办）：
+```typescript
+// realm-skill-bridge.ts 的 tool result handler
+if (status === 'error') {
+  const errorKind = classifyError(err)
+  // 'network' | 'http-4xx' | 'http-5xx' | 'timeout' | 'dns' | 'ssl' | 'refused' | 'unknown'
+}
+```
+
+operator 排查 "为什么 web_fetch 失败" 时目前只知道 "unknown"，无法定位。
+
+---
+
+##### §7.54.8.3 `hasCloudCredentials` 在 HTTP API 路径漏 emit
+
+**症状**：TUI 路径（2ac6c73e session）有：
+```
+INFO [input-guard] hasCloudCredentials: slot=DEEPSEEK_API_KEY envValueLen=35 ...
+```
+
+HTTP API 路径（us-news-test-001 session）**没有**这一行——只在 input-guard 决策链上 sanitize start/done 直接出现。
+
+**根因猜测**：
+- input-guard.ts 的 `hasCloudCredentials` 检查在 `preflight intent` emit 之后（line 752-812 之间），但只在 `category=CLOUD` 且 `targetRealm=CLOUD` 时 emit
+- HTTP API 路径下，preflight intent 通过 `agent._edgeRoute` reuse，可能 emit 路径不同
+- 或者 HTTP API 路径下 `hasCloudCredentials` 被短路（HTTP API 层已检查 DEEPSEEK_API_KEY）
+
+**影响**：
+- TUI 路径能看到 "cloud key 已配置" 的 INFO 行——operator 排查 cloud-realm 决策时一目了然
+- HTTP API 路径看不到——audit trail 不完整
+
+**修复方向**：让 HTTP API 路径也 emit `hasCloudCredentials`（无论 realm 决策），或确认 HTTP API 层确实检查了 key（不需要 input-guard 再检查）。
+
+---
+
+**§7.54.8 综合 Lesson**：
+1. **HTTP API 路径与 TUI 路径的 preflight 顺序不同**——HTTP API 先 intent（加速），TUI 先 prompt-guard（safety）。operator 看 ops log 第一行 `systemLen` 字段能立刻判断入口（`0` = intent = HTTP API；`2505` = prompt-guard = TUI）。
+2. **`routeSource` 三件套**（`routeSource` + `intentSource` + `reqId`）是入口 audit 指纹——operator grep 这三个字段能区分 HTTP API / TUI / 其他入口。
+3. **§7.54.6 部署状态未跟上**——代码默认值改了，但进程没重启 env 仍是旧值。audit.jsonl 的 `timeoutMs=15000` 暴露了这个 bug。**必须重启 dsh-tui**才能让 §7.54.6 真正生效。
+4. **`errorKind=unknown` 是 §7.54+ 待优化项**——tool error 分类不够，operator 排查 "为什么 web_fetch 失败" 时无法定位根因。
+5. **`hasCloudCredentials` 在 HTTP API 路径漏 emit**——audit trail 不完整。需确认是设计意图还是 bug。
+
+**待办**（按优先级）：
+1. ⭐ **重启 dsh-tui**让 §7.54.6 真正生效（修复 §7.54.8.1）
+2. `errorKind` 细化（修复 §7.54.8.2）
+3. `hasCloudCredentials` 在 HTTP API 路径 emit 一致性（修复 §7.54.8.3）
+
+**相关**：
+- `cordis.patch.yml:397,459` — 30s/20s timeout（§7.54.5/§7.54.6）
+- `src/dsh-adapter/input-guard.ts:698-740` — preflight intent + emit 位置
+- `src/dsh-adapter/http-api.ts:492` — HTTP API 层 intentRouter.classify 调用位置
+- `src/dsh-adapter/input-guard.ts:705-710` — input-guard 读 `_edgeRoute` 跳过 intent LLM
+- `~/.dsh-edge-agent/log/dsh-edge-agent.log` — ops log 位置
+- `~/.dsh-edge-agent/audit/audit.plain.jsonl` — audit.jsonl 位置
+- memory `ops-log-coverage-principle` — "每个关键环节都在 ops log 体现"
+- memory `audit-presence-vs-enforce` — §7.34 audit 入口设计
+
 
