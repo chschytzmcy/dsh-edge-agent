@@ -6448,4 +6448,98 @@ user 选 A 跟之前"增加超时时间"立场一致。**最稳的还是 D**，�
 - `~/.dsh/profiles/dsh-tui/.env.sh` — cp 同步 .env.sh
 - memory `mibao-empty-result-diagnosis.md` — 2026-09-11 切 DashScope 时有讨论过"切回本地 llama.cpp"路径，作为 fallback 候选
 
+#### §7.54.6 prompt-guard 15000 → 20000ms（TUI 实测仍 15s abort 撞墙）
+
+**症状**（延续 §7.54.5）：TUI 路径 chat "查询最新的AI新闻" 完整 ops log 显示：
+- intent-router LLM call done `durationMs=4186`（4.2s 成功），整个 intent 阶段总耗时 9.2s，远在 30s budget 内
+- **prompt-guard LLM call done `durationMs=15004`**（撞 15s 墙：15000ms timeout + 4ms abort 处理开销）——DashScope qwen3.7-plus streaming 限流持续
+
+**修复**（commit 457da36）：prompt-guard `modelDetectionTimeoutMs` 15000 → 20000。intent-router 30s **不动**（4.2s 实际耗时离 30s 远，§7.54.5 的"上限试探"已超额，再调无依据）。
+
+```yaml
+# cordis.patch.yml:459
+modelDetectionTimeoutMs: !!js parseInt(process.env.DSH_EDGE_GUARD_MODEL_TIMEOUT_MS ?? '20000', 10)
+```
+
+```bash
+# .env.sh:86
+export DSH_EDGE_GUARD_MODEL_TIMEOUT_MS="${DSH_EDGE_GUARD_MODEL_TIMEOUT_MS:-20000}"
+```
+
+**user 决策依据（2026-09-14）**："Prompt-guard调整为20秒"——
+- 看到 prompt-guard 真撞墙（15004ms = abort 边缘），必须再延 5s 给 DashScope 限流空间
+- intent-router 实际只用 4.2s，30s 还有 25s+ headroom，无需动
+- 整体 worst case latency ≈ 20s prompt-guard + 4s intent + 7s cloud-llm + tool = ~32s，与 §7.54.5 的 32.5s 同量级，不算 regression
+- 同步 vs 异步代价不变（§7.54.2 已记录 "43% latency waste 是 known cost"，20s 让 waste 上升到 ~50%）——user 仍接受 fail-open safe 兜底 + 简单同步设计
+
+**Lesson**：
+1. **实测比默认参数有依据**——§7.54.5 给 prompt-guard 15s 是"略增"估算，TUI 实测发现仍不够。要看实际 abort `durationMs` 而不是想当然。
+2. **不对称调整是合理的**——prompt-guard 与 intent-router 不是对称调用，前者是 124 字英文安全 prompt（易限流），后者是 345 字中文分类 prompt（限流频率不同）。**只动撞墙的那一个**，不动没问题的那个。
+3. **20000 是当前上限试探**——再大也救不了真挂起的连接（dashScope 真限流可能 30s+ 也不发）。如果 dashScope 持续 flaky，应切本地 llama.cpp（§7.54.5 方案 D）或加 retry。
+
+**相关**：
+- `cordis.patch.yml:459` — `?? '15000'` → `?? '20000'`
+- `.env.sh:86` — `:-15000` → `:-20000`
+- §7.54.5 — 前一次（10s/8s → 30s/15s），intent-router 在那提到 30s
+- §7.54.4 — 再前一次（4s → 10s/8s），最初撞墙点
+- §7.54.2 — 同步 vs 异步设计决策记录
+
+#### §7.54.7 ops log 记录 system prompt — 每个 LLM 调用可见 systemLen + systemPreview（2026-09-14）
+
+**症状**（user 反馈）："把每次调用LLM的 system prompt 记录进去"。之前 ops log 只 log `model=` / `promptLen=` / `messageCount=`，但 **system prompt 不可见**——operator 排查"为什么 LLM 返回 X"时，不知道这个调用实际收到什么 system 指令（prompt-guard 的安全分类器 prompt vs intent-router 的分类 prompt vs DeepSeek 的 agent 默认 prompt 完全不同）。
+
+**修复**（commit 4602661）：`cloud-llm-adapter.ts` + `local-llm-adapter.ts` 的 `LLM call start` 行加 2 个字段：
+
+```typescript
+// cloud-llm-adapter.ts:261-269 — 用 augmentedSystem（tool-result 时追加 synth instruction）
+const wireSystem = augmentedSystem.length > 0 ? augmentedSystem : (typeof options.system === 'string' ? options.system : '')
+// local-llm-adapter.ts:273-280 — 用 options.system（无 augmentedSystem）
+const systemLen = wireSystem.length
+const systemPreview = systemLen > 0 ? wireSystem.slice(0, 200).replace(/\s+/g, ' ') : ''
+// 200 字截断 + 空白合并，避免日志爆炸（每次 LLM 调用一行 ≤ 400 字符）
+```
+
+emit 格式：
+```
+[cloud-llm-adapter] LLM call start ... messageCount=3 promptLen=6103 systemLen=6349 systemPreview="You are an AI agent powered by DeepSeek Harness..." baseUrl=https://api.deepseek.com
+```
+
+**TUI chat "查询最新的AI新闻" 5 次 LLM 调用的 systemLen 分布**（验证数据）：
+
+| # | 调用 | model | systemLen | 说明 |
+|---|---|---:|---:|---|
+| 1 | prompt-guard | qwen3.7-plus | **2505** | 安全分类器 prompt（"You are a security classifier for a LOCAL edge-agent that runs on the user's own device..."） |
+| 2 | intent-router | qwen3.7-plus | **0** | intent-router 把指令塞 user message，不设 system role |
+| 3 | DeepSeek #1 | deepseek-chat | **6349** | agent 默认 system prompt（"You are an AI agent powered by DeepSeek Harness..."）— 第一轮无 tool-result |
+| 4 | DeepSeek #2 | deepseek-chat | **6576** | 同 #3 + 227 字 augmentedSystem tool-result synth instruction |
+| 5 | DeepSeek #3 | deepseek-chat | **6576** | 同 #2（hasToolResult=true，augmentedSystem 不变） |
+
+**关键发现**：
+1. **prompt-guard systemLen=2505 最大**——安全分类 prompt 比 DeepSeek agent 默认 prompt（6349）小 60%，但内容更密集（few-shot + 黑名单）。
+2. **intent-router systemLen=0**——印证 §7.54 文档里的设计选择（"intent-router 把所有指令塞 user message"），不需要 system role。
+3. **DeepSeek #1 → #2 systemLen +227**——验证 cloud-llm-adapter augmentedSystem 仅在 tool_result 出现后追加（`hasToolResult=true` 时注入）。
+4. **DeepSeek #2 → #3 systemLen 不变**——同一 chat 内 augmentedSystem 累积不再增长（不是每次 LLM 调用都追加，仅追加一次）。
+
+**200 字截断的取舍**：
+- log 文件可读性优先（每次 LLM 调用一行，截断后大致 ≤400 字符）
+- 真要查完整 system prompt 可用 `git grep` 或读源码
+- 200 字覆盖"role 定义 + 输出格式 + 第一段黑名单"——operator 排查时一眼能看出"这个 LLM 调用的 system prompt 角色是什么"
+
+**Lesson**：
+1. **system prompt 是 LLM-as-judge 类调用最关键的元数据**——prompt-guard / intent-router / DeepSeek 三种 system 完全不一样，operator 排查"为什么 LLM 返回 X"时 system prompt 是第一查的对象。
+2. **`promptLen` ≠ `systemLen`**——`promptLen` 只算 messages 数组内容，不含 `options.system`。两个独立字段各有意义：前者是 user-side 输入，后者是 system-side 指令。
+3. **augmentedSystem 是 cloud-llm-adapter 的私有 augmentation**——本地 llama.cpp 不会有这个增量（augmentedSystem 仅在 `cloud-llm-adapter.ts:245-253` 注入）。本地 LLM 的 systemLen 始终等于 options.system 的字符串长度。
+4. **systemLen=0 不一定是漏传**——intent-router 就是设计成不用 system role（把所有指令塞 user message）。这是 prompt-guard 与 intent-router 的实现差异，不是 bug。
+5. **§7.54 系列 7 个子项合并看**——同一 chat 内 5 次 LLM 调用的 systemLen + promptLen + messageCount 完整呈现"模型收到的全部输入"，对排查"为什么 LLM 输出 X"提供了完整 audit trail。
+
+**相关**：
+- `src/dsh-adapter/cloud-llm-adapter.ts:261-269` — wireSystem / systemLen / systemPreview 计算
+- `src/dsh-adapter/local-llm-adapter.ts:273-280` — wireSystem / systemLen / systemPreview 计算
+- `src/dsh-adapter/prompt-guard.ts:485` — system prompt 注入位置（"You are a security classifier..."）
+- `src/dsh-adapter/intent-router.ts:496` — prompt 在 user message 注入位置（不用 system role）
+- `src/dsh-adapter/cloud-llm-adapter.ts:245-253` — augmentedSystem 注入位置（hasToolResult=true 时追加）
+- `src/dsh-adapter/openai-sse.ts:53-55` — system role 提取位置（wire body 里 system role messages 分离到 options.system）
+- memory `ops-log-coverage-principle` — "每个关键环节都在 ops log 体现"
+- memory `audit-presence-vs-enforce` — §7.34 audit 入口 + §7.54 字段补完共同构成完整 audit trail
+
 
