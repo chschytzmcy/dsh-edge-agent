@@ -394,7 +394,7 @@
         classificationProvider: !!js process.env.DSH_EDGE_INTENT_PROVIDER ?? 'local-llm'
         classificationModel: !!js process.env.DSH_EDGE_INTENT_MODEL ?? 'Qwen3-4B-Instruct-2507'
         confidenceThreshold: !!js parseFloat(process.env.DSH_EDGE_INTENT_CONFIDENCE_THRESHOLD ?? '0.6')
-        llmTimeoutMs: !!js parseInt(process.env.DSH_EDGE_INTENT_LLM_TIMEOUT_MS ?? '10000', 10)
+        llmTimeoutMs: !!js parseInt(process.env.DSH_EDGE_INTENT_LLM_TIMEOUT_MS ?? '30000', 10)
         recentMessagesLimit: !!js parseInt(process.env.DSH_EDGE_INTENT_RECENT_LIMIT ?? '3', 10)
         maxInputLength: !!js parseInt(process.env.DSH_EDGE_INTENT_MAX_INPUT ?? '2000', 10)
         fallbackKeywords: !!js (process.env.DSH_EDGE_INTENT_FALLBACK_KEYWORDS ?? '').split(',').filter(Boolean)
@@ -456,7 +456,7 @@
         enableModelDetection: !!js process.env.DSH_EDGE_GUARD_MODEL !== 'false'
         modelDetectionProvider: !!js process.env.DSH_EDGE_GUARD_MODEL_PROVIDER ?? 'local-llm'
         modelDetectionModel: !!js process.env.DSH_EDGE_GUARD_MODEL_MODEL ?? 'Qwen3-4B-Instruct-2507'
-        modelDetectionTimeoutMs: !!js parseInt(process.env.DSH_EDGE_GUARD_MODEL_TIMEOUT_MS ?? '8000', 10)
+        modelDetectionTimeoutMs: !!js parseInt(process.env.DSH_EDGE_GUARD_MODEL_TIMEOUT_MS ?? '15000', 10)
         modelDetectionMaxInputLength: !!js parseInt(process.env.DSH_EDGE_GUARD_MODEL_MAX_INPUT ?? '2000', 10)
 
     # ── Phase 4: 隐私策略引擎 + 脱敏管线 ──────────────────────────────────

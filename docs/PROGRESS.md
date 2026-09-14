@@ -6356,7 +6356,7 @@ if (r && typeof r.provider === 'string' && typeof r.model === 'string') {
 
 **症状**：intent-router classify（345 字中文 prompt，DashScope qwen3.7-plus streaming）在 4s 内收不到完整 stream → abort at timeout。prompt-guard 模型检测（124 字英文 safety prompt）约 2.7s 完成但无 headroom，遇到 DashScope 限流就 abort。
 
-**修复**（本提交）：
+**修复**：
 
 | 字段 | 旧 | 新 | 位置 |
 |---|---|---|---|
@@ -6393,13 +6393,59 @@ export DSH_EDGE_INTENT_LLM_TIMEOUT_MS="${DSH_EDGE_INTENT_LLM_TIMEOUT_MS:-10000}"
 3. **`!!js parseInt(process.env.X ?? 'fallback')` 是 bundle + env 双轨保险**：env 设了用 env，没设用 patch 默认值。Profile patch 完全可以删（如果它没真用户 override），env + bundle 已经够。
 4. **dashScope qwen3.7-plus 持续 flaky**：intent-router 时好时坏（3.6s ok / 10s abort），prompt-guard 这次 8s 都 abort。fail-open safe 设计救命（chat 不挂）。但生产环境应该考虑切回本地 llama.cpp 或加 retry。
 
+#### §7.54.5 dashScope 限流 timeout 再延 10000/8000 → 30000/15000ms
+
+**症状**（延续 §7.54.4）：§7.54.4 改到 10s/8s 后，2 次 chat 仍 1 次 abort（50% abort rate）。DashScope qwen3.7-plus streaming **限流时 server 保持连接但不发 chunk**——HTTP 200 OK 但 chunk 一直不来。AbortController client-side 10s 切断，stream 中断时已经积累的 chunk 都丢。
+
+**实测数据**：
+
+| Chat | §7.54.4 (10s/8s) | §7.54.5 (30s/15s) |
+|---|---|---|
+| #1 | 22s — intent-router 10s abort → default:sanitized | 25.6s — intent 成功 (LOCAL)，prompt-guard 7.8s |
+| #2 | 14s — intent 3.6s 成功 (LOCAL)，prompt-guard 8s abort | 32.5s — **intent-router 真用 22.5s**（限流但 30s 内出），prompt-guard 7.5s |
+| #3 | (没测) | 16.5s — intent 3.1s 成功，prompt-guard 10.8s |
+| **Abort rate** | **50% (1/2)** | **0% (0/3)** |
+
+**修复**（本提交）：
+
+| 字段 | §7.54.4 | §7.54.5 | 新 |
+|---|---|---|---|
+| `intent-router.llmTimeoutMs` | 10000 | 30000 | +20000ms DashScope 限流 headroom |
+| `prompt-guard.modelDetectionTimeoutMs` | 8000 | 15000 | +7000ms 略增 |
+
+`cordis.patch.yml:397,459` + `.env.sh:83-84` 同步改：
+
+```yaml
+llmTimeoutMs: !!js parseInt(process.env.DSH_EDGE_INTENT_LLM_TIMEOUT_MS ?? '30000', 10)
+modelDetectionTimeoutMs: !!js parseInt(process.env.DSH_EDGE_GUARD_MODEL_TIMEOUT_MS ?? '15000', 10)
+```
+
+```bash
+export DSH_EDGE_GUARD_MODEL_TIMEOUT_MS="${DSH_EDGE_GUARD_MODEL_TIMEOUT_MS:-15000}"
+export DSH_EDGE_INTENT_LLM_TIMEOUT_MS="${DSH_EDGE_INTENT_LLM_TIMEOUT_MS:-30000}"
+```
+
+**user 决策**：4 个方案对比 ——
+- **A. 延 timeout 到 30s**（采纳）：改 2 个默认值，worst case +20s latency，fail-open 仍兜底。
+- B. 加 1 次 retry 后 fallback：worst case 20s。
+- C. rules 优先于 LLM (fast-fail)：keyword 不命中的 query 仍走 LLM 不变。
+- D. 切回本地 llama.cpp qwen3-4b：无限流，本地 < 1s，但要本地 model server。
+
+user 选 A 跟之前"增加超时时间"立场一致。**最稳的还是 D**，但 user 暂不想折腾本地 model server 切换。
+
+**验证**：3 次 chat 全成功（rationale=llm-classified:local），intent-router 限流时长尾 22.5s 也未 abort。Worst case latency 32.5s（intent 22.5s + prompt-guard 7.5s + cloud-llm 2.3s + misc），但 abort rate 从 50% → 0%。fail-open 0 次触发。
+
+**Lesson**：
+1. **DashScope streaming 限流是"挂起不发 chunk"**，不是真 429——AbortController 是 client-side 唯一可靠的 timeout。
+2. **30s 是 "上限试探"**：再大也救不了真挂起的连接（dashScope 真限流可能 30s+ 也不发）。如果 dashScope 持续 flaky，应该切本地 llama.cpp（方案 D）或加 retry（方案 B）。
+3. **fail-open 是兜底而非主路径**：chat 200 即使 abort 也行，但 intent 丢精度（rationale=default:sanitized 取代 llm-classified:local）。30s 救回 abort rate 的同时保住了 intent 精度——这是延迟换精度的 trade。
+4. **`.env.sh` 默认值跟 patch 默认值同步改**——避免"patch 改了但 .env.sh 没改"导致环境不一致的排查成本。两条路径都用 env override 时只读 patch 默认值即可。
+
 **相关**：
-- `cordis.patch.yml:397,459` — 两个 timeout 默认值
-- `.env.sh:80-81` — env var 镜像
-- `~/.dsh/profiles/dsh-tui/cordis.patch.yml` — 替换为 `[]`
+- `cordis.patch.yml:397,459` — 10000/8000 → 30000/15000
+- `.env.sh:83-84` — 同步 env 默认值
 - `~/.dsh/profiles/dsh-tui/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/cordis.patch.yml` — cp 同步项目 patch
-- memory `prompt-guard-local-llm-waste.md` — §7.54.2 user 决策
-- memory `dsh-profile-overlay.md` — 两层 patch 架构
-- §7.43 — tui 默认 port 21018 强制覆盖
+- `~/.dsh/profiles/dsh-tui/.env.sh` — cp 同步 .env.sh
+- memory `mibao-empty-result-diagnosis.md` — 2026-09-11 切 DashScope 时有讨论过"切回本地 llama.cpp"路径，作为 fallback 候选
 
 

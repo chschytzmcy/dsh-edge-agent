@@ -74,11 +74,14 @@ export DSH_EDGE_GUARD_MODEL_MODEL="${DSH_EDGE_GUARD_MODEL_MODEL:-${DSH_EDGE_LOCA
 # Pre-§7.54.4 default was 4000ms — intent-router classify (345-char Chinese
 # prompt) was being aborted at 4s on DashScope's streaming API; prompt-guard
 # model detection (124-char English safety prompt) was OK at ~2.7s but had
-# no headroom. New defaults: prompt-guard 8000ms (2x measured), intent-router
-# 10000ms (DashScope headroom). Override by exporting these env vars before
-# `source .env.sh`.
-export DSH_EDGE_GUARD_MODEL_TIMEOUT_MS="${DSH_EDGE_GUARD_MODEL_TIMEOUT_MS:-8000}"
-export DSH_EDGE_INTENT_LLM_TIMEOUT_MS="${DSH_EDGE_INTENT_LLM_TIMEOUT_MS:-10000}"
+# no headroom.
+# §7.54.5 (2026-09-14): DashScope qwen3.7-plus streaming 限流时 server 保持
+# 连接但不发 chunk，10s/8s 仍 abort（2 次 chat 中 1 次 abort）。user 决定
+# 再延：intent-router 30000ms，prompt-guard 15000ms。Worst case 增加 ~20s
+# latency，但 fail-open safe 仍兜底。Override by exporting these env vars
+# before `source .env.sh`.
+export DSH_EDGE_GUARD_MODEL_TIMEOUT_MS="${DSH_EDGE_GUARD_MODEL_TIMEOUT_MS:-15000}"
+export DSH_EDGE_INTENT_LLM_TIMEOUT_MS="${DSH_EDGE_INTENT_LLM_TIMEOUT_MS:-30000}"
 export DSH_EDGE_LOCAL_TOOLS_WRITABLE="${DSH_EDGE_LOCAL_TOOLS_WRITABLE:-true}"
 export DSH_EDGE_LOCAL_TOOLS_ALLOWLIST="${DSH_EDGE_LOCAL_TOOLS_ALLOWLIST:-/tmp,/home/etsme/cy/agent/dsh-edge-agent}"
 export DSH_PERMISSION_MODE="${DSH_PERMISSION_MODE:-workspace-write}"
