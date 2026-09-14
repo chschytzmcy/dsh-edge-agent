@@ -1651,7 +1651,14 @@ export function resolveRoute(
     try {
       const r = mr.resolve(preferred)
       if (r && typeof r.provider === 'string' && typeof r.model === 'string') {
-        return { provider: r.provider, model: r.model, resolved: true }
+        // §7.54 (2026-09-14): model-router maps provider ids to themselves
+        // (e.g. 'local-llm' → {provider:'local-llm', model:'local-llm'}). The
+        // wire body wants the actual upstream model name (qwen3.7-plus for
+        // local, deepseek-chat for cloud), not the provider id. Override the
+        // routing key with the fallback model when the router returned the
+        // provider id as the model.
+        const resolvedModel = (r.model === r.provider) ? fallbackModel : r.model
+        return { provider: r.provider, model: resolvedModel, resolved: true }
       }
     } catch {
       // fall through to hardcoded pair

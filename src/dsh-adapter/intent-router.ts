@@ -352,13 +352,22 @@ export class IntentRouterServiceImpl extends Service {
     // ⚠️ classificationProvider MUST be a provider route id (with 'local-' /
     // 'cloud-' prefix); bare model ids resolve to realm: 'CLOUD' (see
     // model-router.ts:103). Current default 'local-llm' is fine.
+    //
+    // §7.54 (2026-09-14): model-router maps provider ids to themselves
+    // (e.g. 'local-llm' → {provider:'local-llm', model:'local-llm'}). The
+    // wire body wants the actual upstream model name (classificationModel,
+    // typically qwen3.7-plus). When router returns provider==model, fall
+    // back to classificationModel so the adapter receives the right wire
+    // model id (routing-key-only labels like 'local-llm' break upstream
+    // model lookup and produce inconsistent ops log lines).
     const modelRouter = this.softService('modelRouter')
     const resolved = (() => {
       try { return modelRouter?.resolve?.(this.classificationProvider) }
       catch { return undefined }
     })()
     const provider = resolved?.provider ?? this.classificationProvider
-    const model = resolved?.model ?? this.classificationModel
+    const resolvedModel = (resolved && resolved.model === resolved.provider) ? this.classificationModel : resolved?.model
+    const model = resolvedModel ?? this.classificationModel
     this.audit('debug', 'intent.llm.route', {
       configured: this.classificationProvider,
       resolvedRealm: resolved?.realm,

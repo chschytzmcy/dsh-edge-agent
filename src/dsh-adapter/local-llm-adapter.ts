@@ -276,8 +276,14 @@ class RealLocalAdapter extends LlmAdapter {
     // 形成完整 trace。
     const sessionId = (options as { sessionId?: string }).sessionId ?? '<pre-session>'
     try {
+      // §7.54 (2026-09-14): show the wire body model (`this.defaultModel`,
+      // which buildChatCompletionsBody uses) instead of `options.model` (which
+      // model-router may overwrite to the provider route id, e.g.
+      // 'local-llm'). Operators reading the ops log expect to see the actual
+      // model name qwen3.7-plus, not the routing key. `route=${options.model}`
+      // preserves the upstream-visible routing key for diagnosis.
       this.logger?.info?.(
-        `[local-llm-adapter] LLM call start sessionId=${sessionId} provider=${options.provider} model=${options.model} messageCount=${sanitizedMessages.length} promptLen=${promptLen} baseUrl=${this.baseUrl}`,
+        `[local-llm-adapter] LLM call start sessionId=${sessionId} provider=${options.provider} model=${this.defaultModel} route=${options.model} messageCount=${sanitizedMessages.length} promptLen=${promptLen} baseUrl=${this.baseUrl}`,
       )
     } catch { /* debug only */ }
     // 2026-09-02: per-call request/response body logging to ops log at
@@ -287,7 +293,7 @@ class RealLocalAdapter extends LlmAdapter {
     // `DSH_EDGE_LOG_LEVEL=info` to suppress bodies entirely.
     this.logger?.debug?.(`[local-llm-adapter] LLM_REQUEST provider=${options.provider} model=${options.model} messageCount=${sanitizedMessages.length} promptLen=${promptLen}`)
     this.logger?.debug?.(`[local-llm-adapter] LLM_MESSAGES ${JSON.stringify({ messages: sanitizedMessages })}`)
-    audit(this.auditLog, 'info', 'llm.local.start', { provider: options.provider, model: options.model, messageCount: sanitizedMessages.length, promptLen, baseUrl: this.baseUrl })
+    audit(this.auditLog, 'info', 'llm.local.start', { provider: options.provider, model: this.defaultModel, route: options.model, messageCount: sanitizedMessages.length, promptLen, baseUrl: this.baseUrl })
 
     let response: Response
     try {
@@ -299,7 +305,7 @@ class RealLocalAdapter extends LlmAdapter {
       })
     } catch (err: any) {
       const durationMs = Date.now() - start
-      audit(this.auditLog, 'error', 'llm.local.network_error', { provider: options.provider, model: options.model, durationMs, error: err?.message ?? String(err) })
+      audit(this.auditLog, 'error', 'llm.local.network_error', { provider: options.provider, model: this.defaultModel, route: options.model, durationMs, error: err?.message ?? String(err) })
       throw err
     }
 
@@ -307,7 +313,7 @@ class RealLocalAdapter extends LlmAdapter {
       const durationMs = Date.now() - start
       let respBody = ''
       try { respBody = await response.text() } catch { /* ignore */ }
-      audit(this.auditLog, 'error', 'llm.local.http_error', { provider: options.provider, model: options.model, status: response.status, durationMs, respBody: respBody.slice(0, 500) })
+      audit(this.auditLog, 'error', 'llm.local.http_error', { provider: options.provider, model: this.defaultModel, route: options.model, status: response.status, durationMs, respBody: respBody.slice(0, 500) })
       throw new LlmError(`local-llm-adapter (${this.providerName}): HTTP ${response.status}: ${respBody.slice(0, 200)}`, 'PROVIDER_ERROR')
     }
 
@@ -368,14 +374,17 @@ class RealLocalAdapter extends LlmAdapter {
     } finally {
       const durationMs = Date.now() - start
       // §7.46.1: ops log done 行
+      // §7.54 (2026-09-14): show defaultModel (= wire body) for consistency
+      // with start line; options.model may be the routing key 'local-llm'.
       try {
         this.logger?.info?.(
-          `[local-llm-adapter] LLM call done sessionId=${sessionId} provider=${options.provider} model=${options.model} durationMs=${durationMs} resultLen=${assembledText.length} toolCallCount=${toolCalls.size} finishKind=${finishKind ?? 'unknown'}${wireError !== undefined ? ` wireError=${wireError}` : ''}`,
+          `[local-llm-adapter] LLM call done sessionId=${sessionId} provider=${options.provider} model=${this.defaultModel} route=${options.model} durationMs=${durationMs} resultLen=${assembledText.length} toolCallCount=${toolCalls.size} finishKind=${finishKind ?? 'unknown'}${wireError !== undefined ? ` wireError=${wireError}` : ''}`,
         )
       } catch { /* debug only */ }
       audit(this.auditLog, 'info', 'llm.local.end', {
         provider: options.provider,
-        model: options.model,
+        model: this.defaultModel,
+        route: options.model,
         durationMs,
         promptLen,
         resultLen: assembledText.length,
