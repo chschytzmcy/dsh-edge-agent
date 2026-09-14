@@ -261,6 +261,13 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
     const promptText = sanitizedMessages.map((m) => `${m.role}:${extractText(m.content)}`).join('\n')
     const promptLen = promptText.length
     const messageCount = sanitizedMessages.length
+    // §7.54.7 (2026-09-14): capture wire-system (after tool-result augmentation)
+    // for ops log so operator can see what system prompt actually went out.
+    // Truncate to first 200 chars to keep log lines readable; full text is in
+    // the request body which DSH_EDGE_LOG_LEVEL=debug exposes via LLM_MESSAGES.
+    const wireSystem = augmentedSystem.length > 0 ? augmentedSystem : (typeof options.system === 'string' ? options.system : '')
+    const systemLen = wireSystem.length
+    const systemPreview = systemLen > 0 ? wireSystem.slice(0, 200).replace(/\s+/g, ' ') : ''
     const start = Date.now()
     // §7.46.1 (2026-09-11): ops log 让"TUI 路径调了哪个 LLM / 多少
     // token / 多久"在 ops log 里可见。http-api POST 200 行有 provider/model
@@ -270,7 +277,7 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
     const sessionId = (options as { sessionId?: string }).sessionId ?? 'unknown'
     try {
       this.logger?.info?.(
-        `[cloud-llm-adapter] LLM call start sessionId=${sessionId} provider=${options.provider} model=${options.model} messageCount=${messageCount} promptLen=${promptLen} baseUrl=${this.baseUrl}`,
+        `[cloud-llm-adapter] LLM call start sessionId=${sessionId} provider=${options.provider} model=${options.model} messageCount=${messageCount} promptLen=${promptLen} systemLen=${systemLen}${systemPreview ? ` systemPreview="${systemPreview}${systemLen > 200 ? '...' : ''}"` : ''} baseUrl=${this.baseUrl}`,
       )
     } catch { /* debug only */ }
     // 2026-09-02: dump the full sanitized messages array to the ops log

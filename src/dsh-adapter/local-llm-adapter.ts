@@ -270,6 +270,14 @@ class RealLocalAdapter extends LlmAdapter {
 
     const promptText = sanitizedMessages.map((m) => `${m.role}:${extractText(m.content)}`).join('\n')
     const promptLen = promptText.length
+    // §7.54.7 (2026-09-14): capture wire-system (passed to
+    // buildChatCompletionsBody) for ops log so operator can see what system
+    // prompt actually went out to local LLM. Truncate to first 200 chars to
+    // keep log lines readable; full text is in the request body which
+    // DSH_EDGE_LOG_LEVEL=debug exposes via LLM_MESSAGES.
+    const wireSystem = typeof options.system === 'string' ? options.system : ''
+    const systemLen = wireSystem.length
+    const systemPreview = systemLen > 0 ? wireSystem.slice(0, 200).replace(/\s+/g, ' ') : ''
     const start = Date.now()
     // §7.46.1 (2026-09-11): ops log 让 TUI 路径调哪个 local LLM / 多久 / 多少
     // token 在 ops log 里可见。配合 realm-skill-bridge pre-step + tool allow
@@ -283,7 +291,7 @@ class RealLocalAdapter extends LlmAdapter {
       // model name qwen3.7-plus, not the routing key. `route=${options.model}`
       // preserves the upstream-visible routing key for diagnosis.
       this.logger?.info?.(
-        `[local-llm-adapter] LLM call start sessionId=${sessionId} provider=${options.provider} model=${this.defaultModel} route=${options.model} messageCount=${sanitizedMessages.length} promptLen=${promptLen} baseUrl=${this.baseUrl}`,
+        `[local-llm-adapter] LLM call start sessionId=${sessionId} provider=${options.provider} model=${this.defaultModel} route=${options.model} messageCount=${sanitizedMessages.length} promptLen=${promptLen} systemLen=${systemLen}${systemPreview ? ` systemPreview="${systemPreview}${systemLen > 200 ? '...' : ''}"` : ''} baseUrl=${this.baseUrl}`,
       )
     } catch { /* debug only */ }
     // 2026-09-02: per-call request/response body logging to ops log at
