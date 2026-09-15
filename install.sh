@@ -181,31 +181,28 @@ for PROFILE in "${PROFILES[@]}"; do
     echo "        skip pnpm install (--skip-pnpm)"
   fi
 
-  # ── 2.2 上游 agent-loop 包（首次部署必需）────────────────────
-  if [ "$DO_PNPM" = 1 ]; then
-    dsh plugin --profile "$PROFILE" add @deepseek-ai/dsh-agent-loop 2>/dev/null || \
-      echo "  warning: failed to add dsh-agent-loop; tool calling may not work." >&2
-  fi
-
-  # ── 2.3 上游 web search 包（web_search tool 依赖）──────────────
+  # ── 2.2-2.4 上游 @deepseek-ai 包（agent-loop / web-search / skill，仅不可解析时 add）─
+  # §7.57: 原实现无条件执行且不带版本参数 —— npm latest 可能低于验证版本，hoist
+  # 已提供 0.1.2-rc.1 时照样装出 profile-local 旧副本并遮蔽之：2026-09-15 实翻车，
+  # 一次全量 install 把 dsh-agent-loop@0.1.0-rc.6 / dsh-web@0.0.1-rc.1 等 7 个旧包
+  # 塞进 web profile，shadow 掉 hoist 验证链路（profile-node-modules-version-skew /
+  # tui-unscoped-context-diagnosis 同族）。可解析（local 或 profiles/ hoist）即跳过；
+  # 真新环境（两处都没有）仍走 plugin add 拉一份，行为不回退。
   if [ "$DO_PNPM" = 1 ]; then
     for _pkg in \
+      @deepseek-ai/dsh-agent-loop \
       @deepseek-ai/dsh-tool-web \
       @deepseek-ai/dsh-web \
-      @deepseek-ai/dsh-web-search-deepseek; do
-      dsh plugin --profile "$PROFILE" add "$_pkg" >/dev/null 2>&1 || \
-        echo "  warning: failed to add $_pkg — web search may not work." >&2
-    done
-  fi
-
-  # ── 2.4 上游 skill 包（skill catalog 依赖）────────────────────
-  if [ "$DO_PNPM" = 1 ]; then
-    for _pkg in \
+      @deepseek-ai/dsh-web-search-deepseek \
       @deepseek-ai/dsh-skill \
       @deepseek-ai/dsh-tool-skill \
       @deepseek-ai/dsh-skill-filesystem; do
+      if [ -d "$PROFILE_DIR/node_modules/$_pkg" ] || [ -d "$DSH_HOME/profiles/node_modules/$_pkg" ]; then
+        echo "        skip upstream $_pkg (already resolvable)"
+        continue
+      fi
       dsh plugin --profile "$PROFILE" add "$_pkg" >/dev/null 2>&1 || \
-        echo "  warning: failed to add $_pkg — skill system may not work." >&2
+        echo "  warning: failed to add $_pkg — tool/skill/web-search capability may be missing." >&2
     done
   fi
 
@@ -223,10 +220,23 @@ for PROFILE in "${PROFILES[@]}"; do
   fi
 
   # ── 2.7 确保 profile 的 dsh.profile.bundles 包含本 bundle ─────
-  if command -v python3 >/dev/null 2>&1; then
-    _PROFILE_PKG="$PROFILE_DIR/package.json"
-    if [ -f "$_PROFILE_PKG" ]; then
-      python3 - "$_PROFILE_PKG" "$NESTED_PKG" <<'PYEOF' || true
+  # profile 骨架（package.json）本体由 dsh CLI 首启自动生成（dsh-app-boot
+  # initProfile / PROFILE_TEMPLATES），不归本 repo；这里只做增量改写。
+  # §7.57: 原来整段被 if [ -f 骨架 ] 包住 —— 新环境 + --skip-pnpm 时骨架还不
+  # 存在，静默 no-op：bundle 永不注册也不报错。注册是挂载的硬前提，缺骨架 /
+  # 缺 python3 / JSON 改写失败三种情形现在全部 fail-fast。
+  _PROFILE_PKG="$PROFILE_DIR/package.json"
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "  error: §2.7 需要 python3 改写 $_PROFILE_PKG，未找到 python3。" >&2
+    exit 1
+  fi
+  if [ ! -f "$_PROFILE_PKG" ]; then
+    echo "  error: $_PROFILE_PKG 不存在 — profile \"$PROFILE\" 尚未初始化。" >&2
+    echo "       profile 骨架由 dsh CLI 生成：去掉 --skip-pnpm 重跑（§2.1 会触发），" >&2
+    echo "       或先手动引导一次：dsh --profile $PROFILE" >&2
+    exit 1
+  fi
+  python3 - "$_PROFILE_PKG" "$NESTED_PKG" <<'PYEOF' || { echo "  error: §2.7 注册改写失败（$_PROFILE_PKG 非法 JSON 或不可写）。" >&2; exit 1; }
 import json, sys, os
 path, nested = sys.argv[1], sys.argv[2]
 with open(path) as f:
@@ -248,17 +258,28 @@ if changed:
         f.write("\n")
     print(f"  added {target} to bundles + dependencies")
 PYEOF
-    fi
-  fi
 
-  # ── 2.8 Bootstrap nested pkg（clean reinstall 路径）───────────
-  if [ ! -f "$NESTED_PKG/package.json" ] && [ -f "$REPO_ROOT/package.json" ]; then
-    echo "        bootstrap nested pkg: cp package.json + pnpm wire file: dep"
-    cp "$REPO_ROOT/package.json" "$NESTED_PKG/package.json"
-    if command -v pnpm >/dev/null 2>&1; then
-      (cd "$PROFILE_DIR" && pnpm install --offline --ignore-scripts 2>&1 | tail -3) || \
-        echo "  warning: pnpm install --offline failed; bundle may not be linked" >&2
+  # ── 2.8 嵌套 package.json 同步（repo 根镜像）──────────────────
+  # §7.57: 原实现是"缺才拷"（copy-once bootstrap）—— 之后 repo 根 package.json
+  # 演进（如 2026-09-11 peerDeps 0.1.2-alpha.2 → 0.1.2-rc.1），嵌套拷贝永远停在
+  # 首次 bootstrap 的快照。peerDeps 只是声明性提示（运行时解析走 profiles
+  # hoist 链）所以至今没炸；但 exports 是真消费面 —— 哪天新增 subpath 导出，
+  # §2.6 同步过去的新 patch 引用旧 package.json 里不存在的导出 →
+  # ERR_MODULE_NOT_FOUND 且极难排查。改为与 §2.6 同款 diff-then-copy；
+  # pnpm 链线只在首次 bootstrap 跑（日常只换文件内容，无需重装）。
+  _NESTED_BOOTSTRAP=0
+  if [ -f "$REPO_ROOT/package.json" ] && ! diff -q "$REPO_ROOT/package.json" "$NESTED_PKG/package.json" >/dev/null 2>&1; then
+    if [ ! -f "$NESTED_PKG/package.json" ]; then
+      _NESTED_BOOTSTRAP=1
+      echo "        bootstrap nested pkg: cp package.json"
+    else
+      echo "        sync package.json → $NESTED_PKG/ (mirror repo root)"
     fi
+    cp "$REPO_ROOT/package.json" "$NESTED_PKG/package.json"
+  fi
+  if [ "$_NESTED_BOOTSTRAP" = 1 ] && command -v pnpm >/dev/null 2>&1; then
+    (cd "$PROFILE_DIR" && pnpm install --offline --ignore-scripts 2>&1 | tail -3) || \
+      echo "  warning: pnpm install --offline failed; bundle may not be linked" >&2
   fi
 done
 
