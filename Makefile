@@ -2,7 +2,11 @@
 # 构建、打包、部署工具链
 
 # 配置
-PACKAGE_NAME := dsh-edge-agent-deploy.tar.gz
+# §7.55 (2026-09-15): tarball 命名带 semver 版本号 (vX.Y.Z)，
+# 触发 release pipeline 时与 git tag 一致；本地构建 fallback HEAD。
+VERSION  := $(shell node -p "require('./package.json').version" 2>/dev/null || echo "0.0.0-dev")
+PACKAGE_NAME := dsh-edge-agent-v$(VERSION).tar.gz
+SHA_NAME    := $(PACKAGE_NAME).sha256
 PACKAGE_DIR := .deploy
 INSTALL_DIR := /opt/dsh-edge-agent
 
@@ -58,31 +62,44 @@ e2e-coverage:
 	@echo "$(GREEN)✓ ops log 覆盖回归通过$(NC)"
 
 # 打包部署文件
+# §7.55 (2026-09-15): 收紧打包内容
+#   - 不打 .env（避免 DEEPSEEK_API_KEY 泄漏）
+#   - 不打 profiles/node_modules/（252 symlink 指向开发机 /home/etsme/.npm-global）
+#   - 不打 profiles/dsh-edge-agent/node_modules/（开发机 runtime，~30M）
+#   - 不打 profiles/*.cordis.yml（§7.31 legacy，install.sh 不读）
+#   - 不打 cordis.yml（legacy --config 模式入口，install.sh 不读）
+#   - 打 install.sh + README.md + LICENSE（用户文档）
+#   - 加 SHA256SUMS
+# 预期 tarball 大小：~2MB（vs 之前 75MB，37× 缩减）
 package: build
-	@echo "$(BLUE)==> 打包部署文件$(NC)"
+	@echo "$(BLUE)==> 打包部署文件 v$(VERSION)$(NC)"
 	@rm -rf $(PACKAGE_DIR)
-	@mkdir -p $(PACKAGE_DIR)/dsh-edge-agent
+	@mkdir -p $(PACKAGE_DIR)/dsh-edge-agent-v$(VERSION)
 
-	@# 复制必要文件
-	@cp -r lib $(PACKAGE_DIR)/dsh-edge-agent/
-	@cp -r profiles $(PACKAGE_DIR)/dsh-edge-agent/
-	@cp -r presets $(PACKAGE_DIR)/dsh-edge-agent/
-	@cp -r scripts $(PACKAGE_DIR)/dsh-edge-agent/
-	@cp package.json $(PACKAGE_DIR)/dsh-edge-agent/
-	@cp pnpm-lock.yaml $(PACKAGE_DIR)/dsh-edge-agent/
-	@cp cordis.patch.yml $(PACKAGE_DIR)/dsh-edge-agent/
-	@cp cordis.yml $(PACKAGE_DIR)/dsh-edge-agent/
-	@cp .env.sh $(PACKAGE_DIR)/dsh-edge-agent/
-	@cp .env.example $(PACKAGE_DIR)/dsh-edge-agent/
-	@# 复制 .env（如果存在）
-	@test -f .env && cp .env $(PACKAGE_DIR)/dsh-edge-agent/ || echo "  .env 不存在，跳过"
+	@# 编译产物 + 配置
+	@cp -r lib $(PACKAGE_DIR)/dsh-edge-agent-v$(VERSION)/
+	@cp -r scripts $(PACKAGE_DIR)/dsh-edge-agent-v$(VERSION)/
+	@cp -r presets $(PACKAGE_DIR)/dsh-edge-agent-v$(VERSION)/
+	@cp package.json $(PACKAGE_DIR)/dsh-edge-agent-v$(VERSION)/
+	@cp pnpm-lock.yaml $(PACKAGE_DIR)/dsh-edge-agent-v$(VERSION)/
+	@cp cordis.patch.yml $(PACKAGE_DIR)/dsh-edge-agent-v$(VERSION)/
+	@cp .env.sh $(PACKAGE_DIR)/dsh-edge-agent-v$(VERSION)/
+	@cp .env.example $(PACKAGE_DIR)/dsh-edge-agent-v$(VERSION)/
 
-	@# 打包
-	@cd $(PACKAGE_DIR) && tar -czf ../$(PACKAGE_NAME) dsh-edge-agent
+	@# 用户文档 + 入口
+	@cp install.sh $(PACKAGE_DIR)/dsh-edge-agent-v$(VERSION)/
+	@cp README.md $(PACKAGE_DIR)/dsh-edge-agent-v$(VERSION)/
+	@cp LICENSE $(PACKAGE_DIR)/dsh-edge-agent-v$(VERSION)/
+
+	@# 打包 + SHA256
+	@cd $(PACKAGE_DIR) && tar -czf ../$(PACKAGE_NAME) dsh-edge-agent-v$(VERSION)
+	@sha256sum $(PACKAGE_NAME) | tee $(SHA_NAME)
 	@rm -rf $(PACKAGE_DIR)
 
-	@echo "$(GREEN)✓ 打包完成: $(PACKAGE_NAME)$(NC)"
-	@ls -lh $(PACKAGE_NAME)
+	@echo ""
+	@SIZE=$$(du -h $(PACKAGE_NAME) | cut -f1); \
+	 echo "$(GREEN)✓ $(PACKAGE_NAME)$(NC) ($$SIZE)"
+	@echo "$(GREEN)✓ $(SHA_NAME)$(NC)"
 
 # 安装到本地
 install: package
@@ -103,7 +120,7 @@ clean:
 	@echo "$(BLUE)==> 清理构建产物$(NC)"
 	@rm -rf lib/
 	@rm -rf $(PACKAGE_DIR)
-	@rm -f $(PACKAGE_NAME)
+	@rm -f $(PACKAGE_NAME) $(SHA_NAME)
 	@echo "$(GREEN)✓ 清理完成$(NC)"
 
 # 完整流程：构建 + 测试 + 验证 + 打包

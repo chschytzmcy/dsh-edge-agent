@@ -27,3 +27,11 @@ final_answer.txt
 ping_result.txt
 秋日小诗.md
 __pycache__/
+
+# 2026-09-15: repo hygiene —
+# `key` holds a live API key and must NEVER enter git history.
+# Release tarballs are `make package` outputs (§7.55 switched naming to
+# *.tar.gz, which the old `*.tgz` rule did not cover); same for checksums.
+key
+*.tar.gz
+*.tar.gz.sha256
