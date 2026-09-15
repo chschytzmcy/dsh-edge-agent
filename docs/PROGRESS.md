@@ -6706,6 +6706,39 @@ HTTP API 路径（us-news-test-001 session）**没有**这一行——只在 inp
 - memory `audit-presence-vs-enforce` — §7.34 audit 入口设计
 
 
+### §7.55 release 打包收紧 — tarball 泄漏 .env 与开发机 symlink 的修复 + repo 卫生(2026-09-15)
+
+**背景**:`make package` 旧实现是"整目录 cp"式黑名单打包,产物 `dsh-edge-agent-deploy.tar.gz` 有 75MB,且藏着两类泄漏/失效风险:
+1. **`cp .env`**——把真实 `DEEPSEEK_API_KEY` / `DASHSCOPE_API_KEY` / `EDGE_API_KEY` 打进 release 产物(secrets 随 tarball 扩散)
+2. **`cp -r profiles`**——把 `profiles/node_modules/` 的 252 个 symlink(全部指向开发机绝对路径 `/home/etsme/.npm-global/...`)和 `profiles/dsh-edge-agent/node_modules/`(~30M 开发 runtime)一起打包;换机解压即全部断链
+3. legacy 配置(`cordis.yml`、`profiles/*.cordis.yml`,§7.31 起 install.sh 不再读取)也一并进产物,误导接收方
+
+**改动**:
+1. **Makefile `package` target 改为白名单打包**:
+   - tarball 命名带 semver:`dsh-edge-agent-v$(VERSION).tar.gz`(`VERSION` 取 `package.json.version`,取不到 fallback `0.0.0-dev`),与未来 git tag / release pipeline 对齐
+   - 只打:`lib/ scripts/ presets/ package.json pnpm-lock.yaml cordis.patch.yml .env.sh .env.example`(编译产物+配置)+ `install.sh README.md LICENSE`(用户文档与入口)
+   - 明确不打:`.env`、`profiles/`(连带的全部 symlink)、`cordis.yml`、`profiles/*.cordis.yml`
+   - 新增 `sha256sum $(PACKAGE_NAME) | tee $(PACKAGE_NAME).sha256`;`clean` 同步删 SHA 文件
+2. **`.gitignore` repo 卫生**(旧 `*.tgz` 规则盖不住 §7.55 新命名):
+   - `key`——repo 根散落的其他服务商真实 API key(`sk-sp-…` 格式;实测 DeepSeek API 认证失败,不是有效 DeepSeek key,但按敏感文件处理,绝不入库)
+   - `*.tar.gz`、`*.tar.gz.sha256`——release 产物是构建输出,不入库
+
+**验证**(2026-09-15 实测):
+- `make package` 产物 **318KB**(vs 旧 75MB,~235× 缩减;低于预期 2MB 是因为剔除干净后只剩 lib+脚本)
+- `tar -tzf` 共 211 项;`.env` 命中 **0**;`node_modules` 命中 **0**
+- `sha256sum -c` 校验通过(`f1261730…`)
+- `git check-ignore -v` 三条新规则全部生效;确认无已 track 的同名文件被误伤
+- 目标机使用路径不变:解包 → `cp .env.example .env` 填 key → `./install.sh`
+
+**Lesson**:release 打包必须**白名单**而非黑名单——"cp 整个目录再删几个"在 secrets 与开发机绝对路径面前必然失守;tar 内容要用 `tar -tzf | grep -c` 断言(本次已把验证命令留档,可进 CI)。
+
+**相关**:
+- commit `b803e3e`(chore(build): §7.55 打包收紧 + .gitignore 挡 key/tarball)
+- `Makefile:65-105` package target;`.gitignore:31-39`
+- memory `test-fixture-no-real-pii` — 同属"敏感物不入库/不入产物"一族
+- §7.56 之前的空号说明:本节(§7.55)由 2026-09-15 补记,当时 Makefile 注释先行引用了编号
+
+
 ### §7.56 ops log 按天轮转 — mtime 年龄判断对活跃追加 log 永不触发的死分支修复(2026-09-15)
 
 **背景**:ops log(`~/.dsh-edge-agent/log/dsh-edge-agent.log`)已长到 17MB 单文件,只有 50MB size 轮转兜底;`maxFileAgeDays` 配置为 0(关闭)。user 要求增加按天轮转。
