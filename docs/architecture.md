@@ -190,6 +190,45 @@ src/
 
 通过 `verify-adapter-boundary.ts` 脚本在 CI 中强制检查。
 
+## 📦 最小部署清单：bundle 在任意 profile 跑起来需要什么
+
+> 实证依据：2026-09-15 §7.55/§7.56 部署验证——两个 profile 的嵌套包与 repo `lib/`、`cordis.patch.yml` 逐字节一致。
+
+dsh-edge-agent 是 profile-agnostic 的 Cordis bundle：它"能不能装上"与目标 profile 无关（web / dsh-tui / 自定义同构），最小集只由以下 **4 项**决定。
+
+### 最小必需集（挂载 + 全部插件生效）
+
+| # | 文件 | 位置 | 作用 |
+|---|---|---|---|
+| 1 | `package.json` | `~/.dsh/profiles/<p>/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/` | bundle 身份卡：`name`/`version`；**`exports` 29 个 subpath 映射**（patch 里每个插件 `name: '…/file-logger'` 靠它解析到实现文件）；**`dsh.bundle.patch` 指针**（告诉 DSH 去哪读装配清单） |
+| 2 | `cordis.patch.yml` | 同上 | 装配说明书：10 个 config 覆盖 + 30 个 disable + 17 个插件 insert。缺它则 bundle 只是躺在 node_modules 里的一堆 JS，一个插件都不会 mount |
+| 3 | `lib/**/*.js` | 同上 | 插件实现本体（tsc 产物）。⚠️ 目录名误导：tsconfig `outDir: "lib/types"`，运行时 `.js` 实际就在 `lib/types/dsh-adapter/*.js`；每模块三份产物，Node 只读 `.js`（`.d.ts` 服务 `types` 条件、`.map` 仅调试定位） |
+| 4 | profile 注册 | `~/.dsh/profiles/<p>/package.json` → `dsh.profile.bundles` 数组追加包名 | 唯一入口开关：不列入 bundles，DSH 启动时不加载本包 |
+
+### 功能完整（web 场景近似必需）
+
+| 5 | agent preset | `~/.dsh/.agent-presets/dsh-edge-agent/{preset.yml, agent.cordis.yml}` | web 宿主的默认 preset 指向 `dsh-edge-agent`（见第 2 节 preset 说明）。缺失后果：隐私插件照常运行，但会话的 agent 组装（工具/prompt 段）不是 edge 版，preset 选择器失效 |
+
+### 明确不需要（都是开发/安装/文档便利）
+
+`src/`、`tests/`、`scripts/`、`presets/`（legacy）、`Makefile`、`install.sh`、`README/LICENSE`、`pnpm-lock.yaml`、`.env`/`.env.sh`（运维项：缺 key 触发 §7.35 LOCAL 降级，属设计内行为）、bundle 自带 `node_modules`（**全部依赖是 peerDependencies，由 `~/.dsh/profiles/node_modules/` hoist 提供**——这是最小集只有 ~1MB 的原因）、legacy `cordis.yml` 与 `profiles/*.cordis.yml`（§7.31 起无人读）。
+
+### 手工最小部署（等价 install.sh 核心路径）
+
+```bash
+N=~/.dsh/profiles/<p>/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent
+mkdir -p "$N"
+cp package.json cordis.patch.yml "$N/"     # ① ②
+rsync -a --delete lib/ "$N/lib/"           # ③
+# ④ 把包名追加进 ~/.dsh/profiles/<p>/package.json 的 dsh.profile.bundles
+```
+
+### 前提与注意
+
+- **前提**：目标机已装 dsh CLI 全局包（`@deepseek-ai/dsh`，自带 dsh-base / dsh-web-app / `@deepseek-ai/*` 上游插件，经 `~/.dsh/profiles/node_modules/` hoist 可解析）。bundle 零自购依赖。
+- `install.sh` §2.7 额外写入 profile `dependencies` 的 `file:` 链接是给 `pnpm install` 用的；手工物理放置时可省略。
+- **改了嵌套包必须重启 dsh 进程才生效**（运行时唯一真相源是嵌套包那份，不是 repo；§7.54.8 lesson 3）。
+
 ## 🚀 启动流程
 
 1. **CLI 启动器**（`bin/dsh-edge-agent.js`）：

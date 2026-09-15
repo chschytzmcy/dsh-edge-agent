@@ -6776,3 +6776,22 @@ audit 配置的 `maxFileAgeDays: 7`(cordis.patch.yml:443)同样从未生效过�
 - `src/dsh-adapter/audit-log.ts` — 同款 checkAndRotate 修复(7 天轮转从此真实生效)
 - `cordis.patch.yml:302-310` — file-logger 轮转配置(env 可覆盖)
 - `tests/unit/file-logger.test.ts` — 3 个 day-boundary 用例 + env 覆盖用例
+
+### §7.57 install.sh 三处同步缺陷修复 — copy-once 漂移 / 静默 no-op / 无守卫 plugin add(2026-09-15)
+
+**背景**:回答"部署文件 ↔ repo 源文件"映射时顺藤摸出 install.sh 三个同源缺陷(都是"快照不自动跟/失败不出声"一族,memory `profile-node-modules-version-skew` / `env-default-restart-required`)。
+
+**缺陷与修复**(全在 `install.sh` Phase 2):
+1. **§2.8 copy-once → diff-then-copy**:原逻辑"嵌套 package.json 缺才拷"——repo 根 2026-09-11 升 peerDeps `0.1.2-alpha.2 → 0.1.2-rc.1` 后,两 profile 嵌套拷贝停留在 09-04 bootstrap 快照。peerDeps 漂移没炸(只是声明),但 `exports` 是真消费面:哪天新增 subpath,§2.6 同步过去的新 patch 引用旧 package.json 不存在的导出 → `ERR_MODULE_NOT_FOUND` 极难排查。改为 §2.6 同款 diff-then-copy;pnpm 链线只在首次 bootstrap 跑。
+2. **§2.7 静默 no-op → fail-fast**:profile 骨架 package.json 本体由 dsh CLI 生成(dsh-app-boot `initProfile`/`PROFILE_TEMPLATES`,非本 repo 文件),§2.7 只做 bundles+`file:` 追加。原实现整段包在 `if [ -f 骨架 ]` 里——新环境 + `--skip-pnpm` 时骨架不存在 → 静默跳过,bundle 永不注册也不报错。现:缺骨架/缺 python3/JSON 改写失败三种情形全部 `exit 1`(python 调用去掉 `|| true`)。
+3. **§2.2-2.4 无守卫 plugin add → 可解析即跳过**:三段上游包 plugin add 无条件执行、不带版本参数。验证第 1 项时现场翻车:第一次全量 `./install.sh` 把 npm latest 的 `dsh-agent-loop@0.1.0-rc.6`、`dsh-web@0.0.1-rc.1` 等 7 包(+16 transitive)装进 **web profile node_modules,shadow 掉 hoist 验证版 0.1.2-rc.1**(web 自 §7.33 起从未跑过这些 plugin add,今天首次触发)。已回退(package.json 删 7 dep + `pnpm install --offline` prune -16,回到 12:38 验证态);并加守卫:`PROFILE_DIR/node_modules/<pkg>` 或 `~/.dsh/profiles/node_modules/<pkg>` 任一存在即 `skip upstream <pkg> (already resolvable)`。真新环境(两处皆无)仍走 plugin add,能力不回退。dsh-tui 未受影响(其 deps 早已手工钉到 rc.1,memory `profile-node-modules-version-skew` 的约定路径)。
+
+**验证**:
+- `bash -n` OK;两遍真实 `./install.sh`:第 1 遍打出 `sync package.json → …/dsh-edge-agent/ (mirror repo root)`(两 profile 漂移即被修复,`diff -q` 与 repo 根逐字节一致);第 2 遍幂等(无 sync 行)+ 14 条 skip upstream + §2.7 未再改写任何 package.json
+- web 终态:`dependencies` 仅 edge-agent file:、bundles 三项齐全、`node_modules/@deepseek-ai/` 无 local 副本
+- 现役 web 进程(12:38 启动)全程未受影响;本次未改 lib/patch 内容,嵌套 package.json 镜像在下次自然重启生效,无需立即重启
+
+**相关**:
+- `install.sh` §2.2-2.4(合并为单守卫循环)/ §2.7 / §2.8
+- `docs/architecture.md`「📦 最小部署清单」+ 新增 `docs/deploy-minimal-files.md`(清单各文件内容物与职责解释)
+- memory `profile-node-modules-version-skew`(本次事故的约定出处)
