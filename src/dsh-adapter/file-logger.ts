@@ -123,7 +123,19 @@ export interface Config {
   queueCapacity: number
   /** Rotate log when file exceeds this size (bytes). 0 = disabled. */
   maxFileSizeBytes: number
-  /** Rotate log when file age exceeds this (days). 0 = disabled. */
+  /**
+   * Calendar-day rotation: rotate when the file's last-write day is at
+   * least this many local calendar days before today. `1` = daily
+   * rotation (first flush after midnight moves the old file to `.1`).
+   * `0` = disabled.
+   *
+   * §7.56 (2026-09-15): previously this compared elapsed `now - mtime`,
+   * which NEVER fires for an active append-mode log — continuous writes
+   * keep mtime at "moments ago", so `ageDays ≈ 0` forever (the shipped
+   * `maxFileAgeDays: 0` masked the dead branch). Calendar-day diff works
+   * for continuously-written files: at the first flush of a new day the
+   * mtime's date is yesterday, so dayDiff ≥ 1 triggers the rotation.
+   */
   maxFileAgeDays: number
   /** Maximum number of rotated files to keep. */
   maxRotatedFiles: number
@@ -146,7 +158,7 @@ export const Config: Schema<Config> = Schema.object({
   flushIntervalMs: Schema.natural().default(1000),
   queueCapacity: Schema.natural().default(10_000),
   maxFileSizeBytes: Schema.natural().default(50 * 1024 * 1024), // 50MB
-  maxFileAgeDays: Schema.number().default(0),
+  maxFileAgeDays: Schema.number().default(1), // §7.56: daily rotation by default
   maxRotatedFiles: Schema.natural().default(5),
   level: Schema.union(['debug', 'info', 'warn', 'error'] as const).default('info'),
 })
@@ -290,12 +302,15 @@ export class FileLoggerServiceImpl extends Service {
     if (!existsSync(this.filePath)) return
     try {
       const stats = await stat(this.filePath)
-      const now = Date.now()
-      const ageMs = now - stats.mtimeMs
-      const ageDays = ageMs / (1000 * 60 * 60 * 24)
+      // §7.56: calendar-day diff in LOCAL time (matches formatLocalIso's
+      // timestamp policy — "one day" is the operator's wall clock day, not
+      // a UTC day). The previous elapsed-time form (`now - mtime`) never
+      // fired for an active append-mode log because every write refreshes
+      // mtime to "moments ago".
+      const dayDiff = localDayIndex(new Date()) - localDayIndex(new Date(stats.mtimeMs))
       const needsRotation =
         (this.maxFileSizeBytes > 0 && stats.size >= this.maxFileSizeBytes) ||
-        (this.maxFileAgeDays > 0 && ageDays >= this.maxFileAgeDays)
+        (this.maxFileAgeDays > 0 && dayDiff >= this.maxFileAgeDays)
       if (!needsRotation) return
 
       // Shift .N → .N+1, then current → .1. Highest index first so we
@@ -340,6 +355,18 @@ export class FileLoggerServiceImpl extends Service {
  * downstream counts them as separate entries, breaking rotation
  * arithmetic and grep counts.
  */
+/**
+ * Calendar-day index in the system's LOCAL timezone: whole days since the
+ * epoch as seen from local wall-clock time. Only differences between two
+ * indexes are meaningful (`dayDiff >= maxFileAgeDays`). Using local
+ * components keeps day boundaries aligned with the log's own local ISO
+ * timestamps (§7.30 policy), so rotation happens at the operator's
+ * midnight, not UTC midnight.
+ */
+function localDayIndex(d: Date): number {
+  return Math.floor(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 86_400_000)
+}
+
 function formatLocalIso(d: Date): string {
   // Manual ISO 8601 in system TZ with offset, since `toISOString()` is
   // hardcoded UTC and `Intl.DateTimeFormat` is locale-aware (varies by
@@ -409,14 +436,18 @@ export function resolveLoggerConfig(env: NodeJS.ProcessEnv = process.env): Resol
   const root = env.DSH_EDGE_LOG_ROOT && env.DSH_EDGE_LOG_ROOT.length > 0
     ? env.DSH_EDGE_LOG_ROOT
     : join(homeBase, '.dsh-edge-agent', 'log')
+  // §7.56: daily rotation is the default (maxFileAgeDays=1). Override with
+  // DSH_EDGE_LOG_MAX_AGE_DAYS (0 disables age rotation, keeping size-only).
+  const ageDaysEnv = parseInt(env.DSH_EDGE_LOG_MAX_AGE_DAYS ?? '', 10)
+  const rotatedEnv = parseInt(env.DSH_EDGE_LOG_MAX_ROTATED ?? '', 10)
   return {
     root,
     filename: 'dsh-edge-agent.log',
     flushIntervalMs: 1000,
     queueCapacity: 10_000,
     maxFileSizeBytes: 50 * 1024 * 1024,
-    maxFileAgeDays: 0,
-    maxRotatedFiles: 5,
+    maxFileAgeDays: Number.isFinite(ageDaysEnv) && ageDaysEnv >= 0 ? ageDaysEnv : 1,
+    maxRotatedFiles: Number.isFinite(rotatedEnv) && rotatedEnv > 0 ? rotatedEnv : 7,
     level: parseLogLevel(env.DSH_EDGE_LOG_LEVEL, 'info'),
   }
 }

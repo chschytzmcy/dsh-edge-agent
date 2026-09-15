@@ -36,6 +36,16 @@ const LEVEL_ORDER: Record<AuditLevel, number> = {
   security: 50,
 }
 
+/**
+ * Calendar-day index in the system's LOCAL timezone (§7.56). Only diffs
+ * between two indexes are meaningful. Mirrors file-logger.ts's helper —
+ * kept local to this module so audit-log has no import dependency on the
+ * logger plugin (both already duplicate the rotation algorithm by design).
+ */
+function localDayIndex(d: Date): number {
+  return Math.floor(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 86_400_000)
+}
+
 export interface Config {
   /** Drop entries below this level. */
   minLevel: AuditLevel
@@ -280,13 +290,17 @@ export class AuditLogServiceImpl extends Service {
 
     try {
       const stats = await stat(this.filePath)
-      const now = Date.now()
-      const ageMs = now - stats.mtimeMs
-      const ageDays = ageMs / (1000 * 60 * 60 * 24)
+      // §7.56 (2026-09-15): calendar-day diff (local time), replacing the
+      // elapsed-time form `now - mtime`. Same bug as file-logger: an active
+      // append-mode log refreshes mtime on every flush, so elapsed age was
+      // always ≈ 0 and the configured `maxFileAgeDays: 7` never fired.
+      // Day-index diff rotates on the first flush of a new calendar day
+      // once the file is ≥ maxFileAgeDays days old by wall clock.
+      const dayDiff = localDayIndex(new Date()) - localDayIndex(new Date(stats.mtimeMs))
 
       const needsRotation =
         (this.maxFileSizeBytes > 0 && stats.size >= this.maxFileSizeBytes) ||
-        (this.maxFileAgeDays > 0 && ageDays >= this.maxFileAgeDays)
+        (this.maxFileAgeDays > 0 && dayDiff >= this.maxFileAgeDays)
 
       if (!needsRotation) return
 

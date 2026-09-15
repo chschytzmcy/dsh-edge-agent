@@ -5,6 +5,8 @@
  *   1. Plugin shape (name/inject/Config/apply)
  *   2. Basic export/format: formatted line lands in file after flush
  *   3. Size-based rotation: file → .1 when maxFileSizeBytes exceeded
+ *   3b. Calendar-day rotation (§7.56): file → .1 across a local day
+ *       boundary when maxFileAgeDays ≥ 1; disabled at 0
  *   4. Queue overflow protection: drops oldest, increments droppedCount
  *   5. Concurrent flush serialisation: no duplicates, no losses
  *   6. installFileLogger env gate: DSH_EDGE_LOG_FILE=false skips
@@ -16,7 +18,7 @@
  */
 
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, readFileSync, existsSync, readdirSync } from 'node:fs'
+import { mkdtempSync, rmSync, readFileSync, existsSync, readdirSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, it } from 'vitest'
@@ -181,6 +183,90 @@ describe('FileLoggerServiceImpl.export + flush', () => {
     assert.ok(entries.length >= 2, `expected rotation, got files: ${entries.join(', ')}`)
   })
 
+  // §7.56 (2026-09-15): calendar-day rotation. The old elapsed-time check
+  // (`now - mtime >= maxFileAgeDays`) never fired for an active append log
+  // because every flush refreshes mtime. The new check compares LOCAL
+  // calendar days, so a file whose mtime is "yesterday" rotates on the
+  // first flush of today. Tests simulate the day boundary with utimesSync.
+  it('rotates across a calendar-day boundary when maxFileAgeDays=1', async () => {
+    const svc = new FileLoggerServiceImpl(fakeCtx() as never, {
+      root,
+      filename: 'a.log',
+      flushIntervalMs: 60_000,
+      queueCapacity: 100,
+      maxFileSizeBytes: 50 * 1024 * 1024,
+      maxFileAgeDays: 1,
+      maxRotatedFiles: 7,
+    })
+    // Seed "yesterday's" file: write one line, then backdate mtime 36h
+    // (36 > 24 guarantees a different local calendar day at any wall time).
+    svc.export({ sn: 1, ts: Date.now(), name: 'rot', type: 'info', level: 1, args: ['yesterday-line'] } as never)
+    await svc.flush()
+    const yesterday = new Date(Date.now() - 36 * 60 * 60 * 1000)
+    utimesSync(svc.filePathForTests(), yesterday, yesterday)
+
+    // First flush of the "new day" must rotate the old file to .1.
+    svc.export({ sn: 2, ts: Date.now(), name: 'rot', type: 'info', level: 1, args: ['today-line'] } as never)
+    await svc.flush()
+
+    const rotated = `${svc.filePathForTests()}.1`
+    assert.ok(existsSync(rotated), 'expected .1 rotated file after day boundary')
+    assert.match(readFileSync(rotated, 'utf-8'), /yesterday-line/)
+    assert.match(readFileSync(svc.filePathForTests(), 'utf-8'), /today-line/)
+    assert.ok(!readFileSync(svc.filePathForTests(), 'utf-8').includes('yesterday-line'),
+      'new file must not contain pre-rotation content')
+  })
+
+  it('does NOT rotate within the same calendar day (maxFileAgeDays=1)', async () => {
+    const svc = new FileLoggerServiceImpl(fakeCtx() as never, {
+      root,
+      filename: 'a.log',
+      flushIntervalMs: 60_000,
+      queueCapacity: 100,
+      maxFileSizeBytes: 50 * 1024 * 1024,
+      maxFileAgeDays: 1,
+      maxRotatedFiles: 7,
+    })
+    svc.export({ sn: 1, ts: Date.now(), name: 'rot', type: 'info', level: 1, args: ['line-1'] } as never)
+    await svc.flush()
+    // Backdate 1h — still the same local calendar day in every realistic
+    // run; even if the test executes within 1h of midnight the dayDiff is
+    // at most 1 and only crosses when the hour actually spans midnight,
+    // so assert on "no rotation OR rotation consistent with dayDiff".
+    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000)
+    utimesSync(svc.filePathForTests(), oneHourAgo, oneHourAgo)
+    svc.export({ sn: 2, ts: Date.now(), name: 'rot', type: 'info', level: 1, args: ['line-2'] } as never)
+    await svc.flush()
+
+    const sameDay = oneHourAgo.getDate() === new Date().getDate()
+    const rotated = existsSync(`${svc.filePathForTests()}.1`)
+    if (sameDay) {
+      assert.ok(!rotated, 'same calendar day must not rotate')
+    } else {
+      // Test ran across local midnight — rotation is the correct behavior.
+      assert.ok(rotated, 'midnight crossed during test; rotation expected')
+    }
+  })
+
+  it('maxFileAgeDays=0 disables day-boundary rotation', async () => {
+    const svc = new FileLoggerServiceImpl(fakeCtx() as never, {
+      root,
+      filename: 'a.log',
+      flushIntervalMs: 60_000,
+      queueCapacity: 100,
+      maxFileSizeBytes: 50 * 1024 * 1024,
+      maxFileAgeDays: 0,
+      maxRotatedFiles: 7,
+    })
+    svc.export({ sn: 1, ts: Date.now(), name: 'rot', type: 'info', level: 1, args: ['old-line'] } as never)
+    await svc.flush()
+    const threeDaysAgo = new Date(Date.now() - 72 * 60 * 60 * 1000)
+    utimesSync(svc.filePathForTests(), threeDaysAgo, threeDaysAgo)
+    svc.export({ sn: 2, ts: Date.now(), name: 'rot', type: 'info', level: 1, args: ['new-line'] } as never)
+    await svc.flush()
+    assert.ok(!existsSync(`${svc.filePathForTests()}.1`), 'age rotation disabled must not rotate')
+  })
+
   it('drops oldest entries when queue is full and counts them', () => {
     const svc = new FileLoggerServiceImpl(fakeCtx() as never, {
       root,
@@ -282,12 +368,24 @@ describe('resolveLoggerConfig', () => {
     assert.equal(cfg.flushIntervalMs, 1000)
     assert.equal(cfg.queueCapacity, 10_000)
     assert.equal(cfg.maxFileSizeBytes, 50 * 1024 * 1024)
-    assert.equal(cfg.maxFileAgeDays, 0)
-    assert.equal(cfg.maxRotatedFiles, 5)
+    // §7.56 (2026-09-15): daily rotation by default; keep-window widened
+    // 5 → 7 so a week of day-rotated files survives.
+    assert.equal(cfg.maxFileAgeDays, 1)
+    assert.equal(cfg.maxRotatedFiles, 7)
     // 2026-09-11: default level flipped debug → info per user feedback
     // "log 太冗余" — ops log was drowning in 4 body lines per LLM call.
     // Previously 2026-09-02 info → debug (PROGRESS §7.23).
     assert.equal(cfg.level, 'info')
+  })
+
+  // §7.56 (2026-09-15): rotation env overrides. AGE_DAYS=0 restores the
+  // old size-only behavior; invalid values fall back to the daily default.
+  it('honours DSH_EDGE_LOG_MAX_AGE_DAYS / MAX_ROTATED env overrides', () => {
+    assert.equal(resolveLoggerConfig({ HOME: '/tmp', DSH_EDGE_LOG_MAX_AGE_DAYS: '0' }).maxFileAgeDays, 0)
+    assert.equal(resolveLoggerConfig({ HOME: '/tmp', DSH_EDGE_LOG_MAX_AGE_DAYS: '3' }).maxFileAgeDays, 3)
+    assert.equal(resolveLoggerConfig({ HOME: '/tmp', DSH_EDGE_LOG_MAX_AGE_DAYS: 'bogus' }).maxFileAgeDays, 1)
+    assert.equal(resolveLoggerConfig({ HOME: '/tmp', DSH_EDGE_LOG_MAX_ROTATED: '14' }).maxRotatedFiles, 14)
+    assert.equal(resolveLoggerConfig({ HOME: '/tmp', DSH_EDGE_LOG_MAX_ROTATED: '-2' }).maxRotatedFiles, 7)
   })
 
   // 2026-09-02: DSH_EDGE_LOG_LEVEL env var overrides the default.

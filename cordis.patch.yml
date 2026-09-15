@@ -300,8 +300,13 @@
         flushIntervalMs: 1000
         queueCapacity: 10000
         maxFileSizeBytes: 52428800  # 50MB
-        maxFileAgeDays: 0
-        maxRotatedFiles: 5
+        # §7.56 (2026-09-15): 按天轮转。1 = 跨日历天后第一次 flush 把旧文件
+        # 移到 .1（旧实现用 mtime 年龄判断，对持续追加的 log 永不触发，
+        # 已改为 day-boundary 判断，见 file-logger.ts checkAndRotate）。
+        # 0 = 关闭年龄轮转（回到纯 50MB size 轮转）。
+        maxFileAgeDays: !!js parseInt(process.env.DSH_EDGE_LOG_MAX_AGE_DAYS ?? '1', 10)
+        # §7.56: 5 → 7 —— 按天轮转下保留一整周历史（size 轮转仍兜底）。
+        maxRotatedFiles: !!js parseInt(process.env.DSH_EDGE_LOG_MAX_ROTATED ?? '7', 10)
         # 2026-09-11: default flipped debug → info per user feedback
         # "log 太冗余" — ops log was drowning in 4 body lines per LLM
         # call (LLM_REQUEST / LLM_MESSAGES / LLM_RESPONSE /

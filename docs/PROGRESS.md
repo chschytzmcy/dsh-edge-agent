@@ -6706,3 +6706,40 @@ HTTP API 路径（us-news-test-001 session）**没有**这一行——只在 inp
 - memory `audit-presence-vs-enforce` — §7.34 audit 入口设计
 
 
+### §7.56 ops log 按天轮转 — mtime 年龄判断对活跃追加 log 永不触发的死分支修复(2026-09-15)
+
+**背景**:ops log(`~/.dsh-edge-agent/log/dsh-edge-agent.log`)已长到 17MB 单文件,只有 50MB size 轮转兜底;`maxFileAgeDays` 配置为 0(关闭)。user 要求增加按天轮转。
+
+**根因(为什么不能直接把 0 改成 1)**:
+`file-logger.ts:checkAndRotate()` 的年龄判断是 `ageDays = (now - stats.mtimeMs) / 86400000`。
+ops log 是 append-mode 持续写入,**每次 flush 都把 mtime 刷成"刚刚"**,`ageDays ≈ 0` 恒成立 →
+`maxFileAgeDays > 0` 分支对活跃 log 永不触发,是死代码。同一算法拷贝自 `audit-log.ts:checkAndRotate()`,
+audit 配置的 `maxFileAgeDays: 7`(cordis.patch.yml:443)同样从未生效过。
+
+**修复**(day-boundary 判断替代 elapsed-time 判断):
+1. `file-logger.ts` + `audit-log.ts`:`checkAndRotate()` 改用**本地日历日索引差**
+   `localDayIndex(now) - localDayIndex(mtime) >= maxFileAgeDays`。
+   跨午夜后的第一次 flush:mtime 的日期是"昨天",dayDiff=1 → 触发轮转(current → .1,.N → .N+1)。
+   用本地时区日界(与 §7.30 时间戳政策一致):轮转发生在 operator 的午夜,不是 UTC 午夜。
+2. `file-logger.ts` schema 默认 `maxFileAgeDays: 0 → 1`(按天轮转成为默认行为);
+   `resolveLoggerConfig` 同步,并新增 env 覆盖:
+   - `DSH_EDGE_LOG_MAX_AGE_DAYS`(0 = 关闭年龄轮转,回到纯 size 轮转)
+   - `DSH_EDGE_LOG_MAX_ROTATED`(默认 5 → 7,按天轮转下保留一周)
+3. `cordis.patch.yml` file-logger 段:`maxFileAgeDays: !!js parseInt(env ?? '1')`,
+   `maxRotatedFiles: !!js parseInt(env ?? '7')`。audit-log 段不动(7 天配置本来就有,修复后自然生效)。
+
+**验证**:
+- 新增 3 个单测(utimesSync 回拨 mtime 模拟跨天):跨天轮转 ✓ / 同日不轮转 ✓ / `maxFileAgeDays=0` 关闭 ✓
+- `resolveLoggerConfig` env 覆盖 + 非法值 fallback 用例 ✓
+- 全量 unit:39 files / 729 passed(默认值断言 0→1、5→7 已同步更新)
+- `verify:patch-surface` OK(17 inserts, 10 config overrides, 30 disables,面未变)
+
+**部署注意**:改的是 bundle 内代码 + patch,**必须重跑 install.sh 同步并重启 dsh 进程**才生效
+(memory `env-default-restart-required` 同款陷阱;§7.54.8 lesson 3)。
+重启后第一个跨午夜 flush 会把现有 17MB 文件轮转成 `.1`。
+
+**相关**:
+- `src/dsh-adapter/file-logger.ts` — checkAndRotate + localDayIndex + resolveLoggerConfig
+- `src/dsh-adapter/audit-log.ts` — 同款 checkAndRotate 修复(7 天轮转从此真实生效)
+- `cordis.patch.yml:302-310` — file-logger 轮转配置(env 可覆盖)
+- `tests/unit/file-logger.test.ts` — 3 个 day-boundary 用例 + env 覆盖用例
