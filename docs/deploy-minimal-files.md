@@ -12,7 +12,7 @@ cordis.patch.yml  = 派工单/点菜单   "今天谁上岗、按什么参数、�
 lib/**/*.js       = 工人本体        真实执行的代码
 ```
 
-DSH 启动:按 package.json 里的指针读到派工单 → insert 点名 → 查花名册(exports)定位工位 → 到 lib 提货执行。**三者缺一,一个插件都装不上——且 2026-09-16 §7.59 实机探针证明:缺任何一环都是【当场响】(boot 报错退出),不是静默降级;"安静地一个都不装"只发生在 ④ bundles[] 未注册时(见文末结论三)。**
+DSH 启动:按 package.json 里的指针读到派工单 → insert 点名 → 查花名册(exports)定位工位 → 到 lib 提货执行。**三者缺一,一个插件都装不上——且 2026-09-16 §7.59 实机探针证明:缺任何一环都是【当场响】(boot 报错退出),不是静默降级;"安静地一个都不装"只发生在 ④ bundles[] 未注册时(实机探针逐轮记录存 PROGRESS §7.59)。**
 
 ## ① `~/.dsh/profiles/<p>/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/package.json`
 
@@ -21,8 +21,8 @@ repo 根 `package.json` 的**逐字节镜像**(install.sh §2.8 diff-then-copy;�
 | 字段 | 内容 | 具体作用 |
 |---|---|---|
 | `name` / `version` | `@deepseek-harness-edge-agent/dsh-edge-agent` / `0.1.0` | bundle 身份证;profile `bundles` 数组按 `name` 找到这个目录 |
-| `exports` | 29 条子路径 → **路径指针**(每条就是 `{'types': '…d.ts', 'import': '…js'}` 两行,不含代码) | Node 标准的子路径路由表,决定 `import '包名/子路径'` 能否解析到文件。**不是插件列表**:29 条 = 插件/适配器子路径 + 非插件共享模块(`./invariant`、`./types` 等)+ 包自身资源(`.`、`./package.json`、`./cordis.patch.yml`)。lib 下共 56 个 `.js`,只有这 29 个入口对外可达,其余是包内私有。新增插件忘加 exports 条目 → Node 抛 `ERR_PACKAGE_PATH_NOT_EXPORTED`(实机核过,见文末结论三;整包缺失才是 `ERR_MODULE_NOT_FOUND`);这也是镜像必须跟 repo 同步的原因 |
-| `dsh.bundle.patch` | `"./cordis.patch.yml"` | 整张花名册与派工单的**唯一交点**:告诉 DSH loader 去哪读 ②。实测(文末结论三):已注册 bundle 的 package.json 删掉 `dsh.bundle` 字段 → loadProfile 当场抛 `declares no dsh.bundle in its package.json`(硬失败,并非"②变死文件后照常 boot") |
+| `exports` | 29 条子路径 → **路径指针**(每条就是 `{'types': '…d.ts', 'import': '…js'}` 两行,不含代码) | Node 标准的子路径路由表,决定 `import '包名/子路径'` 能否解析到文件。**不是插件列表**:29 条 = 插件/适配器子路径 + 非插件共享模块(`./invariant`、`./types` 等)+ 包自身资源(`.`、`./package.json`、`./cordis.patch.yml`)。lib 下共 56 个 `.js`,只有这 29 个入口对外可达,其余是包内私有。新增插件忘加 exports 条目 → Node 抛 `ERR_PACKAGE_PATH_NOT_EXPORTED`(实机核过;整包缺失才是 `ERR_MODULE_NOT_FOUND`);这也是镜像必须跟 repo 同步的原因 |
+| `dsh.bundle.patch` | `"./cordis.patch.yml"` | 整张花名册与派工单的**唯一交点**:告诉 DSH loader 去哪读 ②。实测:已注册 bundle 的 package.json 删掉 `dsh.bundle` 字段 → loadProfile 当场抛 `declares no dsh.bundle in its package.json`(硬失败,并非"②变死文件后照常 boot") |
 | `peerDependencies` | `@deepseek-ai/* = 0.1.2-rc.1` 等 | **纯声明**:bundle 零自购依赖,运行时一律走 `~/.dsh/profiles/node_modules/` hoist 链解析(所以嵌套目录下没有自己的 node_modules)。peerDeps 漂移不影响运行,只有 `exports` 漂移会炸 |
 | `files` | lib/ scripts/ presets/ + 若干根文件 | `make package` 白名单,决定 release tarball 内容;运行时不读 |
 
@@ -30,14 +30,30 @@ repo 根 `package.json` 的**逐字节镜像**(install.sh §2.8 diff-then-copy;�
 
 注意语义精度:它**不只说"本 bundle 要做什么"**,而是"装了本 bundle 之后,整个 DSH 的组装方案要做哪些改动"——三段里只有 insert 是自家事,config/disable 共 40 处动作的对象是**上游/宿主插件**。只写差量,DSH 启动时按层合并:`dsh-base → 宿主(dsh-web-app/dsh-tui) → 本 patch → ~/.dsh/profiles/<p>/cordis.patch.yml(用户皮肤,最后压顶)`。
 
-- **17 个 insert(派工)**:把 L2/L1 自己的插件挂进插件图(intent-router、prompt-guard、sanitizer-pipeline、privacy-policy、audit-log、td-bus、tcm、local-storage、file-logger、http-api…)。insert 的 `name` 就是子路径引用本身(如 `@deepseek-harness-edge-agent/dsh-edge-agent/file-logger`)→ 经 ① 的 exports 解析到 lib。
+- **17 个 insert(派工)**:把 L2/L1 自己的插件挂进插件图(intent-router、prompt-guard、sanitizer-pipeline、privacy-policy、audit-log、td-bus、tcm、local-storage、file-logger、http-api…)。insert 的 `name` 就是子路径引用本身(如 `@deepseek-harness-edge-agent/dsh-edge-agent/file-logger`)→ 经 ① 的 exports 解析到 lib。其中 **7 个是执法核心**(闭包推导见铁律 3),其余 10 个是执法之外的能力——模型接入(local/cloud-llm-adapter、model-router)、入口会话(http-api、edge-tools-registry、local-storage、sessions)、隐私增强(td-bus、tcm)、运维(file-logger、web-search-guard);实机结论:摘掉这 10 个,闸门照常执法。
 - **10 个 config 覆盖(定参数)**:改**已存在插件**的参数——file-logger 轮转(§7.56)、audit-log root、llm provider/模型名、各超时。值多为 `!!js` 表达式(如 `parseInt(process.env.DSH_EDGE_LOG_MAX_AGE_DAYS ?? '1', 10)`),所以 `.env.sh` 不改文件即可覆盖——这也是"改 env 必须重启进程"的机制根源。
 - **30 个 disable(撤编)**:剔除 edge 场景不用的上游/宿主插件(云直连、dsh 原生模块)。
 
 三条铁律(实证):
 1. **patch 说了算**:bundle 能力在 lib 里写了也不执行,上不上岗、按什么参数,全看这份派工单——聚合 id `dsh-edge-agent` 被 disable(`src/dsh-adapter/index.ts:apply()` 不执行),新增聚合级 wiring 必须另起独立插件 id。
 2. **系统级、启动时**:一次组装管整个进程生命周期;与会话级的 ⑤ `agent.cordis.yml` 正交,别混。
-3. **inject 只能加不能减**(§7.59 源码实证):代码里的 `export const inject` 会被 loader 追加合并进插件依赖,yml 无法撤销。所以"极简部署"绕不开包的硬依赖闭包——prompt-guard 依赖 `{privacyPolicy, auditLog, llm}`、privacy-policy 依赖 `{auditLog}`、input-guard 依赖 `{promptGuard, privacyPolicy, intentRouter, sanitizer, auditLog, realmSkillBridge}`;派工单只点两个能力插件的结果是 boot 硬失败,想装能力必须连依赖一起点。完整依赖图与"最小执法集 = 7"的推导见文末 §7.59 结论一(FAIL-LOUD 逐字签名存 PROGRESS §7.59)。
+3. **inject 只能加不能减**(§7.59 源码实证):代码里的 `export const inject` 会被 loader 追加合并进插件依赖,yml 无法撤销。所以"极简部署"绕不开包的硬依赖闭包——而且**被点名的两个能力插件还不是执法者**:prompt-guard / privacy-policy 是纯 service,自己不挂事件 hook;真正挂在 `agent/pre-step` / `llm/stream` / `agent/request` 上、聊天时挨个调用它们的唯一执法者是 **input-guard**。它的传递依赖闭包 = **最小执法集,共 7 插件**:
+
+   ```
+   宿主提供,无需点:llm▲(dsh-llm)、skills▲(宿主 bundle)
+
+   input-guard(唯一执法者)
+   ├─ prompt-guard        ── privacyPolicy, auditLog, llm▲
+   ├─ privacy-policy      ── auditLog
+   ├─ intent-router       ── llm▲, auditLog
+   ├─ sanitizer-pipeline  ── privacyPolicy, auditLog
+   ├─ realm-skill-bridge  ── auditLog, skills▲
+   └─ audit-log           ── (无依赖)
+   ```
+
+   **哪怕派工单只写 input-guard 一个名字,闭包也会逼你点全 7 个**;只点两个能力插件的结果是 boot 硬失败(`2 entries did not activate` + 逐项 `pending (waiting for service…)`,静默 INACTIVE 是 cordis 核心行为,dsh 宿主的 `assertEntriesActivated` 明炸;逐字签名存 PROGRESS §7.59)。想装能力,必须连依赖一起点。
+
+部署验收推论:"装上"分三层,**mount(挂上)≠ active(活了)≠ enforced(拦得住)**——boot 不报错只证明前两层,依赖闭包不齐时插件可能 ACTIVE 却一条都不拦;执法的真凭据是审计落盘出现 `blocked.attack` / `blocked.policy` 执法行(这也正是 §7.57 把 ④ 未注册改 fail-fast 的原因:缺件链路里唯一静默的就是它,其余缺口全部当场响,行为见 ①② 表格与文末差异速记)。
 
 ## ③ 同目录 `lib/**/*.js` — 插件实现本体(代码真正所在)
 
@@ -122,7 +138,7 @@ dsh 源码**写死**两个发现根:装机系统根 + `~/.dsh/.agent-presets/`(�
 | 谁读 | Node(模块解析)+ npm/dsh 工具链 | DSH/Cordis loader |
 | 何时起作用 | 每次有 import 按子路径找人时(查表) | 启动组装一次 |
 | 认不认识"插件" | 不认识——只见"包名/子路径 → 文件" | 认识——全插件图视角 |
-| 没有它 | import 报 `ERR_PACKAGE_PATH_NOT_EXPORTED` | 指针在而 patch 文件缺 → boot 报 `failed to read overlay …ENOENT`;patch 文件被指针引到却想"整体不装",要靠 ④ bundles[] 摘除——那才是"躺在 node_modules 里的死 JS"(均见文末结论三) |
+| 没有它 | import 报 `ERR_PACKAGE_PATH_NOT_EXPORTED` | 指针在而 patch 文件缺 → boot 报 `failed to read overlay …ENOENT`;patch 文件被指针引到却想"整体不装",要靠 ④ bundles[] 摘除——那才是"躺在 node_modules 里的死 JS"(boot 正常零痕迹,唯一静默场景) |
 | 写了 ≠ 会发生 | exports 列了 `./audit-log` **不代表它会上岗**,只保证"找得到" | insert 点了名但 exports 没有这条 → 查无此人,当场报错 |
 
 一句话:**package.json 管"找不找得到",cordis.patch.yml 管"用不用、怎么用"。电话本里存了厨师号码,不代表今晚他做菜;菜单点了他的菜,电话本里没号码也点不了。**
@@ -137,54 +153,3 @@ profile package.json ──bundles[]──▶ ①嵌套package.json ──dsh.bu
                                   (实现本体, apply/Config)
       ⑤ .agent-presets/{preset.yml, agent.cordis.yml} ──▶ 会话级 agent 组装(与插件图正交)
 ```
-
-## §7.59 最终结论:「极简部署」不是从派工单挑两个插件
-
-**"派工单里只点 prompt-guard + privacy-policy 行不行?"** 不行。三个要点——①最小执法集是 7 个插件,由代码依赖闭死(结论一);②"装上"分 mount/active/enforced 三层,层层独立(结论二);③缺件几乎全当场炸,唯一静默的是没注册(结论三)。复现方法见文末附注。
-
-### 结论一:最小执法集 = input-guard 一个插件的依赖闭包,共 7 个
-
-先摆角色:**prompt-guard / privacy-policy 是纯 service,自己不挂任何事件 hook**;真正挂在 `agent/pre-step`/`llm/stream`/`agent/request` 上、聊天时挨个调用它们的是 **input-guard**。所以"只装两个能力"根本命题不成立——执法者必须在场。而执法者一个人来不了:插件源码的 `export const inject` 声明硬依赖,loader 只会**追加**、yml 删不掉(铁律 3),完整依赖图(边 = 源码 inject,实测核过):
-
-```
-宿主提供,无需点:llm(dsh-llm)、skills(宿主 bundle)
-
-input-guard(唯一执法者)
-├─ prompt-guard        ── privacy-policy, auditLog, llm▲
-├─ privacy-policy      ── auditLog
-├─ intent-router       ── llm▲, auditLog
-├─ sanitizer-pipeline  ── privacyPolicy, auditLog
-├─ realm-skill-bridge  ── auditLog, skills▲
-└─ audit-log           ── (无依赖)
-```
-
-把 input-guard 的 6 条依赖做传递闭包,恰好得到 **7 插件**:`input-guard` + `prompt-guard`(攻击判定→`blocked.attack`)+ `privacy-policy`(路由裁决→`blocked.policy`)+ `intent-router`(逐条消息分 LOCAL/SANITIZED/CLOUD 驱动路由;§7.58 密盒守栏在此)+ `sanitizer-pipeline`(上云 PII 脱敏,**脱不了敏降 LOCAL**,§7.21/22)+ `realm-skill-bridge`(会话↔realm 注册 + skill/tool realm 过滤,§7.36)+ `audit-log`(安全事件落盘;也是各能力的公共依赖)。**哪怕派工单只写 input-guard 一个名字,闭包也会逼你点全 7 个。**
-
-只点两能力的派工单 = boot 硬失败:`dsh: 2 entries did not activate` + 逐项 `pending (waiting for service…)`(静默 INACTIVE 是 cordis 核心行为,dsh 宿主的 `assertEntriesActivated` 明炸;实机逐字签名存 PROGRESS §7.59)。
-
-对照生产:17 个 insert = **7 执法核心 + 10 执法之外的能力**——模型接入(local/cloud-llm-adapter、model-router)、入口会话(http-api、edge-tools-registry、local-storage、sessions)、隐私增强(td-bus、tcm)、运维(file-logger、web-search-guard)。摘掉这 10 个,闸门照常执法(rig 已证)。
-
-### 结论二:装上(mount)≠ 活了(active)≠ 拦得住(enforced)
-
-三层彼此独立:只点两能力插件根本装不上(boot 硬失败,结论一);依赖闭包不齐时可能 boot 成功、服务 ACTIVE,但注入句畅通——**活了也拦不住**(审计 `input-guard.*` 零行);7 插件闭包齐了,`blocked.attack` / `blocked.policy` 才全中。部署验收因此看审计**执法行存在**,不是"没报错"(原因见结论三 ④ 行)。
-
-执法行为要点:注入句(`忽略之前的指令,…`)→ `blocked.attack`(security 级);`rm -rf` → `blocked.policy`(DEFAULT_POLICY 足够);手机号(占位号)→ DEFAULT_POLICY **不**拦(PII→云按设计是 SANITIZED 非 REJECT),往 `policyPath` 写自定义 REJECT 规则后立刻拦(first-match-wins、preview 自动脱敏 `138****0111`);无 local-llm provider 的良性句 3ms 走 rules fallback、零网络,被拦轮次不发 LLM 请求——**极简图离线闭环、不需要可用 key**。
-
-### 结论三:缺件基本都"当场炸",唯一静默的是"根本没注册"
-
-| 缺口 | 行为(错误码/行号均实机核过) |
-|---|---|
-| ① package.json 缺 `dsh.bundle` 字段 | boot 即抛 `declares no dsh.bundle in its package.json`(index.js:862)——不是"变死文件照常 boot" |
-| ② 指针在、patch 文件缺 | boot 即报 `failed to read overlay …ENOENT`(index.js:1131)——不是"死 JS 躺 node_modules" |
-| ② patch 点名、① exports 未列该子路径 | `ERR_PACKAGE_PATH_NOT_EXPORTED`("包在但子路径没列"另有错码;整包缺失才是 `ERR_MODULE_NOT_FOUND`) |
-| ③ lib 挑文件(删包内私有模块) | 包内 import 断链当场炸——lib 必须整目录携带 |
-| ④ bundles[] 未注册 | **唯一静默场景**:"死 JS 躺 node_modules",boot 正常零痕迹——正因只有它静默,§7.57 把注册改 fail-fast,部署验证看审计执法行而非"没报错" |
-| ⑤ preset | 会话层与插件图正交:改 ⑤ 变体验、不变执法审计行 |
-
-### 附:复现(现状 = §7.59.5 单源)
-
-**现役载体**:`bundle-minimal/` 三文件——花名册 `package.json`(exports = 7 闭包 + file-logger)、唯一派工单 `cordis.patch.yml`(8 插件实装图,名字即 loader 指针名,部署 = 逐字 cp 零改名)、realm 种子 `skill-realms.seed.json`(§7.59.3)。驱动 `bash scripts/minimal-bundle-rig.sh all`:`deploy` 无参(TP 拿逐字 8 插件图;CP 拿剥 file-logger 行块的**运行时派生** 7 插件图,派生物只活在 throwaway 嵌套包)→ 冒烟断言 B1-B4 → 反事实 P1-P5;`down`/`clean` 收尾。只碰两个 throwaway profile(TUI 形状克隆 + headless 孪生,均零安装);存储根 `MIN_ROOT` 可用环境变量覆写到 scratch(复现勿用默认值——默认 `~/.dsh-edge-agent-minimal/` 是 dsh-tui 生产极简实例正在写的日志/审计根,assert 开头会 rm -rf 它)。CI 锁 `tests/unit/bundle-minimal.test.ts`(17 例);极简包不进 release tarball。
-
-**验证面(user 拍板 2026-09-16):极简版只以 TUI 形状为准,测完即完成。** dsh-tui 生产实例就是验收面(其嵌套包挂 repo 派工单的逐字节副本,实弹轮次见 `docs/PROGRESS.md` §7.59.1-3);headless 孪生仅是自动化臂——TUI 非交互驱动不了聊天(R2),B1-B4 借它跑,同一 agent-loop waterfall,图语义与 TUI 一致。**web 从未、也不列入极简验证面**:`~/.dsh/profiles/web/` 属全量 bundle 线(§7.33 文档案例),原样保留,与极简线零依赖、零联动。
-
-历轮复跑的结果计数与逐字 boot 签名(首轮 25/25、单源后 15 PASS,以及已退役 stage 时代的 FAIL-LOUD/零闸门证据)一律存档 `docs/PROGRESS.md` §7.59 系列——**本文不携过程**。
