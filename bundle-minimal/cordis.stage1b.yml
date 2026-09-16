@@ -1,0 +1,25 @@
+# §7.59 stage1b:stage1 + audit-log —— 三个插件全部 ACTIVE。
+#
+# 预期实测(assert1b 断言):
+#   1. boot 不再报 "did not activate"(llm 由宿主 dsh-llm 提供,已满足);
+#   2. 聊天后审计文件出现 privacy-policy 的 boot 行(policy.missing / policy.loaded)
+#      —— 证明两个能力插件确实活着且在干活;
+#   3. 但审计里【零】input-guard.* 行,聊天也不会被 BLOCK/REJECT ——
+#      因为 prompt-guard / privacy-policy 是纯 service、没有任何事件 hook,
+#      真正挂 agent/pre-step / llm/stream / agent/request 并调用它们的是
+#      input-guard(唯一 caller),这里没点它。
+#
+# → 与 stage1 合成三层语义:mount ≠ active ≠ enforced。
+- insert:
+    - id: audit-log
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent-minimal/audit-log'
+      config:
+        # root 是 Schema 必填(audit-log.ts:75)。root=…/audit → 实际文件
+        # <root>/audit.plain.jsonl(默认 filename)。
+        root: !!js (process.env.DSH_EDGE_STORAGE_ROOT ?? (process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent-minimal') + '/audit'
+    - id: privacy-policy
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent-minimal/privacy-policy'
+      config:
+        policyPath: !!js (process.env.DSH_EDGE_STORAGE_ROOT ?? (process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent-minimal') + '/privacy-policy.json'
+    - id: prompt-guard
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent-minimal/prompt-guard'

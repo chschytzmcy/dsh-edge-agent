@@ -6795,3 +6795,39 @@ audit 配置的 `maxFileAgeDays: 7`(cordis.patch.yml:443)同样从未生效过�
 - `install.sh` §2.2-2.4(合并为单守卫循环)/ §2.7 / §2.8
 - `docs/architecture.md`「📦 最小部署清单」+ 新增 `docs/deploy-minimal-files.md`(清单各文件内容物与职责解释)
 - memory `profile-node-modules-version-skew`(本次事故的约定出处)
+
+### §7.58 工具调用 400 根因修复 — openai-sse index 错位 + Pass-0 重复 id 消毒 + intent-router LOCAL 实体路由(2026-09-16)
+
+**背景**:2026-09-15 线上(web session 24303d6a 第 2 轮,"查询共登陆了几个密盒")DeepSeek 返 400 `Duplicate value for 'tool_call_id' … in message[N]`。归因纠正:不是上游/模型问题,是**我们适配器自己的产流 bug**。
+
+**根因(A1,`src/dsh-adapter/openai-sse.ts`)**:`tool-call-delta` 事件的 chunk index 用 wire 原值(0 基),而流末 `terminalChunks` 的 `block-end` 用序号 1,2,3…(1 基)。宿主 `BlockAssembler` 按 `chunk.index` 归并 partial → delta 累积块与 block-end 落进两个不同槽位,拼成**同 id 双工具调用块**写进历史,下轮 replay 即 400。只在"无 text、纯 tool-call"轮触发——text 先行时它占住 index 0,撞车的 delta 被无害并进 text 块,故长期潜伏。修复:两相统一 `wire index + 1`,并在两处注释互指。
+
+**防御(A2,`src/dsh-adapter/input-guard.ts`)**:新增 Pass-0 重复 `tool_call_id` 消毒器——第 k 个重复 call 改名 `${id}-dup${k}`(占用表让位时再加 `x` 后缀),配对 result **必须引用 call 的改名后 id**(经 `callIdsById: Map<originalId, string[]>` 查表)。教训(写测试时踩出的真 bug):result 若自己走碰撞让位逻辑,会撞上刚给配对 call 起的名而错位成 `-dupNx` → 配对断裂 orphanCount+1。改名同步 `msgCopy.source.callId`,审计 `input-guard.duplicate-tool-call-id.recovered`(payload.duplicateCount)+ warn summary 行;`guard: false` 时全 pass-through。
+
+**路由修正(B,`src/dsh-adapter/intent-router.ts` + patch)**:
+1. 裸查询动词(搜索/查询/查找/搜/查/search)从 CLOUD 关键词内置表移除——动词是查询动作不是联网对象信号,事故句就是被 `rule-cloud-keyword:查询` 误路由 CLOUD(单字"查"更会误伤"检查一下设备");动词句落到 LOCAL 关键词/默认档。
+2. 新增 `localEntities` 实体表(内置 密盒/ets/etscli,env `DSH_EDGE_INTENT_LOCAL_ENTITIES` **追加**不替换,与 cloudKeywords 同语义):规则路径最先匹配(`rule-local-entity`, confidence 0.9);LLM 判出非 LOCAL 时确定性改判兜底(`override-local-entity` guardrail)——密盒类问题不再可能上云。
+
+**验证**:新增 `tests/unit/openai-sse-tool-call-index.test.ts`(5 例,直接驱动宿主真 `BlockAssembler`,含事故 CALL_ID 回归)+ `tests/unit/input-guard-duplicate-tool-call-id.test.ts`(8 例,含三连重复/让位撞名/deepFreeze 安全);全量 unit 绿(本次 §7.59 后 765)、typecheck 干净。
+**⚠️ 未部署**:修复只在工作区+repo `lib/`,嵌套包需 install.sh 同步且重启 web/dsh-tui 进程才生效(会断现存会话,待用户点头;§7.54.8 lesson 3)。
+
+**相关**:`docs/deploy-minimal-files.md` 无涉;反事实 rig(§7.59)部署的 repo `lib/` 已含本修复——input-guard hash 极简==repo ≠生产即其证。
+
+### §7.59 极简 bundle 实证 rig — mount ≠ active ≠ enforced 三层语义 + 反事实矩阵(2026-09-16)
+
+**背景**:user 要"只带 prompt-guard + privacy-policy 的极简 bundle"来验证 `docs/deploy-minimal-files.md` 的 5 件套主张。探索推翻前提:**严格两插件装不上也演示不了能力**——①二者是纯 service 零事件 hook(唯一 caller 是 input-guard);②代码 `inject` 会被 loader 追加合并、patch 只能加不能减(privacy-policy←auditLog;prompt-guard←privacyPolicy+auditLog+llm);③dsh-app-boot `assertEntriesActivated` 对 pending 是**响的**(cordis 核心才静默)。与 user 确认后落成三段阶梯 rig,**零产品代码改动**。
+
+**交付**:
+- `bundle-minimal/`——极简花名册 `package.json`(exports=7 插件闭包,逐条镜像全量包)+ 三张 stage 派工单 + README。`lib/` 不入库,部署时 rsync 仓库编译产物(= architecture.md 手工四步逐字执行;§7.58 修复因此在极简图里同步生效)。
+- `scripts/minimal-bundle-rig.sh`——`deploy 1|1b|2` / `assert*` / `probes` / `chat` / `dump` / `down` / `clean`;两个 throwaway profile:`edge-min-test`(cp -a 克隆 dsh-tui 的 TUI 形状,`script -qec` 伪 TTY 探测)+ `edge-min-chat`(dsh-base+dsh-headless 手工孪生,hoist 零安装,单发聊天驱动);存储隔离 `~/.dsh-edge-agent-minimal/`;生产 web/dsh-tui 全程零触碰(pkill/断言只匹配 edge-min-*)。
+- `tests/unit/bundle-minimal.test.ts`——CI 锁 16 例:stage 名单阶梯/花名册↔派工单互指/必填字段/路径隔离表达式(绝不指生产 root)/inject 闭包覆盖/镜像 root exports+peerDeps。不进 release tarball(打包白名单未动)。
+
+**实测结果**(全绿):stage1 **6/6**——`2 entries did not activate` + 两行 `pending (waiting for …)` 逐字命中(mount≠active);stage1b **4/4**——boot 过、审计 `policy.missing`(活了)、`input-guard.*` 零行(active≠enforced);stage2 **9/9**——`boot.probe`、B1 注入句 `blocked.attack`(direct-injection-zh+prompt-leak-zh)、B2 `rm -rf` `blocked.policy`(DEFAULT_POLICY)、B3 自定义 policy 手机号 REJECT(rational=rig 规则、preview 自动脱敏 `138****0111`)、B4 rules fallback(`llm_error`→`rules-after-llm-error`,3ms 零网络,离线闭环);探针 **6/6**(含还原复验)。
+
+**探针修正文档三处旧表述**:缺件一族全是**当场响**——P1 删 `dsh.bundle` 字段 `declares no dsh.bundle`、P2 缺 patch 文件 `failed to read overlay…ENOENT`、P3 子路径未列 exports `ERR_PACKAGE_PATH_NOT_EXPORTED`(非 `ERR_MODULE_NOT_FOUND`,Node 两个码语义有别)、P4 抽私有文件 `pii-utils` 断链;唯有 P5 摘注册是静默死 JS。另:**realm-skill-bridge `configPath` 代码默认硬编码生产 root 且不读 env**(隔离必显式设置,R7)。
+
+**rig 自身踩坑两条**(已修):整目录备份+`mv` 还原是一次性的(P3 起包被毁→改逐文件 `.bak-rig`);`node -e '…# ④'` 把 bash 注释带进 JS 字符串→SyntaxError 静默漏注册。
+
+**文档回写**:`deploy-minimal-files.md`(四处措辞修正 + 铁律 3「inject 只能加不能减」+ 文末「§7.59 实机实证」三层语义表/P1-P6 矩阵/stage 实录);`architecture.md`(表格行修正 + 前提与注意两脚注:双 profile 实证、R7 隔离坑)。P6(preset 正交)保留手动方案——`~/.dsh/.agent-presets/` 全局资产,rig 绝不删改。
+
+**相关**:`docs/deploy-minimal-files.md` §7.59 节;`bundle-minimal/README.md`;§7.58(同仓共存,极简图跑的即含修复的 lib)

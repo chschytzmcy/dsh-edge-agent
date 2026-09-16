@@ -1,0 +1,59 @@
+{
+  "name": "@deepseek-harness-edge-agent/dsh-edge-agent-minimal",
+  "version": "0.1.0",
+  "private": true,
+  "description": "§7.59 最小 bundle 实证载体:与全量包同 lib(部署时 rsync),但派工单只点极简名单。三张 stage patch(cordis.stage1/stage1b/stage2.yml)由 scripts/minimal-bundle-rig.sh 选择一份 cp 成 cordis.patch.yml——本文件不入库那份嵌套副本,lib/ 也不入库。",
+  "type": "module",
+  "main": "lib/types/index.js",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "import": "./lib/types/index.js"
+    },
+    "./package.json": "./package.json",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./audit-log": {
+      "types": "./lib/types/dsh-adapter/audit-log.d.ts",
+      "import": "./lib/types/dsh-adapter/audit-log.js"
+    },
+    "./privacy-policy": {
+      "types": "./lib/types/dsh-adapter/privacy-policy.d.ts",
+      "import": "./lib/types/dsh-adapter/privacy-policy.js"
+    },
+    "./prompt-guard": {
+      "types": "./lib/types/dsh-adapter/prompt-guard.d.ts",
+      "import": "./lib/types/dsh-adapter/prompt-guard.js"
+    },
+    "./intent-router": {
+      "types": "./lib/types/dsh-adapter/intent-router.d.ts",
+      "import": "./lib/types/dsh-adapter/intent-router.js"
+    },
+    "./sanitizer-pipeline": {
+      "types": "./lib/types/dsh-adapter/sanitizer-pipeline.d.ts",
+      "import": "./lib/types/dsh-adapter/sanitizer-pipeline.js"
+    },
+    "./realm-skill-bridge": {
+      "types": "./lib/types/dsh-adapter/realm-skill-bridge.d.ts",
+      "import": "./lib/types/dsh-adapter/realm-skill-bridge.js"
+    },
+    "./input-guard": {
+      "types": "./lib/types/dsh-adapter/input-guard.d.ts",
+      "import": "./lib/types/dsh-adapter/input-guard.js"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-agent": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-llm": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-scope": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-session": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-system-prompt": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-tools": "0.1.2-rc.1",
+    "@deepseek-ai/schemastery": "^3.18.2"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

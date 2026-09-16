@@ -1,0 +1,31 @@
+# §7.59 stage1 证伪派工单:花名册齐全(exports 有 7 个插件子路径),但菜单只点
+# privacy-policy + prompt-guard —— 故意不点 audit-log。
+#
+# 机制(源码实证,文档回写素材):
+#   - patch 的 inject 只能加不能减(cordis loader Inject.resolve 对代码 inject
+#     做追加合并),所以代码硬依赖躲不掉:
+#       privacy-policy ← { auditLog }                      (privacy-policy.ts:27)
+#       prompt-guard   ← { privacyPolicy, auditLog, llm } (prompt-guard.ts:25)
+#   - auditLog 服务只有本包 audit-log 插件提供;本 stage 没点它。
+#   - dsh-app-boot assertEntriesActivated(lib/index.js:1431-1458)对 PENDING
+#     fiber 是【响的】:boot 非零退出。
+#
+# 预期实测签名(assert1 断言这些):
+#   "<bin>: 2 entries did not activate"
+#   "...dsh-edge-agent-minimal/privacy-policy: pending (waiting for service: auditLog)"
+#   "...dsh-edge-agent-minimal/prompt-guard: pending (waiting for services: privacyPolicy, auditLog)"
+#
+# 注:无 disable 行、无用户皮肤、只写必填 config —— 派工单最小形状本身也是
+# deploy-minimal-files.md 主张的验证对象。
+- insert:
+    - id: privacy-policy
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent-minimal/privacy-policy'
+      config:
+        # policyPath 是 Schema 必填(privacy-policy.ts:36)。缺这个字段更糟——
+        # schemastery 校验失败会【静默丢弃整个插件】(见全量 patch :158-167 注释),
+        # 连 pending 签名都看不到。文件允许不存在(→ policy.missing warn + DEFAULT_POLICY)。
+        # 显式指到 -minimal root:不碰生产共享的 ~/.dsh-edge-agent/。
+        policyPath: !!js (process.env.DSH_EDGE_STORAGE_ROOT ?? (process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent-minimal') + '/privacy-policy.json'
+    - id: prompt-guard
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent-minimal/prompt-guard'
+      # Config 全默认,一行不写 —— 也是主张验证:派工单不必抄全量那份 config

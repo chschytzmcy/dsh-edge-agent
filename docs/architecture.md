@@ -201,7 +201,7 @@ dsh-edge-agent 是 profile-agnostic 的 Cordis bundle：它"能不能装上"与�
 | # | 文件 | 位置 | 作用 |
 |---|---|---|---|
 | 1 | `package.json` | `~/.dsh/profiles/<p>/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/` | bundle 身份卡：`name`/`version`；**`exports` 29 个 subpath 映射**（patch 里每个插件 `name: '…/file-logger'` 靠它解析到实现文件）；**`dsh.bundle.patch` 指针**（告诉 DSH 去哪读装配清单） |
-| 2 | `cordis.patch.yml` | 同上 | 装配说明书：10 个 config 覆盖 + 30 个 disable + 17 个插件 insert。缺它则 bundle 只是躺在 node_modules 里的一堆 JS，一个插件都不会 mount |
+| 2 | `cordis.patch.yml` | 同上 | 装配说明书：10 个 config 覆盖 + 30 个 disable + 17 个插件 insert。⚠️ §7.59 实测修正：指针在而文件缺是 **boot 硬失败**（`failed to read overlay …ENOENT`），不是"静默一个都不 mount"；"死 JS 躺 node_modules"只有 ④ 未注册时成立 |
 | 3 | `lib/**/*.js` | 同上 | 插件实现本体（tsc 产物）。⚠️ 目录名误导：tsconfig `outDir: "lib/types"`，运行时 `.js` 实际就在 `lib/types/dsh-adapter/*.js`；每模块三份产物，Node 只读 `.js`（`.d.ts` 服务 `types` 条件、`.map` 仅调试定位） |
 | 4 | profile 注册 | `~/.dsh/profiles/<p>/package.json` → `dsh.profile.bundles` 数组追加包名 | 唯一入口开关：不列入 bundles，DSH 启动时不加载本包 |
 
@@ -228,6 +228,8 @@ rsync -a --delete lib/ "$N/lib/"           # ③
 - **前提**：目标机已装 dsh CLI 全局包（`@deepseek-ai/dsh`，自带 dsh-base / dsh-web-app / `@deepseek-ai/*` 上游插件，经 `~/.dsh/profiles/node_modules/` hoist 可解析）。bundle 零自购依赖。
 - `install.sh` §2.7 额外写入 profile `dependencies` 的 `file:` 链接是给 `pnpm install` 用的；手工物理放置时可省略。
 - **改了嵌套包必须重启 dsh 进程才生效**（运行时唯一真相源是嵌套包那份，不是 repo；§7.54.8 lesson 3）。
+- **§7.59 复现实证**（2026-09-16）：上方手工四步被 `bundle-minimal/` + `scripts/minimal-bundle-rig.sh` 逐字执行并在 **TUI 形状 profile（dsh-tui 克隆）与 headless profile（dsh-base + dsh-headless，零安装）** 双形态跑通全部断言；两形态共享同一 agent-loop waterfall，闸门行为一致（差异仅在 TUI 必须 TTY、非交互驱动要用 headless 单发）。三层语义 mount ≠ active ≠ enforced 与反事实矩阵见 `docs/deploy-minimal-files.md` 文末。
+- **极简/定制部署的存储隔离坑（§7.59 R7）**：`audit-log.root`、`privacy-policy.policyPath` 是 Schema 必填（缺了 schemastery **静默丢插件**，连 boot 报错都没有），而 `realm-skill-bridge.configPath` **有代码默认值且硬编码 `~/.dsh-edge-agent/skill-realms.json`、不读 `DSH_EDGE_STORAGE_ROOT`**——实验/多实例部署想隔离数据根，这三处都必须显式指走，否则会写进生产共享 root。
 
 ## 🚀 启动流程
 
