@@ -6831,3 +6831,21 @@ audit 配置的 `maxFileAgeDays: 7`(cordis.patch.yml:443)同样从未生效过�
 **文档回写**:`deploy-minimal-files.md`(四处措辞修正 + 铁律 3「inject 只能加不能减」+ 文末「§7.59 实机实证」三层语义表/P1-P6 矩阵/stage 实录);`architecture.md`(表格行修正 + 前提与注意两脚注:双 profile 实证、R7 隔离坑)。P6(preset 正交)保留手动方案——`~/.dsh/.agent-presets/` 全局资产,rig 绝不删改。
 
 **相关**:`docs/deploy-minimal-files.md` §7.59 节;`bundle-minimal/README.md`;§7.58(同仓共存,极简图跑的即含修复的 lib)
+
+#### §7.59.1 全云不变量:LOCAL 轮免洗洞 + 两行修复(2026-09-16,dsh-tui 实装后)
+
+**结论**:极简图 `localProvider: deepseek-official` 使 input-guard.ts:38 的"LOCAL = 本地模型看原文,不出境"前提失效——LOCAL 分类轮会把**原文**递给云。修法即两行:`sanitizeLocalTraffic: true`(LOCAL 轮也过脱敏门)+ `downgradeOnSanitizeFailure: false`(洗不干净 REJECT,不降级"假 LOCAL")。两张 stage 文件已带,CI 有不变量锁,**全量部署勿抄**(那里 localProvider 是真本地)。
+
+**实机证据**(dsh-tui 挂 stage2-ops,tmux E2E):带手机号 LOCAL 轮 `routed LOCAL → sanitizer.sanitized replacementCount=1 → desanitize done restoredBytes=6672 errorCount=0`(号码没上云、答案完整);干净 LOCAL 轮 `replacementCount=0 outcome=clean`——两个出口分支都过。顺带证实极简语义下 LOCAL 答题者仍是云模型(`probe provider=deepseek-official agentRealm=LOCAL`),qwen3-4b 那行 probe 只是分类器 R5 故意失败的尝试。
+
+#### §7.59.2 探针真实性:日志只准打真实存在的模型(2026-09-16,user 反馈)
+
+**结论**:`llm/stream probe` 曾打印 `model=qwen3-4b`——本图**不存在**该模型,它只是 intent-router.ts:78 的 schema 默认值吃了亏。user 原则:"就算是 local llm 也要打印实际的 local llm"。修法:stage2(-ops) 的 intent-router 行显式 `classificationModel: no-local-llm-in-graph` 哨兵;CI 锁禁止缺省与 qwen 字样(21 例)。**换装后实测**:重启后全 ops log `qwen3-4b` 命中 0,探针行如实显示 `model=no-local-llm-in-graph`。遗留观察:`chat finished … duration=-1`(同会话第 2+ turn 无 initial 起点,打表口径缺口,§7.46 节点清单候选)。
+
+#### §7.59.3 realm 种子:派工单点闸门 ≠ 有策略——部署第⑤步落数据面(2026-09-16)
+
+**结论**:CLOUD 轮 `tool allow tool=bash` 初判"缺表漏洞",读码后**修正**:未点名工具 Layer 3 fail-open 是 §7.47.1 **设计**(CLOUD agent 本地跑 `date` 合法);缺表真正的后果是**技能全隐**(`catalogDropped=34` 根因)与 web 工具无 realm 锁。补 `bundle-minimal/skill-realms.seed.json`(rig deploy 第⑤步 + 手工部署第⑤步):`web_search/web_fetch: CLOUD` + `skills:{}` + `defaultRealm: hidden`——刻意**不**照抄生产私有映射。CI 锁 22 例(合法 JSON/工具值类型/无生产路径)。
+
+**实机证据**:种子落 `~/.dsh-edge-agent-minimal/skill-realms.json` 后 **5s hot-reload 免重启**生效;15:45 诱导轮 `routed LOCAL` → 首批 `tool deny web_fetch/web_search reason=(CLOUD) not allowed in LOCAL realm` + `bash allow realm=LOCAL` ×5;15:46 回归轮 `routed CLOUD` → `web_search allow`,零误伤。
+
+**结构性边界(记录,非 bug)**:极简 LOCAL 轮的 bash **tool result 原文回填云端上下文**(如"查询本地的IP地址"轮的局域网 IP)——§7.59.1 只保输入文本;tool-result→cloud 不过 sanitizer。极简能承诺"文本隐私",承诺不了"数据隐私";后者需真 local-llm(全量版)或产品侧新增"敏感工具输出过滤"(候选活)。

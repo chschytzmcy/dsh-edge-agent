@@ -39,6 +39,10 @@
     "./input-guard": {
       "types": "./lib/types/dsh-adapter/input-guard.d.ts",
       "import": "./lib/types/dsh-adapter/input-guard.js"
+    },
+    "./file-logger": {
+      "types": "./lib/types/dsh-adapter/file-logger.d.ts",
+      "import": "./lib/types/dsh-adapter/file-logger.js"
     }
   },
   "peerDependencies": {

@@ -221,6 +221,9 @@ mkdir -p "$N"
 cp package.json cordis.patch.yml "$N/"     # ① ②
 rsync -a --delete lib/ "$N/lib/"           # ③
 # ④ 把包名追加进 ~/.dsh/profiles/<p>/package.json 的 dsh.profile.bundles
+# ⑤ (§7.59.3) realm 数据面:往 realm-skill-bridge.configPath 的路径落一张
+#    skill-realms.json(实验根可用 bundle-minimal/skill-realms.seed.json)。
+#    派工单只挂闸门,策略在表里:缺表 → tools 全部 fail-open(§7.47.1 设计)+ 技能全隐。
 ```
 
 ### 前提与注意

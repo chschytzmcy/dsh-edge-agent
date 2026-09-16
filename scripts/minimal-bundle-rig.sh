@@ -132,7 +132,12 @@ deploy(){
       fs.writeFileSync(f, JSON.stringify(j, null, 2) + "\n");
     ' "$PROFILES/$p/package.json" "$PKG"
   done
-  echo "  deployed stage $stage → $CP + $TP"
+  # ⑤ §7.59.3 realm 种子:configPath 的【数据面】。表缺位时 tools 全部
+  # fail-open(§7.47.1 设计)+ 技能全隐;种上后 web_search/web_fetch 锁 CLOUD,
+  # LOCAL/SANITIZED 轮网络工具被 Layer 3 拒绝。每次 deploy 重写,幂等。
+  mkdir -p "$MIN_ROOT"
+  cp "$SRC/skill-realms.seed.json" "$MIN_ROOT/skill-realms.json"
+  echo "  deployed stage $stage → $CP + $TP (+ $MIN_ROOT/skill-realms.json)"
 }
 
 # ── 断言 ────────────────────────────────────────────────────────────────────

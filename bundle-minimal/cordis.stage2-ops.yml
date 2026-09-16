@@ -1,0 +1,65 @@
+# §7.59 stage2-ops:实装变体 —— 7 插件执法闭包 + file-logger(运维日志落盘)。
+# 与 cordis.stage2.yml 唯一差异:第一行插入 file-logger。生产注释(cordis.patch.yml
+# §M6)要求它 "Must mount FIRST":Cordis 按依赖序加载且 file-logger 除宿主 web
+# service 外无闭包内依赖,放最前才能兜住后续所有插件的 ctx.logger.* 输出。
+# ⚠️ 宿主前提:file-logger.ts:97 `inject = ['web']`(boot 诊断读
+#   ctx.web.searchProviders)。dsh-tui / web 宿主提供 web service(生产全量版
+#   天天实证);headless(dsh-base+dsh-headless)没有 → fiber pending → boot
+#   FAIL-LOUD。因此 rig 三阶段阶梯仍用 7 插件 stage2,本文件只用于 TUI/web
+#   形状 profile 的真实部署。
+# 运维日志责任分离(两-channel discipline,见 file-logger.ts 头注释):
+#   ops log(本文件带出的)= 过程流水,metadata only;
+#   audit JSONL = 安全账本,redacted 内容 preview。二者互不顶替。
+- insert:
+    - id: file-logger
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent-minimal/file-logger'
+      config:
+        # Schema 必填(file-logger.ts:156 root required)。指到 minimal root 的
+        # log/ 下,表达式与其余路径行同一写法,保证 R7 隔离锁语义不变。
+        # filename/flush/轮转走代码默认:dsh-edge-agent.log,1s flush,50MB + 按天轮转。
+        root: !!js (process.env.DSH_EDGE_STORAGE_ROOT ?? (process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent-minimal') + '/log'
+    - id: audit-log
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent-minimal/audit-log'
+      config:
+        root: !!js (process.env.DSH_EDGE_STORAGE_ROOT ?? (process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent-minimal') + '/audit'
+    - id: privacy-policy
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent-minimal/privacy-policy'
+      config:
+        policyPath: !!js (process.env.DSH_EDGE_STORAGE_ROOT ?? (process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent-minimal') + '/privacy-policy.json'
+    - id: prompt-guard
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent-minimal/prompt-guard'
+      config:
+        # 本图没有 local-llm provider,模型辅助检测必然超时 → 关掉省 4s/轮
+        # (保留默认 true 也是一种实验,但会把 B1 断言拖慢且产生噪音行)。
+        enableModelDetection: false
+    - id: intent-router
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent-minimal/intent-router'
+      config:
+        # 故意指向【本图不存在】的 provider → classifyWithLlm 必抛 →
+        # 确定性走 rules fallback(intent.classify.llm_error +
+        # intent.classify.end path=rules-after-llm-error)。零网络,离线可断言。
+        classificationProvider: local-llm
+        # §7.59.2 探针真实性:哨兵替代代码默认 'qwen3-4b'(本图无本地 LLM,
+        # 默认值是虚构型号,probe/audit 打它会误导)。
+        classificationModel: no-local-llm-in-graph
+    - id: sanitizer-pipeline
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent-minimal/sanitizer-pipeline'
+    - id: realm-skill-bridge
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent-minimal/realm-skill-bridge'
+      config:
+        # 必须显式:代码默认硬编码 ~/.dsh-edge-agent/skill-realms.json,【不读】
+        # DSH_EDGE_STORAGE_ROOT(realm-skill-bridge.ts:46-49)。不设会污染生产共享 root。
+        configPath: !!js (process.env.DSH_EDGE_STORAGE_ROOT ?? (process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent-minimal') + '/skill-realms.json'
+    - id: input-guard
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent-minimal/input-guard'
+      config:
+        # 降级/路由改写的目标必须是【存在】的 provider:本图无 local-llm/cloud-llm,
+        # 宿主 dsh-base 的 upstream llm-deepseek 路由名是 deepseek-official。
+        localProvider: deepseek-official
+        localModel: deepseek-chat
+        defaultCloudProvider: deepseek-official
+        defaultCloudModel: deepseek-chat
+        # §7.59.1 全云不变量(同 cordis.stage2.yml,勿在全量部署抄用):
+        # localProvider 指云 → LOCAL 轮也脱敏;脱敏失败 REJECT,不降级"假 LOCAL"。
+        sanitizeLocalTraffic: true
+        downgradeOnSanitizeFailure: false

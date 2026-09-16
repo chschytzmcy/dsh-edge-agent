@@ -29,6 +29,10 @@
         # 确定性走 rules fallback(intent.classify.llm_error +
         # intent.classify.end path=rules-after-llm-error)。零网络,离线可断言。
         classificationProvider: local-llm
+        # §7.59.2 探针真实性:不写则吃代码默认 'qwen3-4b'(intent-router.ts:78),
+        # llm/stream probe 与 intent.classify.start 会打印一个本图【不存在】的
+        # 模型名,误导读日志的人。本图无本地 LLM → 用显式哨兵,日志即实情。
+        classificationModel: no-local-llm-in-graph
     - id: sanitizer-pipeline
       name: '@deepseek-harness-edge-agent/dsh-edge-agent-minimal/sanitizer-pipeline'
     - id: realm-skill-bridge
@@ -46,3 +50,11 @@
         localModel: deepseek-chat
         defaultCloudProvider: deepseek-official
         defaultCloudModel: deepseek-chat
+        # §7.59.1 全云不变量(2026-09-16):localProvider 被上面改指云端 provider,
+        # "LOCAL 轮 = 不出境"的代码前提(input-guard.ts:38)在本图不成立。修法:
+        # ① LOCAL 轮也脱敏(sanitizeLocalTraffic),任何出境内容必先洗;
+        # ② 脱敏失败不降级"假 LOCAL"(原文会进云)——直接 REJECT。
+        # 无本地模型时,"脱不了敏就不上云"只剩 REJECT 这一个诚实方向。
+        # (全量部署【不要】抄这两行:那里 localProvider=local-llm 是真本地。)
+        sanitizeLocalTraffic: true
+        downgradeOnSanitizeFailure: false
