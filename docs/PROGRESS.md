@@ -6861,3 +6861,7 @@ audit 配置的 `maxFileAgeDays: 7`(cordis.patch.yml:443)同样从未生效过�
 **headless 冒烟臂的代价与解法**:单源后 stage2 的"headless 可 boot"职责没有对应文件——解法是 **rig deploy 时运行时派生**:TP 拿逐字拷贝,CP 拿剥掉 file-logger 行块的 7 插件图(`awk` 剥块 + derived-from 头注,带"不可部署到 TUI/web"警示)。派生物只存在于 throwaway 嵌套包,仓库不落第二张图——**图语义的单一权威就是这张文件本身**。
 
 **同步收敛**:rig `deploy` 无参化(`deploy <2|ops>` → `deploy`),证据日志 `stage2-*` 更名 `smoke-*`;CI 锁 19→17 例(两张名单测合一,§7.59.1/2/3 各锁改单文件断言,headless 剥离前提"file-logger 只多依赖 web"升为受锁断言);README/package.json 描述同步。dsh-tui 生产副本 re-cp 恢复逐字节一致(本次仅注释头漂移,insert 行零变化,无需重启)。
+
+#### §7.59.6 文档只留最终信息:`deploy-minimal-files.md` 删过程叙述(2026-09-16,user 拍板)
+
+**结论**:user 两条定调——「极简版只在 TUI 上测试完就行了」「测试过程信息可以删掉,只保留最终信息」。`deploy-minimal-files.md` 据此收敛:保留三条最终结论(闭包推导/三层语义/缺件行为速查表,证据指针改指结论节)与「附:复现」现状载体;**删去** stage 编年表、历轮 PASS 计数、P1-P6 探针编号、二刷/三刷/四刷修订史。逐字 boot 签名的单一存档点归本系列(§7.59.4/5 中"文末存档"表述照读为本节,"文件可删,实证不可删"由本节兑现)。**web profile 原样保留不删**(全量线 §7.33 资产;极简验证面 TUI-only,零联动)。纯文档改动,代码面与 CI 锁不动。
