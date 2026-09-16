@@ -404,6 +404,7 @@
         maxInputLength: !!js parseInt(process.env.DSH_EDGE_INTENT_MAX_INPUT ?? '2000', 10)
         fallbackKeywords: !!js (process.env.DSH_EDGE_INTENT_FALLBACK_KEYWORDS ?? '').split(',').filter(Boolean)
         cloudKeywords: !!js (process.env.DSH_EDGE_INTENT_CLOUD_KEYWORDS ?? '').split(',').filter(Boolean)
+        localEntities: !!js (process.env.DSH_EDGE_INTENT_LOCAL_ENTITIES ?? '').split(',').filter(Boolean)
 
     # NOTE: id renamed from `tools` to avoid colliding with dsh-base.
     - id: edge-tools-registry

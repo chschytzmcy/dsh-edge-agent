@@ -60,6 +60,11 @@ export interface Config {
    *  on Qwen3-4B). Default ships EN + CN built-in list. Override via env
    *  DSH_EDGE_INTENT_CLOUD_KEYWORDS (comma-sep) — appended to built-in. */
   cloudKeywords?: string[]
+  /** §7.58 (2026-09-16): LOCAL-entity list (密盒/ets/etscli built-in)
+   *  matched before every keyword layer and used to override a non-LOCAL
+   *  LLM verdict. Env DSH_EDGE_INTENT_LOCAL_ENTITIES (comma-sep) appends to
+   *  built-in (NOT replaces), same semantics as cloudKeywords. */
+  localEntities?: string[]
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -82,6 +87,7 @@ export const Config: Schema<Config> = Schema.object({
   maxInputLength: Schema.natural().default(2000),
   fallbackKeywords: Schema.array(Schema.string()).default([] as string[]),
   cloudKeywords: Schema.array(Schema.string()).default([] as string[]),
+  localEntities: Schema.array(Schema.string()).default([] as string[]),
 })
 
 export interface Intent {
@@ -110,21 +116,43 @@ const LOCAL_KEYWORDS_DEFAULT: readonly string[] = [
 
 /** §7.47 (2026-09-12): Built-in CLOUD keyword list. Matched BEFORE
  *  fallbackKeywords in classifyWithRules so queries that obviously need
- *  web/search (新闻 / news / 搜索 / search / 最新 / latest / 今天 / today /
- *  实时 / live / 趋势 / trend / 排行榜 / ranking) go straight to CLOUD,
- *  without depending on the LLM classifier (which can hang on Qwen3-4B).
+ *  web/search (新闻 / news / 最新 / latest / 今天 / today / 实时 / live /
+ *  趋势 / trend / 排行榜 / ranking) go straight to CLOUD, without
+ *  depending on the LLM classifier (which can hang on Qwen3-4B).
  *  Users extend via env `DSH_EDGE_INTENT_CLOUD_KEYWORDS` (comma-sep) —
  *  appended to built-in (NOT replaced). Lower priority than privacy-policy
  *  rules (which can REJECT) but higher than fallbackKeywords (which is
- *  LOCAL-only). */
+ *  LOCAL-only).
+ *  §7.58 (2026-09-16): bare query VERBS (搜索/查询/查找/搜/查, search) were
+ *  REMOVED from the built-in list. A verb is a query *action*, not an
+ *  online-object signal — it fires on local questions too ("查询密盒登录状态"
+ *  was mis-routed CLOUD by `rule-cloud-keyword:查询`, 2026-09-15 incident;
+ *  any "检查一下设备" trips the single-char "查"). Verb-only queries now fall
+ *  through to the LOCAL keyword list → defaultCategory (fail-closed,
+ *  SANITIZED), with the LLM classifier (when alive) doing the nuanced
+ *  work. Online OBJECT nouns (新闻/最新/热搜/news/latest/…) stay as-is. */
 const CLOUD_KEYWORDS_DEFAULT: readonly string[] = [
-  // 中文: 信息获取类信号词
+  // 中文: 信息获取类信号词（§7.58: 只留对象/时间名词，不留裸动词）
   '新闻', '最新', '今天', '今日', '实时', '热搜', '趋势', '排行榜',
-  '搜索', '查询', '查找', '搜', '查', '资讯', '动态', '进展', '消息',
+  '资讯', '动态', '进展', '消息',
   '网上', '互联网', '在线',
   // English: information-acquisition signals
-  'news', 'latest', 'today', 'live', 'trending', 'ranking', 'search',
+  'news', 'latest', 'today', 'live', 'trending', 'ranking',
   'online', 'internet', 'web search', 'web',
+]
+
+/** §7.58 (2026-09-16): product/device entities that physically live behind
+ *  LOCAL skills only (realm table: ets-* = LOCAL). Matched FIRST in
+ *  classifyWithRules — above CLOUD strong keywords and the generic LOCAL
+ *  fallback — and re-checked as a deterministic override after an
+ *  LLM-classified non-LOCAL verdict (the qwen classifier answered CLOUD
+ *  conf=1 for "查询共登陆了几个密盒": it cannot know which realms own
+ *  which resources). CJK entries match as substrings; ASCII entries match
+ *  with word boundaries so 'ets' cannot fire inside "assets". Extend via
+ *  env `DSH_EDGE_INTENT_LOCAL_ENTITIES` (comma-sep) — appended to
+ *  built-in, same semantics as cloudKeywords. */
+const LOCAL_ENTITY_KEYWORDS_DEFAULT: readonly string[] = [
+  '密盒', 'ets', 'etscli',
 ]
 
 export class IntentRouterServiceImpl extends Service {
@@ -139,6 +167,9 @@ export class IntentRouterServiceImpl extends Service {
   /** §7.47 (2026-09-12): CLOUD keyword list, merged with built-in defaults.
    *  Matched in classifyWithRules BEFORE fallbackKeywords. */
   private readonly cloudKeywords: readonly string[]
+  /** §7.58 (2026-09-16): LOCAL-entity list, merged with built-in defaults.
+   *  Checked FIRST in classifyWithRules + as LLM-verdict override guardrail. */
+  private readonly localEntities: readonly string[]
   private readonly llm: any
   private readonly auditLog: AuditLike | undefined
   private readonly stats: IntentRouterStats = {
@@ -186,6 +217,9 @@ export class IntentRouterServiceImpl extends Service {
     // so the default safety net (新闻/news/search/...) always applies.
     // Empty config → use built-in only.
     this.cloudKeywords = CLOUD_KEYWORDS_DEFAULT.concat(config.cloudKeywords ?? [])
+    // §7.58 (2026-09-16): localEntities APPENDED to built-in (not replaced),
+    // same safety-net semantics as cloudKeywords.
+    this.localEntities = LOCAL_ENTITY_KEYWORDS_DEFAULT.concat(config.localEntities ?? [])
     this.llm = (ctx as any).llm
     this.auditLog = auditLog
   }
@@ -308,15 +342,42 @@ export class IntentRouterServiceImpl extends Service {
     try {
       const intent = await this.classifyWithLlm(effectiveText, context?.recentMessages, context?.sessionId)
       this.stats.llmHit++
+      // §7.58 (2026-09-16) entity guardrail: the classification LLM has no
+      // view of the skill-realm table — it answered CLOUD conf=1 for
+      // "查询共登陆了几个密盒" (2026-09-15 turn 1), and the rules layer
+      // never runs on this path. Entities that only resolve behind LOCAL
+      // skills force LOCAL deterministically, overriding any non-LOCAL LLM
+      // verdict. Fail-closed toward LOCAL; audited at warn so ops can grep
+      // 'entity_override' for classifier quality regressions.
+      let finalIntent = intent
+      if (intent.category !== 'LOCAL') {
+        const entityHit = this.matchLocalEntity(effectiveText.toLowerCase())
+        if (entityHit !== undefined) {
+          finalIntent = {
+            category: 'LOCAL',
+            confidence: 0.9,
+            targetRealm: 'local',
+            rationale: `override-local-entity:${entityHit}`,
+          }
+          this.audit('warn', 'intent.classify.entity_override', {
+            from: intent.category,
+            to: 'LOCAL',
+            entity: entityHit,
+            llmConfidence: intent.confidence,
+            llmRationale: intent.rationale,
+            textLen: effectiveText.length,
+          })
+        }
+      }
       this.audit('info', 'intent.classify.end', {
         textLen: effectiveText.length,
-        path: 'llm',
-        category: intent.category,
-        confidence: intent.confidence,
-        rationale: intent.rationale,
+        path: finalIntent === intent ? 'llm' : 'llm-entity-override',
+        category: finalIntent.category,
+        confidence: finalIntent.confidence,
+        rationale: finalIntent.rationale,
         durationMs: Date.now() - start,
       })
-      return intent
+      return finalIntent
     } catch (err: any) {
       // classifyWithLlm already audited the specific kind (timeout vs error
       // vs low-confidence vs unclear). Here we just attribute the fallback.
@@ -619,6 +680,24 @@ confidence 含义：
     }
   }
 
+  /** §7.58 (2026-09-16): match a LOCAL-entity keyword. CJK entries are
+   *  substring matches; ASCII entries require non-alphanumeric boundaries
+   *  (so 'ets' never fires inside "assets"/"settings"). Returns the matched
+   *  (lower-cased) keyword, or undefined. */
+  private matchLocalEntity(lower: string): string | undefined {
+    for (const kw of this.localEntities) {
+      const k = kw.toLowerCase().trim()
+      if (k.length === 0) continue
+      if (/^[\x00-\x7f]+$/.test(k)) {
+        const esc = k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+        if (new RegExp(`(^|[^a-z0-9])${esc}([^a-z0-9]|$)`, 'u').test(lower)) return k
+      } else if (lower.includes(k)) {
+        return k
+      }
+    }
+    return undefined
+  }
+
   private classifyWithRules(text: string): Intent {
     // Phase: try privacy-policy routing rules first (hot-reloadable, richer
     // semantics: LOCAL/CLOUD/SANITIZED/REJECT with per-rule confidence +
@@ -678,14 +757,29 @@ confidence 含义：
     // Fallback: configurable keyword list (defaults to built-in EN + CN).
     // Used only when privacy-policy is absent / has no matching rule.
     const lower = text.toLowerCase()
+    // §7.58 (2026-09-16): LOCAL entities checked FIRST — before even CLOUD
+    // strong keywords. "查询共登陆了几个密盒" (2026-09-15 incident) contains
+    // both an entity (密盒) and a verb (查询): the entity names a resource
+    // that only exists behind LOCAL skills, so it decides the realm no
+    // matter what else the sentence contains. Fail-closed toward LOCAL.
+    const entityHit = this.matchLocalEntity(lower)
+    if (entityHit !== undefined) {
+      this.audit('debug', 'intent.rules.hit', { source: 'local-entity', matchedEntity: entityHit })
+      return {
+        category: 'LOCAL',
+        confidence: 0.9,
+        targetRealm: 'local',
+        rationale: `rule-local-entity:${entityHit}`,
+      }
+    }
     // §7.47 (2026-09-12): CLOUD keywords matched BEFORE LOCAL fallback.
     // This catches queries that obviously need web/search/latest-news and
     // would otherwise hit defaultCategory (SANITIZED, fail-closed) without
-    // any LLM call. Local keywords still take priority by inspection order
-    // is CLOUD → LOCAL → default — but if a query contains both CLOUD and
-    // LOCAL signals (e.g. "查本地文件的网络文档"), the CLOUD path wins
-    // because user explicitly asked for online content. Privacy-policy
-    // rules (above) can still REJECT.
+    // any LLM call. Inspection order is ENTITY → CLOUD → LOCAL → default —
+    // if a query contains both CLOUD and LOCAL signals (e.g. "把本地文件整理
+    // 成新闻稿发到网上"), the CLOUD path wins because user explicitly asked
+    // for online content; a LOCAL *entity* name still beats both (above).
+    // Privacy-policy rules (before all of this) can still REJECT.
     const cloudMatched = this.cloudKeywords.find((kw) => lower.includes(kw.toLowerCase()))
     if (cloudMatched !== undefined) {
       this.audit('debug', 'intent.rules.hit', { source: 'cloud-keyword', matchedKeyword: cloudMatched })

@@ -195,9 +195,20 @@ export function sseEventToChunk(
     // a tool call across multiple deltas, intermediate chunks omit `name` (and
     // on the very first chunk the local accumulator's `name` is still `''`).
     // Strip `undefined` so the chunk survives lossless JSON validation.
+    // §7.58 (2026-09-16): the chunk index MUST equal the index `terminalChunks`
+    // later uses for the matching `block-end` — both are `wire index + 1`
+    // (index 0 belongs to text). They used to disagree (delta = wire index 0,
+    // block-end = 1-based sequential): the host `BlockAssembler` keys partials
+    // by index, so the delta-accumulated call and the block-end landed in two
+    // different blocks → one persisted assistant message with the SAME
+    // tool-call duplicated under a single shared id, and the next replay got
+    // DeepSeek 400 "Duplicate value for 'tool_call_id' … in message[N]"
+    // (session 24303d6a turn 2, 2026-09-15). Only text-less tool turns were
+    // affected — when text came first, it squatted index 0 and the colliding
+    // delta was harmlessly merged into the text partial.
     const chunk: StreamChunk = {
       type: 'tool-call-delta',
-      index: event.index,
+      index: event.index + 1,
       id: brandCallId(idForChunk as ToolCallId | string) as ToolCallId,
       argumentsDelta: event.argumentsDelta,
     }
@@ -229,12 +240,16 @@ export function* terminalChunks(
   }
   // CRITICAL: Tool-call block-ends must use indices that don't collide with text (index 0).
   // The BlockAssembler uses chunk.index to track blocks, so text and tool-calls must have
-  // distinct indices. Use 1, 2, 3... for tool-calls.
-  let toolCallIndex = 1
-  for (const [, call] of [...toolCalls.entries()].sort((a, b) => a[0] - b[0])) {
+  // distinct indices. §7.58: the mapping is EXACTLY `wire index + 1` — the same one
+  // sseEventToChunk applies to live tool-call-delta chunks — so each call's delta
+  // partial and its block-end land in the SAME block slot. Sequential numbering
+  // (`toolCallIndex++`) instead would diverge whenever wire indices have gaps and
+  // double the tool-calls whenever a delta partial was already open (see the
+  // duplicate-id incident documented at the tool-call-delta yield above).
+  for (const [wireIndex, call] of [...toolCalls.entries()].sort((a, b) => a[0] - b[0])) {
     yield {
       type: 'block-end',
-      index: toolCallIndex++,
+      index: wireIndex + 1,
       block: {
         type: 'tool-call',
         id: brandCallId(call.id as ToolCallId | string) as ToolCallId,

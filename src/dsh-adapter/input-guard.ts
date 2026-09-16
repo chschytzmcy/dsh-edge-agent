@@ -345,6 +345,15 @@ export class InputGuardServiceImpl extends Service {
    * 不足）。优先级：先让请求能跑通，再考虑 LLM 行为。这是 input-guard
    * 的职责边界：保证 schema 合规，不保证 LLM 行为合理。
    *
+   * §7.58 (2026-09-16) Pass 0——重复 tool_call id 唯一化：同一次 sanitize 内
+   * 第 2..n 次出现的同 id tool-call 块（及其第 2..n 个配对 tool-result 块，
+   * 含 message.source.callId）改名为 `${id}-dup${k}`，避免 DeepSeek 400
+   * "Duplicate value for 'tool_call_id' … in message[N]"。来源：(a) 旧版
+   * openai-sse.ts delta / block-end 索引错位使一次调用在一条 assistant 消息
+   * 里落成两个同 id 块（已源头修复），修复前落盘的 session 历史仍在——
+   * 2026-09-15 session 24303d6a turn 2 实锤；(b) 未来其他模型 / adapter 的
+   * 同类重复输出。Pass 0 先于 orphan 扫描，保证后续 pass 看到全局唯一 id。
+   *
    * 调用方：cloud-llm-adapter / local-llm-adapter 在 buildChatCompletionsBody
    * 前调用。如 input-guard 未启用（enableInputGuard=false）则跳过。
    */
@@ -355,10 +364,12 @@ export class InputGuardServiceImpl extends Service {
     messages: Array<Record<string, unknown>>
     orphanCount: number
     syntheticInjected: number
+    /** §7.58 (2026-09-16): 本消息集内被改名的重复 tool-call 块数。 */
+    duplicateCount: number
   } {
     if (!this.config.enableInputGuard) {
       // 不洗：保持原样
-      return { messages: [...messages], orphanCount: 0, syntheticInjected: 0 }
+      return { messages: [...messages], orphanCount: 0, syntheticInjected: 0, duplicateCount: 0 }
     }
     const out: Array<Record<string, unknown>> = []
     let orphanCount = 0
@@ -414,18 +425,125 @@ export class InputGuardServiceImpl extends Service {
       return ids
     }
 
+    // ── Pass 0（§7.58, 2026-09-16）：重复 tool_call id 唯一化 ─────────────
+    // 按文档顺序对同一 id 的出现次序计数：同一 id 的第 k 次「调用」与第 k 次
+    // 「结果」天然一一对应（call 恒在其 result 之前出现），第 1 次保留原 id，
+    // 第 k≥2 次改名 `${id}-dup${k}`。RESULT 不自算新名，而是引用第 k 个 CALL
+    // 改名后的 id（callIdsById 表）——若 result 自己走碰撞让位逻辑，会撞上
+    // 刚给配对 call 起的名字而错位成 -dupNx（单测实测踩中）。消息与块一律
+    // 浅拷贝——运行期 dsh-llm 对 payload deepFreeze，in-place 修改会炸。改名
+    // 撞上历史已有 id 时再加 'x' 后缀（防御极端命名）。
+    const blockIdOf = (b: Record<string, unknown>): string | undefined =>
+      typeof b.toolCallId === 'string' ? b.toolCallId
+        : typeof b.callId === 'string' ? b.callId
+          : typeof b.id === 'string' ? b.id
+            : undefined
+    const takenIds = new Set<string>()
+    for (const m of messages) {
+      const c = (m as { content?: unknown }).content
+      if (!Array.isArray(c)) continue
+      for (const block of c as unknown[]) {
+        if (!block || typeof block !== 'object') continue
+        const b = block as Record<string, unknown>
+        if (b.type !== 'tool-call' && b.type !== 'tool-result') continue
+        const id = blockIdOf(b)
+        if (id !== undefined) takenIds.add(id)
+      }
+    }
+    const callOccurrence = new Map<string, number>()
+    const resultOccurrence = new Map<string, number>()
+    // 原 id → 其各次 call 改名后的 id（按出现顺序）。result 的第 k 次出现直接
+    // 引用第 k 个 call 的落定 id，配对天然一致，不会互相让位错位。
+    const callIdsById = new Map<string, string[]>()
+    let duplicateCount = 0
+    const pass0: Array<Record<string, unknown>> = []
+    for (const m of messages) {
+      const content = (m as { content?: unknown }).content
+      if (!Array.isArray(content)) {
+        pass0.push(m)
+        continue
+      }
+      let touched = false
+      let renameFrom: string | undefined
+      let renameTo: string | undefined
+      const blocks = (content as unknown[]).map((block) => {
+        if (!block || typeof block !== 'object') return block
+        const b = block as Record<string, unknown>
+        if (b.type !== 'tool-call' && b.type !== 'tool-result') return block
+        const id = blockIdOf(b)
+        if (id === undefined) return block
+        const isCall = b.type === 'tool-call'
+        const occ = isCall
+          ? (callOccurrence.get(id) ?? 0) + 1
+          : (resultOccurrence.get(id) ?? 0) + 1
+        if (isCall) callOccurrence.set(id, occ)
+        else resultOccurrence.set(id, occ)
+        let nextId: string
+        if (isCall) {
+          nextId = id
+          if (occ > 1) {
+            nextId = `${id}-dup${occ}`
+            while (takenIds.has(nextId)) nextId = `${nextId}x`
+            takenIds.add(nextId)
+            duplicateCount++
+          }
+          const assigned = callIdsById.get(id)
+          if (assigned) assigned.push(nextId)
+          else callIdsById.set(id, [nextId])
+        } else {
+          const assigned = callIdsById.get(id)
+          if (assigned !== undefined && assigned.length >= occ) {
+            nextId = assigned[occ - 1] as string
+          } else {
+            // result 比 call 还多（上游另有问题的历史）：自算唯一名兜底，
+            // 不指望配对，至少不再触发 DeepSeek 的 per-message id 去重 400。
+            nextId = `${id}-dup${occ}`
+            while (takenIds.has(nextId)) nextId = `${nextId}x`
+            takenIds.add(nextId)
+          }
+        }
+        if (nextId === id) return block
+        if (!isCall) {
+          renameFrom = id
+          renameTo = nextId
+        }
+        touched = true
+        const copy: Record<string, unknown> = { ...b }
+        if (copy.toolCallId !== undefined) copy.toolCallId = nextId
+        if (copy.callId !== undefined) copy.callId = nextId
+        if (copy.id !== undefined) copy.id = nextId
+        return copy
+      })
+      if (!touched) {
+        pass0.push(m)
+        continue
+      }
+      const msgCopy: Record<string, unknown> = { ...(m as Record<string, unknown>), content: blocks }
+      // tool-result 消息的 source.callId 也指回 call id（dsh session 记录格式），
+      // 同步改名保持配对；wire 构建不读它，但 desanitize / 审计路径会。
+      const src = (msgCopy as { source?: unknown }).source
+      if (
+        renameTo !== undefined &&
+        src !== null && typeof src === 'object' &&
+        (src as Record<string, unknown>).callId === renameFrom
+      ) {
+        msgCopy.source = { ...(src as Record<string, unknown>), callId: renameTo }
+      }
+      pass0.push(msgCopy)
+    }
+
     // 第一遍：扫描所有消息，构建 "所有出现过的 tool-result id" 集合
     // 我们不只盯紧跟 assistant 的"连续 tool 段"——因为 dsh 把 tool-result
     // 放在后续 user 消息的 content 块里，可能隔了几条消息。
     const respondedAll = new Set<string>()
-    for (const m of messages) {
+    for (const m of pass0) {
       const c = (m as { content?: unknown }).content
       for (const id of collectResultIds(c)) respondedAll.add(id)
     }
 
     // 第二遍：扫 assistant 消息，遇到有 tool-call 的就补缺失响应
-    for (let i = 0; i < messages.length; i++) {
-      const msg = messages[i]
+    for (let i = 0; i < pass0.length; i++) {
+      const msg = pass0[i]
       const role = (msg as { role?: unknown }).role
       const content = (msg as { content?: unknown }).content
 
@@ -446,8 +564,8 @@ export class InputGuardServiceImpl extends Service {
       // 实际 dsh 行为：tool-result 块总是出现在对应的 assistant tool-call 之后，
       // 但不一定紧跟（中间可能有 user 消息）。所以扫描 i+1 之后所有消息即可。
       const respondedAfter = new Set<string>()
-      for (let k = i + 1; k < messages.length; k++) {
-        for (const id of collectResultIds((messages[k] as { content?: unknown }).content)) {
+      for (let k = i + 1; k < pass0.length; k++) {
+        for (const id of collectResultIds((pass0[k] as { content?: unknown }).content)) {
           respondedAfter.add(id)
         }
       }
@@ -491,14 +609,28 @@ export class InputGuardServiceImpl extends Service {
       }
     }
 
-    if (orphanCount > 0 || process.env.DSH_EDGE_INPUT_GUARD_DEBUG === 'true') {
+    if (duplicateCount > 0) {
+      // §7.58: 重复 tool_call id 改名是"请求能跑通"级别的修复，warn 可见。
+      try {
+        this.ctx?.logger?.warn?.(
+          `[input-guard] duplicate-tool-call-id summary sessionId=${sessionId ?? 'unknown'} renamedCalls=${duplicateCount} inputMessages=${messages.length}`,
+        )
+      } catch { /* debug only */ }
+      this.audit('warn', 'input-guard.duplicate-tool-call-id.recovered', {
+        sessionId,
+        duplicateCount,
+        originalMessageCount: messages.length,
+      })
+    }
+
+    if (orphanCount > 0 || duplicateCount > 0 || process.env.DSH_EDGE_INPUT_GUARD_DEBUG === 'true') {
       // §7.46.2: orphan tool-call 清洗在 ops log 也开一行 — 跟主 sanitize
       // 路径不同，这是同步纯本地操作（不调 sanitizer），所以只 emit 一行
       // summary，不做 start/done 配对。orphanCount > 0 时输出，让 operator
       // 在 ops log 里能直接 grep 'orphan-tool-call summary' 看到修复量。
       try {
         this.ctx?.logger?.info?.(
-          `[input-guard] orphan-tool-call summary sessionId=${sessionId ?? 'unknown'} orphanCount=${orphanCount} syntheticInjected=${syntheticInjected} inputMessages=${messages.length} outputMessages=${out.length}`,
+          `[input-guard] orphan-tool-call summary sessionId=${sessionId ?? 'unknown'} orphanCount=${orphanCount} syntheticInjected=${syntheticInjected} duplicateRenamed=${duplicateCount} inputMessages=${messages.length} outputMessages=${out.length}`,
         )
       } catch { /* debug only */ }
       this.audit('warn', 'input-guard.orphan-tool-call.recovered', {
@@ -510,7 +642,7 @@ export class InputGuardServiceImpl extends Service {
       })
     }
 
-    return { messages: out, orphanCount, syntheticInjected }
+    return { messages: out, orphanCount, syntheticInjected, duplicateCount }
   }
 
   /**
