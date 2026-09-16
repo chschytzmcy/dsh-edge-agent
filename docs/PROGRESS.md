@@ -6849,3 +6849,7 @@ audit 配置的 `maxFileAgeDays: 7`(cordis.patch.yml:443)同样从未生效过�
 **实机证据**:种子落 `~/.dsh-edge-agent-minimal/skill-realms.json` 后 **5s hot-reload 免重启**生效;15:45 诱导轮 `routed LOCAL` → 首批 `tool deny web_fetch/web_search reason=(CLOUD) not allowed in LOCAL realm` + `bash allow realm=LOCAL` ×5;15:46 回归轮 `routed CLOUD` → `web_search allow`,零误伤。
 
 **结构性边界(记录,非 bug)**:极简 LOCAL 轮的 bash **tool result 原文回填云端上下文**(如"查询本地的IP地址"轮的局域网 IP)——§7.59.1 只保输入文本;tool-result→cloud 不过 sanitizer。极简能承诺"文本隐私",承诺不了"数据隐私";后者需真 local-llm(全量版)或产品侧新增"敏感工具输出过滤"(候选活)。
+
+#### §7.59.4 阶梯精简:证伪级 stage1/1b 退役(2026-09-16,user 拍板)
+
+**结论**:user「不用证伪,保存最新的 cordis 文件即可」→ `cordis.stage1.yml` / `cordis.stage1b.yml` 删除,`bundle-minimal/` 收敛为四文件(package.json + stage2 + stage2-ops + realm 种子);rig 阶梯塌缩为 `deploy <2|ops>`(ops 只落 TUI 形状 profile,headless 挂它会 file-logger web-inject 起爆,故保留 stage2 作 headless 冒烟臂)。**三层语义的证伪结论不丢**:mount≠active 的 FAIL-LOUD pending 逐字签名、active≠enforced 的零闸门证据,均存档于本节上文与 `deploy-minimal-files.md` 文末——文件可删,实证不可删。CI 锁同步修剪(22→19 例,含一条"依赖边不变式"留守断言,防止存档叙述随代码演化过期)。

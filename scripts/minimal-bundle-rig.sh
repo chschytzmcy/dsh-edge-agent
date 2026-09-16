@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# §7.59 最小 bundle 两阶段实证 rig —— 验证 docs/deploy-minimal-files.md 的 5 件套主张。
+# §7.59 最小 bundle 实证 rig —— 验证 docs/deploy-minimal-files.md 的 5 件套主张。
 #
 # 只操作两个 throwaway profile(绝不碰 web / dsh-tui 生产 profile):
 #   edge-min-test  TUI 形状(clone 自 dsh-tui,主验证面)—— 只做 boot 级探测
 #   edge-min-chat  headless 孪生(dsh-base + dsh-headless,零安装)—— 驱动单发聊天
 #
-# 阶梯:
-#   stage1  只点 prompt-guard+privacy-policy → 预期 boot FAIL-LOUD(did not activate)
-#   stage1b +audit-log                      → 预期 ACTIVE 但聊天零闸门事件(无 caller)
-#   stage2  7 插件能力闭环                   → 实弹 BLOCK/REJECT + 反事实探针 P1-P5
+# 阶梯(§7.59.4 精简:证伪级 stage1/stage1b 已退役,其 boot 签名逐字存档于
+# docs/PROGRESS.md §7.59 与 docs/deploy-minimal-files.md,不再作为可跑臂):
+#   stage2     7 插件能力闭环     → 实弹 BLOCK/REJECT + 反事实探针 P1-P5(headless 可 boot)
+#   stage2-ops stage2 + file-logger → 实装变体,与 dsh-tui 生产所挂逐字同源
 #
 # 用法:
 #   scripts/minimal-bundle-rig.sh all                     # build 检查 + 全阶梯
-#   scripts/minimal-bundle-rig.sh deploy <1|1b|2>         # 物理放置某 stage(两个 profile)
-#   scripts/minimal-bundle-rig.sh assert1|assert1b|assert2
+#   scripts/minimal-bundle-rig.sh deploy <2|ops>          # 物理放置某 stage(两个 profile;ops 在 headless 仅放置不 boot)
+#   scripts/minimal-bundle-rig.sh assert2                 # 7 插件闭环冒烟(B1-B4)
 #   scripts/minimal-bundle-rig.sh probes                  # 反事实(P1..P5;P6 只打印说明)
 #   scripts/minimal-bundle-rig.sh chat <文本...>          # 手动冒烟(headless)
 #   scripts/minimal-bundle-rig.sh dump <profile>          # --dump-config 过滤 minimal 行
@@ -60,8 +60,8 @@ run_dsh(){
   env DSH_EDGE_STORAGE_ROOT="$MIN_ROOT" timeout "$t" dsh --profile "$p" "$@" </dev/null >"$log" 2>&1
 }
 
-# TUI 形状 profile 没有 TTY 起不了 UI,但 stage1 的 activation 断言发生在渲染
-# 之前 —— 用 script 伪 TTY,只为拿到 run.log 与退出码。
+# TUI 形状 profile 没有 TTY 起不了 UI,但 activation 断言发生在渲染之前
+# —— 用 script 伪 TTY,只为拿到 run.log 与退出码。
 run_tui(){
   local p="$1" log="$2" t="$3"
   guard_profiles "$p"; mkdir -p "$(dirname "$log")"
@@ -109,14 +109,15 @@ ensure_tp(){
 deploy(){
   local stage="$1" file
   case "$stage" in
-    1)  file=cordis.stage1.yml ;;
-    1b) file=cordis.stage1b.yml ;;
-    2)  file=cordis.stage2.yml ;;
-    *)  die "stage ∈ {1, 1b, 2}" ;;
+    2)    file=cordis.stage2.yml ;;
+    ops)  file=cordis.stage2-ops.yml ;;   # ⚠️ headless 孪生挂它会 boot FAIL-LOUD(file-logger inject web),仅 TUI 形状可用
+    *)    die "stage ∈ {2, ops}" ;;
   esac
   [ -f "$REPO/lib/types/dsh-adapter/prompt-guard.js" ] || die "lib/ 未编译,先跑: make build"
   ensure_cp; ensure_tp
-  for p in "$CP" "$TP"; do
+  # ops 变体只落 TUI 形状 profile:headless 孪生没有 web service,file-logger 会 boot FAIL-LOUD
+  local targets="$CP $TP"; [ "$stage" = ops ] && targets="$TP"
+  for p in $targets; do
     local n; n="$(nested_dir "$p")"
     mkdir -p "$n"
     cp "$SRC/package.json" "$n/"                          # ①
@@ -137,47 +138,10 @@ deploy(){
   # LOCAL/SANITIZED 轮网络工具被 Layer 3 拒绝。每次 deploy 重写,幂等。
   mkdir -p "$MIN_ROOT"
   cp "$SRC/skill-realms.seed.json" "$MIN_ROOT/skill-realms.json"
-  echo "  deployed stage $stage → $CP + $TP (+ $MIN_ROOT/skill-realms.json)"
+  echo "  deployed stage $stage → ${targets} (+ $MIN_ROOT/skill-realms.json)"
 }
 
 # ── 断言 ────────────────────────────────────────────────────────────────────
-assert1(){
-  step "assert stage1(预期:FAIL-LOUD pending)"
-  rm -rf "$MIN_ROOT"
-  local log rc
-  run_dsh "$CP" "$EVID/stage1-chat.log" 60 "hi"; rc=$?
-  log="$EVID/stage1-chat.log"
-  [ "$rc" -ne 0 ] && ok "headless boot 非零退出 (rc=$rc)" || no "headless boot 竟然 rc=0(预期非零)"
-  grep -q "did not activate" "$log" && ok "签名: entries did not activate" || no "缺 'did not activate' 行"
-  grep -qF "privacy-policy: pending (waiting for service: auditLog)" "$log" \
-    && ok "签名: privacy-policy pending(auditLog)" || no "缺 privacy-policy pending 行"
-  grep -qF "prompt-guard: pending (waiting for services: privacyPolicy, auditLog)" "$log" \
-    && ok "签名: prompt-guard pending(privacyPolicy, auditLog)" || no "缺 prompt-guard pending 行"
-  run_tui "$TP" "$EVID/stage1-tui.log" 40; rc=$?
-  [ "$rc" -ne 0 ] && grep -q "did not activate" "$EVID/stage1-tui.log" \
-    && ok "TUI 形状 profile 同样 FAIL-LOUD(rc=$rc)" || no "TUI profile 未见 activation 失败签名"
-  [ ! -d "$MIN_ROOT/audit" ] && ok "audit 目录未产生(没插件活过)" || no "audit 目录不该存在"
-}
-
-assert1b(){
-  step "assert stage1b(预期:ACTIVE 但零闸门事件)"
-  rm -rf "$MIN_ROOT"
-  local log rc
-  run_dsh "$CP" "$EVID/stage1b-chat.log" 90 "hi"; rc=$?
-  log="$EVID/stage1b-chat.log"
-  grep -q "did not activate" "$log" && no "仍在报 did not activate" || ok "boot 通过 activation 断言"
-  if [ -f "$AUDIT" ]; then
-    grep -Eq '"policy\.(missing|loaded)"' "$AUDIT" \
-      && ok "审计出现 privacy-policy boot 行(能力插件 ACTIVE 且干活)" \
-      || no "审计缺 policy.missing/loaded 行(没证据说插件真活了)"
-    grep -q 'input-guard\.' "$AUDIT" && no "出现 input-guard 行(不该,stage1b 未点它)" || ok "零 input-guard.* 行(无 caller → 无 enforced)"
-  else
-    no "audit 文件不存在(boot 未到达 audit-log apply?)"
-  fi
-  # 「enforced 缺席」的旁证:聊天没被拦截(可能因缺 key 走 provider 错误,但绝不能是 gate 拒绝)
-  grep -q 'blocked' "$log" && no "run.log 出现 blocked(不该有闸门)" || ok "run.log 无 blocked"
-}
-
 assert2(){
   step "assert stage2(预期:实弹 BLOCK / REJECT)"
   rm -rf "$MIN_ROOT"
@@ -332,8 +296,6 @@ command -v dsh >/dev/null || die "dsh CLI 不在 PATH"
 case "${1:-all}" in
   build)    make -C "$REPO" build ;;
   deploy)   deploy "${2:?stage}" ;;
-  assert1)  assert1; summary ;;
-  assert1b) assert1b; summary ;;
   assert2)  assert2; summary ;;
   probes)   probes; summary ;;
   chat)
@@ -346,8 +308,6 @@ case "${1:-all}" in
   dump)     guard_profiles "${2:?profile}"; env DSH_EDGE_STORAGE_ROOT="$MIN_ROOT" dsh --profile "$2" --dump-config 2>&1 | grep -i "minimal\|error" | head -30 ;;
   all)
     [ -f "$REPO/lib/types/dsh-adapter/prompt-guard.js" ] || die "lib/ 未编译,先跑: scripts/minimal-bundle-rig.sh build"
-    deploy 1;  assert1
-    deploy 1b; assert1b
     deploy 2;  assert2
     probes
     summary

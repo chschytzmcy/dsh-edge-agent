@@ -1,16 +1,17 @@
 /**
- * §7.59 CI lock —— bundle-minimal/ 六文件与产品面的同步性。
+ * §7.59 CI lock —— bundle-minimal/ 四文件与产品面的同步性。
  *
- * bundle-minimal 是真机 rig 的静态面(4 张 stage patch + 1 份花名册 package.json
+ * bundle-minimal 是真机 rig 的静态面(2 张 stage patch + 1 份花名册 package.json
  * + 1 份 realm 种子 skill-realms.seed.json),
  * rig 脚本(scripts/minimal-bundle-rig.sh)跑真机验证,本测试跑漂移验证:
- *   - stage 名单恰好 = 设计阶梯(1:两插件 / 1b:+audit-log / 2:7 插件闭包 /
- *     2-ops:闭包 + file-logger 实装变体,TUI/web 宿主专用)
+ *   - stage 名单恰好 = 现役阶梯(2:7 插件闭包 / 2-ops:闭包 + file-logger
+ *     实装变体,TUI/web 宿主专用)。§7.59.4:证伪级 stage1/1b 已退役,
+ *     boot 签名逐字存档于 docs/PROGRESS.md §7.59 与 docs/deploy-minimal-files.md
  *   - 每条 insert 的 name 末段 ∈ 极简 exports,对应 src 文件存在(①↔②互指)
  *   - Schema 必填字段 + 存储隔离锁(③必填、R7:realm-skill-bridge.configPath;
  *     所有路径表达式只准落 .dsh-edge-agent-minimal,绝不指生产 root)
  *   - inject 闭包锁:stage2 名单必须覆盖全部非宿主依赖(防产品侧新增 inject 后
- *     rig 静默 pending —— 正是 stage1 用来证伪的那类断裂)
+ *     rig 静默 pending —— 原 stage1 证伪过的那类断裂,签名存档 §7.59)
  *   - 极简花名册 ⊆ 全量花名册(exports 值、peerDependencies 逐字镜像)
  */
 import assert from 'node:assert/strict'
@@ -76,20 +77,6 @@ function injectOf(text: string): string[] {
 }
 
 describe('bundle-minimal:stage 阶梯名单', () => {
-  it('stage1 恰好点 privacy-policy + prompt-guard(证伪前提:不含 audit-log)', () => {
-    const rows = stageInserts('cordis.stage1.yml')
-    assert.deepEqual(ids(rows), ['privacy-policy', 'prompt-guard'])
-  })
-
-  it('stage1 的 prompt-guard 一行不写 config(主张:派工单不必抄全量 config)', () => {
-    const row = stageInserts('cordis.stage1.yml').find(r => r.id === 'prompt-guard')!
-    assert.equal(row.config, undefined)
-  })
-
-  it('stage1b = stage1 + audit-log(三插件全 ACTIVE)', () => {
-    assert.deepEqual(ids(stageInserts('cordis.stage1b.yml')), ['audit-log', 'privacy-policy', 'prompt-guard'])
-  })
-
   it('stage2 = 恰 7 插件能力闭包', () => {
     assert.deepEqual(ids(stageInserts('cordis.stage2.yml')), [...CLOSURE].sort())
   })
@@ -102,7 +89,7 @@ describe('bundle-minimal:stage 阶梯名单', () => {
 })
 
 describe('bundle-minimal:花名册 ↔ 派工单互指', () => {
-  const allRows = ['cordis.stage1.yml', 'cordis.stage1b.yml', 'cordis.stage2.yml', 'cordis.stage2-ops.yml'].flatMap(f => stageInserts(f))
+  const allRows = ['cordis.stage2.yml', 'cordis.stage2-ops.yml'].flatMap(f => stageInserts(f))
 
   it('每条 insert 的 name = PKG/<sub>,<sub> ∈ 极简 exports 且 import 路径规范、src 存在', () => {
     for (const row of allRows) {
@@ -125,14 +112,14 @@ describe('bundle-minimal:花名册 ↔ 派工单互指', () => {
 
 describe('bundle-minimal:必填字段与存储隔离', () => {
   it('凡点 privacy-policy 的 stage 都有 policyPath;schemastery 缺必填会静默丢插件,连 pending 都看不到', () => {
-    for (const f of ['cordis.stage1.yml', 'cordis.stage1b.yml', 'cordis.stage2.yml', 'cordis.stage2-ops.yml']) {
+    for (const f of ['cordis.stage2.yml', 'cordis.stage2-ops.yml']) {
       const row = stageInserts(f).find(r => r.id === 'privacy-policy')!
       assert.equal(typeof row.config?.policyPath, 'string', `${f}: privacy-policy 缺必填 policyPath`)
     }
   })
 
   it('凡点 audit-log 的 stage 都有 root(audit-log.ts:75 必填)', () => {
-    for (const f of ['cordis.stage1b.yml', 'cordis.stage2.yml', 'cordis.stage2-ops.yml']) {
+    for (const f of ['cordis.stage2.yml', 'cordis.stage2-ops.yml']) {
       const row = stageInserts(f).find(r => r.id === 'audit-log')!
       assert.equal(typeof row.config?.root, 'string', `${f}: audit-log 缺必填 root`)
     }
@@ -186,7 +173,7 @@ describe('bundle-minimal:必填字段与存储隔离', () => {
   })
 
   it('所有路径 config 表达式只落 .dsh-edge-agent-minimal,绝不指生产 root', () => {
-    const rows = ['cordis.stage1.yml', 'cordis.stage1b.yml', 'cordis.stage2.yml', 'cordis.stage2-ops.yml'].flatMap(f => stageInserts(f))
+    const rows = ['cordis.stage2.yml', 'cordis.stage2-ops.yml'].flatMap(f => stageInserts(f))
     for (const row of rows) {
       for (const [k, v] of Object.entries(row.config ?? {})) {
         if (typeof v !== 'string' || !v.includes('.dsh-edge-agent')) continue
@@ -232,7 +219,9 @@ describe('bundle-minimal:inject 闭包锁', () => {
     }
   })
 
-  it('stage1 的证伪签名前提:prompt-guard/privacy-policy 的 inject 都含 auditLog(stage1 不点它 ⇒ 必然 pending)', () => {
+  it('依赖闭包不变式(证伪阶梯退役后的留守断言):prompt-guard/privacy-policy 的 inject 仍含 auditLog', () => {
+    // stage1/1b 的 FAIL-LOUD pending 签名已存档 §7.59;这里锁"若依赖边变了,
+    // 存档叙述即过期"——injectList 三行同时是 stage2 闭包锁的输入前提。
     assert.ok(injectList('privacy-policy').includes('auditLog'))
     assert.ok(injectList('prompt-guard').includes('auditLog'))
     assert.ok(injectList('prompt-guard').includes('privacyPolicy'))

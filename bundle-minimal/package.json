@@ -2,7 +2,7 @@
   "name": "@deepseek-harness-edge-agent/dsh-edge-agent-minimal",
   "version": "0.1.0",
   "private": true,
-  "description": "§7.59 最小 bundle 实证载体:与全量包同 lib(部署时 rsync),但派工单只点极简名单。三张 stage patch(cordis.stage1/stage1b/stage2.yml)由 scripts/minimal-bundle-rig.sh 选择一份 cp 成 cordis.patch.yml——本文件不入库那份嵌套副本,lib/ 也不入库。",
+  "description": "§7.59 最小 bundle 实证载体:与全量包同 lib(部署时 rsync),但派工单只点极简名单。两张 stage patch(cordis.stage2/stage2-ops.yml)由 scripts/minimal-bundle-rig.sh 选择一份 cp 成 cordis.patch.yml——本文件不入库那份嵌套副本,lib/ 也不入库。(§7.59.4:stage1/1b 证伪阶梯已退役,签名存档 docs/PROGRESS.md)",
   "type": "module",
   "main": "lib/types/index.js",
   "exports": {
