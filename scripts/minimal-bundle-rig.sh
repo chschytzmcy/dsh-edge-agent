@@ -6,7 +6,7 @@
 #   edge-min-chat  headless 孪生(dsh-base + dsh-headless,零安装)—— 驱动单发聊天
 #
 # 单源派工单(§7.59.5:stage1/1b/2 全部退役,签名逐字存档 docs/PROGRESS.md
-# §7.59 与 docs/deploy-minimal-files.md):
+# §7.59 系列·单一存档点):
 #   bundle-minimal/cordis.patch.yml  8 插件实装图 → TUI 形状 profile 逐字拷贝
 #   headless 孪生拿【运行时派生】的 7 插件图(剥 file-logger 行块——它
 #   inject web,headless 必 FAIL-LOUD;派生物只存在于 throwaway 嵌套包)

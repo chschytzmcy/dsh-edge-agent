@@ -3,18 +3,20 @@
 验证 `docs/deploy-minimal-files.md` 5 件套主张的可复现 rig。§7.59.5 起仓库只有
 **一张派工单** `cordis.patch.yml`——名字即 `package.json` 的 `dsh.bundle.patch`
 指针名,部署 = 逐字 cp 进嵌套包,零改名。rig 派工单只允许部署到 throwaway
-profile(`edge-min-test` TUI 形状 / `edge-min-chat` headless 孪生),绝不进 web
-生产 profile——唯一例外是 dsh-tui 生产:其嵌套包挂本派工单的逐字节副本
-(2026-09-16 起)。整个目录不进 release tarball。
+profile(`edge-min-test` TUI 形状 / `edge-min-chat` headless 孪生),绝不进任何
+生产 profile(web / dsh-tui)。2026-09-16 dsh-tui 生产曾短暂挂过本派工单的
+逐字节副本做端到端验证,同日已换回全量正式 bundle(PROGRESS §7.59.7)。
+整个目录不进 release tarball。
 
 > §7.59.4(user 拍板「不用证伪,保存最新的 cordis 文件即可」):stage1 / stage1b
 > 证伪阶梯退役;§7.59.5:stage2 与 stage2-ops 二合一为本文件。各轮 boot 签名
 > (FAIL-LOUD pending 逐字行、active≠enforced 证据)存档于 `docs/PROGRESS.md`
-> §7.59 实测段与 `docs/deploy-minimal-files.md` 文末——文件可删,实证不可删。
+> §7.59 实测段(单一存档点;`deploy-minimal-files.md` 只留最终结论)——
+> 文件可删,实证不可删。
 
 - `package.json` — 极简花名册(exports = 7 插件闭包 + file-logger,`dsh.bundle.patch` 指针)
 - `cordis.patch.yml` — 8 插件实装图 = file-logger(居首)+ 7 插件执法闭包 → 冒烟
-  聊天实弹 BLOCK / REJECT,dsh-tui 生产所挂即此图。§7.59.1 全云不变量:
+  聊天实弹 BLOCK / REJECT。§7.59.1 全云不变量:
   localProvider 指宿主云 provider ⇒ `sanitizeLocalTraffic:true` +
   `downgradeOnSanitizeFailure:false`(LOCAL 轮也脱敏;脱敏失败 REJECT)。全量部署勿抄。
   ⚠️ headless 宿主不可逐字挂:file-logger `inject=['web']`,headless

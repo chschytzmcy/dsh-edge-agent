@@ -7,7 +7,7 @@
  *   - 派工单名单恰好 = 现役 8 插件实装花名册(7 插件闭包 + file-logger 居首)。
  *     §7.59.4:证伪级 stage1/1b 已退役;§7.59.5:stage2/stage2-ops 合并为单一
  *     cordis.patch.yml(headless 孪生的 7 插件图由 rig 运行时派生,不落仓库),
- *     boot 签名逐字存档于 docs/PROGRESS.md §7.59 与 docs/deploy-minimal-files.md
+ *     boot 签名逐字存档于 docs/PROGRESS.md §7.59(单一存档点)
  *   - 每条 insert 的 name 末段 ∈ 极简 exports,对应 src 文件存在(①↔②互指)
  *   - Schema 必填字段 + 存储隔离锁(③必填、R7:realm-skill-bridge.configPath;
  *     所有路径表达式只准落 .dsh-edge-agent-minimal,绝不指生产 root)
@@ -51,7 +51,7 @@ const ids = (rows: InsertRow[]) => rows.map(r => r.id).sort()
 const CLOSURE = ['audit-log', 'privacy-policy', 'prompt-guard', 'intent-router', 'sanitizer-pipeline', 'realm-skill-bridge', 'input-guard'] as const
 /** 实装花名册 = 执法闭包 7 + file-logger(运维日志落盘)。file-logger
  *  inject=['web'],headless 冒烟图由 rig deploy 时剥除,但 exports 必须提供,
- *  否则 TUI 形状(含生产 dsh-tui 副本)派工单断链。 */
+ *  否则 TUI 形状派工单断链。 */
 const ROSTER = [...CLOSURE, 'file-logger']
 
 const patchRows = stageInserts(PATCH)
