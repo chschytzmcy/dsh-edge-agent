@@ -6853,3 +6853,11 @@ audit 配置的 `maxFileAgeDays: 7`(cordis.patch.yml:443)同样从未生效过�
 #### §7.59.4 阶梯精简:证伪级 stage1/1b 退役(2026-09-16,user 拍板)
 
 **结论**:user「不用证伪,保存最新的 cordis 文件即可」→ `cordis.stage1.yml` / `cordis.stage1b.yml` 删除,`bundle-minimal/` 收敛为四文件(package.json + stage2 + stage2-ops + realm 种子);rig 阶梯塌缩为 `deploy <2|ops>`(ops 只落 TUI 形状 profile,headless 挂它会 file-logger web-inject 起爆,故保留 stage2 作 headless 冒烟臂)。**三层语义的证伪结论不丢**:mount≠active 的 FAIL-LOUD pending 逐字签名、active≠enforced 的零闸门证据,均存档于本节上文与 `deploy-minimal-files.md` 文末——文件可删,实证不可删。CI 锁同步修剪(22→19 例,含一条"依赖边不变式"留守断言,防止存档叙述随代码演化过期)。
+
+#### §7.59.5 单源收敛:一张 `cordis.patch.yml`,headless 图改为运行时派生(2026-09-16,user 拍板)
+
+**结论**:user「把 stage2 也删了,只留 stage2-ops,名字改成最终的名字」→ `git mv cordis.stage2-ops.yml cordis.patch.yml` + 删 `cordis.stage2.yml`。选指针名作最终名:仓库文件、嵌套包文件、`dsh.bundle.patch` 指向三者同名,部署=逐字 cp,**零改名环节**。`bundle-minimal/` 至此三文件(package.json + cordis.patch.yml + skill-realms.seed.json),即 dsh-tui 生产在用的 8 插件实装图。
+
+**headless 冒烟臂的代价与解法**:单源后 stage2 的"headless 可 boot"职责没有对应文件——解法是 **rig deploy 时运行时派生**:TP 拿逐字拷贝,CP 拿剥掉 file-logger 行块的 7 插件图(`awk` 剥块 + derived-from 头注,带"不可部署到 TUI/web"警示)。派生物只存在于 throwaway 嵌套包,仓库不落第二张图——**图语义的单一权威就是这张文件本身**。
+
+**同步收敛**:rig `deploy` 无参化(`deploy <2|ops>` → `deploy`),证据日志 `stage2-*` 更名 `smoke-*`;CI 锁 19→17 例(两张名单测合一,§7.59.1/2/3 各锁改单文件断言,headless 剥离前提"file-logger 只多依赖 web"升为受锁断言);README/package.json 描述同步。dsh-tui 生产副本 re-cp 恢复逐字节一致(本次仅注释头漂移,insert 行零变化,无需重启)。

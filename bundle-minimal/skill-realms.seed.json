@@ -1,5 +1,5 @@
 {
-  "_comment": "§7.59.3 realm 种子:部署时由 rig(或 README 手工第⑤步)落为 $DSH_EDGE_STORAGE_ROOT/skill-realms.json,与 stage2(-ops) 派工单里 realm-skill-bridge.configPath 同路径。语义(实测 realm-skill-bridge.ts):表里【未点名】的工具在 Layer 3 按 §7.47.1 设计 fail-open(unknown tool 无 realm 约束——CLOUD agent 本地跑 bash 属合法面);本表把 web_search/web_fetch 锁 CLOUD,LOCAL/SANITIZED 轮即禁网(fail-closed)。skills 留空 + defaultRealm=hidden:极简宿主技能全隐,【不】照抄生产私有策略文件。",
+  "_comment": "§7.59.3 realm 种子:部署时由 rig(或 README 手工第⑤步)落为 $DSH_EDGE_STORAGE_ROOT/skill-realms.json,与派工单(cordis.patch.yml)里 realm-skill-bridge.configPath 同路径。语义(实测 realm-skill-bridge.ts):表里【未点名】的工具在 Layer 3 按 §7.47.1 设计 fail-open(unknown tool 无 realm 约束——CLOUD agent 本地跑 bash 属合法面);本表把 web_search/web_fetch 锁 CLOUD,LOCAL/SANITIZED 轮即禁网(fail-closed)。skills 留空 + defaultRealm=hidden:极简宿主技能全隐,【不】照抄生产私有策略文件。",
   "skills": {},
   "tools": {
     "web_search": "CLOUD",

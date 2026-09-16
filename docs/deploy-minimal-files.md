@@ -192,3 +192,5 @@ stage2 执法实录(真实审计行,详签存 rig evidence):注入句(`忽略之
 ### 附:复现
 
 `bundle-minimal/`(7 花名册 + 三张 stage 派工单)+ `scripts/minimal-bundle-rig.sh`(`all` 全跑,`down`/`clean` 收尾)。只碰 throwaway profile(TUI 形状克隆 + headless 孪生,均零安装)与隔离存储 `~/.dsh-edge-agent-minimal/`;本轮 **25/25 PASS**,证据留 `evidence/`。CI 锁 `tests/unit/bundle-minimal.test.ts`(16 例)防 rig 与产品面漂移;极简包不进 release tarball。
+
+> **§7.59.5 单源收敛(2026-09-16)**:上段"三张 stage 派工单"为验证当时的历史叙述——stage1/1b 已于 §7.59.4 退役,stage2/stage2-ops 已合并为唯一现役派工单 `bundle-minimal/cordis.patch.yml`(8 插件实装图,名字即 loader 指针名,部署零改名;dsh-tui 生产所挂即其逐字节副本)。headless 孪生的 7 插件图不再是仓库文件,由 rig deploy 时剥 file-logger 行块运行时派生。本节其余实测叙述与签名照档不动。
