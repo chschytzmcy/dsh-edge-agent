@@ -28,6 +28,19 @@
 #   ./install.sh --skip-pnpm                  # 跳过 npm install（假设已装过）
 #   ./install.sh --force-install              # 强制重装本包（覆盖 rsync）
 #   ./install.sh -h | --help                  # 打印本帮助
+#
+# §7.74 部署语义双分支(tarball 模式也适用):
+#   - profile=dsh-edge:从 tarball 自带 profiles/dsh-edge/(package.json skeleton
+#     + cordis.patch.yml skin)做完整部署 —— §2.7 bootstrap skeleton + §2.5 sync
+#     skin + §2.6 rsync lib/ + bundle-level patch overlay;本项目自有 headless
+#     profile,适合"装一个能用的完整 dsh-edge daemon"场景。
+#   - profile=web|dsh-tui:tarball 没有 profiles/web/ 或 profiles/tui/(这两个
+#     不是本项目自有 profile,而是 DSH 平台默认宿主)—— install.sh 自动 fallback
+#     到"仅部署 bundle":§2.7 只注册 bundle 到已有 profile 的 package.json
+#     (bundles + dependencies),§2.5 不动(无 skin overlay);适合"我已有 web/
+#     tui 在跑,只把 dsh-edge-agent bundle 挂上去"的场景。
+# 两种部署都从 $REPO_ROOT/lib/ rsync 到 ~/.dsh/profiles/<name>/node_modules/
+# @deepseek-harness-edge-agent/dsh-edge-agent/lib/。
 
 set -euo pipefail
 

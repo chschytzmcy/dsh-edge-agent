@@ -7056,6 +7056,37 @@ audit 配置的 `maxFileAgeDays: 7`(cordis.patch.yml:443)同样从未生效过�
 - §7.65 留作 "未做" 的 `--restart-at HH:MM` 仍不做。
 - "智能重启" 探针(只在跑的重启)未做,语义沿用 §7.65 的"无脑全启"。
 
+### §7.74 部署语义双分支:完整 deploy vs 仅部署 bundle(2026-09-17)
+
+**问题**:§7.73 把 `profiles/dsh-edge/` 骨架塞进 tarball 后,外部用户拿到的 tarball 只**项目自有 profile** 的 skeleton + skin,没有 `profiles/web/` `profiles/tui/`(那两个不是本项目的 profile,是 DSH 平台默认宿主)。install.sh 的 `--profile=<name>` 在 tarball 模式下应该自动适配 —— 给 `dsh-edge` 是完整部署(用 tarball 自带骨架),给 `web`/`tui` 是仅部署 bundle(用用户已有的 DSH profile,不动其 package.json 的 bundles/dependencies 之外的部分)。
+
+**结论先行**(用户原话:"tarball 里有 profile文件,支持通过里面的install.sh 部署 dsh-edge profile 或 仅部署bundle到 web-tui"):**install.sh 已原生支持双分支,无需新增 flag** —— 通过 `profiles/$PROFILE/package.json` 在 tarball 中是否存在自动分流:
+- **profile=dsh-edge**:tarball 含 `profiles/dsh-edge/package.json`(skeleton)+ `profiles/dsh-edge/cordis.patch.yml`(skin)→ §2.7 bootstrap skeleton + §2.5 sync skin + §2.6 rsync lib/(完整 deploy)
+- **profile=web|dsh-tui**:tarball **不**含 `profiles/web/` 或 `profiles/tui/`(不是本项目自有 profile)→ §2.7 检测 `$REPO_ROOT/profiles/web/package.json` 缺,跳过 skeleton bootstrap,直接调 python3 注册 bundle 到已有 `~/.dsh/profiles/web/package.json` 的 bundles/dependencies;§2.5 因 `profiles/web/cordis.patch.yml` 缺而跳过 skin sync;§2.6 仍 rsync lib/(仅 bundle 部署)
+
+**install.sh 改动**(1 段,header 用法注释):
+- 用法注释末尾加 §7.74 "部署语义双分支"段,显式说明 `profile=dsh-edge` vs `profile=web|dsh-tui` 的语义差别 + tarball 内 profiles/ 目录的覆盖关系(bundle-level `cordis.patch.yml` 是 bundle 自己的 patch,在 tarball 里;profile-level `profiles/$PROFILE/cordis.patch.yml` 是 skin,在 tarball 只对 dsh-edge)
+
+**install.sh 逻辑零改动**:§2.5 / §2.7 早就是按 `if [ -f "$REPO_ROOT/profiles/$PROFILE/..." ]` 条件触发的——tarball 有就走,没有就跳过。双分支语义是 §7.73 打包策略的**涌现属性**(只打 dsh-edge/ 不打 web/tui/),不是 install.sh 主动分流的。
+
+**实跑验证**(tarball 模式 --no-restart 两分支):
+- `./install.sh --profile=dsh-edge --no-restart`:Phase 2 rsync lib/ 到 dsh-edge profile + Phase 2.5 skin sync(若 tarball cordis.patch.yml [] 与 dest [] 不一致才动)+ §2.7 skeleton bootstrap(若 ~/.dsh/profiles/dsh-edge/package.json 缺才 cp);dsh-edge profile 是 init 状态时,§2.5 + §2.7 都是 no-op。
+- `./install.sh --profile=web --no-restart`:Phase 2 rsync lib/ 到 web profile(node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/lib/, 64 个 lib/types/* 文件),Phase 2.5 无 echo(tarball 无 profiles/web/cordis.patch.yml),§2.7 注册 bundle 到 ~/.dsh/profiles/web/package.json(web 已 init,无 skeleton bootstrap)。
+- `./install.sh --profile=tui --no-restart`:同 web,Phase 2 rsync lib/ 到 dsh-tui profile,Phase 2.5 无 echo,§2.7 注册 bundle 到 ~/.dsh/profiles/dsh-tui/package.json。
+- 三 profile 的 `~/.dsh/profiles/<p>/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/lib/types/` 都有 64 个文件,内容一致(同一份 tarball lib/)。
+
+**典型用户场景对照**:
+- **场景 A:本机开发**(git clone 仓库 + 改代码 + 反复迭代):`./install.sh --profile=dsh-edge --no-restart`(repo 模式,Phase 1 make package 重 build)
+- **场景 B:装一台裸机跑 headless dsh-edge**(release 分发):解开 tarball + `./install.sh`(tarball 模式,§2.7 从 tarball 自带 skeleton 引导 dsh-edge profile,§2.5 sync skin,完整 deploy)
+- **场景 C:已有 web/tui 在跑,挂 bundle 上**:解开 tarball + `./install.sh --profile=web` 或 `--profile=tui`(tarball 模式,仅 bundle deploy,不碰现有 web/tui profile 的其他配置)
+- **场景 D:用户用 DSH CLI 默认初始化了 web + tui + dsh-edge 三 profile,想给 dsh-edge 装 bundle**:`./install.sh --profile=dsh-edge`(完整 deploy,因为三 profile 都已 init,§2.7 skeleton bootstrap 跳过,但 bundle 注册 + lib rsync 正常)
+
+**memory 同步**:`make-install-path-home.md` 加"部署语义双分支"段:profile=dsh-edge → 完整 deploy(skeleton + bundle + skin),profile=web|tui → 仅 bundle deploy(无 skeleton + 无 skin);根源是 §7.73 只打 profiles/dsh-edge/(不是 install.sh 主动分流,是 tarball 内容决定)。`MEMORY.md` 指针同步加 §7.74 注。
+
+**未做**:
+- install.sh 不显式校验"profile=web|tui 时该 profile 已 init" —— 若 web/tui profile 缺 ~/.dsh/profiles/<p>/package.json,§2.7 fail-fast 报错指向 `dsh plugin add` —— 这是 DSH CLI 应做的 domain 工作(让用户用 dsh 工具链自 init),install.sh 不背扫
+- 不加 `--bundle-only` 显式 flag —— 当前 `--profile=web|tui` 已隐含"仅 bundle"语义,加冗余 flag 反而稀释 CLI 表达力
+
 ### §7.73 profile 骨架进 tarball —— 外部用户 fresh-machine bootstrap 自洽(2026-09-17)
 
 **问题**:§7.72 让 tarball 自洽后,外部用户下载 tarball → 解开 → `./install.sh` 部署本机的流程已基本可行,但 **fresh-machine 场景还差一步**:DSH `~/.dsh/profiles/<name>/` 在全新机器上不存在时,install.sh §2.7 需要从 `$REPO_ROOT/profiles/$PROFILE/package.json` bootstrap 一个 skeleton(package.json + 字段写本 bundle 的 `bundles` + `dependencies`)。**§7.55 tarball 打包时 `profiles/` 被 .npmignore 整目录排除 + Makefile 不 cp `profiles/`**,所以 fresh-machine + tarball 模式下 §2.7 fail-fast,提示去 `dsh plugin add`(那一步会 npm 404,bundle 没发布,死循环)。
