@@ -344,11 +344,14 @@ describe('http-api plugin', () => {
 import { resolveRoute } from '../../src/dsh-adapter/http-api.ts'
 
 describe('http-api resolveRoute (modelRouter wiring)', () => {
-  const prevEnv = process.env.DSH_EDGE_LOCAL_LLM_MODEL
+  const prevLocal = process.env.DSH_EDGE_LOCAL_LLM_MODEL
+  const prevCloud = process.env.DSH_EDGE_MODEL
 
   afterEach(() => {
-    if (prevEnv === undefined) delete process.env.DSH_EDGE_LOCAL_LLM_MODEL
-    else process.env.DSH_EDGE_LOCAL_LLM_MODEL = prevEnv
+    if (prevLocal === undefined) delete process.env.DSH_EDGE_LOCAL_LLM_MODEL
+    else process.env.DSH_EDGE_LOCAL_LLM_MODEL = prevLocal
+    if (prevCloud === undefined) delete process.env.DSH_EDGE_MODEL
+    else process.env.DSH_EDGE_MODEL = prevCloud
   })
 
   it('falls back to hardcoded local provider+model when modelRouter is absent', () => {
@@ -371,6 +374,18 @@ describe('http-api resolveRoute (modelRouter wiring)', () => {
     const r = resolveRoute({}, true)
     expect(r.resolved).toBe(false)
     expect(r.model).toBe('qwen3-4b-fine-tuned')
+  })
+
+  it('§7.75: honors DSH_EDGE_MODEL env override on the cloud fallback path', () => {
+    // §7.75 (2026-09-17): cloud fallback 链从硬编码 'deepseek-chat'
+    // 改成读 DSH_EDGE_MODEL（.env CLOUD_LLM_MODEL 注入值）—— 改 .env
+    // CLOUD_LLM_MODEL=deepseek-flash 后 model-router 走 fallback 时上行
+    // model 也跟 flash 对齐，不再悄悄变 deepseek-chat
+    process.env.DSH_EDGE_MODEL = 'deepseek-flash'
+    const r = resolveRoute({}, false)
+    expect(r.resolved).toBe(false)
+    expect(r.provider).toBe('cloud-llm')
+    expect(r.model).toBe('deepseek-flash')
   })
 
   it('uses modelRouter.resolve when present and returns the resolved route', () => {

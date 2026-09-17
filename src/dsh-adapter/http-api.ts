@@ -1643,9 +1643,11 @@ export function resolveRoute(
   isLocal: boolean,
 ): { provider: string; model: string; resolved: boolean } {
   const preferred = isLocal ? 'local-llm' : 'cloud-llm'
+  // §7.75 (2026-09-17): fallback model 镜像 .env 池 → 改 CLOUD_LLM_MODEL /
+  // LOCAL_LLM_MODEL 自动跟随，跟 cordis.patch.yml:376/384 的 !!js 表达式语义一致
   const fallbackModel = isLocal
     ? (process.env.DSH_EDGE_LOCAL_LLM_MODEL ?? 'qwen3-4b-instruct-2507')
-    : 'deepseek-chat'
+    : (process.env.DSH_EDGE_MODEL ?? 'deepseek-chat')
   const mr = typeof ctx?.get === 'function' ? (() => { try { return ctx.get('modelRouter') } catch { return undefined } })() : ctx?.modelRouter
   if (mr && typeof mr.resolve === 'function') {
     try {
@@ -1653,10 +1655,11 @@ export function resolveRoute(
       if (r && typeof r.provider === 'string' && typeof r.model === 'string') {
         // §7.54 (2026-09-14): model-router maps provider ids to themselves
         // (e.g. 'local-llm' → {provider:'local-llm', model:'local-llm'}). The
-        // wire body wants the actual upstream model name (qwen3.7-plus for
-        // local, deepseek-chat for cloud), not the provider id. Override the
-        // routing key with the fallback model when the router returned the
-        // provider id as the model.
+        // wire body wants the actual upstream model name (DSH_EDGE_LOCAL_LLM_MODEL
+        // for local, DSH_EDGE_MODEL for cloud), not the provider id. Override
+        // the routing key with the fallback model when the router returned the
+        // provider id as the model. §7.75: fallback 链从硬编码 'deepseek-chat'
+        // 改成读 DSH_EDGE_MODEL (.env CLOUD_LLM_MODEL 注入值)。
         const resolvedModel = (r.model === r.provider) ? fallbackModel : r.model
         return { provider: r.provider, model: resolvedModel, resolved: true }
       }
