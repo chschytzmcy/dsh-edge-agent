@@ -99,6 +99,12 @@ export interface Config {
   defaultModel: string
   /** Optional bearer header for an authenticated llama.cpp server. */
   apiKeyEnv?: string
+  /** §7.4? (2026-09-17) LAN minicpm5-2b Jinja2 tojson(ensure_ascii) bug
+   *  workaround: when true, omit `body.tools` from wire request so the
+   *  server template `{% if tools %}` block is never evaluated. Model
+   *  falls back to plain-text tool defs in system prompt's
+   *  <available_tools>. Defaults to false. */
+  stripTools?: boolean
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -106,6 +112,7 @@ export const Config: Schema<Config> = Schema.object({
   baseUrl: Schema.string().default('http://127.0.0.1:8080/v1'),
   defaultModel: Schema.string().default('qwen3-4b'),
   apiKeyEnv: Schema.string().description('Optional env-slot name carrying an auth bearer.'),
+  stripTools: Schema.boolean().default(false),
 })
 
 export interface LocalLlmAdapter {
@@ -183,6 +190,7 @@ class RealLocalAdapter extends LlmAdapter {
   private readonly auditLog: AuditLike | undefined
   private readonly inputGuard: InputGuardLike | undefined
   private readonly logger: LoggerLike | undefined
+  private readonly stripTools: boolean
 
   constructor(provider: string, config: Config, auditLog?: AuditLike, inputGuard?: InputGuardLike, logger?: LoggerLike) {
     super()
@@ -193,6 +201,7 @@ class RealLocalAdapter extends LlmAdapter {
     this.auditLog = auditLog
     this.inputGuard = inputGuard
     this.logger = logger
+    this.stripTools = config.stripTools ?? false
   }
 
   get providers(): string[] {
@@ -259,7 +268,15 @@ class RealLocalAdapter extends LlmAdapter {
       sanitizedMessages = result.messages as unknown as typeof options.messages
     }
 
-    const body = buildChatCompletionsBody({ ...options, messages: sanitizedMessages }, this.defaultModel, undefined)
+    // §7.4? (2026-09-17) LAN minicpm5-2b Jinja2 `tojson(ensure_ascii)` bug:
+    // when stripTools is on, set `tools: undefined` in the spread so the
+    // openai-sse.ts guard skips `body.tools` assignment and the server
+    // template's `{% if tools %}` block is skipped. Default false → wire
+    // body unchanged for unaffected servers/models.
+    const wireOptions = this.stripTools
+      ? { ...options, tools: undefined, messages: sanitizedMessages }
+      : { ...options, messages: sanitizedMessages }
+    const body = buildChatCompletionsBody(wireOptions, this.defaultModel, undefined)
     const headers: Record<string, string> = {
       'content-type': 'application/json',
       'accept': 'text/event-stream',

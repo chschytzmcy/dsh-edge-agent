@@ -383,6 +383,10 @@
         baseUrl: !!js process.env.DSH_EDGE_LOCAL_LLM_BASEURL ?? 'http://192.168.1.121:11017/v1'
         defaultModel: !!js process.env.DSH_EDGE_LOCAL_LLM_MODEL ?? 'Qwen3-4B-Instruct-2507'
         apiKeyEnv: !!js process.env.DSH_EDGE_LOCAL_LLM_KEY_ENV ?? undefined
+        # §7.4? (2026-09-17) opt-in workaround for LAN minicpm5-2b server
+        # Jinja2 `tojson(ensure_ascii)` bug. Inverse idiom: defaults false
+        # (workaround is opt-in so a healthy server never loses body.tools).
+        stripTools: !!js process.env.DSH_EDGE_LOCAL_LLM_STRIP_TOOLS === 'true'
 
     - id: model-router
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/model-router'

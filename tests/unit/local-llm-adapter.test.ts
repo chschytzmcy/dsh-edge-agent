@@ -512,4 +512,79 @@ describe('local-llm-adapter (M4, real-only)', () => {
       restoreFetch()
     })
   })
+
+  // §7.4? (2026-09-17) stripTools client-side workaround.
+  // LAN minicpm5-2b server Jinja2 `tojson(ensure_ascii)` crash when
+  // body.tools is non-empty. The adapter must drop body.tools when
+  // stripTools=true so the upstream `{% if tools %}` block is skipped.
+  // Inverse template: cloud-llm-adapter.test.ts:214 (`forwards tools …`).
+  describe('stripTools workaround (§7.4?)', () => {
+    it('omits body.tools when stripTools=true', async () => {
+      installFetchMock(() => sseResponse([
+        { choices: [{ delta: { content: 'pong' }, finish_reason: null }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] },
+      ]))
+
+      const adapter = new LocalLlmAdapterImpl({
+        providers: ['local-llm'],
+        baseUrl: 'http://127.0.0.1:8080/v1',
+        defaultModel: 'qwen3-4b',
+        stripTools: true,
+      })
+
+      for await (const _ of adapter.stream({
+        provider: 'local-llm',
+        model: 'qwen3-4b',
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
+        tools: [{
+          name: 'local_file_read',
+          description: 'read',
+          parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
+        }],
+      })) {
+        // drain
+      }
+
+      assert.ok(captured)
+      assert.equal(captured!.bodyJson.tools, undefined,
+        `expected no body.tools; got: ${JSON.stringify(captured!.bodyJson.tools)}`)
+      assert.equal(captured!.bodyJson.model, 'qwen3-4b')
+      assert.equal(captured!.bodyJson.stream, true)
+      restoreFetch()
+    })
+
+    it('forwards body.tools when stripTools=false (default)', async () => {
+      installFetchMock(() => sseResponse([
+        { choices: [{ delta: { content: 'pong' }, finish_reason: null }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] },
+      ]))
+
+      const adapter = new LocalLlmAdapterImpl({
+        providers: ['local-llm'],
+        baseUrl: 'http://127.0.0.1:8080/v1',
+        defaultModel: 'qwen3-4b',
+      })
+
+      for await (const _ of adapter.stream({
+        provider: 'local-llm',
+        model: 'qwen3-4b',
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
+        tools: [{
+          name: 'local_file_read',
+          description: 'read',
+          parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
+        }],
+      })) {
+        // drain
+      }
+
+      assert.ok(captured)
+      const wireTools = captured!.bodyJson.tools as Array<Record<string, unknown>>
+      assert.ok(Array.isArray(wireTools), 'body.tools must be forwarded as array')
+      assert.equal(wireTools.length, 1)
+      assert.equal(wireTools[0]!.type, 'function')
+      assert.equal((wireTools[0]!.function as Record<string, unknown>).name, 'local_file_read')
+      restoreFetch()
+    })
+  })
 })

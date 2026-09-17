@@ -120,6 +120,11 @@ export DSH_EDGE_CLOUD_KEY_ENV="${CLOUD_LLM_KEY_ENV}"
 export DSH_EDGE_LOCAL_LLM_BASEURL="${LOCAL_LLM_BASEURL}"
 export DSH_EDGE_LOCAL_LLM_MODEL="${LOCAL_LLM_MODEL}"
 export DSH_EDGE_LOCAL_LLM_KEY_ENV="${LOCAL_LLM_KEY_ENV}"
+# §7.4? (2026-09-17) opt-in workaround for LAN minicpm5-2b server
+# Jinja2 `tojson(ensure_ascii)` bug. .env 必须显式给 LOCAL_LLM_STRIP_TOOLS
+# (false / true),不允许 fallback —— 跟 header "不允许 ${VAR:-default}" 原则
+# 对齐(plugin Schema 的 default(false) 兜底)。
+export DSH_EDGE_LOCAL_LLM_STRIP_TOOLS="${LOCAL_LLM_STRIP_TOOLS}"
 
 # ── prompt-guard 模型层（Stage 6） ────────────────────────────────
 export DSH_EDGE_GUARD_MODEL="${GUARD_MODEL_ENABLED}"
