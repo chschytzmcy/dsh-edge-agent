@@ -7050,8 +7050,8 @@ audit 配置的 `maxFileAgeDays: 7`(cordis.patch.yml:443)同样从未生效过�
 - README §7.61 headless 行:`./install.sh --profiles=dsh-edge --with=dsh-edge` → `./install.sh --profiles=dsh-edge`
 - Makefile help:install 示例行同上,3 处 `--with=` 删除
 - architecture.md §7.61 部署例句:同上
+- Makefile `install:` 子目标 "下一步:" 段("默认并存启动 dsh-tui + web" → "默认同步 + 启动 dsh-tui + web + dsh-edge",§7.66/§7.67 语境)
 
 **未做**:
-- `make install` 子目标 help 文案(`下一步:` 段)还写 "默认并存启动 dsh-tui + web",未带 dsh-edge;可后续捎带修,本轮聚焦 install.sh CLI。
 - §7.65 留作 "未做" 的 `--restart-at HH:MM` 仍不做。
 - "智能重启" 探针(只在跑的重启)未做,语义沿用 §7.65 的"无脑全启"。

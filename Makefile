@@ -124,7 +124,7 @@ install: package
 	@echo "下一步:"
 	@echo "  1. 进入目录: cd $(INSTALL_DIR)"
 	@echo "  2. 配置环境: cp .env.example .env && \$$EDITOR .env"
-	@echo "  3. 启动服务: ./install.sh    # 默认并存启动 dsh-tui + web"
+	@echo "  3. 启动服务: ./install.sh    # 默认同步 + 启动 dsh-tui + web + dsh-edge（§7.66/§7.67）"
 
 # 清理
 clean:
