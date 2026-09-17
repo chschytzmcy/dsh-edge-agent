@@ -13,17 +13,16 @@
 #   - pnpm 已安装（npm install -g pnpm 或 corepack enable pnpm）
 #
 # 用法：
-#   ./install.sh                              # 默认：只同步 dsh-tui + web，不启动
-#   ./install.sh --with                       # 同步 + 启动 dsh-tui + web（并存）
-#   ./install.sh --with=web                   # 同步两个 + 启动 web
-#   ./install.sh --with=tui                   # 同步两个 + 启动 dsh-tui
-#   ./install.sh --with=web,tui               # 同步两个 + 都启
-#   ./install.sh --profiles=dsh-tui           # 只同步 dsh-tui（不启）
-#   ./install.sh --profiles=dsh-tui --with    # 只同步 + 只启动 dsh-tui
-#   ./install.sh --profiles=dsh-edge --with=dsh-edge  # §7.61 headless（可与其他 profile 并存）
+#   ./install.sh                              # 默认：同步 + 启动 dsh-tui + web（§7.65 web 不再 opt-in）
+#   ./install.sh --with                       # 同上（deprecated alias，保留兼容）
+#   ./install.sh --with=web                   # 只启 web（同步两个 + 启 web）
+#   ./install.sh --with=tui                   # 只启 dsh-tui（同步两个 + 启 dsh-tui）
+#   ./install.sh --with=web,tui               # 显式指定启动子集
+#   ./install.sh --no-restart                 # 只同步不启（开发改代码反复迭代时,避免重启打搅）
+#   ./install.sh --profiles=dsh-tui           # 只同步 dsh-tui + 启 dsh-tui（默认重启语义）
+#   ./install.sh --profiles=dsh-edge --with=dsh-edge  # §7.61 headless（HTTP-only :21019，无 UI）
 #   ./install.sh --skip-pnpm                  # 跳过 npm install（假设已装过）
 #   ./install.sh --force-install              # 强制重装本包（覆盖 rsync）
-#   ./install.sh --no-restart                 # 显式：不启动（默认行为）
 #   ./install.sh -h | --help                  # 打印本帮助
 
 set -euo pipefail
@@ -39,11 +38,12 @@ done
 DSH_HOME="${DSH_HOME:-$HOME/.dsh}"
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 
-DO_RESTART=0  # 默认：只装不启；用 --with=web 或 --with=tui 显式启
+DO_RESTART=1  # §7.65 默认重启:同步+启/重启 PROFILES(开发迭代场景);--no-restart opt-out
 DO_PNPM=1
 FORCE_INSTALL=0
 # PROFILES 是这次新部署的目标 profile 数组。每 profile 走一份独立
 # pkill → port-wait → nohup launch 流水线，互不干扰（除了端口本身）。
+# 默认 (dsh-tui web) — web 不再 opt-in,跟着默认启(2026-09-17 §7.65)。
 PROFILES=()
 # START_PROFILES 是这次要启动的 profile 子集。默认空（全不启）；
 # --with=web 启 web，--with=tui 启 dsh-tui，--with=web,tui 都启，
@@ -83,12 +83,12 @@ for arg in "$@"; do
   esac
 done
 
-# 默认：同步 dsh-tui + web，但不启动
+# 默认：同步 dsh-tui + web,且都启动(§7.65 web 不再 opt-in)
 if [ ${#PROFILES[@]} -eq 0 ]; then
   PROFILES=(dsh-tui web)
 fi
 
-# --with 不带值 → 启动全部 PROFILES
+# --with 不带值 → 启动全部 PROFILES;默认 DO_RESTART=1 时也走这条
 if [ "$DO_RESTART" = 1 ] && [ ${#START_PROFILES[@]} -eq 0 ]; then
   START_PROFILES=("${PROFILES[@]}")
 fi
@@ -336,10 +336,10 @@ fi
 # profile 起来时能通过 port_is_free 校验确认没撞。若并行启动，
 # 第一个启动的还没 bind 之前第二个会以为端口空闲然后 EADDRINUSE。
 #
-# 默认 DO_RESTART=0 + START_PROFILES=() → 跳过整个 Phase 3。
-# 启哪些 profile 由 --with=web 或 --with=tui 或 --with=web,tui 或 --with 控制。
+# 默认 DO_RESTART=1 + START_PROFILES=PROFILES → 启动所有 PROFILES(§7.65 默认重启语义)
+# --no-restart opt-out,跳过整个 Phase 3。
 if [ "$DO_RESTART" = 0 ] || [ ${#START_PROFILES[@]} -eq 0 ]; then
-  echo "==> [3/4] 不启动（默认行为；用 --with=web 或 --with=tui 或 --with 显式启动）"
+  echo "==> [3/4] 不启动（--no-restart opt-out；显式启：--with=web 或 --with=tui 或 --with）"
   echo "    已同步 profiles: ${PROFILES[*]}"
   echo "    手动启动: cd \$DSH_HOME/profiles/<name> && source .env.sh && dsh --profile <name>"
   echo "    或:      ./install.sh --with=web,tui"

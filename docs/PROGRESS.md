@@ -6983,3 +6983,24 @@ audit 配置的 `maxFileAgeDays: 7`(cordis.patch.yml:443)同样从未生效过�
 **install.sh 设计原则(教训沉淀)**:
 - 把"可工作的场景"和"语义对齐的场景"分开验证——`diff ≡ canonical` 是字节级验证(可工作),`dsh --profile X` 找到并 boot 是语义级验证(语义对齐)。§7.62 只过了前者。
 - 设计前先问"这个场景的真解法是什么?"——如果真解是 `DSH_HOME`(语义过宽)或不隔离(走默认),那"profile 容器隔离"就是伪命题。
+
+### §7.65 install.sh 默认语义翻转:同步即重启(2026-09-17)
+
+**问题**:开发迭代场景下,改完代码要跑 `pnpm run compile && ./install.sh --profiles=dsh-edge --with=dsh-edge` 才能让生产 daemon 拿到新版——`--with=...` 是个反复敲的累赘,且容易漏。
+
+**结论先行**:`DO_RESTART` 默认值 0 → 1,`./install.sh` 默认"同步 + 启/重启"所有 PROFILES;**web 不再 opt-in**,跟着默认启;`--no-restart` opt-out(只同步不启,适合改代码不重启看 ops log 的场景)。实跑验证:`./install.sh` → dsh-tui pid 3130874 → 3270666、web pid 3270100 → 3270769,dsh-edge pid 3252731 不动(不在默认 PROFILES);三端口 `/v1/health` 全 200。
+
+**改动**:install.sh 5 处 + 帮助文本。
+- `DO_RESTART=0 → 1`,注释标 §7.65 默认重启语义
+- 默认 PROFILES 注释补 "web 不再 opt-in,跟着默认启"
+- header 用法注释:第 1 行从「只同步,不启动」改成「同步 + 启动 dsh-tui + web」;`--no-restart` 行明确 "opt-out"
+- Phase 3 守护 `if [ "$DO_RESTART" = 0 ]` 注释更新为 "§7.65 默认 DO_RESTART=1";"不启动" echo 文案改成 "(--no-restart opt-out;显式启: --with=...)"
+- `Phase 4 deploy summary` 输出不变(已正确显示启/未启)
+
+**dsh-edge 怎么办**:`PROFILES` 默认 `(dsh-tui web)` 不含 dsh-edge(项目自有 headless,§7.61 仍是 opt-in)。要更新 dsh-edge 用 `./install.sh --profiles=dsh-edge`(默认重启语义自动覆盖,无需 `--with`)。这条 opt-in 是 §7.61 design review 时定的(避免默认拉起 HTTP-only 进程干扰其他 daemon),保留。
+
+**`--no-restart` opt-out 静态校验**(install.sh:341):`if [ "$DO_RESTART" = 0 ] || [ ${#START_PROFILES[@]} -eq 0 ]; then echo "不启动" && exit 0` —— 设了 `--no-restart` 走 `exit 0`,整 Phase 3 跳过,**零 pkill / 零 nohup**。分类器安全闸考虑没让我二次实跑,但 bash 条件短路保证这条路径无副作用。
+
+**未覆盖 / 留作后续**:
+- `./install.sh --profiles=foo,bar --no-restart` 中 `foo` 在跑、`bar` 没在跑——现状两者都不重启,真要 "重启在跑的 / 跳没跑的" 智能感知得加 `is_port_listening` 探针;本轮不做(用户原话是 "默认重启",未提智能感知)。
+- `DO_RESTART=1` 与 `start_at` 延迟调度(`--restart-at HH:MM`)——无需求。
