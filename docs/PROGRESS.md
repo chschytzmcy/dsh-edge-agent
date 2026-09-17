@@ -7056,6 +7056,41 @@ audit 配置的 `maxFileAgeDays: 7`(cordis.patch.yml:443)同样从未生效过�
 - §7.65 留作 "未做" 的 `--restart-at HH:MM` 仍不做。
 - "智能重启" 探针(只在跑的重启)未做,语义沿用 §7.65 的"无脑全启"。
 
+### §7.71 删 `make install` —— 部署流水线单一入口归 install.sh(2026-09-17)
+
+**问题**:`make install` 单独存在,但 install.sh 才是真正干活的(同步、杀/启 profile)。两条路径:
+- `make install` → 解 tarball 到 `~/.dsh-edge-agent/latest/` + pnpm install,**然后告诉用户"下一步跑 ./install.sh"**
+- `./install.sh` → 真部署(compile + rsync + kill/start)
+
+用户要从 §7.70 的 `make install` 走到真正部署,必须再敲 `./install.sh` —— 两段流程割裂 + "下一步"指引等于自承 `make install` 是不完整动作。**两段部署路径没有存在的理由**:install.sh 已包含 build,Makefile 不需要再来一段 install;tarball 现在也只供 release 分发用,内部 install 走 REPO_ROOT/lib/ 直 rsync 即可。
+
+**结论先行**(user 原话:"去掉 make install,只保留 make 构建 和 make package 打包,install.sh 直接触发make,然后部署到本地"):**删 `make install`,Makefile 只剩 build + package(tarball 留作 release 产物);install.sh 内部调 `make package` 做 build + tarball,然后直 rsync REPO_ROOT/lib/ 到 profile**。一条命令完成"编译+打包+同步+重启",单一入口。
+
+**改动清单**(3 处):
+- **Makefile**:
+  - 删 `install:` 整个 target(原 §7.70 写的"解 tarball → ~/.dsh-edge-agent/latest/ → pnpm install → 提示 ./install.sh" 段)
+  - 删 §7.70 加的 `VERSION_DIR` / `INSTALL_DIR` / `BUNDLE_ROOT` 三个 make 变量(`make install` 删了它们也跟着删)
+  - 删 `install` 出 `.PHONY`
+  - `help` 重写:删 `make install` 行,新增"本地部署"段(指向 `./install.sh`)、"Release 分发"段(指向 `make release` = test+verify+package)
+  - `package:` target 头部加 §7.71 注释:install.sh 内部调它,但 install.sh 只用 `lib/`(REPO_ROOT 镜像),tarball 仅供 release 分发
+- **install.sh**:
+  - 头部用法注释加 §7.71 段(说明 install.sh 内部调 `make package`、tarball 仅供 release 分发)+ 前置加 `make` 已安装
+  - 前置检查段新增 `make` 检测(`apt install make` / `dfn install make` 提示)
+  - **Phase 1 整段重写**:`echo "==> [1/4] compile TypeScript"; cd $REPO_ROOT; npm run compile >/dev/null` → `echo "==> [1/4] make package (build + tarball)"; cd $REPO_ROOT; make package`。Phase 数字仍是 1/4(phase 数不变,Phase 1 干的活从"只 compile"升级成"compile + tarball")
+  - 后续 Phase 2/2.5/3/4 一字不动 —— 它们 rsync 都从 `$REPO_ROOT/lib/` 读,`make package` 留下 REPO_ROOT/lib/ 镜像(只 copy 到 .deploy staging 又 rm,产物副本一直就在 REPO_ROOT)
+- **memory**:`make-install-path-home.md` 重写(描述新架构:install.sh 单入口,Makefile 只 build+package,tarball 仅 release 用)
+
+**§7.70/§7.71 之间的关系**:§7.70 加的"装到 `~/.dsh-edge-agent/latest/`"设计仅服务于 `make install`,§7.71 删 `make install` 后该设计一并撤销。**遗留物清理**(留待 user 决定):
+- `~/.dsh-edge-agent/dsh-edge-agent-v0.1.0/`(版本子目录) + `latest` 软链(`§7.70 make install` 留下的)—— 现在不被任何东西读,留着无害但冗余;删不影响系统(没有任何路径引用它)。
+- `~/.dsh-edge-agent/audit/` `log/` `sessions/` `storage/` `skill-realms.json` `presets/` —— 这些是 bundle plugin runtime channel,跟 §7.70/§7.71 都无关,**`make package` / install.sh / `make install` 全都不碰**,保留。
+
+**实跑验证**(`./install.sh` 默认 dsh-edge):Phase 1 `make package` 成功 → REPO_ROOT/lib/ 镜像 + `dsh-edge-agent-v0.1.0.tar.gz` (351601 字节)生成;Phase 2 sync 跳过(无差异);Phase 2.5 agent-presets 跳过;Phase 3 杀 dsh-tui/web/旧 dsh-edge、启 dsh-edge (PID 3282993)、port 21017 free;Phase 4 `✓ dsh-edge :21017` 汇总。`curl /v1/health → 200`。`.gitignore` 已含 `*.tar.gz` `*.tar.gz.sha256`,REPO_ROOT 里的 tarball 不入 git。
+
+**未做**:
+- 删 `~/.dsh-edge-agent/dsh-edge-agent-v0.1.0/` + `latest` 软链(§7.70 留下的冗余)—— 待 user 决定是否清。
+- `make release` 的语义没动 —— `test + verify + package` 三步,仍是 release 流程(给 CI / 外部用户下载用)。
+- `make install` 删后 §7.70 PROGRESS 条目不删 —— 历史记录 §7.70 当时的决策与实现,§7.71 撤回决议放新条目即可。
+
 ### §7.70 `make install` 路径下移到 `~/.dsh-edge-agent/latest/` —— 免 sudo,数据/源分离(2026-09-17)
 
 **问题**:`make install` 默认装到 `/opt/dsh-edge-agent`(`INSTALL_DIR := /opt/dsh-edge-agent`),需要 sudo,还埋了一个 self-referencing symlink bug(`ln -s /opt/dsh-edge-agent /opt/dsh-edge-agent/latest` —— 源与目标同一路径,symlink 自指死)。`make install` 用户跑一次要输 sudo 密码,而 `~/.dsh-edge-agent/` 本来就是项目私有数据根(user 视角天然就在 `~/` 下,无 sudo 写权限)。两个根混用也奇怪:`/opt/dsh-edge-agent/latest` 是 source,`~/.dsh-edge-agent/{audit,sessions,log,storage}` 是 runtime channel,bundle plugin 写后者、读前者 —— source 跟 data 不在一个 root,运营/排障要跨 root 查。

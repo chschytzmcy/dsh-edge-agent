@@ -1,5 +1,5 @@
 # dsh-edge-agent Makefile
-# 构建、打包、部署工具链
+# 构建、打包工具链(本地部署归 install.sh,不在 Makefile 范围)
 
 # 配置
 # §7.55 (2026-09-15): tarball 命名带 semver 版本号 (vX.Y.Z)，
@@ -8,7 +8,10 @@ VERSION  := $(shell node -p "require('./package.json').version" 2>/dev/null || e
 PACKAGE_NAME := dsh-edge-agent-v$(VERSION).tar.gz
 SHA_NAME    := $(PACKAGE_NAME).sha256
 PACKAGE_DIR := .deploy
-# §7.70 (2026-09-17): install 路径下移到 ~/.dsh-edge-agent/latest/(详见 install: 段)
+# §7.71 (2026-09-17): 删 `make install` —— 单一部署入口归 install.sh,
+# Makefile 只负责 build + package(tarball 仅作 release 分发,本地部署走
+# install.sh 直 rsync REPO_ROOT/lib/ 到 profile)。runtime channel
+# (~/.dsh-edge-agent/{audit,log,sessions,storage,...}) 不归 make 管。
 
 # 颜色输出
 BLUE := \033[0;34m
@@ -16,27 +19,30 @@ GREEN := \033[0;32m
 YELLOW := \033[1;33m
 NC := \033[0m
 
-.PHONY: help build test verify e2e-coverage e2e-tui package install clean
+.PHONY: help build test verify e2e-coverage e2e-tui package clean
 
 # 默认目标
 help:
 	@echo "$(BLUE)dsh-edge-agent 构建与部署$(NC)"
 	@echo ""
 	@echo "用法:"
-	@echo "  $(GREEN)make build$(NC)         - 构建 TypeScript 代码"
+	@echo "  $(GREEN)make build$(NC)         - 构建 TypeScript 代码(只编译,不出 tarball)"
 	@echo "  $(GREEN)make test$(NC)          - 运行单元测试"
 	@echo "  $(GREEN)make verify$(NC)        - 运行构建验证"
 	@echo "  $(GREEN)make e2e-coverage$(NC)  - ops log 21 节点覆盖回归（3 重点用例）"
 	@echo "  $(GREEN)make e2e-tui$(NC)       - 生产 dsh-tui 实机 E2E（tmux+HTTP 双通道，逐用例日志分析）"
-	@echo "  $(GREEN)make package$(NC)       - 打包部署文件"
-	@echo "  $(GREEN)make install$(NC)       - 安装到本地系统"
-	@echo "  $(GREEN)make clean$(NC)         - 清理构建产物"
+	@echo "  $(GREEN)make package$(NC)       - 构建 + 打 tarball(release 分发用,install.sh 不读)"
+	@echo "  $(GREEN)make clean$(NC)         - 清理构建产物 + tarball"
 	@echo ""
-	@echo "本地部署到 DSH profile(§7.69 单 profile 架构,端口统一 :21017):"
-	@echo "  $(GREEN)./install.sh$(NC)                # 默认：杀其他 profile + 部署 + 启 dsh-edge"
+	@echo "本地部署(§7.71:单一入口归 install.sh,内部 'make package' + 直 rsync):"
+	@echo "  $(GREEN)./install.sh$(NC)                # 默认：make package + 部署 + 启 dsh-edge(:21017,§7.69)"
 	@echo "  $(GREEN)./install.sh --profile=web$(NC)       # 切 web:杀 dsh-tui + dsh-edge,部署 + 启 web"
 	@echo "  $(GREEN)./install.sh --profile=tui$(NC)       # 切 dsh-tui:杀 web + dsh-edge,部署 + 启 dsh-tui"
 	@echo "  $(GREEN)./install.sh --profile=dsh-edge$(NC)  # 显式 dsh-edge(§7.61 headless,HTTP :21017 无 UI)"
+	@echo "  $(GREEN)./install.sh --no-restart$(NC)        # 只编译 + 同步,不重启(改代码反复迭代用)"
+	@echo ""
+	@echo "Release 分发:"
+	@echo "  $(GREEN)make release$(NC)      - test + verify + package(给 CI / 外部用户下载用)"
 
 # 构建
 build:
@@ -82,6 +88,9 @@ e2e-tui:
 #   - 打 install.sh + README.md + LICENSE（用户文档）
 #   - 加 SHA256SUMS
 # 预期 tarball 大小：~2MB（vs 之前 75MB，37× 缩减）
+# §7.71 (2026-09-17): install.sh 内部调用此 target —— `make package` 是 install.sh
+# 的 Phase 1,但 install.sh 自身不读 tarball(只读 tarball 准备好的 REPO_ROOT/lib/
+# 镜像)。tarball 仅供 release 分发 / 外部用户下载。
 package: build
 	@echo "$(BLUE)==> 打包部署文件 v$(VERSION)$(NC)"
 	@rm -rf $(PACKAGE_DIR)
@@ -111,29 +120,6 @@ package: build
 	@SIZE=$$(du -h $(PACKAGE_NAME) | cut -f1); \
 	 echo "$(GREEN)✓ $(PACKAGE_NAME)$(NC) ($$SIZE)"
 	@echo "$(GREEN)✓ $(SHA_NAME)$(NC)"
-
-# §7.70 (2026-09-17): 装到 ~/.dsh-edge-agent/latest/ —— 项目私有数据根下,
-# 免 sudo。VERSION_DIR 是 tarball 解出的版本子目录;INSTALL_DIR 是 latest
-# symlink,指向当前激活版本。~/.dsh-edge-agent/ 下的 audit/ sessions/ log/
-# storage/ 等 runtime channel(由 bundle plugin 写)不动。
-VERSION_DIR  := $(HOME)/.dsh-edge-agent/dsh-edge-agent-v$(VERSION)
-INSTALL_DIR  := $(HOME)/.dsh-edge-agent/latest
-BUNDLE_ROOT  := $(HOME)/.dsh-edge-agent
-
-# 安装到本地
-install: package
-	@echo "$(BLUE)==> 安装到本地 $(BUNDLE_ROOT)$(NC)"
-	@mkdir -p $(BUNDLE_ROOT)
-	@tar -xzf $(PACKAGE_NAME) -C $(BUNDLE_ROOT)
-	@rm -f $(INSTALL_DIR)
-	@ln -s $(VERSION_DIR) $(INSTALL_DIR)
-	@cd $(INSTALL_DIR) && pnpm install --ignore-scripts
-	@echo "$(GREEN)✓ 安装完成$(NC)"
-	@echo ""
-	@echo "下一步:"
-	@echo "  1. 进入目录: cd $(INSTALL_DIR)"
-	@echo "  2. 配置环境: cp .env.example .env && \$$EDITOR .env"
-	@echo "  3. 启动服务: ./install.sh    # 默认同步 + 启动 dsh-edge(:21017,§7.69)"
 
 # 清理
 clean:

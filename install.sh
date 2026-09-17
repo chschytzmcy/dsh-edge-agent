@@ -9,7 +9,13 @@
 #   - dsh-tui  : 终端宿主            (http-api :21017)
 # 任何自定义 profile 也可以走 --profile=<name>（profile-agnostic bundle）。
 #
+# §7.71 (2026-09-17) 部署流水线整合：install.sh 内部调用 `make package`
+# 完成 build + tarball(产物在 REPO_ROOT,包括 lib/ 给本地 install 用,
+# *.tar.gz 给 release 分发用),然后直 rsync REPO_ROOT/lib/ 到目标 profile
+# node_modules。Makefile 不再管 install —— `make install` 已删(§7.71)。
+#
 # 前置：
+#   - make 已安装（POSIX make；install.sh Phase 1 内部 'make package'）
 #   - dsh CLI 已安装（npm install -g @deepseek-ai/dsh）
 #   - pnpm 已安装（npm install -g pnpm 或 corepack enable pnpm）
 #
@@ -80,16 +86,27 @@ if ! command -v dsh >/dev/null 2>&1; then
   exit 1
 fi
 
+if ! command -v make >/dev/null 2>&1; then
+  echo "未检测到 make。install.sh 内部调用 'make package' 做 build + tarball，请先安装：" >&2
+  echo "  apt install make       # Debian/Ubuntu" >&2
+  echo "  dnf install make       # Fedora/RHEL" >&2
+  exit 1
+fi
+
 if [ "$DO_PNPM" = 1 ] && ! command -v pnpm >/dev/null 2>&1; then
   echo "未检测到 pnpm。dsh plugin 把安装转发给 pnpm，请先安装：" >&2
   echo "  npm install -g pnpm   （或启用 corepack：corepack enable pnpm）" >&2
   exit 1
 fi
 
-# ── Phase 1: 编译（一次性）────────────────────────────────────────
-echo "==> [1/4] compile TypeScript"
+# ── Phase 1: 编译 + 打 tarball（一次性）────────────────────────────
+# §7.71 (2026-09-17): install.sh 内部 'make package' —— build + tarball
+# 一步走完。tarball (REPO_ROOT/dsh-edge-agent-v<X.Y.Z>.tar.gz) 是 release
+# 分发产物,install.sh 自身不读;install.sh 用的是 `package:` 依赖 `build:`
+# 留下的 REPO_ROOT/lib/(已在该目录下),直接 rsync 到 profile。
+echo "==> [1/4] make package (build + tarball)"
 cd "$REPO_ROOT"
-npm run compile >/dev/null
+make package
 
 # ── Phase 2: 同步到 target profile ─────────────────────────────────
 # §7.69 单 profile 架构 —— 一次只部署 + 重启一个 profile(target)。
