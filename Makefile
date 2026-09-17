@@ -33,10 +33,10 @@ help:
 	@echo "  $(GREEN)make clean$(NC)         - 清理构建产物"
 	@echo ""
 	@echo "本地部署到 DSH profile:"
-	@echo "  $(GREEN)./install.sh$(NC)                # 默认并存部署 dsh-tui + web"
-	@echo "  $(GREEN)./install.sh --profiles=dsh-tui$(NC)   # 只部署 dsh-tui"
-	@echo "  $(GREEN)./install.sh --profiles=web$(NC)       # 只部署 web"
-	@echo "  $(GREEN)./install.sh --profiles=dsh-edge --with=dsh-edge$(NC)  # §7.61 headless（HTTP :21019，无 UI）"
+	@echo "  $(GREEN)./install.sh$(NC)                # 默认部署 + 重启 dsh-tui + web + dsh-edge（§7.66/§7.67）"
+	@echo "  $(GREEN)./install.sh --profiles=dsh-tui$(NC)   # 只部署 + 重启 dsh-tui"
+	@echo "  $(GREEN)./install.sh --profiles=web$(NC)       # 只部署 + 重启 web"
+	@echo "  $(GREEN)./install.sh --profiles=dsh-edge$(NC)  # §7.61 headless（HTTP :21019，无 UI）"
 
 # 构建
 build:

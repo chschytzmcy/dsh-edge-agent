@@ -7024,3 +7024,34 @@ audit 配置的 `maxFileAgeDays: 7`(cordis.patch.yml:443)同样从未生效过�
 **未做(留后续)**:
 - `--profiles=dsh-edge` 是否仍需保留作为 opt-out 形式:保留(用户可能想"只装 dsh-edge 不碰其他"),语义同 `--profiles=dsh-tui` 单跑。
 - "智能重启"(只在跑的重启 / 没跑的不启)未做,本轮沿用 §7.65 的"无脑全启"语义,反正三 daemon 都该跑。
+
+### §7.67 install.sh 去掉 `--with` —— 只留 `--profiles` + `--no-restart`(2026-09-17)
+
+**问题**:§7.65 翻转默认语义后,`--with` 仍存在,语义是 "在已 `--profiles` 列出的同步集合中再挑出要重启的子集"。问题:
+1. **职责重复**:`--profiles` = 同步范围,`--with` = 重启范围,绝大多数调用场景二者相同(用户不会想"同步 web + dsh-edge 但只启 web");
+2. **认知负担**:用户得在两维 flag 间映射"我想要哪些 daemon 起来",一次实跑过程中 user 自己也问"差别是什么"(本轮对话原话),触发删 flag 决定;
+3. **历史包袱**:`--with` 是 §7.43 时代 `--with=ui/tui` 单选 + 默认不同语义残留,§7.65 已删 `--with` 单选,剩 `--with=a,b` 多选,实际不必要。
+
+**结论先行**:`--with` 整族删除,`install.sh` CLI 收敛到 `--profiles=...`(同步 + 默认重启的范围)+ `--no-restart`(关掉默认重启)。实跑验证:`./install.sh --profiles=dsh-tui` 默认重启 dsh-tui,`./install.sh --profiles=dsh-tui --no-restart` 只同步不启,`bash -n` SYNTAX-OK,`--help` 输出无 `--with` 行。
+
+**install.sh 改动**(7 处):
+- header 用法注释块:`--with=` 全部示例删除,`--profiles=` + `--no-restart` 示例重写
+- PROFILES 注释块:"`--with=ui` / `--with=tui` / `--with=web` / `--with=web,tui` 选起谁" 段整段删
+- case `$1`:删 `--with`, `--with=*`, `--restart` 三分支
+- `START_PROFILES` 填充:`[ ${#PROFILES[@]} -gt 0 ] && START_PROFILES=("${PROFILES[@]}")` 在 `DO_RESTART=1` 时为真时填充,`DO_RESTART=0` 时空数组
+- "START ⊆ PROFILES 校验" 段删除(无 `--with` 后语义不再需要)
+- Phase-3 echo:`--with=` 提示文案删除
+- header 注释 `--no-restart` 一行:从 "显式不启所有 profile" 改为 "显式关掉默认重启"
+
+**`--restart` 旗标**:一并删除(§7.65 翻转默认后它变 dead code —— `--restart` 等价于 "无 --no-restart",无意义)。
+
+**文档同步**(README / Makefile / architecture.md):
+- README §7.43 deploy 矩阵段:`--with=web` 等示例全删,`./install.sh` 注释更新为 "默认同步 + 启动 dsh-tui + web + dsh-edge"
+- README §7.61 headless 行:`./install.sh --profiles=dsh-edge --with=dsh-edge` → `./install.sh --profiles=dsh-edge`
+- Makefile help:install 示例行同上,3 处 `--with=` 删除
+- architecture.md §7.61 部署例句:同上
+
+**未做**:
+- `make install` 子目标 help 文案(`下一步:` 段)还写 "默认并存启动 dsh-tui + web",未带 dsh-edge;可后续捎带修,本轮聚焦 install.sh CLI。
+- §7.65 留作 "未做" 的 `--restart-at HH:MM` 仍不做。
+- "智能重启" 探针(只在跑的重启)未做,语义沿用 §7.65 的"无脑全启"。

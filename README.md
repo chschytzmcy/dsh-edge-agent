@@ -115,13 +115,12 @@ cd dsh-edge-agent
 pnpm install
 pnpm run compile
 
-# §7.43 (2026-09-11): 默认只同步不启动；用 --with= 显式启。
-./install.sh                            # 默认：只同步 dsh-tui + web，不启动（已运行的进程保持）
-./install.sh --with                     # 同步 + 启动 dsh-tui + web（并存）
-./install.sh --with=web                 # 同步两个 + 只启动 web
-./install.sh --with=tui                 # 同步两个 + 只启动 dsh-tui
-./install.sh --with=web,tui             # 同步两个 + 都启
-./install.sh --profiles=dsh-tui         # 只同步 dsh-tui（不启）
+# §7.65 (2026-09-17): 默认同步 + 启动;§7.67 去掉 --with,只 --profiles + --no-restart
+./install.sh                            # 同步 + 启动 dsh-tui + web + dsh-edge(三全启)
+./install.sh --profiles=dsh-edge        # 同步 + 启动 dsh-edge(单 profile)
+./install.sh --profiles=web,dsh-edge    # 同步 + 启动 web + dsh-edge
+./install.sh --no-restart               # 只同步不启(开发改代码反复迭代时)
+./install.sh --profiles=dsh-tui --no-restart  # 只同步 dsh-tui 不启
 
 # 手动启动某个 profile（开发循环）
 cd ~/.dsh/profiles/dsh-tui
@@ -140,8 +139,8 @@ disown
 # 只装一个
 ./install.sh --profiles=web
 
-# §7.61 项目自有 headless profile(无 UI,HTTP-only 入口 :21019)
-./install.sh --profiles=dsh-edge --with=dsh-edge
+# §7.61 项目自有 headless profile(无 UI,HTTP-only 入口 :21019);§7.67 默认重启
+./install.sh --profiles=dsh-edge
 
 # 装任意自定义 profile
 ./install.sh --profiles=my-edge
