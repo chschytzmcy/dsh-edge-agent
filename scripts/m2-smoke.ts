@@ -1,5 +1,9 @@
 #!/usr/bin/env node --import tsx/esm
 /**
+ * DEAD (§7.61, 2026-09-17): 依赖的 `dsh --config` 旗标已从现装 CLI 移除,
+ * profiles/edge-m1.cordis.yml 已 git rm;工具链 E2E 面由
+ * scripts/e2e-tui-live.sh(§7.60)取代。保留供叙事连贯,不可运行。
+ *
  * M2 manual smoke — drive the edge-m1 profile through a tool-calling
  * conversation: the assistant must call `local_file_read` to surface
  * the contents of `/tmp/m2-smoke-test.txt`.

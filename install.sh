@@ -5,6 +5,7 @@
 # 命令可以同时部署多个 profile 并存运行：
 #   - dsh-tui：终端宿主 (port 21018，配套 @deepseek-harness-tui/dsh-tui)
 #   - web    ：浏览器宿主 (port 21017，配套 @deepseek-ai/dsh-web-app)
+#   - dsh-edge：项目自有 headless (port 21019，HTTP-only 入口·无 UI 宿主，§7.61)
 # 任何自定义 profile 也可以加入 PROFILES 列表（profile-agnostic bundle）。
 #
 # 前置：
@@ -19,6 +20,7 @@
 #   ./install.sh --with=web,tui               # 同步两个 + 都启
 #   ./install.sh --profiles=dsh-tui           # 只同步 dsh-tui（不启）
 #   ./install.sh --profiles=dsh-tui --with    # 只同步 + 只启动 dsh-tui
+#   ./install.sh --profiles=dsh-edge --with=dsh-edge  # §7.61 headless（可与其他 profile 并存）
 #   ./install.sh --skip-pnpm                  # 跳过 npm install（假设已装过）
 #   ./install.sh --force-install              # 强制重装本包（覆盖 rsync）
 #   ./install.sh --no-restart                 # 显式：不启动（默认行为）
@@ -49,16 +51,17 @@ PROFILES=()
 START_PROFILES=()
 
 print_help() {
-  sed -n '2,26p' "$0"
+  sed -n '2,28p' "$0"
 }
 
 # 别名规范化：--with=tui 是 --with=dsh-tui 的简写。把 user-friendly
 # 短名映射到 DSH profile 真名。
 canonical_profile() {
   case "$1" in
-    tui|dsh-tui) echo "dsh-tui" ;;
-    web)         echo "web" ;;
-    *)           echo "$1" ;;
+    tui|dsh-tui)   echo "dsh-tui" ;;
+    web)           echo "web" ;;
+    edge|dsh-edge) echo "dsh-edge" ;;
+    *)             echo "$1" ;;
   esac
 }
 
@@ -131,9 +134,10 @@ done
 # profile 共存时端口必须互不相同。
 port_for_profile() {
   case "$(canonical_profile "$1")" in
-    dsh-tui) echo 21018 ;;
-    web)     echo 21017 ;;
-    *)       echo 21017 ;;
+    dsh-tui)  echo 21018 ;;
+    web)      echo 21017 ;;
+    dsh-edge) echo 21019 ;;
+    *)        echo 21017 ;;
   esac
 }
 
@@ -230,10 +234,20 @@ for PROFILE in "${PROFILES[@]}"; do
     echo "  error: §2.7 需要 python3 改写 $_PROFILE_PKG，未找到 python3。" >&2
     exit 1
   fi
+  # §7.61: 仓库拥有的 profile（profiles/$PROFILE/package.json 在仓库里）→
+  # skeleton 自愈：直接拷仓库骨架引导容器，救活「新机器 + --skip-pnpm 时
+  # §2.1 不跑、骨架永不生成」的死结（勘查实证 boot 不 auto-init 未知名，
+  # 旧文案指路的 `dsh --profile X` 在新机上是死路）。
+  if [ ! -f "$_PROFILE_PKG" ] && [ -f "$REPO_ROOT/profiles/$PROFILE/package.json" ]; then
+    echo "        bootstrap profile skeleton from repo profiles/$PROFILE/package.json"
+    mkdir -p "$PROFILE_DIR"
+    cp "$REPO_ROOT/profiles/$PROFILE/package.json" "$_PROFILE_PKG"
+  fi
   if [ ! -f "$_PROFILE_PKG" ]; then
     echo "  error: $_PROFILE_PKG 不存在 — profile \"$PROFILE\" 尚未初始化。" >&2
-    echo "       profile 骨架由 dsh CLI 生成：去掉 --skip-pnpm 重跑（§2.1 会触发），" >&2
-    echo "       或先手动引导一次：dsh --profile $PROFILE" >&2
+    echo "       去掉 --skip-pnpm 重跑（§2.1 的 dsh plugin add 会初始化容器），" >&2
+    echo "       或先手动引导一次：" >&2
+    echo "       dsh plugin --profile $PROFILE add @deepseek-harness-edge-agent/dsh-edge-agent" >&2
     exit 1
   fi
   python3 - "$_PROFILE_PKG" "$NESTED_PKG" <<'PYEOF' || { echo "  error: §2.7 注册改写失败（$_PROFILE_PKG 非法 JSON 或不可写）。" >&2; exit 1; }
@@ -469,8 +483,9 @@ echo "  访问入口:"
 for PROFILE in "${START_PROFILES[@]}"; do
   PORT="$(port_for_profile "$PROFILE")"
   case "$PROFILE" in
-    web)     echo "    web:    http://127.0.0.1:$PORT/  (web UI at :3080 if dsh-web-app installed)" ;;
-    dsh-tui) echo "    dsh-tui: 终端已在运行；HTTP API http://127.0.0.1:$PORT/v1/chat" ;;
-    *)       echo "    $PROFILE: http://127.0.0.1:$PORT/" ;;
+    web)      echo "    web:    http://127.0.0.1:$PORT/  (web UI at :3080 if dsh-web-app installed)" ;;
+    dsh-tui)  echo "    dsh-tui: 终端已在运行；HTTP API http://127.0.0.1:$PORT/v1/chat" ;;
+    dsh-edge) echo "    dsh-edge: HTTP API http://127.0.0.1:$PORT/v1/chat (GET /v1/health; 无 UI)" ;;
+    *)        echo "    $PROFILE: http://127.0.0.1:$PORT/" ;;
   esac
 done

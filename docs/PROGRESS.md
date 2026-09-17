@@ -6914,3 +6914,25 @@ audit 配置的 `maxFileAgeDays: 7`(cordis.patch.yml:443)同样从未生效过�
 **事实校正**:生产进程 env **有** `EDGE_API_KEY`(§7.59.7 探针当场误记"无")⇒ X0 AUTH=on,H1 走 401 严格分支并实测 `http.auth.fail`(warn)+ 零业务审计行。
 
 回归:`pnpm test` 766 passed / 1 skipped 不变(零产品码改动);`SESSION=bogus x0` → die exit 2 文案含 install.sh 指路。K 臂纪律:E2E 期间勿 attach 抢输入焦点(ksend 前置 `wait_idle` 守)。
+
+### §7.61 项目自有 headless profile dsh-edge —— 零 UI 宿主,HTTP-only :21019(2026-09-17)
+
+**问题**:user 要求实现项目自己的 profile,使 bundle **不依赖 dsh-web 也不依赖 dsh-tui**。既有两生产 profile 各挂一个 UI 宿主;本 bundle 名义上只硬依赖 dsh-base 的宿主服务。拍板:入口 = HTTP API 唯一(无 CLI chat);纯增量,web/dsh-tui 不动;名 `dsh-edge` @ **:21019**;数据面共享生产 root、**仅审计叶子目录分流**(Variant B,依据见发现 2)。
+
+**结论先行**:`profiles/dsh-edge/{package.json,cordis.patch.yml}` 两文件落地,install.sh 五处小改,`./install.sh --profiles=dsh-edge --with=dsh-edge` 一键起。**boot 十步核验全绿**(骨架树 bundles=[base,ours]、`--dump-config` 零 UI 宿主行、:21019 监听、run.log 零 `did not activate`、审计分流自证、health 200 / 坏 bearer 401 / rm-rf 403 conf=0.95 / 正常聊 200);**§7.60 H 臂平移 :21019 = 13 PASS / 0 FAIL / 1 合法 sk,与 canonical 持平**;**双 daemon 并发共存零串门**(tui 轮只进共享 root、edge 轮只进 `audit-dsh-edge/`,skill-realms mtime 未动,dsh-tui 全程无感);回归:canonical `make e2e-tui` 31/0/1 不变、`pnpm test` 766/1skip、`verify:build` 全绿、tarball 零 profiles/。
+
+**发现 1 —— "headless 无 web 必断链"前提在 rc.1 作废(实证钉死)**:`@deepseek-ai/dsh-base@0.1.2-rc.1` 自带 patch(cordis.patch.yml:447-451)**无条件挂 `- id: web`**(searchProvider: deepseek-official + fetchProvider: http),故 file-logger 的 `inject: ['web']` 与 web-search 链在零 UI 宿主下闭合——dsh-edge 实机 ops log `web-diag ctx.web registered=true searchProviders.ids=[deepseek-official]`。§7.59 rig 时代"headless 冒烟图必须 awk 剥 file-logger"的前提只对 rc.1 之前的 base 成立。常驻生命周期由 http-api 自己的 `node:http` listen handle 撑(dsh 启动器明文"进程生命期交给 mounted plugins");上游 `@deepseek-ai/dsh-headless` 是 one-shot(要求 ctx.appExit,任务完成即退),**绝不进 bundles**。
+
+**发现 2 —— audit flush 是整文件读-改-写,共享审计文件必有覆盖竞争窗(⇒ Variant B)**:`src/dsh-adapter/audit-log.ts:263-269` flush = `readFile(全文件) → writeFile(tmp) → rename(tmp)`——两进程同窗 flush 时,后写方基于旧快照 rename,吃掉对方刚落盘的新行(TOCTOU)。原"jsonl 逐行追加并发可容忍"的判断只对 `O_APPEND` 直写路径成立,对 flush 不成立。解法:profile skin 把 dsh-edge 的 `audit-log.root` 指 `~/.dsh-edge-agent/audit-dsh-edge/`;其余数据面维持共享(ops log 是 O_APPEND 单行写安全;sessions 按 sid 分文件;skill-realms 读多写少——`ensureDefaultConfig` 缺省才拷 + mtime 重载,并发无虞,实测 mtime 未动)。
+
+**发现 3 —— skin 的 config 行是整对象替换**:loader `applyEntryPatches` 对 override 行按顶层键整体赋值(根 patch:158 web 行即同款全量重述模式),所以 `profiles/dsh-edge/cordis.patch.yml` 必须逐字镜像根 :438-450 audit-log 全部 9 键、只改 root 尾段(保留 `DSH_EDGE_AUDIT_ROOT ??` 前缀;全机现无该导出,兜底生效)。只写增量 = 丢键。另:与 §7.54.4 dsh-tui skin 清空的原因不冲突——那炸的是重复 `insert:` 行(duplicate entry id),本文件只有针对已挂载 id 的 config override。
+
+**发现 4 —— boot 不 auto-init 未知 profile(修 install.sh §2.7 死文案)**:未知名 `dsh --profile X` 直接 throw `profile does not exist`,骨架只由 `dsh plugin` 生成——旧 fail-fast 文案"先手动引导一次:dsh --profile X"在新机上是死路,已改指 `dsh plugin --profile X add …`;并新增 **§2.7 骨架自愈**:容器 package.json 缺失且仓库 `profiles/$PROFILE/package.json` 存在 → 直接拷骨架(实弹验证:mv 走容器 pkg 再 `--skip-pnpm` 重跑,bootstrap+python 复原结果与现役容器 **diff 全等**)。`dependencies` 仓库骨架留空 `{}` 是刻意的:旧先例 `file:../..` 在容器里指错目标,§2.7 python 会写容器正确的 `file:node_modules/…` 形。
+
+**harness 配套(两行 env 化)**:`scripts/e2e-tui-live.sh` `AUTH="${AUTH:-}"` + `AUDIT="${AUDIT:-…}"` 允许外部预置——无 tmux 进程的臂旁路 X0 探测(t_h1 原 guard `[ -n "$AUTH" ] || t_x0` 天然衔接)。用法一行:`AUTH=on PORT=21019 AUDIT=$HOME/.dsh-edge-agent/audit-dsh-edge/audit.plain.jsonl scripts/e2e-tui-live.sh h1 h2 h5 h4 h3`。K 臂与 `all` 仍 dsh-tui 专属。
+
+**顺带修复(pre-existing red)**:`verify:build` 的 plugin-spec battery 自 a5784d5(9-13,`llm-max-turns.ts` 落地)起就是红的——纯共享状态模块(max-turns guard + SSE-retry bookkeeping,仅被两个 llm-adapter import,零 patch 挂载、零 exports)漏进 battery 的纯 helper 豁免名单;此前各轮只跑 `pnpm test`,battery 未再执行故未暴露。:50-56 名单补一行。
+
+**清理**:`git rm` 四个 `profiles/edge-{full,m1,minimal,standard}.cordis.yml`——宣称的 `dsh --config` 旗标在现装 CLI 已不存在(bin.js:77 只剩 `--profile/--patch/--dump-config/--dump-default-config`);m1-m3 smoke 脚本加 `DEAD:` 头注(保留叙事连贯)。architecture.md M 段验证块加历史指针;README :168 "6 channel 目录按 profile 分根"陈旧表述修正(§7.36 起单 root + §7.61 审计分流唯一例外)。
+
+**攻击面**:21019 与 21018 能力完全同构(同 bearer/同 policy/同 127.0.0.1 绑定),净增面 = 多一个环回 listener;approval 'ask' 无 UI 的悬挂行为与 :21018 现状一致(pre-existing)。回滚:`kill <edge-pid>` + `rm -rf ~/.dsh/profiles/dsh-edge ~/.dsh-edge-agent/audit-dsh-edge` + git revert,web/dsh-tui 全程无感。

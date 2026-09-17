@@ -36,6 +36,7 @@ help:
 	@echo "  $(GREEN)./install.sh$(NC)                # 默认并存部署 dsh-tui + web"
 	@echo "  $(GREEN)./install.sh --profiles=dsh-tui$(NC)   # 只部署 dsh-tui"
 	@echo "  $(GREEN)./install.sh --profiles=web$(NC)       # 只部署 web"
+	@echo "  $(GREEN)./install.sh --profiles=dsh-edge --with=dsh-edge$(NC)  # §7.61 headless（HTTP :21019，无 UI）"
 
 # 构建
 build:
@@ -75,7 +76,8 @@ e2e-tui:
 #   - 不打 .env（避免 DEEPSEEK_API_KEY 泄漏）
 #   - 不打 profiles/node_modules/（252 symlink 指向开发机 /home/etsme/.npm-global）
 #   - 不打 profiles/dsh-edge-agent/node_modules/（开发机 runtime，~30M）
-#   - 不打 profiles/*.cordis.yml（§7.31 legacy，install.sh 不读）
+#   - 不打 profiles/（.npmignore 整目录排除；§7.61 后仅剩 dsh-edge 部署骨架+皮肤，
+#     是 install.sh 的输入而非产物，release 包内自带 install.sh 即可用）
 #   - 不打 cordis.yml（legacy --config 模式入口，install.sh 不读）
 #   - 打 install.sh + README.md + LICENSE（用户文档）
 #   - 加 SHA256SUMS

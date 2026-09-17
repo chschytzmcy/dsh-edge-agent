@@ -140,11 +140,14 @@ disown
 # 只装一个
 ./install.sh --profiles=web
 
-# 装自定义 profile
+# §7.61 项目自有 headless profile(无 UI,HTTP-only 入口 :21019)
+./install.sh --profiles=dsh-edge --with=dsh-edge
+
+# 装任意自定义 profile
 ./install.sh --profiles=my-edge
 ```
 
-> bundle 是 profile-agnostic 的——`--profiles=` 接受任何 DSH profile 名（dsh-tui / web / 自定义）。端口在 install.sh 里的 `port_for_profile()` 映射，未来加新 profile 必须在那里同步登记。
+> bundle 是 profile-agnostic 的——`--profiles=` 接受任何 DSH profile 名（dsh-tui / web / dsh-edge / 自定义）。端口在 install.sh 里的 `port_for_profile()` 映射（现役登记：dsh-tui 21018 / web 21017 / dsh-edge 21019），未来加新 profile 必须在那里同步登记。
 
 ### 方式三：Windows
 
@@ -165,7 +168,7 @@ dsh plugin --profile dsh-tui add @deepseek-harness-edge-agent/dsh-edge-agent
 3. pnpm 装 7 个上游包（dsh-agent-loop / dsh-tool-web / dsh-web / dsh-web-search-deepseek / dsh-skill / dsh-tool-skill / dsh-skill-filesystem）— 每个 profile 各装一次
 4. rsync `lib/` → profile 嵌套包
 5. 同步 `cordis.patch.yml` 到嵌套包（**bundle-level patch**，§7.31 fix）
-6. 创建 6 个 channel 目录（默认 `~/.dsh-edge-agent-<profile>/`，由各 profile `.env.sh` 设置；dsh-tui 用 `~/.dsh-edge-agent-dsh-tui/`，web 用 `~/.dsh-edge-agent-web/`）
+6. 数据面单 root `~/.dsh-edge-agent/`（§7.36 起各 profile 共享，历史上"6 个 channel 目录按 profile 分根"的说法已废；§7.61 唯一例外：dsh-edge 的审计流经 profile skin 单独落 `~/.dsh-edge-agent/audit-dsh-edge/`，规避多进程并发 flush 的整文件读-改-写竞争）
 7. 加载默认策略 `tests/fixtures/privacy-policy.json`（也可由 `DSH_EDGE_PRIVACY_POLICY_PATH` 覆盖）
 8. 顺序启动 dsh-tui (port 21018) → web (port 21017)：每个 profile 独立 pkill → port-wait → nohup launch
 

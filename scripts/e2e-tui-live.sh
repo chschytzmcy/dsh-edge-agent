@@ -33,7 +33,7 @@ PANE="$SESSION:0.0"
 PORT="${PORT:-21018}"
 BASE="http://127.0.0.1:$PORT"
 PROD_ROOT="${PROD_ROOT:-$HOME/.dsh-edge-agent}"
-AUDIT="$PROD_ROOT/audit/audit.plain.jsonl"
+AUDIT="${AUDIT:-$PROD_ROOT/audit/audit.plain.jsonl}"
 OPS="$PROD_ROOT/log/dsh-edge-agent.log"
 PROFILE_PKG="$DSH_HOME/profiles/$PROFILE/package.json"
 NESTED="$DSH_HOME/profiles/$PROFILE/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent"
@@ -162,7 +162,8 @@ for l in sys.stdin:
 # ── HTTP 通道 ────────────────────────────────────────────────────────────────
 # 服务端 bearerToken 缺省 ⇒ checkAuth 恒真(http-api.ts:431)。X0 探生产进程
 # 的 EDGE_API_KEY 存在性(只数名字,永不印值)定 AUTH=on/off,H1 双模式断言。
-AUTH=""
+# §7.61: 允许外部预置(打 :21019 等无 tmux 进程的臂时旁路 t_x0 探测)。
+AUTH="${AUTH:-}"
 hpost(){  # hpost <path> <bearer> <json-body> [timeout] —— "HTTP码|响应体"
   local path="$1" bearer="$2" body="$3" t="${4:-$H_TIMEOUT}"
   local out

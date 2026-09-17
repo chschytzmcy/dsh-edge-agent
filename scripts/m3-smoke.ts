@@ -1,5 +1,9 @@
 #!/usr/bin/env node --import tsx/esm
 /**
+ * DEAD (§7.61, 2026-09-17): 依赖的 `dsh --config` 旗标已从现装 CLI 移除,
+ * profiles/edge-m1.cordis.yml 已 git rm;会话/审计持久面由
+ * scripts/e2e-tui-live.sh(§7.60)逐用例日志分析取代。不可运行。
+ *
  * M3 manual smoke — drive the edge-m1 profile twice in a row, then inspect
  * the on-disk JSONL store: a session created in run 1 should be visible
  * in `sessions listActive` of run 2, and the audit log should contain

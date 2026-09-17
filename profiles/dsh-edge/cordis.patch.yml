@@ -1,0 +1,33 @@
+# dsh-edge profile skin — applied AFTER every bundle layer (load order:
+# dsh-base → ...bundles... → our bundle patch → this file).
+#
+# §7.61 (2026-09-17) Variant B: 审计叶子目录分流。
+# audit-log flush 是整文件 read → tmp → rename 的读-改-写
+# (src/dsh-adapter/audit-log.ts:263-269),并发双进程(dsh-tui + dsh-edge)
+# 共享同一 audit 文件时,后 flush 方会基于旧快照覆盖对方刚落盘的新行
+# (TOCTOU 竞争窗)。故 dsh-edge 的 audit 根指到 ~/.dsh-edge-agent/
+# audit-dsh-edge/,其余数据面(policy / sessions / skill-realms / ops log)
+# 与 dsh-tui 共享生产 root(ops log 是 O_APPEND 单行写安全;sessions 按
+# sid 分文件;skill-realms 读多写少——ensureDefaultConfig 缺省才拷)。
+#
+# ⚠ skin 的 config 行是【整对象替换】(loader applyEntryPatches 顶层键赋值,
+# 见根 cordis.patch.yml:158 web 行同款模式)——下面逐字镜像根
+# cordis.patch.yml:438-450 audit-log 行的全部键,唯一改动是 root 默认值
+# 尾段 /audit → /audit-dsh-edge。根行若演进(加键/改值),此处必须同步,
+# 否则丢键。
+#
+# DSH_EDGE_AUDIT_ROOT 前缀保留(全机现无该导出,兜底才会生效)。
+# 注意:与 §7.54.4 dsh-tui skin 清空的原因不同——那里是重复 `insert:` 行
+# 炸 duplicate entry id;本文件只有针对已挂载 id 的 config override 行,
+# 无 insert,合法。
+- id: audit-log
+  config:
+    minLevel: !!js process.env.DSH_EDGE_AUDIT_MIN_LEVEL ?? 'info'
+    ringBufferSize: 512
+    flushIntervalMs: !!js parseInt(process.env.DSH_EDGE_AUDIT_FLUSH_MS ?? '1000', 10)
+    filename: audit.plain.jsonl
+    root: !!js (process.env.DSH_EDGE_AUDIT_ROOT ?? (process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent/audit-dsh-edge')
+    enablePIIRedaction: true
+    maxFileSizeBytes: 10485760  # 10MB
+    maxFileAgeDays: 7
+    maxRotatedFiles: 5

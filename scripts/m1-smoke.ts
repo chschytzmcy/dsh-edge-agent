@@ -1,5 +1,10 @@
 #!/usr/bin/env node --import tsx/esm
 /**
+ * DEAD (§7.61, 2026-09-17): 依赖 `dsh --config profiles/edge-m1.cordis.yml` ——
+ * 该旗标在现装 dsh CLI 已移除(只剩 --profile/--patch/--dump-config*),
+ * yml 已 git rm。M 期手工 smoke 由 scripts/e2e-tui-live.sh(§7.60)取代。
+ * 保留脚本供里程碑叙事连贯,不可运行。
+ *
  * M1 manual smoke — drive the edge-m1 profile end-to-end against the
  * real DeepSeek API. The unit/integration tests under tests/unit/
  * stub `fetch`, but a real API call still has to be exercised by hand

@@ -53,6 +53,10 @@ for (const file of sources) {
   // pure helpers — used internally by the http-api plugin; not plugins themselves
   if (base === 'http-api-routes') continue
   if (base === 'http-api-sessions') continue
+  // pure shared state (max-turns guard + SSE-retry bookkeeping) imported by the
+  // two llm-adapters only; never inserted by cordis.patch.yml, not in exports.
+  // (§7.61: battery red since a5784d5 2026-09-13 — verify:build hadn't run until then.)
+  if (base === 'llm-max-turns') continue
   if (base === 'plugin' || base === 'index') continue
   const content = readFileSync(file, 'utf8')
 

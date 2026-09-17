@@ -233,10 +233,11 @@ rsync -a --delete lib/ "$N/lib/"           # ③
 - **改了嵌套包必须重启 dsh 进程才生效**（运行时唯一真相源是嵌套包那份，不是 repo；§7.54.8 lesson 3）。
 - **§7.59 实证结论（极简线）**：上方手工步骤 ①-⑤ 在 TUI 形状（dsh-tui 克隆）与 headless（dsh-base + dsh-headless，零安装）两形状逐字成立，闸门行为一致（差异仅在 TUI 必须 TTY、非交互驱动要用 headless 单发）。**验证面 = TUI 形状（user 拍板 2026-09-16）：dsh-tui 生产实例测完即完成；headless 仅是自动化臂；web 不列入**（`~/.dsh/profiles/web/` 属全量线资产，原样保留、与极简线零联动）。三层语义 mount ≠ active ≠ enforced、最小执法集 = 7 闭包推导与缺件行为，均已并入 `docs/deploy-minimal-files.md` ② 节（铁律 3 + 部署验收推论）及 ①② 表格；载体 = `bundle-minimal/` 三文件（唯一派工单 `cordis.patch.yml`，§7.59.5 单源收敛）+ `scripts/minimal-bundle-rig.sh`；历轮 boot 签名与结果计数存档 `docs/PROGRESS.md` §7.59 系列。⚠️ 复跑 rig 仍建议 `MIN_ROOT=<scratch>` 覆写——默认 `~/.dsh-edge-agent-minimal/` 已无生产实例使用（dsh-tui 已于 2026-09-16 换回全量 bundle，§7.59.7），但里面是 §7.59 历轮实证证据，rig assert 开头会 `rm -rf` 清空它。
 - **极简/定制部署的存储隔离坑（§7.59 R7）**：`audit-log.root`、`privacy-policy.policyPath` 是 Schema 必填（缺了 schemastery **静默丢插件**，连 boot 报错都没有），而 `realm-skill-bridge.configPath` **有代码默认值且硬编码 `~/.dsh-edge-agent/skill-realms.json`、不读 `DSH_EDGE_STORAGE_ROOT`**——实验/多实例部署想隔离数据根，这三处都必须显式指走，否则会写进生产共享 root。
+- **§7.61 项目自有 headless profile `dsh-edge`（零 UI 宿主）**：仓库带骨架 `profiles/dsh-edge/package.json`（bundles = `[dsh-base, 本包]`）。可行为前提：dsh-base@0.1.2-rc.1 的自带 patch 挂 `- id: web`，故 file-logger 的 `inject: ['web']` 在无 dsh-web-app / 无 dsh-tui 时照样闭合（实机 ops log `web-diag ctx.web registered=true` 钉死）；常驻由 http-api 自己的 `node:http` listen handle 撑（上游 `@deepseek-ai/dsh-headless` 是 one-shot，勿入 bundles）。皮肤 `profiles/dsh-edge/cordis.patch.yml` 把 audit root 分流到 `~/.dsh-edge-agent/audit-dsh-edge/`（flush 是整文件读→tmp→rename，`src/dsh-adapter/audit-log.ts:263-269`，与 dsh-tui 共享审计文件存在互相覆盖新行的竞争窗），其余数据面仍共享生产 root。部署：`./install.sh --profiles=dsh-edge --with=dsh-edge` → 唯一入口 HTTP `http://127.0.0.1:21019/v1/chat`（GET `/v1/health`；鉴权同 bearer）。E2E 复用：`AUTH=on PORT=21019 AUDIT=~/.dsh-edge-agent/audit-dsh-edge/audit.plain.jsonl scripts/e2e-tui-live.sh h1 h2 h5 h4 h3`（§7.60 H 臂平移，实测 13 PASS/0 FAIL/1 合法 sk）。
 
 ## 🚀 启动流程
 
-1. **CLI 启动器**（`bin/dsh-edge-agent.js`）：
+1. **CLI 启动器**（`bin/dsh-edge-agent.js`）（legacy——launcher 已随 §7.33 删除；profile 名 `dsh-edge-agent` 亦被 §7.61 的 `dsh-edge` 取代。现役入口 = `install.sh` / `dsh --profile <name>`）：
    - 检测 `dsh` CLI
    - 引导 `$DSH_HOME/profiles/dsh-edge-agent/` profile
    - 拦截 `--resume` 参数
@@ -7555,7 +7556,7 @@ $ pnpm dsh --profile edge-minimal sessions list
   - cloud：route `cloud-llm` 命中 cloud-llm-adapter（回归 M1）
   - model-router：`resolveRoute('local-llm-mock')` → LOCAL；`'cloud-llm'` → CLOUD
 
-**验证**：
+**验证**（⚠️ §7.61 注：本节及其后 M 段验证块里的 `--config profiles/edge-*.cordis.yml` 命令为 v7.x 里程碑原文——该旗标已不在现装 dsh CLI，四个 yml 已 git rm；现役手工/自动验证走 `scripts/e2e-tui-live.sh`（§7.60）与 `profiles/dsh-edge`（§7.61））：
 
 ```bash
 $ pnpm dsh --config profiles/edge-m1.cordis.yml --provider local-llm-mock "今天天气"
