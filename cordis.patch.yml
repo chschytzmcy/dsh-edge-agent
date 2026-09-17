@@ -43,7 +43,9 @@
 - id: llm-deepseek
   config:
     apiKeyEnv: !!js process.env.DSH_EDGE_CLOUD_KEY_ENV ?? 'DEEPSEEK_API_KEY'
-    baseURL: !!js process.env.DEEPSEEK_BASE_URL
+    # §7.75: 跟 local-llm-adapter 对称读 DSH_EDGE_CLOUD_LLM_BASEURL；
+    # 兜底 DEEPSEEK_BASE_URL（DSH 黑名单精确名，仅在 inherited env 出现）
+    baseURL: !!js process.env.DSH_EDGE_CLOUD_LLM_BASEURL ?? process.env.DEEPSEEK_BASE_URL
     thinking: enabled
     reasoningEffort: max
 
@@ -366,7 +368,10 @@
       inject: [llm, auditLog]
       config:
         providers: [cloud-llm]
-        baseUrl: !!js process.env.DEEPSEEK_BASE_URL ?? 'https://api.deepseek.com'
+        # §7.75: 跟 local-llm-adapter 对称读 DSH_EDGE_CLOUD_LLM_BASEURL；
+        # 兜底链 = DSH_EDGE_CLOUD_LLM_BASEURL → DEEPSEEK_BASE_URL（inherited env）→
+        # plugin Schema default 'https://api.deepseek.com'
+        baseUrl: !!js process.env.DSH_EDGE_CLOUD_LLM_BASEURL ?? process.env.DEEPSEEK_BASE_URL ?? 'https://api.deepseek.com'
         apiKeyEnv: DEEPSEEK_API_KEY
         defaultModel: !!js process.env.DSH_EDGE_MODEL ?? 'deepseek-chat'
 
@@ -383,7 +388,9 @@
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/model-router'
       inject: [llm]
       config:
-        defaultModel: !!js process.env.DSH_EDGE_MODEL_ROUTER_DEFAULT ?? 'cloud-llm'
+        # §7.75: 删 defaultModel（v0.1.x 死字段，model-router.ts:143 构造时
+        # 只接 localModels/cloudModels）。routing 由 intent 分类 + classificationProvider
+        # 走 modelRouter.resolve() 决定，不靠"默认目标"变量
         localModels: [local-llm]
         cloudModels: [cloud-llm]
 
@@ -529,5 +536,8 @@
         rejectOnPolicyViolation: !!js process.env.DSH_EDGE_REJECT_POLICY !== 'false'
         # sanitize 失败 → 降级 LOCAL（系统故障而非 user 错；fail-closed + 可用）
         downgradeOnSanitizeFailure: !!js process.env.DSH_EDGE_SANITIZE_DOWNGRADE !== 'false'
-        localProvider: !!js process.env.DSH_EDGE_LOCAL_PROVIDER ?? 'local-llm'
+        # §7.75: 删 localProvider 行（input-guard.ts:78 Schema default 'local-llm'，
+        # 无配置价值；删 ROUTER_LOCAL_PROVIDER .env 变量）
+        # 保留 localModel 行（Schema default 'qwen3-4b-instruct-2507' 跟
+        # LOCAL_LLM_MODEL 不一致，必须靠 .env 注入避免 model 错乱）
         localModel: !!js process.env.DSH_EDGE_LOCAL_MODEL ?? 'qwen3-4b-instruct-2507'
