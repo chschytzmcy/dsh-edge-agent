@@ -16,7 +16,7 @@ GREEN := \033[0;32m
 YELLOW := \033[1;33m
 NC := \033[0m
 
-.PHONY: help build test verify e2e-coverage package install clean
+.PHONY: help build test verify e2e-coverage e2e-tui package install clean
 
 # 默认目标
 help:
@@ -27,6 +27,7 @@ help:
 	@echo "  $(GREEN)make test$(NC)          - 运行单元测试"
 	@echo "  $(GREEN)make verify$(NC)        - 运行构建验证"
 	@echo "  $(GREEN)make e2e-coverage$(NC)  - ops log 21 节点覆盖回归（3 重点用例）"
+	@echo "  $(GREEN)make e2e-tui$(NC)       - 生产 dsh-tui 实机 E2E（tmux+HTTP 双通道，逐用例日志分析）"
 	@echo "  $(GREEN)make package$(NC)       - 打包部署文件"
 	@echo "  $(GREEN)make install$(NC)       - 安装到本地系统"
 	@echo "  $(GREEN)make clean$(NC)         - 清理构建产物"
@@ -60,6 +61,14 @@ e2e-coverage:
 	@echo "$(BLUE)==> 运行 ops log 覆盖回归（3 重点用例）$(NC)"
 	@bash scripts/e2e-ops-log-coverage.sh
 	@echo "$(GREEN)✓ ops log 覆盖回归通过$(NC)"
+
+# §7.60 生产 dsh-tui 实机 E2E（X0 + H1-H5 + K1-K2，双通道，逐用例日志分析）
+# 前置：production dsh-tui 在跑（tmux 会话 dsh-tui + :21018）；只 attach 不拉起。
+# 预期 ~4-6 分钟；期间勿手动 attach 抢输入焦点。
+e2e-tui:
+	@echo "$(BLUE)==> 生产 dsh-tui 实机 E2E（8 用例双通道）$(NC)"
+	@bash scripts/e2e-tui-live.sh all
+	@echo "$(GREEN)✓ dsh-tui 实机 E2E 通过$(NC)"
 
 # 打包部署文件
 # §7.55 (2026-09-15): 收紧打包内容
