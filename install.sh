@@ -13,14 +13,12 @@
 #   - pnpm 已安装（npm install -g pnpm 或 corepack enable pnpm）
 #
 # 用法：
-#   ./install.sh                              # 默认：同步 + 启动 dsh-tui + web（§7.65 web 不再 opt-in）
+#   ./install.sh                              # 默认：同步 + 启动 dsh-tui + web + dsh-edge（§7.66 三全启）
 #   ./install.sh --with                       # 同上（deprecated alias，保留兼容）
-#   ./install.sh --with=web                   # 只启 web（同步两个 + 启 web）
-#   ./install.sh --with=tui                   # 只启 dsh-tui（同步两个 + 启 dsh-tui）
-#   ./install.sh --with=web,tui               # 显式指定启动子集
+#   ./install.sh --with=dsh-edge              # 只启 dsh-edge（同步三个 + 启 dsh-edge）
+#   ./install.sh --with=web,dsh-edge          # 启 web + dsh-edge（同步三个）
 #   ./install.sh --no-restart                 # 只同步不启（开发改代码反复迭代时,避免重启打搅）
 #   ./install.sh --profiles=dsh-tui           # 只同步 dsh-tui + 启 dsh-tui（默认重启语义）
-#   ./install.sh --profiles=dsh-edge --with=dsh-edge  # §7.61 headless（HTTP-only :21019，无 UI）
 #   ./install.sh --skip-pnpm                  # 跳过 npm install（假设已装过）
 #   ./install.sh --force-install              # 强制重装本包（覆盖 rsync）
 #   ./install.sh -h | --help                  # 打印本帮助
@@ -43,7 +41,7 @@ DO_PNPM=1
 FORCE_INSTALL=0
 # PROFILES 是这次新部署的目标 profile 数组。每 profile 走一份独立
 # pkill → port-wait → nohup launch 流水线，互不干扰（除了端口本身）。
-# 默认 (dsh-tui web) — web 不再 opt-in,跟着默认启(2026-09-17 §7.65)。
+# 默认 (dsh-tui web dsh-edge) — 三个全启(2026-09-17 §7.66)
 PROFILES=()
 # START_PROFILES 是这次要启动的 profile 子集。默认空（全不启）；
 # --with=web 启 web，--with=tui 启 dsh-tui，--with=web,tui 都启，
@@ -83,9 +81,9 @@ for arg in "$@"; do
   esac
 done
 
-# 默认：同步 dsh-tui + web,且都启动(§7.65 web 不再 opt-in)
+# 默认：同步 dsh-tui + web + dsh-edge,且都启动(§7.66 dsh-edge 也并入默认)
 if [ ${#PROFILES[@]} -eq 0 ]; then
-  PROFILES=(dsh-tui web)
+  PROFILES=(dsh-tui web dsh-edge)
 fi
 
 # --with 不带值 → 启动全部 PROFILES;默认 DO_RESTART=1 时也走这条

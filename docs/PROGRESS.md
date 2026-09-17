@@ -7004,3 +7004,23 @@ audit 配置的 `maxFileAgeDays: 7`(cordis.patch.yml:443)同样从未生效过�
 **未覆盖 / 留作后续**:
 - `./install.sh --profiles=foo,bar --no-restart` 中 `foo` 在跑、`bar` 没在跑——现状两者都不重启,真要 "重启在跑的 / 跳没跑的" 智能感知得加 `is_port_listening` 探针;本轮不做(用户原话是 "默认重启",未提智能感知)。
 - `DO_RESTART=1` 与 `start_at` 延迟调度(`--restart-at HH:MM`)——无需求。
+
+### §7.66 install.sh 默认 PROFILES 包含 dsh-edge —— 三 profile 同启(2026-09-17)
+
+**问题**:§7.65 把 web 从 opt-in 拉到默认后,`./install.sh` 默认重启 dsh-tui + web,dsh-edge 仍需 `--profiles=dsh-edge` 显式 opt-in;但 dsh-edge 已是项目自有 headless(§7.61),长期运行 1h30m+ 稳定无副作用,作为开发环境标配留着合理。
+
+**结论先行**:`PROFILES` 默认 `(dsh-tui web)` → `(dsh-tui web dsh-edge)`,`./install.sh` 一键同步 + 重启三 profile。实跑验证:dsh-tui pid 3270666 → 3271263、web pid 3270769 → 3271363、dsh-edge pid 3252731(1h30m+) → 3271440,三端口 `:21017/21018/21019` 全 LISTEN + `/v1/health` 全 200,Phase-4 summary 三行全绿。
+
+**改动**:install.sh 3 处。
+- `PROFILES=(dsh-tui web)` → `PROFILES=(dsh-tui web dsh-edge)`(默认填充处)
+- PROFILES 注释 "默认 (dsh-tui web) — web 不再 opt-in" → "默认 (dsh-tui web dsh-edge) — 三全启"
+- header 用法注释:第 1 行 / `--with=...` 示例行更新为 "三全启" 语境
+
+**dsh-edge 历史地位演化**:
+- §7.61 (2026-09-17):新增,opt-in (`--profiles=dsh-edge`)
+- §7.66 (同日,本轮):并入默认,`./install.sh` 直接管
+- 端口/进程/audit 分流(§7.61 Variant B,`~/.dsh-edge-agent/audit-dsh-edge/`)无变化
+
+**未做(留后续)**:
+- `--profiles=dsh-edge` 是否仍需保留作为 opt-out 形式:保留(用户可能想"只装 dsh-edge 不碰其他"),语义同 `--profiles=dsh-tui` 单跑。
+- "智能重启"(只在跑的重启 / 没跑的不启)未做,本轮沿用 §7.65 的"无脑全启"语义,反正三 daemon 都该跑。
