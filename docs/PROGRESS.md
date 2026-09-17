@@ -7056,6 +7056,48 @@ audit 配置的 `maxFileAgeDays: 7`(cordis.patch.yml:443)同样从未生效过�
 - §7.65 留作 "未做" 的 `--restart-at HH:MM` 仍不做。
 - "智能重启" 探针(只在跑的重启)未做,语义沿用 §7.65 的"无脑全启"。
 
+### §7.69 install.sh 单 profile 架构 + 端口统一 :21017(2026-09-17)
+
+**问题**:§7.65→§7.66→§7.67 三步演进了"默认重启 + 三 profile 同启"语义。但:
+1. 三 profile 共存导致 **audit-log.ts:263-269 read→tmp→rename TOCTOU race 实际触发**(§7.68 接受偶尔丢行就是这个 race);
+2. 三 profile 端口各异(21017/21018/21019),同时跑三个 daemon + 三套 .env.sh override + install.sh 端口 inline force,心智成本与维护成本叠加;
+3. 切 UI 时(从 dsh-tui 切到 web 或 dsh-edge)用户得手动 kill 一个启另一个,无 install.sh 一键;
+4. 真单用户开发场景一次只需要一个 profile —— tui 开发时不需要 web,web 开发时不需要 tui。
+
+**结论先行**:**install.sh 单 profile 架构 + HTTP 端口统一 :21017**(user 原话:"默认只部署到edge,通过--profile 可以选择部署到web或tui,去掉--profiles,只能部署到一个profile,先停止其他profile的进程,单独重启指定profile进程,http 端口统一")。实跑验证:`./install.sh` 默认杀 dsh-tui + web + 启 dsh-edge(:21017 200);`--profile=web` 杀 dsh-tui + dsh-edge + 启 web(:21017 200);`--profile=tui` 杀 web + dsh-edge + 启 dsh-tui(:21017 200,验证 TUI 也吃 :21017 而非 21018)。三次切换都各起一个 daemon,端口干净,目标 profile 拿新代码。
+
+**install.sh 改动**(11 处):
+- header 用法注释块重写(单 profile + 杀其他 + 启指定语境)
+- PROFILES 数组 → PROFILE 单值(CLI 收敛到 `--profile=<name>`)
+- case `$1` 删 `--all` / `--profiles` / `--profiles=*` / `--to-profile` / `--to-profile=*`;加 `--profile` / `--profile=*`
+- 默认 PROFILES 数组填充 → 默认 PROFILE="dsh-edge"(§7.69 默认)
+- 删 START_PROFILES 数组 + canonical dedup 循环(单 profile 不需要)
+- 删 `port_for_profile()` 函数(端口统一后无意义)
+- Phase 2 / 2.5 循环改成 `for PROFILE in $PROFILE; do`(单元素数组,循环结构保留)
+- **Phase 3 新增 "杀其他 profile" 步**:遍历 `OTHER_PROFILES=(dsh-tui web dsh-edge)` 里 != target 的两个,`pkill "node.*dsh --profile $OTHER"` + 等退;`kill target profile 旧进程` + `port_is_free 21017` + `nohup launch` 三段
+- Phase 3 删 `INLINE_PORT` 变量 + `_LAUNCH_ENV` 不再 inline force `DSH_EDGE_HTTP_PORT`(源链 profile .env.sh → repo .env.sh → bundle http-api `default(21017)` 兜底)
+- Phase 4 汇总改成单 profile(`START_OK=1/0` 代替原 `declare -A START_RESULT`)
+- 头部注释 5 处更新(单 profile + 端口统一语境)
+
+**`~/.dsh/profiles/dsh-tui/.env.sh` 端口覆盖撤回**(memory `tui-port-override` SUPERSEDED):
+- 原 `export DSH_EDGE_HTTP_PORT=21018  # TUI 无条件覆盖` 行删除,改为注释指向 §7.69
+- 实测:删后 dsh-tui 启动 `run.log` 显示 `DSH_EDGE_HTTP_PORT=<unset>`,但 http-api schema `default(21017)` 兜底,audit `http.started port:21017` 验证生效
+
+**`port_for_profile()` 删除**:install.sh 不再需要 profile → port 映射(全 :21017);`OTHER_PROFILES` 列表新加 profile 时只添一行,无需同步端口表。
+
+**§7.68 audit 共写现在更安全**:虽然 §7.68 接受了 TOCTOU 偶发丢行,但 §7.69 单 profile 架构下,任何时刻只有 **一个 dsh 进程** 在写 `~/.dsh-edge-agent/audit/audit.plain.jsonl` —— TOCTOU race **实际不再触发**(race 需要并发双进程 flush)。§7.68 接受丢行的"风险"实质上已被 §7.69 架构消除。
+
+**memory 同步**:
+- `entrypoints.md` §7.69 重写(描述、表格、E2E 衔接、How to apply 全部更新)
+- `tui-port-override.md` 加 SUPERSEDED 头(2026-09-17 §7.69)
+- `tui-primary-deploy.md` 指针在 MEMORY.md 改为 SUPERSEDED
+- `MEMORY.md` entrypoints 指针描述同步更新
+
+**未做**:
+- 老的 §7.43/§7.61/§7.65/§7.66/§7.67 历史 PROGRESS 条目不重写(历史记录当下事实,§7.69 撤回决议放新条目即可)
+- `~/.dsh-edge-agent/audit-dsh-edge/` 撤回 + 共写已在 §7.68 完成,§7.69 不重做
+- `audit-log.ts` 加 flock IPC 锁治根 race 仍未做 —— §7.69 单 profile 架构下 race 不再触发,治本需求降低
+
 ### §7.68 撤回 §7.61 audit 分流 —— dsh-edge 与 dsh-tui 共写 `~/.dsh-edge-agent/audit/`(2026-09-17)
 
 **问题**:§7.61 因 `audit-log.ts:263-269` 整文件 read→tmp→rename 的 TOCTOU race,把 dsh-edge 的 audit root 分流到 `~/.dsh-edge-agent/audit-dsh-edge/`(Variant B)。代价:数据目录分裂、查 dsh-edge 审计要切路径、E2E H 臂要 `AUDIT=...audit-dsh-edge/...` env 预设。

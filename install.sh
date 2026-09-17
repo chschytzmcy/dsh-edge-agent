@@ -1,21 +1,23 @@
 #!/usr/bin/env bash
 # dsh-edge-agent 本地一键部署（编译 + 安装 + 同步 + 重启）。
 #
-# 把 bundle 装到 DSH profile 的嵌套包目录、重启对应 dsh 进程。一个
-# 命令可以同时部署多个 profile 并存运行：
-#   - dsh-tui：终端宿主 (port 21018，配套 @deepseek-harness-tui/dsh-tui)
-#   - web    ：浏览器宿主 (port 21017，配套 @deepseek-ai/dsh-web-app)
-#   - dsh-edge：项目自有 headless (port 21019，HTTP-only 入口·无 UI 宿主，§7.61)
-# 任何自定义 profile 也可以加入 PROFILES 列表（profile-agnostic bundle）。
+# 单 profile 架构（§7.69, 2026-09-17）：一次只跑一个 profile —— 部署
+# 目标前 install.sh 先停掉其他 profile 进程（避免端口冲突 + audit
+# TOCTOU race）。HTTP 端口统一为 21017（http-api 默认；.env.sh 兜底）。
+#   - dsh-edge : 项目自有 headless  (HTTP API :21017, 无 UI, §7.61)
+#   - web      : 浏览器宿主          (UI :3080 + http-api :21017)
+#   - dsh-tui  : 终端宿主            (http-api :21017)
+# 任何自定义 profile 也可以走 --profile=<name>（profile-agnostic bundle）。
 #
 # 前置：
 #   - dsh CLI 已安装（npm install -g @deepseek-ai/dsh）
 #   - pnpm 已安装（npm install -g pnpm 或 corepack enable pnpm）
 #
 # 用法：
-#   ./install.sh                              # 默认：同步 + 启动 dsh-tui + web + dsh-edge（§7.67 三全启）
-#   ./install.sh --profiles=dsh-edge          # 只同步 + 启动 dsh-edge（单 profile）
-#   ./install.sh --profiles=web,dsh-edge      # 同步 + 启动 web + dsh-edge
+#   ./install.sh                              # 默认：停 dsh-tui + web，部署 + 启 dsh-edge
+#   ./install.sh --profile=web                # 切到 web：停 dsh-tui + dsh-edge，部署 + 启 web
+#   ./install.sh --profile=tui                # 切到 dsh-tui：停 web + dsh-edge，部署 + 启 dsh-tui
+#   ./install.sh --profile=dsh-edge           # 显式（与默认等价）
 #   ./install.sh --no-restart                 # 只同步不启（开发改代码反复迭代时,避免重启打搅）
 #   ./install.sh --skip-pnpm                  # 跳过 npm install（假设已装过）
 #   ./install.sh --force-install              # 强制重装本包（覆盖 rsync）
@@ -34,20 +36,14 @@ done
 DSH_HOME="${DSH_HOME:-$HOME/.dsh}"
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 
-DO_RESTART=1  # §7.65 默认重启:同步+启/重启 PROFILES(开发迭代场景);--no-restart opt-out
+DO_RESTART=1  # §7.65 默认重启:同步+启/重启 target profile(开发迭代场景);--no-restart opt-out
 DO_PNPM=1
 FORCE_INSTALL=0
-# PROFILES 是这次新部署的目标 profile 数组。每 profile 走一份独立
-# pkill → port-wait → nohup launch 流水线，互不干扰（除了端口本身）。
-# 默认 (dsh-tui web dsh-edge) — 三个全启(2026-09-17 §7.66)
-PROFILES=()
-# START_PROFILES 是这次要启动的 profile 子集。DO_RESTART=1 时 = PROFILES,
-# --no-restart 时为空。§7.67 简化:不再有 --with,START_PROFILES 永远等于
-# PROFILES 或空,无第三种形态。
-START_PROFILES=()
+# §7.69 单 profile 架构:CLI 收敛到 --profile=<name>(单数),默认 dsh-edge
+PROFILE=""
 
 print_help() {
-  sed -n '2,27p' "$0"
+  sed -n '2,30p' "$0"
 }
 
 # 别名规范化：把 user-friendly 短名(tui/edge)映射到 DSH profile 真名
@@ -63,64 +59,20 @@ canonical_profile() {
 
 for arg in "$@"; do
   case "$arg" in
-    --all)             PROFILES=(dsh-tui web) ;;
-    --profiles=*)      IFS=',' read -ra PROFILES <<< "${arg#*=}" ;;
-    --profiles)        shift; IFS=',' read -ra PROFILES <<< "${1:-}" ;;
-    --to-profile)      shift; echo "warning: --to-profile is deprecated, use --profiles= or --all" >&2; PROFILES=("${1:-}") ;;
-    --to-profile=*)    echo "warning: --to-profile is deprecated, use --profiles= or --all" >&2; PROFILES=("${arg#*=}") ;;
-    --no-restart)      DO_RESTART=0 ;;
-    --skip-pnpm)       DO_PNPM=0 ;;
-    --force-install)   FORCE_INSTALL=1 ;;
-    -h|--help)         print_help; exit 0 ;;
+    --profile=*)      PROFILE="$(canonical_profile "${arg#*=}")" ;;
+    --profile)        shift; PROFILE="$(canonical_profile "${1:-}")" ;;
+    --no-restart)     DO_RESTART=0 ;;
+    --skip-pnpm)      DO_PNPM=0 ;;
+    --force-install)  FORCE_INSTALL=1 ;;
+    -h|--help)        print_help; exit 0 ;;
     *) echo "unknown flag: $arg" >&2; exit 2 ;;
   esac
 done
 
-# 默认：同步 dsh-tui + web + dsh-edge,且都启动(§7.66 dsh-edge 也并入默认)
-if [ ${#PROFILES[@]} -eq 0 ]; then
-  PROFILES=(dsh-tui web dsh-edge)
+# §7.69 默认 dsh-edge —— 项目自有 headless,HTTP-only,无 UI 干扰
+if [ -z "$PROFILE" ]; then
+  PROFILE="dsh-edge"
 fi
-
-# §7.67 简化:DO_RESTART=1 时 START_PROFILES = PROFILES(全启);否则空(--no-restart)
-if [ "$DO_RESTART" = 1 ]; then
-  START_PROFILES=("${PROFILES[@]}")
-fi
-
-# Canonical 化：tui → dsh-tui 等;同时检测同一 profile 被多次列出的 dup
-_canonical=()
-declare -A _seen=()
-for _p in "${PROFILES[@]}"; do
-  _c="$(canonical_profile "$_p")"
-  if [ -z "${_seen[$_c]:-}" ]; then
-    _canonical+=("$_c")
-    _seen[$_c]=1
-  fi
-done
-PROFILES=("${_canonical[@]}")
-
-# START_PROFILES 同样 canonical 化(虽 §7.67 后 = PROFILES,但保留健壮性)
-_canonical=()
-unset _seen
-declare -A _seen=()
-for _p in "${START_PROFILES[@]}"; do
-  _c="$(canonical_profile "$_p")"
-  if [ -z "${_seen[$_c]:-}" ]; then
-    _canonical+=("$_c")
-    _seen[$_c]=1
-  fi
-done
-START_PROFILES=("${_canonical[@]}")
-
-# PROFILE → port 映射。新增 profile 时在这里加一行;同一台机器多个
-# profile 共存时端口必须互不相同。
-port_for_profile() {
-  case "$(canonical_profile "$1")" in
-    dsh-tui)  echo 21018 ;;
-    web)      echo 21017 ;;
-    dsh-edge) echo 21019 ;;
-    *)        echo 21017 ;;
-  esac
-}
 
 if ! command -v dsh >/dev/null 2>&1; then
   echo "未检测到 dsh CLI。先安装官方客户端：" >&2
@@ -139,9 +91,11 @@ echo "==> [1/4] compile TypeScript"
 cd "$REPO_ROOT"
 npm run compile >/dev/null
 
-# ── Phase 2: 同步到每个 profile ─────────────────────────────────
+# ── Phase 2: 同步到 target profile ─────────────────────────────────
+# §7.69 单 profile 架构 —— 一次只部署 + 重启一个 profile(target)。
 # 每个 profile 独立走 §2-§3.7 全套（plugin add 上游包 + rsync + 嵌套
 # pkg bootstrap）。编译已经做一次，重复执行 plugin add 是幂等的。
+PROFILES=("$PROFILE")
 for PROFILE in "${PROFILES[@]}"; do
   PROFILE_DIR="$DSH_HOME/profiles/$PROFILE"
   NESTED_PKG="$PROFILE_DIR/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent"
@@ -312,17 +266,16 @@ if [ -d "$USER_PRESET_SRC" ]; then
   fi
 fi
 
-# ── Phase 3: 启动 START_PROFILES 里的 profile ─────────────────────
-# 顺序而非并行的原因:每个 profile 启动后端口立刻占用,下一个
-# profile 起来时能通过 port_is_free 校验确认没撞。若并行启动,
-# 第一个启动的还没 bind 之前第二个会以为端口空闲然后 EADDRINUSE。
+# ── Phase 3: 启动 target profile（单 profile 架构 §7.69）───────────
+# §7.69: 一次只跑一个 profile —— 部署前先杀掉其他 profile 的 dsh 进程,
+# 避免端口冲突(都吃 :21017)+ audit TOCTOU race。target profile 本身
+# 也要重启(确保拿新代码)。
 #
-# §7.67 简化:DO_RESTART=1 时 START_PROFILES = PROFILES,启动所有;
-# --no-restart opt-out,跳过整个 Phase 3。
-if [ "$DO_RESTART" = 0 ] || [ ${#START_PROFILES[@]} -eq 0 ]; then
+# §7.65: DO_RESTART=1 时启;--no-restart opt-out,跳过整个 Phase 3。
+if [ "$DO_RESTART" = 0 ]; then
   echo "==> [3/4] 不启动(--no-restart opt-out;去掉 --no-restart 重跑即启)"
-  echo "    已同步 profiles: ${PROFILES[*]}"
-  echo "    手动启动: cd \$DSH_HOME/profiles/<name> && source .env.sh && dsh --profile <name>"
+  echo "    已同步 profile: $PROFILE"
+  echo "    手动启动: cd \$DSH_HOME/profiles/$PROFILE && source .env.sh && dsh --profile $PROFILE"
   exit 0
 fi
 
@@ -358,114 +311,124 @@ if [ ! -x "$DSH_BIN" ]; then
 fi
 
 echo
-echo "==> [3/4] restart DSH (profiles: ${PROFILES[*]})"
+echo "==> [3/4] restart DSH (profile: $PROFILE)"
 
-# 记录每个 profile 的启动结果，最后汇总报告
-declare -A START_RESULT
-START_ORDER=()
+# §7.69 单 profile 架构 — 杀掉其他 profile 的 dsh 进程。
+# 所有 profile 都吃 :21017,并发跑两个会 EADDRINUSE + 触发 §7.68 audit
+# TOCTOU race;切 profile 前必杀旧的。target profile 自己下面也重启拿新代码。
+OTHER_PROFILES=()
+for _p in dsh-tui web dsh-edge; do
+  [ "$_p" != "$PROFILE" ] && OTHER_PROFILES+=("$_p")
+done
 
-for PROFILE in "${START_PROFILES[@]}"; do
-  PROFILE_DIR="$DSH_HOME/profiles/$PROFILE"
-  INLINE_PORT="$(port_for_profile "$PROFILE")"
-  LOG="${DSH_EDGE_LOG:-$DSH_HOME/profiles/$PROFILE/run.log}"
-
-  echo
-  echo "  ── profile: $PROFILE (port=$INLINE_PORT, log=$LOG) ──"
-
-  # 只匹配真正的 dsh node 进程（命令行含 'node' 和 'dsh'），避免
-  # 把 pgrep 自身或包装 shell 一起杀掉。
-  pids=$(ps -eo pid,cmd 2>/dev/null | awk '/node.*dsh --profile '"$PROFILE"'/{print $1}') || true
+_killed_any=0
+for OTHER in "${OTHER_PROFILES[@]}"; do
+  pids=$(ps -eo pid,cmd 2>/dev/null | awk '/node.*dsh --profile '"$OTHER"'/{print $1}') || true
   pids=$(echo "$pids" | tr -s '[:space:]' ' ' | sed 's/^ *//;s/ *$//')
   if [ -n "$pids" ]; then
-    echo "      killing PIDs: $pids"
+    echo "      killing other profile: $OTHER (PIDs: $pids)"
     # shellcheck disable=SC2086
     kill $pids 2>/dev/null || true
-    for _ in 1 2 3 4 5; do
-      sleep 1
-      ps -eo pid,cmd 2>/dev/null | grep -q "node.*dsh --profile $PROFILE" || break
-    done
-  fi
-
-  # §7.43: 等待端口真正空闲。TIME_WAIT 会把 TCP 端口挂 ~60s，必须
-  # 探测端口而非只看进程退出，否则会 EADDRINUSE。
-  echo "      waiting for port $INLINE_PORT to be free …"
-  for _ in 1 2 3 4 5 6 7 8 9 10; do
-    if port_is_free "$INLINE_PORT"; then
-      echo "      port $INLINE_PORT is free"
-      break
-    fi
-    sleep 1
-  done
-
-  mkdir -p "$(dirname "$LOG")"
-
-  # 优先 source profile-local .env.sh（web profile 自带），fallback repo .env.sh
-  PROFILE_ENV_SH="$PROFILE_DIR/.env.sh"
-  if [ -f "$PROFILE_ENV_SH" ]; then
-    _LAUNCH_ENV="source '$PROFILE_ENV_SH' 2>/dev/null || true; export DSH_EDGE_HTTP_PORT=${INLINE_PORT}"
-  else
-    _LAUNCH_ENV="source '$REPO_ROOT/.env.sh' 2>/dev/null || true; export DSH_EDGE_HTTP_PORT=${INLINE_PORT}"
-  fi
-  echo "      DSH_EDGE_HTTP_PORT=${INLINE_PORT} (profile=${PROFILE}, forced inline)"
-
-  # 启动（后台，detach）。nohup + disown 双保险，让进程不被 shell
-  # 退出时的 SIGHUP 杀掉。
-  nohup bash -c "$_LAUNCH_ENV && exec '$DSH_BIN' --profile $PROFILE" \
-    > "$LOG" 2>&1 &
-  NEW_PID=$!
-  disown 2>/dev/null || true
-  echo "      launched PID=$NEW_PID"
-
-  # 等 dsh 真正启动（grep intentRouter: found 或 dsh web: http:// 行）
-  for _ in 1 2 3 4 5 6 7 8; do
-    sleep 1
-    ps -eo pid,cmd 2>/dev/null | grep -q "node.*dsh --profile $PROFILE" || continue
-    grep -q 'dsh web: http://\|intentRouter: found' "$LOG" 2>/dev/null && break
-  done
-
-  if ps -eo pid,cmd 2>/dev/null | grep -q "node.*dsh --profile $PROFILE"; then
-    START_RESULT["$PROFILE"]="OK"
-    START_ORDER+=("$PROFILE")
-    echo "      ✓ $PROFILE up"
-  else
-    START_RESULT["$PROFILE"]="FAIL"
-    START_ORDER+=("$PROFILE")
-    echo "      ✗ $PROFILE did not stay up. tail of $LOG:" >&2
-    tail -n 15 "$LOG" >&2 || true
+    _killed_any=1
   fi
 done
+
+if [ "$_killed_any" = 1 ]; then
+  echo "      waiting for other profiles to exit ..."
+  for _ in 1 2 3 4 5; do
+    sleep 1
+    _any_left=0
+    for OTHER in "${OTHER_PROFILES[@]}"; do
+      if ps -eo pid,cmd 2>/dev/null | grep -q "node.*dsh --profile $OTHER"; then
+        _any_left=1
+        break
+      fi
+    done
+    [ "$_any_left" = 0 ] && break
+  done
+fi
+
+# §7.69 — kill target profile 的旧进程（拿新代码）
+PROFILE_DIR="$DSH_HOME/profiles/$PROFILE"
+LOG="${DSH_EDGE_LOG:-$DSH_HOME/profiles/$PROFILE/run.log}"
+pids=$(ps -eo pid,cmd 2>/dev/null | awk '/node.*dsh --profile '"$PROFILE"'/{print $1}') || true
+pids=$(echo "$pids" | tr -s '[:space:]' ' ' | sed 's/^ *//;s/ *$//')
+if [ -n "$pids" ]; then
+  echo "      killing $PROFILE (PIDs: $pids)"
+  # shellcheck disable=SC2086
+  kill $pids 2>/dev/null || true
+fi
+for _ in 1 2 3 4 5; do
+  sleep 1
+  ps -eo pid,cmd 2>/dev/null | grep -q "node.*dsh --profile $PROFILE" || break
+done
+
+# §7.43: 等待端口真正空闲。TIME_WAIT 会把 TCP 端口挂 ~60s,必须探测端口
+# 而非只看进程退出,否则会 EADDRINUSE。§7.69 端口统一 :21017。
+echo "      waiting for port 21017 to be free ..."
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  if port_is_free 21017; then
+    echo "      port 21017 is free"
+    break
+  fi
+  sleep 1
+done
+
+mkdir -p "$(dirname "$LOG")"
+
+# §7.69 — 端口统一 :21017,不再 inline force。source chain 自兜底:
+#   profile-local .env.sh(若有) → repo .env.sh → bundle patch 默认(21017)。
+PROFILE_ENV_SH="$PROFILE_DIR/.env.sh"
+if [ -f "$PROFILE_ENV_SH" ]; then
+  _LAUNCH_ENV="source '$PROFILE_ENV_SH' 2>/dev/null || true"
+else
+  _LAUNCH_ENV="source '$REPO_ROOT/.env.sh' 2>/dev/null || true"
+fi
+echo "      DSH_EDGE_HTTP_PORT=\${DSH_EDGE_HTTP_PORT:-21017} (profile=$PROFILE, source chain 兜底)"
+
+# 启动（后台,detach）。nohup + disown 双保险,让进程不被 shell 退出
+# 时的 SIGHUP 杀掉。
+nohup bash -c "$_LAUNCH_ENV && exec '$DSH_BIN' --profile $PROFILE" \
+  > "$LOG" 2>&1 &
+NEW_PID=$!
+disown 2>/dev/null || true
+echo "      launched PID=$NEW_PID"
+
+# 等 dsh 真正启动（grep intentRouter: found 或 dsh web: http:// 行）
+for _ in 1 2 3 4 5 6 7 8; do
+  sleep 1
+  ps -eo pid,cmd 2>/dev/null | grep -q "node.*dsh --profile $PROFILE" || continue
+  grep -q 'dsh web: http://\|intentRouter: found' "$LOG" 2>/dev/null && break
+done
+
+if ps -eo pid,cmd 2>/dev/null | grep -q "node.*dsh --profile $PROFILE"; then
+  START_OK=1
+  echo "      ✓ $PROFILE up"
+else
+  START_OK=0
+  echo "      ✗ $PROFILE did not stay up. tail of $LOG:" >&2
+  tail -n 15 "$LOG" >&2 || true
+fi
 
 # ── Phase 4: 汇总报告 ───────────────────────────────────────────
 echo
 echo "==> [4/4] deploy summary"
 
-OK_COUNT=0
-FAIL_COUNT=0
-for PROFILE in "${START_ORDER[@]}"; do
-  PORT="$(port_for_profile "$PROFILE")"
-  case "${START_RESULT[$PROFILE]}" in
-    OK)   echo "  ✓ $PROFILE :$PORT"
-          OK_COUNT=$((OK_COUNT + 1)) ;;
-    FAIL) echo "  ✗ $PROFILE FAILED — see $DSH_HOME/profiles/$PROFILE/run.log"
-          FAIL_COUNT=$((FAIL_COUNT + 1)) ;;
-  esac
-done
-
-echo
-if [ "$FAIL_COUNT" -gt 0 ]; then
-  echo "deploy PARTIAL: $OK_COUNT up, $FAIL_COUNT failed."
-  echo "  排查: tail -f \$DSH_HOME/profiles/<name>/run.log"
+if [ "$START_OK" = 1 ]; then
+  echo "  ✓ $PROFILE :21017"
+else
+  echo "  ✗ $PROFILE FAILED — see $DSH_HOME/profiles/$PROFILE/run.log"
+  echo
+  echo "deploy FAILED. 排查: tail -f \$DSH_HOME/profiles/$PROFILE/run.log"
   exit 1
 fi
 
-echo "deploy OK: ${START_PROFILES[*]} (sync 范围: ${PROFILES[*]})."
+echo
+echo "deploy OK: $PROFILE"
 echo "  访问入口:"
-for PROFILE in "${START_PROFILES[@]}"; do
-  PORT="$(port_for_profile "$PROFILE")"
-  case "$PROFILE" in
-    web)      echo "    web:    http://127.0.0.1:$PORT/  (web UI at :3080 if dsh-web-app installed)" ;;
-    dsh-tui)  echo "    dsh-tui: 终端已在运行；HTTP API http://127.0.0.1:$PORT/v1/chat" ;;
-    dsh-edge) echo "    dsh-edge: HTTP API http://127.0.0.1:$PORT/v1/chat (GET /v1/health; 无 UI)" ;;
-    *)        echo "    $PROFILE: http://127.0.0.1:$PORT/" ;;
-  esac
-done
+case "$PROFILE" in
+  web)      echo "    web:    http://127.0.0.1:21017/  (web UI at :3080 if dsh-web-app installed)" ;;
+  dsh-tui)  echo "    dsh-tui: 终端已在运行;HTTP API http://127.0.0.1:21017/v1/chat" ;;
+  dsh-edge) echo "    dsh-edge: HTTP API http://127.0.0.1:21017/v1/chat (GET /v1/health; 无 UI)" ;;
+  *)        echo "    $PROFILE: http://127.0.0.1:21017/" ;;
+esac

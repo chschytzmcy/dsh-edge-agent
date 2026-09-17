@@ -115,12 +115,12 @@ cd dsh-edge-agent
 pnpm install
 pnpm run compile
 
-# §7.65 (2026-09-17): 默认同步 + 启动;§7.67 去掉 --with,只 --profiles + --no-restart
-./install.sh                            # 同步 + 启动 dsh-tui + web + dsh-edge(三全启)
-./install.sh --profiles=dsh-edge        # 同步 + 启动 dsh-edge(单 profile)
-./install.sh --profiles=web,dsh-edge    # 同步 + 启动 web + dsh-edge
-./install.sh --no-restart               # 只同步不启(开发改代码反复迭代时)
-./install.sh --profiles=dsh-tui --no-restart  # 只同步 dsh-tui 不启
+# §7.69 (2026-09-17): 单 profile 架构 —— 默认 dsh-edge,杀其他+启指定,端口统一 :21017
+./install.sh                            # 默认：杀 dsh-tui + web,同步 + 启 dsh-edge(:21017)
+./install.sh --profile=web              # 切 web:杀 dsh-tui + dsh-edge,同步 + 启 web(:21017 + webui :3080)
+./install.sh --profile=tui              # 切 dsh-tui:杀 web + dsh-edge,同步 + 启 dsh-tui(:21017)
+./install.sh --profile=dsh-edge         # 显式(与默认等价)
+./install.sh --no-restart               # 只同步不杀不启(开发改代码反复迭代时)
 
 # 手动启动某个 profile（开发循环）
 cd ~/.dsh/profiles/dsh-tui
@@ -130,23 +130,20 @@ disown
 
 ### 方式二：把 bundle 装到现有 dsh-tui / web profile（profile-agnostic）
 
-新 install.sh 把 bundle 同步到所有目标 profile 的嵌套包 + 重启对应 dsh：
+§7.69 单 profile 架构 —— install.sh 一次只部署一个 profile(target),先杀掉其他 profile 进程,再 restart target 拿新代码:
 
 ```bash
-# 默认：并存部署 dsh-tui + web
+# 默认：部署 dsh-edge(项目自有 headless,无 UI)
 ./install.sh
 
-# 只装一个
-./install.sh --profiles=web
+# 切到浏览器宿主
+./install.sh --profile=web
 
-# §7.61 项目自有 headless profile(无 UI,HTTP-only 入口 :21019);§7.67 默认重启
-./install.sh --profiles=dsh-edge
-
-# 装任意自定义 profile
-./install.sh --profiles=my-edge
+# 切到终端宿主
+./install.sh --profile=tui   # 或 --profile=dsh-tui
 ```
 
-> bundle 是 profile-agnostic 的——`--profiles=` 接受任何 DSH profile 名（dsh-tui / web / dsh-edge / 自定义）。端口在 install.sh 里的 `port_for_profile()` 映射（现役登记：dsh-tui 21018 / web 21017 / dsh-edge 21019），未来加新 profile 必须在那里同步登记。
+> bundle 是 profile-agnostic 的——`--profile=` 接受任何 DSH profile 名(dsh-tui / web / dsh-edge / 自定义)。HTTP 端口统一 :21017(http-api schema 默认,`http-api.ts:63`);切 profile 前 install.sh 必杀其他进程(避免 EADDRINUSE + audit TOCTOU race)。加新 profile 只在 install.sh `OTHER_PROFILES` 列表里添一行即可。
 
 ### 方式三：Windows
 
@@ -160,36 +157,34 @@ dsh plugin --profile dsh-tui add @deepseek-harness-edge-agent/dsh-edge-agent
 
 ### 首次启动流程
 
-首次运行 `install.sh`（默认 `--profiles=dsh-tui,web`）会执行：
+首次运行 `install.sh`（默认 `--profile=dsh-edge`，§7.69 单 profile 架构）会执行：
 
 1. 检测 dsh CLI / pnpm 是否已安装
-2. `dsh plugin add @deepseek-harness-edge-agent/dsh-edge-agent` 注册本 bundle 到每个目标 profile 的 `dsh.profile.bundles` 列表
-3. pnpm 装 7 个上游包（dsh-agent-loop / dsh-tool-web / dsh-web / dsh-web-search-deepseek / dsh-skill / dsh-tool-skill / dsh-skill-filesystem）— 每个 profile 各装一次
+2. `dsh plugin add @deepseek-harness-edge-agent/dsh-edge-agent` 注册本 bundle 到 target profile 的 `dsh.profile.bundles` 列表
+3. pnpm 装 7 个上游包（dsh-agent-loop / dsh-tool-web / dsh-web / dsh-web-search-deepseek / dsh-skill / dsh-tool-skill / dsh-skill-filesystem）
 4. rsync `lib/` → profile 嵌套包
 5. 同步 `cordis.patch.yml` 到嵌套包（**bundle-level patch**，§7.31 fix）
-6. 数据面单 root `~/.dsh-edge-agent/`（§7.36 起各 profile 共享，历史上"6 个 channel 目录按 profile 分根"的说法已废；§7.61 唯一例外：dsh-edge 的审计流经 profile skin 单独落 `~/.dsh-edge-agent/audit-dsh-edge/`，规避多进程并发 flush 的整文件读-改-写竞争）
+6. 数据面单 root `~/.dsh-edge-agent/`（§7.36 起各 profile 共享，§7.68 撤回 §7.61 audit 分流，所有 profile 共写 `audit/audit.plain.jsonl`）
 7. 加载默认策略 `tests/fixtures/privacy-policy.json`（也可由 `DSH_EDGE_PRIVACY_POLICY_PATH` 覆盖）
-8. 顺序启动 dsh-tui (port 21018) → web (port 21017)：每个 profile 独立 pkill → port-wait → nohup launch
+8. **杀掉其他 profile 进程**(dsh-tui + web,§7.69)+ 杀掉 target profile 旧进程 + restart target 拿新代码,HTTP 端口统一 :21017
 
-完成后 TUI 进入终端交互；浏览器访问 `:3080` 即可使用 webui chat。
+完成后 HTTP API 监听 `:21017`(`/v1/chat`, GET `/v1/health`)。切 UI 用 `./install.sh --profile=web`(webui `:3080`)或 `--profile=tui`(终端)。
 
 ### 验证安装
 
 ```bash
-# 1. bundle 已注册到 dsh-tui 和 web profile？
-grep '@deepseek-harness-edge-agent/dsh-edge-agent' ~/.dsh/profiles/dsh-tui/package.json
-grep '@deepseek-harness-edge-agent/dsh-edge-agent' ~/.dsh/profiles/web/package.json
+# 1. bundle 已注册到 target profile？
+grep '@deepseek-harness-edge-agent/dsh-edge-agent' ~/.dsh/profiles/dsh-edge/package.json
 
 # 2. 19 个 plugin 全部挂载？
-dsh --profile dsh-tui --dump-config | grep -E 'input-guard|file-logger|intent-router|sanitizer' | wc -l
+dsh --profile dsh-edge --dump-config | grep -E 'input-guard|file-logger|intent-router|sanitizer' | wc -l
 # 期望：≥4
 
-# 3. 双 profile 并存运行？
-pgrep -af 'dsh --profile (dsh-tui|web)' | grep -v pgrep
-ss -tlnp | grep -E '21017|21018'   # 期望：两个端口都在听
+# 3. 单 profile 运行(§7.69)?只一个 dsh 进程 + :21017 在听
+pgrep -af 'dsh --profile' | grep -v pgrep
+ss -tlnp | grep -E '21017'
 
-# 4. http-api（tui 21018 / web 21017）
-curl -s --max-time 3 http://127.0.0.1:21018/v1/health
+# 4. http-api 健康检查
 curl -s --max-time 3 http://127.0.0.1:21017/v1/health
 ```
 
@@ -525,24 +520,18 @@ dsh-edge-agent 通过**环境变量**和 `cordis.yml` 进行配置。所有环�
 
 ---
 
-## 🌐 入口架构（§7.43 重构后：--profiles=dsh-tui,web 默认并存启动）
+## 🌐 入口架构（§7.69 重构后：单 profile 架构，端口统一 :21017）
 
-> **2026-09-11 §7.43 修订**：install.sh 重写后默认 `--profiles=dsh-tui,web` 并存启动。dsh-tui 用 :21018，web 用 :21017，两个 profile 同时在跑。`--all` / `--profiles=<csv>` / `--to-profile=<name>` (deprecated) 控制部署范围。
+> **2026-09-17 §7.69 修订**：install.sh 单 profile 架构 —— 一次只跑一个 profile。默认 `--profile=dsh-edge`(项目自有 headless,无 UI),HTTP 端口统一 :21017(http-api schema 默认)。切换用 `--profile=web`(webui `:3080` + http-api `:21017`)或 `--profile=tui`(终端 UI + http-api `:21017`)。切 profile 前 install.sh 自动杀掉其他 profile 进程。
 >
-> §7.33 仍然有效：dsh-edge-agent 是"纯 plugins" bundle。http-api plugin 当前 **disabled**（代码保留，未来可手动启用）。
+> §7.33 仍然有效：dsh-edge-agent 是"纯 plugins" bundle。http-api plugin **re-enabled**(2026-09-04 §7.59 修),所有 profile 都吃同一份 http-api。
 
-**默认入口（§7.43 dsh-tui profile 宿主）**：
+**默认入口（§7.69 dsh-edge profile 宿主）**：
 
 | 入口 | 端口 | 鉴权 | 目标用户 | 状态 |
 |---|---|---|---|---|
-| **TUI**（dsh-tui bundle） | `:21018` | loopback trust | 终端用户 / 开发者 | ✅ enabled（§7.43 primary） |
-| **DSH 官方 Web UI**（SPA + apiproxy） | `:3080` | loopback trust + pairing | 浏览器 / 真人用户 / IM 渠道 | ✅ 默认并存启动 |
-
-**已 disabled 的可选入口**（代码保留，未来手动启用见下文 §"重新启用 http-api"）：
-
-| 入口 | 端口 | 用途 | 状态 |
-|---|---|---|---|
-| **http-api**（自研 REST + SSE） | `:21017` | CLI / SDK / cURL / 外部 agent | ❌ disabled（`cordis.patch.yml:313 disabled: true`）|
+| **http-api**（自研 REST + SSE） | `:21017` | bearer `EDGE_API_KEY` | CLI / SDK / cURL / 外部 agent / mobile | ✅ enabled（§7.59 修） |
+| **DSH 官方 Web UI**（SPA + apiproxy） | `:3080` | loopback trust + pairing | 浏览器 / 真人用户 / IM 渠道 | ✅ 切 web profile 时启 |
 
 ### 浏览器 / IM 用户 → `:3080`
 

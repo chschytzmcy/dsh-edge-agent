@@ -32,11 +32,11 @@ help:
 	@echo "  $(GREEN)make install$(NC)       - 安装到本地系统"
 	@echo "  $(GREEN)make clean$(NC)         - 清理构建产物"
 	@echo ""
-	@echo "本地部署到 DSH profile:"
-	@echo "  $(GREEN)./install.sh$(NC)                # 默认部署 + 重启 dsh-tui + web + dsh-edge（§7.66/§7.67）"
-	@echo "  $(GREEN)./install.sh --profiles=dsh-tui$(NC)   # 只部署 + 重启 dsh-tui"
-	@echo "  $(GREEN)./install.sh --profiles=web$(NC)       # 只部署 + 重启 web"
-	@echo "  $(GREEN)./install.sh --profiles=dsh-edge$(NC)  # §7.61 headless（HTTP :21019，无 UI）"
+	@echo "本地部署到 DSH profile(§7.69 单 profile 架构,端口统一 :21017):"
+	@echo "  $(GREEN)./install.sh$(NC)                # 默认：杀其他 profile + 部署 + 启 dsh-edge"
+	@echo "  $(GREEN)./install.sh --profile=web$(NC)       # 切 web:杀 dsh-tui + dsh-edge,部署 + 启 web"
+	@echo "  $(GREEN)./install.sh --profile=tui$(NC)       # 切 dsh-tui:杀 web + dsh-edge,部署 + 启 dsh-tui"
+	@echo "  $(GREEN)./install.sh --profile=dsh-edge$(NC)  # 显式 dsh-edge(§7.61 headless,HTTP :21017 无 UI)"
 
 # 构建
 build:
