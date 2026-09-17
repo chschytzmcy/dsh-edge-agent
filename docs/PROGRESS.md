@@ -7331,3 +7331,152 @@ audit 配置的 `maxFileAgeDays: 7`(cordis.patch.yml:443)同样从未生效过�
 - `audit-log.ts` 加 flock IPC 锁治根 race(治本要改产品码,user 选"接受"分支不治);如未来 audit 完整性变硬约束再回头做。
 - `~/.dsh/profiles/dsh-edge/node_modules/.../lib/dsh-adapter/audit-log.ts` 仍是 §7.61 之前的代码;部署新 bundle lib/ 时已 rsync,但源码不动。
 - 历史 PROGRESS §7.61 条目(6922/6926/6932/6938/7022)不重写 —— 历史记录 §7.61 当下事实,撤回决议放 §7.68 即可。
+
+### §7.75 .env × .env.sh × 代码 匹配性收敛(2026-09-17)
+
+**问题**:user 持续 pushback 5 轮删除冗余 env var(M1 → M7.75 收口序列):`MAIN_PROVIDER` / `MODEL_ROUTER_DEFAULT` / `ROUTER_LOCAL_PROVIDER` / `INPUT_GUARD_LOCAL_MODEL` 四变量逐步证明"无代码消费者 / 死字段 / 单一派生即可"。终态配置 = 2 个 LLM 池(CLOUD/LOCAL) + 2 个 stage 指针(GUARD/INTENT)。但**收口后整体架构是否仍自洽**——即 `.env` 45 行裸名 → `.env.sh` 45 个 DSH_EDGE_* export → 代码 60 个 DSH_EDGE_* 消费点(实际 grep 命中 = 64 含 artifact)——三个集合的覆盖关系是否漏配 / 多配 / 错配,**没有过任何形式的量化扫描**。
+
+**结论先行**:`bash -n` × 3 + `set -a; . ./.env; set +a; . ./.env.sh` 实测加载 + 全量 grep 三方集合 diff,结果:
+- **45 个 `.env.sh` export 全部命中代码消费者(无 orphan)**;
+- **60 个代码消费点中 19 个未被 `.env.sh` export(全部有意,4 类分组:debug-only / 脚本专属 / HOME 兜底 / 历史残留)**;
+- **§7.75 之前的两处 P0 不一致已修复**:① `.env.example` 的 `CLOUD_LLM_MODEL=deepseek-chat` 跟 `.env` 实际 `deepseek-flash` 错开;② `http-api.ts:1648` 的 cloud fallback 硬编码 `'deepseek-chat'` 未读 `.env` CLOUD_LLM_MODEL → model-router fallback 路径上行 model 跟用户配置错开。
+- 修后 `pnpm test` baseline 786/1skip → 787/1skip(+1 §7.75 新用例,**零回归**);prod ops log 实证:`intent=CLOUD → cloud-llm / deepseek-flash` 与 `.env` 设的 CLOUD_LLM_MODEL 一致。
+
+**M1 → §7.75 收敛序列**(user 5 轮 pushback 删冗余 var 归档):
+
+| 轮 | user 反馈 | 变量 | 判定 | 修法 |
+|---|---|---|---|---|
+| M1 | "应该有多个 LLM 的配置,然后 prompt-guard 选择对应的 LLM,其他阶段也选择对应的 LLM" | (新增需求) | §7.75 起点 | 设计 §1 池 + §2 指针双层架构 |
+| M2 | "明确下,增加 LOCAL 和 CLOUD 的 LLM 配置" | (补 LOCAL 池) | 池架构不够细 | §1 拆 CLOUD/LOCAL 两个池,各自 baseurl/model/key_env |
+| M3 | "CLOUD LLM 为什么没有 BASEURL" | CLOUD_LLM_BASEURL | DSH 黑名单精确名 DEEPSEEK_BASE_URL 不能直放 .env | CLOUD_LLM_BASEURL → DSH_EDGE_CLOUD_LLM_BASEURL,黑名单名作 inherited-env 兜底 |
+| M4 | "不应该存在 MAIN_PROVIDER,agent-loop 调用哪个取决 意图识别选择的是 local 还是 cloud" | MAIN_PROVIDER | 完全 dead,意图分类结果才是真相 | 删除(注释 + .env + .env.sh + cordis.patch.yml + .env.example 全部清理) |
+| M5 | "MODEL_ROUTER_DEFAULT 是不是也还无用的?" | MODEL_ROUTER_DEFAULT | `model-router.ts:143` 构造只接 localModels/cloudModels,`defaultModel` 字段 v0.1.x 死字段 | 删除 + cordis.patch.yml #391-393 注释钉死 |
+| M6 | "ROUTER_LOCAL_PROVIDER=local-llm 有用吗?" | ROUTER_LOCAL_PROVIDER | input-guard.ts:78 默认 `localProvider: 'local-llm'`,无外部覆盖需求 | 删除 |
+| M7 | "去掉 INPUT_GUARD_LOCAL_MODEL" | INPUT_GUARD_LOCAL_MODEL | input-guard.ts:79 默认 `qwen3-4b-instruct-2507` ≠ LOCAL_LLM_MODEL=`qwen3.7-plus`,必须注入,但注入值必须等于 LOCAL_LLM_MODEL,既然相等就直接派生 | .env.sh:151 `export DSH_EDGE_LOCAL_MODEL="${LOCAL_LLM_MODEL}"` |
+
+**全盘 diff 量化**(基线 = `.env` 45 裸名 KEY + `.env.sh` 45 DSH_EDGE_* export + `cordis.patch.yml` / `src/dsh-adapter/*.ts` / `scripts/*.ts` 中所有 `process.env.DSH_EDGE_*` / `env.DSH_EDGE_*` 唯一名):
+
+```
+.env.sh exports (45):
+  AUDIT_FLUSH_MS  AUDIT_MIN_LEVEL  CLOUD_KEY_ENV  CLOUD_LLM_BASEURL
+  GUARD_MODEL  GUARD_MODEL_MAX_INPUT  GUARD_MODEL_MODEL  GUARD_MODEL_PROVIDER
+  GUARD_MODEL_TIMEOUT_MS  HTTP_HOST  HTTP_PORT  INPUT_GUARD  INTENT_CLOUD_KEYWORDS
+  INTENT_CONFIDENCE_THRESHOLD  INTENT_FALLBACK_KEYWORDS  INTENT_LLM_TIMEOUT_MS
+  INTENT_LOCAL_ENTITIES  INTENT_MAX_INPUT  INTENT_MODEL  INTENT_PROVIDER
+  INTENT_RECENT_LIMIT  LOCAL_LLM_BASEURL  LOCAL_LLM_KEY_ENV  LOCAL_LLM_MODEL
+  LOCAL_MODEL  LOCAL_TOOLS_ALLOWLIST  LOCAL_TOOLS_WRITABLE  LOG_LEVEL
+  LOG_MAX_AGE_DAYS  LOG_MAX_ROTATED  MAX_BODY_BYTES  MAX_SESSIONS  MODEL
+  PERMISSION_MODE  PERSONA  PROVIDER  REALM_HOT_RELOAD  REALM_WATCH_MS
+  REJECT_POLICY  SANITIZE_DOWNGRADE  SAN_MAX_SESSIONS  SAN_SWEEP_MS  SAN_TTL_MS
+  SESSION_IDLE_MS  TEE_TYPE
+
+code consumers (60 effective, 64 grep hits 含 artifact):
+  = 45 .env.sh export ∪ {19 个未 export,见 §3.D 分组表}
+```
+
+**§3.A P0 不一致(已修)**——`.env.example` vs `.env` CLOUD_LLM_MODEL 错开:
+
+| 文件 | CLOUD_LLM_MODEL | 顶端架构图 CLOUD 行 | 备注 |
+|---|---|---|---|
+| `.env` | `deepseek-flash` | `deepseek-flash` | 实跑真值 |
+| `.env.example` (修前) | `deepseek-chat` | `deepseek-chat` | cp → .env 后用户用 chat(贵/慢) |
+| `.env.example` (修后) | `deepseek-flash` | `deepseek-flash` | §7.75 commit `042f689` |
+
+**§3.B 已知 drift 矩阵——Schema default 与 `.env` 注入值错开**(informational,无 bug):
+
+| 配置点 | Schema default (literal) | `.env` 注入值 | 链路 | 注入覆盖 |
+|---|---|---|---|---|
+| `local-llm-adapter.defaultModel` cordis.patch.yml:384 | `Qwen3-4B-Instruct-2507` | `qwen3.7-plus` | DSH_EDGE_LOCAL_LLM_MODEL | ✓ |
+| `intent-router.classificationModel` cordis.patch.yml:407 | `Qwen3-4B-Instruct-2507` | `qwen3.7-plus` | DSH_EDGE_INTENT_MODEL | ✓ |
+| `prompt-guard.modelDetectionModel` cordis.patch.yml:471 | `Qwen3-4B-Instruct-2507` | `qwen3.7-plus` | DSH_EDGE_GUARD_MODEL_MODEL | ✓ |
+| `input-guard.localModel` cordis.patch.yml:543 | `qwen3-4b-instruct-2507` | `qwen3.7-plus` | DSH_EDGE_LOCAL_MODEL(派生自 LOCAL) | ✓ |
+| `cloud-llm-adapter.defaultModel` cordis.patch.yml:376 | `deepseek-chat` | `deepseek-flash` | DSH_EDGE_MODEL | ✓ |
+| `cloud-llm-adapter` Schema cloud-llm-adapter.ts:98 | `deepseek-chat` | `deepseek-flash` | 同上 | ✓ |
+| `local-llm-adapter` Schema local-llm-adapter.ts:107 | `qwen3-4b` | `qwen3.7-plus` | 同 §1 | ✓ |
+
+**风险面**:全部走 `.env.sh` 注入链 ✓;**唯一隐患** = 裸跑 `dsh --profile dsh-edge` 未 `source .env.sh`(§7.62 教训路径)→ Schema default 兜底命中,**主对话走 qwen3-4b / 云端走 deepseek-chat**——预期行为(设计),但**不是** `.env` 默认状态。install.sh 已强制 source,无需二次补丁。
+
+**§3.C drift 边界**——`DSH_EDGE_PROVIDER` / `DSH_EDGE_MODEL` **只被 agent-default-model 孤儿 row + input-guard Schema default 镜像读**:
+- 消费者:`cordis.patch.yml:84-85`(agent-default-model row,agent-loop 在无意图分类结果时的兜底)
+- 消费者:`src/dsh-adapter/input-guard.ts:86,89`(Schema default 镜像,模块加载时求值)
+- **设计意图**:顶部注释 + load 输出 banner 都明确"`_DEFAULT_FALLBACK_PROVIDER='cloud-llm'`,真 routing 永远走意图分类"。input-guard 的 `defaultCloudProvider` 在 Schema 加载时 snapshot,后续 stage 指针切换不影响它——**不是 bug**(注释说明 "originalProvider 用于 TUI CLOUD→LOCAL→CLOUD 序列恢复,缺值时无害"),只是 drift 面,后续排查要知会。
+
+**§3.D 19 个 DSH_EDGE_* 代码读但 `.env.sh` 未 export 的分类**(全部已知 intent,无设计漏洞):
+
+| 类别 | 变量 | 不 export 理由 |
+|---|---|---|
+| **HOME 兜底**(6) | `DSH_EDGE_AUDIT_ROOT` / `LOG_ROOT` / `STORAGE_ROOT` / `SESSION_ROOT` / `REALM_CONFIG` / `PRIVACY_POLICY_PATH` | cordis.patch.yml 都有 `?? $HOME/.dsh-edge-agent/...` 三段 fallback;§7.68 单 root 架构下整 root 已是 `~/.dsh-edge-agent/`,改根 = 重装,**默认 export 是噪音** |
+| **Debug-only**(2) | `INPUT_GUARD_DEBUG` / `LOG_FILE` | 默认 false,开启 = 深度排障;export 进 shell 污染其他命令 |
+| **脚本专属**(6) | `HTTP_URL` / `HTTP_TOKEN` / `PROFILE_DIR` / `REAL_LLM_REQUIRED` / `LOCAL_LLM_MODE` / `WEB_PORT` | 历史 m4/m5/m6 + e2e-model-detection.sh 专用;普通启动不需 |
+| **隐私路径**(1) | `POLICY_HMAC_KEY` | 可选 secret,KMS 外部注入,`.env.sh` 不 export 合理 |
+| **历史 DEAD / grep artifact**(4) | `TD_BLOCK_LEVEL`(仅 PROGRESS.md:383 残)/ `HOME`(仅 reinstall-dsh.sh:27)/ `INTENT_CONFIDENCE_`(grep 误命中)/ `M`(该 m6-*) | 已过时 / 残文档 / 误命中 |
+
+**§4.2 P0 fix——`http-api.ts:1648` cloud fallback 链修整**:
+- 修前:`isLocal=false` 时 `fallbackModel = 'deepseek-chat'`(硬编码)—— **model-router 走 fallback 路径(model.id === provider.id)时上行 model = `deepseek-chat`**,无视 `.env` CLOUD_LLM_MODEL=deepseek-flash
+- 修后:`fallbackModel = process.env.DSH_EDGE_MODEL ?? 'deepseek-chat'`—— 镜像 `:1647` 行的本地分支写法(已读 `DSH_EDGE_LOCAL_LLM_MODEL`),语义跟 cordis.patch.yml:376 的 `!!js` 表达式对齐
+- 注释同步:`// §7.54: ... wire body wants the actual upstream model name (DSH_EDGE_LOCAL_LLM_MODEL for local, DSH_EDGE_MODEL for cloud)` + `// §7.75: fallback 链从硬编码 'deepseek-chat' 改成读 DSH_EDGE_MODEL (.env CLOUD_LLM_MODEL 注入值)`
+- 测试:`tests/unit/http-api.test.ts` 新增 `'§7.75: honors DSH_EDGE_MODEL env override on the cloud fallback path'` 用例;`afterEach` 同步保存/恢复 `DSH_EDGE_LOCAL_LLM_MODEL` + `DSH_EDGE_MODEL`(原 `prevEnv` 单变量改名 `prevLocal`,新增 `prevCloud`),避免污染其他用例
+- baseline 786/1skip → 787/1skip(+1,无回归)
+
+**链路 dot-tracing 验证**(关键 endpoint 的 `.env` → wire 全链):
+
+主对话走 CLOUD 池(intent=CLOUD):
+```
+.env CLOUD_LLM_MODEL=deepseek-flash
+  ↓ set -a; . .env; set +a
+shell env CLOUD_LLM_MODEL
+  ↓ .env.sh _resolve_model 'cloud-llm'
+DSH_EDGE_MODEL=deepseek-flash
+  ↓ cordis.patch.yml:376 !!js process.env.DSH_EDGE_MODEL ?? 'deepseek-chat'
+cloud-llm-adapter.config.defaultModel = deepseek-flash
+  ↓ ctx 模型resolver → resolveRoute(...)
+§7.54 model-router returns {provider, model}
+  ↓ http-api.ts:1660 resolvedModel = (r.model === r.provider) ? fallbackModel : r.model
+fallbackModel (isLocal=false) = DSH_EDGE_MODEL ?? 'deepseek-chat' = deepseek-flash   ← §7.75 fix
+  ↓ wire body
+POST $CLOUD_LLM_BASEURL/chat/completions  body.model = deepseek-flash   ← 跟 .env 一致
+```
+
+主对话走 LOCAL 池(intent=LOCAL):
+```
+.env LOCAL_LLM_MODEL=qwen3.7-plus
+  ↓ DSH_EDGE_LOCAL_LLM_MODEL
+  ↓ resolveRoute(..., isLocal=true): fallbackModel = DSH_EDGE_LOCAL_LLM_MODEL ?? 'qwen3-4b-instruct-2507'
+POST $LOCAL_LLM_BASEURL/chat/completions  body.model = qwen3.7-plus   ✓
+```
+
+input-guard 降级路径(sanitize-fail / cloud-key-missing / intent=LOCAL):
+```
+DSH_EDGE_LOCAL_MODEL = LOCAL_LLM_MODEL  ← .env.sh:151 派生
+  ↓ cordis.patch.yml:543
+input-guard.config.localModel = qwen3.7-plus
+  ↓ 降级路径用 localProvider='local-llm' + localModel='qwen3.7-plus'
+✓ 跟 .env 真值一致
+```
+
+prompt-guard 模型层(Stage 6):
+```
+GUARD_PROVIDER=local-llm
+  ↓ .env.sh _resolve_model
+DSH_EDGE_GUARD_MODEL_MODEL=qwen3.7-plus
+  ↓ cordis.patch.yml:471
+prompt-guard.config.modelDetectionModel = qwen3.7-plus
+✓
+```
+
+**改动清单**(4 行 hook):
+- `.env.example` 第 62 行 `CLOUD_LLM_MODEL=deepseek-chat` → `deepseek-flash`(同步顶部架构图 2 处 `deepseek-chat` → `deepseek-flash`)
+- `src/dsh-adapter/http-api.ts:1648` `'deepseek-chat'` → `(process.env.DSH_EDGE_MODEL ?? 'deepseek-chat')`(同步 `:1654-1658` §7.54 注释 + 新增 `:1647-1648` §7.75 注释)
+- `tests/unit/http-api.test.ts` `afterEach` 双变量保存/恢复 + 新增 §7.75 cloud fallback env 覆盖用例
+- 文档化:`docs/PROGRESS.md` §7.75(本条目)—— 全盘量化 + M1→§7.75 收口序列 + §3.B drift 矩阵 + §3.D 19 个未 export 分组表 + §4.2 fix dot-tracing
+
+**commit**:`042f689 fix: §7.75 cloud fallback 读 DSH_EDGE_MODEL —— 跟 .env CLOUD_LLM_MODEL 对齐`(3 files / +29 / -11)。
+
+**memory 同步**:
+- 本条目即唯一归档位置(无独立 memory 文件 —— 后续 §3.B/§3.D 排查直接搜 PROGRESS §7.75 即可)
+- §7.75 之前的 pushback 5 轮(M1-M7)历史归档在本条目"M1 → §7.75 收敛序列"表里
+
+**未做**:
+- 不补 `DSH_EDGE_INPUT_GUARD_DEBUG` 等 19 个 debug-only 变量进 `.env.sh` —— 设计意图就是不 export(避免污染 shell),保留 grep artifact 即可
+- 不改 cordis.patch.yml `dsh-edge-agent` 已 §7.33 聚合 disabled 状态 —— 与本条目无关
+- 历史 PROGRESS §7.43 / §7.61 / §7.65 / §7.66 / §7.67 / §7.69 等 §7.55 之前条目不重写,§7.75 收口决议放本条目
