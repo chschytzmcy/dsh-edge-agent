@@ -86,27 +86,45 @@ if ! command -v dsh >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! command -v make >/dev/null 2>&1; then
-  echo "未检测到 make。install.sh 内部调用 'make package' 做 build + tarball，请先安装：" >&2
-  echo "  apt install make       # Debian/Ubuntu" >&2
-  echo "  dnf install make       # Fedora/RHEL" >&2
-  exit 1
-fi
-
 if [ "$DO_PNPM" = 1 ] && ! command -v pnpm >/dev/null 2>&1; then
   echo "未检测到 pnpm。dsh plugin 把安装转发给 pnpm，请先安装：" >&2
   echo "  npm install -g pnpm   （或启用 corepack：corepack enable pnpm）" >&2
   exit 1
 fi
 
-# ── Phase 1: 编译 + 打 tarball（一次性）────────────────────────────
-# §7.71 (2026-09-17): install.sh 内部 'make package' —— build + tarball
-# 一步走完。tarball (REPO_ROOT/dsh-edge-agent-v<X.Y.Z>.tar.gz) 是 release
-# 分发产物,install.sh 自身不读;install.sh 用的是 `package:` 依赖 `build:`
-# 留下的 REPO_ROOT/lib/(已在该目录下),直接 rsync 到 profile。
-echo "==> [1/4] make package (build + tarball)"
-cd "$REPO_ROOT"
-make package
+# §7.72 检测上下文(repo 模式 vs tarball 模式):
+# - 有 tsconfig.json → repo 模式,Phase 1 内部 'make package' 重 build
+# - 无 tsconfig.json → tarball 模式,Phase 1 直接用预编译 lib/(无需 make)
+# 两种模式都从 $REPO_ROOT/lib/ 读部署源;后续 Phase 2-4 不变。
+REPO_MODE=0
+if [ -f "$REPO_ROOT/tsconfig.json" ]; then
+  REPO_MODE=1
+  if ! command -v make >/dev/null 2>&1; then
+    echo "未检测到 make,repo 模式 install.sh 内部调 'make package',请先安装：" >&2
+    echo "  apt install make       # Debian/Ubuntu" >&2
+    echo "  dnf install make       # Fedora/RHEL" >&2
+    exit 1
+  fi
+fi
+
+# ── Phase 1: 准备部署源(REPO_ROOT/lib/)──────────────────────────
+# §7.72 (2026-09-17): 单 install.sh 双模式:
+#   - repo 模式(有 tsconfig.json):内部 'make package' —— 重 build + 出 tarball
+#     给 release 分发用。
+#   - tarball 模式(无 tsconfig.json,解开 release tarball 跑):直接用预编译
+#     lib/(无需 make,无需 tsconfig),把包里的内容部署到本地 DSH profile。
+# 两种模式都从 $REPO_ROOT/lib/ 读;Phase 2-4 共享同一份部署逻辑。
+if [ "$REPO_MODE" = 1 ]; then
+  echo "==> [1/4] repo mode: make package (build + tarball)"
+  cd "$REPO_ROOT"
+  make package
+else
+  echo "==> [1/4] tarball mode: using pre-built lib/ (no tsconfig.json, no make needed)"
+  if [ ! -d "$REPO_ROOT/lib" ]; then
+    echo "error: tarball 缺 lib/ —— 解包不完整或 release 流程坏了。" >&2
+    exit 1
+  fi
+fi
 
 # ── Phase 2: 同步到 target profile ─────────────────────────────────
 # §7.69 单 profile 架构 —— 一次只部署 + 重启一个 profile(target)。

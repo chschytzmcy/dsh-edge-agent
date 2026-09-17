@@ -7056,6 +7056,48 @@ audit 配置的 `maxFileAgeDays: 7`(cordis.patch.yml:443)同样从未生效过�
 - §7.65 留作 "未做" 的 `--restart-at HH:MM` 仍不做。
 - "智能重启" 探针(只在跑的重启)未做,语义沿用 §7.65 的"无脑全启"。
 
+### §7.72 单 install.sh 双模式 —— repo + tarball 上下文自识别(2026-09-17)
+
+**问题**:§7.71 把 install.sh 改成内部 'make package' build + tarball,然后直 rsync REPO_ROOT/lib/ 到 profile。这条路只在 repo 上下文(working copy,带 tsconfig.json)下走得通;**外部用户下载 release tarball → 解开 → 跑 install.sh 时会炸**:
+1. tarball 不含 `tsconfig.json`(.npmignore 排除) → `make package` 报 TS5058
+2. tarball 不含 `src/` → `make build` 没源可编译
+3. 外部用户机器未必有 `make` / `pnpm` / `python3` 等 repo 开发前置
+本质问题:**§7.71 的 install.sh 假设"REPO_ROOT = git clone 出来的工作树",**但 release tarball 解开后的目录就是另一个 REPO_ROOT,语义不一样但 install.sh 没法区分。
+
+**结论先行**(user 原话:"make package 里的 install.sh 就是本项目里部署用的install.sh"—— 单文件双场景):**单 install.sh 双模式自动适配**:
+- **repo 模式**(有 `tsconfig.json`):内部 `make package` 重 build + 出 tarball(本机开发者改代码后跑 install.sh 的场景)
+- **tarball 模式**(无 `tsconfig.json`):跳过 make,直接用预编译 `lib/`(release tarball 解开后跑 install.sh 部署到本机的场景)
+两种模式后续 Phase 2/2.5/3/4 完全相同 —— 都从 `$REPO_ROOT/lib/` 读部署源,统一部署逻辑。
+
+**改动**(install.sh 1 段,Phase 1 + 前置检查):
+- 前置 `make` 检测从无条件改为条件:`if [ "$REPO_MODE" = 1 ] && ! command -v make` —— repo 模式要求 make,tarball 模式不要求(无 tsconfig.json 就设 REPO_MODE=0)
+- 新加 `REPO_MODE` 检测块(在 Phase 1 前):`[ -f "$REPO_ROOT/tsconfig.json" ]` 设 REPO_MODE=1,否则 0
+- **Phase 1 整段重写**:
+  ```bash
+  if [ "$REPO_MODE" = 1 ]; then
+    echo "==> [1/4] repo mode: make package (build + tarball)"
+    cd "$REPO_ROOT" && make package
+  else
+    echo "==> [1/4] tarball mode: using pre-built lib/ (no tsconfig.json, no make needed)"
+    [ ! -d "$REPO_ROOT/lib" ] && { echo "error: tarball 缺 lib/..." >&2; exit 1; }
+  fi
+  ```
+
+**实跑验证**(两模式都过):
+- **repo 模式**:`./install.sh` 从 REPO_ROOT 跑(tsconfig.json 在)→ `make package` 成功 → REPO_ROOT/lib/ 镜像 + tarball (351722 字节) 生成 → Phase 2-4 部署 → `curl /v1/health` 200
+- **tarball 模式**:`mktemp -d` + `tar -xzf dsh-edge-agent-v0.1.0.tar.gz -C $TMPDIR` + `cd $TMPDIR/.../ && ./install.sh --no-restart`(无 tsconfig.json)→ Phase 1 echo "tarball mode: using pre-built lib/" → 跳过 make → Phase 2 `rsync lib/ → ~/.dsh/profiles/dsh-edge/node_modules/.../lib/`(从 tarball 自带的 lib/)→ Phase 2.5 agent-presets 跳过(不在 tarball)→ Phase 3 不启(--no-restart)→ OK
+
+**tarball 自洽性**(§7.72 同时回答 §7.70 "已知局限"):tarball 不含 tsconfig.json 不再是问题 —— tarball 模式不调 make,不调 tsc,只读 `lib/`(预编译 JS);runtime 跑 dsh 进程不需要 tsconfig.json。tarball 自洽 = 解开 + `./install.sh` 一键部署(只要 profile 装能初始化,见 §2.7 修复)。
+
+**Phase 2.5 tarball 路径行为**(预期):`agent-presets/` 不在 tarball(.npmignore + Makefile 都不打)→ 外部用户机器若无 `~/.dsh/.agent-presets/` 内容,本轮部署不动它(DSH 默认 preset 兜底)→ 后续 dsh 启动仍可工作,只是没有 edge 专属 preset。
+**未治本**(已记,留待后续):
+- `profiles/$PROFILE/cordis.patch.yml` 不在 tarball(整 `profiles/` 目录被 .npmignore 排除)→ 外部用户若需 profile-level patch overlay,得手动拷过去;本轮部署不需要,因为 bundle-level `cordis.patch.yml`(在 tarball)已生效。
+- `profiles/$PROFILE/package.json` 不在 tarball → 外部用户首装无 skeleton → 依赖 `dsh plugin add`(Phase 2.1)初始化容器,若 npm 404(bundle 未发布)会卡 §2.7 fail-fast。本轮 §2.7 fail-fast 文案指向 `dsh plugin --profile X add` 是 dead-end(新机无 profile 时不初始化容器)—— 这是 §7.61 + §7.57 历史遗留,本轮不动。
+
+**未做**:
+- §7.71 PROGRESS 条目不删 —— 历史记录 §7.71 当时的设计;§7.72 在 §7.71 基础上叠加双模式逻辑,不放旧条。
+- 老的 §7.70/§7.71 PROGRESS 条目不删 —— 历史。
+
 ### §7.71 删 `make install` —— 部署流水线单一入口归 install.sh(2026-09-17)
 
 **问题**:`make install` 单独存在,但 install.sh 才是真正干活的(同步、杀/启 profile)。两条路径:
