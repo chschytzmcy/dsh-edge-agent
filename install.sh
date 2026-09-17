@@ -21,6 +21,7 @@
 #   ./install.sh --profiles=dsh-tui           # 只同步 dsh-tui（不启）
 #   ./install.sh --profiles=dsh-tui --with    # 只同步 + 只启动 dsh-tui
 #   ./install.sh --profiles=dsh-edge --with=dsh-edge  # §7.61 headless（可与其他 profile 并存）
+#   DSH_PROFILE_DIR=/tmp/dsh-scratch ./install.sh --profiles=foo  # §7.62 隔离部署到非默认本地路径
 #   ./install.sh --skip-pnpm                  # 跳过 npm install（假设已装过）
 #   ./install.sh --force-install              # 强制重装本包（覆盖 rsync）
 #   ./install.sh --no-restart                 # 显式：不启动（默认行为）
@@ -37,6 +38,11 @@ done
 [ -n "$_NPM_BIN" ] && export PATH="${PATH}$_NPM_BIN"
 
 DSH_HOME="${DSH_HOME:-$HOME/.dsh}"
+# §7.62: 调试/隔离场景下,把全部 profile 容器目录盖写到非默认本地路径
+# (例:DSH_PROFILE_DIR=/tmp/dsh-scratch),落地 <dir>/<profile>/,与 ~/.dsh/profiles
+# 完全隔离。默认 = $DSH_HOME/profiles。生产部署保持空字符串即可。
+PROFILE_ROOT="${DSH_PROFILE_DIR:-$DSH_HOME/profiles}"
+[ -n "${DSH_PROFILE_DIR:-}" ] && echo "    DSH_PROFILE_DIR=$DSH_PROFILE_DIR → 容器落地 $PROFILE_ROOT (覆盖 $DSH_HOME/profiles)"
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 
 DO_RESTART=0  # 默认：只装不启；用 --with=web 或 --with=tui 显式启
@@ -162,7 +168,7 @@ npm run compile >/dev/null
 # 每个 profile 独立走 §2-§3.7 全套（plugin add 上游包 + rsync + 嵌套
 # pkg bootstrap）。编译已经做一次，重复执行 plugin add 是幂等的。
 for PROFILE in "${PROFILES[@]}"; do
-  PROFILE_DIR="$DSH_HOME/profiles/$PROFILE"
+  PROFILE_DIR="$PROFILE_ROOT/$PROFILE"
   NESTED_PKG="$PROFILE_DIR/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent"
 
   echo
@@ -303,7 +309,7 @@ echo "==> [2.5/4] sync shared assets"
 
 # profiles/$PROFILE/cordis.patch.yml overlay（legacy）
 for PROFILE in "${PROFILES[@]}"; do
-  PROFILE_DIR="$DSH_HOME/profiles/$PROFILE"
+  PROFILE_DIR="$PROFILE_ROOT/$PROFILE"
   if [ -f "$REPO_ROOT/profiles/$PROFILE/cordis.patch.yml" ]; then
     if ! diff -q "$REPO_ROOT/profiles/$PROFILE/cordis.patch.yml" "$PROFILE_DIR/cordis.patch.yml" >/dev/null 2>&1; then
       echo "        sync profiles/$PROFILE/cordis.patch.yml → $PROFILE_DIR/cordis.patch.yml"
@@ -341,7 +347,7 @@ fi
 if [ "$DO_RESTART" = 0 ] || [ ${#START_PROFILES[@]} -eq 0 ]; then
   echo "==> [3/4] 不启动（默认行为；用 --with=web 或 --with=tui 或 --with 显式启动）"
   echo "    已同步 profiles: ${PROFILES[*]}"
-  echo "    手动启动: cd \$DSH_HOME/profiles/<name> && source .env.sh && dsh --profile <name>"
+  echo "    手动启动: cd \$PROFILE_ROOT/<name> && source .env.sh && dsh --profile <name>"
   echo "    或:      ./install.sh --with=web,tui"
   exit 0
 fi
@@ -385,9 +391,9 @@ declare -A START_RESULT
 START_ORDER=()
 
 for PROFILE in "${START_PROFILES[@]}"; do
-  PROFILE_DIR="$DSH_HOME/profiles/$PROFILE"
+  PROFILE_DIR="$PROFILE_ROOT/$PROFILE"
   INLINE_PORT="$(port_for_profile "$PROFILE")"
-  LOG="${DSH_EDGE_LOG:-$DSH_HOME/profiles/$PROFILE/run.log}"
+  LOG="${DSH_EDGE_LOG:-$PROFILE_ROOT/$PROFILE/run.log}"
 
   echo
   echo "  ── profile: $PROFILE (port=$INLINE_PORT, log=$LOG) ──"
@@ -466,7 +472,7 @@ for PROFILE in "${START_ORDER[@]}"; do
   case "${START_RESULT[$PROFILE]}" in
     OK)   echo "  ✓ $PROFILE :$PORT"
           OK_COUNT=$((OK_COUNT + 1)) ;;
-    FAIL) echo "  ✗ $PROFILE FAILED — see $DSH_HOME/profiles/$PROFILE/run.log"
+    FAIL) echo "  ✗ $PROFILE FAILED — see $PROFILE_ROOT/$PROFILE/run.log"
           FAIL_COUNT=$((FAIL_COUNT + 1)) ;;
   esac
 done
@@ -474,7 +480,7 @@ done
 echo
 if [ "$FAIL_COUNT" -gt 0 ]; then
   echo "deploy PARTIAL: $OK_COUNT up, $FAIL_COUNT failed."
-  echo "  排查: tail -f \$DSH_HOME/profiles/<name>/run.log"
+  echo "  排查: tail -f \$PROFILE_ROOT/<name>/run.log"
   exit 1
 fi
 

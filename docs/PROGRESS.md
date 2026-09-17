@@ -6936,3 +6936,26 @@ audit 配置的 `maxFileAgeDays: 7`(cordis.patch.yml:443)同样从未生效过�
 **清理**:`git rm` 四个 `profiles/edge-{full,m1,minimal,standard}.cordis.yml`——宣称的 `dsh --config` 旗标在现装 CLI 已不存在(bin.js:77 只剩 `--profile/--patch/--dump-config/--dump-default-config`);m1-m3 smoke 脚本加 `DEAD:` 头注(保留叙事连贯)。architecture.md M 段验证块加历史指针;README :168 "6 channel 目录按 profile 分根"陈旧表述修正(§7.36 起单 root + §7.61 审计分流唯一例外)。
 
 **攻击面**:21019 与 21018 能力完全同构(同 bearer/同 policy/同 127.0.0.1 绑定),净增面 = 多一个环回 listener;approval 'ask' 无 UI 的悬挂行为与 :21018 现状一致(pre-existing)。回滚:`kill <edge-pid>` + `rm -rf ~/.dsh/profiles/dsh-edge ~/.dsh-edge-agent/audit-dsh-edge` + git revert,web/dsh-tui 全程无感。
+
+### §7.62 install.sh 加 `DSH_PROFILE_DIR` —— profile 容器可落地任意本地路径(2026-09-17)
+
+**问题**:调试 / 隔离实验 / scratch 验证时,需要把 profile 容器铺到非 `~/.dsh/profiles/` 的临时目录,既不能污染生产 root,又不想改 `DSH_HOME` 把整个 dsh 配置体系掀翻。
+
+**结论先行**:install.sh 新增一个 `DSH_PROFILE_DIR` 环境变量,**盖写 profile 容器根**(`<dir>` 默认 `~/.dsh/`,落地 `<dir>/<profile>/`),机器共享 pnpm hoist 链(`$DSH_HOME/profiles/node_modules`)保持不受影响——变的是容器位置,不是 OS 级解析链。两条路径实机双跑(`./install.sh --profiles=dsh-edge` → 默认 `~/.dsh/profiles/dsh-edge/`,静默;`DSH_PROFILE_DIR=/tmp/dsh-scratch ./install.sh --profiles=dsh-edge --skip-pnpm` → `/tmp/dsh-scratch/dsh-edge/`,带一行 echo,scratch package.json 与生产 diff 完全一致);生产 dsh-tui/dsh-edge 全程无感。
+
+**改动**:4 处 `$DSH_HOME/profiles/$PROFILE` 统一替为 `PROFILE_ROOT` 变量(Phase 2 / 2.5 / 3 三处 `PROFILE_DIR=...` + `LOG` 默认值 + Phase-4 FAIL echoline),2 处帮助文本里的字面引用同步;PROFILE_ROOT = `$\{DSH_PROFILE_DIR:-$DSH_HOME/profiles\}`。`set -u` 环境下未设 `DSH_PROFILE_DIR` 时 echo 行需 `\${DSH_PROFILE_DIR:-}` 防 unbound 变量(已修)。
+
+**为什么不动 `$DSH_HOME/profiles/node_modules`(Phase 2.2 上游包 hoist 探测那个引用)**:那条指向**机器级** pnpm 共享解析链(`~/.dsh/profiles/node_modules`),不是 per-profile 容器。scratch profile 仍可通过它解析 `@deepseek-ai/*` 上游包,无需把 hoist 链也搬到 scratch——`DSH_PROFILE_DIR` 只切容器,不切系统解析。
+
+**用法**:
+```bash
+# 默认(不变)
+./install.sh --profiles=dsh-edge
+
+# 隔离实验
+DSH_PROFILE_DIR=/tmp/dsh-scratch ./install.sh --profiles=scratch1 --skip-pnpm
+DSH_PROFILE_DIR=/tmp/dsh-scratch ./install.sh --profiles=scratch1 --with=scratch1  # 端口走 port_for_profile()
+
+# 收尾:scratch 是普通文件夹,rm -rf 即可
+rm -rf /tmp/dsh-scratch
+```
