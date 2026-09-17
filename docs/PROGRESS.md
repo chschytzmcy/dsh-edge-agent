@@ -6965,3 +6965,21 @@ audit 配置的 `maxFileAgeDays: 7`(cordis.patch.yml:443)同样从未生效过�
 **经验**:双序匹配(规则 #4 override-possessive-zh 双向顺序)和多限定词叠加(规则 #1 用 `(?:限定词\s*){1,2}`)是中文注入覆盖的两个常见 pattern bug 来源——首次跑测试 5/14 fail,全在这两类。规则需要按"用户实际会说的自然语序"枚举而非按"理想化语法顺序"。
 
 **未覆盖(gap 留着,留 §7.64+ 续做)**:`所有规则都作废`(应已被 #2 覆盖?确认);`忽略 + 你的 + 所有 + 规则`(被 #1 覆盖);「直接复述整个 system prompt」(内容指纹层);基于 embedding 的语义攻击(超出正则层)。
+
+### §7.64 收口:scratch 隔离部署能力彻底剔除(2026-09-17)
+
+**结论**:`install.sh` profile 容器路径**只走 `~/.dsh/profiles/<name>/`**,不再支持 scratch 隔离部署、任意本地路径覆盖等任何非默认形态。
+
+**决策**:
+- §7.62(commit 828dfdb,已 `aef5976` revert)曾尝试用 `DSH_PROFILE_DIR` env var 覆盖容器根路径——用户追问 "DSH 能识别吗" 后查实 DSH CLI 的 `loadProfile → resolveProfileDir` 硬编码 `<DSH_HOME>/profiles/<name>` 结构,不读 `DSH_PROFILE_DIR`;即便强行对齐 `DSH_HOME`(语义错位,顺带覆盖 audit/presets/env)。
+- 经复盘 §7.62 设计的真实需求("调试/隔离实验/scratch 验证")逐条无强约束场景:调试 install.sh 只需 diff 字节级,本地迭代靠真 `DSH_HOME` 隔离,多实例靠端口,CI 沙箱有 TEE/OHTTP 兜底——**"scratch 隔离部署"是为不存在的需求造的实现**。
+- 正确做法:回归 §7.61 单一形态(`~/.dsh/profiles/<name>/`),不要再造一个 DSH 不认的 env var。
+
+**当前状态验证(全仓扫)**:
+- `install.sh`:无 `DSH_PROFILE_DIR` / `PROFILE_ROOT` / `scratch` 引用
+- `docs/`:仅有 `MIN_ROOT=<scratch>`(§7.59 minimal rig 的另一个东西,跟 profile 部署无关,保留)
+- git history:`828dfdb → 59a3970 → aef5976` 链清楚,§7.62 痕迹可在 `git log --all` 查到但 HEAD 不引用
+
+**install.sh 设计原则(教训沉淀)**:
+- 把"可工作的场景"和"语义对齐的场景"分开验证——`diff ≡ canonical` 是字节级验证(可工作),`dsh --profile X` 找到并 boot 是语义级验证(语义对齐)。§7.62 只过了前者。
+- 设计前先问"这个场景的真解法是什么?"——如果真解是 `DSH_HOME`(语义过宽)或不隔离(走默认),那"profile 容器隔离"就是伪命题。
