@@ -7056,6 +7056,53 @@ audit 配置的 `maxFileAgeDays: 7`(cordis.patch.yml:443)同样从未生效过�
 - §7.65 留作 "未做" 的 `--restart-at HH:MM` 仍不做。
 - "智能重启" 探针(只在跑的重启)未做,语义沿用 §7.65 的"无脑全启"。
 
+### §7.73 profile 骨架进 tarball —— 外部用户 fresh-machine bootstrap 自洽(2026-09-17)
+
+**问题**:§7.72 让 tarball 自洽后,外部用户下载 tarball → 解开 → `./install.sh` 部署本机的流程已基本可行,但 **fresh-machine 场景还差一步**:DSH `~/.dsh/profiles/<name>/` 在全新机器上不存在时,install.sh §2.7 需要从 `$REPO_ROOT/profiles/$PROFILE/package.json` bootstrap 一个 skeleton(package.json + 字段写本 bundle 的 `bundles` + `dependencies`)。**§7.55 tarball 打包时 `profiles/` 被 .npmignore 整目录排除 + Makefile 不 cp `profiles/`**,所以 fresh-machine + tarball 模式下 §2.7 fail-fast,提示去 `dsh plugin add`(那一步会 npm 404,bundle 没发布,死循环)。
+
+**结论先行**(用户原话:"把 profiles 骨架塞进 tarball"):**tarball 现在打 `profiles/dsh-edge/`**(只这个子目录,不打 `profiles/dsh-edge-agent/` legacy、不打 `profiles/node_modules/` 252 symlink)。fresh-machine + tarball 模式:`dsh plugin add` 404 后 §2.7 找到 tarball 自带的 `profiles/dsh-edge/package.json`,bootstrap skeleton 成功,流程走通。
+
+**改动**(Makefile `package:` 段 4 行新增):
+```makefile
+@# §7.73: profile 骨架 —— tarball 模式 install.sh §2.5 / §2.7 读 $REPO_ROOT/
+@# profiles/$PROFILE/。只打 dsh-edge/(项目自有 profile 的骨架 package.json
+@# + skin cordis.patch.yml),不打 profiles/node_modules/(252 symlink 指向开发机)
+@# 也不打 profiles/dsh-edge-agent/(§7.61 退役的 legacy profile + 自带 node_modules)。
+@mkdir -p $(PACKAGE_DIR)/dsh-edge-agent-v$(VERSION)/profiles
+@cp -r profiles/dsh-edge $(PACKAGE_DIR)/dsh-edge-agent-v$(VERSION)/profiles/
+```
+
+**只打 `dsh-edge/`,不打整 `profiles/`**:top-level `profiles/` 还有 `profiles/dsh-edge-agent/`(§7.61 退役的 legacy profile + agent-presets/)和 `profiles/node_modules/`(252 symlink 指向开发机 `/home/etsme/.npm-global`,**绝不能进 tarball**)。`@cp -r profiles/dsh-edge` 只拿项目在用、dunbar-shape 小的 `dsh-edge/`(2 个文件: `cordis.patch.yml` skin + `package.json` skeleton,共 ~1.1KB)。
+
+**install.sh 不动**:§2.5 已经读 `$REPO_ROOT/profiles/$PROFILE/cordis.patch.yml`,§2.7 已经读 `$REPO_ROOT/profiles/$PROFILE/package.json` —— tarball 模式 REPO_ROOT = 解开 tarball 的目录,有这两个文件就直接用,**install.sh 一行不改**。
+
+**实跑验证**(tarball 模式 end-to-end):
+- `tar -xzf dsh-edge-agent-v0.1.0.tar.gz -C $TMPDIR` → 解到 `$TMPDIR/dsh-edge-agent-v0.1.0/`
+- `tar -tzf ... | grep '^.../profiles'` 验:含 `profiles/dsh-edge/package.json` + `profiles/dsh-edge/cordis.patch.yml`,**不含** `profiles/dsh-edge-agent/` + `profiles/node_modules/`
+- `cd $TMPDIR/dsh-edge-agent-v0.1.0 && ./install.sh --no-restart`:
+  - Phase 1: `tarball mode: using pre-built lib/`(tsconfig.json 缺)
+  - Phase 2: `rsync lib/ → ~/.dsh/profiles/dsh-edge/node_modules/.../lib/`(从 tarball 自带 lib/)
+  - Phase 2.5: 无 echo(本机 profile 已 init,cordis.patch.yml `[]` 已对,agent-presets 不在 tarball 跳过)
+  - Phase 3: --no-restart 跳过
+- tarball 大小 344K → 348K(+4K,即两个 profile 文件大小)
+
+**fresh-machine 路径(代码 review 推演,实机不重演)**:新机器 / 干净 ~/.dsh,跑 tarball 模式 install.sh:
+1. Phase 1: tarball mode,lib/ 已备
+2. Phase 2.1: `$NESTED_PKG/lib` 不存在 → `dsh plugin add` → npm 404(bundle 未发布)→ §3.5 兜底
+3. Phase 2.5: `profiles/dsh-edge/cordis.patch.yml` 在 tarball,copy 到 `~/.dsh/profiles/dsh-edge/cordis.patch.yml`
+4. Phase 2.7: `_PROFILE_PKG` 不存在 + tarball 有 `profiles/dsh-edge/package.json` → bootstrap skeleton ✓(这一步 §7.73 之前会 fail-fast)
+5. Phase 2.8: tarball 有 `package.json`,mirror 到 `NESTED_PKG/package.json`
+6. Phase 3: 启 target profile(默认 dsh-edge)
+
+**§7.72 "未治本" 收尾**:§7.72 PROGRESS 留的"profiles/$PROFILE/package.json 不在 tarball → 外部用户首装依赖 dsh plugin add 初始化容器;若 npm 404 §2.7 fail-fast —— §7.61/§7.57 历史遗留,本轮不动" —— §7.73 治本了一半:**fresh-machine** bootstrap 现在通了(§2.7 找到 skeleton);**未知 profile**(如用户 `--profile=foo` 但 tarball 没 `profiles/foo/`)仍 fail-fast,这是预期 —— bundle 只骨架 dsh-edge,其他 profile 用 dsh CLI 自己 init。
+
+**memory 同步**:`make-install-path-home.md` 加"tarball 自洽"段:tarball 现在含 `profiles/dsh-edge/(package.json + cordis.patch.yml)`,fresh-machine §2.7 bootstrap 自洽,未治本只剩"未知 profile fail-fast"。`MEMORY.md` 指针同步加 §7.73 注。
+
+**未做**:
+- tarball 仍不含 `agent-presets/` —— 外部用户若要 edge 专属 preset,得手动 `cp` `presets/agent-preset-edge.json` → `~/.dsh/.agent-presets/`(presets/ 已含在 tarball,但 install.sh 不主动 sync 到 `~/.dsh/.agent-presets/`,DSH CLI 自己扫 preset 目录)
+- tarball 仍不含 `profiles/dsh-edge-agent/`(legacy,§7.61 退役)—— 即使打也对当前 install.sh 流程无用,留着冗余
+- install.sh §2.7 文案修订:fail-fast 时建议"cp -r $REPO_ROOT/profiles/<p>/<name> ~/.dsh/profiles/<p>/" —— §7.73 后只有未知 profile 触发,文案偏离实际路径可能性低,本轮不动
+
 ### §7.72 单 install.sh 双模式 —— repo + tarball 上下文自识别(2026-09-17)
 
 **问题**:§7.71 把 install.sh 改成内部 'make package' build + tarball,然后直 rsync REPO_ROOT/lib/ 到 profile。这条路只在 repo 上下文(working copy,带 tsconfig.json)下走得通;**外部用户下载 release tarball → 解开 → 跑 install.sh 时会炸**:

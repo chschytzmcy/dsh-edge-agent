@@ -82,8 +82,10 @@ e2e-tui:
 #   - 不打 .env（避免 DEEPSEEK_API_KEY 泄漏）
 #   - 不打 profiles/node_modules/（252 symlink 指向开发机 /home/etsme/.npm-global）
 #   - 不打 profiles/dsh-edge-agent/node_modules/（开发机 runtime，~30M）
-#   - 不打 profiles/（.npmignore 整目录排除；§7.61 后仅剩 dsh-edge 部署骨架+皮肤，
-#     是 install.sh 的输入而非产物，release 包内自带 install.sh 即可用）
+#   - §7.73 (2026-09-17): 打 profiles/dsh-edge/ —— tarball 模式 install.sh §2.5
+#     (cordis.patch.yml overlay) + §2.7 (skeleton bootstrap) 依赖 $REPO_ROOT/
+#     profiles/$PROFILE/,只打 dsh-edge/(项目自有 profile 骨架 + skin);
+#     legacy profiles/dsh-edge-agent/ + 顶层 profiles/node_modules/ 仍不打
 #   - 不打 cordis.yml（legacy --config 模式入口，install.sh 不读）
 #   - 打 install.sh + README.md + LICENSE（用户文档）
 #   - 加 SHA256SUMS
@@ -105,6 +107,14 @@ package: build
 	@cp cordis.patch.yml $(PACKAGE_DIR)/dsh-edge-agent-v$(VERSION)/
 	@cp .env.sh $(PACKAGE_DIR)/dsh-edge-agent-v$(VERSION)/
 	@cp .env.example $(PACKAGE_DIR)/dsh-edge-agent-v$(VERSION)/
+
+	@# §7.73 (2026-09-17): profile 骨架 —— tarball 模式 install.sh §2.5 /
+	@# §2.7 读 $REPO_ROOT/profiles/$PROFILE/。只打 dsh-edge/(项目自有 profile
+	@# 的骨架 package.json + skin cordis.patch.yml),不打 profiles/node_modules/
+	@# (252 symlink 指向开发机)也不打 profiles/dsh-edge-agent/(§7.61 退役
+	@# 的 legacy profile + 自带 node_modules)。
+	@mkdir -p $(PACKAGE_DIR)/dsh-edge-agent-v$(VERSION)/profiles
+	@cp -r profiles/dsh-edge $(PACKAGE_DIR)/dsh-edge-agent-v$(VERSION)/profiles/
 
 	@# 用户文档 + 入口
 	@cp install.sh $(PACKAGE_DIR)/dsh-edge-agent-v$(VERSION)/
