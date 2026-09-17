@@ -8,7 +8,7 @@ VERSION  := $(shell node -p "require('./package.json').version" 2>/dev/null || e
 PACKAGE_NAME := dsh-edge-agent-v$(VERSION).tar.gz
 SHA_NAME    := $(PACKAGE_NAME).sha256
 PACKAGE_DIR := .deploy
-INSTALL_DIR := /opt/dsh-edge-agent
+# §7.70 (2026-09-17): install 路径下移到 ~/.dsh-edge-agent/latest/(详见 install: 段)
 
 # 颜色输出
 BLUE := \033[0;34m
@@ -112,19 +112,28 @@ package: build
 	 echo "$(GREEN)✓ $(PACKAGE_NAME)$(NC) ($$SIZE)"
 	@echo "$(GREEN)✓ $(SHA_NAME)$(NC)"
 
+# §7.70 (2026-09-17): 装到 ~/.dsh-edge-agent/latest/ —— 项目私有数据根下,
+# 免 sudo。VERSION_DIR 是 tarball 解出的版本子目录;INSTALL_DIR 是 latest
+# symlink,指向当前激活版本。~/.dsh-edge-agent/ 下的 audit/ sessions/ log/
+# storage/ 等 runtime channel(由 bundle plugin 写)不动。
+VERSION_DIR  := $(HOME)/.dsh-edge-agent/dsh-edge-agent-v$(VERSION)
+INSTALL_DIR  := $(HOME)/.dsh-edge-agent/latest
+BUNDLE_ROOT  := $(HOME)/.dsh-edge-agent
+
 # 安装到本地
 install: package
-	@echo "$(BLUE)==> 安装到本地系统 $(INSTALL_DIR)$(NC)"
-	@sudo mkdir -p $(INSTALL_DIR)
-	@sudo tar -xzf $(PACKAGE_NAME) -C /opt/
-	@sudo rm -f $(INSTALL_DIR)/latest && sudo ln -s $(INSTALL_DIR) $(INSTALL_DIR)/latest
-	@cd $(INSTALL_DIR) && sudo pnpm install --ignore-scripts
+	@echo "$(BLUE)==> 安装到本地 $(BUNDLE_ROOT)$(NC)"
+	@mkdir -p $(BUNDLE_ROOT)
+	@tar -xzf $(PACKAGE_NAME) -C $(BUNDLE_ROOT)
+	@rm -f $(INSTALL_DIR)
+	@ln -s $(VERSION_DIR) $(INSTALL_DIR)
+	@cd $(INSTALL_DIR) && pnpm install --ignore-scripts
 	@echo "$(GREEN)✓ 安装完成$(NC)"
 	@echo ""
 	@echo "下一步:"
 	@echo "  1. 进入目录: cd $(INSTALL_DIR)"
 	@echo "  2. 配置环境: cp .env.example .env && \$$EDITOR .env"
-	@echo "  3. 启动服务: ./install.sh    # 默认同步 + 启动 dsh-tui + web + dsh-edge（§7.66/§7.67）"
+	@echo "  3. 启动服务: ./install.sh    # 默认同步 + 启动 dsh-edge(:21017,§7.69)"
 
 # 清理
 clean:

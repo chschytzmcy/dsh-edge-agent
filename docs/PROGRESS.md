@@ -7056,6 +7056,62 @@ audit 配置的 `maxFileAgeDays: 7`(cordis.patch.yml:443)同样从未生效过�
 - §7.65 留作 "未做" 的 `--restart-at HH:MM` 仍不做。
 - "智能重启" 探针(只在跑的重启)未做,语义沿用 §7.65 的"无脑全启"。
 
+### §7.70 `make install` 路径下移到 `~/.dsh-edge-agent/latest/` —— 免 sudo,数据/源分离(2026-09-17)
+
+**问题**:`make install` 默认装到 `/opt/dsh-edge-agent`(`INSTALL_DIR := /opt/dsh-edge-agent`),需要 sudo,还埋了一个 self-referencing symlink bug(`ln -s /opt/dsh-edge-agent /opt/dsh-edge-agent/latest` —— 源与目标同一路径,symlink 自指死)。`make install` 用户跑一次要输 sudo 密码,而 `~/.dsh-edge-agent/` 本来就是项目私有数据根(user 视角天然就在 `~/` 下,无 sudo 写权限)。两个根混用也奇怪:`/opt/dsh-edge-agent/latest` 是 source,`~/.dsh-edge-agent/{audit,sessions,log,storage}` 是 runtime channel,bundle plugin 写后者、读前者 —— source 跟 data 不在一个 root,运营/排障要跨 root 查。
+
+**根因(根上错误的假设)**:原 `make install` 把 release tarball 当成"系统级服务"装(模仿 `/opt/<app>/` 习惯),但本项目是**单用户开发工具**,无 systemd,无 multi-tenant,无生产集群 —— `/opt/` 的合理性前提全无,留 sudo 反而碍事。
+
+**结论先行**(user 拍板,user 原话:"不是应该是 `~/.dsh-edge-agent` 吗"):**`make install` 装到 `~/.dsh-edge-agent/latest/`** —— 版本子目录 `~/.dsh-edge-agent/dsh-edge-agent-v<VERSION>/` + 激活软链 `~/.dsh-edge-agent/latest`,无 sudo,源跟 data 同 root 排障方便。版本子目录让多个 release tarball 可共存(降级只需 `ln -sfn` 切 `latest` 指向);runtime channel(由 bundle plugin 写,**`make install` 不动**)继续按原状在 `~/.dsh-edge-agent/{audit,sessions,log,storage,presets,skill-realms}/`。
+
+**新根布局**(user 拍板,对比表):
+
+| 根 | 放什么 | 谁写 | `make install` 碰不碰 |
+|---|---|---|---|
+| `~/.dsh-edge-agent/` | **数据根**(本项目私域) | bundle plugin 运行时 | 仅提取 tarball 进子目录 + 维护 latest 软链 |
+| `~/.dsh-edge-agent/{audit,sessions,log,storage,presets,skill-realms}/` | runtime channel(6 个) | bundle plugin via `~/.dsh-edge-agent/<channel>` | **不碰**(已是上一轮 `make install`/bundle 写下的,保住) |
+| `~/.dsh-edge-agent/dsh-edge-agent-v<X.Y.Z>/` | **source**(release tarball 内容:`lib/` `install.sh` `package.json` `pnpm-lock.yaml` `cordis.patch.yml` `.env.example` `README.md` 等) | `make install` 提 tarball 解出 | 写入(可幂等覆盖)|
+| `~/.dsh-edge-agent/latest` → `dsh-edge-agent-v<X.Y.Z>` | 当前激活 source 软链 | `make install` 维护 | 重写软链 |
+| `~/.dsh/` | DSH 平台根(`profiles/` `persona/` `.agent-presets/` 等) | DSH 平台 | **不碰**(本项目不能跨域) |
+| `~/.dsh/profiles/<name>/` | 单 profile 的 `.env.sh` `cordis.patch.yml` `package.json` 副本 + `node_modules/` 链 | install.sh Phase 2/2.5 | **不归** `make install` 管(`./install.sh` 的活) |
+
+**改动清单**(Makefile 6 处 + 注释升级):
+- 顶部 `INSTALL_DIR := /opt/dsh-edge-agent` **删除**(变量定义只对 `install:` 段有用,挪下去)
+- `install:` 段前新加 3 个 make 变量,带 §7.70 注释块:`VERSION_DIR := $(HOME)/.dsh-edge-agent/dsh-edge-agent-v$(VERSION)` / `INSTALL_DIR := $(HOME)/.dsh-edge-agent/latest` / `BUNDLE_ROOT := $(HOME)/.dsh-edge-agent`
+- `install: package` 段:去所有 `sudo`(`sudo mkdir -p` → `mkdir -p`、`sudo tar -xzf` → `tar -xzf`、`sudo rm -f && sudo ln -s` → `rm -f && ln -s`、`sudo pnpm install` → `pnpm install`)
+- `tar -xzf $(PACKAGE_NAME) -C /opt/` → `tar -xzf $(PACKAGE_NAME) -C $(BUNDLE_ROOT)`(解到 `~/.dsh-edge-agent/`,得到 `~/.dsh-edge-agent/dsh-edge-agent-v0.1.0/`)
+- 修 self-referencing symlink bug:`rm -f $(INSTALL_DIR)/latest && ln -s $(INSTALL_DIR) $(INSTALL_DIR)/latest`(源/目标同路径)→ `rm -f $(INSTALL_DIR) && ln -s $(VERSION_DIR) $(INSTALL_DIR)`(`latest` 是 `~/.dsh-edge-agent/latest`,目标是 `~/.dsh-edge-agent/dsh-edge-agent-v0.1.0/`,不再自指)
+- `cd $(INSTALL_DIR) && pnpm install --ignore-scripts` —— 在 `latest`(软链解析到 `dsh-edge-agent-v0.1.0/`)下装依赖,跑 `pnpm install --ignore-scripts`(本项目无 postinstall hook,`--ignore-scripts` 提速 + 避免上游 npm 钩子跑)
+- `make help` 第 35-39 行的"本地部署到 DSH profile"段保留(指向 `./install.sh`,不变),其上"`make install` - 安装到本地系统"echo 改成"`make install` - 安装 release tarball 到 `~/.dsh-edge-agent/latest/`"(隐含信息源准确化)
+- "下一步"段第 3 条 echo 改 §7.69 单 profile 默认:`./install.sh  # 默认同步 + 启动 dsh-edge(:21017,§7.69)`(原来是 `dsh-tui + web + dsh-edge` 三 profile,§7.69 后只剩 dsh-edge 默认)
+
+**实跑验证**(`make install` 一次):`/usr/bin/sudo -n true` 退出码 1(user 不在 sudoers NOPASSWD),改后 `make install` 全程不调 sudo,输出:
+```
+==> 安装到本地 /home/etsme/.dsh-edge-agent
+==> 解压 tarball...
+==> 维护 latest 软链...
+==> pnpm install (--ignore-scripts)...
+✓ 安装完成
+下一步:
+  1. 进入目录: cd /home/etsme/.dsh-edge-agent/latest
+  2. 配置环境: cp .env.example .env && $EDITOR .env
+  3. 启动服务: ./install.sh    # 默认同步 + 启动 dsh-edge(:21017,§7.69)
+```
+`ls -la ~/.dsh-edge-agent/` 验证:`audit/` `log/` `sessions/` `storage/` `presets/` `skill-realms/` `latest → dsh-edge-agent-v0.1.0/` `dsh-edge-agent-v0.1.0/` 八项齐,runtime channel 原状未动。`~/.dsh-edge-agent/latest/install.sh` 可执行。dsh-edge 当前进程(PID 3274779,:21017)未受影响 —— `make install` 只做解压+软链+pnpm install,不重启任何 dsh 进程(daemon 重启是 `./install.sh` 的活)。
+
+**已知局限**(实跑发现,**未做治本**):
+- tarball 不含 `tsconfig.json`(被 `.npmignore` 排除)。结果:`make install` 解出的 `latest/` 下 `pnpm install` 没问题(产物在 `lib/` 已 compile 好),但**直接** `./install.sh --no-restart`(只重 sync 阶段、不启动)或**手动跑 `pnpm run compile`** 会失败 `TS5058: The specified path does not exist: 'tsconfig.json'`。当前开发工作流是 repo working copy 跑 `./install.sh`,绕开此问题;release tarball 仅供"在裸机上解开 + `./install.sh` 启动"用(届时 `lib/` 已是 compile 产物,compile 阶段不执行;若要重新 sync+compile,需从 git 克隆源码再跑 `./install.sh`)。**治本选项**(留待 user 拍板):(A) 把 `tsconfig.json` + 编译输入源加入 tarball(~3MB 增量,release tarball 变"可二次 compile"产品);(B) install.sh Phase 1.5 检测 `tsconfig.json` 缺失则跳过 compile 阶段(默认 release tarball 已是 compile 产物);(C) 维持现状,README 写明"release tarball 是 runtime-only artifact,源码 sync 走 git"。
+- `make clean` 仍 `rm -rf lib/`(build 产物)、`.deploy`(中间目录)、`*.tar.gz *.sha256`(tarball)—— 不碰 `~/.dsh-edge-agent/` 下任何东西,符合"源 vs data 隔离"。
+
+**memory 同步**:
+- `MEMORY.md` 加一条 `make-install-path-home.md` 指针:`make install 装到 ~/.dsh-edge-agent/latest/ (§7.70),无 sudo,免自指 symlink;runtime channel(audit/ log/ sessions/ storage/)不动`。
+- `dsh-edge-agent-data-path.md` 不动(描述 runtime channel 落单 bundle root,仍准)。
+
+**未做**:
+- release tarball 加 `tsconfig.json` / install.sh 跳过 compile / 文档化 tarball 边界 —— 待 user 拍板"release tarball 是 runtime-only 还是可重 compile"。
+- 老的 `/opt/dsh-edge-agent` 残留若有(`ls /opt/dsh-edge-agent` 历史产物)未清 —— 假设旧机器无,本轮不背扫。
+- `~/.dsh-edge-agent/dsh-edge-agent-v<X.Y.Z>/` 老版本目录自动 GC 未做(`make install` 永远留下最近一次提的版本);如要支持多版本并存降级,手动 `rm -rf` 旧目录或写 `make gc` target(留待 §7.7x)。
+
 ### §7.69 install.sh 单 profile 架构 + 端口统一 :21017(2026-09-17)
 
 **问题**:§7.65→§7.66→§7.67 三步演进了"默认重启 + 三 profile 同启"语义。但:
