@@ -7055,3 +7055,26 @@ audit 配置的 `maxFileAgeDays: 7`(cordis.patch.yml:443)同样从未生效过�
 **未做**:
 - §7.65 留作 "未做" 的 `--restart-at HH:MM` 仍不做。
 - "智能重启" 探针(只在跑的重启)未做,语义沿用 §7.65 的"无脑全启"。
+
+### §7.68 撤回 §7.61 audit 分流 —— dsh-edge 与 dsh-tui 共写 `~/.dsh-edge-agent/audit/`(2026-09-17)
+
+**问题**:§7.61 因 `audit-log.ts:263-269` 整文件 read→tmp→rename 的 TOCTOU race,把 dsh-edge 的 audit root 分流到 `~/.dsh-edge-agent/audit-dsh-edge/`(Variant B)。代价:数据目录分裂、查 dsh-edge 审计要切路径、E2E H 臂要 `AUDIT=...audit-dsh-edge/...` env 预设。
+
+**结论先行**(user 拍板,接受 race):**撤回分流,dsh-edge audit 与 dsh-tui/web 共写 `~/.dsh-edge-agent/audit/audit.plain.jsonl`**。实操:repo + 容器 `profiles/dsh-edge/cordis.patch.yml` 都改为空 patch 数组(`[]`),删除 audit-log override;bundle patch 默认 root 直接生效。`cat ~/.dsh-edge-agent/audit-dsh-edge/audit.plain.jsonl >> ~/.dsh-edge-agent/audit/audit.plain.jsonl` 后 `rm -rf ~/.dsh-edge-agent/audit-dsh-edge/`。验证:`./install.sh --profiles=dsh-edge` 重启后 dsh-edge 健康(`/v1/health` 200);curl 测试 `POST /v1/chat message="ping"` 触发 `session.created` + `guard.model-detect.start` + `llm.local.start` 三事件落 `audit/`,**不落**已删的 `audit-dsh-edge/`;`audit.plain.jsonl` 总行数 12662(= 12535 tui/web + 127 dsh-edge 历史),dsh-edge PID 3273263 起的新事件与既有 tui/web 事件交织。
+
+**TOCTOU race 接受**(user 原话"接受偶尔丢行"):并发双进程写同文件,后 flush 方基于旧快照 rename 覆盖新行 ⇒ dsh-tui 与 dsh-edge 同时段偶发丢行(50% 命中率,丢的是 flush 时窗内的 ring buffer 切片)。audit 是运营/排障工具,不是合规强求;丢行可容忍。**未来可优化**:在 `audit-log.ts:263-269` 加 `flock(fd, LOCK_EX)` IPC 锁,治根;本轮不做。
+
+**改动清单**(4 处):
+- `profiles/dsh-edge/cordis.patch.yml`:头部注释从 §7.61 Variant B 改为 §7.68 清空声明;`- id: audit-log` 整块删除,文件尾追加 `[]` 显式声明空 patch 数组(YAML 解析需顶层 token,纯注释会被 loader 视作 null)。
+- install.sh Phase 2.5 diff-then-copy 不动 —— 它已经在 `diff -q` 不一致时 `cp` 覆盖,源变空数组自然覆盖原 dest 的分流版本。
+- `~/.dsh-edge-agent/audit-dsh-edge/audit.plain.jsonl` 127 行 concat 进 `audit/audit.plain.jsonl`,`audit-dsh-edge/` 整目录 `rm -rf`。
+- `docs/architecture.md:236` 段去掉"skin 把 audit root 分流"句,改"audit 与 dsh-tui 共写 `~/.dsh-edge-agent/audit/`(§7.68 撤回 §7.61 分流,接受 audit-log.ts:263-269 read-tmp-rename TOCTOU 偶发丢行)"。`README.md:170` 同改。
+
+**E2E 影响**:`scripts/e2e-tui-live.sh h1 h2 h5 h4 h3` 跑 :21019 现在 `AUDIT=...` env **不需要再设** —— 默认 $PROD_ROOT/audit/audit.plain.jsonl 已包含 dsh-edge 事件。回归便利:DSH_EDGE_AUDIT_ROOT env 变量仍保留(bundle patch 默认值兜底),无调用方改。
+
+**memory 同步**:`entrypoints.md` 三处 §7.61 分流描述改 §7.68 共写。`dsh-edge-agent-data-path.md` 不动(本来就没提 audit-dsh-edge 子项,只描述 6 个 channel 落单 bundle root)。
+
+**未做**:
+- `audit-log.ts` 加 flock IPC 锁治根 race(治本要改产品码,user 选"接受"分支不治);如未来 audit 完整性变硬约束再回头做。
+- `~/.dsh/profiles/dsh-edge/node_modules/.../lib/dsh-adapter/audit-log.ts` 仍是 §7.61 之前的代码;部署新 bundle lib/ 时已 rsync,但源码不动。
+- 历史 PROGRESS §7.61 条目(6922/6926/6932/6938/7022)不重写 —— 历史记录 §7.61 当下事实,撤回决议放 §7.68 即可。
