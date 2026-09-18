@@ -58,10 +58,18 @@ NC = "\033[0m"
 class ModelClient:
     """Direct HTTP client for OpenAI-compatible /v1/chat/completions."""
 
-    def __init__(self, base_url: str, model: str, timeout: int = 120):
+    def __init__(self, base_url: str, model: str, timeout: int = 120, trace_writer=None):
+        """
+        trace_writer: optional callable(category, case_id) -> Path.
+        When provided, every chat() call appends {request, response} to that path.
+        §7.87.1:trace 此前完全没写(0 处 write_trace 调用);改在 client 层 sink,所有
+        runner(C1-C6)零改动即获得 per-case trace。
+        """
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.timeout = timeout
+        self.trace_writer = trace_writer
+        self._case_counter: dict[str, int] = {}  # category → counter
 
     def chat(self, messages: list, **kwargs) -> dict:
         body = {"model": self.model, "messages": messages, "stream": False, **kwargs}
@@ -73,18 +81,32 @@ class ModelClient:
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+            data = json.loads(resp.read().decode("utf-8"))
+        if self.trace_writer is not None:
+            category = kwargs.pop("__category", "unknown")
+            self._case_counter[category] = self._case_counter.get(category, 0) + 1
+            case_id = f"{category}_{self._case_counter[category]:04d}"
+            try:
+                write_trace(self.trace_writer, category, case_id, body, data)
+            except Exception as e:
+                warn(f"  trace write failed for {case_id}: {e}")
+        return data
 
 
 class DshEdgeClient:
     """HTTP client for dsh-edge /v1/chat."""
 
-    def __init__(self, base_url: str, token: str, timeout: int = 180):
+    def __init__(self, base_url: str, token: str, timeout: int = 180, trace_writer=None):
+        """
+        trace_writer: same as ModelClient — callable(category, case_id) -> Path.
+        """
         self.base_url = base_url.rstrip("/")
         self.token = token
         self.timeout = timeout
+        self.trace_writer = trace_writer
+        self._case_counter: dict[str, int] = {}
 
-    def chat(self, message: str, session_id: str) -> dict:
+    def chat(self, message: str, session_id: str, category: str = "pipeline") -> dict:
         body = {"message": message, "sessionId": session_id}
         req = urllib.request.Request(
             f"{self.base_url}/chat",
@@ -96,7 +118,15 @@ class DshEdgeClient:
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+            data = json.loads(resp.read().decode("utf-8"))
+        if self.trace_writer is not None:
+            self._case_counter[category] = self._case_counter.get(category, 0) + 1
+            case_id = f"{category}_{self._case_counter[category]:04d}"
+            try:
+                write_trace(self.trace_writer, category, case_id, body, data)
+            except Exception as e:
+                warn(f"  trace write failed for {case_id}: {e}")
+        return data
 
 
 # ── Fixtures + rubric loaders ─────────────────────────────────────
@@ -294,6 +324,7 @@ def run_intent(client: ModelClient, fixtures: list, iterations: int) -> dict:
                     ],
                     temperature=0,
                     max_tokens=64,
+                    __category="C1",
                 )
                 content = resp["choices"][0]["message"]["content"]
                 parsed = parse_json_relaxed(content)
@@ -352,6 +383,7 @@ def run_safety(client: ModelClient, fixtures: list, iterations: int) -> dict:
                     ],
                     temperature=0,
                     max_tokens=256,
+                    __category="C2",
                 )
                 content = resp["choices"][0]["message"]["content"]
                 parsed = parse_json_relaxed(content)
@@ -402,6 +434,7 @@ def run_chinese(client: ModelClient, fixtures: list, iterations: int) -> dict:
                     ],
                     temperature=0.7,
                     max_tokens=512,
+                    __category="C3",
                 )
                 content = resp["choices"][0]["message"]["content"].strip()
                 if content:
@@ -439,6 +472,7 @@ def run_json_output(client: ModelClient, fixtures: list, iterations: int) -> dic
                     ],
                     temperature=0,
                     max_tokens=256,
+                    __category="C4",
                 )
                 content = resp["choices"][0]["message"]["content"]
                 parsed = parse_json_relaxed(content)
@@ -505,6 +539,7 @@ If no PII: {"pii_found": [], "safe_to_send_to_cloud": true}"""
                         ],
                         temperature=0,
                         max_tokens=256,
+                        __category="C5",
                     )
                     content = resp["choices"][0]["message"]["content"]
                     parsed = parse_json_relaxed(content)
@@ -554,6 +589,7 @@ def run_tools(client: ModelClient, fixtures: list, iterations: int) -> dict:
                         tools=TOOLS_SCHEMA,
                         temperature=0,
                         max_tokens=256,
+                        __category="C6",
                     )
                     msg = resp["choices"][0]["message"]
                     tool_calls = msg.get("tool_calls") or []
@@ -588,8 +624,16 @@ def run_tools(client: ModelClient, fixtures: list, iterations: int) -> dict:
 
 
 def run_pipeline_e2e(client: DshEdgeClient, query: str, session_id: str, log_file: Path, expected_intent: str) -> dict:
+    # §7.87.1:从 session_id "bench-e2e-mibao-..." 抽出 category 名(mibao/news/localip)给 trace
+    cat = "pipeline"
+    if "mibao" in session_id:
+        cat = "C7"
+    elif "news" in session_id:
+        cat = "C8"
+    elif "localip" in session_id:
+        cat = "C9"
     try:
-        resp = client.chat(query, session_id)
+        resp = client.chat(query, session_id, category=cat)
     except urllib.error.HTTPError as e:
         return {"passed": False, "intent": "ERROR", "result_len": 0, "log_excerpt": "", "error": f"HTTP {e.code}: {e.reason}"}
     except Exception as e:
@@ -625,7 +669,7 @@ def run_multiturn(client: DshEdgeClient, fixtures: list, iterations: int) -> dic
             recent_replies: list[str] = []
             for turn_idx, turn in enumerate(conv["turns"]):
                 try:
-                    resp = client.chat(turn["user"], session_id)
+                    resp = client.chat(turn["user"], session_id, category="C10")
                     reply = resp.get("result", "")
                     recent_replies.append(reply)
                     if turn_idx > 0 and "expected_keyword" in turn:
@@ -651,6 +695,7 @@ def run_latency_profile(client: ModelClient, n_requests: int = 10) -> dict:
                 messages=[{"role": "user", "content": "你好"}],
                 temperature=0,
                 max_tokens=10,
+                __category="latency",
             )
             latencies.append((time.time() - t0) * 1000)
         except Exception as e:
@@ -666,10 +711,23 @@ def run_latency_profile(client: ModelClient, n_requests: int = 10) -> dict:
 
 # ── Trace writer ──────────────────────────────────────────────────
 
-def write_trace(out_dir: Path, category: str, case_id: str, request: Any, response: Any) -> None:
-    trace_dir = out_dir / "traces/intrinsic"
-    trace_dir.mkdir(parents=True, exist_ok=True)
-    trace_file = trace_dir / f"{category}.jsonl"
+def write_trace(trace_writer, category: str, case_id: str, request: Any, response: Any) -> None:
+    """
+    trace_writer: callable(category, case_id) -> Path
+        从 category 决定 trace 文件路径(per-category 拆分方便排查)。
+        默认 fallback:写 traces/{category}.jsonl(相对 cwd)
+    §7.87.1:之前签名是 (out_dir, category, case_id, request, response) —
+    6 个 runner 全没调用,trace 永远空。改成 callable 后 client 层自动 sink,
+    runner 零改动。
+    """
+    if callable(trace_writer):
+        trace_file = trace_writer(category, case_id)
+    else:
+        # legacy fallback: trace_writer 是 out_dir 字符串/Path
+        trace_dir = Path(trace_writer) / "traces"
+        trace_dir.mkdir(parents=True, exist_ok=True)
+        trace_file = trace_dir / f"{category}.jsonl"
+    trace_file.parent.mkdir(parents=True, exist_ok=True)
     with trace_file.open("a") as f:
         f.write(json.dumps({
             "ts": datetime.now().isoformat(),
@@ -728,6 +786,12 @@ def main() -> int:
     out_dir = Path(args.out_dir) if args.out_dir else Path(f"dist/bench-{args.label}-{timestamp}")
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # §7.87.1:trace_writer — 客户端每 chat 一次就 append 到 traces/{category}.jsonl
+    # 此前 write_trace() 定义了但 0 调用,trace 永远空文件。改成在 client 层 sink,
+    # 9 个 runner 零改动(已分别加 __category="C1"..."latency")。
+    def trace_writer(category: str, case_id: str) -> Path:
+        return out_dir / "traces" / f"{category}.jsonl"
+
     banner(f"Model Quality Bench — {args.label}")
     print(f"  Model    : {args.model}")
     print(f"  Base URL : {args.base_url}")
@@ -735,8 +799,8 @@ def main() -> int:
     print(f"  Iter     : {args.iterations}")
     print(f"  Output   : {out_dir}")
 
-    model_client = ModelClient(args.base_url, args.model, timeout=120)
-    dsh_client = DshEdgeClient(args.dsh_url, args.dsh_token, timeout=180)
+    model_client = ModelClient(args.base_url, args.model, timeout=120, trace_writer=trace_writer)
+    dsh_client = DshEdgeClient(args.dsh_url, args.dsh_token, timeout=180, trace_writer=trace_writer)
     log_file = Path(args.log_file)
 
     only = set(args.only.split(",")) if args.only else None

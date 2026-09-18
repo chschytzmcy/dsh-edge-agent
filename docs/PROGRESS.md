@@ -8590,3 +8590,51 @@ verdict: ≥85 ✅ / 70-84 ⚠️ / 50-69 ❌ / <50 💀
 - 首次实跑(待 baseUrl 网络恢复后)
 - 跟 §7.85 历史模型(qwen3-4b / minicpm5-2b / llama3-8b)横向对比
 - 视需求加 `/v1/benchmark` HTTP 路由(本期 standalone shell 即可)
+
+### §7.87.1 REPO_ROOT 路径 bug + trace 漏写(2026-09-18,跑过程中发现)
+
+首次实跑用 Ollama @ 127.0.0.1:11434 qwen3:4b(LAN 67.0.0.5:28001 仍 502),触发两个 bug:
+
+**Bug A**:bash `REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"` 多一层 `..`
+- 脚本在 `scripts/e2e-model-quality-bench.sh`,SCRIPT_DIR=`scripts/`,**只要 `scripts/..` 一层**就回到 repo root
+- 之前写 `../..` → REPO_ROOT=/home/etsme/cy/agent(项目根的**父目录**),harness 把 `dist/bench-*` 写到 `/home/etsme/cy/agent/dist/` 而不是项目内
+- 修法:改为 `cd "$SCRIPT_DIR/.."`
+- 加 REPO_ROOT sanity check:必须含 `cordis.patch.yml` + `package.json`,否则 fail-fast(exit 2),防再犯
+- 对照 `scripts/e2e-ops-log-coverage.sh:35` 同位置写 `SCRIPT_DIR/..` 一层,bench 当时漏对齐
+
+**Bug B**:`write_trace()` 在 harness.py 里**定义了但 0 处调用** — 6 个 runner (C1-C6) + pipeline (C7-C10) 都没写 trace
+- 结果:`dist/bench-*/traces/intrinsic/*.jsonl` 永远是空文件
+- 仅最终 `scores.json` + `report.md` 落盘;operator 看不出单个 case 失败原因
+- 修法:每个 `client.chat(...)` 后调 `write_trace(out_dir, category, case_id, request, response)`
+- 影响:首次跑的 trace 缺失,fix 后重跑有完整 trace
+
+**Bug C**(顺手):Python stdout 重定向到 file 后默认 buffered,8 分钟跑完才一次性 flush,operator 看不出卡哪
+- 修法:bash 调 `python3` 时前置 `PYTHONUNBUFFERED=1`
+
+**Fix 实现**:
+- `harness.py`:`ModelClient` / `DshEdgeClient` 加 `trace_writer` 参数(client 层 sink);9 个 `client.chat(...)` 各加 `__category="C1"..."latency"`(pipeline 走 `category="C7/C8/C9/C10"` 显式参);runner 函数 0 改动其他逻辑
+- `e2e-model-quality-bench.sh`:REPO_ROOT 改一层 + 加 sanity check + PYTHONUNBUFFERED
+
+**实跑结果**(fix 落地后跑了两轮 `--only C7,C8,C9,C10` pipeline only,intrinsic 没跑因为 LAN Ollama CPU 单跑 6s/case × 115 fixture ≈ 12min):
+
+| | Ollama qwen3:4b @ 127.0.0.1:11434 | LAN minicpm5-2b @ 192.168.1.174:8911 |
+|---|---|---|
+| C7 mibao | ✗ intent=LOCAL result_len=**0** | ✗ intent=LOCAL result_len=**0** |
+| C8 news | ✓ intent=CLOUD result_len=**1510** | ✓ intent=CLOUD result_len=**1407** |
+| C9 local-ip | ✗ intent=LOCAL result_len=**66** | ✗ intent=LOCAL result_len=**0** |
+| C10 multi-turn | ✓ 0.8 retention | ✓ 0.8 retention |
+| **Pipeline** | **45.0** | **45.0** |
+| Final (intrinsic 跳过) | 18/100 💀 | 18/100 💀 |
+
+**关键观察**:
+1. **Intent 分类 100% 准确** — dsh-edge heuristic(override-local-entity:密盒)+ qwen3:4b LLM classify 都对
+2. **CLOUD web_search 都成功** — 两个模型都综合出 ~1500 chars 答案
+3. **LOCAL skills (mibao/local-ip) 都空 result** — **不是模型问题,是 dsh-edge LOCAL path 没接通对应 skill(ets-auth/ets-system)**。qwen3:4b 给 66 chars 中文"我来帮您查询局域网 IP...",minicpm5-2b 给空 — Ollama 至少尝试响应了
+4. **C10 多轮 80% retention** — 两个模型都能保留上下文
+
+**没跑 qwen3.5-9b @ 67.0.0.5:28001**:LAN LLM 全程 HTTP 502(3s timeout,proxy 拦不到 upstream),等 user 修网络再跑 §7.85 baseline。
+
+**遗留**:
+- C7/C9 LOCAL path 失败需要排查 dsh-edge 哪个 adapter / skill 调度断了(跟 §7.79 §7.85 系列问题一起)
+- 跑 intrinsic 6 个 category 完整数据需要 LAN 模型恢复后做
+- 内联 trace 写到 trace 完整(每行 LLM call request/response JSON)已 verify,`dist/bench-*/traces/{C1..C10,latency}.jsonl`

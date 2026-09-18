@@ -26,9 +26,21 @@ NC='\033[0m'
 
 # ── Locate script directory + repo root ──────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# §7.87.1(2026-09-18):SCRIPT_DIR 是 scripts/,一层 .. 就回到 REPO_ROOT。
+# 之前写 ../.. 导致 harness 把 dist/bench-* 写到 /home/etsme/cy/agent/dist/
+# (repo root 之上的兄弟目录)而不是项目内 dist/。修一层即可。
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 HARNESS="$SCRIPT_DIR/e2e-model-quality-bench/harness.py"
 FIXTURES_DIR="$SCRIPT_DIR/e2e-model-quality-bench/fixtures"
+
+# §7.87.1 防再犯:REPO_ROOT 必须包含 cordis.patch.yml + package.json,否则
+# harness 会把 dist/bench-* 写到错误位置。fail-fast 不浪费 10 分钟。
+if [[ ! -f "$REPO_ROOT/cordis.patch.yml" || ! -f "$REPO_ROOT/package.json" ]]; then
+    echo "${RED}✗ REPO_ROOT sanity check failed: $REPO_ROOT${NC}" >&2
+    echo "${RED}  期望含 cordis.patch.yml + package.json;实际没有 → REPO_ROOT 路径错了${NC}" >&2
+    echo "${RED}  bench harness 会把输出写到错误位置。检查 SCRIPT_DIR/.. 深度(§7.87.1 教训)${NC}" >&2
+    exit 2
+fi
 
 # ── Source .env if present (for LOCAL_LLM_BASEURL / LOCAL_LLM_MODEL / EDGE_API_KEY) ──
 if [[ -f "$REPO_ROOT/.env" ]]; then
@@ -165,7 +177,9 @@ HARNESS_ARGS=(
 
 # ── Run harness ────────────────────────────────────────────────────
 cd "$REPO_ROOT"
-python3 "$HARNESS" "${HARNESS_ARGS[@]}"
+# §7.87.1:PYTHONUNBUFFERED=1 防 stdout 重定向到 file 后 Python 默认 buffered,
+# 看实时进度必须 unbuffered(否则 8min 跑完才一次性 flush,operator 看不出卡哪)
+PYTHONUNBUFFERED=1 python3 "$HARNESS" "${HARNESS_ARGS[@]}"
 RC=$?
 
 exit "$RC"
