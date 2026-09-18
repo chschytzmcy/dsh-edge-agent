@@ -8332,3 +8332,31 @@ fi
 
 **重新验证**(修正后):43 文件 / 802 测试通过;5 verify gates PASS;make release tarball 364K SHA `9ad1f7826...`;`source .env` → `process.env.TAVILY_API_KEY=tvly-xxx` → plugin `available()=true` → `ctx.web searchProviders=[tavily-bocha-fallback]`。
 
+### §7.83 CLOUD LLM 切换到 Aliyun token-plan(2026-09-18)
+
+**触发**:DeepSeek 账户余额耗尽(-0.13 CNY 持续返回 402),用户拍板"换供应商"。
+
+**配置切换**(本节改动):
+- `CLOUD_LLM_BASEURL`: `https://api.deepseek.com` → `https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1`
+- `CLOUD_LLM_MODEL`: `deepseek-flash` → `qwen3.8-flash`
+- 新增 `ALIYUN_TOKEN_PLAN_KEY`(JWT 格式 `sk-sp-H.DPDXDL...`,跟 coding.dashscope subscription key `sk-sp-cf27...` 不同 —— §7.79 教训: token-plan key 不能用于 coding.dashscope 端点,反之亦然)
+- `CLOUD_LLM_KEY_ENV=ALIYUN_TOKEN_PLAN_KEY`(通过 `.env.sh` 翻译层 `export DSH_EDGE_CLOUD_KEY_ENV=...`)
+
+**Bug 发现 + 修复**(本节核心):
+- `cordis.patch.yml:385` 写死 `apiKeyEnv: DEEPSEEK_API_KEY`(跟 baseUrl 对称的 `DSH_EDGE_CLOUD_LLM_BASEURL` 已经是动态了,但 apiKeyEnv 没跟上)。`.env.sh` 的翻译层(`export DSH_EDGE_CLOUD_KEY_ENV="${CLOUD_LLM_KEY_ENV}"`)设置了正确的 key env 名,但 patch 没读它,导致切到 token-plan 端点时仍用 DeepSeek key → 401。
+- 修复: 改成 `apiKeyEnv: !!js process.env.DSH_EDGE_CLOUD_KEY_ENV ?? 'DEEPSEEK_API_KEY'`,跟 baseUrl 对称。
+
+**验证**(修复后):
+- 直接 curl token-plan endpoint 配新 key:200 OK,验证 key + endpoint 配对正确
+- `bash install.sh --profile=dsh-edge` 重启 dsh-edge → `dsh --profile dsh-edge --dump-config` 验 boot 无 error
+- 端到端 chat: `curl POST /v1/chat "查2026年9月最新AI新闻,2句话简报"` → 200,real 2026-09-18 AI news + 引用,768B
+- ops log 确认: `cloud-llm-adapter LLM call done ... model=qwen3.8-flash ... baseUrl=https://token-plan.cn-beijing.maas.aliyuncs.com/... ... status=200 intent=CLOUD`
+- 5 verify gates + 802 unit tests + e2e-coverage 3/3 PASS,无 regress
+
+**教训**:
+1. **`.env.sh` 翻译层必须被 patch 消费才有意义**。如果只是 `.env.sh` 设了 `DSH_EDGE_CLOUD_KEY_ENV` 但 patch 仍写死读 `DEEPSEEK_API_KEY`,翻译就成空操作。**每个翻译字段都要在 patch 里有对应的 `process.env.DSH_EDGE_*` 读 + fallback 默认**。
+2. **端点换 + key 换 必须同时改 baseurl 和 apiKeyEnv**。两者独立才能切端点 —— 只换 baseurl(key 不变) 或只换 key(baseurl 不变) 都会 401。
+3. **token-plan 端点 ≠ coding.dashscope 端点**: `token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1` vs `coding.dashscope.aliyuncs.com/v1`,两个 endpoint 的 key 体系不互通。token-plan key(JWT 格式)在 coding.dashscope 报 401,反之亦然 —— §7.79 已记录。
+
+**改动文件**: `cordis.patch.yml`(apiKeyEnv 改动态)+ `.env.example`(文档同步 + placeholder)。`.env.sh` 不变(翻译逻辑早已实现)。
+
