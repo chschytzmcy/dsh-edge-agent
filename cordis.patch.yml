@@ -165,8 +165,12 @@
   # web-search-deepseek's `inject: ['web']` never fires, and `web_search`
   # tool calls fail with "configured web provider ... is not registered".
   # 2026-09-04: fetchProvider now uses 'http' from dsh-web-fetch-http plugin.
+  # 2026-09-18 (§7.82): searchProvider 改 tavily-bocha-fallback —— 三级链
+  # provider(Tavily → 博查 AI → DeepSeek)。web-search-deepseek 仍 enabled 作
+  # Tier-3 内部兜底(由 aggregator 私有 DeepSeekSearchProvider 实例调用,
+  # 不暴露为独立 provider;否则 seam 会因 AMBIGUOUS 报错)。
   config:
-    searchProvider: deepseek-official
+    searchProvider: tavily-bocha-fallback
     fetchProvider: http
 - id: tool-todo
   disabled: false
@@ -178,6 +182,12 @@
   # `dsh-launch-environment`, `dsh-web`, `dsh-agent`, all in dsh scope (0.1.2-rc.1).
   # Without this plugin, `deepseek-official` search provider is never registered,
   # so web_search tool calls fail with "provider not registered".
+  # 2026-09-18 (§7.82): DISABLED —— web-search-tavily-bocha 接管 searchProvider
+  # 路由,在 aggregator 内部私有持有 DeepSeekSearchProvider 实例作 Tier-3
+  # fallback。若两 plugin 同 enabled, ctx.web 会同时注册 2 个 usable provider
+  # ('tavily-bocha-fallback' + 'deepseek-official') → AMBIGUOUS 报错。仍启用
+  # 会留 orphan DeepSeek 注册 + 浪费一次 HTTP probe。
+  disabled: true
 - id: web-fetch-http
   # 2026-09-04: ENABLED. Provides the 'http' fetch provider for web_fetch tool.
   # Peer deps (cordis, dsh-timeout, dsh-web) all in dsh scope. Without this,
@@ -516,6 +526,18 @@
         enablePIIMonitor: true
         enableAudit: true
         enableRateLimit: true
+
+    # ── Phase 5 (§7.82): Tavily → 博查 AI → DeepSeek 三级 web_search 兜底链
+    # 注册一个 aggregator search provider(id='tavily-bocha-fallback')到 ctx.web;
+    # web.searchProvider = 'tavily-bocha-fallback' 即指向它。任一 tier 抛错
+    # (非 2xx / 网络 / JSON 解析) → 下一 tier 接续; 三 tier 都失败 →
+    # WEB_PROVIDER_UNAVAILABLE。env-only 配置: DSH_EDGE_TAVILY_API_KEY /
+    # DSH_EDGE_BOCHA_API_KEY(DSH 黑名单,不能写 .env)。
+    - id: web-search-tavily-bocha
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/web-search-tavily-bocha'
+      inject: [web]
+      config:
+        reserved: {}
 
     # ── Phase 6: input-guard 编排器 ────────────────────────────────────
     # 端侧隐私安全管线的编排器。把安全/隐私/脱敏逻辑从 transport 层

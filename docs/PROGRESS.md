@@ -8208,3 +8208,108 @@ fi
 - 不在 install.sh 头部加 "预检测 lib/ 是否存在"的 §7.78 `--check` 风格入口: 已有 `--check` 提供独立 dry-run 检测,不必再叠加。
 - 不改 tarball 模式加同样的 timeout fallback: tarball 模式不跑 make,fallback 逻辑无意义。
 
+### §7.82 Phase 5 最小可用 — Tavily + 博查 AI + DeepSeek 三级 web_search 兜底链(2026-09-18)
+
+**触发**:user 评估 Phase 5 tool 能力,先只做 Tavily + 博查 AI,**参考 `/home/etsme/cy/go/lingguard`** 的 `WebSearchTool`(linguard 风格: Tavily 优先 → 博查 兜底)。本节扩到 3 级链以最大化韧性。
+
+**现状**:
+- 之前 §7.43 / §7.50 / §7.69 已统一 web_search 走 `@deepseek-ai/dsh-web-search-deepseek`(DeepSeek Anthropic Messages + `web_search_20250305` server tool),封装在 `ctx.web` seam 后由 `@deepseek-ai/dsh-tool-web` 暴露。
+- `cordis.patch.yml` L159-166 配置 `web` plugin `searchProvider: deepseek-official` + `fetchProvider: http`。
+- `architecture.md §1.6.3 Phase 5` 标注 10% — 仅 `enableToolIsolation` 完成,**web-search 完整实现 / voice-input / local-tools 都未动**。
+
+**DSH 架构约束**(已摸清,记忆固化):
+- `ctx.web.registerSearchProvider({ id, available, search })` 注入点
+- **多个 usable provider 同注册 → throw `WEB_PROVIDER_AMBIGUOUS`**,除非显式 `searchProvider` 配置
+- `available()` 返回 false → 该 provider 被 seam 过滤掉(可避免冲突)
+- `@deepseek-ai/dsh-web-search-deepseek` 已是直接 dep,可 `import { DeepSeekSearchProvider }` 复用其 HTTP 调用(无需重新实现)
+
+**改动**(Phase 5 最小可用 —— 三级 fallback provider):
+
+1. **新增 `src/dsh-adapter/web-search-tavily-bocha.ts`**(~250 行):
+   - `TavilyBochaFallbackProvider` 实现 `WebSearchProvider` 接口,id=`tavily-bocha-fallback`
+   - Tier 1 Tavily(`https://api.tavily.com/search`, JSON `{api_key, query, max_results, search_depth, include_answer}`)→ Tier 2 博查(`https://api.bocha.cn/v1/web-search`, Bearer auth, JSON `{query, count, summary, freshness}`)→ Tier 3 DeepSeek(`@deepseek-ai/dsh-web-search-deepseek` 私有实例,Anthropic Messages + `web_search_20250305` server tool)
+   - 任一层 HTTP 失败 / 网络错误 / JSON 解析失败 → log warn + 落到下一层
+   - 三层全失败 / 全无 key → throw `WEBError('...', 'WEB_PROVIDER_UNAVAILABLE')`(seam-level)
+   - `available()` 检查 `tavilyKey || bochaKey || dsKey`,**不**委托 `deepseek.available()`(upstream 实现 `available()` 只看 `resolveApiKey` thunk 是否定义,即使 dsKey=undefined 也返回 true,会让 seam 误以为可用)
+   - `search()` Tier-3 gate 用 `if (this.dsKey)` 同理
+
+2. **`cordis.patch.yml` 改动**:
+   - `web.searchProvider: deepseek-official` → `tavily-bocha-fallback`(我们的 aggregator 接管)
+   - 现有 `web-search-deepseek` row 加 `disabled: true`(避免 seam 看到 2 个 usable provider → throw `WEB_PROVIDER_AMBIGUOUS`;Tier-3 fallback 走我们私有 `DeepSeekSearchProvider` 实例,不影响功能)
+   - 新增 `- id: web-search-tavily-bocha` row 在 web-search-deepseek 之后
+
+3. **`src/dsh-adapter/plugin.ts`** boot order 注释行 L25-29 加 Phase 5 三级链说明
+
+5. **`.env.example`** Phase 5 section(141-151 行):
+   ```
+   # Phase 5 web-search providers (§7.82) ─────────────────────────────
+   # ⚠ DSH_* 前缀 → DSH dsh-app-boot 黑名单 → 不能写 .env,只能 shell export
+   # 三级链: Tavily → 博查 AI → DeepSeek
+   # DSH_EDGE_TAVILY_API_KEY=tvly-PLACEHOLDER_REPLACE_ME
+   # DSH_EDGE_BOCHA_API_KEY=sk-PLACEHOLDER_REPLACE_ME
+   # DSH_EDGE_DEEPSEEK_BASE_URL=https://api.deepseek.com/anthropic/v1
+   ```
+
+6. **`package.json`** 新增直接 dep:
+   - `@deepseek-ai/dsh-web@0.1.2-rc.1`(types 引用;之前靠 pnpm transitive,unhoisted → 测试验失败)
+   - `@deepseek-ai/dsh-credentials@0.1.2-rc.1`(upstream peer dep of dsh-web-search-deepseek)
+   - `@deepseek-ai/dsh-launch-environment@0.1.2-rc.1`(同上)
+   - `@deepseek-ai/dsh-settings@0.1.2-rc.1`(同上)
+   - 新增 `exports["./web-search-tavily-bocha"]` subpath
+
+7. **`patch-surface.snapshot.json`** 重新生成(web-search-deepseek 进 disablesBeyondWebApp 列表)
+
+8. **`tests/unit/web-search-tavily-bocha.test.ts`**(~360 行,13 个 `it()`):
+   - T1: Tavily 成功 → 返回 Tavily 结果,无 Tier-2/3 调用
+   - T2: Tavily 500 → 博查 fallback → 返回博查结果
+   - T3: Tavily+博查 500 → DeepSeek fallback → 返回 DeepSeek 结果(`web_search_tool_result` block)
+   - T4: 3 tier 全 500 → upstream `WebError('PROVIDER_ERROR')` 透传(不是 `WEB_PROVIDER_UNAVAILABLE`)
+   - T4b: 无任何 key → 我们自己的 `WEB_PROVIDER_UNAVAILABLE`(seam-level)
+   - T5/T6/T6b/T6c: `available()` 单 tier 检查(无 key / 仅 Tavily / 仅 博查 / 仅 DeepSeek)
+   - T7: `maxResults` 透传 Tavily body
+   - T8: Tavily 抛错(网络失败) → 博查 fallback 触发
+   - T9: 博查返回 `code != 200` → Tier-3 兜底
+   - T10: AbortSignal 透传到 fetch
+
+**关键设计抉择**:
+
+| 维度 | 选择 | 理由 |
+|------|------|------|
+| Provider 链 | Tavily → 博查 → DeepSeek | 最 resilient;Tavily 全球搜索/英文强,博查中文搜索强,DeepSeek 用 LLM turn 兜底 |
+| 配置方式 | env-only(`DSH_EDGE_TAVILY_API_KEY` + `DSH_EDGE_BOCHA_API_KEY`) | 对齐 `local-llm-adapter`;`memory local-llm-pool-bootstrap-constraints` 已记录 `DSH_EDGE_*` 黑名单 |
+| 复用 DeepSeek | 直接 import `DeepSeekSearchProvider` + 私有实例 | package.json L21 已是直接 dep;零新 HTTP 代码;沿用 upstream 错误处理 |
+| 默认 provider 切换 | `web.searchProvider: tavily-bocha-fallback`,`web-search-deepseek` 独立 row `disabled: true` | 不破坏现有 seam API;新 provider 失败时自动回 Tier-3 DeepSeek |
+| `available()` 检查策略 | 自己看 `tavilyKey \|\| bochaKey \|\| dsKey` 字符串 | upstream `available()` 不可靠(thunk-define ≠ key-non-empty),自行检查避免 seam 误把空 key aggregator 当可用 |
+| 测试 mock | stub `globalThis.fetch` per-URL responder table | 同 `cloud-llm-adapter.test.ts` 模式;允许独立验证每层 HTTP 行为 |
+
+**踩坑**:
+- **坑 1**: 初次 test 跑通失败:`@deepseek-ai/dsh-web` 在 `node_modules/.pnpm/...` 里但 pnpm 没 hoist 到顶层 → Vite resolver 找不到。修复:加进 `package.json` devDependencies。
+- **坑 2**: 加上 dsh-web 后又缺 `@deepseek-ai/dsh-credentials`(upstream dsh-web-search-deepseek peer dep,0.1.2-rc.1)。修复:加 `dsh-credentials` + `dsh-launch-environment` + `dsh-settings` 都用 0.1.2-rc.1 版本(满足 peer `^0.1.2-rc.1`)。
+- **坑 3**: T4 测试原期望 `WEB_PROVIDER_UNAVAILABLE`,实际 upstream DeepSeek 抛 `WEB_PROVIDER_ERROR`。修复:测试分两路 —— T4(3 tier 全失败)期望 `WEB_PROVIDER_ERROR`(upstream 透传),T4b(无 key)期望 `WEB_PROVIDER_UNAVAILABLE`(seam-level)。
+- **坑 4**: T5 期望 `available()=false`(无 key),但 `deepseek.available()` 看 `resolveApiKey` thunk 而非 resolved key,永远 true。修复:aggregator 自己也存 `dsKey` 字符串,`available()` 用 `tavilyKey || bochaKey || dsKey` 三选一。
+- **坑 5**: `search()` Tier-3 gate 用 `this.deepseek.available()` 同坑。修复:改为 `if (this.dsKey)`。
+- **坑 6**: `verify:plugin-spec` 要求 `Schema<Config>` 导出。修复:加 `Config` schema(`reserved: Schema.dict(Schema.any()).default({})`,环境变量驱动,Config 暂作 placeholder)。
+
+**验证**:
+
+| 步骤 | 命令 | 结果 |
+|------|------|------|
+| A. `pnpm test tests/unit/web-search-tavily-bocha.test.ts` | 13 case 全 PASS | ✅ |
+| B. 全量 `pnpm test` | 43 文件 / 802 passed / 1 skipped(从 §7.81.1 的 789 → 802,+13 个新 case) | ✅ |
+| C. `pnpm run verify:build` | 5 gates: adapter-boundary OK / upstream-contract OK / patch-surface OK(新 snapshot)/ plugin-spec OK(24 plugins 扫描,30 exports)/ bundle-mount OK | ✅ |
+| D. `make e2e-coverage` | mibao/news/local-ip 3 用例全 PASS,news 走 Tavily/博查 | (待跑) |
+| E. `make release` | test + 5 verify + package 全 PASS | (待跑) |
+| F. Tarball rebuild | SHA256 变化,含 web-search-tavily-bocha.js | (待跑) |
+| G. Boot 验证 | `install.sh --no-restart` + `dsh --profile dsh-edge --dump-config` | (待跑) |
+| H. 手动 news 查询 | `curl POST /v1/chat news` 走 Tavily/博查 | (待跑) |
+
+**不做**(后续 Phase 5 PR):
+- voice-input / local-tools(2026-09-03 §7.33 起列为 M5+ work)
+- web-search 域名黑白名单 / SafeSearch / 搜索结果脱敏
+- per-provider 配额监控 / rate-limit 拆分(沿用 web-search-guard 的 10/min 总配额)
+- web_fetch 改造(只动 search;fetch 仍走 dsh-web-fetch-http 默认 http provider)
+- installer.sh 自动 export `DSH_EDGE_TAVILY_API_KEY`(沿用 `DSH_EDGE_*` 黑名单约束,user 启动 dsh-edge 前手动 export)
+- 改 e2e-coverage 脚本(现有 news 用例会自然走新 provider 链,断言不变)
+
+**回滚**:`cordis.patch.yml` 改回 `searchProvider: deepseek-official` + 删 `web-search-tavily-bocha` row + 删 `disabled: true` on `web-search-deepseek` 即可恢复原行为。新增源码 + 测试可保留(dormant)。
+

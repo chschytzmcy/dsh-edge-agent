@@ -16,6 +16,7 @@
     "privacy-policy",
     "sanitizer-pipeline",
     "web-search-guard",
+    "web-search-tavily-bocha",
     "input-guard"
   ],
   "configOverrides": [
@@ -39,6 +40,7 @@
     "attestation",
     "web-search",
     "voice-input",
+    "web-search-deepseek",
     "tool-pwsh",
     "tool-jobs",
     "tool-subagent",

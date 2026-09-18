@@ -128,6 +128,10 @@
     "./web-search-guard": {
       "types": "./lib/types/dsh-adapter/web-search-guard.d.ts",
       "import": "./lib/types/dsh-adapter/web-search-guard.js"
+    },
+    "./web-search-tavily-bocha": {
+      "types": "./lib/types/dsh-adapter/web-search-tavily-bocha.d.ts",
+      "import": "./lib/types/dsh-adapter/web-search-tavily-bocha.js"
     }
   },
   "files": [
@@ -178,7 +182,11 @@
     "@deepseek-ai/dsh-session": "0.1.2-rc.1",
     "@deepseek-ai/dsh-system-prompt": "0.1.2-rc.1",
     "@deepseek-ai/dsh-tools": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-credentials": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-launch-environment": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-settings": "0.1.2-rc.1",
     "@deepseek-ai/dsh-tool-web": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-web": "0.1.2-rc.1",
     "@deepseek-ai/dsh-web-search-deepseek": "0.1.2-rc.1",
     "@deepseek-ai/schemastery": "^3.18.2",
     "@types/node": "^22.10.0",
