@@ -116,26 +116,49 @@ fi
 # ── Phase 1: 计算 PROFILE_LIST ────────────────────────────────
 PROFILE_LIST=()
 
+# 识别 fingerprint:profile 含本 bundle 的两种 trace
+# (任一命中即认为装了,支持 nested pkg 与 package.json 任意 stale 残留)
+#
+#   1. profile/package.json 含 bundle 字符串 (in dsh.profile.bundles 或 dependencies)
+#   2. profile/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/ 还在
+#
+# 这样:
+#   - 只装 web/tui 没装 dsh-edge:profile/package.json fingerprint 命中 ✅
+#   - 部分清理(package.json 已 rm,nested pkg 还在):nested pkg fingerprint 命中 ✅
+#   - 完全清理:任一 fingerprint 都不命中,profile 不入 list ✅
+profile_has_bundle() {
+  local prof_dir="$1"
+  local pkg_json="$prof_dir/package.json"
+  local nested_pkg="$prof_dir/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent"
+  if [ -f "$pkg_json" ] && grep -q '@deepseek-harness-edge-agent/dsh-edge-agent' "$pkg_json" 2>/dev/null; then
+    return 0  # fingerprint 1 命中
+  fi
+  if [ -d "$nested_pkg" ]; then
+    return 0  # fingerprint 2 命中
+  fi
+  return 1
+}
+
 if [ "$DO_ALL" = 1 ]; then
-  log_info "scan \$DSH_HOME/profiles/* for dsh-edge-agent bundle..."
+  log_info "scan \$DSH_HOME/profiles/* for dsh-edge-agent bundle fingerprints..."
   if [ ! -d "$DSH_HOME/profiles" ]; then
     log_warn "\$DSH_HOME/profiles 不存在 ($DSH_HOME/profiles),nothing to scan"
     exit 0
   fi
   for profile_dir in "$DSH_HOME/profiles/"*/; do
-    [ -f "$profile_dir/package.json" ] || continue
-    if grep -q '"@deepseek-harness-edge-agent/dsh-edge-agent"' "$profile_dir/package.json" 2>/dev/null; then
-      prof_name=$(basename "$profile_dir")
+    [ -d "$profile_dir" ] || continue
+    prof_name=$(basename "$profile_dir")
+    if profile_has_bundle "$profile_dir"; then
       PROFILE_LIST+=("$prof_name")
     fi
   done
   if [ ${#PROFILE_LIST[@]} = 0 ]; then
-    log_info "no profile with bundle mounted found, exit 0"
+    log_info "no profile with bundle fingerprint found, exit 0"
     exit 0
   fi
 
   # 默认 / --all 模式:单次 y/N 确认(不是逐个 prompt)
-  log_warn "找到 ${#PROFILE_LIST[@]} 个含 bundle 的 profile:"
+  log_warn "找到 ${#PROFILE_LIST[@]} 个含 bundle fingerprint 的 profile:"
   for prof in "${PROFILE_LIST[@]}"; do
     echo "   - $prof"
   done
