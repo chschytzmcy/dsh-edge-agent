@@ -8360,3 +8360,35 @@ fi
 
 **改动文件**: `cordis.patch.yml`(apiKeyEnv 改动态)+ `.env.example`(文档同步 + placeholder)。`.env.sh` 不变(翻译逻辑早已实现)。
 
+### §7.84 CLOUD LLM 切到 MiniMax(api.minimaxi.com)(2026-09-18)
+
+**触发**: §7.83 切到 token-plan 后用户反馈 token-plan 配额也耗尽(2026-09-18 当日),要求换供应商 → MiniMax。
+
+**user 给的原始 baseurl**: `https://api.minimaxi.com/anthropic/v1` —— **最初按公开文档 redirect 到 `https://api.minimax.io/v1` 是错的**(见我下面"踩坑")。
+
+**配置切换**(本节改动):
+- `CLOUD_LLM_BASEURL`: `https://token-plan...` → `https://api.minimaxi.com/v1`
+- `CLOUD_LLM_MODEL`: `qwen3.8-flash` → `MiniMax-M2.7-highspeed`
+- 新增 `MINIMAX_API_KEY`(`sk-cp-ZVI4-...` 格式,跟 §7.83 token-plan key 同类)
+- `CLOUD_LLM_KEY_ENV=MINIMAX_API_KEY`
+
+**踩坑**: `api.minimaxi.com` 跟 `api.minimax.io` 是 MiniMax 旗下**两个独立 namespace**,同一个 key 只在其中一个生效。
+- 第一次按"官方文档"用 `api.minimax.io/v1/chat/completions` → 401 `invalid api key (2049)`
+- 直 curl `api.minimaxi.com/v1/chat/completions` 同 key → 200,正常响应
+- 最终 baseurl 回到 user 最初给的 `api.minimaxi.com`(不是 minimax.io)
+
+教训: **当 user 给的 URL 跟公开文档不一致时,先 curl 实测端点 + key,别盲信文档**。本节前两次改动都被我"基于公开文档"覆盖回 user 的 URL,第三次才意识到是 user 给的才对。
+
+**§7.83 修复的余热**(本节零代码改动):
+§7.83 把 `cordis.patch.yml` 的 `apiKeyEnv` 改成动态读 `process.env.DSH_EDGE_CLOUD_KEY_ENV`,本节直接受益 —— 切 MiniMax 时**0 行代码改动**,只改 `.env` 三行(baseurl / KEY_ENV / MODEL) + 新 env var 占位。`.env.sh` 翻译层 (`export DSH_EDGE_CLOUD_KEY_ENV=${CLOUD_LLM_KEY_ENV}`) 早已存在,无需改。
+
+**验证**(修复后):
+- 直 curl `api.minimaxi.com/v1/chat/completions` 同 key + `model=MiniMax-M2.7-highspeed` → 200,正常返回
+- `bash install.sh --profile=dsh-edge` 重启 dsh-edge
+- 端到端 chat: `curl POST /v1/chat "查2026年9月最新AI新闻"` → 200,940B 总结 + 引用链接,`baseUrl=https://api.minimaxi.com/v1`
+- audit log 确认: `llm.cloud.start/end` x2(一次 web_search tool,一次 final summary),`baseUrl=https://api.minimaxi.com/v1`,`model=MiniMax-M2.7-highspeed`
+- 5 verify gates + 802 unit tests + e2e-coverage 3/3 PASS,无 regress
+- news 用例: `web_search` 34 次,`cloud-llm-adapter LLM call start` 64 次,resultLen=1751
+
+**改动文件**: 仅 `.env.example`(baseurl / KEY_ENV / MODEL 改 + 新 MINIMAX_API_KEY placeholder)。`cordis.patch.yml` / `cloud-llm-adapter.ts` / `.env.sh` **0 行改动**(§7.83 翻译层对称修复的余热)。
+
