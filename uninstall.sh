@@ -1,37 +1,34 @@
 #!/usr/bin/env bash
 # uninstall.sh —— dsh-edge-agent 反向部署脚本 (§7.76)
 #
-# 镜像 install.sh 的语义:
-#   - 默认(无 flag) = uninstall all(扫所有含本 bundle 的 profile,1 次 y/N 确认后批量卸载)
-#   - --profile=<name> : 单 profile 模式(显式,无需 y/N)
-#   - --all : 显式 alias,等价无 flag(向后兼容)
-#   - --purge-data : 额外清 ~/.dsh-edge-agent/(独立 y/N 确认)
-#   - 破坏性操作全部 opt-in + 显式 y/N 确认
-#   - kill 模式同 install.sh:374/402 (SIGTERM → wait → SIGKILL)
-#   - 不删 ~/.dsh/ 整目录(用户可能装了别的项目)
+# 默认行为 (无 flag) = FULL uninstall (用户拍板: 不用加任何参数,默认请全部)
+#   - kill + clean 所有含本 bundle fingerprint 的 profile
+#   - shred REPO_ROOT/.env (含 live API key) + rm .env.sh
+#   - rm -rf ~/.dsh-edge-agent/ (6 渠道数据)
+#   - rmdir ~/.dsh/.agent-presets/ (仅当空)
+# Opt-out flags: --keep-data / --keep-env / --keep-presets 保留对应项
+#
+# 显式单 profile 模式 (--profile=X) = 精准手术,无需 y/N
+#   (CLI 即确认;但 data/env/presets 默认仍清,用 --keep-* opt-out)
 #
 # 安全约束:
-#   - 任何 y/N prompt 默认 N(必须显式 y 才执行)
-#   - .env 含 live API key:shred -u 而非 rm(防恢复)
-#   - 不 echo 任何 key 内容
-#   - --all / 默认扫描只匹配本 bundle 名,其他项目 profile 自动跳过
+#   - 任何 y/N prompt 默认 N (必须显式 y 才执行)
+#   - 不删 ~/.dsh/ 整目录 (用户可能装了别的项目)
+#   - 不动 user skin (diff -q 不一致时跳过)
+#   - .env 用 shred -u 防 live key 落盘恢复
 #
 # 用法:
-#   uninstall.sh [--profile=<name>] [--all] [--purge-data]
-#                 [--keep-presets] [--keep-tarball-root] [--help]
-#
-# 默认(无 flag):  等价 --all,扫所有 profile,1 次 y/N 确认后批量卸载。
-# --profile=<name>: 卸载指定 profile(接受别名 web/edge/dsh-edge),显式无需 y/N。
-# --all           : 同默认(向后兼容)。
-# --purge-data    : 同时清 ~/.dsh-edge-agent/(独立 y/N 确认)。
-# --keep-presets  : 保留 ~/.dsh/.agent-presets/(默认会 rmdir 仅当空)。
-# --keep-tarball-root : 保留 REPO_ROOT/.env.sh / .env(默认会删;.env 用 shred -u)。
-# -h, --help      : 打印这段。
+#   uninstall.sh                  # 默认: 全清 (kill + env + data + presets)
+#   uninstall.sh --profile=<name> # 显式单 profile 模式 (不需 y/N)
+#   uninstall.sh --keep-data      # 保留 ~/.dsh-edge-agent/ 数据
+#   uninstall.sh --keep-env       # 保留 REPO_ROOT/.env / .env.sh
+#   uninstall.sh --keep-presets   # 保留 ~/.dsh/.agent-presets/
+#   uninstall.sh --help           # 打印帮助
 #
 # 退出码:
-#   0 = 成功(可能没做任何事)
+#   0 = 成功 (可能没做任何事)
 #   1 = 用户参数错 / y/N 拒绝
-#   2 = kill / rm 失败(部分清理)
+#   2 = kill / rm 失败 (部分清理)
 
 set -uo pipefail
 
@@ -39,13 +36,13 @@ set -uo pipefail
 DSH_HOME="${DSH_HOME:-$HOME/.dsh}"
 REPO_ROOT="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
 PROFILE=""
-DO_ALL=0           # --all / 默认:扫所有含 bundle 的 profile
-EXPLICIT_PROFILE=0 # 是否显式 --profile(显式则无需 y/N)
-DO_PURGE_DATA=0
-KEEP_PRESETS=0
-KEEP_TARBALL_ROOT=0
+EXPLICIT_PROFILE=0
+DO_ALL=0           # 默认 --all: 扫所有含 bundle fingerprint 的 profile
+DO_KEEP_DATA=0     # 默认 = 清 ~/.dsh-edge-agent/ ;--keep-data 保留
+DO_KEEP_ENV=0      # 默认 = shred .env + rm .env.sh ;--keep-env 保留
+DO_KEEP_PRESETS=0  # 默认 = rmdir ~/.dsh/.agent-presets/ 仅当空
 
-# ── 颜色(跟 install.sh 对齐)───────────────────────────────────
+# ── 颜色 (跟 install.sh 对齐) ──────────────────────────────────
 BLUE='\033[0;34m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -62,35 +59,38 @@ print_help() {
   cat <<EOF
 Usage: uninstall.sh [options]
 
-默认(无 flag):等价 --all —— 扫 \$DSH_HOME/profiles/*,找到所有含本 bundle
-(@deepseek-harness-edge-agent/dsh-edge-agent) 的 profile,打印清单 + 1 次
-y/N 确认,确认后批量 kill+清理。
+默认 (无 flag): FULL uninstall —— 扫所有含本 bundle 的 profile,1 次 y/N
+确认后批量 kill + 清理,同时清 REPO_ROOT 环境文件 + ~/.dsh-edge-agent/ 数据
++ ~/.dsh/.agent-presets/。Opt-out 用 --keep-* flags。
 
 Options:
-  --profile=<name>        卸载指定 profile(接受别名 tui/web/edge/dsh-edge)
-                          显式指定,无需 y/N 二次确认
-  --all                   显式 alias,等价默认(向后兼容)
-  --purge-data            同时清 \$HOME/.dsh-edge-agent/(独立 y/N 确认)
-  --keep-presets          保留 \$DSH_HOME/.agent-presets/(默认 rmdir 仅当空)
-  --keep-tarball-root     保留 REPO_ROOT/.env.sh 和 .env(默认会删)
-  -h, --help              打印这段
+  --profile=<name>     显式单 profile 模式 (接受别名 tui/web/edge/dsh-edge)
+                       CLI 即确认,无需 y/N。data/env/presets 默认仍清。
+  --keep-data          保留 ~/.dsh-edge-agent/ (默认 rm -rf)
+  --keep-env           保留 REPO_ROOT/.env (shred) 和 .env.sh
+                       (alias: --keep-tarball-root,向后兼容)
+  --keep-presets       保留 ~/.dsh/.agent-presets/ (默认 rmdir 仅当空)
+  --all                显式 alias,等价默认 (向后兼容)
+  -h, --help           打印这段
 
 安全约束:
   - 任何 y/N prompt 默认 N
   - .env 含 live API key,shred 而非 rm
-  - 不删 ~/.dsh/ 整目录(只删命名 profile 子目录 + ~/.dsh-edge-agent/)
+  - 不删 ~/.dsh/ 整目录 (只删命名 profile 子目录 + ~/.dsh-edge-agent/)
+  - 不动 user skin (diff 不一致时跳过)
+  - kill SIGTERM→5s wait→SIGKILL9,镜像 install.sh:374/402
 
 Rollback hint: uninstall 后可 \`./install.sh --skip-pnpm --no-restart\` 一键恢复部署。
 EOF
 }
 
-# ── canonical_profile 镜像(跟 install.sh:70-77)────────────────
+# ── canonical_profile 镜像 (跟 install.sh:70-77) ────────────────
 canonical_profile() {
   case "$1" in
-    tui)    echo "dsh-tui" ;;
-    web)    echo "web" ;;
+    tui|dsh-tui)   echo "dsh-tui" ;;
+    web)           echo "web" ;;
     edge|dsh-edge) echo "dsh-edge" ;;
-    *)      echo "$1" ;;
+    *)             echo "$1" ;;
   esac
 }
 
@@ -99,33 +99,22 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --profile=*)   PROFILE="${1#*=}"; EXPLICIT_PROFILE=1 ;;
     --all)         DO_ALL=1 ;;
-    --purge-data)  DO_PURGE_DATA=1 ;;
-    --keep-presets)        KEEP_PRESETS=1 ;;
-    --keep-tarball-root)   KEEP_TARBALL_ROOT=1 ;;
+    --keep-data)        DO_KEEP_DATA=1 ;;
+    --keep-env|--keep-tarball-root) DO_KEEP_ENV=1 ;;
+    --keep-presets)     DO_KEEP_PRESETS=1 ;;
     -h|--help)     print_help; exit 0 ;;
     *)             log_fail "unknown flag: $1"; print_help; exit 1 ;;
   esac
   shift
 done
 
-# 默认 = --all(无 flag = 扫所有 profile)
+# 默认 = full mode (无 flag = --all)
 if [ "$EXPLICIT_PROFILE" = 0 ] && [ "$DO_ALL" = 0 ]; then
   DO_ALL=1
 fi
 
-# ── Phase 1: 计算 PROFILE_LIST ────────────────────────────────
-PROFILE_LIST=()
-
-# 识别 fingerprint:profile 含本 bundle 的两种 trace
-# (任一命中即认为装了,支持 nested pkg 与 package.json 任意 stale 残留)
-#
-#   1. profile/package.json 含 bundle 字符串 (in dsh.profile.bundles 或 dependencies)
-#   2. profile/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/ 还在
-#
-# 这样:
-#   - 只装 web/tui 没装 dsh-edge:profile/package.json fingerprint 命中 ✅
-#   - 部分清理(package.json 已 rm,nested pkg 还在):nested pkg fingerprint 命中 ✅
-#   - 完全清理:任一 fingerprint 都不命中,profile 不入 list ✅
+# ── fingerprint: profile 含本 bundle 的两种 trace ─────────────
+# 任一命中即认为装了,支持 nested pkg 与 package.json 任意 stale 残留。
 profile_has_bundle() {
   local prof_dir="$1"
   local pkg_json="$prof_dir/package.json"
@@ -138,6 +127,9 @@ profile_has_bundle() {
   fi
   return 1
 }
+
+# ── Phase 1: 计算 PROFILE_LIST ────────────────────────────────
+PROFILE_LIST=()
 
 if [ "$DO_ALL" = 1 ]; then
   log_info "scan \$DSH_HOME/profiles/* for dsh-edge-agent bundle fingerprints..."
@@ -156,25 +148,73 @@ if [ "$DO_ALL" = 1 ]; then
     log_info "no profile with bundle fingerprint found, exit 0"
     exit 0
   fi
-
-  # 默认 / --all 模式:单次 y/N 确认(不是逐个 prompt)
-  log_warn "找到 ${#PROFILE_LIST[@]} 个含 bundle fingerprint 的 profile:"
-  for prof in "${PROFILE_LIST[@]}"; do
-    echo "   - $prof"
-  done
-  read -rp "批量 kill + 清理上述所有 profile? [y/N] " ans
-  if [ "$ans" != "y" ] && [ "$ans" != "Y" ]; then
-    log_warn "用户拒绝(输 N),无副作用"
-    exit 0
-  fi
-  echo ""
 else
-  # 显式 --profile 模式:无需 y/N(用户已显式)
+  # 显式 --profile 模式: 无需 y/N (用户已显式)
   if [ -z "$PROFILE" ]; then
     PROFILE="dsh-edge"
   fi
   PROFILE=$(canonical_profile "$PROFILE")
   PROFILE_LIST=("$PROFILE")
+fi
+
+# ── Phase 1.5: 默认 / --all 模式 — 完整 summary + 1 次 y/N ──
+if [ "$EXPLICIT_PROFILE" = 0 ]; then
+  # 计算 ~/.dsh-edge-agent/ 大小 (供 prompt 显示)
+  local_data_size=""
+  if [ -d "$HOME/.dsh-edge-agent" ]; then
+    local_data_size=$(du -sh "$HOME/.dsh-edge-agent" 2>/dev/null | cut -f1)
+  fi
+
+  echo ""
+  echo "═══════════════════════════════════════════════════"
+  echo "  uninstall 将执行以下操作 (full mode)"
+  echo "═══════════════════════════════════════════════════"
+  echo ""
+  echo "  [1] kill + clean profile (${#PROFILE_LIST[@]} 个):"
+  for prof in "${PROFILE_LIST[@]}"; do
+    echo "      - $prof"
+  done
+  echo ""
+
+  echo "  [2] REPO_ROOT 环境文件:"
+  if [ "$DO_KEEP_ENV" = 0 ]; then
+    [ -f "$REPO_ROOT/.env" ]   && echo "      - shred $REPO_ROOT/.env (含 live API key)"
+    [ -f "$REPO_ROOT/.env.sh" ] && echo "      - rm $REPO_ROOT/.env.sh"
+    if [ ! -f "$REPO_ROOT/.env" ] && [ ! -f "$REPO_ROOT/.env.sh" ]; then
+      echo "      - skip (都不存在)"
+    fi
+  else
+    echo "      - skip (--keep-env)"
+  fi
+  echo ""
+
+  echo "  [3] ~/.dsh-edge-agent/ 数据:"
+  if [ "$DO_KEEP_DATA" = 0 ]; then
+    if [ -d "$HOME/.dsh-edge-agent" ]; then
+      echo "      - rm -rf $HOME/.dsh-edge-agent/ (大小: ${local_data_size:-?})"
+    else
+      echo "      - skip (目录不存在)"
+    fi
+  else
+    echo "      - skip (--keep-data)"
+  fi
+  echo ""
+
+  echo "  [4] ~/.dsh/.agent-presets/:"
+  if [ "$DO_KEEP_PRESETS" = 0 ]; then
+    echo "      - rmdir (仅当空)"
+  else
+    echo "      - skip (--keep-presets)"
+  fi
+
+  echo ""
+  echo "═══════════════════════════════════════════════════"
+  read -rp "确认全部执行? [y/N] " ans
+  if [ "$ans" != "y" ] && [ "$ans" != "Y" ]; then
+    log_warn "用户拒绝(输 N),无副作用"
+    exit 0
+  fi
+  echo ""
 fi
 
 # ── Phase 2: kill 每个 profile 的进程 ────────────────────────
@@ -185,14 +225,12 @@ kill_profile() {
   if [ -n "$pids" ]; then
     log_info "killing $prof (PIDs: $pids)"
     kill $pids 2>/dev/null || true
-    # 等 5s 让进程优雅退出
     for _ in 1 2 3 4 5; do
       sleep 1
       local alive
       alive=$(ps -eo pid,cmd 2>/dev/null | awk '/node.*dsh --profile '"$prof"'/ && !/awk/{print $1}')
       [ -z "$alive" ] && break
     done
-    # 残留就 SIGKILL
     pids=$(ps -eo pid,cmd 2>/dev/null | awk '/node.*dsh --profile '"$prof"'/ && !/awk/{print $1}')
     if [ -n "$pids" ]; then
       log_warn "$prof 优雅退出超时,SIGKILL (PIDs: $pids)"
@@ -310,7 +348,6 @@ done
 # ── Phase 3.5: 清理 install.sh §2.5 sync 的 profile-无关资产 ──
 # ~/.dsh/.agent-presets/dsh-edge-agent/(含 agent.cordis.yml + preset.yml,
 # install.sh §2.5 从 REPO_ROOT/agent-presets/ rsync 过去)。
-# 这是 *本 bundle 独有* 子目录,不是 user 写的 preset。
 log_info "Phase 3.5: clean install.sh §2.5 shared assets (profile-agnostic)"
 PRESET_DIR="$DSH_HOME/.agent-presets/dsh-edge-agent"
 if [ -d "$PRESET_DIR" ]; then
@@ -320,31 +357,20 @@ else
   log_info "  skip: $PRESET_DIR 不存在"
 fi
 
-# ── Phase 4: --purge-data 显式 y/N ─────────────────────────
-if [ "$DO_PURGE_DATA" = 1 ]; then
-  log_warn "--purge-data: 将删除 \$HOME/.dsh-edge-agent/"
+# ── Phase 4: ~/.dsh-edge-agent/ 数据 purge (默认 ON,除非 --keep-data) ──
+if [ "$DO_KEEP_DATA" = 0 ]; then
   if [ -d "$HOME/.dsh-edge-agent" ]; then
-    local_size=$(du -sh "$HOME/.dsh-edge-agent" 2>/dev/null | cut -f1)
-    echo "   大小: $local_size"
-    echo "   内含 6 渠道:audit/log/sessions/storage/cache/tmp + skill-realms.json"
-    echo "   memory dsh-edge-agent-data-path.md 记录 user 拍板数据可丢,"
-    echo "   但 uninstall 仍要求显式确认。"
-    read -rp "   确认删除? [y/N] " ans
-    if [ "$ans" = "y" ] || [ "$ans" = "Y" ]; then
-      rm -rf "$HOME/.dsh-edge-agent"
-      log_pass "✓ ~/.dsh-edge-agent/ 已删除"
-    else
-      log_warn "跳过(数据保留)"
-    fi
+    rm -rf "$HOME/.dsh-edge-agent"
+    log_pass "✓ ~/.dsh-edge-agent/ 已删除"
   else
-    log_info "~/.dsh-edge-agent/ 不存在,跳过"
+    log_info "skip: ~/.dsh-edge-agent/ 不存在"
   fi
+else
+  log_info "--keep-data: skip ~/.dsh-edge-agent/"
 fi
 
-# ── Phase 5: .agent-presets 父目录 rmdir(仅当空)──────────
-# Phase 3.5 已删 dsh-edge-agent 子目录;现在 rmdir 父目录仅当空
-# (可能还有别的 bundle 的 presets,不能 rm -rf)。
-if [ "$KEEP_PRESETS" = 0 ]; then
+# ── Phase 5: .agent-presets 父目录 rmdir (仅当空) ──────────
+if [ "$DO_KEEP_PRESETS" = 0 ]; then
   if [ -d "$DSH_HOME/.agent-presets" ]; then
     if rmdir "$DSH_HOME/.agent-presets" 2>/dev/null; then
       log_pass "✓ rmdir $DSH_HOME/.agent-presets (空)"
@@ -352,13 +378,12 @@ if [ "$KEEP_PRESETS" = 0 ]; then
       log_info "skip: $DSH_HOME/.agent-presets 非空(可能含其他 bundle 的 presets)"
     fi
   fi
+else
+  log_info "--keep-presets: skip ~/.dsh/.agent-presets/"
 fi
 
-# ── Phase 6: tarball 根目录 .env/.env.sh 清理(默认)─────────
-# §7.76:REPO_ROOT/.env 由用户手动创建,可能含 live API key。
-# shred .env 防 key 落盘;.env.sh 是 install.sh 拉起时 dsh source 的副本,
-# 由 .env.example 模板得来,可重建。
-if [ "$KEEP_TARBALL_ROOT" = 0 ]; then
+# ── Phase 6: REPO_ROOT .env/.env.sh 清理 (默认 ON,除非 --keep-env) ──
+if [ "$DO_KEEP_ENV" = 0 ]; then
   if [ -f "$REPO_ROOT/.env" ]; then
     if command -v shred >/dev/null 2>&1; then
       shred -u "$REPO_ROOT/.env" 2>/dev/null && log_pass "✓ shredded $REPO_ROOT/.env (live key)"
@@ -370,7 +395,7 @@ if [ "$KEEP_TARBALL_ROOT" = 0 ]; then
     rm -f "$REPO_ROOT/.env.sh" && log_pass "✓ rm $REPO_ROOT/.env.sh"
   fi
 else
-  log_info "--keep-tarball-root: skip .env/.env.sh cleanup"
+  log_info "--keep-env: skip .env/.env.sh cleanup"
 fi
 
 # ── Phase 7: summary + rollback hint ─────────────────────────
@@ -383,8 +408,8 @@ echo "已清理:"
 for prof in "${PROFILE_LIST[@]}"; do
   echo "  - profile: $prof (process killed + nested pkg + bundle from package.json + run.log)"
 done
-[ "$DO_PURGE_DATA" = 1 ] && echo "  - ~/.dsh-edge-agent/ (按 --purge-data)"
-[ "$KEEP_PRESETS" = 0 ] && [ -d "$DSH_HOME/.agent-presets" ] && echo "  - ~/.dsh/.agent-presets/ (空时 rmdir)"
-[ "$KEEP_TARBALL_ROOT" = 0 ] && echo "  - $REPO_ROOT/.env / .env.sh"
+[ "$DO_KEEP_PRESETS" = 0 ] && [ -d "$DSH_HOME/.agent-presets" ] && echo "  - ~/.dsh/.agent-presets/ (空时 rmdir)"
+[ "$DO_KEEP_DATA" = 0 ]   && echo "  - ~/.dsh-edge-agent/ (6 渠道数据)"
+[ "$DO_KEEP_ENV" = 0 ]    && echo "  - $REPO_ROOT/.env (shred) + .env.sh"
 echo ""
 echo "Rollback hint: 跑 \`./install.sh --skip-pnpm --no-restart\` 一键恢复部署。"
