@@ -118,6 +118,7 @@ package: build
 
 	@# 用户文档 + 入口
 	@cp install.sh $(PACKAGE_DIR)/dsh-edge-agent-v$(VERSION)/
+	@cp uninstall.sh $(PACKAGE_DIR)/dsh-edge-agent-v$(VERSION)/
 	@cp README.md $(PACKAGE_DIR)/dsh-edge-agent-v$(VERSION)/
 	@cp LICENSE $(PACKAGE_DIR)/dsh-edge-agent-v$(VERSION)/
 
