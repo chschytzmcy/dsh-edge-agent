@@ -531,8 +531,9 @@
     # 注册一个 aggregator search provider(id='tavily-bocha-fallback')到 ctx.web;
     # web.searchProvider = 'tavily-bocha-fallback' 即指向它。任一 tier 抛错
     # (非 2xx / 网络 / JSON 解析) → 下一 tier 接续; 三 tier 都失败 →
-    # WEB_PROVIDER_UNAVAILABLE。env-only 配置: DSH_EDGE_TAVILY_API_KEY /
-    # DSH_EDGE_BOCHA_API_KEY(DSH 黑名单,不能写 .env)。
+    # WEB_PROVIDER_UNAVAILABLE。配置走裸名 env (§7.75: .env + .env.sh source
+    # chain;避开 DSH 黑名单 DSH_/XDG_/DYLD_/BASH_FUNC_): TAVILY_API_KEY /
+    # BOCHA_API_KEY / DEEPSEEK_API_KEY,都在 repo .env 里跟其他 secret 同地。
     - id: web-search-tavily-bocha
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/web-search-tavily-bocha'
       inject: [web]

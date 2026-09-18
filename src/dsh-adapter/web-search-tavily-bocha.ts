@@ -9,11 +9,23 @@
  *                       Messages; final backstop when both Tavily and Bocha fail
  *                       or when neither key is set and only DEEPSEEK_API_KEY is present)
  *
- * Configuration (env-only, shell-exported — DSH blacklist forbids .env writes):
- *   - DSH_EDGE_TAVILY_API_KEY     (Tier 1)
- *   - DSH_EDGE_BOCHA_API_KEY      (Tier 2)
- *   - DEEPSEEK_API_KEY            (Tier 3 fallback, already required for cloud-llm)
- *   - DSH_EDGE_DEEPSEEK_BASE_URL  (optional, default https://api.deepseek.com/anthropic/v1)
+ * Configuration (.env-managed via §7.75 .env.sh source chain — bare names,
+ * no DSH_/XDG_/DYLD_/BASH_FUNC_ prefix to bypass dsh-app-boot blacklist):
+ *   - TAVILY_API_KEY    (Tier 1) — bare name, lives in repo .env
+ *   - BOCHA_API_KEY     (Tier 2) — bare name, lives in repo .env
+ *   - DEEPSEEK_API_KEY  (Tier 3 fallback, already required for cloud-llm)
+ *   - DEEPSEEK_BASE_URL (optional, default https://api.deepseek.com/anthropic/v1)
+ *
+ * Why bare names (NOT DSH_EDGE_* prefix)?  DSH dsh-app-boot 0.1.2-rc.1's
+ * BOOTSTRAP_PREFIXES = ["DSH_", "XDG_", "DYLD_", "BASH_FUNC_"] rejects any
+ * DSH_-prefixed KEY in .env files when dsh itself parses them
+ * (dsh-app-boot/lib/index.js:933-1015). Our install.sh source chain
+ * (`source .env.sh` → `set -a; . .env; set +a`) exports bare names BEFORE
+ * dsh launches — they reach the plugin via process.env. Naming them with
+ * the `DSH_EDGE_` prefix would either be silently ignored or rejected by
+ * the launcher if anyone ever copied them into a dsh-loaded file. Bare
+ * names align with §7.75 (`EDGE_API_KEY`, `DEEPSEEK_API_KEY`, etc.) so all
+ * secrets sit in one .env.
  *
  * Cordis integration: registers as a single search provider with id
  * `tavily-bocha-fallback` in `ctx.web`. `available()` returns true iff at
@@ -50,11 +62,11 @@ export const name = 'web-search-tavily-bocha'
 export const inject = ['web']
 
 /**
- * Config schema. The aggregator is fully env-driven (§7.82: DSH_EDGE_TAVILY_API_KEY
- * / DSH_EDGE_BOCHA_API_KEY / DEEPSEEK_API_KEY), so the schema is intentionally
- * minimal — provided only to satisfy the `verify:plugin-spec` battery. Future
- * Phase 5 work (per-provider rate-limit split, domain whitelist, SafeSearch)
- * can add fields here without touching `apply()`.
+ * Config schema. The aggregator is fully env-driven (§7.82: TAVILY_API_KEY
+ * / BOCHA_API_KEY / DEEPSEEK_API_KEY — bare names per §7.75), so the schema is
+ * intentionally minimal — provided only to satisfy the `verify:plugin-spec`
+ * battery. Future Phase 5 work (per-provider rate-limit split, domain
+ * whitelist, SafeSearch) can add fields here without touching `apply()`.
  */
 export interface Config {
   /** Reserved for future tuning knobs. No-op in v0.1.x. */
@@ -136,7 +148,7 @@ export class TavilyBochaFallbackProvider implements WebSearchProvider {
     // All tiers failed or unavailable.
     throw new WebError(
       'all web search providers failed or none configured ' +
-        '(set DSH_EDGE_TAVILY_API_KEY / DSH_EDGE_BOCHA_API_KEY / DEEPSEEK_API_KEY)',
+        '(set TAVILY_API_KEY / BOCHA_API_KEY / DEEPSEEK_API_KEY in .env)',
       'WEB_PROVIDER_UNAVAILABLE',
     )
   }
@@ -250,13 +262,17 @@ export class TavilyBochaFallbackProvider implements WebSearchProvider {
  * @param ctx - Cordis context with `ctx.web` available per `inject`.
  */
 export async function apply(ctx: Context, _config: Config): Promise<void> {
-  const tavilyKey = process.env.DSH_EDGE_TAVILY_API_KEY?.trim() || undefined
-  const bochaKey = process.env.DSH_EDGE_BOCHA_API_KEY?.trim() || undefined
-  const dsKey =
-    process.env.DSH_EDGE_DEEPSEEK_API_KEY?.trim() ||
-    process.env.DEEPSEEK_API_KEY?.trim() ||
-    undefined
-  const dsBaseURL = process.env.DSH_EDGE_DEEPSEEK_BASE_URL?.trim() || DEEPSEEK_DEFAULT_BASE_URL
+  // Read from bare env names — flow path:
+  //   repo .env (TAVILY_API_KEY=...)  →  install.sh `source .env.sh`
+  //                                    →  .env.sh `set -a; . .env; set +a`
+  //                                    →  process.env.TAVILY_API_KEY
+  //                                    →  this read in plugin.apply()
+  // §7.75 design: all secrets sit in one .env, no DSH_/XDG_/DYLD_/BASH_FUNC_
+  // prefix (would trip dsh-app-boot's bootstrap-only whitelist).
+  const tavilyKey = process.env.TAVILY_API_KEY?.trim() || undefined
+  const bochaKey = process.env.BOCHA_API_KEY?.trim() || undefined
+  const dsKey = process.env.DEEPSEEK_API_KEY?.trim() || undefined
+  const dsBaseURL = process.env.DEEPSEEK_BASE_URL?.trim() || DEEPSEEK_DEFAULT_BASE_URL
 
   // Construct upstream DeepSeek provider for Tier-3 fallback. We bypass its
   // settings-section / credential-ref machinery because we read env vars

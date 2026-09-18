@@ -8243,11 +8243,9 @@ fi
 5. **`.env.example`** Phase 5 section(141-151 行):
    ```
    # Phase 5 web-search providers (§7.82) ─────────────────────────────
-   # ⚠ DSH_* 前缀 → DSH dsh-app-boot 黑名单 → 不能写 .env,只能 shell export
-   # 三级链: Tavily → 博查 AI → DeepSeek
-   # DSH_EDGE_TAVILY_API_KEY=tvly-PLACEHOLDER_REPLACE_ME
-   # DSH_EDGE_BOCHA_API_KEY=sk-PLACEHOLDER_REPLACE_ME
-   # DSH_EDGE_DEEPSEEK_BASE_URL=https://api.deepseek.com/anthropic/v1
+   # 三级链: Tavily → 博查 AI → DeepSeek。裸名(§7.75 约定),与其他 secret 同地
+   # TAVILY_API_KEY=tvly-PLACEHOLDER_REPLACE_ME
+   # BOCHA_API_KEY=sk-PLACEHOLDER_REPLACE_ME
    ```
 
 6. **`package.json`** 新增直接 dep:
@@ -8276,7 +8274,7 @@ fi
 | 维度 | 选择 | 理由 |
 |------|------|------|
 | Provider 链 | Tavily → 博查 → DeepSeek | 最 resilient;Tavily 全球搜索/英文强,博查中文搜索强,DeepSeek 用 LLM turn 兜底 |
-| 配置方式 | env-only(`DSH_EDGE_TAVILY_API_KEY` + `DSH_EDGE_BOCHA_API_KEY`) | 对齐 `local-llm-adapter`;`memory local-llm-pool-bootstrap-constraints` 已记录 `DSH_EDGE_*` 黑名单 |
+| 配置方式 | 裸名 env `TAVILY_API_KEY` + `BOCHA_API_KEY` + `DEEPSEEK_API_KEY`,跟其他 secret 同地写 `.env` | §7.75 .env/.env.sh source chain 自动 export 到 process.env。**不用** `DSH_EDGE_*` 前缀(DSH 黑名单禁 .env 设这些;即便设了 install.sh 走 shell-inherit 也可,但命名上 §7.75 统一裸名更一致) |
 | 复用 DeepSeek | 直接 import `DeepSeekSearchProvider` + 私有实例 | package.json L21 已是直接 dep;零新 HTTP 代码;沿用 upstream 错误处理 |
 | 默认 provider 切换 | `web.searchProvider: tavily-bocha-fallback`,`web-search-deepseek` 独立 row `disabled: true` | 不破坏现有 seam API;新 provider 失败时自动回 Tier-3 DeepSeek |
 | `available()` 检查策略 | 自己看 `tavilyKey \|\| bochaKey \|\| dsKey` 字符串 | upstream `available()` 不可靠(thunk-define ≠ key-non-empty),自行检查避免 seam 误把空 key aggregator 当可用 |
@@ -8308,8 +8306,29 @@ fi
 - web-search 域名黑白名单 / SafeSearch / 搜索结果脱敏
 - per-provider 配额监控 / rate-limit 拆分(沿用 web-search-guard 的 10/min 总配额)
 - web_fetch 改造(只动 search;fetch 仍走 dsh-web-fetch-http 默认 http provider)
-- installer.sh 自动 export `DSH_EDGE_TAVILY_API_KEY`(沿用 `DSH_EDGE_*` 黑名单约束,user 启动 dsh-edge 前手动 export)
+- installer.sh 自动 export Tavily/Bocha key(沿用 §7.75 .env/.env.sh source chain;key 已在 .env,install.sh 启动时自动 source)
 - 改 e2e-coverage 脚本(现有 news 用例会自然走新 provider 链,断言不变)
 
 **回滚**:`cordis.patch.yml` 改回 `searchProvider: deepseek-official` + 删 `web-search-tavily-bocha` row + 删 `disabled: true` on `web-search-deepseek` 即可恢复原行为。新增源码 + 测试可保留(dormant)。
+
+#### 7.82.1 配置路径修正(user feedback 撤回 DSH_EDGE_* 前缀)
+
+**问题**:`§7.82` 初版用 `DSH_EDGE_TAVILY_API_KEY` / `DSH_EDGE_BOCHA_API_KEY` 前缀,沿用 `local-llm-adapter` 的命名习惯。user 当场纠偏:**"Tavily 和 博查 AI 的 KEY 需要写在 .env 里,所有的配置都在 .env 里"**。
+
+**重新核对机制**(不是 §7.82 当时说的"DSH 黑名单禁 .env 写 DSH_*"):
+- DSH 黑名单 `BOOTSTRAP_PREFIXES = ["DSH_", "XDG_", "DYLD_", "BASH_FUNC_"]` 在 `dsh-app-boot/lib/index.js:985-1015` 强制。**只过滤 DSH 自己读 .env 时**(`readEnvLayer` 函数会 throw 如果 .env 出现黑名单 prefix 的 name)。
+- 我司 `install.sh` 走 `source .env.sh` → `.env.sh` 内 `set -a; . .env; set +a` 把 `.env` 里所有 `KEY=VALUE` 全部 export 到 shell。dsh 启动时这些 key 已经在 process.env 里了,DSH 视作 inherited env,不进 .env 加载路径,不触发黑名单。
+- §7.75 整个项目早就定下 `.env` 用裸名(避开黑名单): `EDGE_API_KEY` / `DEEPSEEK_API_KEY` / `LOCAL_LLM_BASEURL` 等都是裸名。`DSH_EDGE_*` 只在 install.sh 拼出,作为 plugin 的入参(不是 .env 直接 KEY)。
+
+**修正**:
+- plugin 读 `process.env.TAVILY_API_KEY` / `process.env.BOCHA_API_KEY` / `process.env.DEEPSEEK_API_KEY`(全裸名)
+- `.env.example` 加 `TAVILY_API_KEY=tvly-PLACEHOLDER_REPLACE_ME` + `BOCHA_API_KEY=sk-PLACEHOLDER_REPLACE_ME` 两条(跟 `EDGE_API_KEY` 同地)
+- `.env.sh` 不需要改:`set -a; . .env` 已经自动 export 裸名
+
+**教训**:
+- "DSH_* 不能写 .env"是**事实但需要限定**: dsh 自己加载的 .env 不能设,但通过 install.sh shell-source 的 .env 完全 OK。§7.82 当时一刀切"必须 shell export"是过度约束,跟 §7.75 项目约定也冲突。
+- 新 env var 在 `.env.example` + `.env` + plugin read 三处都得保持前缀一致 —— 任意一处不一致会出现"配置写了但读不到"的隐性 bug(§7.79 同款陷阱)。
+- `DSH_EDGE_*` 前缀只用在 install.sh 拼出的派生变量(`DSH_EDGE_GUARD_MODEL` / `DSH_EDGE_INTENT_MODEL`),不是用户要配置的原始 secret。
+
+**重新验证**(修正后):43 文件 / 802 测试通过;5 verify gates PASS;make release tarball 364K SHA `9ad1f7826...`;`source .env` → `process.env.TAVILY_API_KEY=tvly-xxx` → plugin `available()=true` → `ctx.web searchProviders=[tavily-bocha-fallback]`。
 
