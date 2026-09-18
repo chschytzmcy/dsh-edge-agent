@@ -8432,3 +8432,28 @@ fi
 
 **对比上一档 token-plan 的同 news 用例**: §7.83 token-plan 跑 news 时 `resultLen=1751`,MiniMax 跑出来 `resultLen=2131` —— 在 prompt/tool 协议完全一致前提下,MiniMax-M2.7-highspeed 单次响应体量 +21%。
 
+### §7.85 LOCAL LLM 切到 LAN Qwen3.5-9B(67.0.0.5:28001)(2026-09-18)
+
+**触发**: §7.84 切完 CLOUD 后,user 在 lingbase 工作目录(`~/cy/rust/lingbase`)起了一个本地 LLM server,直 curl 验通(`http://67.0.0.5:28001/v1/chat/completions` + `model=qwen3.5-9b`),把 LOCAL 池切过去。
+
+**配置切换**(本节改动):
+- `LOCAL_LLM_BASEURL`: `https://coding.dashscope.aliyuncs.com/v1` → `http://67.0.0.5:28001/v1`
+- `LOCAL_LLM_MODEL`: `qwen3.7-plus` → `qwen3.5-9b`(model 实际路径 `/data/lizhouyang/models/mtp/Qwen3.5-9B-Q4_K_M.gguf`,Q4_K_M 量化)
+- `LOCAL_LLM_KEY_ENV`: `DASHSCOPE_API_KEY` → `NO_AUTH`(无 auth,跟旧 192.168.1.174:8911 同款)
+
+**§7.83 翻译层的余热**(本节零代码改动):
+跟 §7.84 一样,切池**0 行代码改动** —— `cordis.patch.yml` 已动态读 `process.env.DSH_EDGE_LOCAL_LLM_BASEURL` / `DSH_EDGE_LOCAL_LLM_KEY_ENV` / `DSH_EDGE_LOCAL_LLM_MODEL`,只改 `.env` 三件套即可。
+
+**网络差异提醒**(本节踩坑):
+我端 curl `67.0.0.5:28001` 直接 timeout(走的是我端的 VPN/出口路径),但 user 在 lingbase 工作目录的 curl 直通 → 证明 user 那边走 LAN 路由可达,我端网络路径不通。**切 LAN server 前别盲信自己端 curl 的结果,要么让 user 验,要么在跟 user 同一网段的 host 上 curl**。
+
+**验证**(修复后):
+- user 直 curl lingbase 验通(`你好` 测试)
+- `bash install.sh --profile=dsh-edge` 重启 dsh-edge
+- 端到端 chat(`查询本机的局域网IP`): intent=LOCAL → 9.3s 返回,resultLen=21
+- audit log 确认: 5 次 LLM call 全走 `baseUrl=http://67.0.0.5:28001/v1`, `model=qwen3.5-9b`, 全 `finishKind=stop/tool-calls`, 0 http_error
+- 5 verify gates + 802 unit tests + e2e-coverage 3/3 PASS,无 regress
+- news 用例同步通过(MiniMax CLOUD 不受影响,resultLen=2055)
+
+**改动文件**: 仅 `.env.example`(baseurl / KEY_ENV / MODEL 改)。`.env.sh` 翻译层早已存在(`export DSH_EDGE_LOCAL_LLM_KEY_ENV=${LOCAL_LLM_KEY_ENV}` 等),无需改。
+
