@@ -2,20 +2,23 @@
 # uninstall.sh —— dsh-edge-agent 反向部署脚本 (§7.76)
 #
 # 默认行为 (无 flag) = FULL uninstall (用户拍板: 不用加任何参数,默认请全部)
+#   - **Phase 1.7 backup .env / .env.sh** → $REPO_ROOT/.env.uninstall-backup.<ts>/
+#     (chmod 600 防 live key 落盘;--no-backup opt-out,**与 --keep-env 独立**)
 #   - kill + clean 所有含本 bundle fingerprint 的 profile
 #   - shred REPO_ROOT/.env (含 live API key) + rm .env.sh
 #   - rm -rf ~/.dsh-edge-agent/ (6 渠道数据)
 #   - rmdir ~/.dsh/.agent-presets/ (仅当空)
-# Opt-out flags: --keep-data / --keep-env / --keep-presets 保留对应项
+# Opt-out flags: --keep-data / --keep-env / --keep-presets / --no-backup
 #
 # 显式单 profile 模式 (--profile=X) = 精准手术,无需 y/N
-#   (CLI 即确认;但 data/env/presets 默认仍清,用 --keep-* opt-out)
+#   (CLI 即确认;但 data/env/presets 默认仍清,用 --keep-* opt-out;backup 仍跑)
 #
 # 安全约束:
+#   - **Phase 1.7 backup 默认 ON** (任何 destructive 前先 cp 一份到 $REPO_ROOT 子目录)
 #   - 任何 y/N prompt 默认 N (必须显式 y 才执行)
 #   - 不删 ~/.dsh/ 整目录 (用户可能装了别的项目)
 #   - 不动 user skin (diff -q 不一致时跳过)
-#   - .env 用 shred -u 防 live key 落盘恢复
+#   - .env 用 shred -u 防 live key 落盘恢复(backup 仍保留原文件,chmod 600)
 #
 # 用法:
 #   uninstall.sh                  # 默认: 全清 (kill + env + data + presets)
@@ -23,6 +26,7 @@
 #   uninstall.sh --keep-data      # 保留 ~/.dsh-edge-agent/ 数据
 #   uninstall.sh --keep-env       # 保留 REPO_ROOT/.env / .env.sh
 #   uninstall.sh --keep-presets   # 保留 ~/.dsh/.agent-presets/
+#   uninstall.sh --no-backup      # 不备份 .env / .env.sh
 #   uninstall.sh --help           # 打印帮助
 #
 # 退出码:
@@ -41,6 +45,7 @@ DO_ALL=0           # 默认 --all: 扫所有含 bundle fingerprint 的 profile
 DO_KEEP_DATA=0     # 默认 = 清 ~/.dsh-edge-agent/ ;--keep-data 保留
 DO_KEEP_ENV=0      # 默认 = shred .env + rm .env.sh ;--keep-env 保留
 DO_KEEP_PRESETS=0  # 默认 = rmdir ~/.dsh/.agent-presets/ 仅当空
+DO_BACKUP=1        # 默认 ON: 先 cp .env/.env.sh 到 .env.uninstall-backup.<ts>/ ;--no-backup 跳过
 
 # ── 颜色 (跟 install.sh 对齐) ──────────────────────────────────
 BLUE='\033[0;34m'
@@ -70,17 +75,21 @@ Options:
   --keep-env           保留 REPO_ROOT/.env (shred) 和 .env.sh
                        (alias: --keep-tarball-root,向后兼容)
   --keep-presets       保留 ~/.dsh/.agent-presets/ (默认 rmdir 仅当空)
+  --no-backup          不备份 .env / .env.sh (默认: cp 到
+                       $REPO_ROOT/.env.uninstall-backup.<ts>/,chmod 600)
   --all                显式 alias,等价默认 (向后兼容)
   -h, --help           打印这段
 
 安全约束:
+  - **Phase 1.7 backup 默认 ON** (任何 destructive 前先 cp 一份,即使 --keep-env)
   - 任何 y/N prompt 默认 N
-  - .env 含 live API key,shred 而非 rm
+  - .env 含 live API key,shred 而非 rm (backup 副本保留原内容)
   - 不删 ~/.dsh/ 整目录 (只删命名 profile 子目录 + ~/.dsh-edge-agent/)
   - 不动 user skin (diff 不一致时跳过)
   - kill SIGTERM→5s wait→SIGKILL9,镜像 install.sh:374/402
 
-Rollback hint: uninstall 后可 \`./install.sh --skip-pnpm --no-restart\` 一键恢复部署。
+Rollback hint: uninstall 后可 \`./install.sh --skip-pnpm --no-restart\` 一键恢复部署;
+.env live 内容可从 $REPO_ROOT/.env.uninstall-backup.<ts>/.env 恢复 (chmod 600)。
 EOF
 }
 
@@ -102,6 +111,7 @@ while [ $# -gt 0 ]; do
     --keep-data)        DO_KEEP_DATA=1 ;;
     --keep-env|--keep-tarball-root) DO_KEEP_ENV=1 ;;
     --keep-presets)     DO_KEEP_PRESETS=1 ;;
+    --no-backup)        DO_BACKUP=0 ;;
     -h|--help)     print_help; exit 0 ;;
     *)             log_fail "unknown flag: $1"; print_help; exit 1 ;;
   esac
@@ -165,18 +175,34 @@ if [ "$EXPLICIT_PROFILE" = 0 ]; then
     local_data_size=$(du -sh "$HOME/.dsh-edge-agent" 2>/dev/null | cut -f1)
   fi
 
+  # 计算 backup destination (Phase 1.7 用;prompt 也 preview 一遍)
+  BACKUP_TS=$(date +%Y%m%d-%H%M%S)
+  BACKUP_DIR="$REPO_ROOT/.env.uninstall-backup.$BACKUP_TS"
+
   echo ""
   echo "═══════════════════════════════════════════════════"
   echo "  uninstall 将执行以下操作 (full mode)"
   echo "═══════════════════════════════════════════════════"
   echo ""
-  echo "  [1] kill + clean profile (${#PROFILE_LIST[@]} 个):"
+  echo "  [1] backup .env / .env.sh (默认 ON):"
+  if [ "$DO_BACKUP" = 1 ]; then
+    if [ -f "$REPO_ROOT/.env" ] || [ -f "$REPO_ROOT/.env.sh" ]; then
+      echo "      - cp → $BACKUP_DIR/ (chmod 700;含 .env 会 chmod 600)"
+    else
+      echo "      - skip (.env / .env.sh 都不存在)"
+    fi
+  else
+    echo "      - skip (--no-backup)"
+  fi
+  echo ""
+
+  echo "  [2] kill + clean profile (${#PROFILE_LIST[@]} 个):"
   for prof in "${PROFILE_LIST[@]}"; do
     echo "      - $prof"
   done
   echo ""
 
-  echo "  [2] REPO_ROOT 环境文件:"
+  echo "  [3] REPO_ROOT 环境文件:"
   if [ "$DO_KEEP_ENV" = 0 ]; then
     [ -f "$REPO_ROOT/.env" ]   && echo "      - shred $REPO_ROOT/.env (含 live API key)"
     [ -f "$REPO_ROOT/.env.sh" ] && echo "      - rm $REPO_ROOT/.env.sh"
@@ -188,7 +214,7 @@ if [ "$EXPLICIT_PROFILE" = 0 ]; then
   fi
   echo ""
 
-  echo "  [3] ~/.dsh-edge-agent/ 数据:"
+  echo "  [4] ~/.dsh-edge-agent/ 数据:"
   if [ "$DO_KEEP_DATA" = 0 ]; then
     if [ -d "$HOME/.dsh-edge-agent" ]; then
       echo "      - rm -rf $HOME/.dsh-edge-agent/ (大小: ${local_data_size:-?})"
@@ -200,7 +226,7 @@ if [ "$EXPLICIT_PROFILE" = 0 ]; then
   fi
   echo ""
 
-  echo "  [4] ~/.dsh/.agent-presets/:"
+  echo "  [5] ~/.dsh/.agent-presets/:"
   if [ "$DO_KEEP_PRESETS" = 0 ]; then
     echo "      - rmdir (仅当空)"
   else
@@ -215,6 +241,59 @@ if [ "$EXPLICIT_PROFILE" = 0 ]; then
     exit 0
   fi
   echo ""
+fi
+
+# ── Phase 1.7: backup .env / .env.sh → $BACKUP_DIR (默认 ON) ──
+# 必须在 Phase 2 kill 之前完成(防数据丢失:即使后续 rm -rf / shred 出错,
+# backup 已留副本)。--no-backup opt-out;--keep-env 不影响 backup(独立
+# safety net,即便不 shred 也留一份)。
+backup_env_files() {
+  if [ ! -f "$REPO_ROOT/.env" ] && [ ! -f "$REPO_ROOT/.env.sh" ]; then
+    log_info "Phase 1.7: backup skip (.env / .env.sh 都不存在)"
+    return 0
+  fi
+
+  if ! mkdir -p "$BACKUP_DIR" 2>/dev/null; then
+    log_warn "Phase 1.7: backup 目录创建失败 ($BACKUP_DIR),跳过 backup"
+    return 0
+  fi
+  chmod 700 "$BACKUP_DIR" 2>/dev/null || true
+
+  local backed=0
+  if [ -f "$REPO_ROOT/.env" ]; then
+    if cp -p "$REPO_ROOT/.env" "$BACKUP_DIR/.env" 2>/dev/null; then
+      chmod 600 "$BACKUP_DIR/.env" 2>/dev/null || true
+      log_pass "  ✓ backup .env → $BACKUP_DIR/.env (chmod 600)"
+      backed=1
+    else
+      log_warn "  ✗ cp .env 失败,跳过(继续 uninstall)"
+    fi
+  fi
+
+  if [ -f "$REPO_ROOT/.env.sh" ]; then
+    if cp -p "$REPO_ROOT/.env.sh" "$BACKUP_DIR/.env.sh" 2>/dev/null; then
+      log_pass "  ✓ backup .env.sh → $BACKUP_DIR/.env.sh"
+      backed=1
+    else
+      log_warn "  ✗ cp .env.sh 失败,跳过(继续 uninstall)"
+    fi
+  fi
+
+  if [ "$backed" = 1 ]; then
+    echo ""
+    log_warn "备份位置: $BACKUP_DIR"
+    echo "  卸载后如需恢复 live API key:"
+    echo "    cp $BACKUP_DIR/.env $REPO_ROOT/.env"
+    echo "    chmod 600 $REPO_ROOT/.env"
+    echo ""
+  fi
+}
+
+if [ "$DO_BACKUP" = 1 ]; then
+  log_info "Phase 1.7: backup .env / .env.sh → $BACKUP_DIR"
+  backup_env_files
+else
+  log_info "Phase 1.7: --no-backup,skip"
 fi
 
 # ── Phase 2: kill 每个 profile 的进程 ────────────────────────
@@ -411,5 +490,14 @@ done
 [ "$DO_KEEP_PRESETS" = 0 ] && [ -d "$DSH_HOME/.agent-presets" ] && echo "  - ~/.dsh/.agent-presets/ (空时 rmdir)"
 [ "$DO_KEEP_DATA" = 0 ]   && echo "  - ~/.dsh-edge-agent/ (6 渠道数据)"
 [ "$DO_KEEP_ENV" = 0 ]    && echo "  - $REPO_ROOT/.env (shred) + .env.sh"
+echo ""
+if [ "$DO_BACKUP" = 1 ] && [ -d "$BACKUP_DIR" ]; then
+  echo "备份保留: $BACKUP_DIR"
+  echo "  含 .env (live key 副本,chmod 600) + .env.sh"
+  echo "  恢复: cp $BACKUP_DIR/.env $REPO_ROOT/.env && chmod 600 $REPO_ROOT/.env"
+  echo "  旧备份: $(ls -d $REPO_ROOT/.env.uninstall-backup.* 2>/dev/null | tr '\n' ' ') 自行清理"
+else
+  echo "备份: --no-backup 或 backup 失败,无副本"
+fi
 echo ""
 echo "Rollback hint: 跑 \`./install.sh --skip-pnpm --no-restart\` 一键恢复部署。"

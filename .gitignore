@@ -9,6 +9,9 @@ AGENTS.md
 .dsh-prompt-debug.json
 .env
 .env.local
+# §7.76 Phase 1.7 backup: .env.uninstall-backup.<ts>/ 可能含 live API key,
+# 跟 .env 同样规则——绝不入 git history。
+.env.uninstall-backup.*
 coverage/
 *.tsbuildinfo
 .claude/

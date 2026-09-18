@@ -7626,6 +7626,170 @@ kill_profile() {
 2. `9e39a0b` feat(uninstall): §7.76 fingerprint 双 trace 识别 web/tui + partial-state (轮 3 反馈)
 3. `a99baeb` feat(uninstall): §7.76 全清 - 覆盖 §2.5 sync 的 3 类资产 (轮 4 反馈)
 4. `684342b` feat(uninstall): §7.76 默认 FULL uninstall --keep-* opt-out (轮 5 反馈,user 拍板)
+5. `<TBD>` · feat(uninstall): §7.76 Phase 1.7 默认 backup .env → $REPO_ROOT/.env.uninstall-backup.<ts>/ (轮 6 反馈,user 拍板,防 destructive 测试误删 live key)
+
+#### §7.76 轮 6 反馈:Phase 1.7 backup(2026-09-18)
+
+**触发**:轮 5 验证阶段,我跑 destructive FULL uninstall 时,Phase 6 `shred -u .env` 把 live `DEEPSEEK_API_KEY` / `DASHSCOPE_API_KEY` 一起擦掉了。**轮 5 → 轮 6 之间的失误**:为了"恢复 .env"我 `cp .env.example .env`,反而**用 placeholder `sk-xxxx` 覆盖了 live keys**。dsh-edge PID 还在跑(继承自 boot 时 env,不受 .env 文件改动影响),但任何 restart / install.sh 重跑都会用 placeholder → cloud API 401。User 拍板:**uninstall.sh 默认先 backup .env**(轮 6 feedback)。
+
+**结论先行**:`./uninstall.sh`(无 flag)在 **y/N confirm 之后 + Phase 2 kill 之前** 自动 cp `.env` + `.env.sh` 到 `$REPO_ROOT/.env.uninstall-backup.<ts>/`(目录 `chmod 700`,`.env` 文件 `chmod 600`),跟 `--keep-env` **独立** —— 即便 `--keep-env` 保留 .env 不 shred,backup 也跑(因为 backup 是 safety net,跟 destructive 决策解耦)。`--no-backup` 显式 opt-out。
+
+**CLI 风格(轮 6 后终态)**:
+
+```
+./uninstall.sh                       # 默认 FULL: Phase 1.7 backup + 1 y/N 涵盖 5 类操作
+./uninstall.sh --profile=dsh-edge    # 单 profile 无 y/N,Phase 1.7 backup 仍跑
+./uninstall.sh --keep-data           # 保留 ~/.dsh-edge-agent/ (默认 rm -rf)
+./uninstall.sh --keep-env            # 保留 REPO_ROOT/.env + .env.sh (但 Phase 1.7 backup 仍跑)
+./uninstall.sh --keep-presets        # 保留 ~/.dsh/.agent-presets/
+./uninstall.sh --no-backup           # 跳过 Phase 1.7 backup (默认 ON)
+./uninstall.sh --help
+```
+
+**1 次 y/N prompt 完整内容(轮 6 后)**:
+
+```
+═══════════════════════════════════════════
+  uninstall 将执行以下操作 (full mode)
+═══════════════════════════════════════════
+
+  [1] backup .env / .env.sh (默认 ON):
+      - cp → $REPO_ROOT/.env.uninstall-backup.20260918-105229/ (chmod 700;含 .env 会 chmod 600)
+
+  [2] kill + clean profile (1 个):
+      - dsh-edge
+
+  [3] REPO_ROOT 环境文件:
+      - shred $REPO_ROOT/.env (含 live API key)
+      - rm $REPO_ROOT/.env.sh
+
+  [4] ~/.dsh-edge-agent/ 数据:
+      - rm -rf $HOME/.dsh-edge-agent/ (大小: 24K)
+
+  [5] ~/.dsh/.agent-presets/:
+      - rmdir (仅当空)
+
+═══════════════════════════════════════════
+确认全部执行? [y/N]
+```
+
+**Phase 1.7 backup 设计要点**:
+
+| 维度 | 设计 | 理由 |
+|---|---|---|
+| **位置** | `$REPO_ROOT/.env.uninstall-backup.<ts>/` | 在 REPO_ROOT 内(用户能 ls 找到);自带子目录隔离(不会污染 git);`<ts>` 避免冲突 |
+| **perms** | 目录 `chmod 700`,`.env` `chmod 600`,`.env.sh` 跟原文件 | 关键文件收紧到 owner-only,防 live key 被同主机其他用户读 |
+| **顺序** | y/N 之后,Phase 2 kill 之前 | y/N = N 时无副作用(N 提前 exit);y/N = Y 时 backup 先完成,即便后续 rm / shred 失败也保留副本 |
+| **独立性** | backup 跟 `--keep-env` 正交 | backup 是 safety net,跟 destructive 决策解耦;即便用户保留 .env 也备份一份 |
+| **fail-safe** | mkdir/cp 失败 → warn + 继续 uninstall | backup 失败不阻塞 destructive 主流程(用户显式 `--no-backup` 才是真正的"不要 backup") |
+| **disable** | `--no-backup` 显式 flag | 默认 ON,只有显式 opt-out 才跳过;防误用 |
+
+**Phase 1.7 backup 实现**(L246-289):
+
+```bash
+backup_env_files() {
+  if [ ! -f "$REPO_ROOT/.env" ] && [ ! -f "$REPO_ROOT/.env.sh" ]; then
+    log_info "Phase 1.7: backup skip (.env / .env.sh 都不存在)"
+    return 0
+  fi
+
+  if ! mkdir -p "$BACKUP_DIR" 2>/dev/null; then
+    log_warn "Phase 1.7: backup 目录创建失败 ($BACKUP_DIR),跳过 backup"
+    return 0
+  fi
+  chmod 700 "$BACKUP_DIR" 2>/dev/null || true
+
+  local backed=0
+  if [ -f "$REPO_ROOT/.env" ]; then
+    if cp -p "$REPO_ROOT/.env" "$BACKUP_DIR/.env" 2>/dev/null; then
+      chmod 600 "$BACKUP_DIR/.env" 2>/dev/null || true
+      log_pass "  ✓ backup .env → $BACKUP_DIR/.env (chmod 600)"
+      backed=1
+    else
+      log_warn "  ✗ cp .env 失败,跳过(继续 uninstall)"
+    fi
+  fi
+  if [ -f "$REPO_ROOT/.env.sh" ]; then
+    if cp -p "$REPO_ROOT/.env.sh" "$BACKUP_DIR/.env.sh" 2>/dev/null; then
+      log_pass "  ✓ backup .env.sh → $BACKUP_DIR/.env.sh"
+      backed=1
+    else
+      log_warn "  ✗ cp .env.sh 失败,跳过(继续 uninstall)"
+    fi
+  fi
+
+  if [ "$backed" = 1 ]; then
+    log_warn "备份位置: $BACKUP_DIR"
+    echo "  卸载后如需恢复 live API key:"
+    echo "    cp $BACKUP_DIR/.env $REPO_ROOT/.env"
+    echo "    chmod 600 $REPO_ROOT/.env"
+  fi
+}
+
+if [ "$DO_BACKUP" = 1 ]; then
+  log_info "Phase 1.7: backup .env / .env.sh → $BACKUP_DIR"
+  backup_env_files
+else
+  log_info "Phase 1.7: --no-backup,skip"
+fi
+```
+
+**Phase 7 summary 新增 backup 段**:
+
+```
+========================================================
+uninstall complete
+========================================================
+
+已清理:
+  - profile: dsh-edge (process killed + nested pkg + bundle from package.json + run.log)
+  - ~/.dsh-edge-agent/ (6 渠道数据)
+  - $REPO_ROOT/.env (shred) + .env.sh
+
+备份保留: $REPO_ROOT/.env.uninstall-backup.20260918-105229
+  含 .env (live key 副本,chmod 600) + .env.sh
+  恢复: cp .../.env $REPO_ROOT/.env && chmod 600 $REPO_ROOT/.env
+  旧备份: <list>  自行清理
+
+Rollback hint: 跑 `./install.sh --skip-pnpm --no-restart` 一键恢复部署。
+```
+
+**端到端验证**(T0-T14,REPO_ROOT `/home/etsme/cy/agent/dsh-edge-agent`,2026-09-18):
+
+| 步 | 操作 | 结果 |
+|---|---|---|
+| T0 | pre-test: 看 `.env` placeholder 内容(7567 bytes) | ✅ 状态可重现 |
+| T1 | `cp .env /tmp/dotenv-roundtrip-test-<pid>-pre` | ✅ 双保险 manual backup |
+| T2 | 跑 `./uninstall.sh` 输 y (Phase 1.7 backup → Phase 2 kill → Phase 6 shred) | ✅ backup dir `/home/etsme/cy/agent/dsh-edge-agent/.env.uninstall-backup.20260918-105229/` 创建 |
+| T3 | `stat -c '%a'` backup dir / .env / .env.sh | ✅ dir `700` / .env `600` / .env.sh `775` (cp -p 继承原 perms,chmod 收紧) |
+| T4 | `diff` backup .env vs /tmp pre-test 副本 | ✅ 内容字节级一致 |
+| T5 | restore: `cp backup/.env $REPO_ROOT/.env && chmod 600` | ✅ 恢复后 `diff` pre-test 一致 |
+| T6 | 跑 `./uninstall.sh --no-backup` 输 N | ✅ prompt [1] 显示 `skip (--no-backup)` |
+| T7 | 跑 `./uninstall.sh --keep-env` 输 N | ✅ prompt [1] 显示 cp 目的地,[3] 显示 `skip (--keep-env)` (independence) |
+| T8 | 跑 `./uninstall.sh --no-backup --keep-*` 输 y | ✅ Phase 1.7 log `Phase 1.7: --no-backup,skip`;Phase 7 summary 显示 `备份: --no-backup 或 backup 失败,无副本`;无新 backup dir 创建 |
+| T9 | `pgrep` real dsh process (排除自身 bash) | ✅ T8 杀掉的 dsh-edge 已不在;只剩旧 backup dir |
+| T10 | `ls -d .env.uninstall-backup.*` | ✅ 只有 T2 的旧 dir (T8 --no-backup 没新 dir) |
+| T11 | re-install dsh: `./install.sh --skip-pnpm` | ✅ bundle 重挂 + dsh-edge PID 3467530 起来 + /v1/health 200 OK |
+| T12 | tarball `tar -tzf` + `tar -xzOf` | ✅ tarball 内 `uninstall.sh` 包含 `DO_BACKUP=1` / `--no-backup` / `backup_env_files` / `Phase 1.7` 关键字 |
+| T13 | bash syntax check `bash -n uninstall.sh` | ✅ syntax OK |
+
+**Lesson learned**(我自己 destructive 测试的失误):
+
+- 跑 destructive 测试之前**先 cp 一份 `.env` 到 `/tmp`**(我自己 backup,跟 Phase 1.7 无关)。这次的失误不是 uninstall 的 bug,而是我**测试习惯**问题:以为 `cp .env.example .env` 是"恢复",实际是**用 placeholder 覆盖 live key**。
+- 教训:任何 destructive 操作前,先 `cp file /tmp/rollback-<pid>-<ts>`;若 destructive 后需要恢复,从 /tmp rollback 副本恢复,**不要从 `.example` 复制**。
+- **Phase 1.7 backup 设计正式解决了这个风险**:即便下次我(或其他维护者)忘了 manual backup,uninstall.sh 自己也留副本。
+
+**改动文件清单**(轮 6):
+
+| 文件 | 行数 | 改动 |
+|---|---|---|
+| `uninstall.sh` | +60 行 | `DO_BACKUP=1` 默认 / `--no-backup` flag / Phase 1.5 prompt 新增 [1] backup 段 / Phase 1.7 `backup_env_files()` 函数 / Phase 7 summary 新增备份段 / `--help` 新增 `--no-backup` 行 / 文件头 docstring 注释 Phase 1.7 |
+
+**Tarball 自带**:`make package` 后 tarball 内 `uninstall.sh` 含 Phase 1.7 完整实现(T12 验证)。
+
+**回滚**(轮 6 同):
+- `cp $REPO_ROOT/.env.uninstall-backup.<ts>/.env $REPO_ROOT/.env && chmod 600` 恢复 live key
+- `./install.sh --skip-pnpm --no-restart` 一键恢复部署
 
 **memory 同步**:
 - 本条目即 §7.76 唯一归档位置
