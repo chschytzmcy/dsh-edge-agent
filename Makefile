@@ -144,9 +144,6 @@ clean:
 	@rm -rf $(DIST_DIR)
 	@echo "$(GREEN)✓ 清理完成$(NC)"
 
-# 完整流程：测试 + 验证 + 构建 + 打包
-# build 通过 `package: build` 链式触发（GNU make 对同一 target 去重，
-# 所以即使显式列出 build 也只跑 1 次 compile —— 这里显式写出来更直观，
-# 防 `package:` 依赖链被人改了 release 漏掉 build）。
-release: test verify build package
+# 完整流程：构建 + 测试 + 验证 + 打包
+release: test verify package
 	@echo "$(GREEN)✓ Release 包准备完成: $(PACKAGE_NAME)$(NC)"
