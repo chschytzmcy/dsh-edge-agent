@@ -7480,3 +7480,160 @@ prompt-guard.config.modelDetectionModel = qwen3.7-plus
 - 不补 `DSH_EDGE_INPUT_GUARD_DEBUG` 等 19 个 debug-only 变量进 `.env.sh` —— 设计意图就是不 export(避免污染 shell),保留 grep artifact 即可
 - 不改 cordis.patch.yml `dsh-edge-agent` 已 §7.33 聚合 disabled 状态 —— 与本条目无关
 - 历史 PROGRESS §7.43 / §7.61 / §7.65 / §7.66 / §7.67 / §7.69 等 §7.55 之前条目不重写,§7.75 收口决议放本条目
+
+### §7.76 uninstall.sh —— 默认 FULL uninstall,1 次 y/N 涵盖 4 类破坏性(2026-09-18)
+
+**问题**:用户拍板 3 轮递进 pushback,逐步让 `uninstall.sh` 从"防御性必须显式"演化为"默认请全部":
+
+1. **轮 1**(make package 后):user 触发"测试打包部署 + 加 uninstall 脚本"
+2. **轮 2**:"`./uninstall.sh 默认就是卸载全部`" —— 把"无 flag → exit 1"门去掉,默认 = `--all` 模式
+3. **轮 3**:"uninstall 也要识别是否仅装到 web/tui 的 bundle 里 + 支持已清理 + 清理 package.json bundle 信息" —— 加 fingerprint 双 trace + partial-state idempotent
+4. **轮 4**:"uninstall 执行后,要清理干净" —— 审计发现 `~/.dsh/.agent-presets/dsh-edge-agent/`(§2.5 rsync 过去)和 `cordis.patch.yml`(同 REPO_ROOT 才删)+ 父目录空 trace 漏清,补齐
+5. **轮 5**:"`./uninstall.sh 不用加任何参数,默认请全部`" —— 把 `--purge-data` 吸收进默认,1 次 y/N 涵盖 4 类破坏性操作
+
+**结论先行**:5 轮递进后最终 = `./uninstall.sh`(无 flag)= **FULL uninstall** —— 扫所有含本 bundle fingerprint 的 profile + 1 次 y/N 确认,确认后批量执行 4 类破坏性:(1) kill + clean profile (2) shred `.env` + rm `.env.sh` (3) rm -rf `~/.dsh-edge-agent/` (4) rmdir `~/.dsh/.agent-presets/`。Opt-out 用 `--keep-data` / `--keep-env` / `--keep-presets` 保留对应项。**单 profile 模式** (`--profile=X`) 保留为精准手术:CLI 即确认无需 y/N,data/env/presets 默认仍清。
+
+**CLI 风格**(终态):
+
+```
+./uninstall.sh                       # FULL: 1 次 y/N 涵盖 4 类破坏性
+./uninstall.sh --profile=dsh-edge    # 单 profile 无 y/N,data/env/presets 默认仍清
+./uninstall.sh --keep-data           # 保留 ~/.dsh-edge-agent/ (125M 数据)
+./uninstall.sh --keep-env            # 保留 REPO_ROOT/.env + .env.sh
+./uninstall.sh --keep-presets        # 保留 ~/.dsh/.agent-presets/
+./uninstall.sh --help
+```
+
+**1 次 y/N prompt 完整内容**(显式列出 4 类操作 + 大小):
+
+```
+═══════════════════════════════════════════════════
+  uninstall 将执行以下操作 (full mode)
+═══════════════════════════════════════════════════
+
+  [1] kill + clean profile (N 个):
+      - dsh-edge
+
+  [2] REPO_ROOT 环境文件:
+      - shred $REPO_ROOT/.env (含 live API key)
+      - rm $REPO_ROOT/.env.sh
+
+  [3] ~/.dsh-edge-agent/ 数据:
+      - rm -rf $HOME/.dsh-edge-agent/ (大小: 125M)
+
+  [4] ~/.dsh/.agent-presets/:
+      - rmdir (仅当空)
+
+═══════════════════════════════════════════════════
+确认全部执行? [y/N]
+```
+
+**Fingerprint 双 trace 设计**(轮 3 反馈后):
+
+```bash
+profile_has_bundle() {
+  local prof_dir="$1"
+  local pkg_json="$prof_dir/package.json"
+  local nested_pkg="$prof_dir/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent"
+  # 任一命中即认为装了,支持 partial-state
+  if [ -f "$pkg_json" ] && grep -q '@deepseek-harness-edge-agent/dsh-edge-agent' "$pkg_json" 2>/dev/null; then
+    return 0  # fingerprint 1: package.json 含 bundle 字符串
+  fi
+  if [ -d "$nested_pkg" ]; then
+    return 0  # fingerprint 2: nested pkg 目录还在
+  fi
+  return 1
+}
+```
+
+**覆盖的状态矩阵**:
+
+| 状态 | fingerprint 1 | fingerprint 2 | 是否入 list |
+|---|---|---|---|
+| 完整装 (nested + package.json 都在) | ✅ | ✅ | ✅ 加 list |
+| **只装 web/tui 没装 dsh-edge** | ✅ | ✅ | ✅ 加 list |
+| **partial: package.json rm, nested pkg 还在** | ❌ | ✅ | ✅ 加 list |
+| **partial: nested pkg gone, package.json stale 引用** | ✅ | ❌ | ✅ 加 list |
+| 完全清理 (两边都 gone) | ❌ | ❌ | ❌ 跳过 (idempotent) |
+
+**全清覆盖率 audit**(before / after 默认 FULL 输 y):
+
+| 痕迹 | before | after |
+|---|---|---|
+| dsh-edge/nested pkg | 在 | ✅ 不存在 |
+| dsh-edge/parent dir | 在 (空) | ✅ 不存在 (rmdir) |
+| dsh-edge/package.json bundle | 2 处 | ✅ 0 处 |
+| dsh-edge/cordis.patch.yml | 在 (同 REPO) | ✅ 不存在 (diff 命中删) |
+| dsh-tui/cordis.patch.yml | 在 (USER SKIN,§7.54.4) | ✅ 保留 (diff 不一致跳过) |
+| `~/.dsh/.agent-presets/dsh-edge-agent/` | 在 (含 agent.cordis.yml + preset.yml) | ✅ 不存在 (rm -rf) |
+| `~/.dsh/.agent-presets/` | 在 | ✅ rmdir 成功 (空) |
+| `~/.dsh-edge-agent/` | 125M (6 渠道) | ✅ 不存在 (rm -rf) |
+| `REPO_ROOT/.env` | 10394 bytes (含 live key) | ✅ 不存在 (shred -u) |
+| `REPO_ROOT/.env.sh` | 12117 bytes | ✅ 不存在 (rm) |
+| dsh process | PID 3462885 | ✅ 无 (kill) |
+
+**USER SKIN 保护原则**(轮 4 关键设计取舍):
+
+- `cordis.patch.yml` / `privacy-policy.json`:install.sh §2.5 sync 的是**项目自有**皮肤,与 REPO_ROOT diff 一致才删;user 编辑过的 (diff 不一致) 跳过保留 —— 这是 §7.54.4 dsh-tui USER SKIN 的安全护栏,不能破坏。
+- `~/.dsh/` 整目录永远不删 —— 用户可能装了别的项目。
+- `.env.sh`:rm 默认;live key 在 `.env` 用 `shred -u`(防恢复)而非 `rm`。
+
+**Kill 模式**(镜像 install.sh:374/402):
+
+```bash
+kill_profile() {
+  local pids=$(ps -eo pid,cmd | awk '/node.*dsh --profile '"$prof"'/ && !/awk/{print $1}')
+  kill $pids  # SIGTERM
+  # 等 5s 优雅退出
+  for _ in 1 2 3 4 5; do sleep 1; alive=$(...); [ -z "$alive" ] && break; done
+  # 残留 SIGKILL9
+  pids=$(...); [ -n "$pids" ] && kill -9 $pids
+}
+```
+
+不用 `pkill -f` (会误杀同主机别人 dsh);awk 精确匹配 `node.*dsh --profile $PROFILE`,不是裸 `dsh`。
+
+**端到端验证**(11 步 A-L,REPO_ROOT `/home/etsme/cy/agent/dsh-edge-agent`,2026-09-18):
+
+| 步 | 操作 | 结果 |
+|---|---|---|
+| A | `bash -n uninstall.sh` | ✅ syntax OK |
+| B | `./uninstall.sh --help` | ✅ 默认 FULL 说明 + 4 类 opt-out flags |
+| C | `./uninstall.sh --unknown` | ✅ fail 退出 1 (unknown flag) |
+| D | `./uninstall.sh` 输 N | ✅ 用户拒绝无副作用,dsh PID + .env 都没动 |
+| E | `--keep-data --keep-env --keep-presets` 输 y | ✅ 仅 kill+clean profile,env/data/presets 全 skip |
+| F | 造 fingerprint 2: web/nested pkg 在 + package.json clean | ✅ 扫到 web (fingerprint 2 命中) |
+| G | `--profile=web --keep-*` (单 profile 无 y/N) | ✅ CLI 即确认,web cleanup 全 PASS |
+| H | partial state: web stale package.json + nested pkg gone | ✅ strip package.json (idempotent) |
+| I | `./install.sh --skip-pnpm --no-restart` | ✅ §2.5 sync agent-presets + cordis.patch.yml |
+| J | 重启 dsh-edge PID 3463658 | ✅ curl /v1/health 200 OK |
+| K | 幂等再跑 `./uninstall.sh` | ✅ exit 0 (no fingerprint found) |
+| L | 最终默认 FULL 输 y destructive | ✅ 100% 清 (audit 11 项全 PASS) |
+
+**改动文件清单**:
+
+| 文件 | 行数 | 改动 |
+|---|---|---|
+| `uninstall.sh` (新) | 320+ 行 | 5 轮迭代最终态:default FULL + fingerprint 双 trace + 全 §2.5 sync 资产覆盖 |
+| `Makefile` (L120-121) | +1 行 | `@cp uninstall.sh $(PACKAGE_DIR).../` 让 tarball 自带 uninstall |
+
+**Tarball 自带**:`make package` 出 `dsh-edge-agent-v0.1.0.tar.gz` (~356K),内含 `install.sh` + `uninstall.sh`,给 release 下游用户一键部署 + 一键卸载。
+
+**回滚**:`./install.sh --skip-pnpm --no-restart` 一键恢复部署;rollback 验证(PID 3463658 + 200 OK)证明 uninstall 不会破坏 dsh 系统文件(只清本 bundle footprint)。
+
+**Commit 序列**(5 轮迭代):
+1. `1f7002f` feat(deploy): §7.76 uninstall.sh + tarball packaging verify (初始版本,默认 exit 1)
+2. `9e39a0b` feat(uninstall): §7.76 fingerprint 双 trace 识别 web/tui + partial-state (轮 3 反馈)
+3. `a99baeb` feat(uninstall): §7.76 全清 - 覆盖 §2.5 sync 的 3 类资产 (轮 4 反馈)
+4. `684342b` feat(uninstall): §7.76 默认 FULL uninstall --keep-* opt-out (轮 5 反馈,user 拍板)
+
+**memory 同步**:
+- 本条目即 §7.76 唯一归档位置
+- 无独立 memory 文件 —— 后续排查 uninstall 行为 / `--keep-*` flags / fingerprint 逻辑直接搜 PROGRESS §7.76
+
+**未做**:
+- 不写 uninstall 的 unit test (destructive bash,test 价值低;e2e 验证覆盖足够)
+- 不在 uninstall 里做 audit log 备份 (user 拍板数据可丢)
+- 不打包 `key` 文件 (REPO-only,不在 tarball)
+- 不动 install.sh (已成熟,§7.72 双模式够用)
+- USER SKIN (diff 不一致) 永远不删 —— user 写的 cordis.patch.yml / privacy-policy.json 视为神圣
