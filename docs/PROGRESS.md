@@ -7844,3 +7844,84 @@ Rollback hint: 跑 `./install.sh --skip-pnpm --no-restart` 一键恢复部署。
 - 不改 `install.sh` 行为(纯 doc 修正)
 - 不引入 `dist/` 子目录层级(`dist/v0.1.0/...` 太深;扁平 `dist/dsh-edge-agent-v0.1.0.tar.gz` 够用)
 - 不改 `*.tar.gz` / `*.tar.gz.sha256` 已有规则(已能覆盖;`dist/` 是补充语义)
+
+### §7.78 install.sh `--check` —— 探测 dsh CLI + profile bundle + REPO source 版本(2026-09-18)
+
+**问题**:用户拍板给 `install.sh` 加 `--check` 参数,探测已装 dsh CLI + 指定 profile bundle 是否有可能更新的版本 —— release pipeline 之前 / 装机诊断 / 自动化脚本判断要不要 `./install.sh` 重部署。
+
+**结论先行**:`./install.sh --check [--profile=<name>]` 只读探测,不做任何改动:
+
+| 探测项 | 来源 | 用途 |
+|---|---|---|
+| **dsh CLI local** | `dsh --version` (前 1 行) | 装机 dsh daemon 当前跑哪个版本 |
+| **dsh CLI npm latest** | `timeout 5 npm view @deepseek-ai/dsh version` | npm registry 最新 release (best-effort, 5s timeout) |
+| **profile bundle deployed** | `$DSH_HOME/profiles/<prof>/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/package.json` 的 `version` 字段 | 已装 bundle 版本 |
+| **profile bundle npm latest** | `timeout 5 npm view @deepseek-harness-edge-agent/dsh-edge-agent version` | npm registry 最新 release (best-effort;本项目私有 npm 包通常 404) |
+| **REPO source** | `$REPO_ROOT/package.json` 的 `version` 字段 | 当前 repo 源码版本(tarball 模式下读 extract 目录的 package.json) |
+
+**退出码设计**:
+- 0 = `deployed = REPO source` (无需重部署)
+- 1 = `deployed ≠ REPO source` / `bundle 未装` / `dsh CLI 缺失` (需 `./install.sh --profile=xxx` 重部署)
+- 退出码 0 让 `--check` 可串入 shell pipeline (CI / healthcheck)
+
+**输出示例**(实际跑的输出,2026-09-18 11:38,新 tarball SHA256 `4a0e2238...`):
+
+```
+==> [check] dsh CLI
+  local:      0.1.2-rc.1  (`dsh --version`)
+  npm latest: 0.1.5-rc.2  (registry.npmjs.org)
+  status:     ⚠ outdated → npm i -g @deepseek-ai/dsh@latest
+
+==> [check] profile 'dsh-edge' bundle
+  deployed:   0.1.0  (/home/etsme/.dsh/profiles/dsh-edge/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/package.json)
+  REPO src:   0.1.0  (/home/etsme/cy/agent/dsh-edge-agent/package.json)
+  npm latest: (404 / not published / network 5s timeout)
+
+==> [check] summary
+  ✓ deployed (0.1.0) = REPO src (0.1.0)
+```
+
+**关键设计取舍**:
+
+1. **`--check` 短路在 dsh CLI 存在性检查之前** —— `--check` 应该能报告 "dsh 未装" 而不是直接 fail(`if ! command -v dsh` 在 L96-100 那个 exit 1 会让 --check 哑火)。改成 `check_versions` 自己处理 `command -v dsh`,没装也走完探测流程,只是 dsh local 字段显示 `(not installed)` 且 `rc=1`。
+
+2. **JSON version 读取双 fallback**:
+   - 优先 `node -e "console.log(require('$f').version)"` (精准)
+   - fallback `grep -m1 '"version"' | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/'` (无 node 也能跑)
+
+3. **`npm view` 加 `|| true` + 5s timeout** —— `set -euo pipefail` 在 install.sh L45,`npm view 404` 或网络 hang 会直接退出。加 `|| true` 吞掉错误,加 `timeout 5` 防 registry hang 卡死整个 --check。
+
+4. **不动 install.sh 部署路径** —— `--check` 是 read-only 加分支,Phase 1-4 部署逻辑全部不变。`--check` 只在 arg parse 后立刻 `check_versions; exit $?` 短路。
+
+5. **`exit_code` 用 local `rc` 累积** —— 多个 failure 维度(dsh missing + bundle missing + REPO ≠ deployed)各自 `rc=1`,最后 `return $rc`。dsh outdated 不算 failure (只是 informational warning),不参与 `rc` 累积。
+
+**端到端验证**(5 case,REPO_ROOT `/home/etsme/cy/agent/dsh-edge-agent`,2026-09-18 11:38):
+
+| case | 操作 | 期望 exit | 实际 |
+|---|---|---|---|
+| 1 | `./install.sh --check` (in sync) | 0 | ✅ 0 |
+| 2 | `./install.sh --check --profile=web` (未装) | 1 | ✅ 1 |
+| 3 | `sed` 临时改 REPO version 为 `0.99.99-test` + `./install.sh --check` | 1 | ✅ 1 |
+| 4 | `mv package.json.bak package.json` 还原 + `./install.sh --check` | 0 | ✅ 0 |
+| 5 | dsh PID 不变(`./install.sh --check` 前/后) | 一致 | ✅ before=after=3469129 |
+
+**tarball mode 验证**:extract `dist/dsh-edge-agent-v0.1.0.tar.gz` 到 `/tmp/check-tar-<pid>/`,跑 `install.sh --check` —— 工作,REPO src 字段正确指向 extract 目录的 `package.json`,deployed vs REPO src 比较正确。
+
+**改动文件清单**:
+
+| 文件 | 行数 | 改动 |
+|---|---|---|
+| `install.sh` (L31-33 docstring) | +3 行 | 用法段加 `--check [--profile=<name>]` 一行 + 描述 |
+| `install.sh` (L60 DO_CHECK=0) | +1 行 | 默认 0(部署模式);`--check` 触发短路 |
+| `install.sh` (L86 `--check`) | +1 行 | arg parse 加 case |
+| `install.sh` (L97-101 短路) | +5 行 | `if [ "$DO_CHECK" = 1 ]; then check_versions; exit $?; fi` |
+| `install.sh` (L80-167 `check_versions()`) | +88 行 | 完整函数:dsh CLI 探测 + bundle 探测 + npm view best-effort + summary |
+| `install.sh` 总 | +102 行新增 | (commit `e340613`) |
+
+**Tarball 自带**:`make package` 已重打,新 SHA256 `4a0e223823dd4ed7e9f95006382a15cd0cd23c190ce6dade987ea7c71f36a540`。`dist/dsh-edge-agent-v0.1.0.tar.gz` 内 `install.sh` 含 `--check` 完整实现。
+
+**未做**:
+- 不写 `--check` 的 unit test (read-only bash,端到端验证足够)
+- 不改 deploy 路径(纯加分支)
+- 不改 `command -v dsh` 短路(只在 --check 路径里改)
+- 不写 dsh outdated → 自动 `npm i -g` (用户拍板手动控制升级时机,见 `--check` 输出里给 `npm i -g @deepseek-ai/dsh@latest` 提示而非自动跑)
