@@ -1,6 +1,6 @@
 {
   "name": "@deepseek-harness-edge-agent/dsh-edge-agent",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Edge-side private agent built on DSH Cordis plugin mechanism: TEE-secured, OHTTP-encrypted, multi-LLM-routed, zero-core-modification.",
   "license": "MIT",
   "repository": {
