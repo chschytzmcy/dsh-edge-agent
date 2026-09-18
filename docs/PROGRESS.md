@@ -8392,3 +8392,43 @@ fi
 
 **改动文件**: 仅 `.env.example`(baseurl / KEY_ENV / MODEL 改 + 新 MINIMAX_API_KEY placeholder)。`cordis.patch.yml` / `cloud-llm-adapter.ts` / `.env.sh` **0 行改动**(§7.83 翻译层对称修复的余热)。
 
+#### 7.84.1 e2e-coverage news 用例实测走 MiniMax 验证(2026-09-18 17:38-17:39)
+
+`make e2e-coverage` 3/3 PASS,news 用例真实 wire 到 MiniMax:
+
+```
+▶ 用例 [news] sessionId=opslog-canary-news query='查询最新的AI新闻'
+  ✓ HTTP 200 → /tmp/e2e-opslog-news.json
+  · ops log 行数: 668
+  ✓ 21 节点覆盖 + 关键字段完整
+  ✓ preflight intent category=CLOUD
+  ✓ tool allow tool=web_search 35 次
+  ✓ cloud-llm-adapter LLM call start 66 次
+  ✓ chat reply status=200
+  ✓ chat reply resultLen=2131
+```
+
+实际 audit log 取证(plain log `~/.dsh-edge-agent/log/dsh-edge-agent.log` 同 session):
+
+```
+[cloud-llm-adapter] LLM call start sessionId=opslog-canary-news 
+  provider=cloud-llm model=MiniMax-M2.7-highspeed messageCount=3 promptLen=6258 
+  baseUrl=https://api.minimaxi.com/v1
+[cloud-llm-adapter] LLM call done ... durationMs=20201 resultLen=2131 toolCallCount=0
+
+[http-api] chat reply sessionId=opslog-canary-news reqId=d83a4aae 
+  provider=cloud-llm model=MiniMax-M2.7-highspeed durationMs=36765 
+  resultLen=2131 status=200 intent=CLOUD
+```
+
+完整链路实证:
+- `baseUrl=https://api.minimaxi.com/v1`(OpenAI-compatible)
+- `model=MiniMax-M2.7-highspeed`
+- `promptLen=10101, systemLen=2455, messageCount=11`
+- `durationMs=36765`(chat 端到端,~36s)
+- `resultLen=2131`(最终 summary)
+- `tool=web_search status=ok` x35(中间 35 次 web_search 工具调用全成功)
+- `http_error count = 0`(全程无 401/4xx/5xx)
+
+**对比上一档 token-plan 的同 news 用例**: §7.83 token-plan 跑 news 时 `resultLen=1751`,MiniMax 跑出来 `resultLen=2131` —— 在 prompt/tool 协议完全一致前提下,MiniMax-M2.7-highspeed 单次响应体量 +21%。
+
