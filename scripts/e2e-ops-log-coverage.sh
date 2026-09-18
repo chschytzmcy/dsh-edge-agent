@@ -67,7 +67,11 @@ fi
 HTTP_API_PORT="${DSH_EDGE_HTTP_PORT:-21017}"
 HTTP_API_URL="http://127.0.0.1:${HTTP_API_PORT}/v1/chat"
 AUTH_TOKEN="${DSH_EDGE_HTTP_TOKEN:-${EDGE_API_KEY:-test-secret-key}}"
-TIMEOUT="${E2E_TIMEOUT:-90}"
+# §7.81.1 (2026-09-18): TIMEOUT 90 → 180s
+# news 用例(web_fetch + web_search 双工具 + 2 次 LLM 重试 + LLM 输出)
+# 实测稳定 ~77s,90s 边缘,加 1 次 web_fetch error 重试就超 90s。180s
+# 给 web_search/web_fetch + 双重 retry + LLM 流式留足 buffer。
+TIMEOUT="${E2E_TIMEOUT:-180}"
 ONLY=""
 DRY_RUN=0
 

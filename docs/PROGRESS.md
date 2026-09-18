@@ -8178,6 +8178,28 @@ fi
 | C. 模拟 hang: `set -x; sleep 999 & pkill -STOP pnpm` 后跑 `./install.sh` | Phase 1 在 120s 后触发 timeout,走 fallback 分支,`lib/` 完好时继续 Phase 2-4,exit 0 |
 | D. fallback 后 Phase 2-4 仍跑通 | `curl http://127.0.0.1:21017/v1/health` 200 |
 | E. 重复 `./install.sh` 3 次 | 幂等,exit 0,dsh-edge 持续运行 |
+| F. `make e2e-coverage` 3 用例 | ✅ ALL PASS(mibao / news / local-ip 全 200 + 21 节点覆盖)|
+
+**7.81.1 实测结果** (2026-09-18 15:23):
+
+| 步骤 | 实测 | 结论 |
+|------|------|------|
+| A | `bash -n install.sh` exit 0 | ✅ |
+| C | `pnpm` shim `sleep 999` 模拟 hang,install.sh --no-restart | ✅ 120s 触发 timeout (exit 124), fallback 走通, Phase 2 rsync,exit 0,dsh-edge /v1/health 200 |
+| F (1st) | news HTTP 401 → 失败 | ❌ **新发现**,非 §7.81 本身 bug |
+
+**7.81.1 副产物发现**:e2e-ops-log-coverage.sh TIMEOUT=90s 对 news 用例太紧。实测 news 用例 web_fetch + web_search 双工具 + 2 次 LLM 重试 + 流式输出稳定 ~77s,90s 边缘,加 1 次 tool 重试就超。手动 `curl --max-time 90 ... news` 跑过 2 次:1 次 HTTP 000 (curl 完全 timeout,响应文件都未生成),1 次 HTTP 401(分类器 fallback)。两种都是 curl 在 90s 截止前被切。
+
+**修法**: `scripts/e2e-ops-log-coverage.sh:70` TIMEOUT 90s → 180s,给 web_search/web_fetch + 双重 retry + LLM 流式留 2x buffer。
+
+**复测**: 540s timeout 内跑完,3/3 全 PASS:
+- mibao (LOCAL): 139 ops log 行,21 节点覆盖,ets-auth skill 调用,LLM done 16x,chat reply 200
+- news (CLOUD): **416 ops log 行**,21 节点覆盖,web_search 21x,**cloud-llm-adapter LLM start 41x**,tool result 67x,resultLen=4013,chat reply 200
+- local-ip (SANITIZED): 138 ops log 行,21 节点覆盖,preflight http-api-classified,tool bash 5x,chat finished turn=1
+
+**root cause 分类**: 这是 §7.81 表层 fix 之下的**第 2 个 timeout** —— 表面上 install.sh 不再 hang (Phase 1 timeout 120s),但 e2e-coverage.sh 本身有 CURL timeout 90s。两者独立。
+
+**教训**(§7.81.2 候选): 跑 e2e-coverage 前应该 `tail -3 ~/.dsh-edge-agent/log/dsh-edge-agent.log | grep LLM call done` 看最近用例 duration,给 timeout 设 2x 缓冲。当前 default 90s 是首次写脚本时取的,没考虑 web 工具场景的 latency。
 
 #### 7.81.2 后续候选
 
