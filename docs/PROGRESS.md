@@ -8000,3 +8000,111 @@ Rollback hint: 跑 `./install.sh --skip-pnpm --no-restart` 一键恢复部署。
 - 不在 PROGRESS §7.76 阶段就预测到 local-llm 池端点会死(实际 2026-09-18 当天 LAN server 502 是用户反馈驱动)
 
 **Tarball 自带**:`make package` 在 §7.77 已重打,本次脚本改动后续需要 `make package` 重打(脚本进了 tarball,本地部署仍依赖 §7.74 双模式 + REPO_ROOT 优先读)。
+
+---
+
+### §7.80 `install.sh` exit code 在 `make package` pnpm hang 时污染(2026-09-18)
+
+**问题**:重启 dsh-edge 跑 `./install.sh`(默认 repo 模式)后,**实际 dsh-edge 进程成功起来了**(PID 3509211,health 200 OK),但 install.sh **exit code = 144**(signal 16 = SIGUSR1,带 `set -euo pipefail` 在 `make package` 阶段 pnpm lockfile sync 挂起时触发)。从用户视角看 install.sh 失败,实际部署已成功。
+
+#### 7.80.1 完整时间线(2026-09-18 14:53-14:54)
+
+| 时间 | 事件 |
+|---|---|
+| 14:53 | 跑 `./install.sh`(默认 = repo 模式,Phase 1 调 `make package`) |
+| 14:54:04 | Phase 2 开始,dsh-edge 启动(PID 3509211,boot scan 完成) |
+| 14:54:11 | Phase 3 `pnpm run compile` 完成,`lib/` 重 build |
+| 14:54:12 | install.sh 退出,exit 144 |
+| (后台) | 我又跑 `nohup dsh --profile dsh-edge &` → exit 1(EADDRINUSE,端口被 PID 3509211 占着) |
+| 14:54:30 | 验证 health 200 ✓ |
+
+**结论**:`install.sh` 失败是 `make package` 阶段 pnpm lockfile sync hang(2026-09-18 当天 `package.json` 时间戳更新触发),但 deploy + 启 dsh-edge 都成功。dsh-edge PID 3509211 在跑 + chat sanity 全绿(news + mibao)。
+
+#### 7.80.2 pnpm 11.7 lockfile sync 触发现象
+
+`pnpm 11.7.0`(本机装版本)在 `pnpm run` 检测到 `package.json` 时间戳更新时,会**自动跑 `pnpm install` 做 lockfile 同步**(即使 `pnpm run compile` 本身不需要 install)。`pnpm install` 内部 hang,`set -e` 在 install.sh 触发 SIGUSR1 → exit 144。
+
+**触发条件**:
+- `package.json` 在 `pnpm run` 之前或期间被改(bump version / `node -e ...writeFileSync` / 任何 writeFileSync)
+- 上次 `pnpm install` 完成 → 现在 package.json 又动了 → pnpm 觉得 lockfile 跟实际不一致,触发 sync
+
+**复现性**: 100%(本轮 bump version 0.1.0 → 0.1.1 后跑 `make package` 也触发,只是 make 模式不让 set -e kill)。
+
+#### 7.80.3 install.sh 应该做的改进(2 候选)
+
+**候选 A: Phase 1 加超时 + fallback**
+```bash
+# Phase 1 (简化示意):
+if [ -d "$REPO_ROOT/lib" ] && [ "$REPO_ROOT/lib/types" -nt "$REPO_ROOT/src" ]; then
+  log_info "Phase 1: lib/ 比 src/ 新,跳过 make package"
+else
+  log_info "Phase 1: lib/ 需要重 build"
+  if ! timeout 60 make package; then
+    log_warn "Phase 1: make package 超时 / 失败,继续用现有 lib/(可能 stale)"
+  fi
+fi
+```
+
+**候选 B: Phase 1 lib/ freshness check(更稳)**
+- 比对 `lib/` mtime vs `src/` mtime,只在 stale 时跑 `make package`
+- `pnpm run compile` 里 `npm run clean` 会清空 lib/,所以 freshness check 必须看 `lib/.last_build_marker` 或 `lib/types/*.js` 文件 mtime
+- 完全跳过 `make package` 在大多数日常 `install.sh --no-restart` 场景(只 sync lib/)能省 30s
+
+**候选 C: `make package` 内部用 `npm run compile` 替代 `pnpm run compile`**
+- 根因: pnpm 11.7 隐式 lockfile sync 行为
+- 改成 npm 直接跑 `npm run compile`(不触发 pnpm install)
+- 风险: 其他用 pnpm workspace 的地方可能受影响(本项目暂时不用 workspace)
+- 收益: 直接消除 hang 根因
+
+**推荐**: 候选 A 短期 + 候选 C 长期。候选 B 复杂度高,收益边际。
+
+#### 7.80.4 Makefile `release` 显式 `build` 试验(2026-09-18)
+
+用户拍板 "make release 可以加上 build",做了 2 次 commit:
+
+1. `860ca90 chore(makefile): release 依赖显式列出 build`
+   - 改成 `release: test verify build package`
+   - 实测: `make -n release` 仍只跑 1 次 `pnpm run compile`(GNU make 对同名 target 去重)
+   - 行为不变,可读性提升
+
+2. `fbd9c2f revert(makefile): release 依赖回退到 test verify package`
+   - 用户拍板回退: "保留 release: test verify package"
+   - build 通过 `package: build` 链式触发
+   - 行为完全一致,只是依赖列表更隐式
+
+**结论**: 两种写法等价,显式列 build 是 **defense-in-depth** 防 `package:` 依赖链被人改了 release 默默漏掉 build;隐式写更简洁。用户拍板保留隐式,**尊重用户拍板**。
+
+#### 7.80.5 端到端验证 `make release`(2026-09-18 14:30)
+
+从干净状态(rm -rf lib/ dist/ .deploy/)跑 `make release`,exit 0:
+
+| 阶段 | 输出 |
+|---|---|
+| test | ✅ **42 test files, 789 passed, 1 skipped** (vitest 全绿) |
+| verify:build | ✅ 5 verify gate 全 PASS(adapter boundary / upstream contract / patch surface / plugin spec / bundle mount) |
+| build | ✅ tsc 出 lib/(21 个 .js 文件) |
+| package | ✅ dist/dsh-edge-agent-v0.1.1.tar.gz (355K) + SHA256 `1a4e3e5a...` |
+| release | ✅ `✓ Release 包准备完成: dsh-edge-agent-v0.1.1.tar.gz` |
+
+**耗时**: ~5-7 分钟(test 60s + verify 30s + build 30s + package 30s + 一些 pnpm 启动开销)。
+
+#### 7.80.6 改动文件清单
+
+| 文件 | 改动 | commit |
+|---|---|---|
+| `Makefile` | `release:` 显式列 `build`(后回退) | `860ca90` → `fbd9c2f` |
+| `docs/PROGRESS.md` | §7.80 完整记录 | (本 commit) |
+
+#### 7.80.7 未做(候选给后续)
+
+- 不修 install.sh Phase 1 加 pnpm 超时 / lib/ freshness check(需要 §7.81+ 设计 + 实测 + 防回归)
+- 不改 `Makefile` 让 `package:` 内部用 `npm run compile` 替代 `pnpm run compile`(根因消除,但需要测 pnpm workspace 边界)
+- 不在 install.sh Phase 3 加 "启 dsh-edge 后立即 health 200 验证",用 health 失败触发 rollback(更安全的 deploy)
+- 不写 install.sh 的回归测试(本轮跑过一次 human-in-loop install.sh 流程,但没自动化)
+- 不在用户手册 README 里加 "install.sh 失败时先看 dsh-edge 是否真起来"的 troubleshooting 段(等 §7.81 修完 install.sh 再写)
+
+#### 7.80.8 给后续排查的 takeaway
+
+1. **install.sh exit code ≠ deploy 失败**:`set -e` + pnpm hang 可能让 exit 非零但 dsh-edge 实际起来了。先 `ps -eo pid,cmd | grep dsh` + `curl /v1/health` 验证,别直接 rollback。
+2. **pnpm 11.7 隐式 lockfile sync 是 trap**: 改 `package.json` 后跑 `pnpm run X` 会先做 lockfile 同步。如果不想 sync,改用 `npm run X` 直接调。
+3. **make -n 是验证 dry-run 顺序最便宜的办法**: 改 Makefile 依赖链之前先 `make -n release` 看实际跑的命令,确认依赖去重生效(本次确认 GNU make 对同名 target 去重 → 显式列 build 不会跑 2 次 compile)。
