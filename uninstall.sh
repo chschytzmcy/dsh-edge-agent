@@ -241,6 +241,7 @@ reset_profile_files() {
   local prof="$1"
   local prof_dir="$DSH_HOME/profiles/$prof"
   local nested_pkg="$prof_dir/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent"
+  local nested_parent="$prof_dir/node_modules/@deepseek-harness-edge-agent"
 
   log_info "Phase 3: clean profile '$prof' ($prof_dir)"
 
@@ -252,19 +253,50 @@ reset_profile_files() {
     log_info "  skip: $nested_pkg already gone"
   fi
 
+  # 3.1.1 父目录 @deepseek-harness-edge-agent/(空时 rmdir,留 trace 不必要)
+  if [ -d "$nested_parent" ]; then
+    if rmdir "$nested_parent" 2>/dev/null; then
+      log_pass "  ✓ rmdir empty parent: $nested_parent"
+    else
+      log_info "  skip: $nested_parent 非空(可能含别的 scope 包)"
+    fi
+  fi
+
   # 3.2 strip profile package.json (我们的 bundle 入口)
   if [ -f "$prof_dir/package.json" ]; then
-    if grep -q '"@deepseek-harness-edge-agent/dsh-edge-agent"' "$prof_dir/package.json" 2>/dev/null; then
+    if grep -q '@deepseek-harness-edge-agent/dsh-edge-agent' "$prof_dir/package.json" 2>/dev/null; then
       python3 -c "$RESET_PKG_PY" "$prof_dir/package.json" && log_pass "  ✓ stripped bundle from $prof_dir/package.json"
     else
       log_info "  skip: profile package.json already clean"
     fi
   fi
 
-  # 3.3 skin 层 cordis.patch.yml (我们这 bundle 没 skin,保留)
-  # 不动 profiles/$prof/cordis.patch.yml —— 它可能含别的项目 bundle 的 skin
+  # 3.3 skin 层 cordis.patch.yml (install.sh §2.5 sync 的)
+  # 只删 **与 REPO_ROOT 一致** 的版本(user 改过的不动,可能是 user skin)
+  local repo_skin="$REPO_ROOT/profiles/$prof/cordis.patch.yml"
+  local dsh_skin="$prof_dir/cordis.patch.yml"
+  if [ -f "$dsh_skin" ]; then
+    if [ -f "$repo_skin" ] && diff -q "$repo_skin" "$dsh_skin" >/dev/null 2>&1; then
+      rm -f "$dsh_skin"
+      log_pass "  ✓ removed install.sh-synced skin: $dsh_skin (matches REPO_ROOT)"
+    else
+      log_info "  skip: $dsh_skin 跟 REPO_ROOT 不一致(或 REPO_ROOT 无),可能是 user skin 保留"
+    fi
+  fi
 
-  # 3.4 run.log (install.sh Phase 3 写的)
+  # 3.4 privacy-policy.json (install.sh §2.5 sync 的,同 cordis.patch.yml 原则)
+  local repo_policy="$REPO_ROOT/profiles/$prof/privacy-policy.json"
+  local dsh_policy="$prof_dir/privacy-policy.json"
+  if [ -f "$dsh_policy" ]; then
+    if [ -f "$repo_policy" ] && diff -q "$repo_policy" "$dsh_policy" >/dev/null 2>&1; then
+      rm -f "$dsh_policy"
+      log_pass "  ✓ removed install.sh-synced privacy-policy: $dsh_policy (matches REPO_ROOT)"
+    else
+      log_info "  skip: $dsh_policy 跟 REPO_ROOT 不一致(或 REPO_ROOT 无),可能是 user 编辑保留"
+    fi
+  fi
+
+  # 3.5 run.log (install.sh Phase 3 写的)
   if [ -f "$prof_dir/run.log" ]; then
     rm -f "$prof_dir/run.log"
     log_pass "  ✓ removed run.log"
@@ -274,6 +306,19 @@ reset_profile_files() {
 for prof in "${PROFILE_LIST[@]}"; do
   reset_profile_files "$prof"
 done
+
+# ── Phase 3.5: 清理 install.sh §2.5 sync 的 profile-无关资产 ──
+# ~/.dsh/.agent-presets/dsh-edge-agent/(含 agent.cordis.yml + preset.yml,
+# install.sh §2.5 从 REPO_ROOT/agent-presets/ rsync 过去)。
+# 这是 *本 bundle 独有* 子目录,不是 user 写的 preset。
+log_info "Phase 3.5: clean install.sh §2.5 shared assets (profile-agnostic)"
+PRESET_DIR="$DSH_HOME/.agent-presets/dsh-edge-agent"
+if [ -d "$PRESET_DIR" ]; then
+  rm -rf "$PRESET_DIR"
+  log_pass "  ✓ removed preset dir: $PRESET_DIR"
+else
+  log_info "  skip: $PRESET_DIR 不存在"
+fi
 
 # ── Phase 4: --purge-data 显式 y/N ─────────────────────────
 if [ "$DO_PURGE_DATA" = 1 ]; then
@@ -296,7 +341,9 @@ if [ "$DO_PURGE_DATA" = 1 ]; then
   fi
 fi
 
-# ── Phase 5: .agent-presets 清理(默认 rmdir 仅当空)──────────
+# ── Phase 5: .agent-presets 父目录 rmdir(仅当空)──────────
+# Phase 3.5 已删 dsh-edge-agent 子目录;现在 rmdir 父目录仅当空
+# (可能还有别的 bundle 的 presets,不能 rm -rf)。
 if [ "$KEEP_PRESETS" = 0 ]; then
   if [ -d "$DSH_HOME/.agent-presets" ]; then
     if rmdir "$DSH_HOME/.agent-presets" 2>/dev/null; then
