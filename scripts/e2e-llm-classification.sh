@@ -157,7 +157,11 @@ send_chat_stream() {
     # ——调用方用 $response 中是否出现 "type\":\"intent\"" 来判定成功。
     # 用 \x1f（ASCII Unit Separator）做分隔符而非 |：$response 含 SSE 换行
     # 与可能的 JSON 内容，| 会被 cut 误截（实测见 P0-3 bug）。
-    printf '200\x1f%s\n' "$response"
+    # §7.4?.1 (2026-09-18):不能 printf 末尾加 \n —— `head -c 8192` 截断
+    # SSE 流时会留下 trailing newline,cut -d$'\x1f' -f1 后 status 是
+    # "200\n"(含 trailing newline) → `[ "$status" != "200" ]` 误判。
+    # 用 `printf` 无 trailing newline;调用方负责 tr -d '\n' 双重保险。
+    printf '200\x1f%s' "$response"
 }
 
 # ─── 重启 server（保留 PORT / API_KEY / PROFILE, 注入额外 ENV）────
@@ -1177,7 +1181,9 @@ run_p0_supplementary_tests() {
     echo "       输入: \"帮我翻译 hello 为中文\""
     local stream_result stream_body stream_status
     stream_result=$(send_chat_stream "帮我翻译 hello 为中文" 60)
-    stream_status=$(echo "$stream_result" | cut -d$'\x1f' -f1)
+    # §7.4?.1 (2026-09-18):tr -d '\n' 双重保险,即使 send_chat_stream
+    # 末尾有 trailing newline 也能正确比对 "200"
+    stream_status=$(echo "$stream_result" | cut -d$'\x1f' -f1 | tr -d '\n')
     stream_body=$(echo "$stream_result" | cut -d$'\x1f' -f2-)
 
     if [ "$stream_status" != "200" ]; then
@@ -1185,24 +1191,36 @@ run_p0_supplementary_tests() {
         echo "       body: $(echo "$stream_body" | head -c 200)"
         TESTS_FAILED=$((TESTS_FAILED + 1))
     else
-        # 首帧形如 data: {"type":"intent","intent":{"category":...}}
-        # ——grep 必须命中 type:intent 且 category 字段
-        local first_frame
-        first_frame=$(echo "$stream_body" | grep -oE 'data: \{[^}]*"type":"intent"[^}]*"intent":\{[^}]*"category":"[A-Z]+"' | head -1)
+        # §7.4?.1 (2026-09-18) 用 python 解析首帧 JSON,不再用脆弱 grep 正则:
+        # 原正则 `data: \{[^}]*"type":"intent"[^}]*"intent":\{[^}]*"category":...`
+        # 在嵌套 JSON 对象上断在第一个 `}`,实际抓不到 category 字段。
+        # SSE 首帧形如:
+        #   data: {"type":"intent","intent":{"category":"CLOUD",...,"confidence":0.9,...}}
+        # 逐行提取 `data: {...}` 然后用 json.loads 解析。
+        local stream_category
+        stream_category=$(echo "$stream_body" \
+          | grep '^data: {' \
+          | head -1 \
+          | sed 's/^data: //' \
+          | python3 -c '
+import sys, json
+try:
+    obj = json.loads(sys.stdin.read())
+    if obj.get("type") == "intent" and isinstance(obj.get("intent"), dict):
+        cat = obj["intent"].get("category", "")
+        print(cat if cat in ("CLOUD", "LOCAL") else "")
+    else:
+        print("")
+except Exception:
+    print("")
+')
 
-        if [ -n "$first_frame" ]; then
-            local stream_category
-            stream_category=$(echo "$first_frame" | grep -oE '"category":"[A-Z]+"' | head -1 | cut -d'"' -f4)
+        if [ -n "$stream_category" ]; then
             echo "       首帧 category: $stream_category"
-            if [ "$stream_category" = "CLOUD" ] || [ "$stream_category" = "LOCAL" ]; then
-                log_pass "流式端点: SSE 首帧含 type:intent + category=$stream_category"
-                TESTS_PASSED=$((TESTS_PASSED + 1))
-            else
-                log_fail "流式端点: SSE 首帧 category 无效 ($stream_category)"
-                TESTS_FAILED=$((TESTS_FAILED + 1))
-            fi
+            log_pass "流式端点: SSE 首帧含 type:intent + category=$stream_category"
+            TESTS_PASSED=$((TESTS_PASSED + 1))
         else
-            # 退路，head -c 截断可能没拿到首帧；打印诊断信息
+            # 退路:head -c 截断可能没拿到首帧;打印诊断信息
             log_fail "流式端点: 未检测到 SSE 首帧 data: {type:intent, ...}"
             echo "       抓取的前 200 字节: $(echo "$stream_body" | head -c 200)"
             TESTS_FAILED=$((TESTS_FAILED + 1))
@@ -1296,7 +1314,8 @@ run_p0_supplementary_tests() {
     echo "       输入: \"我的手机号是 $stream_pii，帮我查运营商套餐\""
     local stream_result stream_status stream_body
     stream_result=$(send_chat_stream "我的手机号是 $stream_pii，帮我查运营商套餐" 90 "$sid_stream")
-    stream_status=$(echo "$stream_result" | cut -d$'\x1f' -f1)
+    # §7.4?.1 (2026-09-18):tr -d '\n' 双重保险
+    stream_status=$(echo "$stream_result" | cut -d$'\x1f' -f1 | tr -d '\n')
     stream_body=$(echo "$stream_result" | cut -d$'\x1f' -f2-)
 
     if [ "$stream_status" != "200" ]; then
@@ -1408,7 +1427,9 @@ run_p0_supplementary_tests() {
 find_audit_log() {
     local root="${DSH_EDGE_AUDIT_ROOT:-}"
     if [ -z "$root" ]; then
-        root="${USERPROFILE:-${HOME:-/home/$(id -un)}}/.dsh-edge-agent-web/audit"
+        # §7.69 (2026-09-17) 单 root 架构:web/dsh-tui/dsh-edge 共用 ~/.dsh-edge-agent/
+        # (不再用 .dsh-edge-agent-web/.dsh-edge-agent-dsh-edge 等后缀目录)
+        root="${USERPROFILE:-${HOME:-/home/$(id -un)}}/.dsh-edge-agent/audit"
     fi
     local candidate="$root/audit.plain.jsonl"
     if [ -f "$candidate" ]; then
