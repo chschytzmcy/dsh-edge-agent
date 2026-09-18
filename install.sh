@@ -27,6 +27,8 @@
 #   ./install.sh --no-restart                 # 只同步不启（开发改代码反复迭代时,避免重启打搅）
 #   ./install.sh --skip-pnpm                  # 跳过 npm install（假设已装过）
 #   ./install.sh --force-install              # 强制重装本包（覆盖 rsync）
+#   ./install.sh --check [--profile=<name>]   # 探测 dsh CLI + bundle + REPO source 版本 + npm latest
+#                                            #   不做改动;exit 0=in sync,1=需更新/缺装
 #   ./install.sh -h | --help                  # 打印本帮助
 #
 # §7.74 部署语义双分支(tarball 模式也适用):
@@ -58,6 +60,7 @@ REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 DO_RESTART=1  # §7.65 默认重启:同步+启/重启 target profile(开发迭代场景);--no-restart opt-out
 DO_PNPM=1
 FORCE_INSTALL=0
+DO_CHECK=0     # §7.78 --check:只探测版本,不改任何东西;默认 0(部署模式)
 # §7.69 单 profile 架构:CLI 收敛到 --profile=<name>(单数),默认 dsh-edge
 PROFILE=""
 
@@ -76,6 +79,95 @@ canonical_profile() {
   esac
 }
 
+# ── --check (§7.78) ───────────────────────────
+# 探测 dsh CLI + 指定 profile bundle + REPO source 版本,best-effort 拿
+# npm registry latest,不做任何改动。
+# 退出码:
+#   0 = deployed = REPO source(in sync, 无需动作)
+#   1 = deployed ≠ REPO source / 未装 / dsh CLI 缺失(需 ./install.sh 重部署)
+#   npm 拿不到 / node 不可用等 —— 内部 tool error,不参与 rc 累积
+check_versions() {
+  local prof="$PROFILE"
+  local prof_dir="$DSH_HOME/profiles/$prof"
+  local nested_pkg_json="$prof_dir/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/package.json"
+  local repo_pkg_json="$REPO_ROOT/package.json"
+  local rc=0
+
+  # 从 JSON 取 version 字段 —— 优先 node(精准),fallback grep+sed
+  read_json_version() {
+    local f="$1"
+    if [ ! -f "$f" ]; then echo "(file not found)"; return; fi
+    if command -v node >/dev/null 2>&1; then
+      node -e "try { console.log(require('$f').version || '(no version)') } catch(e) { console.log('(parse error: '+e.message+')') }" 2>/dev/null || echo "(node parse failed)"
+    else
+      grep -m1 '"version"' "$f" 2>/dev/null | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/' || echo "(grep failed)"
+    fi
+  }
+
+  echo "==> [check] dsh CLI"
+  local dsh_local
+  if command -v dsh >/dev/null 2>&1; then
+    dsh_local=$(dsh --version 2>&1 | head -1 | sed -E 's/^[Vv]//; s/[[:space:]].*$//')
+    [ -z "$dsh_local" ] && dsh_local="(parse error)"
+    echo "  local:      $dsh_local  (\`dsh --version\`)"
+  else
+    dsh_local="(not installed)"
+    echo "  local:      $dsh_local  ✗ run: npm install -g @deepseek-ai/dsh"
+    rc=1
+  fi
+  if command -v npm >/dev/null 2>&1; then
+    local dsh_remote
+    # `npm view 404` 在 set -e 下会 exit;用 || true 包住,且 timeout 防
+    # 网络卡死(registry 偶尔会 hang)。
+    dsh_remote=$(timeout 5 npm view @deepseek-ai/dsh version 2>/dev/null) || true
+    if [ -n "$dsh_remote" ]; then
+      echo "  npm latest: $dsh_remote  (registry.npmjs.org)"
+      if [ "$dsh_local" != "(not installed)" ] && [ "$dsh_local" != "$dsh_remote" ]; then
+        echo "  status:     ⚠ outdated → npm i -g @deepseek-ai/dsh@latest"
+      fi
+    else
+      echo "  npm latest: (network unavailable / 5s timeout)"
+    fi
+  else
+    echo "  npm latest: (npm not installed)"
+  fi
+  echo ""
+
+  echo "==> [check] profile '$prof' bundle"
+  local bundle_local
+  bundle_local=$(read_json_version "$nested_pkg_json")
+  if [ "$bundle_local" = "(file not found)" ]; then
+    echo "  deployed:   (not installed at $prof_dir)"
+    rc=1
+  else
+    echo "  deployed:   $bundle_local  ($nested_pkg_json)"
+  fi
+  local repo_version
+  repo_version=$(read_json_version "$repo_pkg_json")
+  echo "  REPO src:   $repo_version  ($repo_pkg_json)"
+  if command -v npm >/dev/null 2>&1; then
+    local bundle_remote
+    bundle_remote=$(timeout 5 npm view @deepseek-harness-edge-agent/dsh-edge-agent version 2>/dev/null) || true
+    if [ -n "$bundle_remote" ]; then
+      echo "  npm latest: $bundle_remote"
+    else
+      echo "  npm latest: (404 / not published / network 5s timeout)"
+    fi
+  fi
+  echo ""
+
+  echo "==> [check] summary"
+  if [ "$bundle_local" = "(file not found)" ]; then
+    echo "  ✗ profile '$prof' 未装 bundle → ./install.sh --profile=$prof"
+  elif [ "$repo_version" != "(file not found)" ] && [ "$bundle_local" != "$repo_version" ]; then
+    echo "  ⚠ deployed ($bundle_local) ≠ REPO src ($repo_version) → ./install.sh --profile=$prof"
+    rc=1
+  else
+    echo "  ✓ deployed ($bundle_local) = REPO src ($repo_version)"
+  fi
+  return $rc
+}
+
 for arg in "$@"; do
   case "$arg" in
     --profile=*)      PROFILE="$(canonical_profile "${arg#*=}")" ;;
@@ -83,6 +175,7 @@ for arg in "$@"; do
     --no-restart)     DO_RESTART=0 ;;
     --skip-pnpm)      DO_PNPM=0 ;;
     --force-install)  FORCE_INSTALL=1 ;;
+    --check)          DO_CHECK=1 ;;
     -h|--help)        print_help; exit 0 ;;
     *) echo "unknown flag: $arg" >&2; exit 2 ;;
   esac
@@ -91,6 +184,15 @@ done
 # §7.69 默认 dsh-edge —— 项目自有 headless,HTTP-only,无 UI 干扰
 if [ -z "$PROFILE" ]; then
   PROFILE="dsh-edge"
+fi
+
+# ── --check 短路 (§7.78) ───────────────────────────
+# 只探测版本,不改任何东西;exit 0 = in sync,1 = 需更新/缺装。
+# 注意:放在 dsh CLI 存在性检查之前 —— --check 应该能报告 "dsh 未装"
+# 而不是直接 fail。
+if [ "$DO_CHECK" = 1 ]; then
+  check_versions
+  exit $?
 fi
 
 if ! command -v dsh >/dev/null 2>&1; then
