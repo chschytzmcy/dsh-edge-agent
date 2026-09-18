@@ -7801,3 +7801,46 @@ Rollback hint: 跑 `./install.sh --skip-pnpm --no-restart` 一键恢复部署。
 - 不打包 `key` 文件 (REPO-only,不在 tarball)
 - 不动 install.sh (已成熟,§7.72 双模式够用)
 - USER SKIN (diff 不一致) 永远不删 —— user 写的 cordis.patch.yml / privacy-policy.json 视为神圣
+
+### §7.77 `make package` 产物落 `dist/` + install.sh §7.71 docstring 对齐(2026-09-18)
+
+**问题**:之前 `make package` 把 `dsh-edge-agent-v0.1.0.tar.gz` + `.sha256` 写到 REPO_ROOT 顶层,跟源码文件混在一起,`git status` 跟 `.gitignore` 屏蔽(`*.tar.gz` / `*.tar.gz.sha256`)总是擦边;另一方面 §7.71 install.sh 头部 docstring 说 "产物在 REPO_ROOT",tarball 实际写在哪没说清。
+
+**结论先行**:
+1. `make package` 产物目录化 —— `DIST_DIR := dist`,tarball + sha256 落 `dist/` 而非 REPO_ROOT 顶层;`make clean` rm -rf dist/(取代旧的 `rm -f $(PACKAGE_NAME) $(SHA_NAME)`)
+2. install.sh §7.71 docstring 修正 —— 拆开 "lib/ 在 REPO_ROOT" 跟 "*.tar.gz 在 dist/" 各自用途(§7.77)
+3. `.gitignore` 新增 `dist/` 防御规则(虽然 `*.tar.gz` 规则已覆盖,但 `dist/` 显式声明语义更清)
+4. install.sh 行为不变 —— 仍读 `REPO_ROOT/lib/`(不看 dist/);(原 dual-mode §7.72 tarball 检测 + §2.5 sync assets 全保留)
+
+**改动 diff**(2 commits):
+
+| Commit | 文件 | 改动 |
+|---|---|---|
+| `6228c96` chore(build) | `Makefile` | `DIST_DIR := dist` / `mkdir -p dist` / `tar -czf ../dist/$(PACKAGE_NAME)` / `cd dist && sha256sum ... | tee` / `clean` rm -rf dist/ / help 段补 "→ dist/" |
+| `6228c96` chore(build) | `.gitignore` | `dist/` 防御规则 |
+| `c809438` docs(install) | `install.sh` | §7.71 docstring:"lib/ 在 REPO_ROOT 给本地 install 用,*.tar.gz 在 dist/ 给 release 分发用,§7.77" |
+
+**为什么 install.sh 行为不变**:install.sh 内部 `make package` 调起时,产物 layout 由 Makefile 决定;但 install.sh 自己 `rsync $REPO_ROOT/lib/` 到目标 profile,不读 `dist/` 或 tarball。`dist/` 纯粹是 release 分发目录(给外部用户下载 `tar -xzf` 用),本地部署路径 REPO_ROOT/lib/ 完全不动。
+
+**端到端验证**(2026-09-18 11:31,新 SHA256 `aee6a35e...`):
+
+| 步 | 操作 | 结果 |
+|---|---|---|
+| A | `make -n package` dry-run 验证路径 | ✅ `tar -czf ../dist/dsh-edge-agent-v0.1.0.tar.gz` + `cd dist && sha256sum ...` |
+| B | 清理旧 dist/ + .deploy/ + REPO_ROOT 顶层旧 tarball | ✅ |
+| C | `make package` 真打 | ✅ 产物落 `dist/dsh-edge-agent-v0.1.0.tar.gz` (362026 bytes, vs 上次 362016 多 10 bytes = install.sh doc 改动) + `.sha256` (sha256 = `aee6a35ed9c5edc3d948ae1835cac0d5e0ede1a97cf2c2b5b192be5863dbee88`) |
+| D | `git check-ignore dist/...` | ✅ `.gitignore:42 dist/` |
+| E | REPO_ROOT 顶层 tarball 泄漏 | ✅ 无 |
+| F | `make clean` 验证 `rm -rf dist/` | ✅ dist/ 已清 |
+| G | 重打新 tarball 验证包内 install.sh + uninstall.sh | ✅ 7 步 T1-T7 全 PASS(extract / syntax / §7.71 docstring 带 §7.77 / uninstall --help 含 Phase 1.7 / tarball mode dry-run / uninstall --keep-* prompt / 装机状态不变) |
+| H | 装机 sanity(dsh-edge PID 3469129 + /v1/health 200 OK + REPO_ROOT/.env 存在 + git status 干净) | ✅ |
+
+**Tarball 内容 sanity**(release downstream 视角):
+- 顶层 11 项:`install.sh` / `uninstall.sh` / `lib/` (171 文件) / `profiles/dsh-edge/` (3 文件) / `cordis.patch.yml` / `presets/` / `package.json` / `pnpm-lock.yaml` / `.env.sh` / `LICENSE` / `README.md` / `scripts/`
+- 不含:`.env` (live keys 防护) / `Makefile` / `tsconfig.json` / `node_modules/` / `profiles/node_modules/` / `profiles/dsh-edge-agent/` (§7.61 退役 legacy profile)
+
+**未做**:
+- 不写 install.sh tarball-mode unit test(已在 §7.72 / §7.77 多次端到端验证)
+- 不改 `install.sh` 行为(纯 doc 修正)
+- 不引入 `dist/` 子目录层级(`dist/v0.1.0/...` 太深;扁平 `dist/dsh-edge-agent-v0.1.0.tar.gz` 够用)
+- 不改 `*.tar.gz` / `*.tar.gz.sha256` 已有规则(已能覆盖;`dist/` 是补充语义)
