@@ -72,13 +72,11 @@ e2e-coverage:
 	@bash scripts/e2e-ops-log-coverage.sh
 	@echo "$(GREEN)✓ ops log 覆盖回归通过$(NC)"
 
-# §7.60 生产 dsh-tui 实机 E2E（X0 + H1-H5 + K1-K2，双通道，逐用例日志分析）
-# 前置：production dsh-tui 在跑（tmux 会话 dsh-tui + :21018）；只 attach 不拉起。
-# 预期 ~4-6 分钟；期间勿手动 attach 抢输入焦点。
+# §7.86(2026-09-18) 历史标记:e2e-tui-live.sh 已删除 —— dsh-tui 生产 rig
+# 在 §7.69 单 profile 架构后不再独立部署,所有 e2e 入口统一走 dsh-edge。
+# 保留 target 入口为兼容性(打印弃用说明 + 退出 0),不实际跑脚本。
 e2e-tui:
-	@echo "$(BLUE)==> 生产 dsh-tui 实机 E2E（8 用例双通道）$(NC)"
-	@bash scripts/e2e-tui-live.sh all
-	@echo "$(GREEN)✓ dsh-tui 实机 E2E 通过$(NC)"
+	@echo "$(YELLOW)==> 弃用(§7.86):e2e-tui-live.sh 已删除 —— 单 profile 架构后 dsh-tui 不再独立部署。HTTP e2e 由 e2e-ops-log-coverage.sh 覆盖(对应原 H 臂)。$(NC)"
 
 # 打包部署文件
 # §7.55 (2026-09-15): 收紧打包内容

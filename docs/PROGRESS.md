@@ -8457,3 +8457,46 @@ fi
 
 **改动文件**: 仅 `.env.example`(baseurl / KEY_ENV / MODEL 改)。`.env.sh` 翻译层早已存在(`export DSH_EDGE_LOCAL_LLM_KEY_ENV=${LOCAL_LLM_KEY_ENV}` 等),无需改。
 
+### §7.86 历史 E2E 脚本清理 + 文档归档(2026-09-18)
+
+**触发**: §7.69 单 profile 架构(切 profile 前杀旧的)+ §7.61 改名 `dsh-edge` + §7.33 卸 webui + M5+ work 没收尾后,history 14 个 E2E / smoke 脚本**全部无可执行宿主**:
+- 依赖 `edge-m1` profile(M1 milestone dev profile,`--config` 旗标已删)
+- 或依赖 `dsh-tui` 独立 rig(§7.69 后 tui 不再独立部署,跟 dsh-edge 共端口 :21017)
+- 或依赖 M5 webui(§7.33 卸)
+- 或引到 M5+ work 未完成的 `local-tools.js`(`ERR_MODULE_NOT_FOUND`)
+
+**统一回归闸**: `scripts/e2e-ops-log-coverage.sh`(21 节点 ops log + 3 重点用例 mibao/news/local-ip)—— 这是单 profile 架构下**唯一活跃的 E2E**。
+
+**清理范围**(本节改动):
+
+| 删除脚本 | 替代关系 |
+|---------|---------|
+| `m1-smoke.ts` ~ `m6-smoke.ts` | 单测 + e2e-ops-log-coverage 覆盖;`--config` 旗标已删 |
+| `m5-e2e-test.sh` / `m5-webui-smoke.sh` | webui 已卸(§7.33) |
+| `m5-verify.ts` | profile 已不存在 |
+| `e2e-tui-live.sh` | dsh-tui 不再独立部署;H 臂用例由 e2e-ops-log-coverage 平移吸收 |
+| `e2e-llm-classification.sh` | intent-router 单测 + e2e-ops-log-coverage preflight intent 节点 |
+| `e2e-model-detection.sh` | §7.42 prompt-guard 单测 + e2e-ops-log-coverage prompt-guard 节点 |
+| `e2e-privacy-precheck.sh` | §7.22/§7.34 input-guard 单测 + 审计 `policy.reject` 事件 |
+| `e2e-lark-skill.sh` | 依赖飞书凭证 + edge-m1 profile |
+| `e2e-web-search.sh` | §7.82 web-search-tavily-bocha 单测(8 个 fallback path)+ e2e-ops-log-coverage news 用例(web_search 35 次 + 0 http_error) |
+
+**配套清理**(本节改动):
+- `package.json`: 删 `dev` / `smoke` / `smoke:m1` ~ `smoke:m6` 6 个 npm scripts(指向已删脚本,`pnpm run smoke` 会 ENOENT)
+- `package.json`: 加 `e2e:coverage: bash scripts/e2e-ops-log-coverage.sh`(直入口,跟 `make e2e-coverage` 等价)
+- `.github/workflows/ci.yml`: 删 test job 末尾 `Run smoke test` 步骤(`pnpm run smoke` 修了)
+- `Makefile`: `e2e-tui` target 改成弃用 stub(打印弃用说明 + 退出 0),`e2e-coverage` target 不变
+- `docs/E2E_HTTP_API_CASES.md` / `docs/E2E_TUI_CASES.md`: 全文重写为 §7.86 归档说明 + 当前活跃 e2e-ops-log-coverage.sh 的精简描述 + 历史脚本表(留档)
+- `docs/intent-and-sanitization.md`: 3 处引用已删脚本的行加 HTML 注释 `<!-- §7.86 归档: ... -->`(设计 doc 不动正文,只标留档说明)
+- `docs/M5-TESTING.md`: 不动 —— 整体是 M5 阶段历史测试档案(整篇都已 §7.33 后过时,但保留作历史记录;非用户入口)
+
+**未改动**: `docs/PROGRESS.md` 历史行 —— append-only,§7.x 条目原样引用当时活跃的脚本是合理的历史记录(对应每个里程碑的真实工具链)。
+
+**保留 stub**:`make e2e-tui` target 不删 —— 兼容外部 CI 脚本调用,只打印弃用说明 + 退出 0,不实际跑已删的 `e2e-tui-live.sh`。
+
+**验证**:
+- `git status`: 14 deletes + 6 modifies + 0 untracked-in-source(`./.env.swp` 是 vim swap,gitignored 不提交)
+- `node -e "JSON.parse(require('fs').readFileSync('package.json'))"` ✓ 合法 JSON
+- grep `pnpm run smoke\|pnpm run dev\|smoke:m[0-9]` 0 hits
+- grep `e2e-tui-live\|m1-smoke\|...` 仅命中 §7.86 归档行 + `e2e-tui` target 弃用说明
+

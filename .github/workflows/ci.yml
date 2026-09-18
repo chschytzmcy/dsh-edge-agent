@@ -1,15 +1,17 @@
-# dsh-edge-agent CI — six stages: build → verify → unit → e2e-privacy → e2e-opslog → smoke.
+# dsh-edge-agent CI — three stages: build → unit → e2e-opslog.
 #
 # Triggered on every push to master and every PR. The full sequence is:
 #   1. install (pnpm install --frozen-lockfile)
 #   2. compile (tsc -p tsconfig.json → lib/types/)
 #   3. verify  (verify:build = boundary + contract + patch-surface + plugin-spec + package)
 #   4. unit    (vitest unit tests; asserts exact count via JSON reporter)
-#   5. e2e-privacy (bash scripts/e2e-privacy-precheck.sh; spins up real dsh server,
-#                  runs 19 注入 / 业务 / 路由 用例, must report 19/19 PASS)
-#   6. e2e-opslog  (bash scripts/e2e-ops-log-coverage.sh; §7.46.9 回归,
+#   5. e2e-opslog (bash scripts/e2e-ops-log-coverage.sh; §7.46.9 回归,
 #                  21 节点 ops log 覆盖 + 3 重点用例（mibao/news/local-ip）断言)
-#   7. smoke   (smoke.ts 冒烟)
+#
+# §7.86(2026-09-18): 删除 e2e-privacy / e2e-tui-live / smoke 三个阶段 —— 前两个
+# 依赖历史 edge-m1 / dsh-tui rig(已废除);smoke.ts 引到 M5+ work 还没写的
+# local-tools.js(ERR_MODULE_NOT_FOUND)。统一回归闸 = e2e-ops-log-coverage.sh
+# (单 profile dsh-edge + 21 节点全链路覆盖)。
 #
 # 任一阶段失败 → PR block。Gate 总数：
 #   - 单元测试：必须 629 PASS（含 1 跳过）、0 FAIL（实际 628 用例 + 1 跳过）
@@ -111,80 +113,14 @@ jobs:
             exit 1
           fi
 
-      - name: Run smoke test
-        run: pnpm run smoke
-
-  e2e-privacy:
-    name: privacy e2e (19/19)
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    needs: build
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22.20'
-          cache: 'pnpm'
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 11.7.0
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Compile
-        run: pnpm run compile
-
-      - name: Install DSH CLI
-        run: npm install -g @deepseek-ai/dsh
-        # dsh CLI 启动时读取 ~/.dsh/profiles/<name>/cordis.yml + bundles 列表，
-        # 缺 bundle 注册会回到 vanilla 配置跑（缺少 dsh-edge-agent 全部 plugins）。
-        # §7.43 (2026-09-11): CI bootstrap 切到 dsh-tui（mandatory primary）。
-        # web profile 通过后续步骤 bootstrap（同 dsh-tui，独立步骤）。
-
-      - name: Bootstrap DSH dsh-tui profile
-        run: |
-          # §7.43 (2026-09-11): dsh-tui 是 mandatory primary。CI 先建 dsh-tui
-          # profile + 注册 dsh-edge-agent bundle + 同步 cordis.patch.yml，
-          # 确保 19 个 plugins 加载。
-          mkdir -p "$HOME/.dsh/profiles/dsh-tui"
-          dsh plugin --profile dsh-tui add @deepseek-harness-edge-agent/dsh-edge-agent || true
-          NESTED="$HOME/.dsh/profiles/dsh-tui/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent"
-          mkdir -p "$NESTED"
-          cp cordis.patch.yml "$NESTED/cordis.patch.yml"
-          cp cordis.yml "$NESTED/cordis.yml" 2>/dev/null || true
-          echo "已同步 bundle patch → $NESTED/cordis.patch.yml"
-
-      - name: Bootstrap DSH web profile (web-only e2e)
-        run: |
-          # §7.43: install.sh --profiles=dsh-tui,web 并存；web-only e2e
-          # (e2e-privacy-precheck.sh 等) 需要 web profile。bootstrap 同 dsh-tui，best-effort。
-          mkdir -p "$HOME/.dsh/profiles/web"
-          dsh plugin --profile web add @deepseek-harness-edge-agent/dsh-edge-agent || true
-          NESTED="$HOME/.dsh/profiles/web/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent"
-          mkdir -p "$NESTED"
-          cp cordis.patch.yml "$NESTED/cordis.patch.yml"
-          echo "已同步 bundle patch → $NESTED/cordis.patch.yml"
-
-      - name: Run privacy precheck e2e (must report 19/19)
-        env:
-          EDGE_API_KEY: test-secret-key
-          DSH_EDGE_HTTP_PORT: '21017'
-        run: bash scripts/e2e-privacy-precheck.sh
-
   e2e-opslog:
     name: ops log coverage (3 cases)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: build
     # §7.46.9: 21 节点 ops log 覆盖 + 3 重点用例（mibao/news/local-ip）回归。
-    # 复用 e2e-privacy 的 web profile bootstrap（步骤相同）。
+    # §7.86(2026-09-18): web profile bootstrap —— dsh-edge bundle 注册 + cordis.patch.yml 同步。
+    # 单 profile dsh-edge 架构(§7.69)后,这里 bootstrap 一次就够 opslog 用了。
     steps:
       - name: Checkout
         uses: actions/checkout@v4

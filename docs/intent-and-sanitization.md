@@ -718,7 +718,7 @@ function coerceSafetyObject(obj: unknown): SafetyVerdict | null {
 - ✅ 自定义规则追加
 - ✅ 输出 PII 脱敏
 
-**e2e 测试** `scripts/e2e-privacy-precheck.sh` + `scripts/e2e-model-detection.sh`：
+**e2e 测试** `scripts/e2e-privacy-precheck.sh` + `scripts/e2e-model-detection.sh`：<!-- §7.86 归档:这两个脚本已 git rm(依赖 edge-m1 profile)——覆盖点(intent 路由 + REJECT 路径)由 e2e-ops-log-coverage.sh + input-guard 单测继承 -->
 - ✅ 正则层拦截（HTTP 400）
 - ✅ 模型层拦截（HTTP 400）
 - ✅ 正常请求放行（HTTP 200）
@@ -1185,7 +1185,7 @@ if (!skipModelDetection) {
 - ✅ HMAC 签名验证（正确/错误/缺失）
 - ✅ DEFAULT_POLICY 回退
 
-**e2e 测试** `scripts/e2e-privacy-precheck.sh`（19/19 通过）：
+**e2e 测试** `scripts/e2e-privacy-precheck.sh`（19/19 通过）：<!-- §7.86 归档:已 git rm,被 §7.22/§7.34 单测 + 审计 `policy.reject` 事件覆盖 -->
 - ✅ 9 个攻击模式请求 → HTTP 400（prompt-guard 拦截）
 - ✅ 5 个业务危险操作 → HTTP 403（privacy-policy 拦截）
 - ✅ 5 个正常请求 → HTTP 200（正确路由 LOCAL/CLOUD）
@@ -1931,7 +1931,7 @@ file, read, write, delete, calculate, compute, local, device, disk, directory, f
 
 ### 3.13.2 真实环境 E2E 测试
 
-**测试脚本**: `scripts/e2e-llm-classification.sh`  
+**测试脚本**: `scripts/e2e-llm-classification.sh` <!-- §7.86 归档:已 git rm,被 intent-router 单测 + e2e-ops-log-coverage preflight intent 节点覆盖 -->
 **测试环境**: 真实 dsh 部署环境（非单元测试）  
 **测试方式**: 启动真实 dsh 服务器，发送 HTTP 请求验证
 
