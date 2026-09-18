@@ -10,8 +10,8 @@
 # 任何自定义 profile 也可以走 --profile=<name>（profile-agnostic bundle）。
 #
 # §7.71 (2026-09-17) 部署流水线整合：install.sh 内部调用 `make package`
-# 完成 build + tarball(产物在 REPO_ROOT,包括 lib/ 给本地 install 用,
-# *.tar.gz 给 release 分发用),然后直 rsync REPO_ROOT/lib/ 到目标 profile
+# 完成 build + tarball(lib/ 在 REPO_ROOT 给本地 install 用,*.tar.gz 在
+# dist/ 给 release 分发用,§7.77),然后直 rsync REPO_ROOT/lib/ 到目标 profile
 # node_modules。Makefile 不再管 install —— `make install` 已删(§7.71)。
 #
 # 前置：
