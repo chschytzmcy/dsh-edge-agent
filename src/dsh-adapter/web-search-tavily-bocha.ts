@@ -47,7 +47,10 @@ import Schema from '@deepseek-ai/schemastery'
 
 // ── Endpoints (fixed; these are the only authoritative hosts for each provider) ─────
 const TAVILY_ENDPOINT = 'https://api.tavily.com/search'
-const BOCHA_ENDPOINT = 'https://api.bocha.cn/v1/web-search'
+// 博查 AI web-search endpoint (§7.82.2 修正域名 —— 旧 `api.bocha.cn` 是误传,
+// 官方开放平台 docs https://open.bochaai.com 明确指向 `api.bochaai.com`;
+// 旧域名持任何 key 都会 403 quota 错误,实际是路由不可达伪装成 quota)。
+const BOCHA_ENDPOINT = 'https://api.bochaai.com/v1/web-search'
 const DEEPSEEK_DEFAULT_BASE_URL = 'https://api.deepseek.com/anthropic/v1'
 
 /** Stable id for `ctx.web.searchProviderId` selection and audit messages. */
@@ -193,9 +196,10 @@ export class TavilyBochaFallbackProvider implements WebSearchProvider {
   }
 
   // ── Tier 2: 博查 AI ────────────────────────────────────────────────────────
-  // API: https://bocha-ai.feishu.cn/docx/Uf4md5j4VoOùkxOkrlcZ03Wnse (web-search endpoint)
-  // Body: { query, count, summary, freshness, searchMode }
-  // 200 OK response: { code: 200, data: { webPages: { value: [...] }, summary? } }
+  // API: https://open.bochaai.com(§7.82.2 修正:旧 feishu docx 链接已迁移,权威 spec 在开放平台)
+  // Body: { query, count, summary, freshness } —— 4 个字段,无额外必填
+  // 200 OK response: { code: 200, msg: null, log_id, data: { _type, queryContext, webPages: { webSearchUrl, totalEstimatedMatches, value: [...] }, images?, videos? } }
+  // 错误 response: { code: 4xx, msg: '...', log_id } —— 无 data 字段
   private async searchBocha(req: WebSearchRequest, signal?: AbortSignal): Promise<WebSearchResult> {
     const r = await fetch(BOCHA_ENDPOINT, {
       method: 'POST',
@@ -217,21 +221,40 @@ export class TavilyBochaFallbackProvider implements WebSearchProvider {
     }
     const json = (await r.json()) as {
       code: number
-      message?: string
+      msg?: string | null
+      log_id?: string
       data?: {
-        webPages?: { value?: Array<{ name?: string; url: string; snippet?: string; summary?: string }> }
+        _type?: string
+        queryContext?: { originalQuery?: string }
+        webPages?: {
+          webSearchUrl?: string
+          totalEstimatedMatches?: number
+          value?: Array<{
+            id?: string
+            name?: string
+            url: string
+            displayUrl?: string
+            snippet?: string
+            summary?: string
+            siteName?: string
+            datePublished?: string
+            dateLastCrawled?: string
+          }>
+        }
         summary?: string
       }
     }
     if (json.code !== 200) {
-      throw new Error(`博查 API code ${json.code}: ${json.message ?? 'unknown error'}`)
+      throw new Error(`博查 API code ${json.code}: ${json.msg ?? 'unknown error'} (log_id=${json.log_id ?? 'n/a'})`)
     }
-    const sources = (json.data?.webPages?.value ?? [])
+    const pages = json.data?.webPages?.value ?? []
+    const sources = pages
       .filter((it) => it.url)
       .map((it) => ({
         url: it.url,
         ...(it.name ? { title: it.name } : {}),
         ...(it.summary ? { snippet: it.summary } : it.snippet ? { snippet: it.snippet } : {}),
+        ...(it.datePublished ? { datePublished: it.datePublished } : {}),
       }))
     return {
       ...(json.data?.summary ? { content: json.data.summary } : {}),

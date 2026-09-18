@@ -87,7 +87,7 @@ function tavilyResponder(status: number, body: unknown): UrlResponder {
 
 function bochaResponder(status: number, body: unknown): UrlResponder {
   return {
-    test: (url) => url === 'https://api.bocha.cn/v1/web-search',
+    test: (url) => url === 'https://api.bochaai.com/v1/web-search',
     build: () =>
       new Response(typeof body === 'string' ? body : JSON.stringify(body), {
         status,
@@ -193,7 +193,7 @@ describe('TavilyBochaFallbackProvider', () => {
     assert.equal(result.sources[0].title, 'X')
     assert.equal(capturedCalls.length, 2)
     assert.equal(capturedCalls[0].url, 'https://api.tavily.com/search')
-    assert.equal(capturedCalls[1].url, 'https://api.bocha.cn/v1/web-search')
+    assert.equal(capturedCalls[1].url, 'https://api.bochaai.com/v1/web-search')
   })
 
   it('T3: Tavily+博查 fail → DeepSeek Tier-3 fallback', async () => {
