@@ -150,6 +150,7 @@
     "build": "npm run compile && npm run verify:build",
     "test": "vitest run tests/unit",
     "e2e:coverage": "bash scripts/e2e-ops-log-coverage.sh",
+    "e2e:benchmark": "bash scripts/e2e-model-quality-bench.sh",
     "verify:build": "npm run verify:boundary && npm run verify:contract && npm run verify:patch-surface && npm run verify:plugin-spec && npm run verify:bundle-mount",
     "verify:boundary": "node --import tsx/esm scripts/verify-adapter-boundary.ts",
     "verify:contract": "node --import tsx/esm scripts/verify-upstream-contract.ts",

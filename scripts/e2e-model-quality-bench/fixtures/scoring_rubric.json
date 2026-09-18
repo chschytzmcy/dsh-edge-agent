@@ -1,0 +1,33 @@
+{
+  "version": "1.0.0",
+  "description": "Scoring weights + thresholds + verdict cutoffs for Model Quality Bench. Override with --rubric path.",
+  "weights": {
+    "intrinsic": 0.50,
+    "pipeline": 0.40,
+    "latency": 0.10
+  },
+  "thresholds": {
+    "C1_f1": 0.85,
+    "C1_parse_rate": 0.95,
+    "C2_recall": 0.80,
+    "C2_fp_rate": 0.20,
+    "C2_parse_rate": 0.90,
+    "C3_bleu": 0.25,
+    "C3_completion": 0.85,
+    "C4_schema": 0.90,
+    "C4_value": 0.70,
+    "C5_recall": 0.80,
+    "C6_acc": 0.75,
+    "C7_pass": 0.67,
+    "C8_pass": 0.67,
+    "C9_pass": 0.67,
+    "C10_retention": 0.70,
+    "overall_pass": 70
+  },
+  "verdict": [
+    {"min": 85, "label": "✅ Production-ready"},
+    {"min": 70, "label": "⚠️  Conditional — works for current 3 cases"},
+    {"min": 50, "label": "❌ Weak — risk on multi-turn / PII / adversarial"},
+    {"min": 0, "label": "💀 Reject — basic intent / safety failing"}
+  ]
+}

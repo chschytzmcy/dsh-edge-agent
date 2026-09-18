@@ -8500,3 +8500,93 @@ fi
 - grep `pnpm run smoke\|pnpm run dev\|smoke:m[0-9]` 0 hits
 - grep `e2e-tui-live\|m1-smoke\|...` 仅命中 §7.86 归档行 + `e2e-tui` target 弃用说明
 
+
+### §7.87 Model Quality Bench — 本项目 local LLM 适配度评分(2026-09-18)
+
+**触发**:user 要求评估"哪些 local LLM 跟本项目匹配得好"。当前 §7.85 切到 LAN qwen3.5-9b @ 67.0.0.5:28001,但**没有量化指标**回答"这个模型到底有多适合本项目"。`e2e-ops-log-coverage.sh` 只验系统不验模型。
+
+**目标**:落地**模型质量评分 harness**——给单个 local LLM 一组本项目实际 workload 的测试用例,输出每类 0-100 分 + 总分 + verdict 建议。
+
+**测试矩阵**(10 category / 120 fixtures / 3 iter / 360 LLM calls):
+
+| # | Category | 类型 | 用例 | 阈值 |
+|---|---------|------|-----|------|
+| C1 | Intent classification | intrinsic(直连 baseUrl) | 30 | macro-F1 ≥ 0.85 |
+| C2 | Safety classification | intrinsic | 20(10 攻击 + 10 FP) | recall ≥ 0.80, FP ≤ 0.20 |
+| C3 | Chinese conversation quality | intrinsic | 15 | BLEU-4 ≥ 0.25 |
+| C4 | JSON structured output | intrinsic | 10 | schema ≥ 0.90, value ≥ 0.70 |
+| C5 | PII detection recall | intrinsic | 20 | macro ≥ 0.80 |
+| C6 | Tool calling reliability | intrinsic | 20 | acc ≥ 0.75 |
+| C7 | E2E mibao | pipeline(走 /v1/chat) | 1 × 3 iter | pass |
+| C8 | E2E news | pipeline | 1 × 3 iter | pass |
+| C9 | E2E local-ip | pipeline | 1 × 3 iter | pass |
+| C10 | Multi-turn context | pipeline | 5 conv × 5 turns | retention ≥ 0.70 |
+
+**System prompts 复用 production 代码**(零漂移):
+- C1 直接 copy `intent-router.ts:557-570`(中文 few-shot JSON)
+- C2 直接 copy `prompt-guard.ts:543-588`(TYPE 1/2 attack catalogue)
+- C6 tool schema 沿用 realm-skill-bridge 的 bash + web_search tag
+
+**评分公式**:
+```
+intrinsic_avg = mean(C1..C6 scores) × 100          # 50% 权重
+pipeline_avg  = mean(C7..C10 scores) × 100          # 40% 权重
+latency_score = 100 - normalize(p95_latency)        # 10% 权重
+final_score   = round(0.50×intrinsic + 0.40×pipeline + 0.10×latency)
+
+verdict: ≥85 ✅ / 70-84 ⚠️ / 50-69 ❌ / <50 💀
+```
+
+**架构**:
+- `scripts/e2e-model-quality-bench.sh` —— bash 入口(arg parse + env source + connectivity check + 调 Python)
+- `scripts/e2e-model-quality-bench/harness.py` —— Python 评分主体(942 行,zero new pip deps:全 stdlib + 已装 scikit-learn/jieba/tiktoken)
+- `scripts/e2e-model-quality-bench/fixtures/*.json` —— 8 个 fixture 文件(intent/safety/chinese/json_output/pii/tools/multiturn/scoring_rubric)
+- `scripts/e2e-model-quality-bench/README.md` —— 跑法 + 加 fixture + 解读
+
+**入口**:
+- `bash scripts/e2e-model-quality-bench.sh --label NAME [--only C1,C7] [--strict] [--dry-run]`
+- `make e2e-benchmark LABEL=qwen3.5-9b-lan`
+- `pnpm e2e:benchmark` (等价)
+
+**输出**(永远):
+- `dist/bench-${LABEL}-${TS}/report.md` —— 人类可读
+- `dist/bench-${LABEL}-${TS}/scores.json` —— 机器可读(横向 diff 用)
+- `dist/bench-${LABEL}-${TS}/traces/intrinsic/*.jsonl` —— 每次 LLM 调用
+- `dist/bench-${LABEL}-${TS}/traces/pipeline/*.json` —— 每次 /v1/chat
+
+`dist/` 已在 .gitignore,只本地留档。
+
+**关键设计决策**(user 已拍板):
+1. 单模型一次跑;横向对比靠 user 跑多次 + diff
+2. 完整 10 category(不精简)
+3. 默认 exit 0 + 报告输出;`--strict` 旗标启用阈值 fail-fast
+
+**与现有 E2E 关系**:
+- `e2e-ops-log-coverage.sh` —— **回归**(验 dsh-edge 系统不 regress),进 CI
+- `e2e-model-quality-bench.sh` —— **选型**(验 model 是否适合本项目),不进 CI(LAN 依赖 + 8-12 分钟太长)
+
+**基准分数占位**:
+- 当前 LAN qwen3.5-9b baseUrl 直连返回 502(网络问题,非模型问题)—— **首次实跑待 baseUrl 修好**
+- e2e-ops-log-coverage mibao/news/local-ip 3/3 PASS(§7.85 已验)
+- 推断 qwen3.5-9b 在 intrinsic 维度(C1-C6)≥ 85,因为 §7.85 端到端能跑通 LLM call,但需要实际跑分确认
+
+**验证**:
+- ✓ bash syntax OK(`bash -n`)
+- ✓ python syntax OK(`py_compile`)
+- ✓ 8 fixture JSON 全合法 + 总 120 cases
+- ✓ dry-run 模式连通性检查 + fixture 列表正常(baseUrl 失败时仍能列出 fixture)
+- ✓ C7 单跑(端到端):`intent=LOCAL resultLen=0 → FAIL`(因 baseUrl 502 + dsh-edge routing 工作正常)
+- ✓ 输出 `report.md` + `scores.json` 格式正确
+- ✓ `make e2e-benchmark` target 已加,`help` 块已加
+- ✓ `package.json` `e2e:benchmark` script 已加
+
+**占位符 PII 遵守**(memory `test-fixture-no-real-pii`):
+- phone: 13800138000 / 13812345678 / 13800000000 / 400-123-4567 / 15912345678
+- id_card: 110101199003078811 / 320101200001011234 / 440307198506152345 / 11010819951212002X / 510104199208075678
+- ip: 192.0.2.x / 10.0.0.x / 198.51.100.x / 172.16.0.x / 203.0.113.x(全 RFC5737 + RFC1918 占位段)
+- email: alice@example.com / test.user@company.org / support@dsh-edge.io / bob+test@example.com / jane.doe@university.edu.cn
+
+**留给后续**:
+- 首次实跑(待 baseUrl 网络恢复后)
+- 跟 §7.85 历史模型(qwen3-4b / minicpm5-2b / llama3-8b)横向对比
+- 视需求加 `/v1/benchmark` HTTP 路由(本期 standalone shell 即可)

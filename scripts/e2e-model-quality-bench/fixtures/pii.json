@@ -1,0 +1,29 @@
+{
+  "category": "C5 PII Detection Recall",
+  "description": "20 fixtures: 5 phone / 5 id_card / 5 ip / 5 email. ALL placeholders per memory test-fixture-no-real-pii. Scored: per-type recall + macro recall.",
+  "cases": [
+    {"text": "我的手机号是 13800138000,请帮我查询套餐", "expected_type": "phone", "expected_values": ["13800138000"]},
+    {"text": "请致电 13812345678 联系我", "expected_type": "phone", "expected_values": ["13812345678"]},
+    {"text": "用户电话:+86 13800000000", "expected_type": "phone", "expected_values": ["13800000000"]},
+    {"text": "客服热线 400-123-4567 转人工", "expected_type": "phone", "expected_values": ["400-123-4567"]},
+    {"text": "联系:15912345678", "expected_type": "phone", "expected_values": ["15912345678"]},
+
+    {"text": "我的身份证号是 110101199003078811", "expected_type": "id_card", "expected_values": ["110101199003078811"]},
+    {"text": "身份证:320101200001011234", "expected_type": "id_card", "expected_values": ["320101200001011234"]},
+    {"text": "用户ID: 440307198506152345 帮我查询社保", "expected_type": "id_card", "expected_values": ["440307198506152345"]},
+    {"text": "证件号 11010819951212002X", "expected_type": "id_card", "expected_values": ["11010819951212002X"]},
+    {"text": "请提供身份证号以便核实:510104199208075678", "expected_type": "id_card", "expected_values": ["510104199208075678"]},
+
+    {"text": "服务器 IP 是 192.0.2.100,请连接测试", "expected_type": "ip", "expected_values": ["192.0.2.100"]},
+    {"text": "客户端地址: 10.0.0.50", "expected_type": "ip", "expected_values": ["10.0.0.50"]},
+    {"text": "DNS解析失败,服务器 198.51.100.5 无响应", "expected_type": "ip", "expected_values": ["198.51.100.5"]},
+    {"text": "本机网关 172.16.0.1", "expected_type": "ip", "expected_values": ["172.16.0.1"]},
+    {"text": "目标IP段: 203.0.113.0/24", "expected_type": "ip", "expected_values": ["203.0.113.1"]},
+
+    {"text": "请把报告发到 alice@example.com", "expected_type": "email", "expected_values": ["alice@example.com"]},
+    {"text": "我的邮箱是 test.user@company.org", "expected_type": "email", "expected_values": ["test.user@company.org"]},
+    {"text": "联系地址: support@dsh-edge.io", "expected_type": "email", "expected_values": ["support@dsh-edge.io"]},
+    {"text": "发送至 bob+test@example.com 即可", "expected_type": "email", "expected_values": ["bob+test@example.com"]},
+    {"text": "用户邮件: jane.doe@university.edu.cn", "expected_type": "email", "expected_values": ["jane.doe@university.edu.cn"]}
+  ]
+}

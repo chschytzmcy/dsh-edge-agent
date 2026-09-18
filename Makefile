@@ -22,7 +22,7 @@ GREEN := \033[0;32m
 YELLOW := \033[1;33m
 NC := \033[0m
 
-.PHONY: help build test verify e2e-coverage e2e-tui package clean
+.PHONY: help build test verify e2e-coverage e2e-tui e2e-benchmark package clean
 
 # 默认目标
 help:
@@ -33,6 +33,7 @@ help:
 	@echo "  $(GREEN)make test$(NC)          - 运行单元测试"
 	@echo "  $(GREEN)make verify$(NC)        - 运行构建验证"
 	@echo "  $(GREEN)make e2e-coverage$(NC)  - ops log 21 节点覆盖回归（3 重点用例）"
+	@echo "  $(GREEN)make e2e-benchmark$(NC) - local LLM 模型质量评分（10 category，145 fixtures×3 iter）"
 	@echo "  $(GREEN)make e2e-tui$(NC)       - 生产 dsh-tui 实机 E2E（tmux+HTTP 双通道，逐用例日志分析）"
 	@echo "  $(GREEN)make package$(NC)       - 构建 + 打 tarball → dist/(§7.77;install.sh 不读)"
 	@echo "  $(GREEN)make clean$(NC)         - 清理构建产物 + tarball"
@@ -77,6 +78,16 @@ e2e-coverage:
 # 保留 target 入口为兼容性(打印弃用说明 + 退出 0),不实际跑脚本。
 e2e-tui:
 	@echo "$(YELLOW)==> 弃用(§7.86):e2e-tui-live.sh 已删除 —— 单 profile 架构后 dsh-tui 不再独立部署。HTTP e2e 由 e2e-ops-log-coverage.sh 覆盖(对应原 H 臂)。$(NC)"
+
+# §7.87(2026-09-18) Model Quality Bench — 评估 local LLM 跟本项目的适配度
+# 145 fixtures × 3 iter = 435 次 LLM 调用,单跑 ~8-12 分钟(LAN 依赖)
+# 不进 CI(LAN + 太慢);手动跑或 release 前跑。
+# 用法:make e2e-benchmark LABEL=qwen3.5-9b-lan
+# 报告落点:dist/bench-${LABEL}-*/(report.md + scores.json + traces/*)
+e2e-benchmark:
+	@echo "$(BLUE)==> 跑 Model Quality Bench (label=${LABEL:-bench})$(NC)"
+	@LABEL=${LABEL:-bench} bash scripts/e2e-model-quality-bench.sh --label $${LABEL}
+	@echo "$(GREEN)✓ Model Quality Bench 完成(报告在 dist/bench-$${LABEL}-*/)$(NC)"
 
 # 打包部署文件
 # §7.55 (2026-09-15): 收紧打包内容

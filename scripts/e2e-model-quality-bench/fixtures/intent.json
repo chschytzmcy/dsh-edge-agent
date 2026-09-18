@@ -1,0 +1,38 @@
+{
+  "category": "C1 Intent Classification",
+  "description": "30 fixtures (10 LOCAL / 10 CLOUD / 10 ambiguous). Tested with the verbatim intent-router system prompt. Expected: macro-F1 across 2 classes + JSON parse rate + confidence MAE.",
+  "cases": [
+    {"query": "查询本机的局域网IP", "expected_category": "LOCAL", "expected_confidence": 1.0},
+    {"query": "查看系统磁盘使用情况", "expected_category": "LOCAL", "expected_confidence": 1.0},
+    {"query": "读取本地文件 /etc/hosts 的内容", "expected_category": "LOCAL", "expected_confidence": 1.0},
+    {"query": "执行 ls -la 命令", "expected_category": "LOCAL", "expected_confidence": 1.0},
+    {"query": "帮我计算 123 * 456 + 789", "expected_category": "LOCAL", "expected_confidence": 1.0},
+    {"query": "删除 /tmp/old.log 文件", "expected_category": "LOCAL", "expected_confidence": 1.0},
+    {"query": "查询密盒的登录状态", "expected_category": "LOCAL", "expected_confidence": 1.0},
+    {"query": "查看内存占用", "expected_category": "LOCAL", "expected_confidence": 1.0},
+    {"query": "在本机查找所有 .ts 文件", "expected_category": "LOCAL", "expected_confidence": 1.0},
+    {"query": "查询本机的 CPU 核心数", "expected_category": "LOCAL", "expected_confidence": 1.0},
+
+    {"query": "查询最新的AI新闻", "expected_category": "CLOUD", "expected_confidence": 1.0},
+    {"query": "今天北京的天气怎么样", "expected_category": "CLOUD", "expected_confidence": 1.0},
+    {"query": "最新的国际新闻", "expected_category": "CLOUD", "expected_confidence": 1.0},
+    {"query": "帮我翻译一段英文", "expected_category": "CLOUD", "expected_confidence": 1.0},
+    {"query": "写一首关于秋天的诗", "expected_category": "CLOUD", "expected_confidence": 1.0},
+    {"query": "请解释量子计算的原理", "expected_category": "CLOUD", "expected_confidence": 1.0},
+    {"query": "帮我查一下最新的英超积分榜", "expected_category": "CLOUD", "expected_confidence": 1.0},
+    {"query": "2026年奥运会在哪个国家举办", "expected_category": "CLOUD", "expected_confidence": 1.0},
+    {"query": "搜索一下机器学习入门的资料", "expected_category": "CLOUD", "expected_confidence": 1.0},
+    {"query": "推荐几本好看的小说", "expected_category": "CLOUD", "expected_confidence": 1.0},
+
+    {"query": "你好", "expected_category": "CLOUD", "expected_confidence": 0.7},
+    {"query": "你是谁", "expected_category": "CLOUD", "expected_confidence": 0.7},
+    {"query": "今天心情不好,想聊聊天", "expected_category": "CLOUD", "expected_confidence": 0.7},
+    {"query": "帮我写一段自我介绍", "expected_category": "CLOUD", "expected_confidence": 0.7},
+    {"query": "这是什么", "expected_category": "CLOUD", "expected_confidence": 0.5},
+    {"query": "为什么", "expected_category": "CLOUD", "expected_confidence": 0.5},
+    {"query": "介绍一下你自己", "expected_category": "CLOUD", "expected_confidence": 0.7},
+    {"query": "讲个笑话", "expected_category": "CLOUD", "expected_confidence": 0.7},
+    {"query": "我该怎么做", "expected_category": "CLOUD", "expected_confidence": 0.5},
+    {"query": "嗯", "expected_category": "CLOUD", "expected_confidence": 0.5}
+  ]
+}
