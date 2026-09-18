@@ -8,6 +8,9 @@ VERSION  := $(shell node -p "require('./package.json').version" 2>/dev/null || e
 PACKAGE_NAME := dsh-edge-agent-v$(VERSION).tar.gz
 SHA_NAME    := $(PACKAGE_NAME).sha256
 PACKAGE_DIR := .deploy
+# §7.77 (2026-09-18): 产物目录化 —— tarball + sha256 落 dist/ 而非 REPO_ROOT
+# 顶层,不污染源码根,跟 `git status` 自然分开。
+DIST_DIR    := dist
 # §7.71 (2026-09-17): 删 `make install` —— 单一部署入口归 install.sh,
 # Makefile 只负责 build + package(tarball 仅作 release 分发,本地部署走
 # install.sh 直 rsync REPO_ROOT/lib/ 到 profile)。runtime channel
@@ -31,7 +34,7 @@ help:
 	@echo "  $(GREEN)make verify$(NC)        - 运行构建验证"
 	@echo "  $(GREEN)make e2e-coverage$(NC)  - ops log 21 节点覆盖回归（3 重点用例）"
 	@echo "  $(GREEN)make e2e-tui$(NC)       - 生产 dsh-tui 实机 E2E（tmux+HTTP 双通道，逐用例日志分析）"
-	@echo "  $(GREEN)make package$(NC)       - 构建 + 打 tarball(release 分发用,install.sh 不读)"
+	@echo "  $(GREEN)make package$(NC)       - 构建 + 打 tarball → dist/(§7.77;install.sh 不读)"
 	@echo "  $(GREEN)make clean$(NC)         - 清理构建产物 + tarball"
 	@echo ""
 	@echo "本地部署(§7.71:单一入口归 install.sh,内部 'make package' + 直 rsync):"
@@ -95,8 +98,9 @@ e2e-tui:
 # 镜像)。tarball 仅供 release 分发 / 外部用户下载。
 package: build
 	@echo "$(BLUE)==> 打包部署文件 v$(VERSION)$(NC)"
-	@rm -rf $(PACKAGE_DIR)
+	@rm -rf $(PACKAGE_DIR) $(DIST_DIR)
 	@mkdir -p $(PACKAGE_DIR)/dsh-edge-agent-v$(VERSION)
+	@mkdir -p $(DIST_DIR)
 
 	@# 编译产物 + 配置
 	@cp -r lib $(PACKAGE_DIR)/dsh-edge-agent-v$(VERSION)/
@@ -122,22 +126,22 @@ package: build
 	@cp README.md $(PACKAGE_DIR)/dsh-edge-agent-v$(VERSION)/
 	@cp LICENSE $(PACKAGE_DIR)/dsh-edge-agent-v$(VERSION)/
 
-	@# 打包 + SHA256
-	@cd $(PACKAGE_DIR) && tar -czf ../$(PACKAGE_NAME) dsh-edge-agent-v$(VERSION)
-	@sha256sum $(PACKAGE_NAME) | tee $(SHA_NAME)
+	@# 打包 + SHA256 → $(DIST_DIR)/(§7.77)
+	@cd $(PACKAGE_DIR) && tar -czf ../$(DIST_DIR)/$(PACKAGE_NAME) dsh-edge-agent-v$(VERSION)
+	@cd $(DIST_DIR) && sha256sum $(PACKAGE_NAME) | tee $(SHA_NAME)
 	@rm -rf $(PACKAGE_DIR)
 
 	@echo ""
-	@SIZE=$$(du -h $(PACKAGE_NAME) | cut -f1); \
-	 echo "$(GREEN)✓ $(PACKAGE_NAME)$(NC) ($$SIZE)"
-	@echo "$(GREEN)✓ $(SHA_NAME)$(NC)"
+	@SIZE=$$(du -h $(DIST_DIR)/$(PACKAGE_NAME) | cut -f1); \
+	 echo "$(GREEN)✓ $(DIST_DIR)/$(PACKAGE_NAME)$(NC) ($$SIZE)"
+	@echo "$(GREEN)✓ $(DIST_DIR)/$(SHA_NAME)$(NC)"
 
 # 清理
 clean:
 	@echo "$(BLUE)==> 清理构建产物$(NC)"
 	@rm -rf lib/
 	@rm -rf $(PACKAGE_DIR)
-	@rm -f $(PACKAGE_NAME) $(SHA_NAME)
+	@rm -rf $(DIST_DIR)
 	@echo "$(GREEN)✓ 清理完成$(NC)"
 
 # 完整流程：构建 + 测试 + 验证 + 打包
