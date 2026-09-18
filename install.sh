@@ -232,7 +232,32 @@ fi
 if [ "$REPO_MODE" = 1 ]; then
   echo "==> [1/4] repo mode: make package (build + tarball)"
   cd "$REPO_ROOT"
-  make package
+  # §7.81 (2026-09-18): repo 模式 Phase 1 加 timeout + fallback
+  # 根因: pnpm 11.7 lockfile sync hang (PROGRESS §7.80), `make package`
+  # 卡 pnpm install 时 set -e 触发 SIGUSR1 (exit 144), 即使 deploy + 启
+  # dsh-edge 都成功。修法: timeout 120s 包 make package, 失败时 fallback
+  # 用现有 lib/ (加 stale warning, 不 abort install.sh)。install.sh 的
+  # exit code 反映 deploy 是否成功, 不反映 make package 是否成功。
+  if [ -d "$REPO_ROOT/lib" ]; then
+    _LIB_BEFORE_MTIME=$(stat -c %Y "$REPO_ROOT/lib" 2>/dev/null || echo 0)
+  else
+    _LIB_BEFORE_MTIME=0
+  fi
+  if timeout 120 make package 2>&1 | tail -30; then
+    echo "  ✓ make package ok (lib/ 重 build + dist/ tarball)"
+  else
+    _PHASE1_RC=$?
+    echo "  ⚠ make package 失败 (exit $_PHASE1_RC), §7.81 fallback 用现有 lib/" >&2
+    if [ ! -d "$REPO_ROOT/lib" ] || [ ! -f "$REPO_ROOT/lib/types/index.js" ]; then
+      echo "  ✗ lib/ 不存在或残缺, 无法 fallback; 建议手动 'make package' 排查" >&2
+      exit 1
+    fi
+    _LIB_AFTER_MTIME=$(stat -c %Y "$REPO_ROOT/lib" 2>/dev/null || echo 0)
+    if [ "$_LIB_AFTER_MTIME" -lt "$_LIB_BEFORE_MTIME" ]; then
+      echo "  ⚠ lib/ 似乎被破坏 (mtime 倒退), fallback 风险高" >&2
+    fi
+    echo "  → 继续 Phase 2-4 用现有 lib/ (可能 stale); exit 0 让 deploy 跑通" >&2
+  fi
 else
   echo "==> [1/4] tarball mode: using pre-built lib/ (no tsconfig.json, no make needed)"
   if [ ! -d "$REPO_ROOT/lib" ]; then

@@ -8108,3 +8108,81 @@ fi
 1. **install.sh exit code ≠ deploy 失败**:`set -e` + pnpm hang 可能让 exit 非零但 dsh-edge 实际起来了。先 `ps -eo pid,cmd | grep dsh` + `curl /v1/health` 验证,别直接 rollback。
 2. **pnpm 11.7 隐式 lockfile sync 是 trap**: 改 `package.json` 后跑 `pnpm run X` 会先做 lockfile 同步。如果不想 sync,改用 `npm run X` 直接调。
 3. **make -n 是验证 dry-run 顺序最便宜的办法**: 改 Makefile 依赖链之前先 `make -n release` 看实际跑的命令,确认依赖去重生效(本次确认 GNU make 对同名 target 去重 → 显式列 build 不会跑 2 次 compile)。
+
+---
+
+### §7.81 install.sh Phase 1 加 `timeout 120` + lib/ fallback(2026-09-18)
+
+**问题**:§7.80 之后 user 拍板 `release: test verify package` 不变,但要求 install.sh Phase 1 本身加兜底 —— 不让 `make package` pnpm hang(§7.80.2)再次让 install.sh 整体退 144 但 dsh-edge 实际跑通。§7.80.7 候选 A 落地。
+
+**根因重述**(§7.80.1): `set -euo pipefail` + `make package` 阶段 pnpm 11.7 lockfile 隐式同步 hang → SIGUSR1 (128+16=144) → install.sh 整体 exit 144 → 但 deploy + dsh-edge 启动已经发生,exit code 不能反映实际部署成败。
+
+**改动**:`install.sh` Phase 1 repo 模式分支(L232-242 → L232-264,~30 行新增):
+
+```bash
+if [ "$REPO_MODE" = 1 ]; then
+  echo "==> [1/4] repo mode: make package (build + tarball)"
+  cd "$REPO_ROOT"
+  # 记录 lib/ mtime 作 fallback 比对
+  if [ -d "$REPO_ROOT/lib" ]; then
+    _LIB_BEFORE_MTIME=$(stat -c %Y "$REPO_ROOT/lib" 2>/dev/null || echo 0)
+  else
+    _LIB_BEFORE_MTIME=0
+  fi
+  # timeout 120s: 默认 5s 不 pnpm 都能完, 120s 够大仓库 cover
+  if timeout 120 make package 2>&1 | tail -30; then
+    echo "  ✓ make package ok (lib/ 重 build + dist/ tarball)"
+  else
+    _PHASE1_RC=$?
+    echo "  ⚠ make package 失败 (exit $_PHASE1_RC), §7.81 fallback 用现有 lib/" >&2
+    # lib/ 必须存在且 types/index.js 完好
+    if [ ! -d "$REPO_ROOT/lib" ] || [ ! -f "$REPO_ROOT/lib/types/index.js" ]; then
+      echo "  ✗ lib/ 不存在或残缺, 无法 fallback; 建议手动 'make package' 排查" >&2
+      exit 1
+    fi
+    # stale 检测: mtime 倒退提示
+    _LIB_AFTER_MTIME=$(stat -c %Y "$REPO_ROOT/lib" 2>/dev/null || echo 0)
+    if [ "$_LIB_AFTER_MTIME" -lt "$_LIB_BEFORE_MTIME" ]; then
+      echo "  ⚠ lib/ 似乎被破坏 (mtime 倒退), fallback 风险高" >&2
+    fi
+    echo "  → 继续 Phase 2-4 用现有 lib/ (可能 stale); exit 0 让 deploy 跑通" >&2
+  fi
+else
+  # tarball mode 不动
+  ...
+fi
+```
+
+**关键设计点**:
+
+1. **timeout 120s 的依据**: 默认 (无 pnpm hang) `pnpm install` 在本机 ~5s 内完成,加上 `tsc` + `tar` + `sha256sum` 总共 < 60s。120s 是 2x 安全 margin,即便锁文件大、node_modules 重 build 也能 cover。**不像 §7.80.1 那种"无限等待"**,有明确截止线。
+2. **不 `exit 1` 而继续 Phase 2-4**: §7.80.1 教训 —— install.sh 退出码 ≠ deploy 失败。Phase 2-4 才是真正部署 bundle + rsync + 启 dsh-edge 的环节,即使 Phase 1 build 失败,只要现有 `lib/types/index.js` 完好,deploy 仍可成功。
+3. **`lib/types/index.js` 是 fallback 健全性底线**: `make package` 把 `lib/` 整目录 cp 进 tarball。如果 `lib/types/index.js` 不存在 = `lib/` 是残缺,fallback 风险高,必须 abort 让用户排查。
+4. **mtime 倒退检测**(`_LIB_BEFORE_MTIME` → `_LIB_AFTER_MTIME`): 防御 make 内部 `rm -rf lib/` + `tsc` 重新输出但因 OOM / signal 中途被打断的 corner case —— `lib/` 存在但 mtime 比原来还旧。这种 fallback 仍继续但打警告,不阻塞 deploy。
+5. **不动 tarball 模式分支**: tarball 模式下 install.sh 不跑 `make package`(§7.72),直接用 tarball 自带的 `lib/`。fallback 逻辑只对 repo 模式有意义。
+
+**对比 §7.80.7 候选**:
+
+| 候选 | §7.80.7 描述 | §7.81 落地状态 |
+|------|------------|---------------|
+| A: timeout + fallback | 短中期方案,保留 pnpm | ✅ 落地(timeout 120s + lib/ fallback) |
+| B: lib/ freshness check | 不重 build 当 src/ 没变 | ❌ 不做(用户未要求; freshness 比较 semantic 复杂,Phase 1 兜底已够)|
+| C: Makefile 改 `npm run compile` | 根因消除(绕开 pnpm) | ❌ 不做(§7.80.7 标记需要测 workspace 边界,本轮聚焦 install.sh 兜底)|
+
+#### 7.81.1 验证计划
+
+| 步骤 | 期望 |
+|------|------|
+| A. `bash -n install.sh` | exit 0(syntax OK) |
+| B. 正常路径: `./install.sh` | Phase 1 30s 内完成(无 hang),退 0,dsh-edge 启起 |
+| C. 模拟 hang: `set -x; sleep 999 & pkill -STOP pnpm` 后跑 `./install.sh` | Phase 1 在 120s 后触发 timeout,走 fallback 分支,`lib/` 完好时继续 Phase 2-4,exit 0 |
+| D. fallback 后 Phase 2-4 仍跑通 | `curl http://127.0.0.1:21017/v1/health` 200 |
+| E. 重复 `./install.sh` 3 次 | 幂等,exit 0,dsh-edge 持续运行 |
+
+#### 7.81.2 后续候选
+
+- 不实现 lib/ freshness check(候选 B): src/ 大改后用户自己 `make build` 主动触发,不需要 install.sh 自动检测。
+- 不实现 Makefile `npm run compile`(候选 C): pnpm 11.7 是上游 bug,等上游修或换 pnpm 12+。
+- 不在 install.sh 头部加 "预检测 lib/ 是否存在"的 §7.78 `--check` 风格入口: 已有 `--check` 提供独立 dry-run 检测,不必再叠加。
+- 不改 tarball 模式加同样的 timeout fallback: tarball 模式不跑 make,fallback 逻辑无意义。
+
