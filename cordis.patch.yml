@@ -382,7 +382,9 @@
         # 兜底链 = DSH_EDGE_CLOUD_LLM_BASEURL → DEEPSEEK_BASE_URL（inherited env）→
         # plugin Schema default 'https://api.deepseek.com'
         baseUrl: !!js process.env.DSH_EDGE_CLOUD_LLM_BASEURL ?? process.env.DEEPSEEK_BASE_URL ?? 'https://api.deepseek.com'
-        apiKeyEnv: DEEPSEEK_API_KEY
+        # §7.83: 改读 DSH_EDGE_CLOUD_KEY_ENV 跟 baseUrl 对称(原写死 DEEPSEEK_API_KEY,
+        # 导致切到 Aliyun token-plan 端点时仍用 DeepSeek key → 401)
+        apiKeyEnv: !!js process.env.DSH_EDGE_CLOUD_KEY_ENV ?? 'DEEPSEEK_API_KEY'
         defaultModel: !!js process.env.DSH_EDGE_MODEL ?? 'deepseek-chat'
 
     - id: local-llm-adapter
