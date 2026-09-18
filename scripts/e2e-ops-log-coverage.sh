@@ -174,6 +174,18 @@ check_node_presence() {
       if ! grep -qF 'tool allow' "$log" && ! grep -qF 'tool deny' "$log"; then
         misses+=('tool allow/deny (任一)')
       fi
+    elif [[ "$pat" == "sanitize start" || "$pat" == "sanitize done" ]]; then
+      # §7.79 (2026-09-18): sanitize 节点只对 CLOUD/SANITIZED 路径必须 emit。
+      # LOCAL 路径不上云端，input-guard v2 跳过 sanitizer（设计意图，
+      # memory [[sanitize-downgrade-policy]]）。所以 LOCAL intent 用例
+      # （如 mibao）没有 sanitize 节点不是 bug，是优化。
+      local realm_route
+      realm_route=$(grep '\[input-guard\] preflight intent' "$log" | tail -1 | grep -oE 'targetRealm=[A-Z]+' || echo "")
+      if [[ "$realm_route" == *"CLOUD"* || "$realm_route" == *"SANITIZED"* ]]; then
+        if ! grep -qF "$pat" "$log"; then
+          misses+=("$pat")
+        fi
+      fi
     elif ! grep -qF "$pat" "$log"; then
       misses+=("$pat")
     fi
@@ -195,7 +207,9 @@ check_node_presence() {
   fi
 
   # LLM call start 必须带 baseUrl= / provider= / model= 字段
-  if ! grep '\[cloud-llm-adapter\] LLM call start' "$log" | grep -q 'baseUrl='; then
+  # §7.79 (2026-09-18): mibao 走 local-llm, news/local-ip 走 cloud-llm;
+  # 必须两个 adapter 都查
+  if ! grep -E '\[(cloud-llm-adapter|local-llm-adapter)\] LLM call start' "$log" | grep -q 'baseUrl='; then
     misses+=('llm-call-start-baseUrl-field')
   fi
 
@@ -239,8 +253,9 @@ assert_mibao() {
   fi
 
   # 期望：至少 2 次 LLM call done（skill → bash tool result → 最终回复）
+  # §7.79 (2026-09-18): mibao 走 local-llm 池,grep 两个 adapter
   local llm_n
-  llm_n=$(grep -c '\[cloud-llm-adapter\] LLM call done' "$log" || true)
+  llm_n=$(grep -cE '\[(cloud-llm-adapter|local-llm-adapter)\] LLM call done' "$log" || true)
   if [ "$llm_n" -lt 2 ]; then
     echo "  ✗ LLM call done 仅 $llm_n 次（期望 ≥2：skill 调用 + 最终回复）"
     fail=1

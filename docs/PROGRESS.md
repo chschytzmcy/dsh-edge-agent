@@ -7925,3 +7925,78 @@ Rollback hint: 跑 `./install.sh --skip-pnpm --no-restart` 一键恢复部署。
 - 不改 deploy 路径(纯加分支)
 - 不改 `command -v dsh` 短路(只在 --check 路径里改)
 - 不写 dsh outdated → 自动 `npm i -g` (用户拍板手动控制升级时机,见 `--check` 输出里给 `npm i -g @deepseek-ai/dsh@latest` 提示而非自动跑)
+
+---
+
+### §7.79 e2e-ops-log-coverage 脚本适配 LOCAL 路径 + 真 DashScope key 注入(2026-09-18)
+
+**问题**:`make e2e-coverage` 跑 3 个 ops log 重点用例(mibao / news / local-ip,见 §7.46.9)时,脚本**硬编码 grep `cloud-llm-adapter`**;同时 `.env` 里 `DASHSCOPE_API_KEY` 是 placeholder,local-llm 池打 `coding.dashscope.aliyuncs.com/v1` 直接 401 → mibao(LOCAL 意图,严格走 local-llm 池)失败。
+
+**结论先行**:两件事一起做 —— **`.env` 注入真 DASHSCOPE_API_KEY** + **脚本放宽 grep adapter 范围** —— `make e2e-coverage` 三个用例全 PASS。
+
+#### 7.79.1 `.env` 真 DashScope key 注入 + shell export DSH_EDGE_LOCAL_LLM_*
+
+**问题分解**:
+1. `cordis.patch.yml` 读 `process.env.DSH_EDGE_LOCAL_LLM_BASEURL ?? 'http://192.168.1.121:11017/v1'`,而 `.env` 写的是 `LOCAL_LLM_BASEURL=...`(无前缀)→ JS `??` 走 fallback,baseUrl 硬编码到 `192.168.1.121`(LAN server 已死)
+2. `192.168.1.121:11017` 是上一个跑通的 LAN server,2026-09-18 502 不可达
+3. `coding.dashscope.aliyuncs.com/v1` 是 OpenAI 兼容端点,但 `.env` 里 `DASHSCOPE_API_KEY=sk-xxxxx...` 是 placeholder,401
+
+**修复链**(4 步):
+1. `.env` 把 `DASHSCOPE_API_KEY` 从 `sk-xxxxx...` placeholder 替换为真 token(从 `/home/etsme/cy/agent/dsh-edge-agent/key` 第 1 行;**注意 `key` 文件里的 token 是 token-plan 专属 Anthropic 兼容 token,不通用 coding 端点**,需要单独验证 key 配对 — 本轮用户填的 key 已在 coding 端点验通)
+2. 启动 dsh-edge 前 **shell export** `DSH_EDGE_LOCAL_LLM_BASEURL=https://coding.dashscope.aliyuncs.com/v1` 等 4 个变量,**不能写 `.env`** —— DSH 启动器把 `DSH_EDGE_*` 加入 BOOTSTRAP_NAMES 黑名单(与 `DEEPSEEK_BASE_URL` / `DSH_EDGE_HTTP_PORT` 等同处理),`.env` 里写会被拒:
+   ```
+   Error: dsh: /home/etsme/.../.env sets "DSH_EDGE_LOCAL_LLM_BASEURL",
+   which only the launching environment may set ... export ... instead of putting it in a .env file
+   ```
+3. `local-llm-adapter` boot 验证:ops log `baseUrl=https://coding.dashscope.aliyuncs.com/v1` ✓
+4. mibao 用例单跑:LOCAL 意图 → local-llm 池 → coding 端点 → `resultLen=291 reason=kind=completed`
+
+**关键 design 约束**:
+- shell export 在 systemd / tmux / cron 启动 dsh-edge 时**必须**保留这 4 个 env,否则 local-llm 池退回硬编码 LAN 端点。后续 install.sh 重启场景需要用户在 shell 里 source 一段 export(或者 install.sh 自动 export)。**这一段目前是手动**。
+
+#### 7.79.2 `scripts/e2e-ops-log-coverage.sh` 适配 LOCAL 路径
+
+脚本 3 处硬编码 cloud-llm-adapter,LOCAL 用例(mibao)走 local-llm-adapter,grep 不到就误判 fail:
+
+| 行号 | 改动 | 原因 |
+|---|---|---|
+| `check_node_presence` L174 附近 | sanitize start/done conditional:只在 `targetRealm=CLOUD\|SANITIZED` 时要求 emit | LOCAL 路径不上云端,input-guard v2 跳过 sanitizer 是设计意图(memory `sanitize-downgrade-policy`),不要求 sanitize 节点是误报 |
+| `check_node_presence` L207 (原 L197) | `grep '\[cloud-llm-adapter\] LLM call start'` → `grep -E '\[(cloud-llm-adapter\|local-llm-adapter)\]'` | 两个 adapter 都需查 |
+| `assert_mibao` L256 (原 L243) | LLM call done 计数同改 | mibao 全程走 local-llm |
+
+**diff 总计**:`scripts/e2e-ops-log-coverage.sh` +17/-2 行,只改 1 文件。
+
+#### 7.79.3 端到端验证
+
+`make e2e-coverage` 完整跑 3 用例,DSH_EDGE_LOCAL_LLM_* shell export + 真 DASHSCOPE_API_KEY 注入后:
+
+| 用例 | 21 节点覆盖 | 关键断言 | ops log 行数 | 结论 |
+|---|---|---|---|---|
+| **mibao** (LOCAL → local-llm → coding.dashscope) | ✅ | ✅ ets-auth skill 调用 + LLM call done 9 次 | 89 | ✅ PASS |
+| **news** (CLOUD → cloud-llm → DeepSeek) | ✅ | ✅ web_search 4 次 + LLM call start 7 次 + resultLen=1516 | 95 | ✅ PASS |
+| **local-ip** (SANITIZED → cloud-llm 兜底) | ✅ | ✅ bash 3 次 | 88 | ✅ PASS |
+
+**总结**:`✓ 所有 ops log 重点用例通过`。
+
+#### 7.79.4 改动文件清单
+
+| 文件 | 行数 | 改动 |
+|---|---|---|
+| `.env` | ±2 行 | `DASHSCOPE_API_KEY` 从 placeholder → 真 token |
+| `scripts/e2e-ops-log-coverage.sh` | +17/-2 行 | sanitize conditional + 两个 adapter grep |
+| `docs/PROGRESS.md` (本节) | +88 行新增 | §7.79 完整记录 |
+
+#### 7.79.5 环境约束 takeaway(给后续排查用)
+
+1. **`.env` 写 `DSH_EDGE_*` 变量 = 启动失败**(DSH 启动器黑名单),必须 shell export
+2. **`cordis.patch.yml` 读 `DSH_EDGE_LOCAL_LLM_BASEURL`,`.env` 写 `LOCAL_LLM_BASEURL` = 永远 fallback 到硬编码 `192.168.1.121:11017`**(变量名不一致)
+3. **`coding.dashscope.aliyuncs.com/v1` 需要的是普通 DashScope API key,不接受 token-plan 体系的 `sk-sp-...DXDL...` token**
+
+#### 7.79.6 未做(候选给后续)
+
+- 不改 `cordis.patch.yml` 让它兼容 `LOCAL_LLM_BASEURL` 别名(影响所有 profile 的 plugin 行为,本轮范围外)
+- 不改 install.sh 让它自动 export `DSH_EDGE_LOCAL_LLM_*`(boot 行为变更需要 §7.80+ 设计,跟 §7.78 `--check` 解耦)
+- 不写 `DSH_EDGE_LOCAL_LLM_BASEURL` 的 unit test(端到端 mibao 用例已覆盖)
+- 不在 PROGRESS §7.76 阶段就预测到 local-llm 池端点会死(实际 2026-09-18 当天 LAN server 502 是用户反馈驱动)
+
+**Tarball 自带**:`make package` 在 §7.77 已重打,本次脚本改动后续需要 `make package` 重打(脚本进了 tarball,本地部署仍依赖 §7.74 双模式 + REPO_ROOT 优先读)。
