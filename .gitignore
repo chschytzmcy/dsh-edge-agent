@@ -15,6 +15,8 @@ AGENTS.md
 # §7.76 Phase 1.7 backup: .env.uninstall-backup.<ts>/ 可能含 live API key,
 # 跟 .env 同样规则——绝不入 git history。
 .env.uninstall-backup.*
+# §7.87.6 per-LLM .env 快照(同样含 live key + LAN IP):绝不入 git history
+.env.local-*
 coverage/
 *.tsbuildinfo
 .claude/
