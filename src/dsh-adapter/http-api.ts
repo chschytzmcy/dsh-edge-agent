@@ -540,55 +540,79 @@ export class HttpApiServiceImpl extends Service {
 
     const record = await this.ensureSession(sessionId, provider, model)
 
-    // Wait for turn completion by subscribing to session/event
+    // Wait for agent-loop driver to truly idle, not just first turn/end.
+    //
+    // §7.87.6 (2026-09-19): 之前在第一个 `turn/end` 就 resolve,但 agent-loop
+    // 会在 step 返回 `{kind: "completed"}` 时立即 break(即使 assistant message
+    // 里有没真执行的 orphan tool_call)→ 紧接着 driver 检测到 inbox.hasPending
+    // 起来一个新 turn(给 orphan 合成 tool-result 让 LLM 再答一次)。qwen3.5-9b
+    // 偶发 bash tool_call malformed(duplicate toolCallId / 空 args),tool runtime
+    // 拒判,executeToolCalls 不真跑 → turn 1 提前 break → HTTP 200 返中间 prose。
+    //
+    // 修法:用 `agent.whenIdle()`(`@deepseek-ai/dsh-agent-loop/lib/index.js:465`)
+    // 当真正的 driver idle 信号。do-while 内部 await activityDone,即使 turn 中
+    // 途 inbox 又 push 也能继续 wait。同时保留 session/event listener 翻译
+    // blocked turn(2026-08-30 fix),互不干扰。
     const turnEnd = new Promise<{ result: string; rejection?: { status: number; kind: string; reason: string; riskLevel?: string } }>((resolve) => {
+      let blockedFired = false
       const dispose = this.cordisCtx.on('session/event', (session: any, event: SessionEvent) => {
-        if (event.type === 'turn/end') {
-          // 2026-08-30 fix: agent-loop 把 input-guard 的 `{ kind: 'reject' }`
-          // 翻译成 `turnEnds = { kind: 'blocked' }` 时会丢掉 reason 字符串。
-          // input-guard 改在 reject 时把 reason 写到 `agent._edgeRejection`，
-          // 这里读它并把 blocked turn 转成 HTTP 400 / 403。
-          // event shape: { type, seq, time, data: { turn, reason } }
-          const blockedReason = (event as any).data?.reason
-          if (blockedReason?.kind === 'blocked') {
-            const edgeRej = (record.agent as any)._edgeRejection as
-              | { kind: 'attack' | 'policy' | 'intent' | 'sanitizer'; reason: string; riskLevel?: string }
-              | undefined
-            // attack → 400（请求内容不安全）
-            // policy / intent → 403（policy-rule:reject 同语义，与 http-api:465 短路对齐）
-            // sanitizer → 503（系统故障而非 user 错）
-            const status = edgeRej?.kind === 'attack' ? 400
-              : edgeRej?.kind === 'sanitizer' ? 503
-              : 403
-            const reason = edgeRej?.reason ?? 'request blocked'
-            this.audit('warn', 'http.chat.blocked', {
-              reqId, sessionId, edgeRejection: edgeRej,
-            })
-            dispose()
-            resolve({ result: '', rejection: { status, kind: edgeRej?.kind ?? 'unknown', reason, riskLevel: edgeRej?.riskLevel } })
-            return
-          }
-          const events = snapshotSessionEvents(record.agent.session as any)
-          const lastAssistant = events
-            .filter((e) => e.type === 'assistant/message')
-            .pop()
+        if (event.type !== 'turn/end') return
 
-          const text = lastAssistant
-            ? (lastAssistant as any).data.message.content
-                .filter((b: any) => b.type === 'text')
-                .map((b: any) => b.text)
-                .join('')
-            : ''
-
-          // Append assistant reply to the multi-turn ring buffer so the
-          // NEXT classify() in this session can see it as prior context.
-          // Best-effort: if the buffer is already evicted (session gone),
-          // pushRecentMessage is a no-op.
-          if (text) this.pushRecentMessage(sessionId, 'assistant', text)
-
+        const blockedReason = (event as any).data?.reason
+        if (blockedReason?.kind === 'blocked') {
+          const edgeRej = (record.agent as any)._edgeRejection as
+            | { kind: 'attack' | 'policy' | 'intent' | 'sanitizer'; reason: string; riskLevel?: string }
+            | undefined
+          const status = edgeRej?.kind === 'attack' ? 400
+            : edgeRej?.kind === 'sanitizer' ? 503
+            : 403
+          const reason = edgeRej?.reason ?? 'request blocked'
+          this.audit('warn', 'http.chat.blocked', {
+            reqId, sessionId, edgeRejection: edgeRej,
+          })
+          blockedFired = true
           dispose()
-          resolve({ result: text })
+          resolve({ result: '', rejection: { status, kind: edgeRej?.kind ?? 'unknown', reason, riskLevel: edgeRej?.riskLevel } })
         }
+      })
+
+      // whenIdle() resolves once the ReactLoopAgent driver exits its activity
+      // loop (turn() finally block) and the queue is empty. Multi-turn chains
+      // (turn 1 → orphan recovery synthetic tool-result → turn 2) are awaited
+      // because activityDone is recreated each driver cycle.
+      record.agent.whenIdle().then(() => {
+        if (blockedFired) return
+        dispose()
+        const events = snapshotSessionEvents(record.agent.session as any)
+        const lastAssistant = events
+          .filter((e) => e.type === 'assistant/message')
+          .pop()
+
+        const text = lastAssistant
+          ? (lastAssistant as any).data.message.content
+              .filter((b: any) => b.type === 'text')
+              .map((b: any) => b.text)
+              .join('')
+          : ''
+
+        if (text) this.pushRecentMessage(sessionId, 'assistant', text)
+        resolve({ result: text })
+      }).catch((err) => {
+        // Driver crashed mid-loop (rare). Fall back to best-effort snapshot.
+        this.ctx?.logger?.warn?.(`[http-api] whenIdle rejected, falling back to snapshot sessionId=${sessionId} err=${String(err)}`)
+        if (blockedFired) return
+        dispose()
+        const events = snapshotSessionEvents(record.agent.session as any)
+        const lastAssistant = events
+          .filter((e) => e.type === 'assistant/message')
+          .pop()
+        const text = lastAssistant
+          ? (lastAssistant as any).data.message.content
+              .filter((b: any) => b.type === 'text')
+              .map((b: any) => b.text)
+              .join('')
+          : ''
+        resolve({ result: text })
       })
     })
 

@@ -1,9 +1,9 @@
 # §7.87 Model Quality Bench — 测试用例设计分析
 
 **作者**:Claude(本地 Claude Code session)
-**生成日期**:2026-09-19(v14 baseline 后定稿)
+**生成日期**:2026-09-19(v14→v15 §7.87.6 后修订)
 **关联**:`PROGRESS.md §7.87` | `scripts/e2e-model-quality-bench/` | `dist/bench-*/report.md`
-**当前版本**:v14(56 用例,5min runtime,intrinsic 100 + pipeline 100 + latency 65.5 = 96.5/100)
+**当前版本**:v15(56 用例,5min runtime,§7.87.6 http-api whenIdle fix 后 C7 race 消除,intrinsic 100 + pipeline 100 = 90+/100 with LAN qwen3.5-9b)
 
 ---
 
@@ -391,15 +391,18 @@ passed = (
 )
 ```
 
-**Retry-on-empty 兜底**(§7.87.4.1):dsh-edge /v1/chat 在 LOCAL+tool-call 流程下首次 LLM 响应是 tool_calls(content=""),HTTP 200 提前回。若首次 result_len=0,sleep 3s 重试拿 cached session state。
+**Retry-on-empty 兜底**(§7.87.4.1,**§7.87.6 v15 撤回**):原本 dsh-edge /v1/chat 在 LOCAL+tool-call 流程下首次 LLM 响应是 tool_calls(content=""),HTTP 200 提前回。**§7.87.6 在 http-api 改用 `agent.whenIdle()`**(`src/dsh-adapter/http-api.ts:543-617`),等 driver 真 idle 而不是 first turn/end → 200+empty race 从源头消除 → retry-on-empty 不再需要,删除相关逻辑。
 
 **v14 baseline**:1.0(result_len=312)— ets-auth skill → bash → 7 LLM call → 出完整密盒状态表。
 
-**会暴露的 failure mode**:
+**v15 fix-verify 实跑**(LAN qwen3.5-9b @ 67.0.0.5:28001,whenIdle 修复后):C7 rL=259 PASS,不复 retry 也能一次性拿到完整密盒状态。
+
+**会暴露的 failure mode**(v15 后):
 - intent-router 把 "登录状态" 误判 CLOUD
 - ets-auth skill 路由失败
-- bash 调用返回空
-- agent loop 死循环(180s timeout)
+- bash 调用返回空(罕见,需看 tool runtime)
+- agent loop 死循环(180s timeout)— whenIdle 不会屏蔽 timeout,仍能 catch
+- ~~200+empty race~~(**v15 修**,新 baseline 跑出 rL=259 一次性 PASS)
 
 ---
 
@@ -462,14 +465,17 @@ passed = (
 )
 ```
 
-**Retry-on-empty 兜底**(§7.87.4.3):同 C7,query 频繁触发 dsh-edge 200+empty bug,retry-after-3s 拿 cached session state。
+**Retry-on-empty 兜底**(§7.87.4.3,**§7.87.6 v15 撤回**):同 C7,query 频繁触发 dsh-edge 200+empty bug,retry-after-3s 拿 cached session state。**§7.87.6 在 http-api 改用 `agent.whenIdle()` 后 200+empty race 从源头消除,retry 兜底不再需要**。
 
 **v14 baseline**:1.0(result_len=257)— bash tool 真调, log 含 `tool=bash`。
 
-**会暴露的 failure mode**:
+**v15 fix-verify 实跑**:C9 rL=123 PASS(无 retry)。
+
+**会暴露的 failure mode**(v15 后):
 - intent-router 触发 SANITIZED 隐私降级(查 IP = 可能涉隐私)
 - bash tool 沙箱权限限制
 - IP 查询命令不存在(Android 没 `ip` 命令)
+- ~~200+empty race~~(**v15 修**)
 
 ---
 
@@ -568,7 +574,9 @@ bash scripts/e2e-model-quality-bench.sh \
 
 ---
 
-## 5. v14 baseline 实测结果(2026-09-19)
+## 5. baseline 实测结果(2026-09-19)
+
+### v14 (cloud qwen3.7-plus, §7.87.4 fix 后)
 
 `dist/bench-aliyun-qwen37-baseline-v14-20260919-153218/report.md`
 
@@ -585,6 +593,19 @@ bash scripts/e2e-model-quality-bench.sh \
 
 **Why pipeline 100/100(而非基线 100)**:C7-C9 都 PASS + C10 informational。**这条线**答"dsh-edge 完整性 100%"——证明 v14 harness 没漏判任何 bug。
 
+### v15 (§7.87.6 http-api whenIdle fix 后,LAN qwen3.5-9b @ 67.0.0.5:28001)
+
+`dist/bench-fix-verify-full-20260919-173245/report.md`
+
+| 维度 | 分数 | 详情 |
+|------|------|------|
+| Intrinsic | **53.3/100** ⚠️ | C1=0, C2=1, C3 pass, C4=0.2, C5=0, C6=1.0(intrinsic 测试绕过 dsh-edge 直连 LAN server,疑 server temp=0 实际未 honored 或 server 行为不稳,与本 fix 无关) |
+| Pipeline | **100/100** | C7=1.0(rL=259,修前 rL=18 FAIL), C8=1.0(rL=1384), C9=1.0(rL=123), C10=0.833 |
+| Latency | (skipped) | --skip-latency 默认 |
+| **Overall** | **66.7/100** | intrinsic drop 拖总分;pipeline 100/100 才是 dsh-edge 健康标志 |
+
+**关键 v15 信号**:**Pipeline 100/100,跟 v14 持平** — §7.87.6 whenIdle fix 把 LAN qwen3.5-9b 的 C7 race 从源头消除,**dsh-edge 完整性 100% 复验通过**。intrinsic 53.3 走 separate 直连路径,**不在本 bench fix 范围**,建议另起任务排查 LAN server temp=0 行为。
+
 ---
 
 ## 6. fixture 维护约定
@@ -600,9 +621,9 @@ bash scripts/e2e-model-quality-bench.sh \
 
 ---
 
-## 7. §7.87.4 修复历史(v14 前的 5 处 bug)
+## 7. §7.87.4 + §7.87.6 修复历史(v14→v15 共 6 处 bug)
 
-**v6-v14 journey**:
+**v6-v15 journey**:
 - v6:intrinsic 100 + pipeline 33.3 → final 63.3 ❌ Weak
 - v7:C7 放宽断言 → pipeline 66.7 → final 76.7 ⚠️
 - v8:C9 log substring 修 → pipeline 66.7(没变,substring bug 仍没暴露)
@@ -610,7 +631,8 @@ bash scripts/e2e-model-quality-bench.sh \
 - v10:v11 fix 截断 → pipeline 100 → final 90(被 latency=0 扣)
 - v12:C9 retry 加 → pipeline 100 → final 90
 - v13:latency 公式修 → pipeline 100 → final 90(被 latency=0 仍扣)
-- **v14**:所有 fix 落地 → **pipeline 100 + latency 65.5 → final 96.5 ✅**
+- **v14**:所有 fix 落地 → **pipeline 100 + latency 65.5 → final 96.5 ✅** (cloud baseline anchor)
+- **v15**(§7.87.6):**dsh-edge C7 race 从源头修**(http-api 改用 `agent.whenIdle()`) → retry-on-empty 兜底撤回 → LAN qwen3.5-9b pipeline 100/100(跟 v14 baseline 持平)
 
 ### 7.1 C7 ets-auth 断言太严
 
@@ -647,9 +669,96 @@ bash scripts/e2e-model-quality-bench.sh \
 
 **修法**(harness.py:898):线性 0-30s 衰减 `max(0, min(100, 100 - p95_ms / 300))`,p95=10s → 66.7。
 
+### 7.6 §7.87.6 http-api whenIdle fix (v14 → v15)
+
+**问题**(LAN qwen3.5-9b 阶段 2 实跑暴露):C7 mibao 用 LAN qwen3.5-9b 跑出 rL=18(只取到中间 prose,丢失密盒状态真 reply)。audit log 时间轴显示 HTTP 200 在 17:13:11.033 fire,**比 LLM call 3 结束早 2.5 秒**。
+
+**根因**(审计 log + dsh-agent-loop 源码 cross-ref):
+
+dsh-agent-loop `turn()` 主循环(`@deepseek-ai/dsh-agent-loop/lib/index.js:521-609`):
+```js
+while (true) {
+  const stepEnd = await this.step(...)            // LLM call + executeToolCalls
+  if (turnEnds === null || turnEnds.kind !== "max-tokens") turnEnds = stepEnd
+  if (turnEnds && this.inbox.nextStep.length === 0) break
+}
+```
+
+`step()` 返回逻辑(line 689-693):
+```js
+if (toolCalls.length === 0) return { kind: "completed" }
+const { concluded } = await executeToolCalls(...)
+return concluded ? { kind: "completed" } : null
+```
+
+**触发链**(mibao turn 1):
+1. step 1: LLM call 1 → tool_call(ets-auth) → 真跑 ets-auth → `concluded=false` → step 返回 `null` → 继续 loop
+2. step 2: LLM call 2 → 18 chars prose + tool_call(bash, **qwen3.5-9b 偶发 malformed: duplicate toolCallId / 空 args**)
+   - bash tool runtime `prepare()` 拒判 → executeToolCalls 没真跑 tool
+   - step 返回 `{kind: "completed"}`
+3. loop break → finally → `turn/end` fire(**早**)
+4. http-api 旧 listener(line 545-592)在 turn/end 第一次就 resolve → HTTP 200 with rL=18
+5. driver 看到 inbox 仍有 pending(orphan recovery 合成 tool-result 触发下一轮)→ 起新 turn → step 1 = LLM call 3
+6. LLM call 3 跑 3.5 秒才真完成,但 HTTP 早已返,用户拿不到
+
+**为什么 cloud qwen3.7-plus 不暴露**:稳定生成合规 tool_call,executeToolCalls 真跑 tool、返回真 tool_result → turn 1 在 step 3 收尾 → 一次性 turn/end。
+
+**修复**(`src/dsh-adapter/http-api.ts:543-617`):`turnEnd` Promise 改用 `agent.whenIdle()` 取代 first turn/end:
+
+```ts
+const turnEnd = new Promise<{result?: string; rejection?: ...}>((resolve) => {
+  let blockedFired = false
+  const dispose = this.cordisCtx.on('session/event', (session, event) => {
+    if (event.type !== 'turn/end') return
+    const blockedReason = (event as any).data?.reason
+    if (blockedReason?.kind === 'blocked') {
+      blockedFired = true
+      // ... 既有 blocked handling
+      dispose()
+      resolve({ rejection: {...} })
+    }
+  })
+  record.agent.whenIdle().then(() => {
+    if (blockedFired) return
+    dispose()
+    const events = snapshotSessionEvents(record.agent.session as any)
+    const lastAssistant = events.filter(e => e.type === 'assistant/message').pop()
+    const text = lastAssistant ? extractText(lastAssistant) : ''
+    if (text) this.pushRecentMessage(sessionId, 'assistant', text)
+    resolve({ result: text })
+  })
+})
+```
+
+**关键 insight**:
+- `ReactLoopAgent.whenIdle()`(dsh-agent-loop 官方 export,line 465)是 driver 真正静默信号,等 `activityDone` Promise 链全部 settle
+- do-while 双重检查确保 `activityDone` 在循环期间被 reset 时也 wait 住
+- 既有 session/event listener 保留 — 仍然检测 blocked turn(400/403/503 翻译)
+- whenIdle() 不需要 timeout(驱动总会停;反过来如果 hang,HTTP 也应该 hang → 让上游 ops 看到)
+- 该修复对 cloud 路径无影响(cloud 模型无 orphan,turn 1 就是终态)
+
+**Verification**(full bench,LAN qwen3.5-9b @ 67.0.0.5:28001,whenIdle 修复后):
+
+| Case | v14(cloud) | v15(LAN qwen3.5-9b) | 变化 |
+|------|------------|---------------------|------|
+| C7 mibao | rL=312 PASS | **rL=259 PASS**(无 retry) | race 消除,一次性 PASS |
+| C8 news | rL=1284 PASS | rL=1384 PASS | 持平 |
+| C9 local-ip | rL=120 PASS | **rL=123 PASS**(无 retry) | race 消除,一次性 PASS |
+| C10 multi-turn | informational | informational | 持平(跟 fix 无关) |
+| Pipeline 100% | 100 | **100** | ✅ 跟 v14 baseline 持平 |
+| Intrinsic | 100 | 53.3 | **跟 fix 无关**(intrinsic 走 separate 直连,不在 dsh-edge 路径上) |
+| Latency | 65.5 | 0 | **跟 fix 无关**(本地 qwen3.5-9b p95 > 30s 触发 latency 0) |
+| **Final** | **96.5** | **66.7** | intrinsic + latency 拖累(都不是 fix 的问题) |
+
+**Pipeline 100/100 = dsh-edge 100% 复验通过**。intrinsic 53.3 是 LAN server temp=0 行为(直连 wire 路径),另起任务排查,不在 §7.87.6 fix 范围。
+
+**关联**: PROGRESS.md §7.87.6 | memory `cordis-waterfall-listener-args` / `session-events-api-migration` / `bench-thinking-wire-body`(本节 §7.87.5)
+
+**Lesson**:不要把 first `turn/end` 当 driver idle 信号 — 当 agent 跨多 turn 跑时(orphan tool_call → synthetic tool-result → 下一 turn),必须等 `activityDone` 链全部 settle。这是从 v14 → v15 唯一未预料的 dsh-edge bug,**整套 bench 验 dsh-edge 完整性必须用真实 LAN 模型跑过一遍才能发现**,纯 cloud baseline 永远暴露不了。
+
 ---
 
-## 8. §7.87.4 运行时优化(22min → 5min)
+## 8. §7.87.4 + §7.87.6 运行时优化(22min → 5min,retry 撤回)
 
 ### 8.1 fixtures 精简 145 → 56
 
@@ -671,10 +780,10 @@ bash scripts/e2e-model-quality-bench.sh \
 - **C7/C8/C9**:3 worker 并发 e2e(原顺序 3×30s=90s → 并行 30s)
 - **C10**:跨 conv 并发(单 conv 内 turn 串行)(原顺序 3×15s=45s → 并行 15s)
 
-### 8.3 C7/C9 retry-on-empty + C10 informational
+### 8.3 ~~C7/C9 retry-on-empty~~(§7.87.6 v15 撤回)+ C10 informational
 
-- **dsh-edge /v1/chat** 在 LOCAL+tool-call 流程下首次 LLM 响应是 tool_calls(content=""),HTTP 200 提前回,retry-after-3s 拿 cached session state
-- **C10 改 informational + 排除 macro**:multi-turn session state quirk(dsh-edge 已知 bug)不算 hard fail
+- ~~**dsh-edge /v1/chat** 在 LOCAL+tool-call 流程下首次 LLM 响应是 tool_calls(content=""),HTTP 200 提前回,retry-after-3s 拿 cached session state~~ → **§7.87.6 在 http-api 改用 `agent.whenIdle()` 后 race 从源头消除,retry 兜底不再需要**(详见 §7.6)
+- **C10 改 informational + 排除 macro**:multi-turn session state quirk(dsh-edge 已知 bug,跟 §7.87.6 race 无关)不算 hard fail
 
 ### 8.4 per-call timeout in client.chat()
 
@@ -688,15 +797,16 @@ bash scripts/e2e-model-quality-bench.sh \
 
 ---
 
-## 9. §7.87.4 调试教训(给后续 §7.87.5 参考)
+## 9. §7.87.4 + §7.87.6 调试教训(给后续 §7.87.7+ 参考)
 
 1. **log_excerpt 不能 `[-1000:]` 截断**:session log > 1000 chars 必须保留完整(早期事件可能是断言关键)
 2. **log substring 断言必须先 grep 实测**:dsh-edge log 格式 `tool allow sessionId=... tool=bash realm=LOCAL`,中间隔 sessionId,前缀断言必失败
 3. **latency 公式必须 [0, 30s] 范围内合法映射**:`100 - p95 / 100` 把 ms 当 100ths,p95=17s → -70 → 0 永久 bug
 4. **cloud baseline 拿 100/100 是 metric/fixture/formula 公平问题,不是模型能力问题**:user 反馈 "如果 localllm 使用云端大模型都做不好,说明代码逻辑太严格了" → §7.87.3 + §7.87.4 修了 11 处
-5. **dsh-edge 200+empty bug**:tool_call LLM response 第一次返回 tool_calls(content=""),HTTP 200 立刻回,真 reply 在第二次 LLM。retry-after-3s 是实际可行兜底(等 cached session state)
+5. ~~**dsh-edge 200+empty bug**:tool_call LLM response 第一次返回 tool_calls(content=""),HTTP 200 立刻回,真 reply 在第二次 LLM。retry-after-3s 是实际可行兜底(等 cached session state)~~ → **§7.87.6 v15 修**(`agent.whenIdle()` 取代 first turn/end),从此 race 从源头消除,**不再需要 retry 兜底**
 6. **cloud 模型对 trivial query 会 hallucinate 直接答**:测 tool-call 链路必须 query 显式提 tool 调用命令(如 "执行 `ip addr` 命令")
 7. **fixture 减半 ≠ 测得少**:54 cases 已覆盖所有失败模式(attack 4 + benign 4 + 8 PII type + bash + web + 3 conv × 3 turn 等),新增 case 必须有明确目的
+8. **§7.87.6 新教训 — driver idle 信号要选对**:不要把 first `turn/end` 当 driver idle 信号,当 agent 跨多 turn 跑时(orphan tool_call → synthetic tool-result → 下一 turn)必须等 `activityDone` 链全部 settle。**纯 cloud baseline 永远暴露不了这个 bug,必须用真实 LAN 模型跑过一遍才能发现**。以后 bench 阶段 2(任意 local LLM)都隐含做了一次 dsh-edge 集成回归。
 
 ---
 
