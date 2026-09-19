@@ -125,6 +125,9 @@ export DSH_EDGE_LOCAL_LLM_KEY_ENV="${LOCAL_LLM_KEY_ENV}"
 # (false / true),不允许 fallback —— 跟 header "不允许 ${VAR:-default}" 原则
 # 对齐(plugin Schema 的 default(false) 兜底)。
 export DSH_EDGE_LOCAL_LLM_STRIP_TOOLS="${LOCAL_LLM_STRIP_TOOLS}"
+# §7.87.5 (2026-09-19): thinking-model 兼容 — 默认关掉 qwen3.5/QwQ/DeepSeek-R1
+# 的 chain-of-thought;开不开由 .env LOCAL_LLM_ENABLE_THINKING 决定(false=关)。
+export DSH_EDGE_LOCAL_LLM_ENABLE_THINKING="${LOCAL_LLM_ENABLE_THINKING}"
 
 # ── prompt-guard 模型层（Stage 6） ────────────────────────────────
 export DSH_EDGE_GUARD_MODEL="${GUARD_MODEL_ENABLED}"

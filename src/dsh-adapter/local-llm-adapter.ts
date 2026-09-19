@@ -105,6 +105,12 @@ export interface Config {
    *  falls back to plain-text tool defs in system prompt's
    *  <available_tools>. Defaults to false. */
   stripTools?: boolean
+  /** §7.87.5 (2026-09-19): disable chain-of-thought for thinking-capable
+   *  models (qwen3.5 / QwQ / DeepSeek-R1). When false (default), the wire
+   *  body gets `chat_template_kwargs={enable_thinking: false}` so the model
+   *  returns final answer directly instead of burning max_tokens on reasoning.
+   *  Pass-through no-op for non-thinking servers. */
+  enableThinking?: boolean
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -113,6 +119,9 @@ export const Config: Schema<Config> = Schema.object({
   defaultModel: Schema.string().default('qwen3-4b'),
   apiKeyEnv: Schema.string().description('Optional env-slot name carrying an auth bearer.'),
   stripTools: Schema.boolean().default(false),
+  // §7.87.5 (2026-09-19): default false — production wants fast answers.
+  // qwen3.5 / QwQ / DeepSeek-R1 will burn max_tokens on reasoning by default.
+  enableThinking: Schema.boolean().default(false),
 })
 
 export interface LocalLlmAdapter {
@@ -191,6 +200,7 @@ class RealLocalAdapter extends LlmAdapter {
   private readonly inputGuard: InputGuardLike | undefined
   private readonly logger: LoggerLike | undefined
   private readonly stripTools: boolean
+  private readonly enableThinking: boolean
 
   constructor(provider: string, config: Config, auditLog?: AuditLike, inputGuard?: InputGuardLike, logger?: LoggerLike) {
     super()
@@ -202,6 +212,8 @@ class RealLocalAdapter extends LlmAdapter {
     this.inputGuard = inputGuard
     this.logger = logger
     this.stripTools = config.stripTools ?? false
+    // §7.87.5 (2026-09-19): opt-in flag for thinking-capable models.
+    this.enableThinking = config.enableThinking ?? false
   }
 
   get providers(): string[] {
@@ -276,7 +288,7 @@ class RealLocalAdapter extends LlmAdapter {
     const wireOptions = this.stripTools
       ? { ...options, tools: undefined, messages: sanitizedMessages }
       : { ...options, messages: sanitizedMessages }
-    const body = buildChatCompletionsBody(wireOptions, this.defaultModel, undefined)
+    const body = buildChatCompletionsBody(wireOptions, this.defaultModel, undefined, this.enableThinking)
     const headers: Record<string, string> = {
       'content-type': 'application/json',
       'accept': 'text/event-stream',

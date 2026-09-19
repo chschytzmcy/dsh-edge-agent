@@ -399,6 +399,11 @@
         # Jinja2 `tojson(ensure_ascii)` bug. Inverse idiom: defaults false
         # (workaround is opt-in so a healthy server never loses body.tools).
         stripTools: !!js process.env.DSH_EDGE_LOCAL_LLM_STRIP_TOOLS === 'true'
+        # §7.87.5 (2026-09-19): disable chain-of-thought for thinking-capable
+        # models (qwen3.5 / QwQ / DeepSeek-R1). Default false — production
+        # wants fast answers. Wire body gets `chat_template_kwargs={enable_thinking:false}`
+        # when false. Pass-through no-op for non-thinking servers.
+        enableThinking: !!js process.env.DSH_EDGE_LOCAL_LLM_ENABLE_THINKING === 'true'
 
     - id: model-router
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/model-router'

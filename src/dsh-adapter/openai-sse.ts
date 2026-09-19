@@ -48,6 +48,10 @@ export function buildChatCompletionsBody(
   options: GenerateOptions,
   defaultModel: string,
   temperature: number | undefined,
+  // §7.87.5 (2026-09-19): inject `chat_template_kwargs={enable_thinking: false}`
+  // for thinking models (qwen3.5 / QwQ / DeepSeek-R1). Default OFF — production
+  // wants fast non-reasoning answers; users can opt-in via env var.
+  enableThinking: boolean = false,
 ): Record<string, unknown> {
   const wireMessages: Array<Record<string, unknown>> = []
   if (options.system !== undefined && options.system.length > 0) {
@@ -120,6 +124,13 @@ export function buildChatCompletionsBody(
   }
   if (temperature !== undefined) body.temperature = temperature
   if (options.maxTokens !== undefined) body.max_tokens = options.maxTokens
+  // §7.87.5 (2026-09-19): disable chain-of-thought for thinking-capable models
+  // (qwen3.5 / QwQ / DeepSeek-R1). Without this, max_tokens gets burned on
+  // reasoning and `content` returns "" (finish_reason="length"). Pass-through
+  // is a no-op for non-thinking servers — they ignore unknown kwargs.
+  if (!enableThinking) {
+    body.chat_template_kwargs = { enable_thinking: false }
+  }
   return body
 }
 
