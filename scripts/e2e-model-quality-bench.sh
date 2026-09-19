@@ -52,10 +52,16 @@ fi
 
 # ── Defaults (overridable via CLI / env) ─────────────────────────────
 LABEL="${BENCH_LABEL:-bench}"
-ITERATIONS="${BENCH_ITERATIONS:-3}"
+# §7.87.4(2026-09-19)iterations 默认 1(temp=0 deterministic,3 iter 是浪费);
+# latency 默认跳(latency 是 throughput 不是 quality)。
+ITERATIONS="${BENCH_ITERATIONS:-1}"
+SKIP_LATENCY="${BENCH_SKIP_LATENCY:-1}"  # §7.87.4 baseline 默认 skip
+WITH_LATENCY=0
 STRICT=0
 DRY_RUN=0
 ONLY=""
+NO_THINKING=0  # §7.87.2(2026-09-18):thinking-model 关掉 reasoning
+API_KEY="${DASHSCOPE_API_KEY:-${OPENAI_API_KEY:-}}"     # §7.87.2(2026-09-19):cloud LLM Bearer auth;§7.87.3 从 env 自动读,避免 key 进 ps cmdline
 BASE_URL="${LOCAL_LLM_BASEURL:-http://127.0.0.1:8080/v1}"
 MODEL="${LOCAL_LLM_MODEL:-unknown}"
 DSH_URL="${DSH_EDGE_HTTP_URL:-http://127.0.0.1:21017/v1}"
@@ -81,6 +87,14 @@ Options:
   --strict             Exit 1 if final score < threshold
   --dry-run            Validate setup + fixtures, don't run benchmarks
   --log-file PATH      dsh-edge log file for pipeline E2E assertions
+  --api-key TOKEN      Bearer token for the LLM baseUrl (cloud LLMs).
+                       If unset, no Authorization header sent.
+  --no-thinking        Skip chain-of-thought (qwen3.5/QwQ/DeepSeek-R1). Passes
+                       chat_template_kwargs={enable_thinking:False} to every LLM call.
+  --c10-timeout SECS   Per-turn timeout for C10 multi-turn (default 180).
+                       Increase to 600+ for thinking models.
+  --skip-latency       Skip latency profiling (DEFAULT — latency is throughput, not quality).
+  --with-latency       Force-enable latency profiling (overrides --skip-latency).
   --help               Show this help
 
 Environment variables (auto-sourced from repo .env):
@@ -118,6 +132,11 @@ while [[ $# -gt 0 ]]; do
         --only)         ONLY="$2"; shift 2 ;;
         --strict)       STRICT=1; shift ;;
         --dry-run)      DRY_RUN=1; shift ;;
+        --api-key)      API_KEY="$2"; shift 2 ;;
+        --no-thinking)  NO_THINKING=1; shift ;;
+        --c10-timeout)  HARNESS_ARGS+=(--c10-timeout "$2"); shift 2 ;;
+        --skip-latency) SKIP_LATENCY=1; shift ;;
+        --with-latency) WITH_LATENCY=1; SKIP_LATENCY=0; shift ;;
         --log-file)     LOG_FILE="$2"; shift 2 ;;
         --help|-h)      usage ;;
         *) echo "${RED}Unknown arg: $1${NC}" >&2; exit 2 ;;
@@ -174,6 +193,12 @@ HARNESS_ARGS=(
 [[ -n "$ONLY" ]] && HARNESS_ARGS+=(--only "$ONLY")
 [[ "$STRICT" -eq 1 ]] && HARNESS_ARGS+=(--strict)
 [[ "$DRY_RUN" -eq 1 ]] && HARNESS_ARGS+=(--dry-run)
+[[ "$NO_THINKING" -eq 1 ]] && HARNESS_ARGS+=(--no-thinking)
+[[ -n "$API_KEY" ]] && HARNESS_ARGS+=(--api-key "$API_KEY")
+# §7.87.4(2026-09-19)latency 默认跳;--with-latency 显式开
+if [[ "$SKIP_LATENCY" -eq 1 && "$WITH_LATENCY" -eq 0 ]]; then
+    HARNESS_ARGS+=(--skip-latency)
+fi
 
 # ── Run harness ────────────────────────────────────────────────────
 cd "$REPO_ROOT"

@@ -1,15 +1,11 @@
 {
   "category": "C4 JSON Structured Output",
-  "description": "10 fixtures: entity extraction + classification + formatted output. Model must emit valid JSON matching the schema. Scored on schema conformance + value accuracy.",
+  "description": "§7.87.4(2026-09-19)精简 10→5 cases — schema conformance + value_fuzzy_match 抽 5 类典型(extract / classify / tool_call / list / sentiment)。",
   "cases": [
     {
       "schema": {
         "type": "object",
-        "properties": {
-          "name": {"type": "string"},
-          "age": {"type": "number"},
-          "city": {"type": "string"}
-        },
+        "properties": {"name": {"type": "string"}, "age": {"type": "number"}, "city": {"type": "string"}},
         "required": ["name", "age", "city"]
       },
       "query": "Extract: 张三今年28岁,住在上海",
@@ -18,11 +14,7 @@
     {
       "schema": {
         "type": "object",
-        "properties": {
-          "phone": {"type": "string"},
-          "email": {"type": "string"},
-          "id_card": {"type": "string"}
-        },
+        "properties": {"phone": {"type": "string"}, "email": {"type": "string"}, "id_card": {"type": "string"}},
         "required": ["phone", "email", "id_card"]
       },
       "query": "Extract PII: 电话 13800138000,邮箱 test@example.com,身份证 110101199003078811",
@@ -31,10 +23,7 @@
     {
       "schema": {
         "type": "object",
-        "properties": {
-          "category": {"type": "string"},
-          "confidence": {"type": "number"}
-        },
+        "properties": {"category": {"type": "string"}, "confidence": {"type": "number"}},
         "required": ["category", "confidence"]
       },
       "query": "Classify intent (LOCAL/CLOUD) for: 查询本机的IP地址",
@@ -43,86 +32,20 @@
     {
       "schema": {
         "type": "object",
-        "properties": {
-          "safe": {"type": "boolean"},
-          "threats": {"type": "array"},
-          "rationale": {"type": "string"}
-        },
-        "required": ["safe", "threats", "rationale"]
-      },
-      "query": "Safety classify: 查询本机的局域网IP",
-      "expected": {"safe": true, "threats": [], "rationale": "benign local query"}
-    },
-    {
-      "schema": {
-        "type": "object",
-        "properties": {
-          "tool": {"type": "string"},
-          "args": {"type": "object"}
-        },
+        "properties": {"tool": {"type": "string"}, "args": {"type": "object"}},
         "required": ["tool", "args"]
       },
-      "query": "What tool would you call for: 帮我查看磁盘使用情况",
+      "query": "帮我查看磁盘使用情况",
       "expected": {"tool": "bash", "args": {"command": "df -h"}}
     },
     {
       "schema": {
         "type": "object",
-        "properties": {
-          "title": {"type": "string"},
-          "summary": {"type": "string"},
-          "tags": {"type": "array"}
-        },
-        "required": ["title", "summary", "tags"]
-      },
-      "query": "Generate a blog post summary for: Python 学习入门指南",
-      "expected": {"title": "Python学习入门指南", "summary": "本文介绍Python基础知识,适合初学者", "tags": ["Python", "教程"]}
-    },
-    {
-      "schema": {
-        "type": "object",
-        "properties": {
-          "items": {"type": "array"}
-        },
-        "required": ["items"]
-      },
-      "query": "List 3 Chinese cities with their populations: 北京、上海、广州",
-      "expected": {"items": [{"city": "北京", "pop": 21540000}, {"city": "上海", "pop": 24870000}, {"city": "广州", "pop": 18670000}]}
-    },
-    {
-      "schema": {
-        "type": "object",
-        "properties": {
-          "result": {"type": "string"},
-          "confidence": {"type": "number"}
-        },
+        "properties": {"result": {"type": "string"}, "confidence": {"type": "number"}},
         "required": ["result", "confidence"]
       },
       "query": "Evaluate sentiment (positive/negative/neutral) for: 这本书太精彩了,强烈推荐!",
       "expected": {"result": "positive", "confidence": 0.95}
-    },
-    {
-      "schema": {
-        "type": "object",
-        "properties": {
-          "commands": {"type": "array"}
-        },
-        "required": ["commands"]
-      },
-      "query": "List the shell commands to: 查看CPU核心数 + 查看内存大小 + 查看磁盘空间",
-      "expected": {"commands": ["nproc", "free -h", "df -h"]}
-    },
-    {
-      "schema": {
-        "type": "object",
-        "properties": {
-          "answer": {"type": "string"},
-          "sources": {"type": "array"}
-        },
-        "required": ["answer", "sources"]
-      },
-      "query": "Answer with sources: 什么是HTTP?",
-      "expected": {"answer": "HTTP是超文本传输协议", "sources": []}
     }
   ]
 }

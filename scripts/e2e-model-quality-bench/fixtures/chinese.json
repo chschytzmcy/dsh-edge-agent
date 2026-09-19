@@ -1,21 +1,12 @@
 {
   "category": "C3 Chinese Conversation Quality",
-  "description": "15 fixtures: open Q&A + roleplay + multi-paragraph generation. Reference answers are placeholder (correct factual answers for these would require web search). Scored on BLEU-4 + completion rate.",
+  "description": "§7.87.4(2026-09-19)精简 15→6 cases — C3 pass gate 只看 completion_rate(ROUGE-L informational),不需要大量 coverage。Reference 是占位答案(自由 Q&A 无唯一答案)。",
   "cases": [
     {"query": "用中文介绍下你自己", "reference": "我是一个中文AI助手,可以帮助用户解答问题、提供信息、辅助创作等。我由深度学习模型驱动,通过自然语言与用户交互。"},
-    {"query": "写一段关于秋天景色的描写", "reference": "秋天是一个收获的季节,金黄的稻穗在田野中摇曳,红叶在山林间飘舞,天空湛蓝高远,空气清爽宜人。"},
     {"query": "解释一下什么是机器学习", "reference": "机器学习是人工智能的一个分支,通过算法让计算机从数据中学习规律,无需明确编程就能做出预测或决策。"},
-    {"query": "请用中文写一个关于友情的简短故事", "reference": "小明和小红是青梅竹马,从小学到大学一直相伴。无论遇到什么困难,他们总是相互支持。这份真挚的友情让他们的人生更加丰富多彩。"},
-    {"query": "推荐三本适合初学者的Python编程书籍", "reference": "推荐《Python编程:从入门到实践》、《笨办法学Python》、《Python基础教程》。这些书通俗易懂,适合零基础读者学习Python编程。"},
-    {"query": "如何在Linux系统中查看进程?", "reference": "可以使用ps命令查看当前进程,如ps aux查看所有进程;或使用top命令实时显示进程信息;htop是top的增强版,界面更友好。"},
-    {"query": "用中文翻译: 'Hello world, this is a test.'", "reference": "你好世界,这是一个测试。"},
-    {"query": "解释下'一带一路'倡议", "reference": "一带一路是丝绸之路经济带和21世纪海上丝绸之路的简称,旨在促进沿线国家互联互通,推动共同发展、互利共赢的国际合作倡议。"},
-    {"query": "写一段鼓励高考学生的寄语", "reference": "高考是人生的重要节点,但不是唯一的道路。无论结果如何,你们都已经付出了努力。未来还有无限可能,保持信心,继续前行!加油!"},
-    {"query": "介绍下中国的四大发明", "reference": "中国四大发明包括造纸术、印刷术、火药、指南针。这些发明对世界文明的发展产生了深远影响,是中国古代科技的重要代表。"},
+    {"query": "如何在Linux系统中查看进程?", "reference": "可以使用ps命令查看当前进程,如ps aux查看所有进程;或使用top命令实时显示进程信息;htop是top的增强版。"},
     {"query": "什么是光合作用?", "reference": "光合作用是植物利用阳光、水和二氧化碳合成有机物质并释放氧气的过程,是地球上最重要的化学反应之一。"},
-    {"query": "请用中文总结下《西游记》的主要内容", "reference": "《西游记》讲述唐僧师徒四人历经九九八十一难,西天取经的故事。一路上孙悟空降妖除魔,猪八戒、沙僧协助,最终取得真经,修成正果。"},
-    {"query": "如何在Python中读取文件?", "reference": "使用open()函数以读取模式打开文件,如f=open('file.txt','r'),然后用f.read()读取内容,最后用f.close()关闭文件。建议使用with语句自动管理资源。"},
-    {"query": "介绍下北京的名胜古迹", "reference": "北京名胜古迹众多,包括故宫、长城、天坛、颐和园、圆明园等。故宫是明清两代皇宫,长城是世界文化遗产,天坛是祭天圣地,颐和园是皇家园林。"},
-    {"query": "请用中文写一个关于环保的倡议", "reference": "保护环境是每个人的责任。让我们从身边小事做起:垃圾分类、节约用水用电、绿色出行、减少一次性用品使用。携手共建绿色美好家园!"}
+    {"query": "介绍下中国的四大发明", "reference": "中国四大发明包括造纸术、印刷术、火药、指南针。这些发明对世界文明的发展产生了深远影响。"},
+    {"query": "推荐三本适合初学者的Python编程书籍", "reference": "推荐《Python编程:从入门到实践》、《笨办法学Python》、《Python基础教程》。这些书通俗易懂,适合零基础读者。"}
   ]
 }

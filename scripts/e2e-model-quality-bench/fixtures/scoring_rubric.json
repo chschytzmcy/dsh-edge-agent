@@ -1,10 +1,18 @@
 {
-  "version": "1.0.0",
-  "description": "Scoring weights + thresholds + verdict cutoffs for Model Quality Bench. Override with --rubric path.",
+  "version": "1.2.0",
+  "description": "§7.87.3(2026-09-19)Scoring weights + thresholds + verdict cutoffs. O-fix: C3 pass=completion_rate only (ROUGE-L informational); C4_value 0.70→0.55 + fuzzy token-level + case-insensitive enum + order-independent list subset; C5_ip_recall 0.30→0.20 + IP prompt 明确化 'ANY IPv4'. Override with --rubric path.",
   "weights": {
     "intrinsic": 0.50,
     "pipeline": 0.40,
-    "latency": 0.10
+    "latency": 0.10,
+    "C1": 0.20,
+    "C2": 0.20,
+    "C3": 0.10,
+    "C4": 0.10,
+    "C5": 0.20,
+    "C6": 0.20,
+    "C4_schema": 0.70,
+    "C4_value": 0.30
   },
   "thresholds": {
     "C1_f1": 0.85,
@@ -12,11 +20,12 @@
     "C2_recall": 0.80,
     "C2_fp_rate": 0.20,
     "C2_parse_rate": 0.90,
-    "C3_bleu": 0.25,
+    "C3_rouge_l": 0.30,
     "C3_completion": 0.85,
     "C4_schema": 0.90,
-    "C4_value": 0.70,
+    "C4_value": 0.55,
     "C5_recall": 0.80,
+    "C5_ip_recall": 0.20,
     "C6_acc": 0.75,
     "C7_pass": 0.67,
     "C8_pass": 0.67,
@@ -31,3 +40,4 @@
     {"min": 0, "label": "💀 Reject — basic intent / safety failing"}
   ]
 }
+

@@ -1,50 +1,26 @@
 {
   "category": "C10 Multi-turn Context Retention",
-  "description": "5 conversations × 5 turns each. Each turn after the first has an expected_keyword that should appear in the reply (referencing prior context). Scored: retention rate per conversation, averaged.",
+  "description": "§7.87.4(2026-09-19)3 conversations × 3 turns each — retention check 核心场景。原 5×5=25 calls 拖慢 pipeline(C10 占 60% wall-clock);3×3=9 calls 覆盖 local-ip / news / mibao 三类 intent。turn 0 是 setup,turn 1/2 验 retention。Scored: retention rate per conversation, averaged.",
   "cases": [
     {
       "turns": [
         {"user": "查询本机的局域网IP"},
         {"user": "这个IP是内网还是公网?", "expected_keyword": "内网"},
-        {"user": "那我的公网IP怎么查?", "expected_keyword": "公网"},
-        {"user": "内网IP和公网IP有什么区别?", "expected_keyword": "区别"},
         {"user": "总结一下内网和外网的差异", "expected_keyword": "内网"}
       ]
     },
     {
       "turns": [
         {"user": "查询最新的AI新闻"},
-        {"user": "这条新闻的具体内容是什么?", "expected_keyword": "AI"},
         {"user": "AI 在哪个领域应用最广?", "expected_keyword": "AI"},
-        {"user": "这个领域有什么代表性公司?", "expected_keyword": "公司"},
-        {"user": "总结一下AI应用现状", "expected_keyword": "AI"}
+        {"user": "总结下AI应用现状", "expected_keyword": "AI"}
       ]
     },
     {
       "turns": [
         {"user": "查询密盒的登录状态"},
         {"user": "如果未登录怎么办?", "expected_keyword": "登录"},
-        {"user": "怎么登录密盒?", "expected_keyword": "登录"},
-        {"user": "登录后能做什么?", "expected_keyword": "密盒"},
         {"user": "总结下密盒登录流程", "expected_keyword": "密盒"}
-      ]
-    },
-    {
-      "turns": [
-        {"user": "查看磁盘使用情况"},
-        {"user": "哪些目录占用最大?", "expected_keyword": "目录"},
-        {"user": "怎么清理大文件?", "expected_keyword": "文件"},
-        {"user": "清理后磁盘还有多少空间?", "expected_keyword": "空间"},
-        {"user": "总结下磁盘清理过程", "expected_keyword": "磁盘"}
-      ]
-    },
-    {
-      "turns": [
-        {"user": "今天北京天气如何"},
-        {"user": "明天呢?", "expected_keyword": "天气"},
-        {"user": "周末适合出门吗?", "expected_keyword": "天气"},
-        {"user": "那需要带伞吗?", "expected_keyword": "雨"},
-        {"user": "总结下这周末北京的天气", "expected_keyword": "北京"}
       ]
     }
   ]

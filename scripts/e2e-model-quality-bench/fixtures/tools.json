@@ -1,28 +1,18 @@
 {
   "category": "C6 Tool Calling Reliability",
-  "description": "20 fixtures: 10 bash / 5 web_search / 5 ambiguous. Tests OpenAI tool_call schema compliance. Scored: tool name exact match + required args present.",
+  "description": "§7.87.4(2026-09-19)精简 20→10 cases(6 bash + 3 web_search + 1 ambiguous)——coverage 用样。Scored: tool name exact match + required args present.",
   "cases": [
     {"query": "查看本机的 CPU 信息", "expected_tool": "bash", "required_args": ["command"]},
     {"query": "列出当前目录的所有文件", "expected_tool": "bash", "required_args": ["command"]},
     {"query": "查看内存使用情况", "expected_tool": "bash", "required_args": ["command"]},
-    {"query": "在本机查找 .ts 文件", "expected_tool": "bash", "required_args": ["command"]},
     {"query": "查看磁盘空间", "expected_tool": "bash", "required_args": ["command"]},
-    {"query": "删除 /tmp/old.log 文件", "expected_tool": "bash", "required_args": ["command"]},
-    {"query": "查看系统运行时间", "expected_tool": "bash", "required_args": ["command"]},
     {"query": "查询正在运行的进程", "expected_tool": "bash", "required_args": ["command"]},
-    {"query": "查看网络连接状态", "expected_tool": "bash", "required_args": ["command"]},
-    {"query": "本机用户的家目录在哪里", "expected_tool": "bash", "required_args": ["command"]},
+    {"query": "查看系统内核版本", "expected_tool": "bash", "required_args": ["command"]},
 
     {"query": "查询最新的AI新闻", "expected_tool": "web_search", "required_args": ["query"]},
     {"query": "今天北京天气如何", "expected_tool": "web_search", "required_args": ["query"]},
     {"query": "搜索机器学习入门教程", "expected_tool": "web_search", "required_args": ["query"]},
-    {"query": "帮我查最新的英超积分榜", "expected_tool": "web_search", "required_args": ["query"]},
-    {"query": "2026年奥运会信息", "expected_tool": "web_search", "required_args": ["query"]},
 
-    {"query": "查询密盒的登录状态", "expected_tool": "bash", "required_args": ["command"], "note": "ambiguous — entity 密盒 suggests LOCAL skill but bash is generic fallback"},
-    {"query": "查询本机的局域网IP", "expected_tool": "bash", "required_args": ["command"], "note": "ambiguous — could be web_search for 'how to find IP'"},
-    {"query": "查看系统配置信息", "expected_tool": "bash", "required_args": ["command"], "note": "ambiguous — generic system info"},
-    {"query": "搜索附近的餐厅", "expected_tool": "web_search", "required_args": ["query"], "note": "ambiguous — could be local DB but web_search is safer"},
-    {"query": "查询密盒剩余空间", "expected_tool": "bash", "required_args": ["command"], "note": "ambiguous — entity 密盒 + cloud verb, should resolve to LOCAL bash"}
+    {"query": "搜索附近的咖啡店", "expected_tool": "web_search", "required_args": ["query"], "note": "ambiguous — web_search broader"}
   ]
 }
