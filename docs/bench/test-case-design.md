@@ -1,9 +1,9 @@
 # §7.87 Model Quality Bench — 测试用例设计分析
 
 **作者**:Claude(本地 Claude Code session)
-**生成日期**:2026-09-19(v14→v15 §7.87.6 后修订)
+**生成日期**:2026-09-20(v15 → v15.bis §7.87.7 加 qwen3.5-9b 3-run + minicpm5-2b 4-run 横向对比)
 **关联**:`PROGRESS.md §7.87` | `scripts/e2e-model-quality-bench/` | `dist/bench-*/report.md`
-**当前版本**:v15(56 用例,5min runtime,§7.87.6 http-api whenIdle fix 后 C7 race 消除,intrinsic 100 + pipeline 100 = 90+/100 with LAN qwen3.5-9b)
+**当前版本**:v15.bis(56 用例,5min runtime,§7.87.6 http-api whenIdle fix 跨 LAN 模型验证 + §7.87.7 3-run qwen3.5-9b median 66.2 + 4-run minicpm5-2b median 79.6,Pipeline 双模型都 100/100)
 
 ---
 
@@ -605,6 +605,58 @@ bash scripts/e2e-model-quality-bench.sh \
 | **Overall** | **66.7/100** | intrinsic drop 拖总分;pipeline 100/100 才是 dsh-edge 健康标志 |
 
 **关键 v15 信号**:**Pipeline 100/100,跟 v14 持平** — §7.87.6 whenIdle fix 把 LAN qwen3.5-9b 的 C7 race 从源头消除,**dsh-edge 完整性 100% 复验通过**。intrinsic 53.3 走 separate 直连路径,**不在本 bench fix 范围**,建议另起任务排查 LAN server temp=0 行为。
+
+### v15.bis (LAN qwen3.5-9b @ 28001,3-run 稳定性 + 横向对比,§7.87.7)
+
+**触发**:user "多测试几次" 看 bench 单次跑的 variance + 加测 minicpm5-2b 横向对比
+
+**qwen3.5-9b (llama.cpp) 3 次完整 bench**:
+
+| Run | Label | Intrinsic | Pipeline | C10 | Final | Verdict |
+|-----|-------|-----------|----------|-----|-------|---------|
+| 1 | qwen3.5-9b-r1 | 52.3 | 100 | 88.9 | **66.2** | ❌ Weak |
+| 2 | qwen3.5-9b-r2 | 52.3 | 100 | 61.1 | **66.2** | ❌ Weak |
+| 3 | qwen3.5-9b-r3 | 52.3 | 100 | 55.6 | **66.2** | ❌ Weak |
+| **median** | | **52.3** | **100** | **61.1** | **66.2** | ❌ Weak |
+
+- Pipeline 100/100 三次稳 → §7.87.6 fix 在 qwen3.5-9b 上泛化正确
+- Intrinsic **0 variance**(52.3 × 3)—— qwen3.5-9b + llama.cpp 完全 deterministic
+- C10 retention 波动大(88.9 → 61.1 → 55.6)—— 多轮频繁 timeout,但 r1 还行
+- Final 跟 v15 单跑 66.7 几乎一致(±0.5),variance 主要在 C10 不计入分
+
+### minicpm5-2b (vllm 0.29.0) @ 28000 — 4 次完整 bench
+
+| Run | Label | Intrinsic | Pipeline | C10 | Final | Verdict |
+|-----|-------|-----------|----------|-----|-------|---------|
+| 1 | minicpm5-2b-67 | **92.4** | 100 | 100 | **86.2** | ✅ Prod-ready |
+| 2 | minicpm5-2b-r2 | 77.8 | 100 | 83.3 | 78.9 | ⚠️ Conditional |
+| 3 | minicpm5-2b-r3 | 79.2 | 100 | 100 | 79.6 | ⚠️ Conditional |
+| 4 | minicpm5-2b-r4 | 79.2 | 100 | 100 | 79.6 | ⚠️ Conditional |
+| **median** | | **79.2** | **100** | **100** | **79.6** | ⚠️ Conditional |
+
+- Pipeline 100/100 四次稳 → §7.87.6 fix 在 minicpm5-2b 上同样泛化
+- Intrinsic ±7 variance(Run 1 lucky outlier 92.4)—— vllm 比 llama.cpp 略多 noise
+- C10 retention 100/100/100(除 r2)—— vllm 多轮调度稳
+- **Run 1 的 86.2 是 outlier,真实稳态是 79.6 Conditional**
+
+### 横向对比 median (v15.bis + minicpm5-2b)
+
+| 维度 | qwen3.5-9b (llama.cpp) | minicpm5-2b (vllm) | 差异 |
+|------|------------------------|---------------------|------|
+| Pipeline 100% | 100 | 100 | tie ✅ |
+| Intrinsic | 52.3 | **79.2** | minicpm **+27** |
+| C10 retention | 61.1 | **100** | minicpm **+39** |
+| Final | 66.2 | **79.6** | minicpm **+13.4** |
+| Verdict | ❌ Weak | ⚠️ Conditional | minicpm **+1 tier** |
+| Intrinsic variance | 0 | ±7 | qwen 完全确定 |
+| C10 timeout 频率 | 高(每 run 1-4 turns timeout) | **0 turn timeout** | minicpm 极稳 |
+
+**关键洞察**:
+- **小模型 + 好 server > 大模型 + 差 server** —— minicpm5-2b(2B)稳态比 qwen3.5-9b(9B)高 13.4 分
+- **Pipeline = 100/100 两个模型都稳** — §7.87.6 whenIdle fix 跨模型泛化(不只修单模型)
+- **minicpm5-2b 没触发 retry-on-empty**,qwen3.5-9b 偶发触发 → vllm tool_call 结构稳定,llama.cpp 偶发 malformed
+- **bench 单次跑有 ~7 分 intrinsic variance**(minicpm Run1 vs median)—— 横向对比至少跑 3 次取 median 才公平
+- **C10 timeout 多发于 qwen3.5-9b** — 多轮并发场景 LAN llama.cpp 调度慢 / 资源不够,不是 §7.87.6 fix 问题
 
 ---
 

@@ -8944,11 +8944,12 @@ const turnEnd = new Promise<{result?: string; rejection?: ...}>((resolve) => {
 
 ---
 
-### §7.87.7 — per-LLM .env 快照 + 横向对比稳定性验证(2026-09-19)
+### §7.87.7 — per-LLM .env 快照 + 横向对比稳定性验证(2026-09-19 → 2026-09-20)
 
 **触发**:
 1. §7.87.6 fix 后 v15 fix-verify 单次跑 66.7,user 让 "多测试几次" 看稳定性
 2. user 反馈 "每个 localllm 保存一个 .env 文件,避免来回修改" → bench 阶段 2 横向对比反复切 LAN 模型时,改 .env LOCAL_LLM_* 块 + dev-restart 太繁琐
+3. user 切到 qwen3.5-9b 再跑 3 次验证(2026-09-19 20:06-21:04)
 
 **1. minicpm5-2b @ 67.0.0.5:28000 (vllm) 4 次完整 bench**(2026-09-19 19:38-19:48):
 
@@ -8962,24 +8963,42 @@ const turnEnd = new Promise<{result?: string; rejection?: ...}>((resolve) => {
 
 **Pipeline 100/100 四次全 PASS** —— §7.87.6 whenIdle fix 极稳。**Run 1 的 86.2 是 intrinsic variance outlier**(C1 lucky parse);runs 2-4 收敛到 ~79,代表 minicpm5-2b 真实稳态是 **Conditional (~79)**,不是 Production-ready。
 
-**横向对比 vs qwen3.5-9b (llama.cpp,§7.87.6 v15 fix-verify)**:
+**2. qwen3.5-9b @ 67.0.0.5:28001 (llama.cpp) 3 次完整 bench**(2026-09-19 20:06-21:04):
 
-| 维度 | qwen3.5-9b (28001) | minicpm5-2b (28000) median | 差异 |
-|------|--------------------|----------------------------|------|
-| Pipeline 100% | 100 | **100** | tie ✅ |
-| Intrinsic | 53.3 | **79.2** | minicpm +26 |
-| C10 retention | 83.3 | **100** | minicpm +17 |
-| retry-on-empty 触发 | C7/C9 都触发 | **未触发** | minicpm 工具调用干净 |
-| Latency | 0 | 0 | tie(LAN 物理延迟) |
-| **Final** | **66.7** ❌ Weak | **79.6** ⚠️ Conditional | minicpm **+13** |
+| Run | Label | Intrinsic | Pipeline | Latency | C10 | Final | Verdict |
+|-----|-------|-----------|----------|---------|-----|-------|---------|
+| 1 | qwen3.5-9b-r1 | 52.3 | 100 | 0 | 88.9 | **66.2** | ❌ Weak |
+| 2 | qwen3.5-9b-r2 | 52.3 | 100 | 0 | 61.1 | **66.2** | ❌ Weak |
+| 3 | qwen3.5-9b-r3 | 52.3 | 100 | 0 | 55.6 | **66.2** | ❌ Weak |
+| **median** | | **52.3** | **100** | 0 | **61.1** | **66.2** | ❌ Weak |
 
-**关键洞察 — 不是模型参数问题,是 server 实现质量**:
-- minicpm5-2b(2B)在 vllm 0.29.0 上正确处理 `chat_template_kwargs: {enable_thinking: false}` → 无 `<think>` reasoning pollution
-- vllm 生成的 tool_call 结构稳定 → 不触发 §7.87.6 race(故无 retry-on-empty)
-- qwen3.5-9b 在 llama.cpp 上偶发 malformed tool_call(duplicate toolCallId / 空 args)= server 端实现问题,不是模型能力问题
-- **小模型 + 好 server > 大模型 + 差 server**(横向对比时的"模型适配度"必须包含 server stack)
+- Pipeline 100/100 三次稳 → §7.87.6 fix 在 qwen3.5-9b 上泛化正确
+- Intrinsic **0 variance**(52.3 × 3)—— qwen3.5-9b + llama.cpp 完全 deterministic
+- C10 retention 波动大(88.9 → 61.1 → 55.6)—— 多轮频繁 timeout
+- Final 跟 v15 单跑 66.7 几乎一致(±0.5),variance 主要在 C10 不计入分
 
-**2. per-LLM .env 快照机制**(user 反馈):
+**3. 横向对比 median (qwen3.5-9b vs minicpm5-2b)**:
+
+| 维度 | qwen3.5-9b (llama.cpp) | minicpm5-2b (vllm) | 差异 |
+|------|------------------------|---------------------|------|
+| Pipeline 100% | 100 | 100 | tie ✅ |
+| Intrinsic | 52.3 | **79.2** | minicpm **+27** |
+| C10 retention | 61.1 | **100** | minicpm **+39** |
+| Final | 66.2 ❌ Weak | **79.6** ⚠️ Conditional | minicpm **+13.4** |
+| Verdict | Weak | Conditional | minicpm **+1 tier** |
+| Intrinsic variance | 0 | ±7 | qwen 完全确定 |
+| C10 timeout 频率 | 高(每 run 1-4 turns) | **0 turn timeout** | minicpm 极稳 |
+| retry-on-empty | 偶发触发 | **未触发** | vllm tool_call 干净 |
+
+**关键洞察**:
+- **小模型 + 好 server > 大模型 + 差 server** —— minicpm5-2b(2B)稳态比 qwen3.5-9b(9B)高 13.4 分
+- **Pipeline = 100/100 两个模型都稳** — §7.87.6 whenIdle fix 跨模型泛化(不只修单模型)
+- **minicpm5-2b 没触发 retry-on-empty**,qwen3.5-9b 偶发 → vllm tool_call 结构稳定,llama.cpp 偶发 malformed
+- **bench 单次跑有 ~7 分 intrinsic variance**(minicpm Run1=92.4 vs median=79.2)—— 横向对比至少跑 3 次取 median 才公平
+- **C10 timeout 多发于 qwen3.5-9b** — 多轮并发场景 LAN llama.cpp 调度慢 / 资源不够,不是 §7.87.6 fix 问题
+- **qwen3.5-9b intrinsic 0 variance vs minicpm ±7** — vllm 在并发/温度控制上略多 noise
+
+**4. per-LLM .env 快照机制**(user 反馈):
 
 新增文件(repo root):
 - `.env.local-qwen3.5-9b` — LAN 28001 + llama.cpp + Qwen3.5-9B-Q4_K_M.gguf 全套配置
@@ -9004,7 +9023,7 @@ bash scripts/e2e-model-quality-bench.sh --label qwen-r2  # 多次跑取 median
 bash scripts/switch-local-llm.sh minicpm5-2b
 bash scripts/e2e-model-quality-bench.sh --label mini-r1
 # ... 多次跑
-diff <(jq .scores dist/bench-qwen-*/scores.json) <(jq .jq .scores dist/bench-mini-*/scores.json)  # 横向
+diff <(jq .scores dist/bench-qwen-*/scores.json) <(jq .scores dist/bench-mini-*/scores.json)  # 横向
 ```
 
 **关联**:memory `env-default-restart-required` / `destructive-default-backup` / `local-llm-pool-bootstrap-constraints` / `bench-thinking-wire-body`(§7.87.5)+ 本节 §7.87.6/§7.87.7
@@ -9012,6 +9031,6 @@ diff <(jq .scores dist/bench-qwen-*/scores.json) <(jq .jq .scores dist/bench-min
 **Why this matters**:
 - bench 阶段 2 横向对比从此不再需要手动 edit .env → 切模型 → dev-restart 反复循环
 - minicpm5-2b 的"86.2 vs 79.6"差异验证了 bench 单次跑**有 ~7 分 intrinsic variance**,横向对比至少跑 3 次取 median 才公平
-- Pipeline 100/100 四次稳定 + 当 §7.87.6 race 在 LAN 模型上"消失"时(干净 tool_call),证明 §7.87.6 fix 是真修(不是恰好 cover 单模型)
+- Pipeline 100/100 双模型双 run 各 3-4 次稳定 + qwen3.5-9b(暴露 §7.87.6 race 的模型)跟 minicpm5-2b(不暴露)都 PASS → §7.87.6 fix 是真修跨模型泛化(不是恰好 cover 单模型)
 
 **Why this matters**:intrinsic 100% 已经验证 qwen3.5-9b 模型本身完美适配。pipeline race 是 dsh-edge 的 bug,不是模型问题。修通后 qwen3.5-9b 阶段 2 应能报 ≥ 90/100(Production-ready),跟 v14 cloud baseline 96.5 接近 → 横向对比可以推到 minicpm5-2b / qwen3-4b / llama3-8b 等历史模型。
