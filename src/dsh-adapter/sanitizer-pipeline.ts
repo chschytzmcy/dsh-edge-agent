@@ -24,6 +24,7 @@
 import { Service } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
 import type { PrivacyPolicyServiceImpl } from './privacy-policy.js'
+import { normalizeForPII, sliceOriginal } from './pii-utils.js'
 
 export const name = 'sanitizer-pipeline'
 
@@ -174,6 +175,32 @@ export class SanitizerServiceImpl extends Service implements SanitizerService {
     let sanitizedText = text
     const replacements: Replacement[] = []
 
+    // §7.87.13 (2026-09-20): PII 预检测前的字符级规范化。
+    //
+    // PII 正则对"空格分隔 phone" / "中文数字 id_card"直接漏抓,LLM 也漏
+    // (§7.87.12 4 模型 trace 显示 100% 失败率)。规范化在文本上做:
+    //   - 空白丢弃
+    //   - 中文数字 → 阿拉伯数字(壹贰叁.../〇/两 等变体)
+    // 用 charMap 把正则在 normalized 上的命中区间翻回 text 原始子串,
+    // 让 `byOriginal` 仍以"用户原输入字符串"为 key(desanitize 后能
+    // 还原为带空格 / 中文数字的字面形态)。
+    //
+    // 性能:normalized/charMap 都是 O(n) 一次性扫描,后续规则匹配走的是
+    // 原 normalized(命中区间已被 placeholder 替换),不会累积放大。
+    const normResult = normalizeForPII(text)
+    let normalized = normResult.normalized
+    const charMap = normResult.charMap
+
+    if (normResult.changed) {
+      // 规范化实际修改了文本 → 审计,便于排查"为何 sanitize 命中了一个看似不含 PII 的输入"
+      // (例:用户输入 "1 3 8 0 0 1 3 8 0 0 0" → 被规范化后命中 phone regex)
+      await this.audit('debug', 'sanitizer.normalized', {
+        sessionId,
+        originalLen: text.length,
+        normalizedLen: normalized.length,
+      })
+    }
+
     for (const rule of rules) {
       let regex: RegExp
       try {
@@ -181,14 +208,42 @@ export class SanitizerServiceImpl extends Service implements SanitizerService {
       } catch {
         continue // 无效正则，跳过该规则
       }
-      // 累进匹配：在上一条规则的产出上继续匹配，规则顺序（长优先）才有意义
-      const hits = sanitizedText.match(regex)
-      if (!hits) continue
+      // §7.87.13 (2026-09-20): regex 在 normalized 上匹配,而非 sanitizedText。
+      // 必须用 exec 拿到 m.index,才能用 charMap 翻回原始子串。
+      // dedup key 改成"用户原字符串"(`byOriginal` 已经以原字符串为 key)。
+      const matches: Array<{ matchStr: string; normStart: number; normEnd: number }> = []
+      regex.lastIndex = 0
+      let m: RegExpExecArray | null
+      while ((m = regex.exec(normalized)) !== null) {
+        if (m[0].length === 0) {
+          // 零宽匹配防御(应不会发生,PII regex 都要求长度)
+          regex.lastIndex++
+          continue
+        }
+        matches.push({ matchStr: m[0], normStart: m.index, normEnd: m.index + m[0].length })
+      }
+      if (matches.length === 0) continue
 
-      // 同一取值在文本中出现多次时只处理一次（split/join 已全量替换），
-      // 避免 replacements 计数虚高。
-      for (const match of new Set(hits)) {
-        let placeholder = mapping.byOriginal.get(match)
+      // §7.87.13 (2026-09-20): 反向处理。
+      //
+      // 正则在 normalized 上匹配到 N 个区间(positions [start, end))。我们对
+      // 每个区间做"matchStr → placeholder"替换,同时**更新 charMap** 以保持
+      // 它跟 normalized 同步 — charMap 的语义是"normalized 位置 → 原文字
+      // 符位置",每替换一段都必须 splice 同步调整:
+      //   删 L 个 charMap 条目(normStart..normStart+L)
+      //   插 P 个条目(normStart..normStart+P),全部指向 charMap[normStart]
+      //     (placeholder 内部位置映射回"被替换段的起点",后续规则不会进
+      //      入 placeholder 区间查询)
+      //
+      // **反向处理**(从最后一个 match 开始)是为了让前面 match 的 normStart
+      // 在被替换后仍有效 — 反向处理时,左边的 match 的 normStart 还没被右
+      // 边的替换影响。
+      const seenOriginals = new Set<string>()
+      for (let mi = matches.length - 1; mi >= 0; mi--) {
+        const { matchStr, normStart, normEnd } = matches[mi]
+        const originalSubstr = sliceOriginal(text, charMap, normStart, normEnd)
+
+        let placeholder = mapping.byOriginal.get(originalSubstr)
         if (!placeholder) {
           // 先判上限再铸造：`>=` 后置检查会允许越界一个，且原先的 break
           // 只跳出内层循环，外层规则照常继续铸造（限流形同虚设）。
@@ -205,16 +260,33 @@ export class SanitizerServiceImpl extends Service implements SanitizerService {
           mapping.counter++
           const piiType = rule.piiType || 'PII'
           placeholder = `[${piiType.toUpperCase()}_${mapping.counter}]`
-          mapping.placeholders.set(placeholder, match)
-          mapping.byOriginal.set(match, placeholder)
+          // byOriginal / placeholders 都以"用户原输入字符串"为 value,保证
+          // desanitize 后还原为字面形态(带空格/中文数字),而非 normalized 形态。
+          mapping.placeholders.set(placeholder, originalSubstr)
+          mapping.byOriginal.set(originalSubstr, placeholder)
         }
-        sanitizedText = sanitizedText.split(match).join(placeholder)
-        replacements.push({
-          original: match,
-          placeholder,
-          piiType: rule.piiType,
-          dataClass: rule.dataClass,
-        })
+        // 在 normalized 上按 normStart 处精确替换 matchStr → placeholder
+        normalized =
+          normalized.slice(0, normStart) + placeholder + normalized.slice(normEnd)
+        // 同步更新 charMap:删 L 插 P,P 个全指向 charMap[normStart](被替换段起点)
+        charMap.splice(
+          normStart,
+          matchStr.length,
+          ...Array(placeholder.length).fill(charMap[normStart]),
+        )
+        // 在 sanitizedText(原文)上按原字串替换 → 保留用户原输入字面,
+        // split/join 全量替换处理"同一 PII 多次出现"的场景
+        sanitizedText = sanitizedText.split(originalSubstr).join(placeholder)
+        // replacements 只记一次(对应原"counts a repeated value once"测试)
+        if (!seenOriginals.has(originalSubstr)) {
+          seenOriginals.add(originalSubstr)
+          replacements.push({
+            original: originalSubstr,
+            placeholder,
+            piiType: rule.piiType,
+            dataClass: rule.dataClass,
+          })
+        }
       }
     }
 

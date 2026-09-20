@@ -3,7 +3,14 @@
  */
 import assert from 'node:assert/strict'
 import { describe, it } from 'vitest'
-import { redactString, redactObject, PII_RULES, PII_PATTERNS } from '../../src/dsh-adapter/pii-utils.js'
+import {
+  redactString,
+  redactObject,
+  normalizeForPII,
+  sliceOriginal,
+  PII_RULES,
+  PII_PATTERNS,
+} from '../../src/dsh-adapter/pii-utils.js'
 
 describe('pii-utils', () => {
   describe('PII_RULES', () => {
@@ -259,6 +266,115 @@ describe('ip-address 误伤收敛', () => {
         `${ip} 应被识别为 IP`,
       )
       assert.ok(!redacted.includes(ip))
+    }
+  })
+})
+
+// ─── §7.87.13 (2026-09-20) PII 预检测前的文本规范化 ──────────────────────
+//
+// 背景:production 风险观测(§7.87.12 4 模型 trace)
+//   - 空格分隔 phone "1 3 8 0 0 1 3 8 0 0 0" → phone regex `\b1[3-9]\d{9}\b` 漏
+//   - 中文数字 id_card "一一零一零一一九九零零三零七八八一一" → id_card regex
+//     `\d{17}[\dXx]` 完全漏
+//   - 4 个本地 LLM 在这两个 case 上 100% 失败 → 唯一防线 = sanitizer 预处理
+//
+// 本组测试覆盖 normalizeForPII / sliceOriginal 的核心行为契约,
+// 不重在 PII regex 命中(那是 sanitizer-pipeline.test.ts 的事)。
+describe('normalizeForPII (§7.87.13)', () => {
+  it('drops whitespace and tracks charMap monotonically', () => {
+    const text = '1 3 8 0 0 1 3 8 0 0 0'
+    const { normalized, charMap, changed } = normalizeForPII(text)
+    assert.equal(normalized, '13800138000')
+    // 11 digits → 11 charMap entries(每 2 步 1 个 digit,因为 digit 之间 1 个空格)
+    assert.deepEqual(charMap, [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20])
+    assert.equal(charMap.length, normalized.length)
+    assert.equal(changed, true)
+    // charMap 严格单调递增
+    for (let i = 1; i < charMap.length; i++) {
+      assert.ok(charMap[i] > charMap[i - 1], `charMap[${i}]=${charMap[i]} not > ${charMap[i - 1]}`)
+    }
+  })
+
+  it('converts Chinese digits to Arabic (1-to-1 char mapping)', () => {
+    const text = '一一零一零一一九九零零三零七八八一一'
+    const { normalized, charMap, changed } = normalizeForPII(text)
+    assert.equal(normalized, '110101199003078811')
+    assert.equal(charMap.length, 18)
+    assert.equal(changed, true)
+    // charMap 严格单调递增,且每字符宽度 1
+    for (let i = 1; i < charMap.length; i++) {
+      assert.equal(charMap[i] - charMap[i - 1], 1)
+    }
+  })
+
+  it('handles 大写财务数字 + 〇 + 两', () => {
+    const text = '壹贰叁肆伍陆柒捌玖〇两'
+    const { normalized } = normalizeForPII(text)
+    assert.equal(normalized, '12345678902')
+  })
+
+  it('returns text unchanged when no whitespace / Chinese digits', () => {
+    const text = 'hello world 12345'
+    // 注意:world 跟 12345 之间有空格,会触发 changed=true。
+    // 这里测的是"无空格也无中文数字"的纯情形。
+    const text2 = 'hello12345'
+    const { normalized, charMap, changed } = normalizeForPII(text2)
+    assert.equal(normalized, text2)
+    assert.equal(charMap.length, text2.length)
+    assert.equal(changed, false)
+  })
+
+  it('keeps ASCII digits untouched', () => {
+    const text = 'phone 13800138000'
+    const { normalized } = normalizeForPII(text)
+    assert.equal(normalized, 'phone 13800138000')
+  })
+
+  it('mixed: prefix + spaced phone', () => {
+    const text = '我的手机号 1 3 8 0 0 1 3 8 0 0 0'
+    const { normalized, charMap } = normalizeForPII(text)
+    // "我的手机号" 跟 "1" 之间的 space 不是 digit 两侧,保留(保护 word boundary)
+    assert.equal(normalized, '我的手机号 13800138000')
+    assert.equal(charMap.length, normalized.length)
+    // phone 在 normalized 中是 [6, 17)(跳过 normalized[5] 的 space)
+    const phoneOriginal = sliceOriginal(text, charMap, 6, 17)
+    assert.equal(phoneOriginal, '1 3 8 0 0 1 3 8 0 0 0')
+  })
+
+  it('mixed: prefix + Chinese-digit id_card', () => {
+    const text = '身份证号 一一零一零一一九九零零三零七八八一一'
+    const { normalized, charMap } = normalizeForPII(text)
+    // "身份证号" 跟 "一" 之间的 space 不是 digit 两侧,保留
+    assert.equal(normalized, '身份证号 110101199003078811')
+    // id_card 在 normalized 中是 [5, 23)(跳过 normalized[4] 的 space)
+    const idOriginal = sliceOriginal(text, charMap, 5, 23)
+    assert.equal(idOriginal, '一一零一零一一九九零零三零七八八一一')
+  })
+})
+
+describe('sliceOriginal (§7.87.13)', () => {
+  it('throws on out-of-range indices', () => {
+    const text = 'abc def'
+    const { charMap } = normalizeForPII(text)
+    assert.throws(() => sliceOriginal(text, charMap, -1, 2))
+    assert.throws(() => sliceOriginal(text, charMap, 0, charMap.length + 1))
+    assert.throws(() => sliceOriginal(text, charMap, 5, 5))
+    assert.throws(() => sliceOriginal(text, charMap, 6, 5))
+  })
+
+  it('round-trips: normalizeForPII + sliceOriginal recovers original substring', () => {
+    const cases = [
+      'phone 1 3 8 0 0 1 3 8 0 0 0',
+      'id 一一零一零一一九九零零三零七八八一一',
+      'mixed 1 3 8 0 0 1 3 8 0 0 0 + 一一零一一',
+    ]
+    for (const text of cases) {
+      const { normalized, charMap } = normalizeForPII(text)
+      // 整段反查必须等于原文
+      const recovered = sliceOriginal(text, charMap, 0, charMap.length)
+      assert.equal(recovered, text, `round-trip failed for: ${text}`)
+      // normalized 长度 = charMap 长度
+      assert.equal(normalized.length, charMap.length)
     }
   })
 })

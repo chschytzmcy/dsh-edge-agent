@@ -8974,3 +8974,68 @@ bash scripts/e2e-model-quality-bench.sh --label qwen-r3
 **关联**:memory `bench-thinking-wire-body`(已 §7.87.8 同步)/ `env-default-restart-required` / `destructive-default-backup`。
 
 **Why this matters**:**3 模型 tier 表给出"模型 + server"组合的实际生产可用性量化依据** —— user 选型从此有数据基础,不再是"哪个跑得动"模糊判断。
+
+### §7.87.13 — sanitizer 字符级规范化:空格分隔 phone + 中文数字 id_card 不再漏抓(2026-09-20)
+
+**触发**:§7.87.12 4 模型 C1-C10 跑出 production 风险 — **空格分隔 phone** (`1 3 8 0 0 1 3 8 0 0 0`) 和 **中文数字 id_card** (`一一零一零一一九九零零三零七八八一一`) 两个 fixture,4 个本地 LLM(27B / 4B / 9B)全部 100% 失败,只有 cloud 720B(dashscope)过。**唯一防线 = sanitizer 预处理**。
+
+**为什么 LLM 救不了**:phone regex `\b1[3-9]\d{9}\b` 要求 11 位连续数字,空格插入直接 break;id_card regex `\d{17}[\dXx]` 完全不抓 `一`。LLM 即使识别出"这是电话号码",作为 prompt 透传给云端仍然触发脱敏(下云)— sanitizer 在 input-guard chain 最前面,LLM 视角下已经是 `[PHONE_1]` / `[ID-CARD_1]`。
+
+**改动**:2 个文件 + 2 个测试文件,净增约 280 行。
+
+**1. `src/dsh-adapter/pii-utils.ts`** — 新增 2 个导出:
+
+```ts
+normalizeForPII(text) -> { normalized, charMap, changed }
+  - 中文数字 → 阿拉伯数字(壹贰叁... 〇 两 等 14 个变体,1:1 映射)
+  - 空白丢弃:**仅当两侧相邻字符都是 ASCII digit 时**
+  - charMap[i] = 规范化后第 i 个字符在原文中的源位置(严格单调递增)
+
+sliceOriginal(text, charMap, start, end) -> string
+  - 把 normalized 上的 [start, end) 翻回 text 上的原始子串
+  - 反查 charMap[start]..charMap[end-1]+1 → text.slice
+```
+
+**关键约束** — 为什么"只 drop digit 之间的空白"而不是简单全 drop:试过 `IP 10.0.0.1` → `IP10.0.0.1`,**IP regex `\b` 在 'P' 与 '1' 之间没有 word boundary,直接漏检**。同理 email / passport / license-plate 都依赖 `\b` 或前后非 digit 字符作为边界锚点。所以空白保留的优先级高于"全 drop":digit 之间的空白是"语义噪声"(用户为视觉分隔多敲的),非 digit 之间的空白是"语义结构"(IP/email 的边界)。
+
+**2. `src/dsh-adapter/sanitizer-pipeline.ts`** — `sanitize()` 关键路径:
+
+```ts
+const { normalized, charMap, changed } = normalizeForPII(text)
+// regex 在 normalized 上匹配(exec + m.index)
+const matches = [...regex.exec(normalized)].map(m => ({matchStr, normStart, normEnd}))
+// 反向处理(从后往前),保证前面 match 的 normStart 不受后续替换影响
+for (let mi = matches.length - 1; mi >= 0; mi--) {
+  const originalSubstr = sliceOriginal(text, charMap, normStart, normEnd)
+  // 替换 normalized + 同步 charMap.splice(start, L, ...Array(P).fill(charMap[start]))
+  normalized = normalized.slice(0, normStart) + placeholder + normalized.slice(normEnd)
+  charMap.splice(normStart, matchStr.length, ...Array(placeholder.length).fill(charMap[normStart]))
+  // 原文 split/join 全量替换(处理"同一 PII 多次出现")
+  sanitizedText = sanitizedText.split(originalSubstr).join(placeholder)
+}
+```
+
+**Why reverse-order + charMap splice**:charMap 是 normalized 的位置映射,每个 matchStr → placeholder 替换都必须 splice 同步(删 L 个 + 插 P 个,全指向 charMap[start])。**反向处理是关键** — 从右往左替换时,左边的 match 的 normStart 还没被右边的替换影响;正向处理则后续替换会让前面的 normStart 偏移。
+
+**审计**:新增 `sanitizer.normalized` debug 行(规范化实际改文本时 emit),便于排查"为何 sanitize 命中了一个看似不含 PII 的输入"。
+
+**3. 覆盖测试**:
+
+| 文件 | describe 块 | 用例数 |
+|------|------------|--------|
+| `pii-utils.test.ts` | `normalizeForPII (§7.87.13)` + `sliceOriginal (§7.87.13)` | 9 |
+| `sanitizer-pipeline.test.ts` | §7.87.13 4 个 sub-describe | 7 |
+
+PRODUCTION_POLICY(严格 18 位 id-card regex + phone + email)覆盖:
+- 空格分隔 phone(`手机号 1 3 8 0 0 1 3 8 0 0 0`)+ 单词分隔(`号码:1 3800138000`)
+- 中文数字 id_card(`身份证号 一一零...`)+ 大写财务数字(`身份证 壹壹零...`)
+- 混合输入(spaced phone + CN-digit id_card 同段)
+- 回归(`no-op audit` when input already normalized)
+
+**Round-trip 验证**:`desanitize(sanitizedText) === text` —— 用户原字面(带空格 / 中文数字)在 desanitize 后精确还原,因为 `byOriginal` / `placeholders` 都以"用户原始字符串"为 value。
+
+**测试结果**:`npm test` = **810 passed / 8 failed**。8 个失败全部是 pre-existing(input-guard ↔ http-api integration 4 + http-api multi-turn 4,与本任务无关;通过 `git stash` 对比验证)。本任务 7 个新增 + 9 个新加 normalize/slice 单测全部 ✅。
+
+**关联**:memory `sanitize-downgrade-policy`(脱敏失败降级 LOCAL)、`sandbox-fixture-no-real-pii`(测试 fixture 用占位号 13800138000 / 110101...)。
+
+**Why this matters**:**production PII 防线 100% 失效的两个 attack vector(空格 / 中文数字)被 sanitizer 字符级规范化堵上**,且不破坏既有 IP / email / passport / license-plate 检测(`\b` 边界保留)。Cloud 路径不再依赖 LLM 自身的 PII 识别(已证明 4 个本地模型 0% 命中这俩 case)。

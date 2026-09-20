@@ -641,3 +641,188 @@ describe('sanitizer-pipeline placeholder collision safety', () => {
     assert.equal(out, '未知 [EMAIL_99] 占位符')
   })
 })
+
+// ─── §7.87.13 (2026-09-20) PII 预检测前的文本规范化 ──────────────────────
+//
+// 背景(§7.87.12 4 模型 trace):
+//   - 空格分隔 phone "1 3 8 0 1 3 8 0 0 0" → phone regex `\b1[3-9]\d{9}\b` 漏
+//   - 中文数字 id_card "一一零一零一一九九零零三零七八八一一" → id_card regex
+//     `\d{17}[\dXx]` 完全漏
+//   - 4 个本地 LLM 100% 失败 → 唯一防线是 sanitizer 字符级规范化
+//
+// 这组测试用带 id-card 规则的 production-like policy 验证:
+//   1. 空格分隔 phone → 命中 phone regex → 还原为用户原字面(带空格)
+//   2. 中文数字 id_card → 命中 id_card regex → 还原为原字面(中文数字)
+//   3. 混合输入 → 两个都被规范化命中
+//   4. 同一 PII 多次出现(空格形态不同)→ 占一个 placeholder
+//   5. Round-trip desanitize → 完全还原为用户原输入字面形态
+
+const PRODUCTION_POLICY: PrivacyPolicy = {
+  version: '1.2.0',
+  routingRules: [],
+  sanitizationRules: [
+    // 严格 18 位身份证
+    { pattern: '\\b[1-9]\\d{5}(?:19|20)\\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\\d|3[01])\\d{3}[\\dXx]\\b',
+      replacement: '[ID-CARD]', dataClass: 'secret', piiType: 'id-card' },
+    // 11 位手机
+    { pattern: '\\b1[3-9]\\d{9}\\b', replacement: '[PHONE]', dataClass: 'confidential', piiType: 'phone' },
+    // 邮箱
+    { pattern: '[\\w.+-]+@[\\w.-]+\\.\\w+', replacement: '[EMAIL]', dataClass: 'confidential', piiType: 'email' },
+  ],
+  dataClassifications: [],
+  globalConstraints: { maxCloudRequestsPerMinute: 20, requireAttestation: false, blockIfTcbCompromised: true },
+}
+
+function createProductionPolicyService(): PrivacyPolicyServiceImpl {
+  const policyPath = join(root, 'policy-prod.json')
+  writeFileSync(policyPath, JSON.stringify(PRODUCTION_POLICY, null, 2), 'utf-8')
+  return new PrivacyPolicyServiceImpl(fakeCtx() as never, {
+    policyPath, hotReload: false, watchIntervalMs: 5000,
+  }, fakeAuditLog())
+}
+
+describe('sanitizer-pipeline §7.87.13 normalization — whitespace-separated phone', () => {
+  it('catches phone with full whitespace separation (every digit isolated)', async () => {
+    const policy = createProductionPolicyService()
+    await policy.reload()
+    const audit = fakeAuditLog()
+    const svc = new SanitizerServiceImpl(fakeCtx() as never, {
+      enableAutoDetection: true, maxReplacementsPerSession: 1024,
+    } as never, policy, audit)
+
+    const r = await svc.sanitize('手机号 1 3 8 0 0 1 3 8 0 0 0', { sessionId: 'ws-1' })
+    // 原字面"1 3 8 0 0 1 3 8 0 0 0" 必须被替换,不能保留
+    assert.ok(!r.sanitizedText.includes('1 3 8 0 0 1 3 8 0 0 0'))
+    // 命中 phone 规则
+    assert.equal(r.replacements.length, 1)
+    assert.equal(r.replacements[0].piiType, 'phone')
+    // byOriginal 是 regex 命中区间的原始子串(无 leading space:手机号与1之间的
+    // space 不在 phone regex 命中范围里,normalizeForPII 只 drop digit 之间的 space)
+    assert.equal(r.replacements[0].original, '1 3 8 0 0 1 3 8 0 0 0')
+    // desanitize 后完全还原
+    const back = await svc.desanitize(r.sanitizedText, 'ws-1')
+    assert.equal(back, '手机号 1 3 8 0 0 1 3 8 0 0 0')
+    // §7.87.13 审计行:规范化实际改了文本
+    assert.ok(audit.entries.some((e) => e.kind === 'sanitizer.normalized'))
+  })
+
+  it('catches phone with single separator space', async () => {
+    const policy = createProductionPolicyService()
+    await policy.reload()
+    const svc = new SanitizerServiceImpl(fakeCtx() as never, {
+      enableAutoDetection: true, maxReplacementsPerSession: 1024,
+    } as never, policy, fakeAuditLog())
+
+    const r = await svc.sanitize('号码:1 3800138000', { sessionId: 'ws-2' })
+    assert.equal(r.replacements.length, 1)
+    assert.equal(r.replacements[0].piiType, 'phone')
+    assert.equal(r.replacements[0].original, '1 3800138000')
+    const back = await svc.desanitize(r.sanitizedText, 'ws-2')
+    assert.equal(back, '号码:1 3800138000')
+  })
+})
+
+describe('sanitizer-pipeline §7.87.13 normalization — Chinese-digit id_card', () => {
+  it('catches id_card written in 一一零... Chinese digits', async () => {
+    const policy = createProductionPolicyService()
+    await policy.reload()
+    const audit = fakeAuditLog()
+    const svc = new SanitizerServiceImpl(fakeCtx() as never, {
+      enableAutoDetection: true, maxReplacementsPerSession: 1024,
+    } as never, policy, audit)
+
+    const r = await svc.sanitize(
+      '身份证号 一一零一零一一九九零零三零七八八一一',
+      { sessionId: 'cn-1' },
+    )
+    // 原字面 中文数字 不能保留
+    assert.ok(!r.sanitizedText.includes('一一零一零一一九九零零三零七八八一一'))
+    // 必须命中 id_card 规则(不是 phone / bank_card)
+    assert.equal(r.replacements.length, 1)
+    assert.equal(r.replacements[0].piiType, 'id-card')
+    // byOriginal 是 regex 命中区间的原始子串(无 leading space)
+    assert.equal(r.replacements[0].original, '一一零一零一一九九零零三零七八八一一')
+    // desanitize 还原
+    const back = await svc.desanitize(r.sanitizedText, 'cn-1')
+    assert.equal(back, '身份证号 一一零一零一一九九零零三零七八八一一')
+    assert.ok(audit.entries.some((e) => e.kind === 'sanitizer.normalized'))
+  })
+
+  it('handles mixed 大写财务数字 身份证', async () => {
+    const policy = createProductionPolicyService()
+    await policy.reload()
+    const svc = new SanitizerServiceImpl(fakeCtx() as never, {
+      enableAutoDetection: true, maxReplacementsPerSession: 1024,
+    } as never, policy, fakeAuditLog())
+
+    const r = await svc.sanitize(
+      '身份证 壹壹零壹零壹壹玖玖零零叁零柒八八壹壹',
+      { sessionId: 'cn-2' },
+    )
+    assert.equal(r.replacements.length, 1)
+    assert.equal(r.replacements[0].piiType, 'id-card')
+    // 无 leading space:身份证与 CN 数字之间本无 space
+    assert.equal(r.replacements[0].original, '壹壹零壹零壹壹玖玖零零叁零柒八八壹壹')
+  })
+})
+
+describe('sanitizer-pipeline §7.87.13 normalization — mixed PII', () => {
+  it('catches both spaced phone + Chinese id_card in one input', async () => {
+    const policy = createProductionPolicyService()
+    await policy.reload()
+    const audit = fakeAuditLog()
+    const svc = new SanitizerServiceImpl(fakeCtx() as never, {
+      enableAutoDetection: true, maxReplacementsPerSession: 1024,
+    } as never, policy, audit)
+
+    const text =
+      '手机号 1 3 8 0 0 1 3 8 0 0 0,身份证 一一零一零一一九九零零三零七八八一一'
+    const r = await svc.sanitize(text, { sessionId: 'mix-1' })
+
+    // 两个 PII 都被替换
+    assert.equal(r.replacements.length, 2)
+    const types = r.replacements.map((x: any) => x.piiType).sort()
+    assert.deepEqual(types, ['id-card', 'phone'])
+    // 都用了 normalized 后的命中区间,但 byOriginal 都是用户原字面(无 leading space)
+    const originals = r.replacements.map((x: any) => x.original).sort()
+    assert.deepEqual(originals, [
+      '1 3 8 0 0 1 3 8 0 0 0',
+      '一一零一零一一九九零零三零七八八一一',
+    ].sort())
+
+    // Round-trip:desanitize 完全还原
+    const back = await svc.desanitize(r.sanitizedText, 'mix-1')
+    assert.equal(back, text)
+  })
+})
+
+describe('sanitizer-pipeline §7.87.13 normalization — regression', () => {
+  it('no-op audit when input has no whitespace / Chinese digits', async () => {
+    const policy = createProductionPolicyService()
+    await policy.reload()
+    const audit = fakeAuditLog()
+    const svc = new SanitizerServiceImpl(fakeCtx() as never, {
+      enableAutoDetection: true, maxReplacementsPerSession: 1024,
+    } as never, policy, audit)
+
+    const r = await svc.sanitize('手机13800138000', { sessionId: 'reg-1' })
+    // 仍正常命中
+    assert.equal(r.replacements.length, 1)
+    assert.equal(r.replacements[0].piiType, 'phone')
+    // 但不应该 emit sanitizer.normalized(规范化未改文本)
+    assert.ok(!audit.entries.some((e) => e.kind === 'sanitizer.normalized'))
+  })
+
+  it('does not affect standard phone cases (control)', async () => {
+    const policy = createProductionPolicyService()
+    await policy.reload()
+    const svc = new SanitizerServiceImpl(fakeCtx() as never, {
+      enableAutoDetection: true, maxReplacementsPerSession: 1024,
+    } as never, policy, fakeAuditLog())
+
+    const r = await svc.sanitize('phone 13800138000', { sessionId: 'reg-2' })
+    assert.equal(r.replacements[0].original, '13800138000')
+    const back = await svc.desanitize(r.sanitizedText, 'reg-2')
+    assert.equal(back, 'phone 13800138000')
+  })
+})
