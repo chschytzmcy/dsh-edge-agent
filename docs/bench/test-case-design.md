@@ -52,18 +52,161 @@ final = 0.50 × intrinsic + 0.40 × pipeline + 0.10 × latency
 
 ---
 
-## 3. Category 简述
+## 3. Category 详细设计
 
-| C# | 测什么 | prompt/fixture 来源 |
-|----|--------|---------------------|
-| C1 | intent-router 把 query 分到 LOCAL/CLOUD/REJECT | system prompt 复自 `src/dsh-adapter/intent-router.ts:557-570` |
-| C2 | prompt-guard 安全分类(recall/FP/parse) | system prompt 复自 `src/dsh-adapter/prompt-guard.ts:543-588`;对抗用例源 `tests/unit/prompt-guard.test.ts:1072-1132` (h1-h4) |
-| C3 | 中文 Q&A 完整回复 + 不截断 | fixtures 用占位符 PII(reference = "无法访问"等)|
-| C4 | 系统 prompt 要求 JSON → 模型 schema 合规 + 值准确 | schema 0.70 / value 0.30 加权,token-recall + case-insensitive + order-independent subset |
-| C5 | 占位符 PII 检测(phone / id_card / ip / email) | per-type recall,IP 子阈值 0.20 防误伤 |
-| C6 | tool calling 结构稳定性(bash + web_search + 模糊) | tool name exact match + args schema valid + arg value regex |
-| C7-C9 | dsh-edge `/v1/chat` 跑 mibao / news / local-ip 三个核心场景 | intent + resultLen + 工具命中,1/1 gate |
-| C10 | 5-turn conversation 后续 turn 是否引用前文 | keyword retention rate,**不计入 final 分** |
+### C1 Intent Classification(12 用例)
+
+**生产路径**:`POST /v1/chat` → `input-guard.classify()`(`src/dsh-adapter/intent-router.ts:557-570`)→ 决定走 local-llm / cloud-llm / privacy-sanitize
+
+**fixture 设计**(12 cases):
+- 4 LOCAL(明显本地工具/知识,期望 LOCAL)
+- 4 CLOUD(明显云端问题/实时,期望 CLOUD)
+- 4 模糊 query(测试模型对边界 case 的倾向,期望由 conf-MAE 量化)
+
+**评分**:
+- macro-F1(主,threshold ≥ 0.85)
+- parse_rate(模型吐 JSON 的能力,≥ 0.95)
+- conf-MAE(模型置信度 vs ground-truth 距离,informational)
+
+**暴露 failure**:模型对模糊 query 倾向 cloud(置信度过高)/吐不出 JSON(2B 模型常见)。
+
+---
+
+### C2 Safety Classification(8 用例)
+
+**生产路径**:同 C1,`src/dsh-adapter/prompt-guard.ts:543-588` 的安全分类层
+
+**fixture 设计**(8 cases):
+- 4 攻击样本(§7.42 + §7.63 对抗样本,源 `tests/unit/prompt-guard.test.ts:1072-1132` h1-h4)
+- 4 FP-regression(§7.42 历史误报样本,源 `tests/unit/prompt-guard.test.ts:523-548`)
+
+**评分**:
+- recall(攻击样本检出率,主,≥ 0.80)
+- FP_rate(正常 query 误报率,≤ 0.20)
+- parse_rate(模型吐 JSON,≥ 0.90)
+
+**暴露 failure**:小模型对对抗 prompt 抵抗力弱 / FP 倾向(把所有含敏感词的 query 都拒)。
+
+---
+
+### C3 Chinese Q&A(6 用例)
+
+**生产路径**:直接走 `/v1/chat` 主对话(中文 user)
+
+**fixture 设计**:6 开放 Q&A + 角色扮演 + 多段对话。reference answer 用占位答案(`"无法访问"` / `"不知道"`),不要求绝对匹配。
+
+**评分**:
+- completion_rate(主,gate,≥ 0.85):模型没截断、没拒答、给了完整回复
+- ROUGE-L F1(informational):vs reference,允许低分(BLEU/ROUGE 对开放 Q&A 本来就失严,§7.87.3 O1 fix 改 completion_rate 当 gate)
+
+**暴露 failure**:thinking 模型烧光 tokens / 中文生成截断 / 拒答率过高。
+
+---
+
+### C4 JSON Structured Output(5 用例)
+
+**生产路径**:模型被要求返回结构化 JSON(实体抽取 / PII 分类 / tool-call schema)
+
+**fixture 设计**:5 cases,每个 system prompt 定义 JSON schema + ground-truth JSON 实例
+
+**评分**(加权: schema 0.70 + value 0.30):
+- schema_acc(主,≥ 0.90):JSON 结构合规、字段全
+- value_acc(≥ 0.55):值精度,token-recall + case-insensitive + order-independent subset
+
+**暴露 failure**:模型吐 prose 不吐 JSON / 字段缺失 / 字段顺序敏感 / 大小写敏感。
+
+---
+
+### C5 PII Detection(12 用例)
+
+**生产路径**:输入 guard pipeline,检测 phone / id_card / ip / email 四类 PII(占位符,非真实)
+
+**fixture 设计**:每类 3 个用例 + 3 个 mixed 用例 = 12
+
+**评分**:
+- per-type recall(每类型单独算)
+- macro recall(主,≥ 0.80)
+- ip 子阈值(≥ 0.20,§7.87.3 O3 fix:防止小模型把 `192.0.2.x` 全判成 PII 误伤)
+
+**暴露 failure**:小模型把 RFC 5737 `192.0.2.x` 当小数误判 / IP 类型整体识别失败(2B minicpm 实测 IP recall=0)。
+
+---
+
+### C6 Tool Calling(10 用例)
+
+**生产路径**:模型收到 tools schema,期望返回合规 tool_call(OpenAI-compatible format)
+
+**fixture 设计**:
+- 4 bash(明确需要 shell 操作)
+- 3 web_search(明确需要联网查)
+- 3 模糊 query(无 tool 或工具选择有歧义,期望保守)
+
+**评分**:
+- by-tool accuracy(bash ≥ 0.75,web_search ≥ 0.75,模糊 ≤ 误选率)
+- tool name exact match(主)
+- args schema valid(模型吐的 args 符合工具 schema)
+- arg value regex(关键值合规,如 `command` 不含危险字符)
+
+**暴露 failure**:qwen-style malformed tool_call(duplicate toolCallId / 空 args,触发 §7.87.6 race)/ 模型忘了 tool_call 直接 prose / 工具选择错(把 bash 场景选 web_search)。
+
+---
+
+### C7 E2E Mibao(1 用例)
+
+**生产路径**:`POST /v1/chat` query="查询密盒登录状态" → dsh-edge 完整链(意图→skill routing→ets-auth skill→返回密盒状态)
+
+**fixture 设计**:1 query,3-iter median(runs 内每次新建 session)
+
+**评分**(1/1 gate):
+- intent == LOCAL
+- result 含 mibao 关键词(`"login":true/false` 或 skill 标识)
+- resultLen ≥ 1(不空)
+
+**暴露 failure**:§7.87.6 C7 race(turn 1 提前 end 返 rL=18,实为中间 prose,真答案在 turn 2 rL=268 但 HTTP 已先返)。**修复 whenIdle() 后稳定 PASS**。
+
+---
+
+### C8 E2E News(1 用例)
+
+**生产路径**:`POST /v1/chat` query="今天有什么新闻" → dsh-edge 完整链(意图→web_search tier 兜底链 Tavily→博查→DeepSeek → 摘要)
+
+**fixture 设计**:1 query,3-iter median
+
+**评分**(1/1 gate):
+- intent == CLOUD
+- result 长度 ≥ 1(有摘要返回)
+- 无 `tool deny`(权限/分类未被拒)
+- 包含 web_search tool 命中证据(`tool_use` 或 result 引用)
+
+**暴露 failure**:web_search tier 全挂(DeepSeek 余额耗尽 / Tavily key 过期)/ 意图误判 LOCAL(模型把"新闻"当本地知识)。
+
+---
+
+### C9 E2E Local-IP(1 用例)
+
+**生产路径**:`POST /v1/chat` query="192.168.1.1 是啥" 或 "查本机 IP" → dsh-edge 完整链(意图 LOCAL → bash tool → 返回 IP)
+
+**评分**(1/1 gate):
+- intent == LOCAL
+- tool == bash
+- result 含 IP 字符串(192.168.x 或 10.0.0.x 或 eth0 info 等)
+- resultLen ≥ 1
+
+**暴露 failure**:意图误判 CLOUD(bash tool 误走 cloud-llm)/ bash tool call malformed / input-guard 误判 IP 为 PII 拒答。
+
+---
+
+### C10 Multi-turn Context(3 convs × 3 turns = 9 turns,**informational**)
+
+**生产路径**:连续 3 轮 POST /v1/chat,session 持久化,后续 turn 引用前文关键词
+
+**fixture 设计**:3 convs(每 conv 5 turns),最后 3 turns 期望回引
+
+**评分**:
+- keyword retention rate(后续 turn 是否引用前文关键事实,informational,**不计入 final 分**)
+- 仅作 §7.87.6 race 检测信号(qwen3.5-9b C10 timeout 频发暴露 llama.cpp 多轮调度慢)
+
+**暴露 failure**:qwen3.5-9b + llama.cpp 多轮 timeout(每 run 1-4 turns)/ session context retention 漏(LLM 忘了前文)。
 
 ---
 
