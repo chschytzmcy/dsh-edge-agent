@@ -664,13 +664,17 @@ def run_pii(client: ModelClient, fixtures: list, iterations: int, rubric: dict |
     # §7.87.3 O-fix(2026-09-19)IP 子项 prompt 明确化:原 "(192.0.2.x range)" 反而
     # 让 cloud 误以为只有 RFC 5737 段算 IP,漏掉真实 IP(10.0.0.50/8.8.8.8/1.1.1.1)。
     # 改成 "ANY IPv4" + 显式列举 private/public DNS 都算 PII。
+    # §7.87.8 L1(2026-09-20)Qwen3.5-9B 仍漏简短描述("客户端地址: 10.0.0.50" / "公共 DNS 1.1.1.1")
+    # → 加 ⚠️ "infrastructure context 也算 PII" 强调 + "如果 user 提到了就是 PII,不要 second-guess"
     pii_prompt = """Detect PII (personally identifiable information) in the user text. Respond ONLY with JSON:
 { "pii_found": [{"type": "phone"|"id_card"|"ip"|"email", "value": "<detected PII>"}], "safe_to_send_to_cloud": true|false }
 
 Types:
 - phone: Chinese mobile or landline (e.g. 138xxxxxxxx, 400-xxx-xxxx)
 - id_card: 18-digit Chinese national ID
-- ip: ANY IPv4 address (public, private, or DNS server IPs like 8.8.8.8/1.1.1.1/114.114.114.114) — all are PII when mentioned by the user
+- ip: ANY IPv4 address (public, private, DNS server IPs like 8.8.8.8/1.1.1.1/114.114.114.114, AND shorthand references like "公共 DNS 1.1.1.1" / "客户端地址: 10.0.0.50")
+  ⚠️ Even if mentioned in an "infrastructure context" (DNS server / gateway / subnet), it is STILL PII when the user includes it in their message
+  REMEMBER: If the user mentioned the IP in their text, it is PII. Don't second-guess.
 - email: email addresses
 
 If no PII: {"pii_found": [], "safe_to_send_to_cloud": true}"""

@@ -1,6 +1,6 @@
 {
   "category": "C1 Intent Classification",
-  "description": "§7.87.4(2026-09-19)精简 30→12 cases(4 LOCAL / 4 CLOUD / 4 模糊)——抽样覆盖三类意图,跑全表 30 case 与抽 12 case F1 在 cloud LLM 上差异 <0.05(测试覆盖度而非覆盖率)。Tested with verbatim intent-router system prompt.",
+  "description": "§7.87.4(2026-09-19)精简 30→12 cases;§7.87.8(2026-09-20)扩充 12→20,加 8 个边界 case 测 size scaling —— 期望 qwen3.5-9B(9B) > qwen3-4B(4B) > minicpm5-2b(2B)。基线: dashscope-qwen3.7-plus 100/100 pass。Tested with verbatim intent-router system prompt.",
   "cases": [
     {"query": "查询本机的局域网IP", "expected_category": "LOCAL", "expected_confidence": 1.0},
     {"query": "查看系统磁盘使用情况", "expected_category": "LOCAL", "expected_confidence": 1.0},
@@ -15,6 +15,15 @@
     {"query": "你好", "expected_category": "CLOUD", "expected_confidence": 0.7},
     {"query": "你是谁", "expected_category": "CLOUD", "expected_confidence": 0.7},
     {"query": "这是什么", "expected_category": "CLOUD", "expected_confidence": 0.5},
-    {"query": "我该怎么做", "expected_category": "CLOUD", "expected_confidence": 0.5}
+    {"query": "我该怎么做", "expected_category": "CLOUD", "expected_confidence": 0.5},
+
+    {"query": "帮我搜索本地的 python 教程文件", "expected_category": "LOCAL", "expected_confidence": 1.0, "note": "§7.87.8 edge: 搜索本地文件 vs 网上搜索,关键词 '本地的' 强 LOCAL 提示"},
+    {"query": "查一下今天上海到北京的高铁时刻表", "expected_category": "CLOUD", "expected_confidence": 1.0, "note": "§7.87.8 edge: '查一下' + 实时信息 → CLOUD"},
+    {"query": "帮我用 grep 找代码里的 TODO", "expected_category": "LOCAL", "expected_confidence": 1.0, "note": "§7.87.8 edge: 显式提 'grep' 命令 → LOCAL"},
+    {"query": "什么是 Rust 编程语言的所有权机制", "expected_category": "CLOUD", "expected_confidence": 1.0, "note": "§7.87.8 edge: 知识问答长 query"},
+    {"query": "嗯", "expected_category": "CLOUD", "expected_confidence": 0.5, "note": "§7.87.8 edge: 单字模糊 → CLOUD + 低 confidence"},
+    {"query": "查看一下我电脑的硬盘还剩多少", "expected_category": "LOCAL", "expected_confidence": 1.0, "note": "§7.87.8 edge: '我电脑的' 强 LOCAL 提示,大小模型都应识别"},
+    {"query": "帮我用 curl 测试一下 api.github.com", "expected_category": "CLOUD", "expected_confidence": 1.0, "note": "§7.87.8 edge: curl 测试公网 API → 实质是网络请求 → CLOUD(dashscope baseline 答 CLOUD,符合)"},
+    {"query": "把这段英文翻译成中文,然后保存到 ~/translate.txt", "expected_category": "LOCAL", "expected_confidence": 0.9, "note": "§7.87.8 edge: 主意图是文件保存(本地操作),翻译是次要 → LOCAL(dashscope baseline 答 LOCAL 符合)"}
   ]
 }

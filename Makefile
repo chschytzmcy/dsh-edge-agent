@@ -84,9 +84,12 @@ e2e-tui:
 # 不进 CI(LAN + 太慢);手动跑或 release 前跑。
 # 用法:make e2e-benchmark LABEL=qwen3.5-9b-lan
 # 报告落点:dist/bench-${LABEL}-*/(report.md + scores.json + traces/*)
+# §7.87.8(2026-09-20)默认 NO_THINKING=1:mlx 服务器(qwen3.5-9b/minicpm5-2b)thinking 模式
+# 会把 max_tokens 全烧在 reasoning content,bench 永远 0 分;rknn(qwen3-4b)chat_template_kwargs
+# 被 server no-op 忽略,设了也无害。
 e2e-benchmark:
-	@echo "$(BLUE)==> 跑 Model Quality Bench (label=${LABEL:-bench})$(NC)"
-	@LABEL=${LABEL:-bench} bash scripts/e2e-model-quality-bench.sh --label $${LABEL}
+	@echo "$(BLUE)==> 跑 Model Quality Bench (label=${LABEL:-bench}, no-thinking=$${NO_THINKING:-1})$(NC)"
+	@export NO_THINKING=$${NO_THINKING:-1}; export LABEL=$${LABEL:-bench}; bash scripts/e2e-model-quality-bench.sh --label "$$LABEL"
 	@echo "$(GREEN)✓ Model Quality Bench 完成(报告在 dist/bench-$${LABEL}-*/)$(NC)"
 
 # 打包部署文件

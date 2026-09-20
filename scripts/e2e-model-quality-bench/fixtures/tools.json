@@ -1,6 +1,6 @@
 {
   "category": "C6 Tool Calling Reliability",
-  "description": "§7.87.4(2026-09-19)精简 20→10 cases(6 bash + 3 web_search + 1 ambiguous)——coverage 用样。Scored: tool name exact match + required args present.",
+  "description": "§7.87.4(2026-09-19)精简 20→10 cases;§7.87.8(2026-09-20)扩充 10→16,加 6 个边界 case 测 tool_call 决策 —— 期望 qwen3.5-9B(9B) > qwen3-4B(4B) > minicpm5-2b(2B)。基线: dashscope-qwen3.7-plus 100/100 pass。Scored: tool name exact match + required args present.",
   "cases": [
     {"query": "查看本机的 CPU 信息", "expected_tool": "bash", "required_args": ["command"]},
     {"query": "列出当前目录的所有文件", "expected_tool": "bash", "required_args": ["command"]},
@@ -13,6 +13,13 @@
     {"query": "今天北京天气如何", "expected_tool": "web_search", "required_args": ["query"]},
     {"query": "搜索机器学习入门教程", "expected_tool": "web_search", "required_args": ["query"]},
 
-    {"query": "搜索附近的咖啡店", "expected_tool": "web_search", "required_args": ["query"], "note": "ambiguous — web_search broader"}
+    {"query": "搜索一下附近有什么好吃的川菜馆", "expected_tool": "web_search", "required_args": ["query"], "note": "§7.87.8 edge: '附近 + 好吃' 类 prose 偏好,cloud baseline 也会 prose 答,作为大小模型差距测试"},
+    {"query": "帮我用 cat 查看 /etc/hosts", "expected_tool": "bash", "required_args": ["command"], "note": "§7.87.8 edge: 显式提 'cat' + 绝对路径 → bash"},
+    {"query": "搜索 2026 年最新的 JavaScript 框架", "expected_tool": "web_search", "required_args": ["query"], "note": "§7.87.8 edge: '最新的' 强 web_search"},
+    {"query": "把 /tmp/log.txt 复制到 /var/log/", "expected_tool": "bash", "required_args": ["command"], "note": "§7.87.8 edge: 文件操作路径明确 → bash"},
+    {"query": "查询北京到上海的高铁票价", "expected_tool": "web_search", "required_args": ["query"], "note": "§7.87.8 edge: 实时票价信息 → web_search"},
+    {"query": "本机跑一下 python --version", "expected_tool": "bash", "required_args": ["command"], "note": "§7.87.8 edge: 显式 '本机' + 命令 → bash"},
+    {"query": "搜一下广州最好的粤菜馆", "expected_tool": "web_search", "required_args": ["query"], "note": "§7.87.8 edge: '最好的X馆' 推荐类 query → web_search"},
+    {"query": "查询深圳证券交易所今天的 A 股大盘指数", "expected_tool": "web_search", "required_args": ["query"], "note": "§7.87.8 edge: 实时金融数据 → web_search(显式 '今天的' + 数据源)"}
   ]
 }

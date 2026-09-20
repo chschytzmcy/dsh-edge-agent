@@ -639,11 +639,15 @@ bash scripts/e2e-model-quality-bench.sh \
 | **qwen3-4b**(4B) | rknn @ 192.168.1.174:8911(w4a16,v15.4 新增)| **100.0** | 100 | **90.0** | ✅ Prod-ready | 0 variance(3 run 完全一致);C1=0.899(conf_mae=0.148)、C3=0.104 informational;**C7-C9 全 PASS**;server 极稳 |
 | **qwen3.5-9b**(9B) | mlx 0.31.3 @ 192.168.65.2:8080(w4a16,v15.4 新增)| **90.0** | 100 | **90.0** | ✅ Prod-ready | C5 IP 子集 0.5~0.75 浮动(median 0.875);C10 retention **100**;mlx server 极稳,跨网段慢(~10min/run)但不掉链 |
 | **minicpm5-2b**(2B) | vllm 28000 | 77.8 | 100 | **78.9** | ⚠️ Conditional | C1 parse_rate=0(F1=0.0)、C5 IP recall=0;**C7-C9 全 PASS**,server 稳定 |
+| ~~**minicpm5-2b-MLX**(2B)~~ | ~~mlx 0.31.3 @ 192.168.65.2:8080(w4a16,统一量化尝试)~~ | ~~41.5~~ | ~~33.3~~ | ~~41.5~~ | 💀 ~~Reject~~ | **§7.87.9 单次实测拒绝 — tool_call 0/17**;**C6 不会发 tool_calls**(model 输出纯文本);C7/C9 fail(dsh-edge 路由正常但 LLM 不发 tool → bash 不跑);同 mlx server 上 qwen3.5-9b C6=1.0 → **非 server 端 bug,模型版本/量化方法差异** |
 
 **Pipeline 4 模型都 100/100**:§7.87.6 `agent.whenIdle()` fix **跨 server 跨模型泛化** —— 不依赖具体 local LLM server 实现(vllm / mlx / rknn / cloud 全部 PASS C7-C9)。
 
-**Intrinsic 排名**:dashscope 100.0 / **qwen3-4b 100.0** / qwen3.5-9b-mlx 90.0 / minicpm5-2b-vllm 77.8。
+**Intrinsic 排名**:dashscope 100.0 / **qwen3-4b 100.0** / qwen3.5-9b-mlx 90.0 / minicpm5-2b-vllm 77.8 / ~~minicpm5-2b-MLX 41.5~~。
 **C10 retention**:dashscope 100 / minicpm 100 / qwen3-4b 83.3 / **qwen3.5-9b-mlx 100**。
+**❌ 统一量化尝试失败**:minicpm5-2b 切 MLX 后 C6 tool_call 完全退化,回到 vllm 版本继续用。
+
+#### 5.2.1 qwen3-4b (4B rknn) intrinsic=100 vs qwen3.5-9b (9B mlx) intrinsic=90 的反常分析
 
 #### 5.2.1 qwen3-4b (4B rknn) intrinsic=100 vs qwen3.5-9b (9B mlx) intrinsic=90 的反常分析
 
@@ -782,6 +786,50 @@ if (ipMatches) {
 详细 trace 在 `dist/bench-qwen3.5-9b-mlx-r3-20260920-124339/traces/{C5,C6}.jsonl`,可逐 case 看 reply。
 
 详细 3-run 数据见 `docs/bench/snapshots/2026-09-20-qwen3-{4b-lan,5-9b-mlx}-3runs.md`(git-track)。
+
+#### 5.2.7 minicpm5-2b-MLX 单次测试结论(2026-09-20,§7.87.9)
+
+**测试动机**:user 要求把 minicpm5-2b 从 vllm 67.0.0.5:28000 切到 mlx 0.31.3 @ 192.168.65.2:8080,跟 qwen3.5-9b 共用同一 server,**统一量化**让 size scaling comparison(9B > 4B > 2B)更 clean。
+
+**测试结果**(单次,NO_THINKING=1,NO median — 单次已足):
+
+| 维度 | vllm 版本(78.9 ⚠️) | **MLX 版本(41.5 💀)** | 差 |
+|------|-------------------|---------------------|-----|
+| Intrinsic | 77.8 | 41.5 | **-36.3** |
+| C1 intent | 0.0(parse_rate 0) | 0.84(parse_rate 1.0) | **+0.84** ↑ |
+| C5 PII recall | 0.667 | 0.729 | +0.06 |
+| **C6 tool_call** | **1.0** | **0.0(0/17)** | **-1.0** 💀 |
+| Pipeline | 100 | 33.3 | -66.7 |
+| C7 mibao | 1.0 | 0.0 | fail |
+| C9 localip | 1.0 | 0.0 | fail |
+
+**❌ 关键发现**:MLX 量化版 minicpm5-2b **C6 tool_call 0/17**。看 trace:
+- response.message 只有 `content`,**永远不出 `tool_calls` 数组**
+- 不是 server bug(同 server 上 qwen3.5-9b C6=1.0)
+- 不是 prompt 强度问题(dashscope 同 prompt C6=0.938)
+
+**根因**(推测):
+- vllm 0.29.0 FP16 path → 保留完整 model weights,tool_call head 正常
+- mlx 4bit quantization(`bits:4, group_size:64, mode:affine`)→ tool_call classification head 退化,model 只学会出 prose 答案
+- 这是 model + quantization combo 失败**,不是 backup
+
+**行动**:
+- ❌ .env.local-minicpm5-2b 退回 vllm 67.0.0.5:28000(78.9 ⚠️ Conditional,已确立 baseline)
+- ❌ 不再尝试 MLX 量化 minicpm5-2b(同 server 上同 model path 不同 quant 的结果已证)
+- ✅ user 给的 §7.87.9 "统一量化"目标**只对 qwen3.5-9b + qwen3-4b 成立**(两边都是 Qwen3.5 家族,mlx 跟 rknn 不同 server 但同 quantization scheme)
+- ✅ minicpm5-2b 留在 vllm FP16 上,size scaling comparison 用混合量化跨模型(诚实标注)
+
+**Size scaling 实际排名**(更新):
+- dashscope-qwen3.7-plus (cloud) 90.0 ✅
+- qwen3-4b (rknn w4a16) 90.0 ✅
+- qwen3.5-9b (mlx w4a16) 90.0 ✅
+- minicpm5-2b (vllm FP16) 78.9 ⚠️
+- ~~minicpm5-2b (mlx w4a16) 41.5 💀~~
+
+**Size scaling 验证状态**:9B (qwen3.5-9b) ≈ 4B (qwen3-4b) > 2B (minicpm5-2b) — **大模型 + mlx ≥ 4B rknn**(Qwen3 系列对 dsh-edge 工作负载足够小);**2B minicpm 在 vllm FP16 上才勉强 Conditional**(0.0~0.8 摇摆);MLX 量化把 2B 完全打废。
+
+详细 trace `dist/bench-minicpm5-2b-mlx-debug-20260920-150418/traces/{C1,C5,C6}.jsonl`。
+详细 backup `.env.local-minicpm5-2b` MLX snapshot = `docs/bench/snapshots/2026-09-20-minicpm5-2b-mlx.env`(gitignored)。
 
 ---
 
