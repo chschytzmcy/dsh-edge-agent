@@ -20,6 +20,12 @@ import sys
 import time
 import urllib.error
 import urllib.request
+
+# §7.87.9(2026-09-20)Bypass 系统 HTTP_PROXY:no_proxy 默认不含 67.0.0.5/192.168.x 等 LAN 地址
+# → urllib 走 127.0.0.1:7890 proxy → 502 Bad Gateway。install_opener(ProxyHandler({}))
+# 强制直连走 LAN,绕过系统代理。
+_proxy_handler = urllib.request.ProxyHandler({})  # 所有协议都空 proxy = 直连
+urllib.request.install_opener(urllib.request.build_opener(_proxy_handler))
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -960,6 +966,10 @@ def main() -> int:
     # §7.87.2(2026-09-18):thinking-model 开关。默认 False(兼容 4b/2b);跑 qwen3.5/QwQ/R1 必须开
     parser.add_argument("--no-thinking", action="store_true",
                         help="Pass chat_template_kwargs={enable_thinking: False} to skip chain-of-thought. Required for thinking models (qwen3.5/QwQ/DeepSeek-R1) — otherwise max_tokens gets burned on reasoning.")
+    # §7.87.9(2026-09-20)intrinsic C1-C6 并发上限(默认 2);27B llama.cpp 默认 parallel=1,
+    # 高并发返 502 Bad Gateway;cloud LLM 可适当调高(4-6)
+    parser.add_argument("--intrinsic-concurrency", type=int, default=2,
+                        help="Max concurrent intrinsic category workers (default 2). Lower for big local LLMs (27B+), higher for cloud.")
     # §7.87.2 O6:C10 单 turn timeout(默认 180s;thinking model 多 turn 极端情况可拉到 600s)
     parser.add_argument("--c10-timeout", type=int, default=180,
                         help="Per-turn timeout for C10 multi-turn in seconds. Default 180. Increase to 600+ for thinking models.")
@@ -1042,7 +1052,10 @@ def main() -> int:
     }
     selected = [k for k in ("C1","C2","C3","C4","C5","C6") if only is None or k in only]
     if selected:
-        with ThreadPoolExecutor(max_workers=len(selected)) as ex:
+        # §7.87.9(2026-09-20)max_workers 限 2:27B llama.cpp 默认 parallel=1,6 线程 fire-and-forget
+        # 会全返 502 Bad Gateway;2 线程对 cloud LLM 仍快(~2-3x 加速),对本地 LLM 安全。
+        max_workers = min(len(selected), getattr(args, "intrinsic_concurrency", 2))
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
             futures = {k: ex.submit(intrinsic_runners[k]) for k in selected}
             for k, f in futures.items():
                 results[k] = f.result()

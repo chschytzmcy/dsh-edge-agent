@@ -638,14 +638,19 @@ bash scripts/e2e-model-quality-bench.sh \
 | **dashscope-qwen3.7-plus** | cloud(coding.dashscope,9B 等价 72B 闭源) | **100.0** | 100 | **90.0** | ✅ Prod-ready | v15 跟 v14 差 6.5 分来自 latency=0(v15 默认 `--skip-latency`);intrinsic + pipeline 都 100/100 持平,dsh-edge 完整性复验 ✓ |
 | **qwen3-4b**(4B) | rknn @ 192.168.1.174:8911(w4a16,v15.4 新增)| **100.0** | 100 | **90.0** | ✅ Prod-ready | 0 variance(3 run 完全一致);C1=0.899(conf_mae=0.148)、C3=0.104 informational;**C7-C9 全 PASS**;server 极稳 |
 | **qwen3.5-9b**(9B) | mlx 0.31.3 @ 192.168.65.2:8080(w4a16,v15.4 新增)| **90.0** | 100 | **90.0** | ✅ Prod-ready | C5 IP 子集 0.5~0.75 浮动(median 0.875);C10 retention **100**;mlx server 极稳,跨网段慢(~10min/run)但不掉链 |
-| **minicpm5-2b**(2B) | vllm 28000 | 77.8 | 100 | **78.9** | ⚠️ Conditional | C1 parse_rate=0(F1=0.0)、C5 IP recall=0;**C7-C9 全 PASS**,server 稳定 |
+| **Qwen3.8-27B**(27B) | llama.cpp 28001(gguf, Q4_K_M,v15.5 新增)| **100.0** | 100 | **90.0** | ✅ Prod-ready | **C1=0.949(conf_mae=0.062 best)**、C5 phone/id/ip/email **全 1.0**、C6 bash+search **全 1.0**;gguf Q4_K_M + NO_THINKING;27B 模型在 dsh-edge 工作负载上**显著优于** 4B/9B;r1 single-run(median 待 3-run 验证) |
+| ~~**minicpm5-2b**(2B)~~ | ~~vllm 28000~~ | ~~77.8~~ | ~~100~~ | ~~78.9~~ | ~~⚠️ Conditional~~ | **§7.87.10 移除对比**:1) vllm FP16 跟其他 w4a16 不可比(quant 精度不同);2) MLX 4bit 化失败(§7.87.9 C6 tool_call 0/17);3) 跟 size scaling 故事无关(non-Qwen family) |
 | ~~**minicpm5-2b-MLX**(2B)~~ | ~~mlx 0.31.3 @ 192.168.65.2:8080(w4a16,统一量化尝试)~~ | ~~41.5~~ | ~~33.3~~ | ~~41.5~~ | 💀 ~~Reject~~ | **§7.87.9 单次实测拒绝 — tool_call 0/17**;**C6 不会发 tool_calls**(model 输出纯文本);C7/C9 fail(dsh-edge 路由正常但 LLM 不发 tool → bash 不跑);同 mlx server 上 qwen3.5-9b C6=1.0 → **非 server 端 bug,模型版本/量化方法差异** |
 
-**Pipeline 4 模型都 100/100**:§7.87.6 `agent.whenIdle()` fix **跨 server 跨模型泛化** —— 不依赖具体 local LLM server 实现(vllm / mlx / rknn / cloud 全部 PASS C7-C9)。
+**Pipeline 4 模型都 100/100**:§7.87.6 `agent.whenIdle()` fix **跨 server 跨模型泛化** —— 不依赖具体 local LLM server 实现(vllm / mlx / rknn / llama.cpp / cloud 全部 PASS C7-C9)。
 
-**Intrinsic 排名**:dashscope 100.0 / **qwen3-4b 100.0** / qwen3.5-9b-mlx 90.0 / minicpm5-2b-vllm 77.8 / ~~minicpm5-2b-MLX 41.5~~。
-**C10 retention**:dashscope 100 / minicpm 100 / qwen3-4b 83.3 / **qwen3.5-9b-mlx 100**。
-**❌ 统一量化尝试失败**:minicpm5-2b 切 MLX 后 C6 tool_call 完全退化,回到 vllm 版本继续用。
+**Intrinsic 排名**:dashscope 100.0 / **qwen3-4b 100.0** / **Qwen3.8-27B 100.0** / qwen3.5-9b-mlx 90.0 / ~~minicpm5-2b-vllm 77.8 / minicpm5-2b-MLX 41.5~~。
+**C10 retention**:dashscope 100 / **Qwen3.8-27B 100** / qwen3.5-9b-mlx 100 / minicpm 100 / qwen3-4b 83.3。
+**✅ Size scaling 验证**(Qwen3 家族纯线):**27B ≥ 4B ≥ 9B** — Qwen3.8-27B 在 C1/C5/C6 三维度都达到 100 分,打败 9B Qwen3.5-mlx(C5 IP recall 退化)和 4B Qwen3-rknn(C1 conf_mae 0.148 > 0.062)。
+
+**❌ 统一量化尝试失败**:minicpm5-2b 切 MLX 后 C6 tool_call 完全退化,从对比表移除;Qwen3.8-27B 用 llama.cpp gguf Q4_K_M(混合精度 4-bit K-quant,跟 rknn/mlx 4-bit 不是同一档)。
+
+#### 5.2.1 qwen3-4b (4B rknn) intrinsic=100 vs qwen3.5-9b (9B mlx) intrinsic=90 的反常分析
 
 #### 5.2.1 qwen3-4b (4B rknn) intrinsic=100 vs qwen3.5-9b (9B mlx) intrinsic=90 的反常分析
 

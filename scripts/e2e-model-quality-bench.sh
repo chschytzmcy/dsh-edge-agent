@@ -135,6 +135,7 @@ while [[ $# -gt 0 ]]; do
         --api-key)      API_KEY="$2"; shift 2 ;;
         --no-thinking)  NO_THINKING=1; shift ;;
         --c10-timeout)  HARNESS_ARGS+=(--c10-timeout "$2"); shift 2 ;;
+        --intrinsic-concurrency) HARNESS_ARGS+=(--intrinsic-concurrency "$2"); shift 2 ;;
         --skip-latency) SKIP_LATENCY=1; shift ;;
         --with-latency) WITH_LATENCY=1; SKIP_LATENCY=0; shift ;;
         --log-file)     LOG_FILE="$2"; shift 2 ;;
