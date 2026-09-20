@@ -9003,6 +9003,7 @@ const turnEnd = new Promise<{result?: string; rejection?: ...}>((resolve) => {
 新增文件(repo root):
 - `.env.local-qwen3.5-9b` — LAN 28001 + llama.cpp + Qwen3.5-9B-Q4_K_M.gguf 全套配置
 - `.env.local-minicpm5-2b` — LAN 28000 + vllm + models/MiniCPM5-2B 全套配置
+- `.env.local-dashscope-qwen3.7-plus` — cloud coding.dashscope + qwen3.7-plus(§7.87.3 Phase 1 baseline,v14=96.5/100 cloud 锚点)
 
 每份 `.env.local-*` 跟 `.env` 同样结构(整个文件 copy,只 LOCAL_LLM_* 块不同),含注释标明 model + server + 切回方法。
 
