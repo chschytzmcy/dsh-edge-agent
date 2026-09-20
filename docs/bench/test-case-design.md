@@ -1,9 +1,9 @@
 # §7.87 Model Quality Bench — 测试用例设计分析
 
 **作者**:Claude(本地 Claude Code session)
-**生成日期**:2026-09-20(v15 → v15.bis §7.87.7 加 qwen3.5-9b 3-run + minicpm5-2b 4-run 横向对比)
-**关联**:`PROGRESS.md §7.87` | `scripts/e2e-model-quality-bench/` | `dist/bench-*/report.md`
-**当前版本**:v15.bis(56 用例,5min runtime,§7.87.6 http-api whenIdle fix 跨 LAN 模型验证 + §7.87.7 3-run qwen3.5-9b median 66.2 + 4-run minicpm5-2b median 79.6,Pipeline 双模型都 100/100)
+**生成日期**:2026-09-20(v15.bis §7.87.7 + v15.ter §7.87.8 加 3-model 纵线对比 dashscope+minicpm5-2b fresh + qwen3.5-9b historical)
+**关联**:`PROGRESS.md §7.87` | `scripts/e2e-model-quality-bench/` | `dist/bench-*/report.md` | `docs/bench/snapshots/`
+**当前版本**:v15.ter(56 用例,~3-5min runtime,§7.87.6 http-api whenIdle fix + §7.87.7 双 LAN 模型 + §7.87.8 cloud+vllm 双 fresh 验证,Pipeline 3 模型都 100/100)
 
 ---
 
@@ -657,6 +657,61 @@ bash scripts/e2e-model-quality-bench.sh \
 - **minicpm5-2b 没触发 retry-on-empty**,qwen3.5-9b 偶发触发 → vllm tool_call 结构稳定,llama.cpp 偶发 malformed
 - **bench 单次跑有 ~7 分 intrinsic variance**(minicpm Run1 vs median)—— 横向对比至少跑 3 次取 median 才公平
 - **C10 timeout 多发于 qwen3.5-9b** — 多轮并发场景 LAN llama.cpp 调度慢 / 资源不够,不是 §7.87.6 fix 问题
+
+### v15.ter (§7.87.8 — 3-model 纵线对比,dashscope cloud + minicpm5-2b fresh + qwen3.5-9b historical)
+
+**触发**:user "切到 dashscope + minicpm5-2b + qwen3.5-9b 全部测试一遍做纵线对比" → 缩减为 "先测试 dashscope 和 minicpm5-2b 做下对比" + "qwen3.5-9b 拿历史测试效果即可"
+
+**1. dashscope-qwen3.7-plus (cloud) 3-run fresh**(2026-09-20 10:00-10:13, 12m08s 总):
+
+| Run | Duration | Intrinsic | Pipeline | C10 | Final | Verdict |
+|-----|----------|-----------|----------|-----|-------|---------|
+| 1 | 4m47s | 100.0 | 100.0 | 100 | **90.0** | ✅ Prod-ready |
+| 2 | 3m48s | 100.0 | 100.0 | 100 | **90.0** | ✅ Prod-ready |
+| 3 | 3m33s | 100.0 | 100.0 | 100 | **90.0** | ✅ Prod-ready |
+| **median** | | **100.0** | **100.0** | **100** | **90.0** | ✅ |
+
+- 3/3 **0 variance**,cloud model 完全 deterministic
+- C1 intent-F1=1.0 + C2 safety=1.0 + C5 PII-recall=1.0(全类型 1.0)+ C4 JSON-schema=0.94 + C6 tool=0.9
+- Pipeline C7-C9 全 1.0(resultLen 101-2431)+ C10 retention 100
+- **首个 cloud baseline intrinsic+pipeline 双 100/100**
+
+**2. minicpm5-2b (vllm 28000) 3-run fresh**(2026-09-20 10:13-10:18, 4m26s 总):
+
+| Run | Duration | Intrinsic | Pipeline | C10 | Final | Verdict |
+|-----|----------|-----------|----------|-----|-------|---------|
+| 1 | 1m40s | 77.8 | 100.0 | 100 | **78.9** | ⚠️ Conditional |
+| 2 | 1m24s | 77.8 | 100.0 | 100 | **78.9** | ⚠️ Conditional |
+| 3 | 1m21s | 77.8 | 100.0 | 100 | **78.9** | ⚠️ Conditional |
+| **median** | | **77.8** | **100.0** | **100** | **78.9** | ⚠️ |
+
+- 3/3 **0 variance**,跟 §7.87.7 4-run median 79.6 差 0.7 在 PASS-or-actual 公式噪声范围
+- **C1 intent-F1=0.0**(parse_rate=0)—— 2B 模型对 system prompt 要求 JSON 输出的指令不稳定
+- **C5 PII-recall=0.667**(phone 0.667 / id 1.0 / **ip 0.0** / email 1.0)—— IP 类型全漏
+- Pipeline C7-C9 + C10 都 100/100 → vllm + 2B 完全能跑通 dsh-edge 系统联动
+
+### 3-model 纵线对比 median
+
+| Model | Server | Intrinsic | Pipeline | Final | Verdict | Tier |
+|-------|--------|-----------|----------|-------|---------|------|
+| **dashscope-qwen3.7-plus** | cloud | **100.0** | 100.0 | **90.0** | ✅ Prod-ready | 1 |
+| **minicpm5-2b** | vllm | 77.8 | 100.0 | 78.9 | ⚠️ Conditional | 2 |
+| qwen3.5-9b [§7.87.7 hist.] | llama.cpp | 52.3 | 100.0 | 66.2 | ❌ Weak | 3 |
+
+### v15.ter 关键洞察
+
+- **§7.87.6 whenIdle fix 跨 3 个模型 + 3 种 server 后端(cloud/vllm/llama.cpp)+ 3 种模型规模(2B/9B/plus)全部泛化** —— Pipeline 100/100 无一例外
+- **dashscope vs minicpm 总分差 11.1**(90.0 vs 78.9)—— intrinsic 差 22.2 被 50% 权重稀释 + pipeline 持平
+- **「小模型 + 好 server > 大模型 + 差 server」再次复验**:minicpm (2B + vllm) 78.9 > qwen3.5-9b (9B + llama.cpp) 66.2
+- **6 个 run 全 0 variance** —— §7.87.6 fix + vllm 干净 tool_call 双管齐下,无 qwen-style malformed race
+- **2B minicpm C1/C5 失败是模型能力天花板**,不是 dsh-edge 损失 —— intrinsic 测的是直连模型,fault 在 wire 之前
+- **bench 流程暴露 2 个真 bug**(并发 race + make-package wipe)—— bench 自身健壮性需要 hardening,见 §7.87.8 PROGRESS
+
+### 数据备份:本次 6 个 clean bench 的 `dist/bench-*` 在 make-package wipe 后已不存
+
+- 完整 per-run 表 + cross-model median + 两条 debug finding 落 `docs/bench/snapshots/2026-09-20-3model-vertical.md`
+- 3 个 race 污染目录移 `dist/bench-raced-20260920-0958/` 加 README
+- 后续横向对比按 snapshot 表的数据当 baseline(原始 scores.json / report.md 暂不重建,等下次 bench 任务按 §7.87.8 fix 后 make-package 跑)
 
 ---
 

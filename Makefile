@@ -107,7 +107,10 @@ e2e-benchmark:
 # 镜像)。tarball 仅供 release 分发 / 外部用户下载。
 package: build
 	@echo "$(BLUE)==> 打包部署文件 v$(VERSION)$(NC)"
-	@rm -rf $(PACKAGE_DIR) $(DIST_DIR)
+	# §7.87.8 (2026-09-20): 只清 PACKAGE_DIR,不清 DIST_DIR —— 保留 dist/bench-*
+	# (历史 bench 报告落点,git-ignored 但 user 本地需要留存对比)。
+	# tarball / sha 在 line 139-140 写入会覆盖旧的,无需预清。
+	@rm -rf $(PACKAGE_DIR)
 	@mkdir -p $(PACKAGE_DIR)/dsh-edge-agent-v$(VERSION)
 	@mkdir -p $(DIST_DIR)
 
