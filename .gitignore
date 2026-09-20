@@ -17,6 +17,8 @@ AGENTS.md
 .env.uninstall-backup.*
 # §7.87.6 per-LLM .env 快照(同样含 live key + LAN IP):绝不入 git history
 .env.local-*
+# §7.87.8 单-LLM .env 备份(同样含 live key):绝不入 git history
+docs/bench/snapshots/*.env
 coverage/
 *.tsbuildinfo
 .claude/

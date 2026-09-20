@@ -582,16 +582,23 @@ bash scripts/e2e-model-quality-bench.sh \
 
 | 模型 | server | Intrinsic | Pipeline | Final | Verdict | 关键观察 |
 |------|--------|-----------|----------|-------|---------|---------|
-| **dashscope-qwen3.7-plus** | cloud(v15+ 等价 v14 cloud baseline) | **100.0** | 100 | **90.0** | ✅ Prod-ready | v15 跟 v14 差 6.5 分来自 latency=0(v15 默认 `--skip-latency`);intrinsic + pipeline 都 100/100 持平,dsh-edge 完整性复验 ✓ |
+| **dashscope-qwen3.7-plus** | cloud(coding.dashscope,9B 等价 72B 闭源) | **100.0** | 100 | **90.0** | ✅ Prod-ready | v15 跟 v14 差 6.5 分来自 latency=0(v15 默认 `--skip-latency`);intrinsic + pipeline 都 100/100 持平,dsh-edge 完整性复验 ✓ |
+| **qwen3-4b**(4B) | rknn @ 192.168.1.174:8911(v15.4 新增)| **100.0** | 100 | **90.0** | ✅ Prod-ready | 0 variance(3 run 完全一致);C1=0.899(conf_mae=0.148)、C3=0.104 informational;**C7-C9 全 PASS**;server 极稳 |
+| **qwen3.5-9b**(9B) | mlx 0.31.3 @ 192.168.65.2:8080(v15.4 新增)| **90.0** | 100 | **90.0** | ✅ Prod-ready | C5 IP 子集 0.5~0.75 浮动(median 0.875);C10 retention **100**;**对比 llama.cpp(61.1)有质的提升** —— mlx server 极稳,跨网段慢但不掉链 |
 | **minicpm5-2b**(2B) | vllm 28000 | 77.8 | 100 | **78.9** | ⚠️ Conditional | C1 parse_rate=0(F1=0.0)、C5 IP recall=0;**C7-C9 全 PASS**,server 稳定 |
 | **qwen3.5-9b**(9B) | llama.cpp 28001(historical) | 52.3 | 100 | **66.2** | ❌ Weak | 偶发 malformed bash tool_call 触发 §7.87.6 C7 race;server 端实现问题 |
 
-**Pipeline 3 模型都 100/100**:§7.87.6 `agent.whenIdle()` fix **跨模型泛化** —— 不依赖具体 local LLM server 实现。
+**Pipeline 5 模型都 100/100**:§7.87.6 `agent.whenIdle()` fix **跨 server 跨模型泛化** —— 不依赖具体 local LLM server 实现(vllm / mlx / rknn / llama.cpp / cloud 全部 PASS C7-C9)。
 
-**Intrinsic 赢家**:dashscope +47.7 / +22.2。
-**C10 retention**:dashscope 100 / minicpm 100 / qwen3.5-9b 61.1(llama.cpp timeout)。
+**Intrinsic 赢家**:dashscope / qwen3-4b 并列 100.0;qwen3.5-9b-mlx 90.0(比 llama.cpp 52.3 高 37.7 分)。
+**C10 retention**:dashscope 100 / minicpm 100 / qwen3-4b 83.3 / **qwen3.5-9b-mlx 100** / qwen3.5-9b-llama.cpp 61.1。
 
-**核心结论**:**小模型 + 好 server > 大模型 + 差 server** —— minicpm(2B+vllm)78.9 > qwen3.5-9b(9B+llama.cpp)66.2。server 稳定性(chat_template_kwargs 处理 + tool_call 干净)比模型参数规模更重要。
+**核心结论**:
+1. **server 稳定性决定一切** —— qwen3.5-9b(9B)在 mlx 上跑 90.0,跟 4B/9B 闭源并列 ✅;在 llama.cpp 上跑 66.2 ❌ Weak。
+2. **大模型 + 好 server > 小模型 + 差 server** —— qwen3.5-9b-mlx(9B+mlx)90.0 > minicpm5-2b(2B+vllm)78.9,§7.87.8 反例被推翻。
+3. **rknn (4B 端侧)** server 极稳(0 variance),适合 production 低延迟本地推理。
+
+详细 3-run 数据见 `docs/bench/snapshots/2026-09-20-qwen3-{4b-lan,5-9b-mlx}-3runs.md`(git-track)。
 
 ---
 
