@@ -8847,100 +8847,50 @@ cloud baseline = 96.5/100 是 honest anchor(intrinsic + pipeline 都 100,latency
 
 **user 选项 A 落地**:深入审计 log + dsh-agent-loop 源码,定位 C7 race。
 
-**根因(审计 log 时间轴 + 源码 cross-ref)**:
-
-| 时刻 | 事件 | 解读 |
-|------|------|------|
-| 17:13:06.738 | `llm.local.start pL=6278` | mibao LLM call 1 start |
-| 17:13:08.561 | `llm.local.end pL=6278 rL=0 tc=1` | LLM call 1 返回 tool_call(ets-auth),无 text |
-| 17:13:08.464 | `llm.local.start pL=6289` | LLM call 2 start(并行,不等 ets-auth 真跑完) |
-| 17:13:08.589 | `llm.local.start pL=6295` | 另一 session 的 call 2(忽略) |
-| 17:13:10.064 | `llm.local.end pL=6289 rL=18 tc=1` | **mibao LLM call 2 返回 18 chars prose + 1 tool_call(bash)** |
-| 17:13:10.083-084 | `input-guard.duplicate-tool-call-id.recovered` + `input-guard.orphan-tool-call.recovered` | 下次 LLM call outgoing prompt 检测到 orphan tool_call,bash 真没执行 |
-| 17:13:10.085 | `llm.local.start pL=6324` | **新 turn 启动**(driver 看到 inbox.hasPending=true 来自 orphan recovery 合成 tool-result) |
-| 17:13:11.026 | `llm.local.end pL=6295 rL=128` | 另一 session 的 call 2 结束(忽略) |
-| 17:13:11.033 | `http.chat.end rL=18 sid=bench-e2e-mibao` | **HTTP 200 提前返**(只取到 LLM call 2 的中间 prose) |
-| 17:13:13.587 | `llm.local.end pL=6324 rL=268` | mibao LLM call 3 才真结束(含合成 tool-result 的"完成回答") |
+**根因**(mibao turn 1 时序,审计 log 复盘):
+1. LLM call 1 → tool_call(ets-auth)→ 真跑 → step 返回 null → 继续 loop
+2. LLM call 2 → 18 chars prose + **malformed bash tool_call**(duplicate toolCallId)
+3. bash tool runtime `prepare()` 拒判 → step 返回 `{kind: "completed"}`(不是 null)
+4. loop break → finally → `turn/end` fire → http-api listener 立即 resolve → **HTTP 200 with rL=18**(只取到中间 prose)
+5. driver 看到 inbox 仍有 pending(orphan recovery 合成 tool-result)→ 起新 turn → LLM call 3 才真返 rL=268(含完整回答)—— **但 HTTP 已早返**
 
 **关键代码节点**(`@deepseek-ai/dsh-agent-loop/lib/index.js`):
 
-`turn()` 主循环(line 521-609):
 ```js
+// turn() 主循环 (line 521-609)
 while (true) {
-  const stepEnd = await this.step(...)            // LLM call + executeToolCalls
+  const stepEnd = await this.step(...)
   if (turnEnds === null || turnEnds.kind !== "max-tokens") turnEnds = stepEnd
   if (turnEnds && this.inbox.nextStep.length === 0) break
 }
-```
-
-`step()` 返回逻辑(line 689-693):
-```js
+// step() 返回 (line 689-693)
 if (toolCalls.length === 0) return { kind: "completed" }
 const { concluded } = await executeToolCalls(...)
 return concluded ? { kind: "completed" } : null
 ```
 
-**事件 chain 推演**(mibao turn 1):
-1. step 1: LLM call 1 → tool_call(ets-auth) → `executeToolCalls` → ets-auth 真跑 → 返回 `concluded=false` → step 返回 `null` → 继续 loop
-2. step 2: LLM call 2 → 18 chars prose + tool_call(bash, malformed/duplicate-id)
-   - bash tool runtime 的 `prepare()` 阶段拒判(可能是重复 toolCallId 校验 / args 解析失败)
-   - 即使 executeToolCalls 被调用,bash 没真跑,`concluded` 值取决于哪条 path
-   - step 返回 `{kind: "completed"}` (不是 null)
-3. loop break → finally → `turn/end` fire
-4. http-api 现有 listener (line 545-592) 在 turn/end 第一次就 resolve → 取最后 assistant message 的 text → HTTP 200 with rL=18
-5. driver 看到 inbox 仍有 pending message(orphan recovery 合成 tool-result 触发的下一轮)→ 起新 turn → step 1 = LLM call 3
-
 **为什么 qwen3.5-9b 暴露、cloud qwen3.7-plus 不暴露**:
-- cloud 模型稳定生成合规 tool_call,executeToolCalls 真跑 tool、返回真 tool_result → turn 1 在 step 3 收尾 → 一次性 turn/end
-- qwen3.5-9b 生成 bash tool_call 时偶发 malformed(duplicate toolCallId / 空 args)→ tool runtime 拒判 → step 返回 completed → turn 1 提前结束
+- cloud 模型稳定生成合规 tool_call → executeToolCalls 真跑 tool → turn 1 一次性 turn/end
+- qwen3.5-9b + llama.cpp 偶发 malformed bash tool_call(duplicate toolCallId / 空 args)→ tool runtime 拒判 → step 返回 completed → turn 1 提前结束
 
-**修复方案**(已选 A,落地代码):
+**修复**(已落地 commit `4277d3b`):
 
-在 `src/dsh-adapter/http-api.ts` line 544-593 的 `turnEnd` Promise 改用 `agent.whenIdle()`:
-
-```ts
-// §7.87.6: 不用 first turn/end 当 resolve 信号 — 改用 agent.whenIdle()
-// 当 agent 跨多 turn 跑(orphan tool_call → synthetic tool-result → 下一 turn)
-// 时,只有 whenIdle() 才能保证 driver 真的 idle。ReactLoopAgent 已经 export
-// 这个方法(`agent-loop/lib/index.js:465`),do-while 双重检查确保
-// activityDone 在循环期间被 reset 时也 wait 住。
-const turnEnd = new Promise<{result?: string; rejection?: ...}>((resolve) => {
-  let blockedFired = false
-  const dispose = this.cordisCtx.on('session/event', (session, event) => {
-    if (event.type !== 'turn/end') return
-    const blockedReason = (event as any).data?.reason
-    if (blockedReason?.kind === 'blocked') {
-      blockedFired = true
-      // ... 既有 blocked handling
-      dispose()
-      resolve({ rejection: {...} })
-    }
-  })
-  record.agent.whenIdle().then(() => {
-    if (blockedFired) return
-    dispose()
-    const events = snapshotSessionEvents(record.agent.session as any)
-    const lastAssistant = events.filter(e => e.type === 'assistant/message').pop()
-    const text = lastAssistant ? extractText(lastAssistant) : ''
-    if (text) this.pushRecentMessage(sessionId, 'assistant', text)
-    resolve({ result: text })
-  })
-})
-```
-
-**关键 insight**:
-- `agent.whenIdle()` 是 dsh-agent-loop 暴露的官方"driver 静默"信号,等 `activityDone` Promise 链全部 settle
-- 既有 session/event listener 保留 — 仍然检测 blocked turn(400/403/503 翻译)
-- whenIdle() 不需要 timeout(驱动总会停;反过来如果 hang,HTTP 也应该 hang → 让上游 ops 看到)
-- 该修复对 cloud 路径无影响(cloud 模型无 orphan,turn 1 就是终态)
+`src/dsh-adapter/http-api.ts:543-617` 的 `turnEnd` Promise 改用 `agent.whenIdle()` 取代 first `turn/end` listener:
+- `ReactLoopAgent.whenIdle()`(dsh-agent-loop `lib/index.js:465`)等 `activityDone` Promise 链全部 settle,do-while 双重检查防 reset 漏判
+- 既有 `session/event` listener **保留**——仍检测 blocked turn(400/403/503 翻译)
+- whenIdle() 不需要 timeout(驱动总会停;反过来 hang 应让上游 ops 看到)
+- 该改动对 cloud 无副作用(cloud 模型 turn 1 一次性 end)
 
 **dev-restart 验证**:
-- `npm run compile` 改 http-api.ts
-- `bash scripts/dev-restart.sh`
-- 跑 bench C7 (mibao) 单用例验证 rL ≥ 100(LAN qwen3.5-9b + whenIdle fix)
-- PASS 后跑全套 bench,预期 C7/C8/C9/C10 全 PASS → overall ≥ 85(qwen3.5-9b "Production-ready" 阈值)
+- `npm run compile` + `bash scripts/dev-restart.sh`
+- bench C7 (mibao) rL=259 PASS(修前 18/16 FAIL)→ 全套 bench C7/C8/C9/C10 全 PASS → Pipeline 100/100
 
-**关联**: memory `cordis-waterfall-listener-args` / `session-events-api-migration` / `bench-thinking-wire-body`(本节 §7.87.5)+ 本节 §7.87.6
+**Why this matters**:
+- §7.87.6 fix 是 **项目级 dsh-edge 完整性修复** —— qwen3.5-9b + minicpm5-2b + dashscope 3 模型 + cloud/vllm/llama.cpp 3 server 后端 Pipeline 都 100/100(§7.87.7/§7.87.8 复验)
+- **教训**:http-api 等 driver 静默必须用 `agent.whenIdle()`,**不要 first `turn/end`** —— 跨多 turn 跑(orphan → synthetic → 下一 turn)时 race
+- **教训**:测 C7 race 类 bug 必须用真实 LAN 模型 + 偶发 malformed tool_call —— 纯 cloud baseline 永远暴露不了
+
+**关联**:memory `cordis-waterfall-listener-args` / `session-events-api-migration` / `bench-thinking-wire-body`(§7.87.5+§7.87.8 同步)。
 
 ---
 
