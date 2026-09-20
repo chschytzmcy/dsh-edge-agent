@@ -637,7 +637,7 @@ bash scripts/e2e-model-quality-bench.sh \
 |------|--------|-----------|----------|-------|---------|---------|
 | **dashscope-qwen3.7-plus** | cloud(coding.dashscope,9B 等价 72B 闭源) | **100.0** | 100 | **90.0** | ✅ Prod-ready | v15 跟 v14 差 6.5 分来自 latency=0(v15 默认 `--skip-latency`);intrinsic + pipeline 都 100/100 持平,dsh-edge 完整性复验 ✓ |
 | **qwen3-4b**(4B) | rknn @ 192.168.1.174:8911(w4a16,v15.4 新增)| **100.0** | 100 | **90.0** | ✅ Prod-ready | 0 variance(3 run 完全一致);C1=0.899(conf_mae=0.148)、C3=0.104 informational;**C7-C9 全 PASS**;server 极稳 |
-| **qwen3.5-9b**(9B) | mlx 0.31.3 @ 192.168.65.2:8080(w4a4,v15.4 新增)| **90.0** | 100 | **90.0** | ✅ Prod-ready | C5 IP 子集 0.5~0.75 浮动(median 0.875);C10 retention **100**;mlx server 极稳,跨网段慢(~10min/run)但不掉链 |
+| **qwen3.5-9b**(9B) | mlx 0.31.3 @ 192.168.65.2:8080(w4a16,v15.4 新增)| **90.0** | 100 | **90.0** | ✅ Prod-ready | C5 IP 子集 0.5~0.75 浮动(median 0.875);C10 retention **100**;mlx server 极稳,跨网段慢(~10min/run)但不掉链 |
 | **minicpm5-2b**(2B) | vllm 28000 | 77.8 | 100 | **78.9** | ⚠️ Conditional | C1 parse_rate=0(F1=0.0)、C5 IP recall=0;**C7-C9 全 PASS**,server 稳定 |
 
 **Pipeline 4 模型都 100/100**:§7.87.6 `agent.whenIdle()` fix **跨 server 跨模型泛化** —— 不依赖具体 local LLM server 实现(vllm / mlx / rknn / cloud 全部 PASS C7-C9)。
@@ -658,24 +658,32 @@ bash scripts/e2e-model-quality-bench.sh \
 
 **反常根因**:
 1. **不是同系列 size 缩放** — qwen3-4b 是 **Qwen3** 系列 4B; qwen3.5-9b 是 **Qwen3.5** 系列 9B,**版本升级**(v3 → v3.5)而非 size scaling
-2. **Qwen3 → Qwen3.5 在某些能力退化**:
+2. **Qwen3 → Qwen3.5 在某些能力退化**(主因):
    - C5 PII 退化(8.8.8.8 / 1.1.1.1 偶发漏) — Qwen3.5 改了 IP 模式识别训练
    - C6 tool_call 退化(web_search name match 0.75) — Qwen3.5 改了 tool_call 训练分布
-3. **量化方式差异(w4a16 vs w4a4)**:
-   - rknn @ 192.168.1.174 = Qwen3-4B **w4a16**(weights int4 + activation fp16) — Rockchip NPU 默认,激活保真
-   - mlx 4-bit @ 192.168.65.2 = Qwen3.5-9B **w4a4**(weights int4 + activation int4) — mlx community 上传时已量化
-   - **关键差异在 activation 精度**:w4a16 激活保持 fp16 → IP/tool_call name 数字保真;w4a4 激活 int4 → 数字模式易漏(8.8.8.8 数字 . 边界识别失败)
+3. **量化精度等价**(非主因):
+   - rknn @ 192.168.1.174 = Qwen3-4B **w4a16**(weights int4 + activation fp16)
+   - mlx 4-bit @ 192.168.65.2 = Qwen3.5-9B **w4a16**(mlx config.json `bits:4, group_size:64, mode:affine` — mlx 默认只量化 weights,activation fp16)
+   - 两边 activation 都是 fp16 → 数字/IP 精度差异**不是量化导致**
 4. **测试用例天花板**:C1-C6 都是 dsh-edge prompt copy 的**短结构化输出**(JSON / PII / tool_call),9B 大模型在短任务上的优势体现不出来,反而 4B 已够用
 
 **正确结论**(替换 §5.2 旧"小模型+好server > 大模型+差server"):
 - ❌ **不是 "4B 优于 9B"**
-- ✅ **"Qwen3 4B (w4a16) 在 dsh-edge 短结构化 prompt 上 ≥ Qwen3.5 9B (w4a4)"** — Qwen3 系列 + w4a16 量化组合在 dsh-edge 工作负载上比 Qwen3.5 + w4a4 更稳
-- ✅ **"w4a16 (激活 fp16) > w4a4 (激活 int4) 在数字/IP/tool_call 细节"** — 量化方式的 activation 精度决定 PII/tool_call 模式识别
+- ❌ **不是 "w4a16 > w4a4"**(两边都是 w4a16)
+- ✅ **"Qwen3 4B 在 dsh-edge 短结构化 prompt 上 ≥ Qwen3.5 9B"** — Qwen3 系列在 PII/tool_call 模式识别训练上**强于** Qwen3.5 系列
+- ✅ **主因 = Qwen3 → Qwen3.5 版本升级在某些 dsh-edge 工作负载上的能力退化**,不是 size 也不是量化
+
+#### 5.2.2 验证方法(下次跑 bench 时可加)
+
+要把"版本升级退化"vs"server 稳定性"拆开,需要:
+1. **同 server 同量化跑 Qwen3-9B 跟 Qwen3.5-9B** — 如果 Qwen3-9B 跟 qwen3-4b 同样稳定,确认是版本升级问题
+2. **同 Qwen3.5 跑不同 server(vllm / mlx / rknn)** — 验证 server 是否是 secondary factor
+3. 本 bench 当前 4 模型没法控制这两个变量(系列 + server 变化耦合),需要后续单独设计 isolation test
 
 **核心结论**:
-1. **server 稳定性 + 量化方式决定 PII/tool_call 细节**(不是模型 size)
+1. **模型版本决定 PII/tool_call 细节**(Qwen3 > Qwen3.5 在 dsh-edge 工作负载上),server 稳定性是 secondary
 2. **大模型 + 好 server > 小模型 + 次 server** —— qwen3.5-9b-mlx(9B+mlx)90.0 > minicpm5-2b(2B+vllm)78.9
-3. **rknn (4B 端侧, w4a16)** server 极稳(0 variance),适合 production 低延迟本地推理,且 dsh-edge 短任务上 ≥ 9B mlx w4a4(关键在 activation 精度)
+3. **rknn (4B 端侧)** server 极稳(0 variance),适合 production 低延迟本地推理,且 dsh-edge 短任务上 ≥ 9B mlx(因 Qwen3 > Qwen3.5)
 
 详细 3-run 数据见 `docs/bench/snapshots/2026-09-20-qwen3-{4b-lan,5-9b-mlx}-3runs.md`(git-track)。
 
