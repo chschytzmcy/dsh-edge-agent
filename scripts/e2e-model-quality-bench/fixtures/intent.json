@@ -29,6 +29,15 @@
     {"query": "先帮我搜一下最新的 Rust 1.80 release notes,然后下载到本地 ~/rust-notes/ 目录", "expected_category": "CLOUD", "expected_confidence": 0.7, "note": "§7.87.11 hard: 多意图串联 (CLOUD 搜索 + LOCAL 下载),主意图是 CLOUD 搜索,需要理解先后顺序;小模型倾向答 LOCAL 因为 '下载到本地'"},
     {"query": "如果我电脑的内存使用超过 80%,就帮我清理一下;否则查一下今天天气", "expected_category": "LOCAL", "expected_confidence": 0.7, "note": "§7.87.11 hard: 条件分支,主句是 LOCAL(内存检查+清理),CLOUD 是 fallback;小模型倾向答 CLOUD 因为 '查天气' 在后面"},
     {"query": "帮我搜一下附近的咖啡馆,但是不要联网,就用本地的数据", "expected_category": "LOCAL", "expected_confidence": 0.85, "note": "§7.87.11 hard: 反语/否定 '不要联网' 强 LOCAL 覆盖,表面 '搜' 关键词容易骗小模型答 web_search → CLOUD"},
-    {"query": "现在帮我做以下几件事:1. 查今天北京天气;2. 列一下我电脑 /tmp 目录下大于 100MB 的文件;3. 把这两份信息都发到 bob@example.com", "expected_category": "LOCAL", "expected_confidence": 0.6, "note": "§7.87.11 hard: 三步串联,主执行是步骤 2 (本地),需要 long-context 推理权重而不是被 '天气/CLOUD' 关键词主导"}
+    {"query": "现在帮我做以下几件事:1. 查今天北京天气;2. 列一下我电脑 /tmp 目录下大于 100MB 的文件;3. 把这两份信息都发到 bob@example.com", "expected_category": "LOCAL", "expected_confidence": 0.6, "note": "§7.87.11 hard: 三步串联,主执行是步骤 2 (本地),需要 long-context 推理权重而不是被 '天气/CLOUD' 关键词主导"},
+
+    {"query": "Can you check the disk space on my machine and also tell me what the weather is like in Tokyo?", "expected_category": "LOCAL", "expected_confidence": 0.7, "note": "§7.87.12 edge: 英文混合 query,主意图是磁盘检查(LOCAL),天气是次要(CLOUD);小模型倾向答 CLOUD 因为前半句简单+英文 → 模型直接走 cloud 路径"},
+    {"query": "帮我看看 ~/.bashrc 里面最近改了啥,顺便帮我查一下 macOS Sonoma 14.5 有什么新特性", "expected_category": "LOCAL", "expected_confidence": 0.7, "note": "§7.87.12 edge: 多意图(LOCAL + CLOUD) 用 '顺便' 连接,主意图是 LOCAL 文件查看;小模型倾向选 CLOUD 因为 macOS 新特性查询"},
+    {"query": "What time is it now on my server? Also, what's the timezone difference between Shanghai and New York?", "expected_category": "LOCAL", "expected_confidence": 0.7, "note": "§7.87.12 edge: 英文混合,主意图是查询本机时间(LOCAL bash),时区是知识问答(CLOUD);需要 long-context 判断主次"},
+    {"query": "帮我用 docker ps -a 看一下正在跑的容器,然后搜一下为什么我的 mysql 容器总是 OOM", "expected_category": "LOCAL", "expected_confidence": 0.7, "note": "§7.87.12 edge: 多意图(LOCAL docker + CLOUD 搜 mysql 问题),主执行是步骤 1 docker ps;小模型倾向选 CLOUD 因为后半句提 '搜'"},
+    {"query": "我电脑上的 VS Code 突然打不开 Python 文件了,帮我看看本机的 ~/.vscode/settings.json 是不是有问题", "expected_category": "LOCAL", "expected_confidence": 0.95, "note": "§7.87.12 edge: 故障排查上下文,主意图是本地文件查看;'VS Code 打不开' 在知识问答模型易误判为 CLOUD 求助"},
+    {"query": "如果 NVIDIA 股票今天收盘价高于 900 美元,帮我算一下收益率;否则就告诉我当前价", "expected_category": "CLOUD", "expected_confidence": 0.7, "note": "§7.87.12 edge: 金融领域 + 条件分支,需要实时股价数据(CLOUD);小模型倾向答 LOCAL 因为 '算一下收益率' 听起来像计算"},
+    {"query": "帮我用 find 命令找一下 /var/log 下所有 .log 文件里包含 'ERROR' 的行,顺便翻译一下错误信息的含义", "expected_category": "LOCAL", "expected_confidence": 0.7, "note": "§7.87.12 edge: 多意图串联 (LOCAL find + CLOUD 翻译),主执行是 grep 步骤;翻译是次要;小模型倾向 CLOUD 因为 '翻译' 关键词"},
+    {"query": "你好,我是新来的,能给我介绍一下你自己以及你能做什么吗?", "expected_category": "CLOUD", "expected_confidence": 0.8, "note": "§7.87.12 edge: 自我介绍/能力询问,纯聊天 (CLOUD);小模型倾向 LOCAL 因为 '我自己/做什么' 像本地操作描述"}
   ]
 }

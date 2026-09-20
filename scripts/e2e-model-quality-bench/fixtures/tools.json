@@ -25,6 +25,15 @@
     {"query": "帮我查一下 192.168.1.1 这个 IP 是不是我本机的网关", "expected_tool": "bash", "required_args": ["command"], "note": "§7.87.11 hard: '本机的网关' 强本地信号;小模型会被 '查一下 IP' 误导成 web_search,大模型理解意图是本地网络诊断"},
     {"query": "如果有新的 npm 版本,帮我升级;否则查一下 npm 官网的最新文档", "expected_tool": "web_search", "required_args": ["query"], "note": "§7.87.11 hard: 条件分支 + '升级' 关键词,主句是 '否则' 后面的 web_search;小模型倾向选 bash 因为前半句提 '升级'"},
     {"query": "我想搜点东西,但先别联网,看看我本地的笔记 ~/notes/ 里有没有相关内容", "expected_tool": "bash", "required_args": ["command"], "note": "§7.87.11 hard: 否定 '先别联网' 强 LOCAL 覆盖,'搜' + '本地 grep/find' 关键词"},
-    {"query": "查一下当前系统负载,如果超过 5 就帮我重启 nginx;另外顺便搜一下 nginx 调优的最新博客", "expected_tool": "bash", "required_args": ["command"], "note": "§7.87.11 hard: 三步串联,主执行是步骤 1+2 (本地 bash),web_search 是 '顺便' 副意图;模型应选主意图的 bash,小模型倾向选 web_search 因为 '最新博客'"}
+    {"query": "查一下当前系统负载,如果超过 5 就帮我重启 nginx;另外顺便搜一下 nginx 调优的最新博客", "expected_tool": "bash", "required_args": ["command"], "note": "§7.87.11 hard: 三步串联,主执行是步骤 1+2 (本地 bash),web_search 是 '顺便' 副意图;模型应选主意图的 bash,小模型倾向选 web_search 因为 '最新博客'"},
+
+    {"query": "用 curl 测试一下 https://api.github.com 这接口是不是正常的,顺便看看我们本机 8080 端口是不是有服务在跑", "expected_tool": "bash", "required_args": ["command"], "note": "§7.87.12 edge: 多意图(curl 测试公网 + 本机端口检查),主执行是 bash;小模型倾向选 web_search 因为 '接口是不是正常的' 听起来像在线测试"},
+    {"query": "用 ripgrep 搜一下 ~/projects 下所有 Rust 文件包含 'unsafe' 关键字的", "expected_tool": "bash", "required_args": ["command"], "note": "§7.87.12 edge: 显式工具名 ripgrep + 路径 + 文件类型,本地代码搜索;小模型可能答 web_search 因为 '搜' 关键词"},
+    {"query": "What's the latest stable version of PostgreSQL?", "expected_tool": "web_search", "required_args": ["query"], "note": "§7.87.12 edge: 英文查询版本号,实时数据 → web_search;小模型可能答 bash 因为 'what version' 像 'system info'"},
+    {"query": "用 df -h 看看 /home 目录还剩多少空间,如果少于 20G 就帮我清理一下 ~/.cache", "expected_tool": "bash", "required_args": ["command"], "note": "§7.87.12 edge: 多步骤 bash(检查+条件清理),全程本地;小模型可能答 web_search 因为 '清理' 听起来像云操作"},
+    {"query": "帮我在 ~/.ssh/config 里面找一下有没有跳板机的配置,然后告诉我跳板机怎么配的", "expected_tool": "bash", "required_args": ["command"], "note": "§7.87.12 edge: 多步骤(本地 grep + 知识问答),主执行是 bash 文件查看;小模型可能答 web_search 因为后半句 '怎么配的'"},
+    {"query": "现在黄金现货价格是多少美元每盎司?", "expected_tool": "web_search", "required_args": ["query"], "note": "§7.87.12 edge: 实时金融数据 → web_search;小模型可能答 bash 因为 '多少' 像查询命令"},
+    {"query": "用 jq 解析一下 /tmp/response.json 里面的 .data.users 数组,统计每个用户的年龄总和", "expected_tool": "bash", "required_args": ["command"], "note": "§7.87.12 edge: 显式工具 jq + 数据处理,纯本地;小模型可能答 web_search 因为 .json 关键词"},
+    {"query": "我想知道 Rust 1.80 的 release notes 跟 1.79 比有什么变化,另外帮我看看本地有没有 rust 1.79 的源码", "expected_tool": "web_search", "required_args": ["query"], "note": "§7.87.12 edge: 多意图(web_search 知识 + bash 本地),主意图是 web_search 比较版本差异;小模型可能答 bash 因为 '本地的' 关键词"}
   ]
 }

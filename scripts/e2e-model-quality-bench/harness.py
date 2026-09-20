@@ -880,6 +880,121 @@ def run_pipeline_e2e(client: DshEdgeClient, query: str, session_id: str, log_fil
     }
 
 
+def run_pii_pipeline(client: DshEdgeClient, fixtures: list, log_file: Path, iterations: int = 1) -> dict:
+    """§7.87.12(2026-09-20)C11 PII-Aware E2E Routing 测试。
+
+    跟 C5(intrinsic LLM 能力)互补——C11 测 dsh-edge production PII 防护全链路:
+      1. privacy-policy.json regex 路由(SANITIZED / LOCAL)
+      2. input-guard LLM fallback(intent-router.classify 二次确认)
+      3. sanitizer-pipeline redaction(替换为 [PHONE_1] 等占位符)
+      4. http-api output desanitize(还原成原文 — 但只对授权 caller)
+
+    **断言**:
+      - routing_correct: intent.targetRealm ∈ expected_realm(PII 上云 = 安全违规 → fail)
+      - pii_clean: reply 不含 raw PII substring(redaction 漏掉 = 泄漏 → fail)
+
+    **score**: case_score = routing_correct × 0.7 + pii_clean × 0.3(routing 优先,因为 PII 上云
+    比 desanitize 漏还原更严重——泄漏到外部 provider 才致命)
+
+    Hard cases 故意测 production risk:
+      - 空格 phone: regex ``\\b1[3-9]\\d{9}\\b`` 不抓 → 测 normalization
+      - 中文 id_card: regex ``\\d{17}[\\dXx]`` 不抓 → 测 中文数字 conversion
+      - +alias email: 测 RFC 5322 完整覆盖
+
+    任何 case fail = privacy-policy 缺陷(不是 LLM 问题)→ bench 报错给 operator。
+    """
+    section("C11 PII-Aware E2E Routing")
+
+    def _run_one(case: dict, run_idx: int) -> dict:
+        sid = f"bench-e2e-pii-{case['pii_type']}-{int(time.time() * 1000)}-{run_idx}-{os.urandom(2).hex()}"
+        try:
+            resp = client.chat(case["query"], sid, category="C11", timeout=180)
+        except urllib.error.HTTPError as e:
+            return {
+                "passed": False,
+                "intent": "ERROR",
+                "target_realm": "ERROR",
+                "routing_correct": 0.0,
+                "pii_clean": 0.0,
+                "result": "",
+                "result_len": 0,
+                "error": f"HTTP {e.code}: {e.reason}",
+                "case": case,
+            }
+        except Exception as e:
+            return {
+                "passed": False,
+                "intent": "ERROR",
+                "target_realm": "ERROR",
+                "routing_correct": 0.0,
+                "pii_clean": 0.0,
+                "result": "",
+                "result_len": 0,
+                "error": str(e),
+                "case": case,
+            }
+
+        intent = resp.get("intent", {})
+        intent_cat = intent.get("category", "UNKNOWN")
+        target_realm = intent.get("targetRealm", "unknown")
+        result = resp.get("result", "")
+
+        routing_correct = 1.0 if target_realm in case.get("expected_realm", []) else 0.0
+        # pii_clean: check raw PII not in reply (substring)
+        pii_value = case.get("pii_value", "")
+        pii_clean = 0.0 if (pii_value and pii_value in result) else 1.0
+        case_score = routing_correct * 0.7 + pii_clean * 0.3
+        return {
+            "passed": case_score >= 0.85,
+            "intent": intent_cat,
+            "target_realm": target_realm,
+            "routing_correct": routing_correct,
+            "pii_clean": pii_clean,
+            "case_score": round(case_score, 3),
+            "result_len": len(result) if result else 0,
+            "result_preview": result[:200] if result else "",
+            "pii_leaked": not pii_clean,
+            "case": case,
+        }
+
+    case_scores = []
+    for run_idx in range(iterations):
+        for case in fixtures:
+            r = _run_one(case, run_idx)
+            case_scores.append(r)
+            tag = "✓" if r["passed"] else "✗"
+            leak_tag = " [LEAK!]" if r.get("pii_leaked") else ""
+            print(
+                f"  C11 [{case['pii_type']:8s}] {tag} routing={r['target_realm']:9s} "
+                f"routing_correct={r['routing_correct']:.0f} pii_clean={r['pii_clean']:.0f} "
+                f"score={r.get('case_score', 0):.3f}{leak_tag}"
+            )
+
+    macro = mean([r["case_score"] for r in case_scores]) if case_scores else 0.0
+    routing_pct = sum(r["routing_correct"] for r in case_scores) / len(case_scores) if case_scores else 0
+    clean_pct = sum(r["pii_clean"] for r in case_scores) / len(case_scores) if case_scores else 0
+    leak_count = sum(1 for r in case_scores if r.get("pii_leaked"))
+    return {
+        "score": round(macro, 3),
+        "routing_correct_rate": round(routing_pct, 3),
+        "pii_clean_rate": round(clean_pct, 3),
+        "pii_leak_count": leak_count,
+        "total_cases": len(case_scores),
+        "passed": macro >= 0.85 and leak_count == 0,
+        "details": [
+            {
+                "pii_type": r["case"].get("pii_type"),
+                "target_realm": r["target_realm"],
+                "routing_correct": r["routing_correct"],
+                "pii_clean": r["pii_clean"],
+                "pii_leaked": r.get("pii_leaked", False),
+                "case_score": r.get("case_score", 0),
+            }
+            for r in case_scores
+        ],
+    }
+
+
 def run_multiturn(client: DshEdgeClient, fixtures: list, iterations: int, per_turn_timeout: int = 180) -> dict:
     # §7.87.4(2026-09-19)C10 改 informational — dsh-edge multi-turn session 处理有
     # 已知怪点(reply lagged by one turn + C10 每次调用 duration 5-22s 不稳定),
@@ -1111,7 +1226,7 @@ def main() -> int:
     # §7.87.4(2026-09-19)C7/C8/C9 并发跑 — 三个 case 互不依赖,
     # 单 case 27-98s 串行 ≈ 3min,并发 ≈ max(单 case) ≈ 1.5min。
     # ThreadPoolExecutor + urllib 同步 HTTP 兼容,无需 aiohttp 重写。
-    if only is None or "C7" in only or "C8" in only or "C9" in only:
+    if only is None or "C7" in only or "C8" in only or "C9" in only or "C11" in only:
         section("C7-C9 E2E Pipeline (parallel)")
         from concurrent.futures import ThreadPoolExecutor
 
@@ -1194,6 +1309,9 @@ def main() -> int:
     # 不应误判 FAIL。只检查 result 实际有内容。
     # (此 comment 是设计上 reminder,真正的 fix 已在 C9 上面 + 下面两处 done)
 
+    if only is None or "C11" in only:
+        results["C11"] = run_pii_pipeline(dsh_client, load_fixtures("pii_pipeline"), log_file, args.iterations)
+
     if only is None or "C10" in only:
         results["C10"] = run_multiturn(dsh_client, load_fixtures("multiturn"), args.iterations, per_turn_timeout=args.c10_timeout)
 
@@ -1213,9 +1331,9 @@ def main() -> int:
         return 1.0 if r.get("passed") else float(r.get("score", 0.0))
 
     intrinsic_scores = [_score_or_pass(results[k]) for k in intrinsic_keys if k in results]
-    # §7.87.4 pipeline macro 只算 hard-gate 的 C7/C8/C9;C10 informational
+    # §7.87.4 pipeline macro 只算 hard-gate 的 C7/C8/C9 + C11 (§7.87.12 新增 PII E2E);C10 informational
     # (multi-turn session 是 dsh-edge 已知怪点,不阻塞 baseline 100 anchor)
-    hard_pipeline_keys = {"C7", "C8", "C9"}
+    hard_pipeline_keys = {"C7", "C8", "C9", "C11"}
     pipeline_scores = [_score_or_pass(results[k]) for k in hard_pipeline_keys if k in results]
     intrinsic_avg = mean(intrinsic_scores) * 100 if intrinsic_scores else 0
     pipeline_avg = mean(pipeline_scores) * 100 if pipeline_scores else 0
