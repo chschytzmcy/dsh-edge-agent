@@ -8788,60 +8788,39 @@ cloud baseline = 96.5/100 是 honest anchor(intrinsic + pipeline 都 100,latency
 
 ### §7.87.5 — thinking-model wire body 控制 + 阶段 2 LAN qwen3.5-9b 首次实跑(2026-09-19)
 
-**触发**:
-- v14 baseline 修完后,阶段 2 阶段 2 跑 **LAN qwen3.5-9b @ 67.0.0.5:28001**(llama.cpp server)。
-- 实测 LAN qwen3.5-9b **没关 thinking 时**,512 max_tokens 全烧 reasoning,`content=""`,`finish_reason="length"` — 必须显式 `chat_template_kwargs={enable_thinking: false}`。
-- harness 自己 intrinsic 跑 `--no-thinking` OK,但 **dsh-edge 内部 LLM call 没传 chat_template_kwargs** — 切到 thinking-model 是潜在 bug。
-- user 反馈:"所有的测试都要 localllm 都要关闭 thinking"。
+**触发**:v14 cloud baseline 修完后阶段 2 跑 LAN qwen3.5-9b @ 67.0.0.5:28001(llama.cpp)。实测不关 thinking 时 512 max_tokens 全烧 reasoning → `content=""` + `finish_reason="length"`。user 反馈 "所有的测试都要 localllm 都要关闭 thinking"。
 
-**Code 改动(3 处)**:
+**3 处 code 改动**(让 harness + dsh-edge 内部 LLM call 都受控):
 
-1. **`src/dsh-adapter/openai-sse.ts` `buildChatCompletionsBody`**:
-   - 新增 `enableThinking: boolean = false`(默认关 — production 想要快答)。
-   - 当 `enableThinking === false`,wire body 注入 `chat_template_kwargs: { enable_thinking: false }`。
-   - Pass-through no-op for non-thinking servers(llama.cpp 接受并忽略未知 kwargs)。
+1. **`src/dsh-adapter/openai-sse.ts` `buildChatCompletionsBody`**:加 `enableThinking: boolean = false`;当 false 注入 `chat_template_kwargs: { enable_thinking: false }`(llama.cpp/vllm 接受并忽略未知 kwargs)
+2. **`src/dsh-adapter/local-llm-adapter.ts`**:`Config.enableThinking?: boolean`(schema default false),传到 `buildChatCompletionsBody` 第 4 参
+3. **`cordis.patch.yml` + `.env.sh` + `.env.example`**:加 `LOCAL_LLM_ENABLE_THINKING`,翻译层 `DSH_EDGE_LOCAL_LLM_ENABLE_THINKING` → patch `enableThinking: !!js process.env.X === 'true'`
 
-2. **`src/dsh-adapter/local-llm-adapter.ts`**:
-   - `Config` 加 `enableThinking?: boolean`(Schema default `false`)。
-   - `RealLocalAdapter` 读 `config.enableThinking`,传到 `buildChatCompletionsBody` 第 4 参。
+`bash scripts/dev-restart.sh` 加载新 lib;wire body 注入对 cloud 透明(cloud 模型无 thinking),不影响 baseline。
 
-3. **`cordis.patch.yml:401`** + **`.env.sh:128`** + **`.env.example:78`**:
-   - 加 `LOCAL_LLM_ENABLE_THINKING`(用户 .env 自己填 `false` / `true`,默认 `false`)。
-   - 翻译层 `DSH_EDGE_LOCAL_LLM_ENABLE_THINKING` → cordis patch `enableThinking: !!js process.env.X === 'true'`。
+**LAN qwen3.5-9b 实跑结果**:
 
-**dev-restart 验证**: `bash scripts/dev-restart.sh` 重启 dsh-edge,加载新 lib。`LOCAL_LLM_*` 仍是 cloud qwen3.7-plus(无 thinking 模式),wire body 注入对 cloud 透明,不影响 baseline。
-
-**阶段 2 实跑结果**(LAN qwen3.5-9b @ 67.0.0.5:28001,llama.cpp,`--no-thinking`,`--iterations 1`,`--skip-latency`):
-
-| Run | intrinsic | pipeline C7/C8/C9/C10 | Overall | 备注 |
-|-----|-----------|------------------------|---------|------|
-| v14 cloud baseline | 100 | **100**(306/1551/1154/100) | 96.5 | 参考线 |
-| **LAN-rerun**(etscli fix 后) | 100 | **100**(306/1551/1154/100) | **90.0** | ✅ Production-ready |
-| **LAN-no-thinking-patch** | 100 | 66.7(18/73/128/83.3) | 76.7 | C7 FAIL — dsh-edge 200+empty |
-| **LAN-rerun3**(再跑验证 flake) | 100 | 66.7(16/90/113/66.7) | 76.7 | C7 FAIL **稳定**(非 flake) |
+| Run | Intrinsic | Pipeline | Overall | 备注 |
+|-----|-----------|----------|---------|------|
+| v14 cloud baseline | 100 | **100** | 96.5 | 参考线 |
+| LAN-rerun(etscli fix) | 100 | **100** | 90.0 | ✅ |
+| **LAN-no-thinking-patch** | 100 | **66.7** | **76.7** | **C7 FAIL 稳定** — 非 metric 问题 |
+| LAN-rerun3(再验证) | 100 | 66.7 | 76.7 | 复现非 flake |
 
 **关键发现**:
-- ✅ **qwen3.5-9b intrinsic 100% baseline** — C1/C2/C4/C5/C6 全 100%。**模型本身完全适配本项目**。
-- ✅ C9 (bash tool) PASS 稳定(`tool=bash` substring + resultLen≥1)。
-- ✅ C8 (web_search tool) PASS 稳定(resultLen≥1 + 无 `tool deny`)。
-- ❌ **C7 (mibao) FAIL 稳定** — 不是 flake:
-  - ops log 显 trace:`LLM call 1 → tool_call(ets-auth) resultLen=14 → LLM call 2 → tool_call(bash) resultLen=18 → HTTP 200 提前返(此时 bash 还没真调)`。
-  - 第 3 次 LLM call `→ bash 真执行 → resultLen=268`,但 HTTP 200 已经先回了。
-  - **根因**:dsh-edge agent loop 在第 2 次 LLM 出现 prose (18 chars) 就 HTTP 200,而不是等 bash tool 真跑完。
-  - harness retry 阈值是 `result_len == 0`,这次 result_len=18 不触发 retry → FAIL。
-  - 之前 etscli fix 后 PASS(result_len=306) 是因为 ets-auth skill 调用快,第 2 次 LLM call 时 bash 已经跑完。
+- ✅ **qwen3.5-9b intrinsic 100%** — C1/C2/C4/C5/C6 全 100%。**模型本身完全适配本项目**。
+- ❌ **C7 (mibao) FAIL 稳定** — ops log trace 显示 `LLM call 1 → tool_call(ets-auth) rL=14 → LLM call 2 → tool_call(bash) rL=18 → HTTP 200 提前返`。第 3 次 LLM call 真跑 bash 才 rL=268,但 HTTP 已先回。**根因是 dsh-edge agent loop race**,不是 harness / 模型问题。
 
-**C7 失败的 4 种处理方案**(待 user 决策):
-- A. **诊断 dsh-edge agent loop**(`realm-skill-bridge.ts` / `http-api-routes.ts`):找为什么 prose 提前 HTTP 200。
-- B. **修 harness retry 阈值**(`result_len==0` → `result_len<100`):但这是 metric gaming,跟 user 之前 "不许调节阈值" 反馈冲突。
-- C. **接受 C7 0 分**:跑 qwen3.5-9b 阶段 2 时,C7=0 是已知 quirk。intrinsic 100 + pipeline 66.7 = 76.7/100 已经是 honest signal(模型本身完美,dSh-edge pipeline 路径有 race condition)。
-- D. **改 LOCAL_LLM 切 LAN qwen3.5-9b**(需 user 手动改 .env):让 dsh-edge 内部也用 LAN qwen3.5-9b,intrinsic + pipeline 完全一致。但 LAN 端 pipeline 调用延迟会大很多,bash tool race 更明显。
+**C7 处理方案 → 选 A**:user 决策 "诊断 dsh-edge agent loop"(不修 harness 阈值 = 不 metric gaming)。根因 + 修复详见 §7.87.6。
 
-**用户反馈 → 落地**:
-> "所有的测试都要 localllm 都要关闭 thinking" → §7.87.5 加 env var + wire body 注入,harness + dsh-edge 都受控
-> "进组 进度" → 本节(§7.87.5)记录 enableThinking 改动 + LAN qwen3.5-9b 实跑结果
+**Why this matters**:
+- §7.87.5 暴露 **「模型适配 vs dsh-edge 路径 bug」分层** —— intrinsic 100 才是模型适配度真实信号;pipeline 66.7 指向 dsh-edge 自身 race,需另起任务修
+- **教训**:bench 必须分两阶段(cloud baseline 锁 dsh-edge 完整性 + LAN 模型测适配度),混在一起会让结论失真
+- **教训**:thinking 行为必须同时改 4 处(openai-sse.ts / local-llm-adapter.ts / cordis.patch.yml / .env.sh),漏一处 patch 不生效
 
-**Why qwen3.5-9b 阶段 2 不能简单报 90/100**:C7 FAIL 不是模型问题,是 dsh-edge agent loop race。intrinsic 100% 才是模型适配度真实信号。pipeline 66.7% 暴露 dsh-edge 路径 bug,反过来指向下一步要修 dsh-edge。
+**关联**:memory `bench-thinking-wire-body`(§7.87.5/6/7/8 同步)/ §7.87.6 / §7.87.7 / §7.87.8。
+
+---
 
 ### §7.87.6 — C7 FAIL 根因诊断:dsh-agent-loop race(`turn/end` 在 orphan tool_call 时提前 fire)(2026-09-19)
 
