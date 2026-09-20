@@ -66,6 +66,59 @@ bench 不是给 LLM 打绝对分,而是**两阶段相对评估**:
 
 **两维度独立评分**:intrinsic 100/100 = "模型 OK";pipeline 100/100 = "dsh-edge OK"。两者都 100 才是干净 baseline(cloud baseline 真意图)。
 
+#### 2.2.1 Intrinsic(C1-C6,53 用例)— 模型本身能力
+
+**测什么**:LLM 在 dsh-edge 实际 prompt 下的**纯模型能力**,不依赖 dsh-edge 任何组件。
+
+| 维度 | 详情 |
+|------|------|
+| **入口** | 直连 `${BASE_URL}/chat/completions`,curl-style HTTP |
+| **prompt 来源** | copy 自 `src/dsh-adapter/intent-router.ts:557-570`(C1)、`src/dsh-adapter/prompt-guard.ts:543-588`(C2)、其他按用途定制 |
+| **覆盖** | C1 intent(12)+ C2 safety(8)+ C3 中文 Q&A(6)+ C4 JSON schema(5)+ C5 PII(12)+ C6 tool_call(10) |
+| **adapter boundary** | 检测模型能否稳定产出 dsh-edge 下游 parser 期望的 schema(JSON / tool_call / 等) |
+| **跟 dsh-edge 关系** | **完全隔离** — 不走 /v1/chat、不经 input-guard / sanitize / tool routing |
+
+**实战价值**:
+1. **横向对比模型** — 同一套 prompt 喂不同模型,看 intrinsic 差异(2B / 4B / 9B / 闭源)
+2. **隔离 model vs code bug** — pipeline FAIL 时看 intrinsic 是否也 FAIL,判断根因在 dsh-edge 还是模型能力
+3. **找最差 category 调优** — 按 intrinsic 最差 2 类反向改 prompt / schema / 后处理兜底
+
+#### 2.2.2 Pipeline(C7-C10,12 用例)— dsh-edge 系统联动
+
+**测什么**:**完整 dsh-edge agent loop** 端到端,从 HTTP /v1/chat → input-guard → intent-router → skill/tool routing → tool execution → reply。
+
+| 维度 | 详情 |
+|------|------|
+| **入口** | `POST http://127.0.0.1:21017/v1/chat`(dsh-edge HTTP API) |
+| **覆盖** | C7 mibao(1)+ C8 news(1)+ C9 local-IP(1)+ C10 multi-turn(3 convs × 3 turns,**informational**) |
+| **联动组件** | input-guard / intent-router / sanitize / skill 注册 / tool_call chain / session state / audit log |
+| **跟 dsh-edge 关系** | **完全依赖** — 任一环节 FAIL = pipeline FAIL |
+
+**实战价值**:
+1. **暴露 dsh-edge bug** — §7.87.6 **C7 race** 就是 pipeline FAIL 暴露的(turn 1 提前结束 + HTTP 200 提前回 + 2.5s 后真 reply 丢失),`agent.whenIdle()` fix 让 pipeline 跨 4 server 全 100/100
+2. **验证 §7.87.6 fix 跨 server 泛化** — vllm / mlx / rknn / cloud 全部 PASS C7-C9
+3. **多轮 session state 实测** — C10 retention(dashscope 100 / qwen3-4b 83.3 / qwen3.5-9b-mlx 100 / minicpm5-2b 100)
+
+**Why C10 永远 informational**:dsh-edge multi-turn session 处理有**已知怪点**(reply lagged by one turn / followup turn 被误判 CLOUD),真要 strict gate 等后续修。
+
+#### 2.2.3 Latency(全 LLM call)— 响应时间分布
+
+**测什么**:LLM call 的**耗时分布**,用 p95 算 score,**不计入 hard fail**(只影响 final 分数的 10%)。
+
+| 维度 | 详情 |
+|------|------|
+| **采集** | harness 每次 LLM call 记录 first_token / total 耗时,跑完算 p50 / p95 |
+| **计算公式** | `latency_score = max(0, min(100, 100 - p95_ms / 300))` |
+| **实测映射** | p95=10.0s → 66.7; p95=0s → 100; p95>30s → 0 |
+| **CLI 开关** | v15+ 默认 `--skip-latency`(per §7.87.3 user 反馈 "latency 是 throughput 不是 quality");`--with-latency` 旗标显式开 |
+
+**Why 默认 skip**:
+- **横向对比模型时建议统一开** `--with-latency` 看真实差距(cloud vs 本地 vs LAN 差异最大就在 latency)
+- 验收 dsh-edge SLA 时必看(用户感知最直接)
+- 不计入 hard fail — latency score 只是 final 分数的一部分,不会单独 fail baseline
+
+**Why v14 cloud=96.5 / v15 cloud=90.0 差 6.5 分**:v14 显式 `--with-latency`(p95=10.3s → 65.5)+ v15 默认 skip(latency=0)。intrinsic + pipeline 都 100/100 持平 → dsh-edge 完整性复验 ✓,差距全部来自 latency 开关。
+
 ---
 
 ## 3. Category-by-category 测试用例设计
