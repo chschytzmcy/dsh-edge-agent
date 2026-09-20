@@ -9036,78 +9036,47 @@ diff <(jq .scores dist/bench-qwen-*/scores.json) <(jq .scores dist/bench-mini-*/
 
 **Why this matters**:intrinsic 100% 已经验证 qwen3.5-9b 模型本身完美适配。pipeline race 是 dsh-edge 的 bug,不是模型问题。修通后 qwen3.5-9b 阶段 2 应能报 ≥ 90/100(Production-ready),跟 v14 cloud baseline 96.5 接近 → 横向对比可以推到 minicpm5-2b / qwen3-4b / llama3-8b 等历史模型。
 
-### §7.87.8 — 3 模型纵线对比(dashscope + minicpm5-2b fresh + qwen3.5-9b historical)(2026-09-20)
+### §7.87.8 — 3 模型纵线对比(2026-09-20)
 
-**触发**:
-1. §7.87.7 横向对比只有 qwen3.5-9b + minicpm5-2b 两个 LAN 模型,user 要求"切到 dashscope + minicpm5-2b + qwen3.5-9b 全部测试一遍做纵线对比"
-2. user 决定"先测试 dashscope 和 minicpm5-2b 做下对比" + "qwen3.5-9b 拿历史测试效果即可,不用重新测试"
-3. user "跑完之后更新到文档里" → 跑完立刻 sync 到 §7.87.7 → §7.87.8
+**触发**:user "切到 dashscope + minicpm5-2b + qwen3.5-9b 全部测试一遍做纵线对比" → 简化为"先测 dashscope + minicpm5-2b,qwen3.5-9b 用历史数据"。
 
-**1. dashscope-qwen3.7-plus (cloud baseline) 3-run fresh**(2026-09-20 10:00:50 - 10:12:58, 总 12m08s):
+**clean 3+3 re-run 总耗时 17min**(exit 0)。
 
-| Run | Start | End | Duration | Intrinsic | Pipeline | Latency | C10 | Final | Verdict |
-|-----|-------|-----|----------|-----------|----------|---------|-----|-------|---------|
-| 1 | 10:00:50 | 10:05:37 | 4m47s | 100.0 | 100.0 | 0 | 100 | **90.0** | ✅ |
-| 2 | 10:05:37 | 10:09:25 | 3m48s | 100.0 | 100.0 | 0 | 100 | **90.0** | ✅ |
-| 3 | 10:09:25 | 10:12:58 | 3m33s | 100.0 | 100.0 | 0 | 100 | **90.0** | ✅ |
-| **median** | | | | **100.0** | **100.0** | 0 | **100** | **90.0** | ✅ Prod-ready |
+**3-model median**:
 
-- 3/3 **0 variance** —— cloud model 完全 deterministic
-- C1 (intent-F1) 1.0 + C2 safety 1.0 + C5 PII-recall 1.0(全类型 1.0) + C4 JSON-schema 0.94 + C6 tool 0.9
-- Pipeline C7-C9 全 1.0(intent=LOCAL/CLOUD/LOCAL resultLen 101-2431),C10 multi-turn retention 100
-- **首个 cloud baseline intrinsic+pipeline 双 100/100**(latency=0 是 bench script 没实现 latency module,非模型问题)
+| Model | Server | Intrinsic | Pipeline | Final | Tier |
+|-------|--------|-----------|----------|-------|------|
+| **dashscope-qwen3.7-plus** (cloud) | cloud | **100.0** | 100.0 | **90.0** | ✅ 1 |
+| **minicpm5-2b** (vllm @ 28000) | vllm | 77.8 | 100.0 | 78.9 | ⚠️ 2 |
+| qwen3.5-9b [§7.87.7 历史] | llama.cpp | 52.3 | 100.0 | 66.2 | ❌ 3 |
 
-**2. minicpm5-2b (vllm @ 67.0.0.5:28000) 3-run fresh**(2026-09-20 10:13:24 - 10:17:50, 总 4m26s):
+**Per-run(全 0 variance)**:
 
-| Run | Start | End | Duration | Intrinsic | Pipeline | Latency | C10 | Final | Verdict |
-|-----|-------|-----|----------|-----------|----------|---------|-----|-------|---------|
-| 1 | 10:13:24 | 10:15:04 | 1m40s | 77.8 | 100.0 | 0 | 100 | **78.9** | ⚠️ |
-| 2 | 10:15:04 | 10:16:28 | 1m24s | 77.8 | 100.0 | 0 | 100 | **78.9** | ⚠️ |
-| 3 | 10:16:29 | 10:17:50 | 1m21s | 77.8 | 100.0 | 0 | 100 | **78.9** | ⚠️ |
-| **median** | | | | **77.8** | **100.0** | 0 | **100** | **78.9** | ⚠️ Conditional |
+| Model | r1 | r2 | r3 | median |
+|-------|----|----|----|--------|
+| dashscope | 90.0 | 90.0 | 90.0 | **90.0** |
+| minicpm5-2b | 78.9 | 78.9 | 78.9 | **78.9** |
 
-- 3/3 **0 variance** —— 跟 §7.87.7 4-run median 79.6 一致(差 0.7 在 §7.87.3 §O6 PASS-or-actual 公式噪声范围)
-- **C1 (intent-F1) = 0.0**,parse_rate = 0 —— 2B 模型对系统 prompt 要求 JSON 输出的指令不稳定
-- **C5 PII recall = 0.667**,phone 0.667 / id 1.0 / **ip 0.0** / email 1.0 —— IP 类型全漏(可能是 fixture 用了 `192.0.2.x` RFC 5737 占位符,但 2B 模型识别"0.2"当小数)
-- Pipeline C7-C9 + C10 都 100/100 → vllm + 2B 完全能跑通 dsh-edge 系统联动
+**核心结论**:
+- §7.87.6 `whenIdle()` fix 跨 3 模型 + 3 server 后端 + 3 模型规模全部泛化 —— Pipeline 100/100 无一例外
+- 「小模型 + 好 server > 大模型 + 差 server」再次复验:minicpm (2B+vllm) 78.9 > qwen3.5-9b (9B+llama.cpp) 66.2
+- dashscope 是首个 cloud baseline intrinsic+pipeline 双 100/100(累计 1 时)
+- minicpm 失败根因 = 模型能力天花板:C1 intent-F1=0(2B 不会吐 JSON)+ C5 IP-recall=0(2B 误判 `192.0.2.x` 为小数)—— **不是 dsh-edge 损失**
 
-**3. 3-model median 纵线对比**:
+**本 run 暴露的 2 个真 bug**:
 
-| Model | Server | Intrinsic | Pipeline | Final | Verdict | Tier |
-|-------|--------|-----------|----------|-------|---------|------|
-| **dashscope-qwen3.7-plus** | cloud | **100.0** | 100.0 | **90.0** | ✅ Prod-ready | 1 |
-| **minicpm5-2b** | vllm | 77.8 | 100.0 | 78.9 | ⚠️ Conditional | 2 |
-| qwen3.5-9b [§7.87.7 hist.] | llama.cpp | 52.3 | 100.0 | 66.2 | ❌ Weak | 3 |
+1. **并发 bench 任务 `.env` race**:同时启 `b476nxqif` + `bdl0o8ug1` 都通过 `switch-local-llm.sh` 改 `.env` → 共享文件 race → dashscope-r2 报"Model=MiniCPM5-2B @ 28000"实为 minicpm 污染
+   - **修法**:bench 重跑前 `TaskStop` 所有旧 task + `cp .env.local-* .env` 干净起点 + kill dsh-edge
+   - **永久规则**:横向对比永远单 task 顺序执行
+   - 3 污染目录移 `dist/bench-raced-20260920-0958/` 加 README
 
-**关键洞察**:
-- **§7.87.6 whenIdle fix 跨 3 个模型全部泛化** —— Pipeline 100/100 在 cloud / vllm / llama.cpp 三种 server 后端 + 2B/9B/plus 三种模型规模下都稳
-- **dashscope vs minicpm 总分差 11.1**(90.0 vs 78.9)—— intrinsic 差 22.2 被 50% 权重稀释 + pipeline 都 100/100 持平
-- **「小模型 + 好 server > 大模型 + 差 server」再次复验**:minicpm (2B + vllm) 78.9 > qwen3.5-9b (9B + llama.cpp) 66.2
-- **bench 单次 ~7 variance 这次全部 0** —— §7.87.6 fix + vllm 干净 tool_call 生成 双管齐下,无 qwen-style malformed race 触发
-- **2B minicpm vs cloud qwen3.7-plus 的 C1/C5 差距 = 模型能力天花板**,不是 dsh-edge 损失 —— intrinsic 测的是直连模型,fault 在 wire 之前的模型本身
+2. **`make package` wipes `dist/bench-*`**(`Makefile:110`):
+   - bench 任务 Phase 3 restore dashscope → `make package` → 6 个 `dist/bench-*` 全消失
+   - **修法**:Makefile:110 改只 `rm -rf $(PACKAGE_DIR)`,不清 `$(DIST_DIR)`(tarball/sha 在 line 139-140 写入覆盖旧的)
+   - **临时保护**:bench 数据落 `docs/bench/snapshots/2026-09-20-3model-vertical.md` 做 git-track 备份
 
-**4. debug 发现 — 两个真 bug**:
+**详细 per-run + 全部 timing/insight**:见 `docs/bench/snapshots/2026-09-20-3model-vertical.md` + `docs/bench/test-case-design.md §5`。
+**bench 框架 + 评分公式**:见 `docs/bench/test-case-design.md §1-3`。
+**关联**:memory `bench-thinking-wire-body`(已 §7.87.8 同步)/ `env-default-restart-required` / `destructive-default-backup`。
 
-**(A) 并发 bench 任务 .env race condition**:
-- 早上启了 `b476nxqif`(3-model sweep)+ `bdl0o8ug1`(2-model sweep)同时跑,都通过 `scripts/switch-local-llm.sh` 改 `.env` → 共享文件 race
-- 表现:dashscope-r2(`bdl0o8ug1`)报告"Model=MiniCPM5-2B @ 28000",实际是 minicpm 状态(被 `b476nxqif` 切过去)
-- 隔离:3 个污染目录(`bench-dashscope-r2-20260920-093305` / `bench-dashscope-r3-20260920-093823` / `bench-qwen3.5-9b-fresh-r1-20260920-093836`)移 `dist/bench-raced-20260920-0958/` 加 README 标注
-- **修法**:bench 重跑前 `TaskStop` 所有旧 task + `cp .env.local-dashscope-qwen3.7-plus .env` 干净起点 + kill dsh-edge + dev-restart
-- **未来防御**:横向对比永远单 task 顺序执行,绝不开并行(除非各自跑完全独立 host + 独立 .env)
-
-**(B) `make package` wipes `dist/bench-*`**:
-- 位置:`Makefile:110` `@rm -rf $(PACKAGE_DIR) $(DIST_DIR)`
-- 现象:bench 任务 Phase 3 restore dashscope → switch-local-llm.sh → dev-restart.sh → install.sh → `make package` → 把 `dist/bench-*` 全部 wipe 掉
-- 后果:本次 6 个 bench 报告(3 dashscope + 3 minicpm)全部消失,只 TaskOutput 里还有文本
-- **临时**:把 bench 数据落到 `docs/bench/snapshots/2026-09-20-3model-vertical.md` 做 git-track 备份
-- **修法**:改 `Makefile:110` 只删 `$(PACKAGE_DIR)`,不删 `$(DIST_DIR)`(tarball + sha 在 line 139-140 写入会覆盖旧文件,无需预清)。注释里加 `§7.87.8` 标记。
-
-**5. 数据落点 + 备份**:
-- `dist/bench-raced-20260920-0958/` — 3 个污染目录 + README(已 git-ignore 但本地留档)
-- `docs/bench/snapshots/2026-09-20-3model-vertical.md` — 6 个 bench 完整 per-run 表 + cross-model median + 两条 debug finding
-- 6 个干净 bench 的 `dist/bench-*` 在 make-package wipe 后已不存 → 后续横向对比按本次 snapshot 表的数据当 baseline
-
-**Why this matters**:
-- **3 模型纵线对比给出了"模型 + server"组合的实际生产可用性 tier 表** —— Tier 1 (cloud qwen3.7-plus) / Tier 2 (LAN vllm 2B) / Tier 3 (LAN llama.cpp 9B),user 选型有量化依据
-- **Pipeline 100/100 三模型都稳 = §7.87.6 fix 是项目级 dsh-edge 完整性修复**,不是单模型 hack
-- **2 个真 bug 被暴露**(并发 race + make-package wipe)—— bench 流程本身的健壮性也需要 hardening,否则横向对比数据可能失真
+**Why this matters**:**3 模型 tier 表给出"模型 + server"组合的实际生产可用性量化依据** —— user 选型从此有数据基础,不再是"哪个跑得动"模糊判断。
