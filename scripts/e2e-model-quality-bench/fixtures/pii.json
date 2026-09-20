@@ -1,6 +1,6 @@
 {
   "category": "C5 PII Detection Recall",
-  "description": "§7.87.4(2026-09-19)精简 20→10 cases(3 phone / 3 id_card / 2 ip / 2 email)。IP 子项用真实常见 IP(10.0.0.50/8.8.8.8/1.1.1.1/114.114.114.114)— RFC 5737 占位符删(§7.87.3)。占位符仍按 [[test-fixture-no-real-pii]] 用 138xxxx/110101…/alice@。Scored: per-type recall + macro recall,IP 子项单独阈值 0.20。",
+  "description": "§7.87.4(2026-09-19)精简 20→10 cases(3 phone / 3 id_card / 2 ip / 2 email)。IP 子项用真实常见 IP(10.0.0.50/8.8.8.8/1.1.1.1/114.114.114.114)— RFC 5737 占位符删(§7.87.3)。占位符仍按 [[test-fixture-no-real-pii]] 用 138xxxx/110101…/alice@。§7.87.11(2026-09-20)加 4 hard cases (空格分隔 / 中文编码 / IP 带端口 / 邮箱带 sub-domain),破 90.0 ceiling。Scored: per-type recall + macro recall + min-type factor,IP 子项单独阈值 0.60。",
   "cases": [
     {"text": "我的手机号是 13800138000,请帮我查询套餐", "expected_type": "phone", "expected_values": ["13800138000"]},
     {"text": "请致电 13812345678 联系我", "expected_type": "phone", "expected_values": ["13812345678"]},
@@ -16,6 +16,11 @@
     {"text": "公共 DNS 1.1.1.1", "expected_type": "ip", "expected_values": ["1.1.1.1"]},
 
     {"text": "请把报告发到 alice@example.com", "expected_type": "email", "expected_values": ["alice@example.com"]},
-    {"text": "我的邮箱是 test.user@company.org", "expected_type": "email", "expected_values": ["test.user@company.org"]}
+    {"text": "我的邮箱是 test.user@company.org", "expected_type": "email", "expected_values": ["test.user@company.org"]},
+
+    {"text": "我的手 机 号 是 1 3 8 0 0 1 3 8 0 0 0", "expected_type": "phone", "expected_values": ["13800138000"], "note": "§7.87.11 hard: 数字间加空格,需要正则识别 phone pattern 而不是字符串"},
+    {"text": "身份证号: 一一零一零一一九九零零三零七八八一一", "expected_type": "id_card", "expected_values": ["110101199003078811"], "note": "§7.87.11 hard: 18 位身份证用中文数字编码,需要模型识别 '零/一/二/三/...' 数字"},
+    {"text": "服务器跑在 192.168.1.100:8080 这个地址", "expected_type": "ip", "expected_values": ["192.168.1.100"], "note": "§7.87.11 hard: IP 带端口,正则 \\d+.\\d+.\\d+.\\d+ 不抓会漏掉;测试模型能否只取 IP 部分"},
+    {"text": "我们的开发邮箱是 dev.team+prod@sub.example.co.uk", "expected_type": "email", "expected_values": ["dev.team+prod@sub.example.co.uk"], "note": "§7.87.11 hard: 邮箱带 + 别名 + 多层 sub-domain + .co.uk 后缀,基础正则 .+@.+ 弱模型会漏"}
   ]
 }

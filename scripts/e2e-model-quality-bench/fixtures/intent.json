@@ -1,6 +1,6 @@
 {
   "category": "C1 Intent Classification",
-  "description": "§7.87.4(2026-09-19)精简 30→12 cases;§7.87.8(2026-09-20)扩充 12→20,加 8 个边界 case 测 size scaling —— 期望 qwen3.5-9B(9B) > qwen3-4B(4B) > minicpm5-2b(2B)。基线: dashscope-qwen3.7-plus 100/100 pass。Tested with verbatim intent-router system prompt.",
+  "description": "§7.87.4(2026-09-19)精简 30→12 cases;§7.87.8(2026-09-20)扩充 12→20,加 8 个边界 case 测 size scaling —— 期望 qwen3.5-9B(9B) > qwen3-4B(4B) > minicpm5-2b(2B)。§7.87.11(2026-09-20)再加 4 hard cases(多意图 / 条件依赖 / 反语 / 长上下文推理)破 90.0 ceiling —— cloud 27B 跟 4B 都 100 难区分,只有真大模型才能在 hard 上稳定 pass。基线: dashscope-qwen3.7-plus 100/100 pass。Tested with verbatim intent-router system prompt.",
   "cases": [
     {"query": "查询本机的局域网IP", "expected_category": "LOCAL", "expected_confidence": 1.0},
     {"query": "查看系统磁盘使用情况", "expected_category": "LOCAL", "expected_confidence": 1.0},
@@ -24,6 +24,11 @@
     {"query": "嗯", "expected_category": "CLOUD", "expected_confidence": 0.5, "note": "§7.87.8 edge: 单字模糊 → CLOUD + 低 confidence"},
     {"query": "查看一下我电脑的硬盘还剩多少", "expected_category": "LOCAL", "expected_confidence": 1.0, "note": "§7.87.8 edge: '我电脑的' 强 LOCAL 提示,大小模型都应识别"},
     {"query": "帮我用 curl 测试一下 api.github.com", "expected_category": "CLOUD", "expected_confidence": 1.0, "note": "§7.87.8 edge: curl 测试公网 API → 实质是网络请求 → CLOUD(dashscope baseline 答 CLOUD,符合)"},
-    {"query": "把这段英文翻译成中文,然后保存到 ~/translate.txt", "expected_category": "LOCAL", "expected_confidence": 0.9, "note": "§7.87.8 edge: 主意图是文件保存(本地操作),翻译是次要 → LOCAL(dashscope baseline 答 LOCAL 符合)"}
+    {"query": "把这段英文翻译成中文,然后保存到 ~/translate.txt", "expected_category": "LOCAL", "expected_confidence": 0.9, "note": "§7.87.8 edge: 主意图是文件保存(本地操作),翻译是次要 → LOCAL(dashscope baseline 答 LOCAL 符合)"},
+
+    {"query": "先帮我搜一下最新的 Rust 1.80 release notes,然后下载到本地 ~/rust-notes/ 目录", "expected_category": "CLOUD", "expected_confidence": 0.7, "note": "§7.87.11 hard: 多意图串联 (CLOUD 搜索 + LOCAL 下载),主意图是 CLOUD 搜索,需要理解先后顺序;小模型倾向答 LOCAL 因为 '下载到本地'"},
+    {"query": "如果我电脑的内存使用超过 80%,就帮我清理一下;否则查一下今天天气", "expected_category": "LOCAL", "expected_confidence": 0.7, "note": "§7.87.11 hard: 条件分支,主句是 LOCAL(内存检查+清理),CLOUD 是 fallback;小模型倾向答 CLOUD 因为 '查天气' 在后面"},
+    {"query": "帮我搜一下附近的咖啡馆,但是不要联网,就用本地的数据", "expected_category": "LOCAL", "expected_confidence": 0.85, "note": "§7.87.11 hard: 反语/否定 '不要联网' 强 LOCAL 覆盖,表面 '搜' 关键词容易骗小模型答 web_search → CLOUD"},
+    {"query": "现在帮我做以下几件事:1. 查今天北京天气;2. 列一下我电脑 /tmp 目录下大于 100MB 的文件;3. 把这两份信息都发到 bob@example.com", "expected_category": "LOCAL", "expected_confidence": 0.6, "note": "§7.87.11 hard: 三步串联,主执行是步骤 2 (本地),需要 long-context 推理权重而不是被 '天气/CLOUD' 关键词主导"}
   ]
 }

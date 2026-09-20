@@ -911,4 +911,47 @@ bench 报告落 `dist/bench-*/`,Makefile:110 已 fix 不再被 `make package` �
 | memory `bench-thinking-wire-body` | §7.87.5-§7.87.8 4 阶段 bench 实测记录 |
 | memory `bench-baseline-100-fix` | §7.87.4 5 bug + 4 优化速查 |
 | memory `bench-metric-fairness-fixes` | §7.87.3 6 处 metric/fixture/formula 修法 |
+
+#### 5.2.7 §7.87.11 评分升级(2026-09-20) — 破 90.0 ceiling,出 size scaling
+
+**问题**:v15.5 4 模型全部 90.0 ✅ Prod-ready,**intrinsic 都是 100** → 无法区分大小模型梯度。原因是:
+1. `intrinsic_avg` 用 `1.0 if passed else raw_score`,只要过了硬阈值(0.85)就拿满分
+2. `C1` 只报 conf_mae 但不计入分数
+3. `C5` 只算 macro,不看 per-type 短板
+4. `C6` 只算 overall,不看 per-tool 短板
+5. fixtures 偏简单(20 个 case 没边界),**cloud 跟 27B 都 100 是天花板效应**
+
+**修法**(4 处):
+- `harness.py run_intent`:`adjusted = f1 * conf_penalty`(conf_mae ≤0.05→1.05,0.05~0.10→1.0,0.10~0.15→0.85,>0.15→0.70),`passed=adjusted≥0.85`
+- `harness.py run_pii`:`adjusted = macro * type_factor`(min_type 1.0→1.0,0.875→0.95,0.5→0.80,<0.5→0.60),`passed=adjusted≥0.80`
+- `harness.py run_tools`:`adjusted = overall * tool_factor`(同 min_type 阈值模式),`passed=adjusted≥0.75`
+- Fixtures 加 12 hard cases(4 per category):多意图 / 条件依赖 / 反语 / 中文数字编码 / 邮箱+别名 / IP带端口 / 否定覆盖
+- **`passed` gate 一致性修正**:`passed = adjusted ≥ threshold`(原 `macro_pass and ip_pass` 用 raw,跟 adjusted 不一致 → 漏判 fail case)
+
+**4 模型 v3 实测**(2026-09-20,1-run,rknn server 重启后补):
+
+| Rank | 模型 | Intrinsic | Pipeline | Final | C1 | C5 | C6 | Verdict |
+|------|------|-----------|----------|-------|-----|-----|-----|---------|
+| 🥇 1 | **Qwen3.8-27B**(llama.cpp) | 95.8 | 100 | **87.9** | 0.916(conf=0.083) | 0.750(min_type=0.75) | 0.905(min_tool=0.889) | ✅ |
+| 🥇 1 | **dashscope-qwen3.7-plus**(cloud) | 95.4 | 100 | **87.7** | 0.958(conf=0.090) | **1.000**(min_type=1.0) | 0.724(min_tool=0.778) | ✅ |
+| 3 | **qwen3-4b**(rknn) | 86.1 | 100 | **83.0** | 0.742(conf=0.147) | 0.700(min_type=0.75) | 0.724(min_tool=0.833) | ⚠️ |
+| 4 | **qwen3.5-9b**(mlx) | 94.7 | 66.7 | **74.0** | 0.873(conf=0.083) | 0.683(min_type=0.667) | 0.905(min_tool=0.889) | ⚠️ |
+
+**结果分析**:
+
+✅ **90.0 ceiling 破除**:4 模型最终分 87.9 / 87.7 / 83.0 / 74.0,**全差异化**。
+
+✅ **Size scaling 现形 cloud ≈ 27B > 4B > 9B**(原假设 `cloud ≥ 27B ≥ 9B ≥ 4B` 部分成立:cloud≈27B>>4B>>9B):
+- **cloud ≈ 27B**(87.7 vs 87.9,差 0.2):cloud 中文长尾 C5=1.0 vs 27B C5=0.75;27B 单一语言校准 C1 conf_mae 0.083 < cloud 0.090;**大模型 ≠ 一定超过 cloud**(cloud 在 dsh-edge 工作负载 saturation 早)
+- **27B >> 4B**(87.9 vs 83.0,差 4.9):size scaling 有效,Qwen3.8 27B 在所有子项都 ≥ Qwen3 4B
+- **4B > 9B**(83.0 vs 74.0,差 9.0):**Qwen3 > Qwen3.5 版本升级退化 > size scaling 提升** — 4B Qwen3 强过 9B Qwen3.5
+- **9B mlx pipeline 66.7**(C7=0):§7.87.6 race 偶发,fix 在 mlx 9B 上不够稳,单次数据需 3-run median
+
+✅ **dashscope gate ≥85 通过**(87.7 vs 旧 90.0,降幅 2.3 在合理范围)。评分升级后**所有模型分数都下降,但相对 ranking 更准**。
+
+✅ **`passed` gate 一致性 bug 修复**:`C5 passed` 原 `macro_pass and ip_pass`(用 raw),新 `adjusted ≥ threshold`;4B C5 raw=0.75, adjusted=0.70 → fail → 计入真实 0.70 而不是 1.0。
+
+**单次跑分学习效应警告**:dashscope 在 C5 中文 id_card 编码 r1=0.75 → r2=1.0,**fixture 本身有 learning effect**(LLM 从 prompt context 学到"中文数字也是 id_card"),**单次跑分有 ±0.25 noise**,3-run median 才稳。
+
+**fixture 数量**:C1 20→24(20 +4 hard),C5 13→17(13 +4 hard),C6 17→21(17 +4 hard)= total +12 cases → 总 fixture 65→77(+18%)。
 | memory `model-quality-bench-two-phase` | 两阶段框架设计哲学 |

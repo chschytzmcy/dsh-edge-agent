@@ -491,11 +491,27 @@ def run_intent(client: ModelClient, fixtures: list, iterations: int) -> dict:
 
     parse_rate = parse_count / parse_total if parse_total else 0
     conf_mae = mean(conf_errors) if conf_errors else 1.0
+    # §7.87.11(2026-09-20)Conf 校准进 final:f1 * conf_penalty。
+    # conf_mae ≤ 0.05 → 1.05 reward(对校准好的模型如 Qwen3.8-27B conf_mae=0.062 → 0.95 ~ 1.0)
+    # conf_mae 0.05~0.10 → 1.0 neutral(dashscope qwen3.7-plus 0.085 → 1.0)
+    # conf_mae 0.10~0.15 → 0.85 penalty(qwen3-4b conf_mae=0.148 → -15%)
+    # conf_mae > 0.15 → 0.70 heavy penalty
+    if conf_mae <= 0.05:
+        conf_penalty = 1.05
+    elif conf_mae <= 0.10:
+        conf_penalty = 1.0
+    elif conf_mae <= 0.15:
+        conf_penalty = 0.85
+    else:
+        conf_penalty = 0.70
+    adjusted = min(1.0, f1 * conf_penalty)
     return {
-        "score": round(f1, 3),
+        "score": round(adjusted, 3),
+        "raw_f1": round(f1, 3),
+        "conf_penalty": conf_penalty,
         "parse_rate": round(parse_rate, 3),
         "conf_mae": round(conf_mae, 3),
-        "passed": f1 >= 0.85,
+        "passed": adjusted >= 0.85,
     }
 
 
@@ -721,6 +737,19 @@ If no PII: {"pii_found": [], "safe_to_send_to_cloud": true}"""
         all_results = [r for case, results in items for r in results]
         per_type[ptype] = mean(all_results) if all_results else 0.0
     macro = mean(per_type.values()) if per_type else 0.0
+    # §7.87.11(2026-09-20)Min-type factor:任何 type < 1.0 → 折扣,显出 "有一类
+    # 完全不行" 的模型差距(如 Qwen3.5-9B IP=0.5 vs Qwen3.8-27B IP=1.0)。
+    # min_type=1.0 → 1.0;min_type=0.875 → 0.95;min_type=0.5 → 0.80;min_type<0.5 → 0.60
+    min_type = min(per_type.values()) if per_type else 0.0
+    if min_type >= 1.0:
+        type_factor = 1.0
+    elif min_type >= 0.875:
+        type_factor = 0.95
+    elif min_type >= 0.5:
+        type_factor = 0.80
+    else:
+        type_factor = 0.60
+    adjusted = macro * type_factor
     # §7.87.2(2026-09-19)O4:rubric 里 IP 子项单独阈值 0.60(其余 0.80),
     # IP 类业务能力相对差(占位符段 RFC 5737 + 真实 IP 混测),给个宽松线避免 fail。
     ip_threshold = 0.60
@@ -732,11 +761,15 @@ If no PII: {"pii_found": [], "safe_to_send_to_cloud": true}"""
     ip_pass = per_type.get("ip", 0.0) >= ip_threshold
     macro_pass = macro >= macro_threshold
     return {
-        "score": round(macro, 3),
+        "score": round(adjusted, 3),
+        "raw_macro": round(macro, 3),
+        "min_type": round(min_type, 3),
+        "type_factor": type_factor,
         "per_type": {k: round(v, 3) for k, v in per_type.items()},
         "ip_threshold": ip_threshold,
         "macro_threshold": macro_threshold,
-        "passed": macro_pass and ip_pass,
+        # §7.87.11:pass gate 跟 adjusted score 一致(原 macro_pass 是 raw 漏掉 min-type 折扣)
+        "passed": adjusted >= macro_threshold,
     }
 
 
@@ -789,10 +822,25 @@ def run_tools(client: ModelClient, fixtures: list, iterations: int) -> dict:
         for tool, items in by_tool.items()
     }
     overall = mean(all_correct) if all_correct else 0.0
+    # §7.87.11(2026-09-20)Min-tool factor:跟 C5 同模式,任何 tool < 1.0 → 折扣。
+    # 这对 local LLM 暴露明显 — Qwen3-4b web_search 偶发掉链,整体 0.95 但 web_search 0.75 → 0.90。
+    min_tool = min(by_tool_acc.values()) if by_tool_acc else 0.0
+    if min_tool >= 1.0:
+        tool_factor = 1.0
+    elif min_tool >= 0.875:
+        tool_factor = 0.95
+    elif min_tool >= 0.5:
+        tool_factor = 0.80
+    else:
+        tool_factor = 0.60
+    adjusted = overall * tool_factor
     return {
-        "score": round(overall, 3),
+        "score": round(adjusted, 3),
+        "raw_overall": round(overall, 3),
+        "min_tool": round(min_tool, 3),
+        "tool_factor": tool_factor,
         "by_tool": {k: round(v, 3) for k, v in by_tool_acc.items()},
-        "passed": overall >= 0.75,
+        "passed": adjusted >= 0.75,
     }
 
 
