@@ -412,13 +412,18 @@ export class PromptGuardServiceImpl extends Service implements PromptGuardServic
         result.dataClassification = dataClass
 
         if (dataClass === 'secret') {
+          // §7.87.13.6 (2026-09-21): 不再 block。历史行为是 safe=false → input-guard
+          // 返回 4xx,导致用户带 secret PII 的合法 query（如 id_card baseline）
+          // 整体 400。修复后放行,由下游负责：
+          //   - privacy-policy routingRules (§7.87.13.5) 把含 PII 关键词的 query
+          //     路由到 LOCAL
+          //   - input-guard matchRouting authoritative (§7.87.13.2) 覆盖 http-api 缓存
+          //   - sanitizer (§7.87.13) 对 CLOUD/SANITIZED 路径脱敏
+          // 仍保留 audit warn 以便观察 secret PII 流量,并把 riskLevel 升 high
+          // 让调用方在 UI/log 层能区分。
           await this.audit('warn', 'input.secret-data', { sessionId, dataClass })
-          return {
-            safe: false,
-            reason: `Input contains secret-level data (${dataClass})`,
-            riskLevel: 'high',
-            dataClassification: dataClass,
-          }
+          result.safe = true
+          result.riskLevel = 'high'
         }
       } catch {
         // privacy-policy 调用失败不阻断

@@ -670,26 +670,30 @@ describe('prompt-guard injection detection', () => {
 // ─── PII data classification (input) ──────────────────────────────────
 
 describe('prompt-guard PII detection (input)', () => {
-  it('blocks input containing secret-level data (bank card)', async () => {
+  it('warns but does not block input containing secret-level data (bank card)', async () => {
+    // §7.87.13.6 (2026-09-21): prompt-guard 不再 block secret PII,改由下游
+    // privacy-policy routing (§7.87.13.5) + sanitizer (§7.87.13) 处理。
+    // 行为：safe=true + riskLevel=high + audit warn。
     const { service } = createGuard({}, policyService)
     const result = await service.checkInput('我的卡号是6222021234567890123', 's1')
-    assert.equal(result.safe, false)
+    assert.equal(result.safe, true)
     assert.equal(result.riskLevel, 'high')
     assert.equal(result.dataClassification, 'secret')
-    assert.ok(result.reason?.includes('secret-level'))
   })
 
-  it('blocks input containing secret-level data (id card)', async () => {
+  it('warns but does not block input containing secret-level data (id card)', async () => {
     const { service } = createGuard({}, policyService)
     const result = await service.checkInput('身份证号11010119900101123X', 's1')
-    assert.equal(result.safe, false)
+    assert.equal(result.safe, true)
+    assert.equal(result.riskLevel, 'high')
     assert.equal(result.dataClassification, 'secret')
   })
 
-  it('blocks input containing secret-level data (API key)', async () => {
+  it('warns but does not block input containing secret-level data (API key)', async () => {
     const { service } = createGuard({}, policyService)
     const result = await service.checkInput('key=sk-abcdefghijklmnopqrstuvwxyz', 's1')
-    assert.equal(result.safe, false)
+    assert.equal(result.safe, true)
+    assert.equal(result.riskLevel, 'high')
     assert.equal(result.dataClassification, 'secret')
   })
 
