@@ -916,6 +916,11 @@ def run_pii_pipeline(client: DshEdgeClient, fixtures: list, log_file: Path, iter
                 "target_realm": "ERROR",
                 "routing_correct": 0.0,
                 "pii_clean": 0.0,
+                # §7.87.13.1(2026-09-20):加 case_score=0.0 让 run_pii_pipeline line 973
+                # 的 mean([r["case_score"] for r in case_scores]) 在 except 分支返回时
+                # 不抛 KeyError。an ERROR case 实质上既不 routing-correct 又不 pii-clean,
+                # 0.7*0 + 0.3*0 = 0.0,符合语义。
+                "case_score": 0.0,
                 "result": "",
                 "result_len": 0,
                 "error": f"HTTP {e.code}: {e.reason}",
@@ -928,6 +933,7 @@ def run_pii_pipeline(client: DshEdgeClient, fixtures: list, log_file: Path, iter
                 "target_realm": "ERROR",
                 "routing_correct": 0.0,
                 "pii_clean": 0.0,
+                "case_score": 0.0,
                 "result": "",
                 "result_len": 0,
                 "error": str(e),
