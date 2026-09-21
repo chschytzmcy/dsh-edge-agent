@@ -183,10 +183,11 @@ describe('pii-utils 单一事实源', () => {
     const { readFileSync } = await import('node:fs')
     const { fileURLToPath } = await import('node:url')
     const { dirname, join, resolve } = await import('node:path')
-    // 2026-09-03 (§7.31): bundle is a pure plugin in web profile; tests
-    // load privacy-policy.json from tests/fixtures/ (was profiles/dsh-edge-agent/
-    // overlay before the refactor).
-    const fixturePath = resolve(dirname(fileURLToPath(import.meta.url)), '../fixtures/privacy-policy.json')
+    // 2026-09-21 (§7.87.13.3): config/privacy-policy.json is the shipped
+    // prod config (was tests/fixtures/privacy-policy.json before the
+    // rename; even earlier was profiles/dsh-edge-agent/ overlay before
+    // the §7.31 bundle-refactor).
+    const fixturePath = resolve(dirname(fileURLToPath(import.meta.url)), '../../config/privacy-policy.json')
     const url = new URL(fixturePath, import.meta.url)
     const policy = JSON.parse(readFileSync(url, 'utf-8'))
     for (const rule of policy.sanitizationRules) {

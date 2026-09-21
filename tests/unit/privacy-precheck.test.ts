@@ -6,10 +6,11 @@ import { describe, it, assert } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve, join } from 'node:path'
 
-// Constant — privacy-policy.json fixture path. 2026-09-03 (§7.31):
-// bundle is a pure plugin in web profile; tests load privacy-policy.json
-// from tests/fixtures/ (was profiles/dsh-edge-agent/ overlay before refactor).
-const OVERLAY_DIR = resolve(__dirname, '../fixtures')
+// Constant — shipped privacy-policy.json path. 2026-09-21 (§7.87.13.3):
+// config/privacy-policy.json is the shipped prod config (was
+// tests/fixtures/privacy-policy.json before the rename; even earlier was
+// profiles/dsh-edge-agent/ overlay before the §7.31 bundle-refactor).
+const OVERLAY_DIR = resolve(__dirname, '../../config')
 
 // Load the actual shipped policy
 const policyPath = join(OVERLAY_DIR, 'privacy-policy.json')

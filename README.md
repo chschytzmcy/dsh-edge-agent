@@ -165,7 +165,7 @@ dsh plugin --profile dsh-tui add @deepseek-harness-edge-agent/dsh-edge-agent
 4. rsync `lib/` → profile 嵌套包
 5. 同步 `cordis.patch.yml` 到嵌套包（**bundle-level patch**，§7.31 fix）
 6. 数据面单 root `~/.dsh-edge-agent/`（§7.36 起各 profile 共享，§7.68 撤回 §7.61 audit 分流，所有 profile 共写 `audit/audit.plain.jsonl`）
-7. 加载默认策略 `tests/fixtures/privacy-policy.json`（也可由 `DSH_EDGE_PRIVACY_POLICY_PATH` 覆盖）
+7. 加载默认策略 `config/privacy-policy.json`（§7.87.13.3 起从仓库根 `config/` 复制到 `~/.dsh-edge-agent/privacy-policy.json`；也可由 `DSH_EDGE_PRIVACY_POLICY_PATH` 覆盖）
 8. **杀掉其他 profile 进程**(dsh-tui + web,§7.69)+ 杀掉 target profile 旧进程 + restart target 拿新代码,HTTP 端口统一 :21017
 
 完成后 HTTP API 监听 `:21017`(`/v1/chat`, GET `/v1/health`)。切 UI 用 `./install.sh --profile=web`(webui `:3080`)或 `--profile=tui`(终端)。

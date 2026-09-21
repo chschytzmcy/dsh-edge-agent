@@ -441,6 +441,24 @@ if [ -d "$USER_PRESET_SRC" ]; then
   fi
 fi
 
+# §7.87.13.3 (2026-09-21): shipped 隐私策略 to bundle root. install.sh 之前
+# 不覆盖 ~/.dsh-edge-agent/privacy-policy.json — 那个路径是 §7.36 起 dsh-edge
+# 单 profile 架构的真实 prod 位置,install.sh Phase 2.5 的 profiles/*/ cp
+# 只走 legacy 路径。config/privacy-policy.json 是 repo 内 shipped 配置
+# (tests/unit/pii-utils.test.ts + privacy-precheck.test.ts 一致性断言源),
+# hotReload=true / watchIntervalMs=5000 允许改完 5 秒生效。
+SHIPPED_POLICY_SRC="$REPO_ROOT/config/privacy-policy.json"
+SHIPPED_POLICY_DST="$HOME/.dsh-edge-agent/privacy-policy.json"
+if [ -f "$SHIPPED_POLICY_SRC" ]; then
+  mkdir -p "$(dirname "$SHIPPED_POLICY_DST")"
+  if ! diff -q "$SHIPPED_POLICY_SRC" "$SHIPPED_POLICY_DST" >/dev/null 2>&1; then
+    echo "        sync config/privacy-policy.json → $SHIPPED_POLICY_DST"
+    cp "$SHIPPED_POLICY_SRC" "$SHIPPED_POLICY_DST"
+  fi
+else
+  echo "  warning: $SHIPPED_POLICY_SRC not found — bundle root policy not synced" >&2
+fi
+
 # ── Phase 3: 启动 target profile（单 profile 架构 §7.69）───────────
 # §7.69: 一次只跑一个 profile —— 部署前先杀掉其他 profile 的 dsh 进程,
 # 避免端口冲突(都吃 :21017)+ audit TOCTOU race。target profile 本身
