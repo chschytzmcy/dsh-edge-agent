@@ -33,6 +33,30 @@
       "rationale": "Financial/identity PII must stay local"
     },
     {
+      "pattern": "(手机号|电话号码|手机.{0,5}号|phone.?number|mobile.?number)",
+      "realm": "LOCAL",
+      "confidence": 0.95,
+      "rationale": "Phone PII must stay local"
+    },
+    {
+      "pattern": "(邮箱|电邮|email.?address|e-?mail)",
+      "realm": "LOCAL",
+      "confidence": 0.95,
+      "rationale": "Email PII must stay local"
+    },
+    {
+      "pattern": "(IP\\s*地址|服务器.{0,8}(IP|地址)|server\\s+IP|局域网.{0,8}(IP|地址))",
+      "realm": "LOCAL",
+      "confidence": 0.9,
+      "rationale": "IP address PII must stay local"
+    },
+    {
+      "pattern": "(家庭住址|住址|home\\s+address|通信地址)",
+      "realm": "LOCAL",
+      "confidence": 0.85,
+      "rationale": "Home address PII must stay local"
+    },
+    {
       "pattern": "(翻译|translate|summarize|summary|explain|为什么|what is|how to)",
       "realm": "CLOUD",
       "confidence": 0.7,
