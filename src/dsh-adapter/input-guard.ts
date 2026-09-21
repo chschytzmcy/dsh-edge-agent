@@ -784,18 +784,25 @@ export class InputGuardServiceImpl extends Service {
     }
 
     // 2. 策略判定 — privacy-policy REJECT
+    // §7.87.13.2 (2026-09-21): hoisted ppRealm/ppConfidence/ppRationale/ppPattern
+    // + edgeRoute to function scope so the §3 routing decision can use them
+    // outside the if-block.
+    let ppRealm: string | undefined
+    let ppRationale: string | undefined
+    let ppConfidence = 0
+    let ppPattern = ''
     if (this.privacyPolicy) {
       // §7.46.6 (2026-09-12): privacy-policy matchRouting 在 ops log 留一行
       // — 让 "privacy-policy 跑没 / 多少 ms / realm=LOCAL|CLOUD|SANITIZED|REJECT"
       // 在 ops log 可见（之前只在 audit）。配合 preflight intent 让
       // operator 看 trace 知道 policy 路由分类（不是 LLM 分类 intent）。
       const ppStart = Date.now()
-      let ppRealm: string | undefined
-      let ppRationale: string | undefined
       try {
         const routing = this.privacyPolicy.matchRouting(originalLastUser.text)
         ppRealm = routing?.realm
         ppRationale = routing?.rationale
+        ppConfidence = routing?.confidence ?? 0
+        ppPattern = (routing as { pattern?: string } | null)?.pattern ?? ''
         try {
           this.ctx?.logger?.info?.(
             `[input-guard] privacy-policy done sessionId=${sessionId} durationMs=${Date.now() - ppStart} realm=${ppRealm ?? 'none'}${ppRationale ? ` rationale=${ppRationale}` : ''}`,
@@ -828,40 +835,75 @@ export class InputGuardServiceImpl extends Service {
     }
 
     // 3. 意图分类 — 优先读 agent._edgeRoute（http-api 已分类），否则 fallback classify
+    //
+    // §7.87.13.2 (2026-09-21): privacy-policy matchRouting result is now
+    // AUTHORITATIVE for non-REJECT routing, not just informational. When a
+    // non-REJECT rule matches, use its realm directly and skip the LLM
+    // classify step (edgeRoute + intentRouter). REJECT was already
+    // authoritative; now LOCAL/SANITIZED/CLOUD are too. This makes
+    // 身份证号/手机号/etc. keyword rules actually route to LOCAL, not
+    // whatever the LLM picks (which would be CLOUD for any query also
+    // containing "查天气" / "今天北京").
+    //
+    // Why this is safe:
+    //   - REJECT path unchanged (block + fail-closed, already works).
+    //   - LLM classify still used when no rule matches (most queries).
+    //   - policy.confidence ≥ 0.7 gates the override (no low-quality rules).
+    //   - intentSource + audit kind make the override observable.
     let category: 'LOCAL' | 'CLOUD' | 'SANITIZED' | 'REJECT' = 'CLOUD'
     let edgeRouteUsed = false
     let intentConfidence = 0
     let intentRationale: string | undefined
+    let policyClassified = false
     let targetRealm: 'LOCAL' | 'CLOUD' = 'CLOUD'
-    const edgeRoute = this.readEdgeRoute(payload.agent)
-    if (edgeRoute) {
-      category = edgeRoute.category === 'REJECT' ? 'CLOUD' : edgeRoute.category
-      edgeRouteUsed = true
-      intentConfidence = edgeRoute.confidence ?? 0
-      intentRationale = edgeRoute.rationale
-    } else if (this.intentRouter) {
-      try {
-        const intent = await this.intentRouter.classify(originalLastUser.text, { sessionId })
-        category = intent.category
-        intentConfidence = intent.confidence ?? 0
-        intentRationale = intent.rationale
-        if (category === 'REJECT') {
-          this.audit('warn', 'input-guard.blocked.intent', {
-            sessionId, confidence: intent.confidence, rationale: intent.rationale,
-          })
-          if (this.config.rejectOnPolicyViolation) {
-            this.attachRejection(payload.agent, {
-              kind: 'intent',
-              reason: intent.rationale ?? 'intent-reject',
+    // §7.87.13.2 (2026-09-21): edgeRoute hoisted to function scope so §4-5
+    // (cloud-key-missing + sanitize-skip path) can still resolve it after
+    // policyClassified short-circuits the if/else below.
+    let edgeRoute: AgentEdgeRoute | undefined
+    if (ppRealm && ppRealm !== 'REJECT' && ppConfidence >= 0.7) {
+      // Privacy-policy override — non-REJECT rule wins over LLM/edgeRoute.
+      category = ppRealm as 'LOCAL' | 'CLOUD' | 'SANITIZED'
+      intentConfidence = ppConfidence
+      intentRationale = ppRationale ?? `policy-rule:${ppRealm.toLowerCase()}`
+      policyClassified = true
+      this.audit('info', 'input-guard.policy.route-applied', {
+        sessionId,
+        policyRealm: ppRealm,
+        policyConfidence: ppConfidence,
+        policyRationale: ppRationale,
+        policyPattern: ppPattern,
+      })
+    } else {
+      edgeRoute = this.readEdgeRoute(payload.agent)
+      if (edgeRoute) {
+        category = edgeRoute.category === 'REJECT' ? 'CLOUD' : edgeRoute.category
+        edgeRouteUsed = true
+        intentConfidence = edgeRoute.confidence ?? 0
+        intentRationale = edgeRoute.rationale
+      } else if (this.intentRouter) {
+        try {
+          const intent = await this.intentRouter.classify(originalLastUser.text, { sessionId })
+          category = intent.category
+          intentConfidence = intent.confidence ?? 0
+          intentRationale = intent.rationale
+          if (category === 'REJECT') {
+            this.audit('warn', 'input-guard.blocked.intent', {
+              sessionId, confidence: intent.confidence, rationale: intent.rationale,
             })
-            return { kind: 'reject', reason: intent.rationale ?? 'intent-reject' }
+            if (this.config.rejectOnPolicyViolation) {
+              this.attachRejection(payload.agent, {
+                kind: 'intent',
+                reason: intent.rationale ?? 'intent-reject',
+              })
+              return { kind: 'reject', reason: intent.rationale ?? 'intent-reject' }
+            }
           }
+        } catch (err: any) {
+          this.audit('error', 'input-guard.intent-router.error', {
+            sessionId, error: err?.message ?? String(err),
+          })
+          // 分类失败用默认 CLOUD（fail-open）
         }
-      } catch (err: any) {
-        this.audit('error', 'input-guard.intent-router.error', {
-          sessionId, error: err?.message ?? String(err),
-        })
-        // 分类失败用默认 CLOUD（fail-open）
       }
     }
     // §7.46 (2026-09-11): ops log 让"为什么路由到 SANITIZED/LOCAL/CLOUD"
@@ -882,9 +924,16 @@ export class InputGuardServiceImpl extends Service {
     // 不明显（是 local-llm hang fallback？还是 http-api resolveRoute 返回？）
     targetRealm = category === 'LOCAL' ? 'LOCAL' : (category === 'SANITIZED' ? 'LOCAL' : 'CLOUD')
     const routeSource: 'http-api' | 'webui' = edgeRouteUsed ? 'http-api' : 'webui'
-    const intentSource: 'http-api-classified' | 'llm-classified' | 'default-fallback' = edgeRouteUsed
-      ? 'http-api-classified'
-      : (this.intentRouter ? 'llm-classified' : 'default-fallback')
+    // §7.87.13.2 (2026-09-21): 'policy-classified' added — matchRouting result
+    // overrode LLM/edgeRoute (see §7.87.13.2 comment block above). Distinct
+    // from 'llm-classified' so ops log shows when privacy-policy is the source
+    // of truth vs LLM fallback.
+    const intentSource: 'policy-classified' | 'http-api-classified' | 'llm-classified' | 'default-fallback' =
+      policyClassified
+        ? 'policy-classified'
+        : (edgeRouteUsed
+          ? 'http-api-classified'
+          : (this.intentRouter ? 'llm-classified' : 'default-fallback'))
     try {
       this.ctx.logger?.info?.(
         `[input-guard] preflight intent sessionId=${sessionId} category=${category} confidence=${intentConfidence} rationale=${intentRationale ?? 'n/a'} targetRealm=${targetRealm} routeSource=${routeSource} intentSource=${intentSource}`,

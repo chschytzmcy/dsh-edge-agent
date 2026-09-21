@@ -707,6 +707,60 @@ describe('handlePreStep — §7.46.6 prompt-guard + privacy-policy ops log', () 
     assert.match(done!, /durationMs=\d+/, 'should include durationMs')
   })
 
+  // §7.87.13.2 (2026-09-21): privacy-policy matchRouting result is now
+  // AUTHORITATIVE for non-REJECT routing (was: informational only). When a
+  // non-REJECT rule matches, use its realm directly and skip LLM classify.
+  it('privacy-policy non-REJECT OVERRIDES LLM intent (LOCAL wins over CLOUD)', async () => {
+    const pp = fakePrivacyPolicy({ realm: 'LOCAL', rationale: '身份证号-detected' })
+    const ir = fakeIntentRouter({ category: 'CLOUD', rationale: 'llm-classified:cloud' })
+    const audit = fakeAuditLog()
+    const { ctx, infoLines } = fakeCtxWithLogger()
+    const svc = new InputGuardServiceImpl(
+      ctx as any, defaultConfig({ sanitizeLocalTraffic: false }),
+      undefined, pp.api as any, ir.api as any, undefined, audit.api as any,
+    )
+    const payload = makePreStepPayload('身份证号 110101199003078811, 查天气')
+    await svc.handlePreStep(payload as any, makeNext(payload.messages))
+
+    // LLM should NOT have been called — policy override short-circuits.
+    assert.equal(ir.calls.length, 0, 'intentRouter.classify should NOT be called when policy overrides')
+
+    // preflight intentSource must be 'policy-classified'
+    const preflight = infoLines.find((l) => l.includes('preflight intent'))
+    assert.ok(preflight, `expected preflight intent line, got: ${JSON.stringify(infoLines)}`)
+    assert.ok(preflight!.includes('intentSource=policy-classified'),
+      `should mark intentSource=policy-classified, got: ${preflight}`)
+
+    // Audit must record the override
+    const override = audit.entries.find((e: any) => e.kind === 'input-guard.policy.route-applied')
+    assert.ok(override, 'must audit input-guard.policy.route-applied')
+    assert.equal(override!.payload.policyRealm, 'LOCAL')
+    assert.equal(override!.payload.policyRationale, '身份证号-detected')
+  })
+
+  it('privacy-policy non-REJECT skipped when confidence < 0.7 (LLM used instead)', async () => {
+    const pp = {
+      api: {
+        matchRouting: (_text: string) => ({ realm: 'LOCAL', confidence: 0.5, rationale: 'weak-rule' }),
+      },
+    }
+    const ir = fakeIntentRouter({ category: 'CLOUD' })
+    const { ctx, infoLines } = fakeCtxWithLogger()
+    const svc = new InputGuardServiceImpl(
+      ctx as any, defaultConfig(),
+      undefined, pp.api as any, ir.api as any, undefined,
+    )
+    const payload = makePreStepPayload('hello world')
+    await svc.handlePreStep(payload as any, makeNext(payload.messages))
+
+    // LLM SHOULD have been called (low confidence rule doesn't override)
+    assert.equal(ir.calls.length, 1, 'LLM classify should still run when policy confidence < 0.7')
+
+    const preflight = infoLines.find((l) => l.includes('preflight intent'))
+    assert.ok(preflight!.includes('intentSource=llm-classified'),
+      `should mark intentSource=llm-classified (not policy-classified)`)
+  })
+
   it('privacy-policy realm=REJECT → done line fires before reject', async () => {
     const pp = fakePrivacyPolicy({ realm: 'REJECT', rationale: 'credential-leak' })
     const ir = fakeIntentRouter({ category: 'LOCAL' })
