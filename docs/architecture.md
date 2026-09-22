@@ -129,7 +129,6 @@ dsh-edge-agent 由 **22 个核心插件 + 1 个可选 http-api** 组成（原 §
 | `local-llm-adapter` | 本地 LLM 适配器（Qwen3-4B） | LOCAL |
 | `cloud-llm-adapter` | 云端 LLM 适配器（DeepSeek） | CLOUD |
 | `sanitizer-pipeline` | PII 脱敏管线（9 条规则） | SANITIZED |
-| `web-search-guard` | web_search / web_fetch 结果 PII 反脱敏 + realm 校验 | — |
 | `ohttp-gateway` | OHTTP（RFC 9458）网关（**A3 后实装**） | — |
 | `secure-bridge` | 端云安全桥 | — |
 | `attestation` | TEE 远程证明 | — |
@@ -355,7 +354,6 @@ rsync -a --delete lib/ "$N/lib/"           # ③
 | 插件 | 文件 | `inject` 数组 | 作用 |
 |------|------|--------------|------|
 | **tools** | `tools.ts` | `['auditLog', 'tools']` | Realm 工具注册表配置，为 DSH 原生工具添加 Realm 标记 |
-| **web-search-guard** | `web-search-guard.ts` | `['tools', 'sanitizer', 'auditLog']` | web_search / web_fetch 结果 PII 反脱敏 + realm 校验（v0.5.0+ 新增） |
 
 > **工具复用**: dsh-edge-agent 不再自行实现工具插件，而是直接复用 DSH 原生工具：
 > - `@deepseek-ai/dsh-tool-web` — Web 搜索和抓取（**仅此一项在 `package.json` `peerDependencies` 中声明**）
@@ -898,7 +896,6 @@ sequenceDiagram
 | `prompt-guard` | `ctx.privacyPolicy`, `ctx.auditLog`, `ctx.llm` | 调用 `checkInput()`；模型辅助检测走 `ctx.llm.stream()` |
 | `http-api` | `ctx.agents`, `ctx.intentRouter`, `ctx.auditLog`, `ctx.tdBus`, `ctx.realmSkillBridge`, `ctx.edgeTools` | 调用 `agents.create()` / `agent.followup()`；订阅 `session/event`；读 `_edgeRejection` 翻译 HTTP 状态 |
 | `tools` | `ctx.tools`, `ctx.auditLog` | `defineTool()` 注册 Realm-aware 工具；`filterTools()` / `isToolAllowed()` 做 realm 过滤 |
-| `web-search-guard` | `ctx.tools`, `ctx.sanitizer`, `ctx.auditLog` | 监听 `tools/result`，对 web_search / web_fetch 结果做 PII 反脱敏 + realm 校验 |
 | `plugin-host` | `ctx.agents`, `ctx.sessions` | 管理第三方插件 grant |
 | `sessions` (edge) | `ctx.localStorage` | 加密会话元数据 |
 | `audit-log` | `*(none — 无 DSH 服务依赖)*` | HMAC 链接；`audit()` / `log()` / `getStats()` |

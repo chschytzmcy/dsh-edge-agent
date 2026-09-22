@@ -30,7 +30,7 @@ repo 根 `package.json` 的**逐字节镜像**(install.sh §2.8 diff-then-copy;�
 
 注意语义精度:它**不只说"本 bundle 要做什么"**,而是"装了本 bundle 之后,整个 DSH 的组装方案要做哪些改动"——三段里只有 insert 是自家事,config/disable 共 40 处动作的对象是**上游/宿主插件**。只写差量,DSH 启动时按层合并:`dsh-base → 宿主(dsh-web-app/dsh-tui) → 本 patch → ~/.dsh/profiles/<p>/cordis.patch.yml(用户皮肤,最后压顶)`。活例:§7.61 `profiles/dsh-edge/cordis.patch.yml`——无宿主 headless profile 用皮肤层把 audit-log root 分流,其 config 行是**整键替换**(必须全量重述 bundle 层该 id 的所有键,只写增量会丢键;头注释有此坑的完整说明)。
 
-- **17 个 insert(派工)**:把 L2/L1 自己的插件挂进插件图(intent-router、prompt-guard、sanitizer-pipeline、privacy-policy、audit-log、td-bus、tcm、local-storage、file-logger、http-api…)。insert 的 `name` 就是子路径引用本身(如 `@deepseek-harness-edge-agent/dsh-edge-agent/file-logger`)→ 经 ① 的 exports 解析到 lib。其中 **7 个是执法核心**(闭包推导见铁律 3),其余 10 个是执法之外的能力——模型接入(local/cloud-llm-adapter、model-router)、入口会话(http-api、edge-tools-registry、local-storage、sessions)、隐私增强(td-bus、tcm)、运维(file-logger、web-search-guard);实机结论:摘掉这 10 个,闸门照常执法。
+- **16 个 insert(派工)**:把 L2/L1 自己的插件挂进插件图(intent-router、prompt-guard、sanitizer-pipeline、privacy-policy、audit-log、td-bus、tcm、local-storage、file-logger、http-api…)。insert 的 `name` 就是子路径引用本身(如 `@deepseek-harness-edge-agent/dsh-edge-agent/file-logger`)→ 经 ① 的 exports 解析到 lib。其中 **7 个是执法核心**(闭包推导见铁律 3),其余 9 个是执法之外的能力——模型接入(local/cloud-llm-adapter、model-router)、入口会话(http-api、edge-tools-registry、local-storage、sessions)、隐私增强(td-bus、tcm)、运维(file-logger);实机结论:摘掉这 9 个,闸门照常执法。
 - **10 个 config 覆盖(定参数)**:改**已存在插件**的参数——file-logger 轮转(§7.56)、audit-log root、llm provider/模型名、各超时。值多为 `!!js` 表达式(如 `parseInt(process.env.DSH_EDGE_LOG_MAX_AGE_DAYS ?? '1', 10)`),所以 `.env.sh` 不改文件即可覆盖——这也是"改 env 必须重启进程"的机制根源。
 - **30 个 disable(撤编)**:剔除 edge 场景不用的上游/宿主插件(云直连、dsh 原生模块)。
 

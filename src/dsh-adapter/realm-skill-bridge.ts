@@ -3,15 +3,26 @@
  *
  * Reads a user-editable JSON config (`skill-realms.json`) that maps skill/tool
  * names (or glob patterns) to LOCAL | CLOUD realms. Tags every discovered skill
- * and tool accordingly, then enforces the mapping at two enforcement points:
+ * and tool accordingly, then enforces the mapping at three enforcement points:
  *
  *   Layer 1 (agent/pre-step): filter the <available_skills> catalog so each
  *     agent only sees skills in its own realm. Skills tagged `hidden` are
  *     invisible to every agent.
  *
+ *   Layer 1.5-replacement (system-prompt/assemble): filter the tool schema
+ *     list BEFORE dsh-agent-loop wraps it in deepFreeze and passes to the
+ *     LLM. Replaces the deleted `llm/stream` tools probe — `payload.tools`
+ *     at llm/stream is already frozen (dsh-agent-loop/lib/index.js:729
+ *     `markAgentLoopRequest(deepFreeze({ ... tools: header.tools, ... }))`)
+ *     so splice/defineProperty mutations silently fail there. The
+ *     system-prompt/assemble waterfall value IS authoritative (per the dsh
+ *     type declaration: "the returned value is authoritative") and tools are
+ *     a plain array at that point. After this layer the LLM never sees
+ *     out-of-realm tools.
+ *
  *   Layer 3 (tools/pre-execute): deny tool execution when the tool's realm
- *     does not match the calling agent's realm (defense-in-depth — Layer 2
- *     schema filtering is wired separately through http-api + filterTools).
+ *     does not match the calling agent's realm (defense-in-depth — also
+ *     catches tools added via runtime registrations that bypass assembly).
  *
  * The config file is hot-reloaded via stat-polling (same pattern as
  * privacy-policy.ts) so changes take effect without a restart.
@@ -425,6 +436,59 @@ export class RealmSkillBridgeService extends Service {
       // we just skip the edgeTools.setRealm() calls.
     }
     this.toolRealms.clear()
+    // §7.92.2 (2026-09-22): seed from native map (DSH_NATIVE_REALM_MAP /
+    // DSH_NATIVE_MULTI_REALM, applied to edgeTools at boot by
+    // edge-tools-registry) BEFORE the config loop so config wins on conflict.
+    // Without this seed, filterToolsField would never filter anything when
+    // user hasn't written skill-realms.json yet — web_search / web_fetch
+    // would stay visible to LOCAL agents (defeating the purpose of Layer
+    // 1.5-replacement). The config loop below adds more tags on top.
+    //
+    // Requires `tools` + `edgeTools` in plugin inject list (see
+    // cordis.patch.yml) — the cordis proxy throws "cannot get property X
+    // without inject" if a plugin reads a service it didn't declare.
+    if (edgeTools) {
+      const nativeResolver = edgeTools as unknown as {
+        realm?: Map<string, Set<RealmTag>>
+        resolveRealms?(name: string): Set<RealmTag>
+      }
+      // Walk every tool known to edgeTools, ask it for native realms,
+      // and copy into this.toolRealms.
+      try {
+        const allTools = (this.ctx as unknown as { tools?: { view?: () => { visible?: Map<string, unknown> } } }).tools?.view?.()?.visible
+        if (allTools instanceof Map) {
+          for (const name of allTools.keys()) {
+            // 1. explicit setRealm (Set<ToolRealm>)
+            const explicit = nativeResolver.realm?.get(name)
+            if (explicit !== undefined && explicit.size > 0) {
+              const out = this.toolRealms.get(name) ?? new Set<RealmTag>()
+              for (const r of explicit) {
+                // edgeTools stores string-set realm values; map into RealmTag
+                if (r === 'LOCAL' || r === 'CLOUD' || r === 'SANITIZED' || r === 'hidden') {
+                  out.add(r)
+                }
+              }
+              if (out.size > 0) this.toolRealms.set(name, out)
+              continue
+            }
+            // 2. resolveRealms falls through to classifyByPrefix → CLOUD; we
+            // don't want prefix tags (would over-restrict). So only accept
+            // values when edgeTools has them via explicit + native map path.
+            // realmOf (single value) is the right probe — it returns
+            // undefined for prefix-only entries.
+            const single = (edgeTools as unknown as { realmOf?: (n: string) => string | undefined }).realmOf?.(name)
+            if (single === 'LOCAL' || single === 'CLOUD' || single === 'SANITIZED' || single === 'hidden') {
+              const out = this.toolRealms.get(name) ?? new Set<RealmTag>()
+              out.add(single)
+              this.toolRealms.set(name, out)
+            }
+          }
+        }
+      } catch {
+        // edgeTools.view() may throw if tools service hasn't mounted yet;
+        // tools/change will re-fire this function once it's available.
+      }
+    }
     for (const [toolName, realm] of Object.entries(this.realmConfig.tools)) {
       // Store realm tag in a Set (supports multi-realm if configured multiple times)
       const existing = this.toolRealms.get(toolName) ?? new Set<RealmTag>()
@@ -805,83 +869,58 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
     return { ...decision, messages: result.messages }
   }, { global: true })
 
-  // ── Layer 1.5: Filter tools list on llm/stream (§7.37) — DISABLED ────────
+  // ── Layer 1.5-replacement: Filter tool schemas at system-prompt/assemble ───
+  // §7.37.x (2026-09-22): replace the deleted `llm/stream` tools probe.
+  // Why the original probe is dead:
+  //   dsh-agent-loop's buildRequest() deepFreezes the entire request payload
+  //   (config + messages + system + tools + sessionId + signal) BEFORE the
+  //   `llm/stream` waterfall fires. See @deepseek-ai/dsh-agent-loop/lib/index.js:729:
+  //     markAgentLoopRequest(deepFreeze({
+  //       ...header.config,
+  //       messages: boundaryMessages,
+  //       ...header.system !== void 0 ? { system: header.system } : {},
+  //       ...header.tools !== void 0 ? { tools: header.tools } : {},
+  //       sessionId: this.session.id, signal,
+  //     }))
+  //   After this, payload.tools at `llm/stream` is frozen — splice, push,
+  //   Object.defineProperty all silently fail.
   //
-  // llm/stream payload carries [provider, model, messages, system, tools,
-  // sessionId, signal]. The catalog text (<available_skills>) lives outside
-  // any reachable dsh hook, so the only LLM-visible realm leak is the
-  // `tools` array. Filtering it would let LOCAL LLM sessions never see
-  // web_search / web_fetch — but dsh-llm 0.1.2-rc.1 deep-freezes the entire
-  // payload (object + array + every index) before waterfall dispatches it,
-  // so we cannot splice / reassign / Object.defineProperty `payload.tools`
-  // without throwing "Cannot delete property N of [object Array]" (or
-  // "Cannot redefine property: tools"). Every mutation strategy breaks
-  // dsh boot.
+  // Why system-prompt/assemble works:
+  //   dsh-system-prompt/lib/index.js:339 builds assembly.tools via plain
+  //   array concat (no freeze), then runs the `system-prompt/assemble`
+  //   waterfall (line 342). The dsh type declaration explicitly states:
+  //     "the returned value is authoritative"
+  //   so we can return a new assembly with filtered tools. dsh-agent-loop
+  //   then picks up `assembly.tools` and freezes them only later (line 729).
   //
-  // The actual fix (§7.36) is upstream: input-guard now registers session
-  // realm before llm/stream fires, so Layer 3 (tools/pre-execute, see
-  // disposePreExec below) sees agentRealm=LOCAL and DENIES web_search /
-  // web_fetch at execution time. We keep the same probe here so that the
-  // audit log records every llm/stream invocation and which session it
-  // belongs to — useful for debugging "LLM chose wrong tool" complaints
-  // even though we don't filter the array.
-  const disposeStream = (ctx as unknown as {
+  // Trade-off: `system-prompt/assemble` runs in `agent.preStep()` (every
+  // step), so we filter once per LLM call. Layer 3 (tools/pre-execute)
+  // remains the authoritative execution-time gate for runtime-added tools.
+  // Layer 1.5-replacement here is a UX gate — LLM doesn't even ATTEMPT a
+  // cross-realm tool call when its schema is hidden.
+  const disposeAssemble = (ctx as unknown as {
     on?: (
       event: string,
-      // §7.39 (2026-09-04): SYNCHRONOUS listener — must NOT be `async`.
-      // Cordis waterfall returns the outermost listener's value verbatim.
-      // An async listener wraps the inner `next()` result (which is the
-      // AsyncGenerator returned by `dsh-llm.adapterStream`) in a Promise,
-      // and dsh-agent-loop's `for await (const chunk of stream)` then
-      // throws "stream is not async iterable" because it receives
-      // Promise<AsyncGenerator> instead of AsyncGenerator. AuditLogLike.log
-      // is declared `void` (sync), so no await is needed here.
-      fn: (payload: unknown, next: () => unknown) => unknown,
+      fn: (assembly: unknown, ctx2: unknown, next: () => Promise<unknown>) => Promise<unknown>,
       options?: { global?: boolean },
     ) => () => void
-  }).on?.('llm/stream', (payload: unknown, next: () => unknown) => {
-    // Read-only audit probe — payload is frozen by dsh-llm.
-    //
-    // §7.47.4 (2026-09-13): drop the `typeof sessionId === 'string'` gate AND
-    // switch sink from `auditLog?.log` to `ctx.logger?.info`. Pre-§7.47.4
-    // called `service.auditLog?.log?.({level:'info',...})` — but for some
-    // reason that path silently no-ops on every chat call (probe fired per
-    // stderr, ops log had 0 lines). Other realm-skill-bridge listeners
-    // (tool allow, chat finished, etc.) use `ctx.logger?.info(...)` and
-    // those land reliably. Switch to the proven sink to satisfy the
-    // "every node in ops log" coverage principle (user feedback 2026-09-13:
-    // "每次修BUG通过日志来修理，确保日志里有所有错误的信息").
-    //
-    // Pre-§7.47.4 gate `if (typeof p.sessionId === 'string')` skipped 100%
-    // of calls because GenerateOptions.sessionId is optional + branded —
-    // upstream dsh-agent-loop doesn't always populate it. Now: log every
-    // call with whatever fields are present (sessionId may be '<none>').
-    const p = payload as
-      | { sessionId?: string; tools?: ReadonlyArray<unknown>; provider?: string; model?: string }
-      | undefined
-    if (p !== undefined) {
-      // §7.52 (2026-09-13) finding: `sessionId=<none>` for the first 2
-      // probes per chat is **expected** — those are the input-guard
-      // prompt-guard + privacy-policy classifier calls (local-llm) that
-      // run BEFORE the session is created. They legitimately don't have
-      // a sessionId yet (the prompt-guard call decides CLOUD/SANITIZED,
-      // then the chat request gets a real sessionId). Distinguish in the
-      // log line so operators don't waste time chasing a phantom bug.
-      const sessionId = typeof p.sessionId === 'string' ? p.sessionId : '<pre-session>'
-      const provider = typeof p.provider === 'string' ? p.provider : '<none>'
-      const model = typeof p.model === 'string' ? p.model : '<none>'
-      const toolsCount = Array.isArray(p.tools) ? p.tools.length : 0
-      const agentRealm = sessionId !== '<pre-session>' ? service.getSessionRealm(sessionId) : null
-      try {
-        ;(ctx as unknown as { logger?: { info?: (...args: unknown[]) => void } }).logger?.info?.(
-          `[realm-skill-bridge] llm/stream probe sessionId=${sessionId} provider=${provider} model=${model} toolsCount=${toolsCount} agentRealm=${agentRealm ?? 'null'} note=frozen-payload-Layer3-enforces`,
-        )
-      }
-      catch { /* debug only */ }
-    }
-    // Return the inner chain result synchronously so the AsyncGenerator
-    // reaches dsh-agent-loop unwrapped.
-    return next()
+  }).on?.('system-prompt/assemble', async (assembly: unknown, ctx2: unknown, next: () => Promise<unknown>) => {
+    const result = (await next()) as { tools?: unknown[]; [k: string]: unknown } | undefined
+    if (!result || !Array.isArray(result.tools)) return result
+    const assembleCtx = ctx2 as { scope?: AgentLike } | undefined
+    const sessionId = assembleCtx?.scope?.session?.id
+    const agentRealm = service.getSessionRealm(sessionId)
+    // No realm classified yet → fail-open at this step. http-api sets
+    // session realm via service.setSessionRealm() in the same request
+    // lifecycle, so undefined should not happen in production. Layer 3
+    // (tools/pre-execute) catches anything that slips through.
+    if (agentRealm === undefined) return result
+    const filter = service.filterToolsField(result.tools, agentRealm)
+    if (!filter.changed) return result
+    ctx.logger?.info?.(
+      `[realm-skill-bridge] assemble filter sessionId=${sessionId ?? 'unknown'} realm=${agentRealm} removedCount=${filter.removed.length} removed=${filter.removed.join(',')}`,
+    )
+    return { ...result, tools: filter.tools }
   }, { global: true })
 
   // ── Layer 3: Gate tool execution by realm ─────────────────────────────────
@@ -1040,7 +1079,7 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
     disposeSkillsChange?.()
     disposeToolsChange?.()
     disposePreStep?.()
-    disposeStream?.()
+    disposeAssemble?.()
     disposePreExec?.()
     disposeToolResult?.()
     disposeSessionEvents?.()

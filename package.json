@@ -125,10 +125,6 @@
       "types": "./lib/types/dsh-adapter/voice-input.d.ts",
       "import": "./lib/types/dsh-adapter/voice-input.js"
     },
-    "./web-search-guard": {
-      "types": "./lib/types/dsh-adapter/web-search-guard.d.ts",
-      "import": "./lib/types/dsh-adapter/web-search-guard.js"
-    },
     "./web-search-tavily-bocha": {
       "types": "./lib/types/dsh-adapter/web-search-tavily-bocha.d.ts",
       "import": "./lib/types/dsh-adapter/web-search-tavily-bocha.js"

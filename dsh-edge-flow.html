@@ -1,0 +1,1315 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>dsh-edge-agent 挂载点功能速查</title>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap">
+  <style>
+    :root {
+      --bg: #0E1116;
+      --surface: #161B22;
+      --surface-2: #1C232C;
+      --border: #2A3340;
+      --border-soft: #1F2731;
+      --ink: #E6EDF3;
+      --ink-soft: #B8C2CC;
+      --ink-mute: #94A3B8;
+      --ink-dim: #6B7785;
+      --waterfall: #FBBF24;
+      --waterfall-bg: rgba(251, 191, 36, 0.12);
+      --emit: #60A5FA;
+      --emit-bg: rgba(96, 165, 250, 0.12);
+      --reject: #F87171;
+      --reject-bg: rgba(248, 113, 113, 0.12);
+      --accept: #4ADE80;
+      --accept-bg: rgba(74, 222, 128, 0.12);
+      --accent: #4ADE80;
+    }
+    :root[data-theme="light"] {
+      --bg: #F7F8FA;
+      --surface: #FFFFFF;
+      --surface-2: #F1F3F5;
+      --border: #D8DEE4;
+      --border-soft: #E5E9EE;
+      --ink: #1A1F26;
+      --ink-soft: #3A4452;
+      --ink-mute: #5A6573;
+      --ink-dim: #8B95A1;
+      --waterfall: #B45309;
+      --waterfall-bg: rgba(180, 83, 9, 0.10);
+      --emit: #1D4ED8;
+      --emit-bg: rgba(29, 78, 216, 0.08);
+      --reject: #B91C1C;
+      --reject-bg: rgba(185, 28, 28, 0.08);
+      --accept: #047857;
+      --accept-bg: rgba(4, 120, 87, 0.08);
+      --accent: #047857;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) {
+        --bg: #0E1116;
+        --surface: #161B22;
+        --surface-2: #1C232C;
+        --border: #2A3340;
+        --border-soft: #1F2731;
+        --ink: #E6EDF3;
+        --ink-soft: #B8C2CC;
+        --ink-mute: #94A3B8;
+        --ink-dim: #6B7785;
+        --waterfall: #FBBF24;
+        --waterfall-bg: rgba(251, 191, 36, 0.12);
+        --emit: #60A5FA;
+        --emit-bg: rgba(96, 165, 250, 0.12);
+        --reject: #F87171;
+        --reject-bg: rgba(248, 113, 113, 0.12);
+        --accept: #4ADE80;
+        --accept-bg: rgba(74, 222, 128, 0.12);
+        --accent: #4ADE80;
+      }
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; height: 100%; }
+    body {
+      background: var(--bg);
+      color: var(--ink);
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      font-size: 15px;
+      line-height: 1.55;
+      -webkit-font-smoothing: antialiased;
+      padding: 24px;
+      padding-block: max(24px, env(safe-area-inset-top, 0px)) max(24px, env(safe-area-inset-bottom, 0px));
+    }
+    .container { max-width: 1180px; margin: 0 auto; }
+
+    /* ── Hero ────────────────────────────────────────────────────────────── */
+    .hero {
+      padding: 32px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      margin-bottom: 20px;
+    }
+    .eyebrow {
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 11px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 12px;
+    }
+    h1 {
+      font-size: 28px;
+      font-weight: 700;
+      margin: 0 0 8px;
+      letter-spacing: -0.02em;
+      text-wrap: balance;
+    }
+    .lead {
+      font-size: 15px;
+      color: var(--ink-soft);
+      max-width: 760px;
+      margin: 0;
+    }
+
+    /* ── Section card ────────────────────────────────────────────────────── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 26px 30px;
+      margin-bottom: 16px;
+    }
+    .card-title {
+      font-size: 18px;
+      font-weight: 600;
+      margin: 0 0 4px;
+      letter-spacing: -0.01em;
+    }
+    .card-sub {
+      font-size: 13px;
+      color: var(--ink-mute);
+      margin: 0 0 18px;
+    }
+
+    /* ── Hook list ───────────────────────────────────────────────────────── */
+    .hook-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+    }
+    .hook-row {
+      display: grid;
+      grid-template-columns: 200px 1fr 90px;
+      gap: 18px;
+      padding: 14px 0;
+      border-bottom: 1px dashed var(--border-soft);
+      align-items: start;
+    }
+    .hook-row:last-child { border-bottom: none; }
+    @media (max-width: 720px) {
+      .hook-row { grid-template-columns: 1fr; gap: 4px; }
+      .hook-name-block { padding-bottom: 4px; border-bottom: 1px solid var(--border-soft); margin-bottom: 6px; }
+    }
+
+    .hook-name-block { min-width: 0; }
+    .hook-name {
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 13.5px;
+      font-weight: 600;
+      color: var(--ink);
+      margin-bottom: 4px;
+    }
+    .hook-sub {
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 11px;
+      color: var(--ink-mute);
+    }
+    .hook-desc {
+      font-size: 13.5px;
+      color: var(--ink-soft);
+      line-height: 1.55;
+      min-width: 0;
+    }
+    .hook-desc b { color: var(--ink); font-weight: 600; }
+    .hook-desc code {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      background: var(--surface-2);
+      padding: 1px 5px;
+      border-radius: 3px;
+      color: var(--ink);
+    }
+    .hook-mode {
+      display: flex;
+      justify-content: flex-end;
+      align-items: start;
+    }
+    .badge {
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 11px;
+      padding: 3px 8px;
+      border-radius: 4px;
+      letter-spacing: 0.04em;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .badge-waterfall { background: var(--waterfall-bg); color: var(--waterfall); }
+    .badge-emit { background: var(--emit-bg); color: var(--emit); }
+
+    /* ── Plugin flow diagram ─────────────────────────────────────────────── */
+    .flow {
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+    }
+    .stage {
+      display: grid;
+      grid-template-columns: 110px 1fr;
+      gap: 20px;
+      padding: 16px 0;
+      border-bottom: 1px dashed var(--border-soft);
+    }
+    .stage:last-child { border-bottom: none; }
+    .stage-axis {
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 11px;
+      color: var(--ink-dim);
+      text-align: right;
+      padding-top: 8px;
+      letter-spacing: 0.04em;
+    }
+    .stage-body { min-width: 0; }
+
+    .stage-title {
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--ink);
+      margin-bottom: 6px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .stage-desc {
+      font-size: 13.5px;
+      color: var(--ink-soft);
+      line-height: 1.55;
+    }
+
+    .plugin-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-top: 10px;
+    }
+    .plugin {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 0;
+      padding: 8px 12px;
+      background: var(--surface-2);
+      border-left: 2px solid var(--border-soft);
+      border-radius: 0 6px 6px 0;
+      font-size: 13px;
+    }
+    .plugin-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .plugin-name {
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      color: var(--ink);
+      font-weight: 500;
+      font-size: 13px;
+    }
+    .plugin-detail {
+      color: var(--ink-mute);
+      font-size: 12.5px;
+      margin-top: 2px;
+      line-height: 1.5;
+    }
+    .plugin-detail b { color: var(--ink-soft); font-weight: 500; }
+
+    .local-block, .not-block, .impact-block {
+      margin-top: 5px;
+      padding: 5px 10px;
+      border-radius: 4px;
+      font-size: 11.5px;
+      line-height: 1.5;
+    }
+    .local-block {
+      background: rgba(80, 160, 220, 0.08);
+      border-left: 3px solid #50a0dc;
+      color: var(--ink-soft);
+    }
+    .local-block b { color: #8ec8f0; font-weight: 600; }
+    .not-block {
+      background: rgba(160, 130, 200, 0.06);
+      border-left: 3px solid #a082c8;
+      color: var(--ink-soft);
+    }
+    .not-block b { color: #c8a8e8; font-weight: 600; }
+    .impact-block {
+      background: rgba(220, 160, 60, 0.08);
+      border-left: 3px solid #dca03c;
+      color: var(--ink-soft);
+    }
+    .impact-block b { color: #f0c878; font-weight: 600; }
+    .local-block code, .not-block code, .impact-block code {
+      background: rgba(255,255,255,0.05);
+      padding: 1px 4px;
+      border-radius: 3px;
+      color: var(--ink);
+    }
+
+    /* ── Sub-flow(挂载点内的子流程)─────────────────────────── */
+    .sub-flow {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 4px;
+      margin-top: 8px;
+      padding: 8px 10px;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px dashed rgba(120, 120, 140, 0.25);
+      border-radius: 4px;
+      font-size: 11px;
+      color: var(--ink-soft);
+      line-height: 1.4;
+    }
+    .sub-flow-label {
+      color: var(--ink-dim);
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 10.5px;
+      margin-right: 2px;
+    }
+    .sub-flow-step {
+      padding: 3px 7px;
+      background: rgba(80, 160, 220, 0.12);
+      border: 1px solid rgba(80, 160, 220, 0.3);
+      border-radius: 3px;
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 10.5px;
+      color: var(--ink);
+      white-space: nowrap;
+    }
+    .sub-flow-step.opt {
+      background: rgba(160, 130, 200, 0.10);
+      border-color: rgba(160, 130, 200, 0.3);
+      font-style: italic;
+    }
+    .sub-flow-step.skip {
+      background: rgba(180, 100, 80, 0.10);
+      border-color: rgba(180, 100, 80, 0.3);
+    }
+    .sub-flow-arrow {
+      color: var(--ink-dim);
+      font-size: 12px;
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+    }
+    .sub-flow-note {
+      margin-left: 4px;
+      font-size: 10.5px;
+      color: var(--ink-dim);
+      font-style: italic;
+    }
+
+    .stage-summary {
+      margin-top: 10px;
+      padding: 8px 12px;
+      background: rgba(120, 200, 120, 0.06);
+      border-left: 3px solid #78c878;
+      border-radius: 4px;
+      font-size: 12.5px;
+      color: var(--ink-soft);
+    }
+    .stage-summary b { color: #a8e8a8; font-weight: 600; }
+
+    .overall-effect {
+      margin-top: 20px;
+      padding: 14px 18px;
+      background: linear-gradient(180deg, rgba(100,180,140,0.06), rgba(100,180,140,0.02));
+      border: 1px solid rgba(100,180,140,0.25);
+      border-radius: 8px;
+    }
+    .overall-effect-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: #a8e8a8;
+      letter-spacing: 0.04em;
+      margin-bottom: 8px;
+    }
+    .overall-effect code {
+      background: rgba(255,255,255,0.05);
+      padding: 1px 5px;
+      border-radius: 3px;
+      color: #d8f0d8;
+    }
+    .overall-effect ul { margin: 4px 0 0 0; padding-left: 18px; }
+    .overall-effect li { margin: 3px 0; font-size: 12.5px; color: var(--ink-soft); line-height: 1.6; }
+
+    .reject-note {
+      margin-top: 8px;
+      padding: 10px 12px;
+      background: rgba(220, 80, 60, 0.08);
+      border-left: 3px solid #dc503c;
+      border-radius: 4px;
+      font-size: 12px;
+      color: var(--ink-soft);
+      line-height: 1.55;
+    }
+    .reject-note b { color: #f0a898; font-weight: 600; }
+    .reject-note code { background: rgba(220, 80, 60, 0.15); color: #ffb8a8; padding: 1px 4px; border-radius: 3px; }
+
+    /* ── Code block ──────────────────────────────────────────────────────── */
+    pre {
+      background: var(--surface-2);
+      border: 1px solid var(--border-soft);
+      border-radius: 8px;
+      padding: 14px 16px;
+      overflow-x: auto;
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 12.5px;
+      line-height: 1.65;
+      color: var(--ink);
+      margin: 8px 0 0;
+    }
+    pre .k { color: #A78BFA; }
+    pre .s { color: var(--accept); }
+    pre .n { color: var(--waterfall); }
+    pre .c { color: var(--ink-dim); font-style: italic; }
+    pre .d { color: var(--reject); }
+
+    /* ── Two-col compare ─────────────────────────────────────────────────── */
+    .compare {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+    @media (max-width: 720px) { .compare { grid-template-columns: 1fr; } }
+    .compare-col {
+      padding: 14px 16px;
+      border-radius: 8px;
+      border-left: 3px solid;
+    }
+    .compare-col.waterfall { background: var(--waterfall-bg); border-left-color: var(--waterfall); }
+    .compare-col.emit { background: var(--emit-bg); border-left-color: var(--emit); }
+    .compare-label {
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-bottom: 6px;
+      font-weight: 600;
+    }
+    .compare-col.waterfall .compare-label { color: var(--waterfall); }
+    .compare-col.emit .compare-label { color: var(--emit); }
+    .compare-text {
+      font-size: 13px;
+      color: var(--ink);
+      line-height: 1.55;
+    }
+    .compare-text code {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      background: var(--surface);
+      padding: 1px 5px;
+      border-radius: 3px;
+    }
+
+    /* ── Insight ─────────────────────────────────────────────────────────── */
+    .insight {
+      background: var(--accept-bg);
+      border: 1px solid var(--accept);
+      border-radius: 8px;
+      padding: 14px 16px;
+      margin-top: 14px;
+      font-size: 13.5px;
+      color: var(--ink);
+    }
+    .insight-label {
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 10px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--accept);
+      margin-bottom: 6px;
+      font-weight: 700;
+    }
+
+    footer {
+      margin-top: 24px;
+      padding: 14px;
+      text-align: center;
+      color: var(--ink-dim);
+      font-size: 11.5px;
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+    }
+  </style>
+</head>
+<body>
+<div class="container">
+
+  <header class="hero">
+    <div class="eyebrow">dsh-edge-agent · 挂载点功能速查</div>
+    <h1>16 个本项目插件 × 9 个事件钩子 × 5 个上游事件源头</h1>
+    <p class="lead">每个挂载点一行说清:挂哪个 dsh 事件、由谁订阅、真正做什么。<b>注意:本项目的 16 个插件不发明任何事件</b>——事件源头是 dsh-base 提供的 5 个上游插件(dsh-agent-loop / dsh-llm / dsh-tools / dsh-session / dsh-skills)。</p>
+  </header>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <section class="card">
+    <h2 class="card-title">0.5 事件源头是谁(关键)</h2>
+    <p class="card-sub">本项目的 16 个插件是<b>订阅者</b>,事件的<b>发起方</b>是 dsh-base bundle 提供的 5 个上游插件</p>
+
+    <div class="hook-list">
+
+      <div class="hook-row">
+        <div class="hook-name-block">
+          <div class="hook-name">dsh-agent-loop</div>
+          <div class="hook-sub">上游 · 由 dsh-base 装入</div>
+        </div>
+        <div class="hook-desc">
+          <b>事件源头</b>:<code>agent/pre-step</code> / <code>agent/request</code> / <code>agent/request-error</code> / <code>agent/status</code> / <code>agent/inbox/*</code>。<code>agent-loop/lib/index.js:501</code> 发 agent/pre-step, <code>:685</code> 发 agent/request。
+        </div>
+        <div class="hook-mode"><span class="badge badge-waterfall">源头</span></div>
+      </div>
+
+      <div class="hook-row">
+        <div class="hook-name-block">
+          <div class="hook-name">dsh-llm</div>
+          <div class="hook-sub">上游 · 由 dsh-base 装入</div>
+        </div>
+        <div class="hook-desc">
+          <b>事件源头</b>:<code>llm/stream</code>。<code>dsh-llm/lib/index.js:1739</code> <code>this.ctx.waterfall(this, "llm/stream", options, () => this.adapterStream(...))</code>。
+        </div>
+        <div class="hook-mode"><span class="badge badge-waterfall">源头</span></div>
+      </div>
+
+      <div class="hook-row">
+        <div class="hook-name-block">
+          <div class="hook-name">dsh-tools</div>
+          <div class="hook-sub">上游 · 由 dsh-base 装入</div>
+        </div>
+        <div class="hook-desc">
+          <b>事件源头</b>:<code>tools/pre-execute</code>(waterfall, <code>:862</code>)、<code>tools/post-execute</code>(waterfall, <code>:3379</code>)、<code>tools/result</code>(emit, <code>:3293</code>)、<code>tools/change</code>(emit, <code>:239</code>)。
+        </div>
+        <div class="hook-mode"><span class="badge badge-emit">源头</span></div>
+      </div>
+
+      <div class="hook-row">
+        <div class="hook-name-block">
+          <div class="hook-name">dsh-session</div>
+          <div class="hook-sub">上游 · 由 dsh-base 装入</div>
+        </div>
+        <div class="hook-desc">
+          <b>事件源头</b>:<code>session/event</code>(emit,会话生命周期事件)。<code>session-persistence-jsonl</code> 把事件 append 到 ~/.dsh-edge-agent/sessions/ 的 JSONL 文件。
+        </div>
+        <div class="hook-mode"><span class="badge badge-emit">源头</span></div>
+      </div>
+
+      <div class="hook-row">
+        <div class="hook-name-block">
+          <div class="hook-name">dsh-skills</div>
+          <div class="hook-sub">上游 · 由 dsh-base 装入</div>
+        </div>
+        <div class="hook-desc">
+          <b>事件源头</b>:<code>skills/change</code>(emit,skill 列表变更通知)。本项目 realm-skill-bridge 订阅它来重打 skill realm tag。
+        </div>
+        <div class="hook-mode"><span class="badge badge-emit">源头</span></div>
+      </div>
+
+      <div class="hook-row">
+        <div class="hook-name-block">
+          <div class="hook-name">dsh-edge-agent 本项目</div>
+          <div class="hook-sub">本项目 · 16 个订阅者</div>
+        </div>
+        <div class="hook-desc">
+          <b>不发明任何事件</b>。只<b>订阅</b>上面 5 个上游插件发的事件(waterfall 拦截 + emit 观测)+ <b>注册</b> service provider + <b>注册</b> LLM/web provider。cordis.patch.yml:55 只 override agent-loop config(agents: []),不重新 mount。
+        </div>
+        <div class="hook-mode"><span class="badge badge-waterfall">订阅者</span></div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <section class="card">
+    <h2 class="card-title">0. 先认清两件事</h2>
+    <p class="card-sub">不看懂这两件事,后面的"waterfall vs emit"就是糊涂账</p>
+
+    <div class="compare">
+      <div class="compare-col waterfall">
+        <div class="compare-label">⛔ waterfall 钩子(打饭阿姨 · 能改菜)</div>
+        <div class="compare-text">
+          dsh 把所有 listener 包成<b>洋葱</b>:你可以<b>不调 <code>next()</code></b> = 自己拍板改菜(拦截)、<b>调 <code>next()</code></b> = 让后面的人先看再决定(拿默认)、<b>throw</b> = 自己炸了 → 整个洋葱都炸(短路退出)。能改写主流程的结果。
+        </div>
+      </div>
+      <div class="compare-col emit">
+        <div class="compare-label">🔵 emit 钩子(记账员 · 4 类活儿)</div>
+        <div class="compare-text">
+          dsh 把所有 listener 当 <b>observer</b>(记账员)并发触发。<b>不能改主流程</b>(return 值被丢弃,<b>throw</b>了也只是 logger.warn 一下)。但可以做 4 类活儿:<b>①记日志</b>(诊断)、<b>②重建内部缓存</b>(打 tag)、<b>③改自己私有状态</b>(如 setRealm)、<b>④推给外部消费者</b>(SSE chunk 写 socket)。
+        </div>
+      </div>
+    </div>
+
+    <pre><span class="c">// ⛔ waterfall 钩子 = 你就是打饭阿姨</span>
+on(<span class="s">'agent/pre-step'</span>, <span class="k">async</span> (payload, next) => {
+  <span class="k">if</span> (isAttack(payload)) <span class="k">throw new</span> <span class="d">Error</span>(<span class="s">'attack-detected'</span>)  <span class="c">// ③ 自己炸了,整条洋葱短路</span>
+  <span class="k">const</span> decision = <span class="k">await</span> next()                                <span class="c">// ② 让后面的人看</span>
+  decision.messages = sanitize(decision.messages)                       <span class="c">// ① 改菜再往下传</span>
+  <span class="k">return</span> decision                                                  <span class="c">// 或 return { kind: 'reject', reason } = 把菜扔了</span>
+})
+
+<span class="c">// 🔵 emit 钩子 = 你只是记账员</span>
+on(<span class="s">'tools/result'</span>, (exec, result) => {
+  <span class="k">this</span>.ctx.logger?.info?.(<span class="s">`[audit] ${exec.name} done`</span>)   <span class="c">// 记一笔,return 值被丢弃,throw 只 logger.warn</span>
+})
+
+<span class="c">// 🔵 emit 钩子的"写 socket 转发"用法 = http-api 在 session/event</span>
+<span class="c">// 同一个 on() 注册的 listener 体里,按 event.type 分支处理:看到 chunk → 写 socket;看到 done → 关连接。</span>
+<span class="c">// "改"的是 HTTP socket,不是 dsh 主流程(emit 模式 return 值被丢弃)。</span>
+on(<span class="s">'session/event'</span>, (session, event) => {
+  <span class="k">if</span> (event.type === <span class="s">'assistant/chunk'</span>) res.write(event.data.chunk)
+  <span class="k">if</span> (event.type === <span class="s">'assistant/message'</span>) { res.write(<span class="s">'event: done\n\n'</span>); res.end() }
+  <span class="k">if</span> (event.type === <span class="s">'turn/end'</span> &amp;&amp; event.data._edgeReject) res.writeHead(<span class="n">403</span>, ...)
+})</pre>
+
+    <div class="insight">
+      <div class="insight-label">生活类比</div>
+      <b>waterfall = 打饭窗口阿姨</b>(能改菜、拒菜、报错);<br>
+      <b>emit = 旁边记账员</b>(只能看、看完了记一笔、记错没事)。<br>
+      <b>同步异步不是关键</b> —— 阿姨可以慢悠悠想(async await)再决定,也可以一看就拍板(sync)。关键是<b>能不能改菜</b>。
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+      <section class="card">
+    <h2 class="card-title">1. 纵向流程 — 请求从进入到流出,流过哪些挂载点</h2>
+    <p class="card-sub">每行 = 一个挂载点。<b>📍 做了什么</b>(在这钩子上做什么)、<b>→ 对后面的影响</b>(下游链路被它改成了什么)。按请求流经顺序排列。冷启动 ⑧ 不在请求链上,放最末。</p>
+
+    <div class="flow">
+
+      <!-- ──────────── ① HTTP ──────────── -->
+      <div class="stage">
+        <div class="stage-axis">t = 0<br>HTTP</div>
+        <div class="stage-body">
+          <div class="stage-title">① HTTP POST :21017 <span class="badge badge-waterfall">路由层</span></div>
+          <div class="stage-desc">Node <code>http.createServer</code> + 自研路由表 — <b>不属于 dsh event 系统</b>(dsh 看不见)。这是 dsh-edge-agent 唯一对外门面。</div>
+          <div class="plugin-list">
+            <div class="plugin">
+              <div class="plugin-row">
+                <span class="plugin-name">http-api</span>
+              </div>
+              <div class="plugin-detail">
+                <div class="local-block">
+                  <b>📍 做了什么</b>:<code>createServer()</code> 监听 :21017 → 匹配路由(<code>/v1/chat</code> / <code>/v1/chat/stream</code> / <code>/v1/health</code> 等) → 解析 body → 写 access log → 调 <code>Session.chat()</code> 注入 dsh-agent-loop → 同时挂 <code>session/event</code> listener 准备回流。
+                </div>
+                <div class="impact-block">
+                  <b>→ 对后面的影响</b>:HTTP body 被拆成 <code>{ sessionId, message, agent, stream }</code> 四元组,从这一刻进入 dsh event 系统,触发 <b>②③④⑤⑥⑦</b> 整条链路。client 关 socket → <code>session.abort()</code> 立刻停后续所有阶段。
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ──────────── ② agent/pre-step ──────────── -->
+      <div class="stage">
+        <div class="stage-axis">t = T₁<br>pre-step</div>
+        <div class="stage-body">
+          <div class="stage-title">② agent/pre-step <span class="badge badge-waterfall">waterfall × 2</span></div>
+          <div class="stage-desc">dsh-agent-loop 每一步开始前。waterfall → 可改 messages、可 reject、可 throw 短路。<b>整个 dsh-edge-agent "拦"主要发生在这层 + ②.⑤ Layer 1.5 + ⑤ Layer 3</b>(Layer 1 + 隐私 4 步管线在这层)。</div>
+          <div class="plugin-list">
+            <div class="plugin">
+              <div class="plugin-row">
+                <span class="plugin-name">input-guard (隐私 4 步管线)</span>
+                <span class="badge badge-waterfall">waterfall</span>
+              </div>
+              <div class="plugin-detail">
+                <div class="local-block">
+                  <b>📍 做了什么</b>(<b>4 步串行,每步 await 前一步</b>):<br>
+                  <b>①</b> <code>await promptGuard.checkInput(text)</code> → 60+ 条正则攻击检测。<b>不 safe → REJECT 短路</b>(L766-771 早返),不再跑 ②③④;<br>
+                  <b>②</b> <code>privacyPolicy.matchRouting(text)</code> → <b>同步</b>(不调 LLM),纯遍历 <code>privacy-policy.json</code> 里 10 条 <code>routingRules</code>,逐条 <code>RegExp.test(text)</code>,<b>第一条命中就 return</b>(顺序敏感)。返回 <code>{realm, confidence, rationale}</code>(7 LOCAL / 2 REJECT / 1 CLOUD,confidence 0.7-0.95)。<b>REJECT → 早返</b>(L818-823);<br>
+                  <b>③</b> <code>await intentRouter.classify(text)</code> → <b>仅在 ② 没命中 / confidence&lt;0.7 时才跑</b>(§7.87.13.2 修复后)。若 ② 命中 + confidence≥0.7 + 非 REJECT,直接用 ② 的 realm 作权威 category,③ 完全跳过(省一次 local-llm 调用,且不让 LLM 覆盖 PII 规则 — 防"身份证号 + 查天气"被 LLM 判 CLOUD 漏 PII);<br>
+                  <b>④</b> <code>await sanitizer.sanitize(text, sessionId)</code> → <b>仅在 category=CLOUD 时才跑</b>,PII → <code>&lt;PHONE:abc&gt;</code> 占位符,LOCAL/SANITIZED 不脱敏。sanitize 失败 → ③ 阶段降级 LOCAL(PII 不出端)。
+                </div>
+                <div class="sub-flow">
+                  <span class="sub-flow-label">子流程:</span>
+                  <span class="sub-flow-step">① promptGuard.checkInput</span>
+                  <span class="sub-flow-arrow">→</span>
+                  <span class="sub-flow-step">② privacyPolicy.matchRouting</span>
+                  <span class="sub-flow-arrow">→</span>
+                  <span class="sub-flow-step opt" title="② 命中+conf≥0.7+非REJECT 时跳过">③ intentRouter.classify</span>
+                  <span class="sub-flow-arrow">→</span>
+                  <span class="sub-flow-step opt" title="仅 CLOUD 才跑">④ sanitizer.sanitize</span>
+                  <span class="sub-flow-note">↑ ① unsafe / ② REJECT 即 return,后续跳过</span>
+                </div>
+                <div class="impact-block">
+                  <b>→ 对后面的影响</b>:<b>① 消息</b>改写后的 <code>decision.messages</code>(含占位符)进入 ④⑤,LLM 永远看不到明文 PII;<b>② 短路</b>attack/REJECT → throw → dsh-agent-loop 翻译 <code>{kind:'blocked'}</code> → 后续阶段全跳过;<b>③ 路由</b>category 由 ③ 阶段读,改 <code>provider: cloud-llm → local-llm</code>(sanitize 失败兜底)。<b>🚫 REJECT 时</b>在 throw 前调 <code>attachRejection(agent, {kind, reason, riskLevel})</code> 把 <code>_edgeRejection</code> 写到 agent 对象 — 因为 dsh-agent-loop:539 会丢 reason 字符串,这张小抄是给 ⑦ http-api 看的。
+                </div>
+              </div>
+            </div>
+            <div class="plugin">
+              <div class="plugin-row">
+                <span class="plugin-name">realm-skill-bridge (Layer 1)</span>
+                <span class="badge badge-waterfall">waterfall</span>
+              </div>
+              <div class="plugin-detail">
+                <div class="local-block">
+                  <b>📍 做了什么</b>:从 <code>decision.messages</code> 里删掉 agent realm 不允许的 <code>&lt;available_skills&gt;</code> 条目(例:agent realm=LOCAL → 删 CLOUD-only skill)→ return 改写后的 decision。
+                </div>
+                <div class="impact-block">
+                  <b>→ 对后面的影响</b>:④ llm/stream 拿到的 messages 里 LLM 只看到被授权的 skill 列表 → LLM 不会去调不该调的工具 → <b>Layer 1 是"目录级"防御</b>。真要 LLM 想调越界工具,还要靠 ②.⑤ Layer 1.5 过滤 tool schema + ⑤ tools/pre-execute Layer 3 兜底拒执行。
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ──────────── ②.5 system-prompt/assemble ──────────── -->
+      <div class="stage">
+        <div class="stage-axis">t = T₁.5<br>prompt</div>
+        <div class="stage-body">
+          <div class="stage-title">②.⑤ system-prompt/assemble <span class="badge badge-waterfall">waterfall × 1</span></div>
+          <div class="stage-desc">dsh 在每次 step 把 tools schema 拼到 system prompt 前。waterfall → 可改 result.tools(<b>在 deepFreeze 之前</b>)、可 reject、可 throw。<b>Layer 1.5 替换层 — 比 Layer 1 早一刀的工具 schema 过滤</b>(§7.91,2026-09-21)。</div>
+          <div class="plugin-list">
+            <div class="plugin">
+              <div class="plugin-row">
+                <span class="plugin-name">realm-skill-bridge (Layer 1.5 — tool schema 过滤)</span>
+                <span class="badge badge-waterfall">waterfall</span>
+              </div>
+              <div class="plugin-detail">
+                <div class="local-block">
+                  <b>📍 做了什么</b>:<code>await next()</code> 拿 <code>{ tools, ... }</code> → 读 <code>assembleCtx.scope.session.id</code> → 查 <code>getSessionRealm()</code> → 调 <code>filterToolsField(tools, realm)</code> 删越界 schema(agent realm=LOCAL → 删 web_search/web_fetch 等 CLOUD-only schema)→ <code>filter.changed=false</code> 时直接 return 原 result(不重打对象) → 否则 return <code>{ ...result, tools: filter.tools }</code>。<b>关键</b>:return 值是权威值(listener 是 waterfall,dropping 返回值等于改写主流程)。
+                </div>
+                <div class="sub-flow">
+                  <span class="sub-flow-label">子流程:</span>
+                  <span class="sub-flow-step">await next() 拿 { tools, ... }</span>
+                  <span class="sub-flow-arrow">→</span>
+                  <span class="sub-flow-step">读 scope.session.id</span>
+                  <span class="sub-flow-arrow">→</span>
+                  <span class="sub-flow-step">getSessionRealm → realm</span>
+                  <span class="sub-flow-arrow">→</span>
+                  <span class="sub-flow-step">filterToolsField(tools, realm)</span>
+                  <span class="sub-flow-arrow">→</span>
+                  <span class="sub-flow-step opt" title="filter.changed 时">return 改写后</span>
+                  <span class="sub-flow-note">↑ 未变化 → 直接 return 原 result(避免 unnecessary clone)</span>
+                </div>
+                <div class="impact-block">
+                  <b>→ 对后面的影响</b>:<b>① schema 隐藏</b>④ llm/stream 拿到的 <code>tools</code> 数组里根本没有越界 schema → LLM 在工具列表里看不到 → 不会主动调;<b>② freeze-safe</b>这层在 dsh-agent-loop:773 <code>markAgentLoopRequest(deepFreeze({...}))</code> 之前运行 → 改 <code>result.tools</code> 是普通数组改写(deepFreeze 不会拦到本 listener);<b>③ fail-open</b><code>agentRealm === undefined</code>(http-api 还没 setSessionRealm)→ Layer 3 兜底;<b>④ 三层协同</b>Layer 1(② pre-step 删 <code>&lt;available_skills&gt;</code>)→ Layer 1.5(②.⑤ 删 tools schema)→ Layer 3(⑤ tools/pre-execute 拒执行)— 任何一道独立可挡。<b>log</b>:filter 变更时打 <code>[realm-skill-bridge] assemble filter sessionId=... realm=... removedCount=N removed=tool1,tool2</code>。
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ──────────── ③ agent/request ──────────── -->
+      <div class="stage">
+        <div class="stage-axis">t = T₂<br>request</div>
+        <div class="stage-body">
+          <div class="stage-title">③ agent/request <span class="badge badge-waterfall">waterfall × 1</span></div>
+          <div class="stage-desc">模型请求 envelope 已拼好(含 provider/model/messages)。waterfall → 可替换 provider/model、可 reject、可 throw。<b>"隐私 → 物理出口"的最后一刀</b>。</div>
+          <div class="plugin-list">
+            <div class="plugin">
+              <div class="plugin-row">
+                <span class="plugin-name">input-guard (provider 改写)</span>
+                <span class="badge badge-waterfall">waterfall</span>
+              </div>
+              <div class="plugin-detail">
+                <div class="local-block">
+                  <b>📍 做了什么</b>:<code>await next()</code> 拿 <code>seedConfig</code>(provider/model/messages) → 读 ② 算出的 <code>routeHint</code> → 改 <code>seedConfig.provider</code>:<code>cloud-llm</code>(默认)→ <code>local-llm</code>(若 sanitizer 失败/不可用)。return 改写后的 seedConfig。
+                </div>
+                <div class="sub-flow">
+                  <span class="sub-flow-label">子流程:</span>
+                  <span class="sub-flow-step">await next() 拿 seedConfig</span>
+                  <span class="sub-flow-arrow">→</span>
+                  <span class="sub-flow-step">读 ② 算的 routeHint</span>
+                  <span class="sub-flow-arrow">→</span>
+                  <span class="sub-flow-step">改 seedConfig.provider</span>
+                  <span class="sub-flow-arrow">→</span>
+                  <span class="sub-flow-step">return 改写后</span>
+                  <span class="sub-flow-note">↑ sanitize 不可用 → cloud→local</span>
+                </div>
+                <div class="impact-block">
+                  <b>→ 对后面的影响</b>:<b>① adapter 选</b>④ llm/stream 走的 adapter 由此决定(<code>ctx.llm.registerAdapter</code> 拿 ['cloud-llm'] 或 ['local-llm'])→ 真实出端是 DeepSeek 还是 LAN Qwen 由此决定;<b>② fail-closed</b><code>cloud → local</code> 切换保证原始 PII 不出端(sanitize 失败兜底);<b>③ 短路</b>attack/REJECT → throw → 后续全跳过。
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ──────────── ④ llm/stream ──────────── -->
+      <div class="stage">
+        <div class="stage-axis">t = T₃<br>stream</div>
+        <div class="stage-body">
+          <div class="stage-title">④ llm/stream <span class="badge badge-waterfall">waterfall × 1</span></div>
+          <div class="stage-desc">LLM 流式响应。waterfall → 可包 AsyncGenerator、可对每个 token 反脱敏。<b>坑点</b>:async function 包 AsyncGenerator 会破坏 stream 协议(§7.38 bug,Promise&lt;AsyncGenerator&gt; → for-await 炸)。</div>
+          <div class="plugin-list">
+            <div class="plugin">
+              <div class="plugin-row">
+                <span class="plugin-name">input-guard (反脱敏)</span>
+                <span class="badge badge-waterfall">waterfall</span>
+              </div>
+              <div class="plugin-detail">
+                <div class="local-block">
+                  <b>📍 做了什么</b>:对每个 <code>text-delta</code> chunk 调 <code>sanitizer.desanitize(chunk, sessionId)</code>(用 ② 阶段写的同一份 sessionId 映射表)→ 占位符还原成明文 PII → return 包装后的 AsyncGenerator(外层 yield)。
+                </div>
+                <div class="sub-flow">
+                  <span class="sub-flow-label">子流程:</span>
+                  <span class="sub-flow-step">drain stream chunks</span>
+                  <span class="sub-flow-arrow">→</span>
+                  <span class="sub-flow-step">对每个 text-delta</span>
+                  <span class="sub-flow-arrow">→</span>
+                  <span class="sub-flow-step">desanitize 占位符</span>
+                  <span class="sub-flow-arrow">→</span>
+                  <span class="sub-flow-step">yield 明文 chunk</span>
+                  <span class="sub-flow-note">↑ listener 是 sync 不是 async(防 §7.38)</span>
+                </div>
+                <div class="sub-flow">
+                  <span class="sub-flow-label">TTL 机制:</span>
+                  <span class="sub-flow-step">每次 desanitize 刷 lastAccess</span>
+                  <span class="sub-flow-arrow">→</span>
+                  <span class="sub-flow-step skip">静默 15min → sweep 清 map</span>
+                  <span class="sub-flow-arrow">→</span>
+                  <span class="sub-flow-step skip">mapping 找不到 → return 原文</span>
+                  <span class="sub-flow-note">↑ 占位符字面量留 chunk,链路不挂</span>
+                </div>
+                <div class="impact-block">
+                  <b>→ 对后面的影响</b>:<b>① SSE 明文</b>⑦ session/event 阶段 http-api 拿到的是已反脱敏的明文 chunk,SSE 直接透传给客户端(浏览器/前端看到原文 PII);<b>② 触发工具</b>收尾助手消息含 tool_calls → dsh-agent-loop 触发 ⑤ tools/pre-execute;<b>③ TTL 兜底</b><code>sessionTtlMs=900_000</code>(15 min,对齐 confidential 档)。<code>sessionMappings</code> 内存直接持明文 PII → <b>三层生命周期</b>:<b>① 主动</b><code>http-api.dropSessionBuffer → purge</code>;<b>② sweep</b><code>sweepExpired</code> 每 60s 扫过期 map,清掉明文,<code>unref()</code> 不钉进程;<b>③ LRU</b><code>maxSessions=1000</code> 超限淘汰。<b>过期行为</b>:<code>desanitizeSync</code> 查 <code>sessionMappings.get(sessionId)</code> → undefined → <code>return text</code>(不 throw);映射在场但单 token 查不到 → <code>mapping.placeholders.get(whole) ?? whole</code>,那项留字面量,其他照常还原。<b>续命</b>:<code>lastAccess = Date.now()</code> 每次反脱敏刷新,活跃聊天永不过期。
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ──────────── ⑤ tools/pre-execute ──────────── -->
+      <div class="stage">
+        <div class="stage-axis">t = T₄<br>tool-pre</div>
+        <div class="stage-body">
+          <div class="stage-title">⑤ tools/pre-execute <span class="badge badge-waterfall">waterfall × 1 (gate)</span></div>
+          <div class="stage-desc">dsh-tools 真要调用工具前。waterfall → 可 <code>return {kind:'reject', reason}</code> 不调 next() 让工具不执行,可 throw 短路。<b>数据安全分级"真正拦不拦"的权威 gate</b>(Layer 1 + 1.5 是目录/schema 级,这层是执行级)。</div>
+          <div class="plugin-list">
+            <div class="plugin">
+              <div class="plugin-row">
+                <span class="plugin-name">realm-skill-bridge (Layer 3 权威 gate)</span>
+                <span class="badge badge-waterfall">waterfall</span>
+              </div>
+              <div class="plugin-detail">
+                <div class="local-block">
+                  <b>📍 做了什么</b>:读 <code>exec.toolName</code> 的 realm tag(⑧ 冷启动时打的)→ 读 session/agent 的 realm 配置 → 比对:<code>agent.realm ⊇ tool.realm</code> 才放行;否则 <code>return {kind:'reject', reason:'realm-blocked'}</code> 不调 next()。
+                </div>
+                <div class="sub-flow">
+                  <span class="sub-flow-label">子流程:</span>
+                  <span class="sub-flow-step">读 toolName realm tag</span>
+                  <span class="sub-flow-arrow">→</span>
+                  <span class="sub-flow-step">读 agent.realm</span>
+                  <span class="sub-flow-arrow">→</span>
+                  <span class="sub-flow-step">agent ⊇ tool?</span>
+                  <span class="sub-flow-arrow">→</span>
+                  <span class="sub-flow-step opt" title="不满足时">return reject</span>
+                  <span class="sub-flow-note">↑ 否 → return {kind:'reject'} 不调 next()</span>
+                </div>
+                <div class="impact-block">
+                  <b>→ 对后面的影响</b>:<b>① 拒 → LLM 重试</b>工具被拒 → LLM 收到 reject reason 当 tool result → 进入下一轮 LLM call(④ 再来一次);<b>② 留痕</b>拒收事件落 audit.security(realm violation);<b>③ 放行</b>真要执行 → ⑥ tools/result 阶段回写结果。<b>跟 Layer 1 / 1.5 互补</b>:Layer 1 防 LLM 看到 skill 目录,Layer 1.5 防 LLM 看到 tool schema,Layer 3 防 LLM 调工具 — 三层一起拦才稳。<b>说明</b>:此处不再挂 PII 监测 / 滑动窗口限速 — CLOUD realm 本就出去,DSSH 上游 <code>tools.guard()</code> + <code>maxParallelToolCalls=10</code> + AbortController + <code>MAX_TURNS_EXCEEDED</code> 已覆盖大多数情况(详见 §7.92.1)。
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ──────────── ⑥ tools/result ──────────── -->
+      <div class="stage">
+        <div class="stage-axis">t = T₅<br>result</div>
+        <div class="stage-body">
+          <div class="stage-title">⑥ tools/result <span class="badge badge-emit">emit × 1</span></div>
+          <div class="stage-desc">工具调完(无论成功/失败/被拒)。emit 模式 → 注释明说"notify observers without exposing a mutation or error channel into the outcome"。<b>只能观测、不能改写</b>(return 值被丢弃,throw 只 logger.warn)。</div>
+          <div class="plugin-list">
+            <div class="plugin">
+              <div class="plugin-row">
+                <span class="plugin-name">realm-skill-bridge (status 落 log)</span>
+                <span class="badge badge-emit">emit</span>
+              </div>
+              <div class="plugin-detail">
+                <div class="local-block">
+                  <b>📍 做了什么</b>:把 <code>status</code>(success/error) / <code>isError</code> / <code>signalAborted</code>(是否被 ⑤ 拒) / <code>toolName</code> / <code>duration</code> 写到 <code>~/.dsh-edge-agent/log/ops.jsonl</code>。
+                </div>
+                <div class="impact-block">
+                  <b>→ 对后面的影响</b>:dsh-agent-loop 把 <code>tool_result</code> 注入 messages → 回到 ② pre-step 进入下一轮 LLM call(多轮对话)。被 ⑤ 拒的 tool call 也走 result(带 reject reason 当 tool_result)→ LLM 自己决定下一步。<b>web_search / web_fetch 的 result 不再单独审计</b>:web 调用本身已在 audit.jsonl 留痕(任何 tool call 都走 audit),去掉 web-search-guard 后流程更简单(详见 §7.92.1)。
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ──────────── ⑦ session/event ──────────── -->
+      <div class="stage">
+        <div class="stage-axis">t = T₆<br>回流</div>
+        <div class="stage-body">
+          <div class="stage-title">⑦ session/event <span class="badge badge-emit">emit × 3</span></div>
+          <div class="stage-desc">dsh-session 在 Session 生命周期里广播的事件。emit 模式 → 只能观测、不能拦截主流程循环本身。本钩子在主循环里反复执行,不是一次性。<b>响应流出客户端</b>的最后一道。</div>
+          <div class="plugin-list">
+            <div class="plugin">
+              <div class="plugin-row">
+                <span class="plugin-name">http-api (chunk SSE)</span>
+                <span class="badge badge-emit">emit</span>
+              </div>
+              <div class="plugin-detail">
+                <div class="local-block">
+                  <b>📍 做了什么</b>:<code>event.type === 'assistant/chunk'</code> 进来 → 提 <code>chunk.text</code>(已被 ④ input-guard 反脱敏) → SSE 写 <code>data: {type:'text', text}</code>。看到 <code>turn/end</code> 正常结束 → SSE 写 <code>event: done</code> 关连接。
+                </div>
+                <div class="impact-block">
+                  <b>→ 对后面的影响</b>:HTTP 客户端实时看到 token 流出。客户端断 socket → http-api 调 <code>session.abort()</code> → dsh-agent-loop 立刻停后续阶段(省算力)。
+                </div>
+              </div>
+            </div>
+            <div class="plugin">
+              <div class="plugin-row">
+                <span class="plugin-name">http-api (REJECT 标签读)</span>
+                <span class="badge badge-emit">emit</span>
+              </div>
+              <div class="plugin-detail">
+                <div class="local-block">
+                  <b>📍 做了什么</b>:<code>turn/end</code> &amp;&amp; <code>reason.kind === 'blocked'</code> → 读 <code>record.agent._edgeRejection</code>(② 阶段贴的小抄) → SSE 写 <code>{type:'error', status, error:'Request rejected', rejection:edgeRej}</code> → 关闭 socket。
+                </div>
+                <div class="impact-block">
+                  <b>→ 对后面的影响</b>:HTTP 客户端拿到 400(attack)/503(sanitizer)/403(其他) 而非 200 + 空流 → 不会误以为请求通了。<b>REJECT 链路闭环</b>:② 阶段 reject 的最终出口,reason 字符串走 throw → dsh-agent-loop:539 翻译时被丢 → 只能靠 ② 提前贴的 <code>_edgeRejection</code> 小抄跨阶段搬运。
+                </div>
+              </div>
+            </div>
+            <div class="plugin">
+              <div class="plugin-row">
+                <span class="plugin-name">realm-skill-bridge (TUI ops log)</span>
+                <span class="badge badge-emit">emit</span>
+              </div>
+              <div class="plugin-detail">
+                <div class="local-block">
+                  <b>📍 做了什么</b>:HTTP 路径已上面两个 http-api listener 接住,TUI 路径(<code>dsh-tui</code> 直连 Session)没人写 ops log → 这里订阅 <code>turn/start</code> / <code>turn/end</code> / <code>message</code> → 逐行落 <code>~/.dsh-edge-agent/log/ops.jsonl</code>。
+                </div>
+                <div class="impact-block">
+                  <b>→ 对后面的影响</b>:TUI 用户的 turn 边界在 ops log 里也能查到 → 定位 TUI 端到端耗时/失败节点不靠 HTTP access log。
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <div class="overall-effect">
+      <div class="overall-effect-title">🌐 整体效果</div>
+      <p style="font-size: 12.5px; color: var(--ink-soft); margin: 0 0 10px 0; line-height: 1.6;">
+        <b>请求流向</b>:客户端 POST <code>:21017/v1/chat/stream</code> → ① http-api 拆 4 元组 → ② input-guard 隐私 4 步管线 + realm Layer 1 目录过滤 → ②.⑤ realm Layer 1.5 tool schema 过滤(assemble)→ ③ input-guard provider 改写 → ④ LLM 流式调用 + 反脱敏 → ⑤ realm Layer 3 拒执行 → ⑥ audit/ops 落盘 → ⑦ http-api SSE 回流 + REJECT 标签读 → 浏览器收到 token。
+      </p>
+      <ul>
+        <li><b>3 道防御纵深</b>:② Layer 1 目录过滤(skills)→ ②.⑤ Layer 1.5 schema 过滤(tools)→ ⑤ Layer 3 执行拦截(realm tag)。任何一道独立可挡。</li>
+        <li><b>3 道 PII 保护</b>:② sanitize 明文 → 占位符(LLM 看不到)→ ③ sanitize 失败 cloud→local(PII 不出端)→ ④ desanitize 反脱敏(给客户端还原)。</li>
+        <li><b>3 类观测</b>:<code>audit.jsonl</code>(行为审计,所有阶段共写) / <code>ops.jsonl</code>(耗时/状态,⑥ + ⑦)/ file-logger(运行时日志,所有阶段共写)。</li>
+        <li><b>1 条 REJECT 标签流</b>:② input-guard throw 前贴 <code>_edgeRejection</code> → dsh-agent-loop 翻译丢 reason → ⑦ http-api 读标签转 4xx(reason 靠小抄跨过翻译断层)。</li>
+        <li><b>4 个路由决策</b>:② 分类(sanitize)→ ③ 切 provider(sanitize 失败)→ ⑤ 限速(超 N 次)→ ⑦ 转 HTTP 状态码(REJECT)。每一刀都改请求的物理路径。</li>
+      </ul>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <h3 style="font-size: 14px; color: var(--ink); margin: 24px 0 4px 0;">冷启动自检(不在请求链上,启动时跑一次)</h3>
+    <p class="card-sub">这一组 listener 不响应任何单次请求,只在冷启动时 dsh-tools / dsh-skills register 完毕时被 emit 触发。本项目的 realm-tag 表在这里固化,后续 ②⑤ 阶段运行时直接读这张表。</p>
+
+    <div class="stage" style="border-bottom: none;">
+      <div class="stage-axis">冷启动<br>⑧ 自检</div>
+      <div class="stage-body">
+        <div class="stage-title">⑧ tools/change + skills/change <span class="badge badge-emit">emit × 3</span></div>
+        <div class="stage-desc">工具/技能列表变更通知(通常发生在启动时 register 完成后)。emit 模式 → 不能拦截,只能"重建缓存/重打 tag"。<b>所有 realm-tag 在此固化</b>。</div>
+        <div class="plugin-list">
+          <div class="plugin">
+            <div class="plugin-row">
+              <span class="plugin-name">realm-skill-bridge (skills tag)</span>
+              <span class="badge badge-emit">emit</span>
+            </div>
+            <div class="plugin-detail">
+              <div class="local-block">
+                <b>📍 做了什么</b>:skills/change 触发 → 遍历 <code>ctx.skills.list()</code> → 按预设策略给每个 skill 打 realm tag(LOCAL/CLOUD/SANITIZED)→ 存到内部 <code>Map&lt;skillName, realm&gt;</code>。
+              </div>
+              <div class="impact-block">
+                <b>→ 对后面的影响</b>:② pre-step Layer 1 过滤 <code>&lt;available_skills&gt;</code> 直接读这张 Map → 启动完成后所有 skill 的 realm 已固化,运行时无开销。
+              </div>
+            </div>
+          </div>
+          <div class="plugin">
+            <div class="plugin-row">
+              <span class="plugin-name">realm-skill-bridge (tools tag)</span>
+              <span class="badge badge-emit">emit</span>
+            </div>
+            <div class="plugin-detail">
+              <div class="local-block">
+                <b>📍 做了什么</b>:tools/change 触发 → 遍历当前 dsh-tools 注册表 → 给每个 toolName 打 realm tag(组合 DSH_NATIVE_REALM_MAP + 自己注入的)。
+              </div>
+              <div class="impact-block">
+                <b>→ 对后面的影响</b>:⑤ tools/pre-execute Layer 3 直接读这张 Map 比对 → 启动完成后所有 tool 的 realm 已固化,运行时一次 O(1) 查询。
+              </div>
+            </div>
+          </div>
+          <div class="plugin">
+            <div class="plugin-row">
+              <span class="plugin-name">edge-tools-registry (DSH_NATIVE_REALM_MAP)</span>
+              <span class="badge badge-emit">emit</span>
+            </div>
+            <div class="plugin-detail">
+              <div class="local-block">
+                <b>📍 做了什么</b>:按固定表 <code>DSH_NATIVE_REALM_MAP</code>(硬编码,跟 dsh 工具名一一对应)→ 给 dsh 自带工具(read_file / write_file / shell / ...)打 realm tag。
+              </div>
+              <div class="impact-block">
+                <b>→ 对后面的影响</b>:跟 realm-skill-bridge 的 tools tag Map <b>双轨</b>存在 → ⑤ Layer 3 实际查的是"哪张表先注册就用哪张"。冷启动顺序敏感,目前由 realm-skill-bridge 先 apply 保证优先。
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <section class="card">
+    <h2 class="card-title">2. 一句话功能速查表（按挂载顺序）</h2>
+    <p class="card-sub">直接拿去念,一行一个挂载点</p>
+
+    <div class="hook-list">
+
+      <div class="hook-row">
+        <div class="hook-name-block">
+          <div class="hook-name">HTTP POST :21017</div>
+          <div class="hook-sub">入口 · Node http.createServer</div>
+        </div>
+        <div class="hook-desc">
+          <b>http-api</b>:Node <code>http.createServer</code> 监听 :21017 → 路由表匹配 <code>/v1/chat</code> / <code>/v1/chat/stream</code> → 解析 body → 调 <code>Session.chat(message)</code> 注入 dsh-agent-loop(从这一刻才进入 dsh event 系统)。
+        </div>
+        <div class="hook-mode"><span class="badge badge-waterfall">路由</span></div>
+      </div>
+
+      <div class="hook-row">
+        <div class="hook-name-block">
+          <div class="hook-name">session/event × 3</div>
+          <div class="hook-sub">emit 模式</div>
+        </div>
+        <div class="hook-desc">
+          <b>http-api</b>:① 把流式 chunk 反向回 HTTP 客户端;② 读 <code>agent._edgeRejection</code> 标签转 SSE error + HTTP 状态码(attack=400 / sanitizer=503 / 其他=403)。<b>realm-skill-bridge</b>:补 TUI 路径的 turn 日志。
+        </div>
+        <div class="hook-mode"><span class="badge badge-emit">emit</span></div>
+      </div>
+
+      <div class="hook-row">
+        <div class="hook-name-block">
+          <div class="hook-name">agent/pre-step × 2</div>
+          <div class="hook-sub">waterfall 模式</div>
+        </div>
+        <div class="hook-desc">
+          <b>input-guard</b>:跑隐私 4 步管线(攻击→策略→分类→脱敏),return 改写 decision 或 throw 拒收。<b>🚫 REJECT 时先调 <code>attachRejection()</code> 把 <code>_edgeRejection</code> 标签写到 agent</b>(因 dsh-agent-loop:539 会丢 reason)。<b>realm-skill-bridge</b>:Layer 1 过滤 <code>&lt;available_skills&gt;</code> 目录,删掉 agent realm 不允许的 skill。
+        </div>
+        <div class="hook-mode"><span class="badge badge-waterfall">waterfall</span></div>
+      </div>
+
+      <div class="hook-row">
+        <div class="hook-name-block">
+          <div class="hook-name">system-prompt/assemble × 1</div>
+          <div class="hook-sub">waterfall 模式 · Layer 1.5</div>
+        </div>
+        <div class="hook-desc">
+          <b>realm-skill-bridge</b>:Layer 1.5 替换层 — 在 dsh 把 tools schema 拼进 system prompt 之前,<code>filterToolsField(tools, realm)</code> 删掉越界 schema → return 改写后的 result(<b>在 dsh-agent-loop deepFreeze 之前</b>,freeze 拦不到本 listener)。fail-open:<code>getSessionRealm === undefined</code> → return 原 result,Layer 3 兜底。详见 §7.91(2026-09-21)。
+        </div>
+        <div class="hook-mode"><span class="badge badge-waterfall">waterfall</span></div>
+      </div>
+
+      <div class="hook-row">
+        <div class="hook-name-block">
+          <div class="hook-name">agent/request × 1</div>
+          <div class="hook-sub">waterfall 模式</div>
+        </div>
+        <div class="hook-desc">
+          <b>input-guard</b>:改写 provider( sanitize 失败 → CLOUD 改 LOCAL,PII 不出端);attack/REJECT → throw 短路退出。
+        </div>
+        <div class="hook-mode"><span class="badge badge-waterfall">waterfall</span></div>
+      </div>
+
+      <div class="hook-row">
+        <div class="hook-name-block">
+          <div class="hook-name">llm/stream × 1</div>
+          <div class="hook-sub">waterfall 模式</div>
+        </div>
+        <div class="hook-desc">
+          <b>input-guard</b>:对每个 text-delta chunk 反脱敏(占位符 → 原文),return 包装后 AsyncGenerator。
+        </div>
+        <div class="hook-mode"><span class="badge badge-waterfall">waterfall</span></div>
+      </div>
+
+      <div class="hook-row">
+        <div class="hook-name-block">
+          <div class="hook-name">tools/pre-execute × 1</div>
+          <div class="hook-sub">waterfall 模式 · gate</div>
+        </div>
+        <div class="hook-desc">
+          <b>realm-skill-bridge</b>:Layer 3 权威 gate — realm 不匹配 → <code>return { kind: 'reject' }</code>,工具不执行(真正拦不拦看这里)。<b>说明</b>:此处不再挂 PII 监测 / 滑动窗口限速 — CLOUD realm 本就出去,dsh 上游 <code>tools.guard()</code> + <code>maxParallelToolCalls=10</code> 已覆盖(详见 §7.92.1)。
+        </div>
+        <div class="hook-mode"><span class="badge badge-waterfall">waterfall</span></div>
+      </div>
+
+      <div class="hook-row">
+        <div class="hook-name-block">
+          <div class="hook-name">tools/result × 1</div>
+          <div class="hook-sub">emit 模式</div>
+        </div>
+        <div class="hook-desc">
+          <b>realm-skill-bridge</b>:把工具调用的 status / isError 落 ops log。
+        </div>
+        <div class="hook-mode"><span class="badge badge-emit">emit</span></div>
+      </div>
+
+      <div class="hook-row">
+        <div class="hook-name-block">
+          <div class="hook-name">tools/change × 2</div>
+          <div class="hook-sub">emit 模式</div>
+        </div>
+        <div class="hook-desc">
+          <b>realm-skill-bridge</b>:tools 列表变化 → 重打 tool realm tag。<b>edge-tools-registry</b>:按 DSH_NATIVE_REALM_MAP 重打 tag。
+        </div>
+        <div class="hook-mode"><span class="badge badge-emit">emit</span></div>
+      </div>
+
+      <div class="hook-row">
+        <div class="hook-name-block">
+          <div class="hook-name">skills/change × 1</div>
+          <div class="hook-sub">emit 模式</div>
+        </div>
+        <div class="hook-desc">
+          <b>realm-skill-bridge</b>:skills 列表变化 → 重打 skill realm tag。
+        </div>
+        <div class="hook-mode"><span class="badge badge-emit">emit</span></div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <section class="card">
+    <h2 class="card-title">3. 不订阅 dsh 事件、但通过 service provider 工作的插件</h2>
+    <p class="card-sub">这些插件不挂 dsh 流程,而是 <code>ctx.reflect.provide(name, this)</code> 让别人 softInject 取。它们在 input-guard / intent-router 等的瀑布流里被调用</p>
+
+    <div class="hook-list">
+
+      <div class="hook-row">
+        <div class="hook-name-block">
+          <div class="hook-name">prompt-guard</div>
+          <div class="hook-sub">service · 攻击检测</div>
+        </div>
+        <div class="hook-desc">
+          60+ 条正则(直接注入/DAN 越狱/角色覆盖/数据外发/PII);可选 local-LLM 模型辅助。<b>被 input-guard 在 pre-step 第一步调用</b>:checkInput → { allowed, reasons, severity }。
+        </div>
+        <div class="hook-mode"><span class="badge badge-emit">provide</span></div>
+      </div>
+
+      <div class="hook-row">
+        <div class="hook-name-block">
+          <div class="hook-name">privacy-policy</div>
+          <div class="hook-sub">service · 策略引擎</div>
+        </div>
+        <div class="hook-desc">
+          读 JSON policy 文件(支持 hot-reload 5s):routingRules[] + fieldRules{}。<b>被 input-guard 和 intent-router 调</b>:matchRouting → { action: allow|reject|sanitize, reasons }。
+        </div>
+        <div class="hook-mode"><span class="badge badge-emit">provide</span></div>
+      </div>
+
+      <div class="hook-row">
+        <div class="hook-name-block">
+          <div class="hook-name">sanitizer-pipeline</div>
+          <div class="hook-sub">service · PII 占位符</div>
+        </div>
+        <div class="hook-desc">
+          本地 PII 映射表(&lt;PHONE_1&gt;, &lt;ID_CARD_1&gt; 等),sessionTtl=15min,sweep 60s。<b>被 input-guard 在 pre-step + llm/stream 双向调</b>:sanitize(明文→占位符)/desanitize(占位符→明文)。
+        </div>
+        <div class="hook-mode"><span class="badge badge-emit">provide</span></div>
+      </div>
+
+      <div class="hook-row">
+        <div class="hook-name-block">
+          <div class="hook-name">intent-router</div>
+          <div class="hook-sub">service · 意图分类</div>
+        </div>
+        <div class="hook-desc">
+          用 local Qwen3-4B 分类每条消息(LOCAL / CLOUD / SANITIZED);前置 privacy-policy + piiUtils 兜底;keyword fallback。<b>被 input-guard 和 http-api 调</b>:classify → { category, confidence, reason }。
+        </div>
+        <div class="hook-mode"><span class="badge badge-emit">provide</span></div>
+      </div>
+
+      <div class="hook-row">
+        <div class="hook-name-block">
+          <div class="hook-name">model-router</div>
+          <div class="hook-sub">service · 决策 provider</div>
+        </div>
+        <div class="hook-desc">
+          决策 provider/model(localModels:[local-llm], cloudModels:[cloud-llm])。<b>被 input-guard / intent-router 软调</b>:resolve → { provider, model }。
+        </div>
+        <div class="hook-mode"><span class="badge badge-emit">provide</span></div>
+      </div>
+
+      <div class="hook-row">
+        <div class="hook-name-block">
+          <div class="hook-name">audit-log</div>
+          <div class="hook-sub">service · 审计日志</div>
+        </div>
+        <div class="hook-desc">
+          JSONL 审计日志 ~/.dsh-edge-agent/audit/audit.plain.jsonl,minLevel 默认 info(debug 静默 drop)。<b>被几乎所有 plugin 在 waterfall/emit 钩子里调</b>:log({ level, kind, source, payload })。
+        </div>
+        <div class="hook-mode"><span class="badge badge-emit">provide</span></div>
+      </div>
+
+      <div class="hook-row">
+        <div class="hook-name-block">
+          <div class="hook-name">edge-tools / localStorage</div>
+          <div class="hook-sub">service · 工具打标/加密 KV</div>
+        </div>
+        <div class="hook-desc">
+          edge-tools:给工具打 realm tag(setRealm/getRealm),被 realm-skill-bridge 在 Layer 3 / tools/change 用。localStorage:加密 KV,被 sanitizer 暂存数据用。
+        </div>
+        <div class="hook-mode"><span class="badge badge-emit">provide</span></div>
+      </div>
+
+      <div class="hook-row">
+        <div class="hook-name-block">
+          <div class="hook-name">cloud-llm-adapter</div>
+          <div class="hook-sub">provider · DeepSeek</div>
+        </div>
+        <div class="hook-desc">
+          <code>ctx.llm.registerAdapter(['cloud-llm'], adapter)</code>。所有标 <code>provider='cloud-llm'</code> 的请求自动转给它,走 DeepSeek 协议(thinking + reasoningEffort=max)。
+        </div>
+        <div class="hook-mode"><span class="badge badge-waterfall">provider</span></div>
+      </div>
+
+      <div class="hook-row">
+        <div class="hook-name-block">
+          <div class="hook-name">local-llm-adapter</div>
+          <div class="hook-sub">provider · LAN Qwen</div>
+        </div>
+        <div class="hook-desc">
+          <code>ctx.llm.registerAdapter(['local-llm'], adapter)</code>。所有标 <code>provider='local-llm'</code> 的请求自动转给它,走 LAN OpenAI-compatible;并发信号量 max=2,timeout 60s。
+        </div>
+        <div class="hook-mode"><span class="badge badge-waterfall">provider</span></div>
+      </div>
+
+      <div class="hook-row">
+        <div class="hook-name-block">
+          <div class="hook-name">web-search-tavily-bocha</div>
+          <div class="hook-sub">provider · 3-tier 兜底链</div>
+        </div>
+        <div class="hook-desc">
+          <code>ctx.web.registerSearchProvider('tavily-bocha-fallback', p)</code>。把 dsh-web searchProvider 换成 Tavily → 博查 AI → DeepSeek 三级链,任一 tier 抛错下一 tier 接续。
+        </div>
+        <div class="hook-mode"><span class="badge badge-waterfall">provider</span></div>
+      </div>
+
+      <div class="hook-row">
+        <div class="hook-name-block">
+          <div class="hook-name">file-logger</div>
+          <div class="hook-sub">logger 重写</div>
+        </div>
+        <div class="hook-desc">
+          重写 <code>ctx.logger.*</code>,所有 plugin 的日志输出落 ~/.dsh-edge-agent/log/dsh-edge-agent.log。<b>必须第一个 apply</b> 才能捞住所有 plugin 的日志。
+        </div>
+        <div class="hook-mode"><span class="badge badge-waterfall">logger</span></div>
+      </div>
+
+      <div class="hook-row">
+        <div class="hook-name-block">
+          <div class="hook-name">tcm</div>
+          <div class="hook-sub">service · TEE 密钥</div>
+        </div>
+        <div class="hook-desc">
+          TEE 密钥管理(simulated/nitro)。<b>被 prompt-guard 注入</b>:加密 sanitizer 的明文 PII 映射表。keyStorePath=~/.dsh-edge-agent/tcm-keys.json。
+        </div>
+        <div class="hook-mode"><span class="badge badge-emit">provide</span></div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <section class="card">
+    <h2 class="card-title">4. 记忆口诀</h2>
+    <p class="card-sub">3 句话记住所有挂载点</p>
+
+    <div class="insight">
+      <div class="insight-label">口诀 1</div>
+      <b>9 个事件钩子 = 5 个 waterfall(可拦截) + 4 个 emit(只观测)。</b><br>
+      waterfall: agent/pre-step / system-prompt/assemble(Layer 1.5)/ agent/request / llm/stream / tools/pre-execute。<br>
+      emit: session/event / tools/result / tools/change / skills/change。
+    </div>
+
+    <div class="insight">
+      <div class="insight-label">口诀 2</div>
+      <b>真正"拦"下来的有 3 道:input-guard 在 pre-step + realm-skill-bridge 在 system-prompt/assemble(Layer 1.5) + tools/pre-execute(Layer 3)。</b><br>
+      其他 hook 要么是观测(emit)、要么是改写不拦(waterfall 但放行)。<br>
+      <b>🚫 REJECT 标签机制</b>:input-guard 拒收 → 写 <code>agent._edgeRejection</code>(小抄)→ throw → dsh-agent-loop 把 reason 翻译丢 → emit turn/end { kind: 'blocked' } → http-api 在 session/event 读小抄转 4xx。reason 在中间丢失,靠小抄传过去。
+    </div>
+
+    <div class="insight">
+      <div class="insight-label">口诀 3</div>
+      <b>13 个 service provider + 3 个 LLM/web provider = 不挂 dsh 流程,只挂注册表。</b><br>
+      它们在别人的瀑布流里被 softInject 取出来调,自己不订阅事件。
+    </div>
+  </section>
+
+  <footer>
+    dsh-edge-agent · 15 插件 / 9 事件订阅点 / 5 waterfall + 4 emit / 13 service + 3 provider
+  </footer>
+</div>
+</body>
+</html>

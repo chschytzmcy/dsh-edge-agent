@@ -356,7 +356,7 @@
     # Must mount before http-api (which injects realmSkillBridge).
     - id: realm-skill-bridge
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/realm-skill-bridge'
-      inject: [auditLog, skills]
+      inject: [auditLog, skills, edgeTools, tools]
       config:
         configPath: !!js process.env.DSH_EDGE_REALM_CONFIG ?? ((process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent/skill-realms.json')
         hotReload: !!js process.env.DSH_EDGE_REALM_HOT_RELOAD !== 'false'
@@ -519,20 +519,6 @@
         sessionTtlMs: !!js parseInt(process.env.DSH_EDGE_SAN_TTL_MS ?? '900000', 10)
         maxSessions: !!js parseInt(process.env.DSH_EDGE_SAN_MAX_SESSIONS ?? '1000', 10)
         sweepIntervalMs: !!js parseInt(process.env.DSH_EDGE_SAN_SWEEP_MS ?? '60000', 10)
-
-    # ── Phase 5: web-search 监控守卫 ──────────────────────────────────────
-    # Observes `tools/result` events for web_search / web_fetch. Tasks:
-    #   - PII leak monitor (security-level audit when LLM bypasses sanitizer)
-    #   - tool.web-search.executed audit event (info-level, redacted payload)
-    #   - In-process sliding-window rate limit (web_search < 10/min,
-    #     web_fetch < 5/min) — soft alarm today; M5+ wires ctx.tools.guard().
-    - id: web-search-guard
-      name: '@deepseek-harness-edge-agent/dsh-edge-agent/web-search-guard'
-      inject: [tools, sanitizer, auditLog]
-      config:
-        enablePIIMonitor: true
-        enableAudit: true
-        enableRateLimit: true
 
     # ── Phase 5 (§7.82): Tavily → 博查 AI → DeepSeek 三级 web_search 兜底链
     # 注册一个 aggregator search provider(id='tavily-bocha-fallback')到 ctx.web;

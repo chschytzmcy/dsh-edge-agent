@@ -9039,3 +9039,213 @@ PRODUCTION_POLICY(严格 18 位 id-card regex + phone + email)覆盖:
 **关联**:memory `sanitize-downgrade-policy`(脱敏失败降级 LOCAL)、`sandbox-fixture-no-real-pii`(测试 fixture 用占位号 13800138000 / 110101...)。
 
 **Why this matters**:**production PII 防线 100% 失效的两个 attack vector(空格 / 中文数字)被 sanitizer 字符级规范化堵上**,且不破坏既有 IP / email / passport / license-plate 检测(`\b` 边界保留)。Cloud 路径不再依赖 LLM 自身的 PII 识别(已证明 4 个本地模型 0% 命中这俩 case)。
+
+### §7.91 — web profile `dsh-base` install 404 兜底:钉 0.1.2-rc.1(2026-09-21)
+
+**触发**:尝试在 `~/.dsh/profiles/web/` 装 `@deepseek-ai/dsh-base`(为了让 dsh-im-host 拿齐 `connection`/`credentials`/`typertGateway` 三个 inject 依赖,见 PROGRESS §7.86 → §7.88 web-fp2-test 装机收尾),pnpm 报:
+
+```
+ERR_PNPM_FETCH_404
+@deepseek-ai%2Fdsh-bash-env: Not Found - 404
+```
+
+**根因诊断**(2 步):
+1. `curl https://registry.npmjs.org/@deepseek-ai/dsh-bash-env` → `{"error":"Not found"}`,**该包从未发布**到 npm registry(只活在 dsh 内部 0.1.0-rc.x 那一开发线的 dep list 里)
+2. `curl .../dsh-base/0.0.1-rc.1`(registry `dist-tags.latest`)=> deps 含 `@deepseek-ai/dsh-bash-env@^0.0.1-rc.1`(79 个 deps 中 3 个 bash 相关,这个 404)
+3. dsh CLI 自带的 dsh-base@0.1.2-rc.1(`/home/etsme/.npm-global/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-base/package.json`)deps **不包含 dsh-bash-env**,改用 `@deepseek-ai/dsh-bash-sandbox@^0.1.2-rc.1`(可在 npm registry 查到)
+
+**结论**:**registry latest dist-tag 指向的是早期 dev 系列(0.0.1-rc.1),CLI 自带的才是 0.1.2-rc.1 稳定线**。两者 deps 树差异极大(后者剥掉了 dsh-bash-env)。
+
+**修复**(4 个 pnpm add,全钉 0.1.2-rc.1):
+```bash
+cd ~/.dsh/profiles/web
+pnpm add @deepseek-ai/dsh-base@0.1.2-rc.1 --save-prod
+pnpm add @deepseek-ai/dsh-web-app@0.1.2-rc.1 --save-prod
+pnpm add @deepseek-ai/dsh-shell-env@0.1.2-rc.1 \
+          @deepseek-ai/dsh-system-prompt@0.1.2-rc.1 --save-prod
+```
+
+(后两个是 dsh-web-app 的顶层 peerDeps,dsh-base 已嵌套装过但要抬到顶层才被 webapp 解析)
+
+**同步更新 `package.json`**(bundles 列表 + deps):
+```json
+{
+  "name": "web-fp2-test",
+  "dsh": {
+    "profile": {
+      "bundles": [
+        "@xmanrui/dsh-im",
+        "@deepseek-ai/dsh-base",
+        "@deepseek-ai/dsh-web-app"
+      ]
+    }
+  },
+  "dependencies": {
+    "@xmanrui/dsh-im": "^4.23.0",
+    "@deepseek-ai/dsh-base": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-web-app": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-shell-env": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-system-prompt": "0.1.2-rc.1"
+  }
+}
+```
+
+**验证**(踩 [[install-script-boot-verify-required]] 教训:必须 boot 验,字节级 diff 不够):
+```bash
+DSH_HOME=/home/etsme/.dsh dsh --profile web --dump-config | wc -l   # 146 个 plugin entry
+DSH_HOME=/home/etsme/.dsh timeout 8 dsh --profile web                 # stdout: 'dsh web: http://127.0.0.1:3080/?token=...'
+```
+
+✅ boot 干净。`dsh-edge` 仍在 21017 跑(PID 4049652),`dsh web` 默认 3080,无端口冲突;`dsh-im` bundle 跟 dsh-base / dsh-web-app 共存,xmanrui-dsh-im-host 的 `connection`/`credentials`/`typertGateway` inject 都能解析。
+
+**关联**:memory 新增 `dsh-bash-env-404-pinning-0-1-2-rc-1`(这条 deploy 经验的固化)。其他相关:`local-llm-pool-bootstrap-constraints`(同类 "fallback 失败 → 静默走错路径" 陷阱)、`profile-node-modules-version-skew`(profile 层级 deps 不会自动跟 CLI 同步)、`dsh-profile-overlay`(user-level override 必须对齐 CLI 自身版本)。
+
+**Why this matters**:**任何 fresh dsh profile 装 dsh-base 必须显式钉 0.1.2-rc.1,禁止 `^`/`latest`/不带版本**。dist-tag 不可信;CLI 自带版本才是 boot-tested 真值。
+
+### §7.92 — Layer 1.5-replacement:在 `system-prompt/assemble` 过滤 tools(2026-09-22)
+
+**触发**:§7.37 结论"Layer 1.5 llm/stream tools filter 不可达"留下未解——LLM 在 LOCAL session 上仍能看到 11 个 tool schema,只能靠 Layer 3 (`tools/pre-execute`) deny。问题是 UX 层面的:LLM 看到 web_search / web_fetch schema 后可能 pick 它们 → Layer 3 拦截 → 一轮空 result + audit `tool.realm.denied`。理想是 LLM 根本看不到越界 schema,直接 pick 在 realm 内的 tool。
+
+**根因 — dsh 流程的 freeze 时序**(三段):
+
+```
+dsh-agent-loop/preStep()
+  └─ assembly = systemPrompt.assemble(...)           ← 工具 schema 还是普通数组
+        └─ system-prompt/assemble waterfall           ← ← ← 唯一可改 tools 的钩子
+dsh-agent-loop/buildRequest(...)
+  ├─ agent/request waterfall                          ← payload 是 { turn, step, signal }
+  ├─ prepareCall (dsh-llm)
+  └─ markAgentLoopRequest(deepFreeze({                ← ← ← 在这一行冻结
+        ...config, messages, system, tools, sessionId, signal
+      }))
+dsh-llm/stream(...)
+  └─ llm/stream waterfall                             ← tools 已经 frozen,改不了
+dsh-tools/execute(...)
+  └─ tools/pre-execute waterfall                      ← Layer 3 权威 gate
+```
+
+`system-prompt/assemble`(dsh-system-prompt/lib/index.js:339-342)是 dsh 类型声明明确写 "the returned value is authoritative" 的钩子,tools 是 plain array,没有 deepFreeze。`llm/stream` 的 payload 在 dsh-agent-loop/lib/index.js:729 的 `markAgentLoopRequest(deepFreeze({...}))` 才被冻结。
+
+**改动**:`realm-skill-bridge.ts` 新增 `disposeAssemble` listener 注册到 `system-prompt/assemble` waterfall(`{ global: true }`):
+
+```ts
+ctx.on('system-prompt/assemble', async (assembly, ctx2, next) => {
+  const result = (await next()) as { tools?: unknown[] } | undefined
+  if (!result || !Array.isArray(result.tools)) return result
+  const sessionId = ctx2?.scope?.session?.id        // assembleContextFor 注入
+  const agentRealm = service.getSessionRealm(sessionId)
+  if (agentRealm === undefined) return result        // fail-open,Layer 3 兜底
+  const filter = service.filterToolsField(result.tools, agentRealm)
+  if (!filter.changed) return result
+  ctx.logger?.info?.(`[realm-skill-bridge] assemble filter sessionId=${sessionId} realm=${agentRealm} removedCount=${filter.removed.length} removed=${filter.removed.join(',')}`)
+  return { ...result, tools: filter.tools }
+}, { global: true })
+```
+
+复用现有 `filterToolsField`(`src/dsh-adapter/realm-skill-bridge.ts:597`):CLOUD/LOCAL 严格匹配 tool realm set,SANITIZED 看全部非 hidden,hidden 永远 drop。
+
+**测试**:`tests/unit/realm-skill-bridge.test.ts` 新增 6 个测试,全部通过(总计 52 pass / 1 skip):
+
+```
+✓ registers a system-prompt/assemble listener
+✓ CLOUD agent sees CLOUD tools, hides LOCAL tools
+✓ LOCAL agent sees LOCAL tools, hides CLOUD tools
+✓ listener integration: passes tools through next() then applies filter on the result
+✓ fail-open when no session realm registered
+✓ hidden tools are always removed regardless of agent realm
+```
+
+**关键设计点**:
+1. **时序正确**:`system-prompt/assemble` 在 dsh-system-prompt:342 走 waterfall,tools 仍可改;dsh-agent-loop:729 之后才 deepFreeze。
+2. **fail-open 安全**:session 没分类时直接放行 —— input-guard/http-api 在同请求生命周期内 `setSessionRealm`,undefined 是异常情况;Layer 3 (`tools/pre-execute`) 仍会兜底拦截。
+3. **跟 Layer 3 对称**:Layer 1.5-replacement = UX gate(LLM 看不到越界工具),Layer 3 = 权威 gate(执行时拦截)。双层保护,即使 §7.36 session-realm 注册漏了,Layer 3 仍生效。
+4. **跟原 Layer 1.5 行为一致**:复用同一 `filterToolsField`,SANITIZED branch + hidden branch 都没动。
+
+**Layer 1.5 现状总结(§7.37→§7.92 演进)**:
+
+| Layer | 状态 | 作用 |
+|---|---|---|
+| Layer 1 (`agent/pre-step` catalog filter) | 永远 no-op(`decision.messages === undefined`) | 历史遗留,已知不可达 |
+| ~~Layer 1.5 (`llm/stream` tools filter)~~ | ~~不可达 (frozen payload)~~ | §7.37 删,§7.92 替换 |
+| **Layer 1.5-replacement (`system-prompt/assemble` tools filter)** | **可达,working** | LLM 在 realm 内才看得到 schema;Layer 3 兜底 |
+| Layer 3 (`tools/pre-execute` deny) | 权威 gate | 始终拦截越界执行,不受 freeze 影响 |
+
+**lesson**:**钩子点必须在 freeze 之前**。deepFreeze 是 dsh-llm 的 invariant(§7.37 lesson 延续),但 freeze 发生的具体边界由 dsh-agent-loop 控制(`buildRequest()` 是 freeze boundary)。任何想 mutate payload 的"方案"必须找 freeze 之前的钩子。`system-prompt/assemble` 跟 `agent/pre-step` / `agent/request` 都是 freeze 之前——后者只 carrier 阶段元信息,前者是真正的 schema 集合,后者还在 assembly 阶段。
+
+**TODO**:
+- M2/M3 smoke 验证实际 chat 中 LOCAL realm 是否真的过滤掉 web_search / web_fetch schema(LLM 直觉性 pick 不再是 web_search)。
+- `dsh-edge-flow.html` 流程图 Layer 1.5 状态从 dead 改成 working,新增 system-prompt/assemble 挂点标注。
+
+### §7.92.1 — 拆除 web-search-guard:Layer 1.5-replacement 之后 4 项职能全冗余(2026-09-22)
+
+**触发**:§7.92 完成 Layer 1.5-replacement 后,user 重新审视 `web-search-guard`(Phase 5 监控守卫)的剩余价值,逐步推导 4 个职能每个都已被替代,直接下令"完整拆除,流程更简单"。
+
+**web-search-guard 历史 4 项职能**(节录自 `src/dsh-adapter/web-search-guard.ts`,已删):
+
+| 职能 | 实现 | Layer 1.5 之后覆盖方 |
+|------|------|---------------------|
+| PII-leak monitor(`sanitizer.sanitize(query) !== query` → security audit) | `tools/result` listener | input-guard CLOUD 路径已 sanitize,LLM 只看占位符 |
+| tools/pre-execute 拒 local-provider(`provider.startsWith('local-') → deny`) | waterfall listener | Layer 1.5-replacement schema 已从 LOCAL 删 web_search + Layer 3 权威 gate 兜底 |
+| Audit event `tool.web-search.executed` | `tools/result` listener | realm-skill-bridge `tools/result` listener 已在打 `tool result tool=web_search status=ok` |
+| Rate-limit(10/min web_search, 5/min web_fetch,软 alarm) | in-process WindowCounter | dsh `maxParallelToolCalls=10` 默认上限 + local-llm-adapter `MAX_TURNS_EXCEEDED` + DeepSeek 上游 429 |
+
+**深挖 user 反问触发的两个 lesson**:
+
+1. **dsh 自带多层安全网**(都从 dsh 源码扒出,不靠记忆):
+   - `maxParallelToolCalls` (default 10, dsh-agent-loop/lib/index.js:1024) — 单 step 内并发上限
+   - `tools.guard()` 官方 API (dsh-tools/lib/index.js:2816) — monotonic deny,支持 global/scope
+   - `tools/restrict()` 官方 API (dsh-tools/lib/index.js:2789) — allow/deny mask
+   - AbortController 每 step 一个 (dsh-agent-loop/lib/index.js:421) — 任何时刻可中断
+   - `local-llm-adapter.ts:489-492` `MAX_TURNS_EXCEEDED` — 跨 step 20 个连续 tool-call 终止 loop
+   - DeepSeek API 上游 429 — 第三方兜底
+2. **我们 10/min WindowCounter 反而是最弱一层**:进程内(重启清零)+ soft alarm(注释自承 "Future work (M5+) wires this to ctx.tools.guard()")+ 跟 maxParallelToolCalls 同数量级。
+
+**user 反问 chain**(很值得记):
+> 只有 cloud 会调用 websearch,都出去了,还有必要监控吗?
+> → PII monitor + local-provider gate 都已被 Layer 1.5/3 覆盖
+> Rate-limit 是担心 LLM 出问题,疯狂调用吗?这个 dsh 的 agent-loop 应该有安全限制了吧
+> → 确认 dsh 自带 maxParallelToolCalls + max-turns + 429 三层更硬,我们的 WindowCounter 是最弱一层
+> 完整拆除,流程更简单
+> → 拆
+
+**改动**:
+- 删 `src/dsh-adapter/web-search-guard.ts`
+- 删 `tests/unit/web-search-guard.test.ts`
+- `src/dsh-adapter/index.ts:99` 删 `export * from './web-search-guard.js'`
+- `cordis.patch.yml:524-533` 删 8 行 insert block + 注释
+- `docs/plugin-mount-points.md` 删 §六 web-search-guard 整段 + §八 inject 行 + §九 流程图 3 个方框
+- `docs/architecture.md` 删 3 个表格行(§一 + §六 + §编排层)
+- `docs/deploy-minimal-files.md:33` 17 个 insert → 16 个,运维一段去掉 "web-search-guard"
+
+**lesson**:**user 反问是 L1.5-replacement 之后最大的设计反馈**。两条 user 反问把整个 plugin 的存在理由拿掉了。教训:
+1. 完成核心 gate 后,要回头扫每个**辅助守卫**是否还有存在理由——不要"写了就留着"。
+2. dsh 自带安全机制(`maxParallelToolCalls` + `tools.guard()` + `tools.restrict()` + `tools/pre-execute` waterfall)是**上游 invariant**,任何自家 rate-limit / PII monitor / deny gate 都得先回答"dsh 这层能不能拦?拦在哪?比我硬还是软?"
+3. "soft alarm + 进程内" 是**最差的限速实现**——不能拦、不能持久、不能跨进程。删比留好。
+
+### §7.92.2 — Layer 1.5-replacement 装死真相:cordis `inject` 漏掉 `tools` + `edgeTools`,proxy 吞异常(2026-09-22)
+
+**触发**:§7.92 上线后,user 让我更新 `dsh-edge-flow.html` 把 Layer 1.5 状态从 dead 改 working。我跑 smoke-final(CLOUD news query)验 chat,1273 字 reply + 调用了 web_search + 22 秒总耗时——但**没有** `assemble filter` log line(理论上 CLOUD 应剔除 edit/glob/grep/write 4 个 LOCAL-only tool schema)。我一开始以为"filter.changed=false 是 fail-open 设计意图",没深挖。
+
+**真相**:user 没说"不修",但 user 的 §7.92.1 lesson 已经立了"完成核心 gate 后回头扫辅助守卫"——L1.5 不是辅助守卫,是 §7.92 头条主线,装死必须顶回去。
+
+**加 diag 一挖到底**(4 步定位,每步新 diag 都把锅收窄一截):
+
+1. `tagTools diag edgeTools=missing err=cannot get property "edgeTools" without inject`
+   → cordis proxy throws 因为 realm-skill-bridge 的 inject 不含 `edgeTools`。Catch 块吞异常,`edgeTools` 留 undefined。
+2. 加 `edgeTools` 到 inject 后:`tagTools diag allTools=Map(13) edgeToolsRealmMap=Map(9)` 还是不出
+   → 第二个 try 块里读 `ctx.tools.view()` 又 throw,因为 inject 也不含 `tools`。Catch 块吞,for 循环不进。
+3. 加 `tools` 到 inject 后:`tagTools diag final toolRealms.size=9 sample=[skill=LOCAL|CLOUD, web_search=CLOUD, web_fetch=CLOUD]`
+   → Map 终于填好。Smoke-final CLOUD chat:`assemble filter sessionId=smoke-final-CLEAN realm=CLOUD removedCount=4 removed=edit,glob,grep,write`。
+
+**改动**:
+- `cordis.patch.yml` realm-skill-bridge inject 从 `[auditLog, skills]` 改为 `[auditLog, skills, edgeTools, tools]`
+- `patch-surface.snapshot.json` regenerate(inserts 数量没变,config 微调不计数)
+- `realm-skill-bridge.ts` tagToolsFromConfig 注释升 §7.92.2,加 "Requires tools + edgeTools in plugin inject list" 提醒
+- `dsh-edge-flow.html` 新增 ②.⑤ `system-prompt/assemble` stage + Layer 1.5 hook-list row + 整体效果描述补 Layer 1.5
+
+**lesson**(比 §7.92.1 更狠):
+1. **cordis proxy silent throw 是 silent failure 重灾区**。`try { ctx.foo } catch { /* skip */ }` 模式看似优雅,实际吞掉了"我没声明 inject"的本质错误。Catch 块应该至少 log.warn(),不能静默。
+2. **plugin 读 `ctx.X` 时,X 必须先在 inject 数组里**(soft dependency 也要列),否则 proxy throw。**这不是 dsh 文档写的,是 runtime 撞出来的**。
+3. **装死 1 天的根因**:`<dsh-tools>` 的冷启动 tool-register 事件在 realm-skill-bridge apply() 跑之前就 fire 完了,`tools/change` 监听器根本收不到。fix 路径是 inject 声明 + `tools/change` re-fire,后者已 firing → 关键在 inject。
+5. **`dsh-edge-flow.html` 更新被这次装死 bug 反向救了一命**:本来只是画图,但跑 smoke 验图的过程中挖出了 §7.92.2 bug。"流程文档 → smoke 验 → 撞 bug → 修"的链路值得保留。
+

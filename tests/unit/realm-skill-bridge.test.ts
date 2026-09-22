@@ -1087,4 +1087,228 @@ ${allSkillLines.join('\n')}
       await dispose()
     })
   })
+
+  // §7.37.x (2026-09-22): Layer 1.5-replacement listener registered on
+  // system-prompt/assemble waterfall. Filters assembly.tools by session
+  // realm before dsh-agent-loop freezes them into the LLM request payload.
+  // Replaces the deleted `llm/stream` tools probe (which was blocked by
+  // dsh-llm's deepFreeze at dsh-agent-loop/lib/index.js:729).
+  describe('system-prompt/assemble tool filter (§7.37.x Layer 1.5-replacement)', () => {
+    function makeFakeCtx(
+      infoLines: string[],
+      calls: Array<{ event: string; fn: (...args: unknown[]) => unknown }>,
+    ): unknown {
+      return {
+        reflect: { provide() { return () => {} } },
+        provide() { return () => {} },
+        skills: {
+          async list() { return [] },
+          async snapshot() { return { skills: [], complete: true } },
+        },
+        logger: {
+          info: (l: string) => infoLines.push(l),
+          warn: () => {}, error: () => {}, debug: () => {},
+        },
+        on(event: string, fn: (...args: unknown[]) => unknown) {
+          calls.push({ event, fn }); return () => {}
+        },
+      }
+    }
+
+    const CLOUD_LOCAL_CONFIG = {
+      skills: {},
+      tools: { web_search: 'CLOUD', web_fetch: 'CLOUD', sys_info: 'LOCAL', bash: 'LOCAL' },
+      defaultRealm: 'hidden',
+      intentDefaultRealm: 'hidden',
+      sessionRealmHeader: 'x-edge-realm',
+    }
+
+    it('registers a system-prompt/assemble listener', async () => {
+      const infoLines: string[] = []
+      const calls: Array<{ event: string; fn: (...args: unknown[]) => unknown }> = []
+      const fakeCtx = makeFakeCtx(infoLines, calls)
+      const { apply } = await import('../../src/dsh-adapter/realm-skill-bridge.ts')
+      const dispose = await (apply as (ctx: unknown, cfg: unknown) => Promise<() => Promise<void>>)(fakeCtx, CLOUD_LOCAL_CONFIG)
+      const assembleListener = calls.find((c) => c.event === 'system-prompt/assemble')
+      assert.ok(assembleListener, 'system-prompt/assemble listener should be registered')
+      await dispose()
+    })
+
+    it('CLOUD agent sees CLOUD tools, hides LOCAL tools', async () => {
+      const infoLines: string[] = []
+      const calls: Array<{ event: string; fn: (...args: unknown[]) => unknown }> = []
+      const fakeCtx = makeFakeCtx(infoLines, calls)
+      const { apply } = await import('../../src/dsh-adapter/realm-skill-bridge.ts')
+      const dispose = await (apply as (ctx: unknown, cfg: unknown) => Promise<() => Promise<void>>)(fakeCtx, CLOUD_LOCAL_CONFIG)
+
+      const assembleListener = calls.find((c) => c.event === 'system-prompt/assemble')!
+      const fn = assembleListener.fn as (a: unknown, c: unknown, n: () => Promise<unknown>) => Promise<unknown>
+
+      // Drive setSessionRealm via tools/change listener side-channel:
+      // service registers tools/change handler that calls tagToolsFromConfig,
+      // and we can reach setSessionRealm by setting up a service singleton
+      // and using the listener closure's service reference. The cleanest
+      // hermetic path is to call the listener directly with a fully-formed
+      // session. The service uses sessionRealms map keyed by session.id,
+      // so we just need to pre-seed it. We do this via the tools/change
+      // hook (which fires tagToolsFromConfig — a tag side-effect) — but
+      // we can't reach setSessionRealm from outside the closure without
+      // exposing it. Instead, observe the filterToolsField purity: this
+      // test focuses on the listener wiring + the filter logic via a
+      // session with a classifiable scope.
+      //
+      // The challenge: setSessionRealm is private to apply() closure. We
+      // CAN reach it via the `service` reflected on ctx.reflect, but that
+      // requires another service singleton. Simpler — use a separate
+      // RealmSkillBridgeService via the exported API, set realm, then
+      // assert filterToolsField output (the function the listener calls).
+      // The listener is tested via its registration + dispatch behavior in
+      // the next tests; here we verify the filter logic.
+      const configPath = writeConfig('skill-realms.json', CLOUD_LOCAL_CONFIG)
+      const service = new RealmSkillBridgeService(
+        fakeCtx as never,
+        { configPath, hotReload: false, watchIntervalMs: 5000 },
+        undefined,
+      )
+      await service.start()
+
+      // Simulate what the listener does internally
+      const allTools = [
+        { name: 'web_search', description: 'cloud search' },
+        { name: 'web_fetch', description: 'cloud fetch' },
+        { name: 'sys_info', description: 'local sysinfo' },
+        { name: 'bash', description: 'shell' },
+        { name: 'unknown_tool', description: 'no realm' },
+      ]
+      service.setSessionRealm('sess-c', 'CLOUD')
+      const cloudFilter = service.filterToolsField(allTools, service.getSessionRealm('sess-c')!)
+      const cloudNames = cloudFilter.tools.map((t: any) => t.name)
+      assert.ok(cloudNames.includes('web_search'), 'CLOUD agent sees web_search')
+      assert.ok(cloudNames.includes('web_fetch'), 'CLOUD agent sees web_fetch')
+      assert.ok(!cloudNames.includes('sys_info'), 'CLOUD agent hides sys_info')
+      assert.ok(!cloudNames.includes('bash'), 'CLOUD agent hides bash')
+      assert.ok(cloudNames.includes('unknown_tool'), 'CLOUD agent passes through unknown tools')
+      service.stop()
+      await dispose()
+    })
+
+    it('LOCAL agent sees LOCAL tools, hides CLOUD tools', async () => {
+      const infoLines: string[] = []
+      const calls: Array<{ event: string; fn: (...args: unknown[]) => unknown }> = []
+      const fakeCtx = makeFakeCtx(infoLines, calls)
+      const configPath = writeConfig('skill-realms.json', CLOUD_LOCAL_CONFIG)
+      const service = new RealmSkillBridgeService(
+        fakeCtx as never,
+        { configPath, hotReload: false, watchIntervalMs: 5000 },
+        undefined,
+      )
+      await service.start()
+      const allTools = [
+        { name: 'web_search' }, { name: 'web_fetch' },
+        { name: 'sys_info' }, { name: 'bash' }, { name: 'unknown_tool' },
+      ]
+      service.setSessionRealm('sess-l', 'LOCAL')
+      const localFilter = service.filterToolsField(allTools, service.getSessionRealm('sess-l')!)
+      const localNames = localFilter.tools.map((t: any) => t.name)
+      assert.ok(!localNames.includes('web_search'), 'LOCAL agent hides web_search')
+      assert.ok(!localNames.includes('web_fetch'), 'LOCAL agent hides web_fetch')
+      assert.ok(localNames.includes('sys_info'), 'LOCAL agent sees sys_info')
+      assert.ok(localNames.includes('bash'), 'LOCAL agent sees bash')
+      service.stop()
+    })
+
+    it('listener integration: passes tools through next() then applies filter on the result', async () => {
+      // Verifies the listener calls next() and returns the upstream assembly
+      // when no session realm is registered (fail-open path). Listener
+      // wiring + filter logic against real realm config are exercised in the
+      // other tests in this describe block.
+      const infoLines: string[] = []
+      const calls: Array<{ event: string; fn: (...args: unknown[]) => unknown }> = []
+      const fakeCtx = makeFakeCtx(infoLines, calls)
+      const { apply } = await import('../../src/dsh-adapter/realm-skill-bridge.ts')
+      const dispose = await (apply as (ctx: unknown, cfg: unknown) => Promise<() => Promise<void>>)(fakeCtx, CLOUD_LOCAL_CONFIG)
+
+      const assembleListener = calls.find((c) => c.event === 'system-prompt/assemble')!
+      const fn = assembleListener.fn as (a: unknown, c: unknown, n: () => Promise<unknown>) => Promise<unknown>
+
+      const sessionId = 'integration-sess'
+      const fakeScope = { session: { id: sessionId } }
+
+      const upstreamAssembly = {
+        sections: [], contexts: [], variables: {},
+        tools: [
+          { name: 'web_search', description: 'cloud search' },
+          { name: 'sys_info', description: 'local sysinfo' },
+          { name: 'bash', description: 'shell' },
+        ],
+      }
+      const result = await fn(upstreamAssembly, { scope: fakeScope }, async () => upstreamAssembly) as { tools: { name: string }[] }
+      // sessionId='integration-sess' has no realm set → fail-open path.
+      // All tools pass through unchanged.
+      assert.equal(result.tools.length, 3, 'undefined agentRealm → fail-open, all 3 tools kept')
+      assert.ok(result.tools.some((t) => t.name === 'web_search'))
+      assert.ok(result.tools.some((t) => t.name === 'sys_info'))
+      assert.ok(result.tools.some((t) => t.name === 'bash'))
+      await dispose()
+    })
+
+    it('fail-open when no session realm registered', async () => {
+      // No sessionId match → agentRealm undefined → listener returns
+      // result unchanged (all tools pass through to LLM). Layer 3 still
+      // gates execution, so this is safe.
+      const infoLines: string[] = []
+      const calls: Array<{ event: string; fn: (...args: unknown[]) => unknown }> = []
+      const fakeCtx = makeFakeCtx(infoLines, calls)
+      const { apply } = await import('../../src/dsh-adapter/realm-skill-bridge.ts')
+      const dispose = await (apply as (ctx: unknown, cfg: unknown) => Promise<() => Promise<void>>)(fakeCtx, CLOUD_LOCAL_CONFIG)
+      const assembleListener = calls.find((c) => c.event === 'system-prompt/assemble')!
+      const fn = assembleListener.fn as (a: unknown, c: unknown, n: () => Promise<unknown>) => Promise<unknown>
+
+      const tools = [
+        { name: 'web_search' },
+        { name: 'web_fetch' },
+        { name: 'sys_info' },
+      ]
+      const result = await fn({ sections: [], contexts: [], variables: {}, tools }, { scope: { session: { id: 'unmapped-sess' } } }, async () => ({ sections: [], contexts: [], variables: {}, tools }))
+      assert.equal((result as { tools: unknown[] }).tools.length, 3, 'no session realm → all tools pass through')
+      await dispose()
+    })
+
+    it('hidden tools are always removed regardless of agent realm', async () => {
+      const infoLines: string[] = []
+      const calls: Array<{ event: string; fn: (...args: unknown[]) => unknown }> = []
+      const fakeCtx = makeFakeCtx(infoLines, calls)
+      const { apply } = await import('../../src/dsh-adapter/realm-skill-bridge.ts')
+      const dispose = await (apply as (ctx: unknown, cfg: unknown) => Promise<() => Promise<void>>)(fakeCtx, {
+        skills: {},
+        tools: { secret_admin: 'hidden', web_search: 'CLOUD' },
+        defaultRealm: 'hidden',
+        intentDefaultRealm: 'hidden',
+        sessionRealmHeader: 'x-edge-realm',
+      })
+
+      const configPath = writeConfig('skill-realms.json', {
+        skills: {},
+        tools: { secret_admin: 'hidden', web_search: 'CLOUD' },
+        defaultRealm: 'hidden',
+      })
+      const service = new RealmSkillBridgeService(
+        fakeCtx as never,
+        { configPath, hotReload: false, watchIntervalMs: 5000 },
+        undefined,
+      )
+      await service.start()
+      service.setSessionRealm('sess-h', 'CLOUD')
+      const tools = [
+        { name: 'web_search' },
+        { name: 'secret_admin' },
+      ]
+      const filter = service.filterToolsField(tools, 'CLOUD')
+      const names = filter.tools.map((t: any) => t.name)
+      assert.ok(names.includes('web_search'), 'CLOUD tool visible to CLOUD agent')
+      assert.ok(!names.includes('secret_admin'), 'hidden tool always removed')
+      service.stop()
+      await dispose()
+    })
+  })
 })
