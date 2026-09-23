@@ -703,7 +703,7 @@ on(<span class="s">'session/event'</span>, (session, event) => {
                   <b>📍 做了什么</b>:从 <code>decision.messages</code> 里删掉 agent realm 不允许的 <code>&lt;available_skills&gt;</code> 条目(例:agent realm=LOCAL → 删 CLOUD-only skill)→ return 改写后的 decision。
                 </div>
                 <div class="impact-block">
-                  <b>→ 对后面的影响</b>:④ llm/stream 拿到的 messages 里 LLM 只看到被授权的 skill 列表 → LLM 不会去调不该调的工具 → <b>Layer 1 是"目录级"防御</b>。真要 LLM 想调越界工具,还要靠 ②.⑤ Layer 1.5 过滤 tool schema + ⑤ tools/pre-execute Layer 3 兜底拒执行。
+                  <b>→ 对后面的影响</b>:④ llm/stream 拿到的 messages 里 LLM 只看到被授权的 skill 列表 → LLM 不会去调不该调的工具 → <b>Layer 1 是"目录级"防御</b>。真要 LLM 想调越界工具,还要靠 ②.⑤ Layer 1.5 过滤 tool schema + ⑤ tools/pre-execute Layer 3 兜底拒执行。<b>⚠ 当前 §7.37 no-op 状态</b>:<code>decision.messages</code> 在 <code>agent/pre-step</code> 时是空的(msgCount=0)— <code>&lt;available_skills&gt;</code> 由 <code>dsh-system-prompt</code> 在 hook surface 之下注入,本 listener 看不到。filter 代码保留作 future-proof + 兜底(dsh 版本变更让 messages 再次 reactivate)+ §7.45 SANITIZED 例外修复(避免 LIST 的 drop 全部 → LLM 永远看不到 ets skill)。<b>实战上 Layer 1 = no-op</b>,Layer 1.5 + Layer 3 才是生效的"独立可挡"双闸。
                 </div>
               </div>
             </div>
@@ -860,7 +860,7 @@ on(<span class="s">'session/event'</span>, (session, event) => {
               </div>
               <div class="plugin-detail">
                 <div class="local-block">
-                  <b>📍 做了什么</b>:读 <code>exec.toolName</code> 的 realm tag(⑧ 冷启动时打的)→ 读 session/agent 的 realm 配置 → 比对:<code>agent.realm ⊇ tool.realm</code> 才放行;否则 <code>return {kind:'reject', reason:'realm-blocked'}</code> 不调 next()。
+                  <b>📍 做了什么</b>:读 <code>exec.toolName</code> 的 realm tag(⑧ 冷启动时打的)→ 读 session/agent 的 realm 配置 → 比对:<code>agent.realm ∈ tool.realm-set</code> 才放行;否则 <code>return {kind:'deny', reason:'Tool "X" (LOCAL) not allowed in CLOUD realm'}</code> 不调 next()。
                 </div>
                 <div class="sub-flow">
                   <span class="sub-flow-label">子流程:</span>
@@ -868,13 +868,13 @@ on(<span class="s">'session/event'</span>, (session, event) => {
                   <span class="sub-flow-arrow">→</span>
                   <span class="sub-flow-step">读 agent.realm</span>
                   <span class="sub-flow-arrow">→</span>
-                  <span class="sub-flow-step">agent ⊇ tool?</span>
+                  <span class="sub-flow-step">agent ∈ tool.realm-set?</span>
                   <span class="sub-flow-arrow">→</span>
-                  <span class="sub-flow-step opt" title="不满足时">return reject</span>
-                  <span class="sub-flow-note">↑ 否 → return {kind:'reject'} 不调 next()</span>
+                  <span class="sub-flow-step opt" title="不满足时">return deny</span>
+                  <span class="sub-flow-note">↑ 否 → return {kind:'deny'} 不调 next()</span>
                 </div>
                 <div class="impact-block">
-                  <b>→ 对后面的影响</b>:<b>① 拒 → LLM 重试</b>工具被拒 → LLM 收到 reject reason 当 tool result → 进入下一轮 LLM call(④ 再来一次);<b>② 留痕</b>拒收事件落 audit.security(realm violation);<b>③ 放行</b>真要执行 → ⑥ tools/result 阶段回写结果。<b>跟 Layer 1 / 1.5 互补</b>:Layer 1 防 LLM 看到 skill 目录,Layer 1.5 防 LLM 看到 tool schema,Layer 3 防 LLM 调工具 — 三层一起拦才稳。<b>说明</b>:此处不再挂 PII 监测 / 滑动窗口限速 — CLOUD realm 本就出去,DSSH 上游 <code>tools.guard()</code> + <code>maxParallelToolCalls=10</code> + AbortController + <code>MAX_TURNS_EXCEEDED</code> 已覆盖大多数情况(详见 §7.92.1)。
+                  <b>→ 对后面的影响</b>:<b>① 拒 → LLM 重试</b>工具被拒 → LLM 收到 deny reason 当 tool result → 进入下一轮 LLM call(④ 再来一次);<b>② 留痕</b>拒收事件落 audit.security(<code>tool.realm.denied</code>)+ ops log(<code>[realm-skill-bridge] tool deny sessionId=... tool=... realm=... reason=...</code>);<b>③ 放行</b>真要执行 → ⑥ tools/result 阶段回写结果。<b>跟 Layer 1 / 1.5 互补</b>:Layer 1 防 LLM 看到 skill 目录(<b>§7.37 当前 no-op</b>),Layer 1.5 防 LLM 看到 tool schema,Layer 3 防 LLM 调工具 — 三层一起拦才稳(实战拦截 = Layer 1.5 + Layer 3 双闸)。<b>说明</b>:此处不再挂 PII 监测 / 滑动窗口限速 — CLOUD realm 本就出去,DSSH 上游 <code>tools.guard()</code> + <code>maxParallelToolCalls=10</code> + AbortController + <code>MAX_TURNS_EXCEEDED</code> 已覆盖大多数情况(详见 §7.92.1)。
                 </div>
               </div>
             </div>
@@ -896,10 +896,10 @@ on(<span class="s">'session/event'</span>, (session, event) => {
               </div>
               <div class="plugin-detail">
                 <div class="local-block">
-                  <b>📍 做了什么</b>:把 <code>status</code>(success/error) / <code>isError</code> / <code>signalAborted</code>(是否被 ⑤ 拒) / <code>toolName</code> / <code>duration</code> 写到 <code>~/.dsh-edge-agent/log/ops.jsonl</code>。
+                  <b>📍 做了什么</b>:把 <code>status</code>(ok/error/aborted) / <code>isError</code> / <code>signalAborted</code>(是否被 ⑤ 拒) / <code>toolName</code> 写到 <code>~/.dsh-edge-agent/log/dsh-edge-agent.log</code>(file-logger 落点,不是 ops.jsonl)。error 时附 <code>errorKind=&lt;message 前 100 字符&gt;</code>。
                 </div>
                 <div class="impact-block">
-                  <b>→ 对后面的影响</b>:dsh-agent-loop 把 <code>tool_result</code> 注入 messages → 回到 ② pre-step 进入下一轮 LLM call(多轮对话)。被 ⑤ 拒的 tool call 也走 result(带 reject reason 当 tool_result)→ LLM 自己决定下一步。<b>web_search / web_fetch 的 result 不再单独审计</b>:web 调用本身已在 audit.jsonl 留痕(任何 tool call 都走 audit),去掉 web-search-guard 后流程更简单(详见 §7.92.1)。
+                  <b>→ 对后面的影响</b>:dsh-agent-loop 把 <code>tool_result</code> 注入 messages → 回到 ② pre-step 进入下一轮 LLM call(多轮对话)。被 ⑤ 拒的 tool call 也走 result(带 deny reason 当 tool_result)→ LLM 自己决定下一步。<b>web_search / web_fetch 的 result 不再单独审计</b>:web 调用本身已在 audit.jsonl 留痕(任何 tool call 都走 audit),去掉 web-search-guard 后流程更简单(详见 §7.92.1)。<b>§7.47.6 教训</b>:此层补 Layer 3 的 150 allow:3 result 失衡,让 web_search hang 这类 bug 在 ops log 立刻能看到。
                 </div>
               </div>
             </div>
@@ -911,7 +911,7 @@ on(<span class="s">'session/event'</span>, (session, event) => {
       <div class="stage">
         <div class="stage-axis">t = T₆<br>回流</div>
         <div class="stage-body">
-          <div class="stage-title">⑦ session/event <span class="badge badge-emit">emit × 3</span></div>
+          <div class="stage-title">⑦ session/event <span class="badge badge-emit">emit × 1 listener(3 types)</span></div>
           <div class="stage-desc">dsh-session 在 Session 生命周期里广播的事件。emit 模式 → 只能观测、不能拦截主流程循环本身。本钩子在主循环里反复执行,不是一次性。<b>响应流出客户端</b>的最后一道。</div>
           <div class="plugin-list">
             <div class="plugin">
@@ -969,7 +969,7 @@ on(<span class="s">'session/event'</span>, (session, event) => {
         <b>请求流向</b>:客户端 POST <code>:21017/v1/chat/stream</code> → ① http-api 拆 4 元组 → ② input-guard 隐私 4 步管线 + realm Layer 1 目录过滤 → ②.⑤ realm Layer 1.5 tool schema 过滤(assemble)→ ③ input-guard provider 改写 → ④ LLM 流式调用 + 反脱敏 → ⑤ realm Layer 3 拒执行 → ⑥ audit/ops 落盘 → ⑦ http-api SSE 回流 + REJECT 标签读 → 浏览器收到 token。
       </p>
       <ul>
-        <li><b>3 道防御纵深</b>:② Layer 1 目录过滤(skills)→ ②.⑤ Layer 1.5 schema 过滤(tools)→ ⑤ Layer 3 执行拦截(realm tag)。任何一道独立可挡。</li>
+        <li><b>3 道防御纵深</b>:② Layer 1 目录过滤(skills)+ ②.⑤ Layer 1.5 schema 过滤(tools)+ ⑤ Layer 3 执行拦截(realm tag)。<b>实战生效双闸</b>:Layer 1 §7.37 当前 no-op(<code>decision.messages</code> 在 pre-step 为空)→ Layer 1.5 + Layer 3 = 真正独立可挡的两道;Layer 1 作 future-proof + §7.45 SANITIZED 兜底。</li>
         <li><b>3 道 PII 保护</b>:② sanitize 明文 → 占位符(LLM 看不到)→ ③ sanitize 失败 cloud→local(PII 不出端)→ ④ desanitize 反脱敏(给客户端还原)。</li>
         <li><b>3 类观测</b>:<code>audit.jsonl</code>(行为审计,所有阶段共写) / <code>ops.jsonl</code>(耗时/状态,⑥ + ⑦)/ file-logger(运行时日志,所有阶段共写)。</li>
         <li><b>1 条 REJECT 标签流</b>:② input-guard throw 前贴 <code>_edgeRejection</code> → dsh-agent-loop 翻译丢 reason → ⑦ http-api 读标签转 4xx(reason 靠小抄跨过翻译断层)。</li>
@@ -1009,10 +1009,10 @@ on(<span class="s">'session/event'</span>, (session, event) => {
             </div>
             <div class="plugin-detail">
               <div class="local-block">
-                <b>📍 做了什么</b>:tools/change 触发 → 遍历当前 dsh-tools 注册表 → 给每个 toolName 打 realm tag(组合 DSH_NATIVE_REALM_MAP + 自己注入的)。
+                <b>📍 做了什么</b>:<b>2 步 seed+override</b>(§7.92.2 修复后):tools/change 触发 → <b>① seed</b>:从 <code>ctx.edgeTools.realm/realmOf()</code> 读 <code>DSH_NATIVE_REALM_MAP</code>(已由 edge-tools-registry 启动时灌入 edgeTools);<b>② override</b>:遍历 <code>realmConfig.tools</code>(<code>~/.dsh-edge-agent/skill-realms.json</code>),覆盖到内部 <code>Map&lt;toolName, Set&lt;RealmTag&gt;&gt;</code>。
               </div>
               <div class="impact-block">
-                <b>→ 对后面的影响</b>:⑤ tools/pre-execute Layer 3 直接读这张 Map 比对 → 启动完成后所有 tool 的 realm 已固化,运行时一次 O(1) 查询。
+                <b>→ 对后面的影响</b>:⑤ tools/pre-execute Layer 3 + ②.⑤ Layer 1.5 直接读这张 Map 比对 → 启动完成后所有 tool 的 realm 已固化,运行时一次 O(1) 查询。<b>seed 必须先于 override</b>(§7.92.2 教训):user 没写 <code>skill-realms.json</code> 时,纯 seed 已经把 <code>web_search/web_fetch</code> 标 CLOUD、<code>edit/glob/grep/write</code> 标 LOCAL → Layer 1.5-replacement 立刻可拦。否则缺 seed → filter 啥都不删 → LOCAL agent 也能看到 web_search → 防护失效。
               </div>
             </div>
           </div>
@@ -1056,7 +1056,7 @@ on(<span class="s">'session/event'</span>, (session, event) => {
 
       <div class="hook-row">
         <div class="hook-name-block">
-          <div class="hook-name">session/event × 3</div>
+          <div class="hook-name">session/event × 1 (3 types)</div>
           <div class="hook-sub">emit 模式</div>
         </div>
         <div class="hook-desc">
@@ -1307,7 +1307,7 @@ on(<span class="s">'session/event'</span>, (session, event) => {
       <div class="insight-label">口诀 1</div>
       <b>9 个事件钩子 = 5 个 waterfall(可拦截) + 4 个 emit(只观测)。</b><br>
       waterfall: agent/pre-step / system-prompt/assemble(Layer 1.5)/ agent/request / llm/stream / tools/pre-execute。<br>
-      emit: session/event / tools/result / tools/change / skills/change。
+      emit: session/event(1 listener × 3 types) / tools/result / tools/change(2 listener: realm-skill-bridge + edge-tools-registry)/ skills/change。
     </div>
 
     <div class="insight">

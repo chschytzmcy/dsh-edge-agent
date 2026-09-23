@@ -39,7 +39,11 @@ import { Service } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
 
 export const name = 'realm-skill-bridge'
-export const inject = ['auditLog', 'skills'] as const
+// §7.92.2 (2026-09-22): 必须声明全部 soft deps — `edgeTools` + `tools` 是
+// tagToolsFromConfig() 实际读取的 ctx 属性。cordis Proxy 在未声明时会
+// 静默 throw "cannot get property X without inject",原 silent catch 吞
+// 掉导致 Layer 1.5-replacement 装死 1 天。必须跟 cordis.patch.yml 一致。
+export const inject = ['auditLog', 'skills', 'edgeTools', 'tools'] as const
 
 /** Realm tag for skills and tools. 'hidden' means invisible to all agents. */
 export type RealmTag = 'LOCAL' | 'CLOUD' | 'SANITIZED' | 'hidden'
