@@ -65,6 +65,26 @@ export interface Config {
    *  LLM verdict. Env DSH_EDGE_INTENT_LOCAL_ENTITIES (comma-sep) appends to
    *  built-in (NOT replaces), same semantics as cloudKeywords. */
   localEntities?: string[]
+  /** §7.92.3 (2026-09-23): jev HTTP intent recognizer (port 8001). Toggle
+   *  — default OFF (opt-in). When ON, jev runs BEFORE the LLM classifier
+   *  and short-circuits high-confidence / low-risk verdicts. See
+   *  ~/work/jev-branch/docs/api_reference.md for the upstream contract.
+   *  Env DSH_EDGE_INTENT_JEV_ENABLED (literal 'true' activates). */
+  jevEnabled?: boolean
+  /** §7.92.3: jev base URL. Env DSH_EDGE_INTENT_JEV_URL. */
+  jevUrl?: string
+  /** §7.92.3: jev HTTP timeout in ms. Env DSH_EDGE_INTENT_JEV_TIMEOUT_MS. */
+  jevTimeoutMs?: number
+  /** §7.92.3: minimum jev confidence to adopt. Below → fall through to
+   *  LLM. Env DSH_EDGE_INTENT_JEV_CONFIDENCE_THRESHOLD. */
+  jevConfidenceThreshold?: number
+  /** §7.92.3: jev risk_score gate (≥ this value → REJECT). Env
+   *  DSH_EDGE_INTENT_JEV_RISK_THRESHOLD. */
+  jevRiskThreshold?: number
+  /** §7.92.3: jev intent → realm mapping table. EXTENDS the built-in
+   *  default (does not replace). Env DSH_EDGE_INTENT_JEV_INTENT_MAP as a
+   *  JSON object string, e.g. `{"订单查询":"SANITIZED","refund":"CLOUD"}`. */
+  jevIntentMap?: Record<string, 'LOCAL' | 'CLOUD' | 'SANITIZED'>
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -88,6 +108,28 @@ export const Config: Schema<Config> = Schema.object({
   fallbackKeywords: Schema.array(Schema.string()).default([] as string[]),
   cloudKeywords: Schema.array(Schema.string()).default([] as string[]),
   localEntities: Schema.array(Schema.string()).default([] as string[]),
+  // §7.92.3 (2026-09-23): jev HTTP intent recognizer. Toggle defaults
+  // OFF — opt-in per §7.75 .env discipline ("不允许 ${VAR:-default}",
+  // operators explicitly turn features on). When ON, jev runs BEFORE the
+  // LLM classifier; failures fall through to LLM (no behavior change for
+  // any path that doesn't go through jev).
+  jevEnabled: Schema.boolean().default(false),
+  jevUrl: Schema.string().default('http://127.0.0.1:8001'),
+  // 2.5s = comfortably above jev's documented P95 (< 300ms) with headroom
+  // for cold-start model load + inter-container network jitter. Smaller
+  // than `llmTimeoutMs` (default 4-30s) so jev-as-prefilter still saves
+  // the operator's overall chat budget on jev-failure paths.
+  jevTimeoutMs: Schema.natural().default(2500),
+  // Mirrors jev's built-in `execute` gate (>= 0.85). Operators tune lower
+  // (e.g. 0.70) to trade more jev-adopts for higher mis-route risk.
+  jevConfidenceThreshold: Schema.number().min(0).max(1).default(0.85),
+  // Mirrors jev's built-in risk-score gate (>= 0.7 → clarify → REJECT).
+  jevRiskThreshold: Schema.number().min(0).max(1).default(0.7),
+  // Map of jev's intent strings (config/intents.yaml on the jev side) to
+  // realm. EXTENDS built-in JEV_INTENT_MAP_DEFAULT — operators can
+  // override built-in entries with their own.
+  jevIntentMap: Schema.dict(Schema.union(['LOCAL', 'CLOUD', 'SANITIZED'] as const))
+    .default({} as Record<string, 'LOCAL' | 'CLOUD' | 'SANITIZED'>),
 })
 
 export interface Intent {
@@ -155,6 +197,77 @@ const LOCAL_ENTITY_KEYWORDS_DEFAULT: readonly string[] = [
   '密盒', 'ets', 'etscli',
 ]
 
+/** §7.92.3 (2026-09-23): built-in jev intent-string → realm mapping.
+ *  Used by classifyWithJev() when `data.intent` is set + `data.action ===
+ *  'execute'` + `confidence ≥ jevConfidenceThreshold`. Operators extend
+ *  (and can override individual keys) via env `INTENT_JEV_INTENT_MAP` as
+ *  JSON, e.g. `{"订单查询":"SANITIZED","refund":"CLOUD"}`. Lookup is
+ *  exact-string match on the jev-side `intent` field.
+ *
+ *  Mapping rationale (per api_reference.md §3.3 + design-v6 §4.3):
+ *  - 订单查询/物流跟踪/退款申请/账户管理/客服/订单状态/物流查询 → SANITIZED
+ *    (these touch PII like order id, address, payment status — must run
+ *    through input-guard sanitizer before any LLM sees them; the actual
+ *    order data lives behind LOCAL skills though, so the post-sanitize
+ *    path routes to the LOCAL realm if applicable — but the realm set
+ *    here is the classifier verdict, not the post-sanitize routing).
+ *    Operators who want direct LOCAL routing can override these to LOCAL.
+ *  - 投诉/法务咨询/法律咨询 → REJECT (high-risk, audit security).
+ *  - 闲聊/其他 → fallback_llm (handled in classifyWithJev, NOT here —
+ *    these never reach this lookup).
+ *  - 知识问答/通用咨询/天气/翻译/闲聊助手 → CLOUD (clear online tasks).
+ *
+ *  NOTE: 闲聊 / 其他 / null are EXCLUDED — classifyWithJev short-circuits
+ *  these as `action: 'skip'` (fall through to LLM) BEFORE consulting this
+ *  map. Other intents not listed here fall through too (defensive: if jev
+ *  returns an intent string we don't recognize, LLM classifier handles it). */
+const JEV_INTENT_MAP_DEFAULT: Readonly<Record<string, 'LOCAL' | 'CLOUD' | 'SANITIZED' | 'REJECT'>> = {
+  // ── SANITIZED: PII-likely business intents (must sanitize before cloud) ──
+  '订单查询': 'SANITIZED',
+  '订单状态': 'SANITIZED',
+  '物流跟踪': 'SANITIZED',
+  '物流查询': 'SANITIZED',
+  '快递查询': 'SANITIZED',
+  '退款申请': 'SANITIZED',
+  '退款查询': 'SANITIZED',
+  '账户管理': 'SANITIZED',
+  '账户余额': 'SANITIZED',
+  '账户信息': 'SANITIZED',
+  '客服': 'SANITIZED',
+  '售后服务': 'SANITIZED',
+  'order_inquiry': 'SANITIZED',
+  'refund': 'SANITIZED',
+  'refund_request': 'SANITIZED',
+  'logistics': 'SANITIZED',
+  'account': 'SANITIZED',
+  'customer_service': 'SANITIZED',
+  // ── REJECT: high-risk / sensitive intents (security-level audit) ──
+  '投诉': 'REJECT',
+  '法务咨询': 'REJECT',
+  '法律咨询': 'REJECT',
+  '举报': 'REJECT',
+  'complaint': 'REJECT',
+  'legal': 'REJECT',
+  'legal_advice': 'REJECT',
+  // ── CLOUD: clear online / knowledge tasks ──
+  '知识问答': 'CLOUD',
+  '通用咨询': 'CLOUD',
+  '天气': 'CLOUD',
+  '翻译': 'CLOUD',
+  '新闻': 'CLOUD',
+  '搜索': 'CLOUD',
+  'knowledge': 'CLOUD',
+  'weather': 'CLOUD',
+  'translation': 'CLOUD',
+  'news': 'CLOUD',
+  'search': 'CLOUD',
+  // ── LOCAL: clear device-bound tasks (rare from jev — usually an entity) ──
+  '设备控制': 'LOCAL',
+  '文件操作': 'LOCAL',
+  'device_control': 'LOCAL',
+  'file_ops': 'LOCAL',
+}
+
 export class IntentRouterServiceImpl extends Service {
   private readonly defaultCategory: Intent['category']
   private readonly classificationProvider: string
@@ -170,6 +283,20 @@ export class IntentRouterServiceImpl extends Service {
   /** §7.58 (2026-09-16): LOCAL-entity list, merged with built-in defaults.
    *  Checked FIRST in classifyWithRules + as LLM-verdict override guardrail. */
   private readonly localEntities: readonly string[]
+  /** §7.92.3 (2026-09-23): jev HTTP intent recognizer (toggle). When
+   *  true, classify() invokes classifyWithJev() BEFORE classifyWithLlm(). */
+  private readonly jevEnabled: boolean
+  /** §7.92.3: jev base URL, e.g. `http://127.0.0.1:8001`. */
+  private readonly jevUrl: string
+  /** §7.92.3: jev fetch timeout (ms). */
+  private readonly jevTimeoutMs: number
+  /** §7.92.3: min jev confidence to adopt (else fall through to LLM). */
+  private readonly jevConfidenceThreshold: number
+  /** §7.92.3: jev risk_score gate (>= this → REJECT). */
+  private readonly jevRiskThreshold: number
+  /** §7.92.3: jev intent → realm map (merged with built-in defaults).
+   *  User config OVERRIDES built-in entries with the same key. */
+  private readonly jevIntentMap: Record<string, 'LOCAL' | 'CLOUD' | 'SANITIZED' | 'REJECT'>
   private readonly llm: any
   private readonly auditLog: AuditLike | undefined
   private readonly stats: IntentRouterStats = {
@@ -191,6 +318,21 @@ export class IntentRouterServiceImpl extends Service {
     sanitized: 0,
     sanitizeError: 0,
     sanitizeSkipped: 0,
+    /** §7.92.3 (2026-09-23): jev prefilter counters. jevHit = adopted
+     *  (path: jev-adopt), jevReject = risk-gated REJECT, jevSkip = fell
+     *  through to LLM (low-conf / fallback_llm / unrecognized intent),
+     *  jevError = transport / parse failure (also fell through), jevTimeout
+     *  = subset of jevError where AbortSignal fired. Operators compare
+     *  jevHit / total to gauge the latency savings of the toggle. */
+    jevHit: 0,
+    jevReject: 0,
+    jevSkip: 0,
+    jevError: 0,
+    jevTimeout: 0,
+    /** §7.92.3: cumulative jev fetch latency in ms (response.latency_ms).
+     *  Used to compute average jev latency in ops dashboards without
+     *  parsing JSONL. Reset on restart. */
+    jevLatencyMsTotal: 0,
     /** G9: 10-bucket histogram of LLM confidence values × (accepted | rejected).
      *  Bucket key is `Math.floor(c * 10)` clamped to [0,9]; `conf=0.0` → '0',
      *  `conf=1.0` → '9' (last bucket inclusive). Empty until first
@@ -220,6 +362,16 @@ export class IntentRouterServiceImpl extends Service {
     // §7.58 (2026-09-16): localEntities APPENDED to built-in (not replaced),
     // same safety-net semantics as cloudKeywords.
     this.localEntities = LOCAL_ENTITY_KEYWORDS_DEFAULT.concat(config.localEntities ?? [])
+    // §7.92.3 (2026-09-23): jev config. Toggle defaults false; URL keeps
+    // localhost default for dev rigs. Intent map: user config keys OVERRIDE
+    // built-in entries (Object.assign semantics, not concat) — operators
+    // explicitly declaring `{"订单查询":"LOCAL"}` should win.
+    this.jevEnabled = config.jevEnabled ?? false
+    this.jevUrl = config.jevUrl ?? 'http://127.0.0.1:8001'
+    this.jevTimeoutMs = config.jevTimeoutMs ?? 2500
+    this.jevConfidenceThreshold = config.jevConfidenceThreshold ?? 0.85
+    this.jevRiskThreshold = config.jevRiskThreshold ?? 0.7
+    this.jevIntentMap = { ...JEV_INTENT_MAP_DEFAULT, ...(config.jevIntentMap ?? {}) }
     this.llm = (ctx as any).llm
     this.auditLog = auditLog
   }
@@ -338,6 +490,87 @@ export class IntentRouterServiceImpl extends Service {
     const textPreview = this.redactPreview(effectiveText) ?? `[len=${effectiveText.length}]`
     this.audit('info', 'intent.classify.start', { textLen: effectiveText.length, textPreview, classifier: this.classificationProvider, model: this.classificationModel })
 
+    // §7.92.3 (2026-09-23): jev prefilter. When enabled, runs BEFORE the
+    // LLM classifier so confident jev verdicts (action=execute, conf >=
+    // threshold, risk < threshold) save the 4-30s LLM round-trip. Failure
+    // modes (network, timeout, parse error, low-confidence, unrecognized
+    // intent, fallback_llm) all fall through to classifyWithLlm — jev is a
+    // strictly-OPTIONAL accelerator, never a behavior regression.
+    if (this.jevEnabled) {
+      const jevResult = await this.classifyWithJev(effectiveText, context?.sessionId)
+      if (jevResult.action === 'reject') {
+        // Risk-score gate: security-level audit, count under `rejected`
+        // (and `jevReject` for jev-specific observability).
+        this.stats.rejected++
+        this.stats.jevReject++
+        this.audit('info', 'intent.classify.end', {
+          textLen: effectiveText.length,
+          path: 'jev-reject',
+          category: 'REJECT',
+          confidence: jevResult.confidence,
+          rationale: `jev-risk:${jevResult.riskScore.toFixed(2)}`,
+          durationMs: Date.now() - start,
+          jevLatencyMs: jevResult.latencyMs,
+          jevIntent: jevResult.intent,
+        })
+        return {
+          category: 'REJECT',
+          confidence: jevResult.confidence,
+          targetRealm: 'rejected',
+          rationale: `jev-risk:${jevResult.riskScore.toFixed(2)}`,
+        }
+      }
+      if (jevResult.action === 'adopt' && jevResult.intent) {
+        this.stats.jevHit++
+        // §7.58 entity guardrail: same as LLM path — entities that
+        // resolve only behind LOCAL skills force LOCAL, overriding a
+        // jev-adopted non-LOCAL verdict (e.g. jev returns 'SANITIZED'
+        // for "查我的密盒订单", entity wins → LOCAL). Mirrors the LLM
+        // branch logic so behavior is symmetric across both paths.
+        const adopted = jevResult.intent
+        let finalIntent = adopted
+        if (adopted.category !== 'LOCAL') {
+          const entityHit = this.matchLocalEntity(effectiveText.toLowerCase())
+          if (entityHit !== undefined) {
+            finalIntent = {
+              category: 'LOCAL',
+              confidence: 0.9,
+              targetRealm: 'local',
+              rationale: `override-local-entity:${entityHit}`,
+            }
+            this.audit('warn', 'intent.classify.entity_override', {
+              from: adopted.category,
+              to: 'LOCAL',
+              entity: entityHit,
+              jevIntent: jevResult.jevIntentString,
+              jevConfidence: jevResult.confidence,
+              textLen: effectiveText.length,
+              source: 'jev',
+            })
+          }
+        }
+        this.audit('info', 'intent.classify.end', {
+          textLen: effectiveText.length,
+          path: finalIntent === adopted ? 'jev-adopt' : 'jev-adopt-entity-override',
+          category: finalIntent.category,
+          confidence: finalIntent.confidence,
+          rationale: finalIntent.rationale,
+          durationMs: Date.now() - start,
+          jevLatencyMs: jevResult.latencyMs,
+          jevIntent: jevResult.jevIntentString,
+          jevConfidence: jevResult.confidence,
+        })
+        return finalIntent
+      }
+      // action === 'skip' (low-conf / fallback_llm / unrecognized intent /
+      // transport error / timeout). All already audited inside
+      // classifyWithJev with a specific kind. Count under jevSkip (or
+      // jevError/jevTimeout already incremented inside the helper).
+      if (jevResult.action === 'skip' && jevResult.skipReason !== 'jev-error' && jevResult.skipReason !== 'jev-timeout') {
+        this.stats.jevSkip++
+      }
+    }
+
     // Try LLM classification first
     try {
       const intent = await this.classifyWithLlm(effectiveText, context?.recentMessages, context?.sessionId)
@@ -396,6 +629,262 @@ export class IntentRouterServiceImpl extends Service {
         durationMs: Date.now() - start,
       })
       return intent
+    }
+  }
+
+  /** §7.92.3 (2026-09-23): jev HTTP prefilter. Posts the user query to
+   *  `${this.jevUrl}/predict` and returns one of:
+   *  - `action: 'reject'`  → `risk_score >= jevRiskThreshold` (security-level)
+   *  - `action: 'adopt'`   → `data.action === 'execute'`, confidence ≥
+   *                           threshold, intent string found in jevIntentMap
+   *                           (mapped to realm)
+   *  - `action: 'skip'`    → any other condition (low-conf, fallback_llm,
+   *                           unrecognized intent, transport / parse error).
+   *                           Caller falls through to classifyWithLlm.
+   *
+   *  Failure handling: every error path (timeout, network, parse) is
+   *  audited at warn level and produces `action: 'skip'` — jev being
+   *  unavailable MUST NOT degrade the existing LLM classification path.
+   *  This is the same fail-open contract used by classifyWithLlm's
+   *  classifyWithRules fallback.
+   *
+   *  See ~/work/jev-branch/docs/api_reference.md for the wire spec.
+   *  Implementation notes:
+   *  - Uses global `fetch` (Node ≥18). AbortSignal for timeout.
+   *  - No auth header — jev is local-network by design.
+   *  - `metadata.session_id` for cross-service trace correlation.
+   *  - `lang` hardcoded 'zh' (we don't auto-detect; the operator's UI
+   *    can pass it later if multilingual queries become common). */
+  private async classifyWithJev(text: string, sessionId?: string): Promise<{
+    action: 'reject' | 'adopt' | 'skip'
+    intent?: Intent
+    jevIntentString?: string
+    confidence: number
+    riskScore: number
+    latencyMs: number
+    skipReason?: string
+  }> {
+    const jevStart = Date.now()
+    this.audit('debug', 'intent.jev.start', {
+      textLen: text.length,
+      jevUrl: this.jevUrl,
+      timeoutMs: this.jevTimeoutMs,
+    })
+
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), this.jevTimeoutMs)
+
+    let responseText = ''
+    let parsed: any = null
+    try {
+      const r = await fetch(`${this.jevUrl}/predict`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          query: text,
+          lang: 'zh',
+          metadata: sessionId ? { session_id: sessionId } : {},
+        }),
+        signal: controller.signal,
+      })
+      if (!r.ok) {
+        this.stats.jevError++
+        this.audit('warn', 'intent.jev.error', {
+          httpStatus: r.status,
+          latencyMs: Date.now() - jevStart,
+        })
+        return { action: 'skip', confidence: 0, riskScore: 0, latencyMs: Date.now() - jevStart, skipReason: 'jev-error' }
+      }
+      responseText = await r.text()
+      try {
+        parsed = JSON.parse(responseText)
+      } catch (parseErr: any) {
+        this.stats.jevError++
+        this.audit('warn', 'intent.jev.error', {
+          reason: 'parse-failure',
+          error: parseErr?.message ?? String(parseErr),
+          latencyMs: Date.now() - jevStart,
+        })
+        return { action: 'skip', confidence: 0, riskScore: 0, latencyMs: Date.now() - jevStart, skipReason: 'jev-error' }
+      }
+    } catch (err: any) {
+      const isAbort = err?.name === 'AbortError' || controller.signal.aborted
+      const latencyMs = Date.now() - jevStart
+      if (isAbort) this.stats.jevTimeout++
+      else this.stats.jevError++
+      this.audit('warn', isAbort ? 'intent.jev.timeout' : 'intent.jev.error', {
+        latencyMs,
+        timeoutMs: this.jevTimeoutMs,
+        error: err?.message ?? String(err),
+      })
+      return {
+        action: 'skip',
+        confidence: 0,
+        riskScore: 0,
+        latencyMs,
+        skipReason: isAbort ? 'jev-timeout' : 'jev-error',
+      }
+    } finally {
+      clearTimeout(timer)
+    }
+
+    // Response envelope: {code, message, request_id, data: {...}}
+    // See api_reference §2.1 + §3.2. `code === 0` is the success sentinel.
+    const data = parsed?.data ?? {}
+    const intentStr: string | null = typeof data.intent === 'string' ? data.intent : null
+    const confidence = typeof data.confidence === 'number' ? Math.max(0, Math.min(1, data.confidence)) : 0
+    const riskScore = typeof data.risk_score === 'number' ? Math.max(0, Math.min(1, data.risk_score)) : 0
+    const dataAction: string = typeof data.action === 'string' ? data.action : ''
+    const latencyMs = (typeof data.latency_ms === 'number' ? data.latency_ms : Date.now() - jevStart)
+
+    this.stats.jevLatencyMsTotal += latencyMs
+    this.audit('debug', 'intent.jev.response', {
+      code: parsed?.code,
+      intent: intentStr,
+      confidence,
+      riskScore,
+      action: dataAction,
+      latencyMs,
+    })
+
+    // Risk gate: high-risk queries short-circuit to REJECT before any
+    // LLM call (security-first; user explicitly chose this in plan Q2).
+    if (riskScore >= this.jevRiskThreshold) {
+      this.audit('security', 'intent.rules.rejected', {
+        source: 'jev',
+        intent: intentStr,
+        riskScore,
+        confidence,
+        textLen: text.length,
+      })
+      return {
+        action: 'reject',
+        confidence,
+        riskScore,
+        latencyMs,
+        jevIntentString: intentStr ?? undefined,
+      }
+    }
+
+    // Skip conditions: jev's own verdict says fall through, OR our
+    // thresholds aren't met, OR the intent string isn't recognized.
+    const FALLBACK_INTENTS = new Set(['闲聊', '其他', 'chat', 'other', 'fallback', 'null'])
+    if (dataAction === 'fallback_llm') {
+      this.audit('info', 'intent.jev.fallback_intent', {
+        intent: intentStr,
+        confidence,
+        latencyMs,
+      })
+      return {
+        action: 'skip',
+        confidence,
+        riskScore,
+        latencyMs,
+        jevIntentString: intentStr ?? undefined,
+        skipReason: 'fallback-llm',
+      }
+    }
+    if (confidence < this.jevConfidenceThreshold) {
+      this.audit('info', 'intent.jev.low_confidence', {
+        intent: intentStr,
+        confidence,
+        threshold: this.jevConfidenceThreshold,
+        latencyMs,
+      })
+      return {
+        action: 'skip',
+        confidence,
+        riskScore,
+        latencyMs,
+        jevIntentString: intentStr ?? undefined,
+        skipReason: 'low-confidence',
+      }
+    }
+    if (!intentStr || FALLBACK_INTENTS.has(intentStr)) {
+      this.audit('info', 'intent.jev.fallback_intent', {
+        intent: intentStr,
+        confidence,
+        latencyMs,
+        reason: 'no-intent-or-fallback-intent',
+      })
+      return {
+        action: 'skip',
+        confidence,
+        riskScore,
+        latencyMs,
+        jevIntentString: intentStr ?? undefined,
+        skipReason: 'unrecognized-intent',
+      }
+    }
+
+    // Map intent string → realm. Missing → skip (defensive).
+    const mapped = this.jevIntentMap[intentStr]
+    if (!mapped) {
+      this.audit('info', 'intent.jev.unmapped_intent', {
+        intent: intentStr,
+        confidence,
+        latencyMs,
+      })
+      return {
+        action: 'skip',
+        confidence,
+        riskScore,
+        latencyMs,
+        jevIntentString: intentStr,
+        skipReason: 'unmapped-intent',
+      }
+    }
+
+    // Adopt the verdict. REJECT here is a policy-driven REJECT (not the
+    // risk-score gate handled above) — for intents like '投诉' / 'legal'
+    // mapped to REJECT in JEV_INTENT_MAP_DEFAULT. Security-level audit
+    // mirrors the risk-gate path so SIEM picks both up uniformly.
+    const targetRealm = mapped === 'LOCAL' ? 'local'
+      : mapped === 'CLOUD' ? 'cloud'
+      : mapped === 'REJECT' ? 'rejected'
+      : 'sanitized'
+    if (mapped === 'REJECT') {
+      this.audit('security', 'intent.rules.rejected', {
+        source: 'jev',
+        intent: intentStr,
+        confidence,
+        riskScore,
+        textLen: text.length,
+      })
+      return {
+        action: 'reject',
+        intent: {
+          category: 'REJECT',
+          confidence,
+          targetRealm,
+          rationale: `jev-intent:${intentStr}`,
+        },
+        jevIntentString: intentStr,
+        confidence,
+        riskScore,
+        latencyMs,
+      }
+    }
+    const adoptedIntent: Intent = {
+      category: mapped,
+      confidence,
+      targetRealm,
+      rationale: `jev-intent:${intentStr}`,
+    }
+    this.audit('info', 'intent.jev.adopt', {
+      intent: intentStr,
+      realm: mapped,
+      confidence,
+      riskScore,
+      latencyMs,
+    })
+    return {
+      action: 'adopt',
+      intent: adoptedIntent,
+      jevIntentString: intentStr,
+      confidence,
+      riskScore,
+      latencyMs,
     }
   }
 
@@ -884,6 +1373,30 @@ export interface IntentRouterStats {
   sanitizeError: number
   /** CLOUD realm but no sanitizer handle mounted (fail-closed → throws). */
   sanitizeSkipped: number
+  /** §7.92.3 (2026-09-23): jev verdict ADOPTED (path: jev-adopt). Sum
+   *  with `llmHit + ruleHit + defaultHit + jevHit` to verify all paths
+   *  hit a final verdict. Compare `jevHit / total` to estimate latency
+   *  savings from the toggle (every jevHit replaces a 4-30s LLM call
+   *  with a ~150ms jev call). */
+  jevHit: number
+  /** §7.92.3: jev risk-gated REJECT (risk_score >= threshold). Subset
+   *  of `rejected`. */
+  jevReject: number
+  /** §7.92.3: jev SKIPPED to LLM (low-conf / fallback_llm / unmapped).
+   *  Distinct from jevError (transport failure) — skip means jev
+   *  worked fine, just deferred to LLM for quality reasons. */
+  jevSkip: number
+  /** §7.92.3: jev transport / parse failure. Counts alongside jevSkip
+   *  in classify()'s tally but operators triage them separately:
+   *  jevError rate climbing → jev service health issue, jevSkip rate
+   *  climbing → jev's intent set doesn't match our traffic. */
+  jevError: number
+  /** §7.92.3: subset of jevError where AbortSignal fired. */
+  jevTimeout: number
+  /** §7.92.3: cumulative jev `data.latency_ms` sum (ms). Use with
+   *  `getStats()` calls to compute average jev latency without
+   *  parsing JSONL. */
+  jevLatencyMsTotal: number
   /** G9: 10-bucket histogram of LLM confidence values × (accepted | rejected).
    *  Bucket key is `String(Math.floor(c * 10))` clamped to [0,9]. Use
    *  `getStats()` to obtain a deep copy. Empty until the first parsed

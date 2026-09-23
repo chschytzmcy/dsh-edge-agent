@@ -2368,4 +2368,348 @@ describe('intent-router', () => {
     assert.equal(intent.category, 'CLOUD', 'non-text-delta chunks should be ignored')
     assert.equal(intent.confidence, 0.8)
   })
+
+  // ─── §7.92.3 jev prefilter ─────────────────────────────────────────────
+
+  /** Build a successful jev /predict response body. */
+  function jevResp(data: Partial<{ intent: string | null; confidence: number; risk_score: number; action: string; latency_ms: number }>): any {
+    return {
+      code: 0,
+      message: 'ok',
+      request_id: 'r-test-001',
+      data: {
+        intent: data.intent ?? null,
+        confidence: data.confidence ?? 0,
+        risk_score: data.risk_score ?? 0,
+        lang: 'zh',
+        lang_confidence: 0.99,
+        engine: 'laya-multilingual',
+        action: data.action ?? 'execute',
+        latency_ms: data.latency_ms ?? 87,
+        top_probabilities: { [data.intent ?? '其他']: data.confidence ?? 0 },
+        error: null,
+        metadata: {},
+      },
+    }
+  }
+
+  /** Mock global fetch with a fixed Response. Records the last call. */
+  function mockFetchOk(body: any): { calls: Array<{ url: string; init: any }> } {
+    const calls: Array<{ url: string; init: any }> = []
+    const orig = (globalThis as any).fetch
+    ;(globalThis as any).fetch = async (url: string, init: any) => {
+      calls.push({ url, init })
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify(body),
+        json: async () => body,
+      }
+    }
+    return {
+      calls,
+      restore: () => { (globalThis as any).fetch = orig },
+    }
+  }
+
+  function mockFetchError(status: number, bodyText = ''): { restore: () => void } {
+    const orig = (globalThis as any).fetch
+    ;(globalThis as any).fetch = async (_url: string, _init: any) => ({
+      ok: false,
+      status,
+      text: async () => bodyText,
+    })
+    return { restore: () => { (globalThis as any).fetch = orig } }
+  }
+
+  function mockFetchAbort(): { restore: () => void } {
+    const orig = (globalThis as any).fetch
+    ;(globalThis as any).fetch = async (_url: string, init: any) => {
+      // Honor AbortSignal: throw DOMException AbortError if already aborted.
+      if (init?.signal?.aborted) {
+        const e: any = new Error('aborted')
+        e.name = 'AbortError'
+        throw e
+      }
+      // Listen for abort.
+      await new Promise((resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => {
+          const e: any = new Error('aborted')
+          e.name = 'AbortError'
+          reject(e)
+        })
+        setTimeout(resolve, 5000)
+      })
+      return { ok: true, status: 200, text: async () => '{}' }
+    }
+    return { restore: () => { (globalThis as any).fetch = orig } }
+  }
+
+  it('§7.92.3: jev disabled → no fetch call (toggle off)', async () => {
+    const mock = mockFetchOk(jevResp({ intent: '订单查询', confidence: 0.95, risk_score: 0.1, action: 'execute' }))
+    try {
+      const mockCtx = { reflect: { provide: () => {} }, llm: null } as any
+      const service = new IntentRouterServiceImpl(mockCtx, {
+        defaultCategory: 'SANITIZED',
+        classificationProvider: 'local-llm',
+        confidenceThreshold: 0.6,
+        jevEnabled: false,
+      })
+
+      const intent = await service.classify('查一下我的订单')
+      assert.equal(intent.category, 'SANITIZED', 'defaultCategory wins when jev disabled')
+      assert.match(intent.rationale, /default:/u)
+      assert.equal(mock.calls.length, 0, 'fetch should not be called when jev is disabled')
+      const stats = service.getStats()
+      assert.equal(stats.jevHit, 0)
+      assert.equal(stats.jevSkip, 0)
+    } finally {
+      mock.restore()
+    }
+  })
+
+  it('§7.92.3: jev enabled + execute + SANITIZED intent → ADOPT (no LLM call)', async () => {
+    const mock = mockFetchOk(jevResp({ intent: '订单查询', confidence: 0.95, risk_score: 0.1, action: 'execute' }))
+    try {
+      const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+      const mockCtx = {
+        reflect: { provide: () => {} },
+        llm: null, // proves jev short-circuits BEFORE LLM
+      } as any
+      const service = new IntentRouterServiceImpl(mockCtx, {
+        defaultCategory: 'CLOUD',
+        classificationProvider: 'local-llm',
+        confidenceThreshold: 0.6,
+        jevEnabled: true,
+        jevUrl: 'http://127.0.0.1:8001',
+        jevConfidenceThreshold: 0.85,
+      }, audit as any)
+
+      const intent = await service.classify('查一下我的订单')
+      assert.equal(intent.category, 'SANITIZED')
+      assert.equal(intent.targetRealm, 'sanitized')
+      assert.match(intent.rationale, /^jev-intent:订单查询$/u)
+      assert.equal(intent.confidence, 0.95)
+
+      assert.equal(mock.calls.length, 1, 'fetch should be called once')
+      const body = JSON.parse(mock.calls[0].init.body)
+      assert.equal(body.query, '查一下我的订单')
+      assert.equal(body.lang, 'zh')
+
+      const stats = service.getStats()
+      assert.equal(stats.jevHit, 1)
+      assert.equal(stats.jevSkip, 0)
+      assert.equal(stats.llmHit, 0, 'LLM should NOT have been called')
+
+      const endEntry = audit.entries.find((e: any) => e.kind === 'intent.classify.end')
+      assert.equal(endEntry.payload.path, 'jev-adopt')
+      assert.equal(endEntry.payload.jevIntent, '订单查询')
+    } finally {
+      mock.restore()
+    }
+  })
+
+  it('§7.92.3: jev enabled + risk_score >= threshold → REJECT (security)', async () => {
+    const mock = mockFetchOk(jevResp({ intent: '投诉', confidence: 0.92, risk_score: 0.85, action: 'execute' }))
+    try {
+      const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+      const mockCtx = { reflect: { provide: () => {} }, llm: null } as any
+      const service = new IntentRouterServiceImpl(mockCtx, {
+        defaultCategory: 'CLOUD',
+        classificationProvider: 'local-llm',
+        confidenceThreshold: 0.6,
+        jevEnabled: true,
+        jevRiskThreshold: 0.7,
+      }, audit as any)
+
+      const intent = await service.classify('我要投诉你们的服务')
+      assert.equal(intent.category, 'REJECT')
+      assert.equal(intent.targetRealm, 'rejected')
+      assert.match(intent.rationale, /^jev-risk:/u)
+
+      const stats = service.getStats()
+      assert.equal(stats.jevReject, 1)
+      assert.equal(stats.rejected, 1)
+      assert.equal(stats.llmHit, 0, 'LLM should NOT have been called on risk-gate')
+
+      const rejectAudit = audit.entries.find((e: any) => e.kind === 'intent.rules.rejected' && e.payload?.source === 'jev')
+      assert.ok(rejectAudit, 'intent.rules.rejected (source=jev) audit should fire')
+      assert.equal(rejectAudit.level, 'security')
+    } finally {
+      mock.restore()
+    }
+  })
+
+  it('§7.92.3: jev enabled + action=fallback_llm → fall through to LLM', async () => {
+    const mock = mockFetchOk(jevResp({ intent: '闲聊', confidence: 0.4, risk_score: 0.05, action: 'fallback_llm' }))
+    try {
+      const verdict = JSON.stringify({ category: 'CLOUD', confidence: 0.85 })
+      const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+      const mockCtx = {
+        reflect: { provide: () => {} },
+        llm: fakeLlm(chunksFromText(verdict)),
+      } as any
+      const service = new IntentRouterServiceImpl(mockCtx, {
+        defaultCategory: 'CLOUD',
+        classificationProvider: 'local-llm',
+        confidenceThreshold: 0.6,
+        jevEnabled: true,
+        jevConfidenceThreshold: 0.85,
+      }, audit as any)
+
+      const intent = await service.classify('你好')
+      assert.equal(intent.category, 'CLOUD', 'LLM verdict adopted after jev fall-through')
+      assert.match(intent.rationale, /^llm-classified/u)
+
+      const stats = service.getStats()
+      assert.equal(stats.jevSkip, 1, 'jevSkip counter incremented')
+      assert.equal(stats.llmHit, 1, 'LLM ran after jev skipped')
+    } finally {
+      mock.restore()
+    }
+  })
+
+  it('§7.92.3: jev enabled + HTTP 5xx → fall through (audit jev.error)', async () => {
+    const mock = mockFetchError(500, 'internal error')
+    try {
+      const verdict = JSON.stringify({ category: 'LOCAL', confidence: 0.9 })
+      const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+      const mockCtx = {
+        reflect: { provide: () => {} },
+        llm: fakeLlm(chunksFromText(verdict)),
+      } as any
+      const service = new IntentRouterServiceImpl(mockCtx, {
+        defaultCategory: 'CLOUD',
+        classificationProvider: 'local-llm',
+        confidenceThreshold: 0.6,
+        jevEnabled: true,
+      }, audit as any)
+
+      const intent = await service.classify('读取文件')
+      assert.equal(intent.category, 'LOCAL')
+      assert.match(intent.rationale, /^llm-classified/u)
+
+      const stats = service.getStats()
+      assert.equal(stats.jevError, 1)
+      assert.equal(stats.jevTimeout, 0)
+      const jevErr = audit.entries.find((e: any) => e.kind === 'intent.jev.error')
+      assert.ok(jevErr, 'intent.jev.error audit should fire')
+      assert.equal(jevErr.level, 'warn')
+      assert.equal(jevErr.payload.httpStatus, 500)
+    } finally {
+      mock.restore()
+    }
+  })
+
+  it('§7.92.3: jev enabled + AbortError → fall through (audit jev.timeout)', async () => {
+    const mock = mockFetchAbort()
+    try {
+      const verdict = JSON.stringify({ category: 'CLOUD', confidence: 0.85 })
+      const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+      const mockCtx = {
+        reflect: { provide: () => {} },
+        llm: fakeLlm(chunksFromText(verdict)),
+      } as any
+      const service = new IntentRouterServiceImpl(mockCtx, {
+        defaultCategory: 'CLOUD',
+        classificationProvider: 'local-llm',
+        confidenceThreshold: 0.6,
+        jevEnabled: true,
+        jevTimeoutMs: 50, // tiny timeout so abort fires fast
+      }, audit as any)
+
+      const intent = await service.classify('你好')
+      assert.equal(intent.category, 'CLOUD')
+
+      const stats = service.getStats()
+      assert.equal(stats.jevTimeout, 1)
+      assert.equal(stats.jevError, 0, 'timeout is mutually exclusive with jevError (matches LLM pattern)')
+      const jevTimeout = audit.entries.find((e: any) => e.kind === 'intent.jev.timeout')
+      assert.ok(jevTimeout, 'intent.jev.timeout audit should fire')
+      assert.equal(jevTimeout.level, 'warn')
+    } finally {
+      mock.restore()
+    }
+  })
+
+  it('§7.92.3: jev user-config intent map overrides built-in', async () => {
+    // User config maps '订单查询' → LOCAL (overrides built-in SANITIZED).
+    const mock = mockFetchOk(jevResp({ intent: '订单查询', confidence: 0.95, risk_score: 0.1, action: 'execute' }))
+    try {
+      const mockCtx = { reflect: { provide: () => {} }, llm: null } as any
+      const service = new IntentRouterServiceImpl(mockCtx, {
+        defaultCategory: 'CLOUD',
+        classificationProvider: 'local-llm',
+        confidenceThreshold: 0.6,
+        jevEnabled: true,
+        jevIntentMap: { '订单查询': 'LOCAL' },
+      })
+
+      const intent = await service.classify('查一下我的订单')
+      assert.equal(intent.category, 'LOCAL', 'user-config map overrides built-in')
+      assert.equal(intent.targetRealm, 'local')
+    } finally {
+      mock.restore()
+    }
+  })
+
+  it('§7.92.3: jev enabled + entity guardrail overrides jev-adopted SANITIZED', async () => {
+    // jev says SANITIZED for '订单查询', but text contains '密盒' which
+    // forces LOCAL via the §7.58 entity guardrail (matches the LLM-path
+    // override behavior so the two paths are symmetric).
+    const mock = mockFetchOk(jevResp({ intent: '订单查询', confidence: 0.95, risk_score: 0.1, action: 'execute' }))
+    try {
+      const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+      const mockCtx = { reflect: { provide: () => {} }, llm: null } as any
+      const service = new IntentRouterServiceImpl(mockCtx, {
+        defaultCategory: 'CLOUD',
+        classificationProvider: 'local-llm',
+        confidenceThreshold: 0.6,
+        jevEnabled: true,
+      }, audit as any)
+
+      const intent = await service.classify('查一下密盒的订单')
+      assert.equal(intent.category, 'LOCAL', 'entity guardrail overrides jev SANITIZED')
+      assert.match(intent.rationale, /^override-local-entity:密盒$/u)
+
+      const endEntry = audit.entries.find((e: any) => e.kind === 'intent.classify.end')
+      assert.equal(endEntry.payload.path, 'jev-adopt-entity-override')
+      const overrideAudit = audit.entries.find((e: any) => e.kind === 'intent.classify.entity_override' && e.payload?.source === 'jev')
+      assert.ok(overrideAudit, 'entity_override audit (source=jev) should fire')
+      assert.equal(overrideAudit.level, 'warn')
+    } finally {
+      mock.restore()
+    }
+  })
+
+  it('§7.92.3: jev unmapped intent → skip to LLM (defensive)', async () => {
+    // jev returns a high-confidence verdict for an intent string that's
+    // not in JEV_INTENT_MAP_DEFAULT and not in user override → LLM.
+    const mock = mockFetchOk(jevResp({ intent: 'foobar', confidence: 0.95, risk_score: 0.1, action: 'execute' }))
+    try {
+      const verdict = JSON.stringify({ category: 'CLOUD', confidence: 0.85 })
+      const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+      const mockCtx = {
+        reflect: { provide: () => {} },
+        llm: fakeLlm(chunksFromText(verdict)),
+      } as any
+      const service = new IntentRouterServiceImpl(mockCtx, {
+        defaultCategory: 'CLOUD',
+        classificationProvider: 'local-llm',
+        confidenceThreshold: 0.6,
+        jevEnabled: true,
+      }, audit as any)
+
+      const intent = await service.classify('unknown intent')
+      assert.equal(intent.category, 'CLOUD')
+      assert.match(intent.rationale, /^llm-classified/u)
+      const stats = service.getStats()
+      assert.equal(stats.jevSkip, 1)
+      assert.equal(stats.llmHit, 1)
+      const unmapped = audit.entries.find((e: any) => e.kind === 'intent.jev.unmapped_intent')
+      assert.ok(unmapped)
+    } finally {
+      mock.restore()
+    }
+  })
 })
