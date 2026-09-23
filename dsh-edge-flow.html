@@ -716,7 +716,7 @@ on(<span class="s">'session/event'</span>, (session, event) => {
         <div class="stage-axis">t = T₁.5<br>prompt</div>
         <div class="stage-body">
           <div class="stage-title">②.⑤ system-prompt/assemble <span class="badge badge-waterfall">waterfall × 1</span></div>
-          <div class="stage-desc">dsh 在每次 step 把 tools schema 拼到 system prompt 前。waterfall → 可改 result.tools(<b>在 deepFreeze 之前</b>)、可 reject、可 throw。<b>Layer 1.5 替换层 — 比 Layer 1 早一刀的工具 schema 过滤</b>(§7.91,2026-09-21)。</div>
+          <div class="stage-desc">dsh 在每次 step 把 tools schema 拼到 system prompt 前。waterfall → 可改 result.tools(<b>在 deepFreeze 之前</b>)、可 reject、可 throw。<b>Layer 1.5 替换层 — 比 Layer 1 早一刀的工具 schema 过滤</b>(§7.91 引入,2026-09-21;§7.92.2 修 cordis proxy silent throw 装死 1 天根因 + 双向 verify,2026-09-22)。</div>
           <div class="plugin-list">
             <div class="plugin">
               <div class="plugin-row">
@@ -742,6 +742,22 @@ on(<span class="s">'session/event'</span>, (session, event) => {
                 </div>
                 <div class="impact-block">
                   <b>→ 对后面的影响</b>:<b>① schema 隐藏</b>④ llm/stream 拿到的 <code>tools</code> 数组里根本没有越界 schema → LLM 在工具列表里看不到 → 不会主动调;<b>② freeze-safe</b>这层在 dsh-agent-loop:773 <code>markAgentLoopRequest(deepFreeze({...}))</code> 之前运行 → 改 <code>result.tools</code> 是普通数组改写(deepFreeze 不会拦到本 listener);<b>③ fail-open</b><code>agentRealm === undefined</code>(http-api 还没 setSessionRealm)→ Layer 3 兜底;<b>④ 三层协同</b>Layer 1(② pre-step 删 <code>&lt;available_skills&gt;</code>)→ Layer 1.5(②.⑤ 删 tools schema)→ Layer 3(⑤ tools/pre-execute 拒执行)— 任何一道独立可挡。<b>log</b>:filter 变更时打 <code>[realm-skill-bridge] assemble filter sessionId=... realm=... removedCount=N removed=tool1,tool2</code>。
+                </div>
+                <div class="compare" style="margin-top: 10px;">
+                  <div class="compare-col waterfall">
+                    <div class="compare-label">§7.92.2 双向 verify · CLOUD 方向</div>
+                    <div class="compare-text">
+                      <code>sessionId=smoke-A-CLOUD realm=CLOUD<br>removedCount=4 removed=edit,glob,grep,write</code><br>
+                      <span style="color: var(--ink-mute); font-size: 11.5px;">query="今天有什么科技新闻" → 删 LOCAL-only 工具,LLM 只看到 web_search 等云端工具</span>
+                    </div>
+                  </div>
+                  <div class="compare-col emit">
+                    <div class="compare-label">§7.92.2 双向 verify · LOCAL 方向</div>
+                    <div class="compare-text">
+                      <code>sessionId=smoke-LOCAL-A realm=LOCAL<br>removedCount=2 removed=web_fetch,web_search</code><br>
+                      <span style="color: var(--ink-mute); font-size: 11.5px;">query="查看 /tmp 目录下的文件" → 删 CLOUD-only 工具,LLM 只看到 bash/read/edit 等本地工具</span>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -958,6 +974,7 @@ on(<span class="s">'session/event'</span>, (session, event) => {
         <li><b>3 类观测</b>:<code>audit.jsonl</code>(行为审计,所有阶段共写) / <code>ops.jsonl</code>(耗时/状态,⑥ + ⑦)/ file-logger(运行时日志,所有阶段共写)。</li>
         <li><b>1 条 REJECT 标签流</b>:② input-guard throw 前贴 <code>_edgeRejection</code> → dsh-agent-loop 翻译丢 reason → ⑦ http-api 读标签转 4xx(reason 靠小抄跨过翻译断层)。</li>
         <li><b>4 个路由决策</b>:② 分类(sanitize)→ ③ 切 provider(sanitize 失败)→ ⑤ 限速(超 N 次)→ ⑦ 转 HTTP 状态码(REJECT)。每一刀都改请求的物理路径。</li>
+        <li><b>②.⑤ §7.92.2 双向 verify 通过</b>:CLOUD 方向 removedCount=4 (edit/glob/grep/write) + LOCAL 方向 removedCount=2 (web_fetch/web_search)。SANITIZED assemble 缺席(filterToolsField fail-open)+ REJECT 路径 http-api short-circuit(不进 input-guard 管线)— 4/4 realm 行为都符合设计契约。</li>
       </ul>
     </div>
 
@@ -1065,7 +1082,7 @@ on(<span class="s">'session/event'</span>, (session, event) => {
           <div class="hook-sub">waterfall 模式 · Layer 1.5</div>
         </div>
         <div class="hook-desc">
-          <b>realm-skill-bridge</b>:Layer 1.5 替换层 — 在 dsh 把 tools schema 拼进 system prompt 之前,<code>filterToolsField(tools, realm)</code> 删掉越界 schema → return 改写后的 result(<b>在 dsh-agent-loop deepFreeze 之前</b>,freeze 拦不到本 listener)。fail-open:<code>getSessionRealm === undefined</code> → return 原 result,Layer 3 兜底。详见 §7.91(2026-09-21)。
+          <b>realm-skill-bridge</b>:Layer 1.5 替换层 — 在 dsh 把 tools schema 拼进 system prompt 之前,<code>filterToolsField(tools, realm)</code> 删掉越界 schema → return 改写后的 result(<b>在 dsh-agent-loop deepFreeze 之前</b>,freeze 拦不到本 listener)。fail-open:<code>getSessionRealm === undefined</code> → return 原 result,Layer 3 兜底。<b>双向</b>:CLOUD→删 edit/glob/grep/write(LOCAL-only);LOCAL→删 web_fetch/web_search(CLOUD-only)。<b>§7.92.2 教训</b>:<code>cordis.inject</code> 必须显式声明 <code>edgeTools</code>+<code>tools</code>(Proxy 静默 throw "cannot get property X without inject"),原 silent catch 装死 1 天,改 <code>log.warn</code> 兜底。详见 §7.91(2026-09-21)+§7.92.2(2026-09-22)。
         </div>
         <div class="hook-mode"><span class="badge badge-waterfall">waterfall</span></div>
       </div>
@@ -1308,7 +1325,8 @@ on(<span class="s">'session/event'</span>, (session, event) => {
   </section>
 
   <footer>
-    dsh-edge-agent · 15 插件 / 9 事件订阅点 / 5 waterfall + 4 emit / 13 service + 3 provider
+    dsh-edge-agent · 15 插件 / 9 事件订阅点 / 5 waterfall + 4 emit / 13 service + 3 provider<br>
+    §7.92.2 verified: ②.⑤ Layer 1.5 bidirectional (CLOUD removedCount=4 · LOCAL removedCount=2) + SANITIZED fail-open + REJECT short-circuit
   </footer>
 </div>
 </body>
