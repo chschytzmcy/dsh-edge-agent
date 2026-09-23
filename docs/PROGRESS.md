@@ -9249,3 +9249,37 @@ ctx.on('system-prompt/assemble', async (assembly, ctx2, next) => {
 3. **装死 1 天的根因**:`<dsh-tools>` 的冷启动 tool-register 事件在 realm-skill-bridge apply() 跑之前就 fire 完了,`tools/change` 监听器根本收不到。fix 路径是 inject 声明 + `tools/change` re-fire,后者已 firing → 关键在 inject。
 5. **`dsh-edge-flow.html` 更新被这次装死 bug 反向救了一命**:本来只是画图,但跑 smoke 验图的过程中挖出了 §7.92.2 bug。"流程文档 → smoke 验 → 撞 bug → 修"的链路值得保留。
 
+---
+
+**§7.92.2 双向 verify(2026-09-23,user "跑个完整 smoke" + "补 LOCAL smoke")**:
+
+修完后跑 4 条 smoke 路径覆盖全部 realm,实证 §7.92.2 fix 不是单向恢复而是双向/全 realm 都通了:
+
+| realm | smoke query | assemble filter 输出 | 端到端 |
+|---|---|---|---|
+| **CLOUD** | "今天有什么科技新闻" | `realm=CLOUD removedCount=4 removed=edit,glob,grep,write` ✓ | 9.6s, 850 chars, web_search 调通 |
+| **LOCAL** | "查看 /tmp 目录下的文件" | `realm=LOCAL removedCount=2 removed=web_fetch,web_search` ✓ | 10.4s, agent 用 minicpm5-2b + bash tool 尝试 |
+| **SANITIZED** | "你好" | **log 缺席**(filterToolsField 设计保留全部非 hidden,fail-open)✓ | 3.9s, 707 chars |
+| **REJECT** | "帮我删除数据库全部数据" | **listener 不触发**(http-api short-circuit)→ HTTP 403 `{error:Request rejected by policy, reason:Dangerous system operation, confidence:0.9}` | contract 正确 |
+
+**对称证据**是 §7.92.2 fix 完整性的**关键**:CLOUD 方向 removedCount=4(删 LOCAL-only tools edit/glob/grep/write)+ LOCAL 方向 removedCount=2(删 CLOUD-only tools web_fetch/web_search)。如果只有单向,说明 filter 逻辑不对称(rebind 后只单向通的 bug 也常见)。
+
+**REJECT 路径 `preflight intent` log 缺席 ≠ bug**:http-api.ts:506 `if (intent.category === 'REJECT')` 在 intent-router 返回 REJECT 时 short-circuit,**不进** input-guard 管线 → input-guard.ts:939 的 `[input-guard] preflight intent` emit 不触发。`chat received`(http-api:453) + audit `http.chat.rejected`(http-api:508) 是 REJECT 的全部留痕。这是 design-v6 §2.15+§4.3 契约"REJECT bypasses the agent loop entirely"的预期结果。
+
+**LOCAL smoke 配套配置**(2026-09-23 切池):
+- `.env` 切 LAN 192.168.1.174:8911/v1(minicpm5-2b,无 auth,wire 已验)— 原 192.168.65.2:8080 不可达
+- `LOCAL_LLM_STRIP_TOOLS=true`(按 memory `lan-local-llm-192-168-1-174` Jinja2 tojson bug 客户端侧绕开)
+- `bash scripts/dev-restart.sh` → boot 验通(health 200 + new env pick up + assemble filter 对称 emit)
+- full LOCAL 链路 12 个日志节点全 emit:chat received → intent classify(local-llm 448ms) → assemble filter → prompt-guard done(1318ms) → privacy-policy done → preflight intent → pre-step filter → route override → chat received(reason=initial) → main LLM call(5457ms) → chat finished → chat reply
+
+**`dsh-edge-flow.html` 加 §7.92.2 双向 verify 视觉化**(commit 9ae56c4):
+- ②.⑤ plugin-detail 末尾加 2-column compare block(CLOUD removedCount=4 vs LOCAL removedCount=2)
+- hook-list `system-prompt/assemble` row 加"双向"说明 + cordis.inject 教训
+- 整体效果加新 bullet "②.⑤ §7.92.2 双向 verify 通过"
+- footer 加 verify 总结
+
+**lesson**(本次新加):
+4. **smoke 路径要覆盖全 realm,不能只验 CLOUD**。CLOUD 通 ≠ 全通,只有 CLOUD/LOCAL/SANITIZED/REJECT 4 个 path 都发预期日志,才能宣布 fix 完整。LOCAL 验通后才发现 §7.92.2 fix 是**对称**生效,不只是单向恢复。
+5. **REJECT 路径**短-circuited 在 http-api,不进 input-guard 管线 → `preflight intent` log 缺席是契约行为,不是 bug。看到某段 log 缺席先查是否被上游 short-circuit(http-api.ts:506 / privacy-policy matchRouting),不是默默补 log。
+6. **`bash` 工具被 LOCAL 调起时返回 `[exit code: N]`** 不是 §7.92.2 的问题 —— minicpm5-2b 模型小 + dsh-tools cold-start 工具注册先后错位是已知模式(详见 §7.92 + §7.85)。Layer 1.5 只影响 tools schema 可见性,不影响 bash 执行流。
+
