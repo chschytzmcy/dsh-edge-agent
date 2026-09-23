@@ -9283,3 +9283,34 @@ ctx.on('system-prompt/assemble', async (assembly, ctx2, next) => {
 5. **REJECT 路径**短-circuited 在 http-api,不进 input-guard 管线 → `preflight intent` log 缺席是契约行为,不是 bug。看到某段 log 缺席先查是否被上游 short-circuit(http-api.ts:506 / privacy-policy matchRouting),不是默默补 log。
 6. **`bash` 工具被 LOCAL 调起时返回 `[exit code: N]`** 不是 §7.92.2 的问题 —— minicpm5-2b 模型小 + dsh-tools cold-start 工具注册先后错位是已知模式(详见 §7.92 + §7.85)。Layer 1.5 只影响 tools schema 可见性,不影响 bash 执行流。
 
+---
+
+**§7.92.2 dsh-edge-flow.html 描述对齐(2026-09-23,user "分析下 dsh-edge-flow.html 里 realm-skill-bridge 的工作内容是否准确")**:
+
+用户让跨 `dsh-edge-flow.html` 跟 `src/dsh-adapter/realm-skill-bridge.ts` 逐条对照,挖出 **6 处不准确 / 误导**,commit `97597c0`:
+
+| # | 位置 | HTML 原描述 | source 真实 | 修正 |
+|---|---|---|---|---|
+| 1 | Stage ② Layer 1 (line 706) | "从 decision.messages 里删掉 `<available_skills>` 条目" | §7.37: `decision.messages` 在 pre-step 时为空(`msgCount=0`),`<available_skills>` 由 dsh-system-prompt 在 hook surface 之下注入,本 listener 看不到 → **Layer 1 实际是 no-op** | 加 §7.37 no-op 提示 + 实战拦截 = Layer 1.5 + Layer 3 双闸 |
+| 2 | Stage ⑤ Layer 3 (line 863) | `return {kind:'reject', reason:'realm-blocked'}` | source line 968: `return { kind: 'deny', reason: denyReason }`(`denyReason` 是动态描述字符串) | `kind:'reject'` → `kind:'deny'`,reason 改为例 `'Tool "X" (LOCAL) not allowed in CLOUD realm'` |
+| 3 | Stage ⑥ tools/result (line 899) | "status / isError / signalAborted / **toolName** / **duration** 写到 **~/.dsh-edge-agent/log/ops.jsonl**" | source line 1002: `[realm-skill-bridge] tool result sessionId=... tool=... status=ok|error|aborted` — **没 duration 字段**,走 `ctx.logger` → file-logger → `dsh-edge-agent.log`,**不是 ops.jsonl** | 删 duration;路径 → `~/.dsh-edge-agent/log/dsh-edge-agent.log`;加 §7.47.6 教训引用 |
+| 4 | Stage ⑧ tagToolsFromConfig (line 1011-1012) | "tools/change 触发 → 遍历当前 dsh-tools 注册表 → 组合 DSH_NATIVE_REALM_MAP + 自己注入的" | source line 434-506: 实际是 **2 步 seed+override**(§7.92.2 修复后)。**先** 从 `ctx.edgeTools.realm/realmOf()` 读 native map;**后** 遍历 `realmConfig.tools` override。**seed 必须先于 override**,user 没写 `skill-realms.json` 时纯 seed 就把 web_search/web_fetch 标 CLOUD → Layer 1.5 立刻可拦 | 改"组合"为"seed+override",标 step ① / ②,加 seed-before-override 必要性 |
+| 5 | 整体效果 (line 972) | "② Layer 1 目录过滤 + ②.⑤ Layer 1.5 schema 过滤 + ⑤ Layer 3 执行拦截。任何一道独立可挡" | Layer 1 §7.37 no-op → "独立可挡"实际只有 1.5 + 3 两道 | 改"3 道独立可挡"为"实战生效双闸 (1.5 + 3) + Layer 1 作 future-proof + §7.45 SANITIZED 兜底" |
+| 6 | Stage ⑦ + hook-list (line 914, 1059, 1310) | `session/event × 3`(stage-title + hook-name + 口诀 1) | source line 1034: 只有 **1 个** `on('session/event', ...)` listener,内部处理 `request/header` + `turn/end` + 兜底无操作 3 种 event type | 改"× 3"为"× 1 listener (3 types)"避免误读 |
+
+**附 realm-skill-bridge.ts:41-46 inject 声明对齐 cordis.patch.yml**:
+```ts
+// §7.92.2: 必须声明全部 soft deps - edgeTools + tools 是 tagToolsFromConfig()
+// 实际读取的 ctx 属性. cordis Proxy 在未声明时静默 throw "cannot get
+// property X without inject", 原 silent catch 吞掉导致 Layer 1.5 装死 1 天.
+export const inject = ['auditLog', 'skills', 'edgeTools', 'tools'] as const
+```
+patch yml line 359 是 `[auditLog, skills, edgeTools, tools]` —— 之前 source 声明漏 `edgeTools` + `tools`,虽然 patch 运行时赢(override),但 source 文件本身仍会误导后来读代码的人。dev-restart.sh boot 验证后 assemble filter 仍然 emit(无回归):`sessionId=smoke-after-inject-fix realm=LOCAL removedCount=2 removed=web_fetch,web_search`。
+
+**verify:build 全过**:adapter-boundary / contract / patch-surface (17 inserts 不变) / plugin-spec (23 adapter plugins) / bundle-mount / HTML validate (`python3 /tmp/validate.py` 报 "Unclosed tags: [], Errors: []")。
+
+**lesson**(本次新加):
+7. **写完代码再画图 ≠ 描述就准**。`dsh-edge-flow.html` 写于 §7.92.1(2026-09-22) 拆 web-search-guard 之后,描述基于当时对 realm-skill-bridge 的理解;但 §7.37 早就判定 Layer 1 no-op,§7.92.2 修复后才补 seed+override,**这些更新没回流到 HTML**。教训:**图跟 code 必须定期 cross-audit**(每改一个 §7.x 章节,顺手 grep 该章节涉及的文件名/函数名,在 HTML 里搜一次看是否还准)。这次没回归测试,要不是 user 让"分析下 ... 是否准确",可能误导很久。
+8. **HTML 描述里魔法字符串(`kind: 'reject'` / `'realm-blocked'` / `ops.jsonl`)要跟 source 1:1**。我之前写文档时为了简洁用了字面量字符串(`'realm-blocked'`),没意识到这是**关键字 grep 锚点** —— 排查 log 时 grep `'reject'` 找不到、grep `'realm-blocked'` 也找不到,debug 时间白白浪费。教训:**log 关键字 / 路径 / kind 字符串在文档里要跟 source 100% 一致**,不能简化或意译。
+9. **session/event × N 这种计数** 在 stage-title 里如果 N != listener 实际数,要写明是"× N types"还是"× N listener"。我之前写 `× 3` 没注单位,读者会以为是 3 个 listener,实际是 1 个 listener × 3 event type。教训:**计数单位要明示**(listener / type / 回调函数 等)。
+
