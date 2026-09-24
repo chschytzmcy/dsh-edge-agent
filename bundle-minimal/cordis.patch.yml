@@ -1,5 +1,7 @@
-# §7.59 极简 bundle 唯一现役派工单(§7.59.5 单源收敛)—— 8 插件 = 7 插件执法
-# 闭包 + file-logger(运维日志落盘)。名字即 loader 指针名(package.json
+# §7.59 极简 bundle 唯一现役派工单(§7.59.5 单源收敛)—— 9 插件 = 8 插件执法
+# 闭包 + file-logger(运维日志落盘)。§7.93.0(2026-09-24):edge-tools-registry
+# 入图 —— realm-skill-bridge §7.92.2(ba192c1)inject 加了 edgeTools,极简图
+# 必须自带 provider,否则 inject 闭包锁红 / rig 静默 pending。名字即 loader 指针名(package.json
 # dsh.bundle.patch = "./cordis.patch.yml"):部署 = 逐字 cp 本文件进嵌套包,零改名。
 # dsh-tui 生产所挂副本与本文件逐字节一致。
 # file-logger 放【第一行】是生产注释(全量 cordis.patch.yml §M6)的硬要求
@@ -8,7 +10,7 @@
 # ⚠️ 宿主前提:file-logger.ts:97 `inject = ['web']`(boot 诊断读
 #   ctx.web.searchProviders)。dsh-tui / web 宿主提供 web service;headless
 #   (dsh-base+dsh-headless)没有 → boot FAIL-LOUD。rig 的 headless 冒烟臂因此
-#   在 deploy 时【运行时派生】7 插件图(剥掉 file-logger 行块),派生物不落仓库。
+#   在 deploy 时【运行时派生】8 插件图(剥掉 file-logger 行块),派生物不落仓库。
 # 运维日志责任分离(两-channel discipline,见 file-logger.ts 头注释):
 #   ops log(本文件带出的)= 过程流水,metadata only;
 #   audit JSONL = 安全账本,redacted 内容 preview。二者互不顶替。
@@ -46,6 +48,16 @@
         classificationModel: no-local-llm-in-graph
     - id: sanitizer-pipeline
       name: '@deepseek-harness-edge-agent/dsh-edge-agent-minimal/sanitizer-pipeline'
+    # NOTE: id 用 edge-tools-registry 而非 `tools` —— 避免与 dsh-base 宿主同名
+    # 冲突(与全量派工单一致)。inject=['auditLog','tools'](tools.ts:25)在
+    # 本图闭合:auditLog 上方已挂,tools 由宿主提供。config 三字段与全量派工单
+    # 逐字一致(也全是代码默认值,显式写出防默认漂移)。
+    - id: edge-tools-registry
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent-minimal/tools'
+      config:
+        defaultRateLimitPerMinute: 60
+        enableToolIsolation: true
+        presentationMode: native
     - id: realm-skill-bridge
       name: '@deepseek-harness-edge-agent/dsh-edge-agent-minimal/realm-skill-bridge'
       config:

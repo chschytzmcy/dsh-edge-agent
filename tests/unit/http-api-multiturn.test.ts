@@ -116,6 +116,11 @@ function buildService(opts: { spy: any; fixtureMap: Map<string, SessionFixture>;
             ctx.emit('session/event', session, turnEnd)
           })
         },
+        // §7.87.6: handleChat 现在 await agent.whenIdle() 当 driver idle 信号,
+        // 再 snapshot events。fake 用 setImmediate(check phase)——必晚于
+        // followup 的 nextTick 事件落盘,复刻真实"turn 完成后才 resolve"时序;
+        // 每次调用新建 promise,多轮复用同一 agent 也各轮独立。
+        whenIdle: () => new Promise<void>(resolve => setImmediate(resolve)),
       }
       const fixture: SessionFixture = {
         agent,

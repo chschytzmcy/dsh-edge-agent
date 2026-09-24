@@ -364,11 +364,23 @@ describe('input-guard ↔ http-api integration', () => {
           ctx.emit('session/event', session, { type: 'turn/end', data: { reason: { kind: 'completed' } } } as any)
         }
 
+        // §7.87.6: handleChat 先调 agent.whenIdle() 再调 followup(),所以
+        // fake 用"预武装 deferred":whenIdle 取当前 promise;followup 捕获它
+        // 并为下一轮重新武装,本轮 async 链 settle 后 resolve 捕获的那个。
+        let idleResolve!: () => void
+        let idlePromise = new Promise<void>(r => { idleResolve = r })
         const handle: any = {
           agent: {
             id: sessionId,
             session,
-            followup,
+            followup: (msg: any) => {
+              const resolveIdle = idleResolve
+              idlePromise = new Promise<void>(r => { idleResolve = r })
+              const p = followup(msg)
+              p.then(resolveIdle, resolveIdle)
+              return p
+            },
+            whenIdle: () => idlePromise,
           },
           handle: { dispose: async () => {} },
         }

@@ -7,14 +7,14 @@
 #
 # 单源派工单(§7.59.5:stage1/1b/2 全部退役,签名逐字存档 docs/PROGRESS.md
 # §7.59 系列·单一存档点):
-#   bundle-minimal/cordis.patch.yml  8 插件实装图 → TUI 形状 profile 逐字拷贝
-#   headless 孪生拿【运行时派生】的 7 插件图(剥 file-logger 行块——它
+#   bundle-minimal/cordis.patch.yml  9 插件实装图 → TUI 形状 profile 逐字拷贝
+#   headless 孪生拿【运行时派生】的 8 插件图(剥 file-logger 行块——它
 #   inject web,headless 必 FAIL-LOUD;派生物只存在于 throwaway 嵌套包)
 #
 # 用法:
 #   scripts/minimal-bundle-rig.sh all                     # build 检查 + 冒烟 + 探针
 #   scripts/minimal-bundle-rig.sh deploy                  # 单源工单落两个 profile(TP 逐字 / CP 派生)
-#   scripts/minimal-bundle-rig.sh assert2                 # 7 插件闭环冒烟(B1-B4,headless)
+#   scripts/minimal-bundle-rig.sh assert2                 # 8 插件闭环冒烟(B1-B4,headless)
 #   scripts/minimal-bundle-rig.sh probes                  # 反事实(P1..P5;P6 只打印说明)
 #   scripts/minimal-bundle-rig.sh chat <文本...>          # 手动冒烟(headless)
 #   scripts/minimal-bundle-rig.sh dump <profile>          # --dump-config 过滤 minimal 行
@@ -108,8 +108,8 @@ ensure_tp(){
 
 # ── 手工四步部署(architecture.md:219-225 逐字等价)─────────────────────────
 deploy(){
-  # §7.59.5 单源:仓库只有一张 cordis.patch.yml(8 插件实装图)。
-  # TP(TUI 形状)拿逐字拷贝;CP(headless 孪生)拿运行时派生 7 插件图。
+  # §7.59.5 单源:仓库只有一张 cordis.patch.yml(9 插件实装图)。
+  # TP(TUI 形状)拿逐字拷贝;CP(headless 孪生)拿运行时派生 8 插件图。
   local file=cordis.patch.yml
   [ -f "$REPO/lib/types/dsh-adapter/prompt-guard.js" ] || die "lib/ 未编译,先跑: make build"
   ensure_cp; ensure_tp
@@ -141,7 +141,7 @@ deploy(){
   # LOCAL/SANITIZED 轮网络工具被 Layer 3 拒绝。每次 deploy 重写,幂等。
   mkdir -p "$MIN_ROOT"
   cp "$SRC/skill-realms.seed.json" "$MIN_ROOT/skill-realms.json"
-  echo "  deployed $file → $TP(逐字 8 插件)+ $CP(派生 7 插件)+ $MIN_ROOT/skill-realms.json"
+  echo "  deployed $file → $TP(逐字 9 插件)+ $CP(派生 8 插件)+ $MIN_ROOT/skill-realms.json"
 }
 
 # ── 断言 ────────────────────────────────────────────────────────────────────
@@ -150,7 +150,7 @@ assert2(){
   rm -rf "$MIN_ROOT"
   local log rc n0
   run_dsh "$CP" "$EVID/smoke-boot.log" 90 "你好"; rc=$?   # 兼作 boot-OK 探测
-  grep -q "did not activate" "$EVID/smoke-boot.log" && no "boot 报 did not activate" || ok "boot 通过(7 插件全 ACTIVE)"
+  grep -q "did not activate" "$EVID/smoke-boot.log" && no "boot 报 did not activate" || ok "boot 通过(8 插件全 ACTIVE)"
   [ -f "$AUDIT" ] && ok "audit 文件产生" || { no "audit 文件不存在,后续断言作废"; return; }
   grep -q 'input-guard.boot.probe' "$AUDIT" && ok "input-guard.boot.probe(瀑布挂上)" || no "缺 boot.probe 行"
   grep -q 'intent.classify.llm_error' "$AUDIT" && ok "intent.classify.llm_error(provider 缺席→必然)" || no "缺 llm_error"

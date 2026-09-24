@@ -4,9 +4,12 @@
  * bundle-minimal 是真机 rig 的静态面(1 张派工单 cordis.patch.yml + 1 份花名册
  * package.json + 1 份 realm 种子 skill-realms.seed.json;§7.59.5 单源收敛),
  * rig 脚本(scripts/minimal-bundle-rig.sh)跑真机验证,本测试跑漂移验证:
- *   - 派工单名单恰好 = 现役 8 插件实装花名册(7 插件闭包 + file-logger 居首)。
+ *   - 派工单名单恰好 = 现役 9 插件实装花名册(8 插件闭包 + file-logger 居首)。
+ *     §7.93.0(2026-09-24):tools(edge-tools-registry)入图 —— realm-skill-bridge
+ *     §7.92.2 inject 加了 edgeTools,极简图必须自带 provider(id≠源名:派工单
+ *     id=edge-tools-registry,name 末段=tools;名单断言按 name 末段比)。
  *     §7.59.4:证伪级 stage1/1b 已退役;§7.59.5:stage2/stage2-ops 合并为单一
- *     cordis.patch.yml(headless 孪生的 7 插件图由 rig 运行时派生,不落仓库),
+ *     cordis.patch.yml(headless 孪生的 8 插件图由 rig 运行时派生,不落仓库),
  *     boot 签名逐字存档于 docs/PROGRESS.md §7.59(单一存档点)
  *   - 每条 insert 的 name 末段 ∈ 极简 exports,对应 src 文件存在(①↔②互指)
  *   - Schema 必填字段 + 存储隔离锁(③必填、R7:realm-skill-bridge.configPath;
@@ -46,12 +49,13 @@ function stageInserts(file: string): InsertRow[] {
   return rows.map((r: any) => ({ id: r.id, name: r.name, config: r.config }))
 }
 
-const ids = (rows: InsertRow[]) => rows.map(r => r.id).sort()
+// (ids helper 已退役:名单断言按 name 末段比 —— edge-tools-registry id≠源名)
 
-const CLOSURE = ['audit-log', 'privacy-policy', 'prompt-guard', 'intent-router', 'sanitizer-pipeline', 'realm-skill-bridge', 'input-guard'] as const
-/** 实装花名册 = 执法闭包 7 + file-logger(运维日志落盘)。file-logger
+const CLOSURE = ['audit-log', 'privacy-policy', 'prompt-guard', 'intent-router', 'sanitizer-pipeline', 'tools', 'realm-skill-bridge', 'input-guard'] as const
+/** 实装花名册 = 执法闭包 8 + file-logger(运维日志落盘)。file-logger
  *  inject=['web'],headless 冒烟图由 rig deploy 时剥除,但 exports 必须提供,
- *  否则 TUI 形状派工单断链。 */
+ *  否则 TUI 形状派工单断链。tools 提供 edgeTools(realm-skill-bridge §7.92.2
+ *  inject 依赖),派工单 id=edge-tools-registry、name 末段=tools。 */
 const ROSTER = [...CLOSURE, 'file-logger']
 
 const patchRows = stageInserts(PATCH)
@@ -64,6 +68,7 @@ const PROVIDES: Record<string, string> = {
   'prompt-guard': 'promptGuard',
   'intent-router': 'intentRouter',
   'sanitizer-pipeline': 'sanitizer',
+  'edge-tools-registry': 'edgeTools',
   'realm-skill-bridge': 'realmSkillBridge',
   'input-guard': 'inputGuard',
 }
@@ -83,9 +88,12 @@ function injectOf(text: string): string[] {
 }
 
 describe('bundle-minimal:单一派工单名单', () => {
-  it('cordis.patch.yml = 恰 8 插件实装花名册,且 file-logger 居首(mount FIRST 才能兜住后续插件的 ctx.logger)', () => {
+  it('cordis.patch.yml = 恰 9 插件实装花名册,且 file-logger 居首(mount FIRST 才能兜住后续插件的 ctx.logger)', () => {
     assert.equal(patchRows[0]!.id, 'file-logger', 'file-logger 必须是第一行')
-    assert.deepEqual(ids(patchRows), ROSTER.slice().sort())
+    // 按 name 末段(= 源文件名 = 花名册名)比,不按 id —— edge-tools-registry
+    // 的 id 与源名 'tools' 不同(dsh-base 同名冲突改名,§7.93.0)。
+    const subs = patchRows.map(r => r.name.slice(PKG.length + 1)).sort()
+    assert.deepEqual(subs, ROSTER.slice().sort())
   })
 })
 
@@ -173,7 +181,7 @@ describe('bundle-minimal:必填字段与存储隔离', () => {
 })
 
 describe('bundle-minimal:inject 闭包锁', () => {
-  it('派工单名单覆盖 8 源文件全部非宿主 inject 依赖(产品侧新增依赖未同步派工单会在此炸)', () => {
+  it('派工单名单覆盖 9 源文件全部非宿主 inject 依赖(产品侧新增依赖未同步派工单会在此炸)', () => {
     const provided = new Set(patchRows.map(r => PROVIDES[r.id]).filter(Boolean))
     const missing = new Set<string>()
     for (const sub of ROSTER) {
