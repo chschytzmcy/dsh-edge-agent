@@ -442,6 +442,7 @@ export class NeedleExtractorServiceImpl extends Service {
           latencyMs,
           ok: true,
         })
+        this.opsLog('boot probe', `ok=true latencyMs=${latencyMs}ms httpStatus=${httpStatus}`)
       } else {
         this.stats.needleBootProbeFail++
         this.audit('warn', 'needle.boot_probe', {
@@ -451,6 +452,7 @@ export class NeedleExtractorServiceImpl extends Service {
           ok: false,
           error: errorMsg,
         })
+        this.opsLog('boot probe', `ok=false latencyMs=${latencyMs}ms httpStatus=${httpStatus} error=${errorMsg || 'none'}`)
       }
     } else {
       // periodic probe (always inside an open-breaker window)
@@ -462,6 +464,7 @@ export class NeedleExtractorServiceImpl extends Service {
         ok,
         error: ok ? undefined : errorMsg,
       })
+      this.opsLog('periodic probe', `ok=${ok} latencyMs=${latencyMs}ms httpStatus=${httpStatus}${ok ? '' : ` error=${errorMsg || 'none'}`}`)
     }
     return ok
   }
@@ -492,6 +495,7 @@ export class NeedleExtractorServiceImpl extends Service {
               needleUrl: this.needleUrl,
               probeLatencyMs: this.needleLastProbeLatencyMs,
             })
+            this.opsLog('circuit recovered', `probeLatencyMs=${this.needleLastProbeLatencyMs}ms`)
           }
           this.stopBreakerProbe()
         })
@@ -525,6 +529,7 @@ export class NeedleExtractorServiceImpl extends Service {
       ttlMs: this.needleBreakerTtlMs,
       openUntilMs: this.needleBreakerOpenUntil,
     })
+    this.opsLog('circuit open', `reason=${reason} openUntilMs=${this.needleBreakerOpenUntil} ttlMs=${this.needleBreakerTtlMs}`)
     this.startBreakerProbe()
   }
 
@@ -573,6 +578,26 @@ export class NeedleExtractorServiceImpl extends Service {
   audit(level: 'debug' | 'info' | 'warn' | 'error' | 'security', kind: string, payload: Record<string, unknown>): void {
     if (!this.auditLog) return
     void this.auditLog.log({ level, kind, source: name, payload }).catch(() => {})
+  }
+
+  /**
+   * §7.46 ops-log-coverage-principle:needle-extractor 的每个关键节点除 audit
+   * 之外,**双轨**通过 ctx.logger 写一行 ops log(file-logger → dsh-edge-agent.log)
+   * —— 运维 `grep "sessionId=... \[needle-extractor\]"` 就能定位(不必过 audit
+   * JSONL 解析器)。Phase 9 之前只 boot 一行,per-session 事件只有 audit →
+   * 部署后 E2E 跑暴露 grep 不便 → Phase 9 补全(本轮)。
+   *
+   * 与 audit 的差异:
+   *   - audit → JSONL 解析器(状态账本,redacted by 过滤规则)
+   *   - opsLog → file-logger(运维 grep,single-line,可含任意字符串)
+   * PII 纪律:**两条通道都不落 query / arguments / result 内容**,只 metadata。
+   *
+   * 失败不阻断执行链(try/catch 兜底 —— 是 debug-only 通道,不是控制信号)。
+   */
+  opsLog(event: string, fields: string): void {
+    try {
+      this.ctx.logger?.info?.(`[needle-extractor] ${event} ${fields}`)
+    } catch { /* debug only */ }
   }
 
   // ── helpers(loose reads — §7.92.2 proxy trap safe)────────────────────
@@ -671,6 +696,7 @@ export class NeedleExtractorServiceImpl extends Service {
           bodyPreview: r.body.slice(0, 80),
           retried: attempt.isRetry,
         })
+        this.opsLog('extract invalid_body_422', `sessionId=${sessionId ?? 'unknown'} durationMs=${r.durationMs} retried=${attempt.isRetry}`)
         return null
       }
 
@@ -679,6 +705,7 @@ export class NeedleExtractorServiceImpl extends Service {
         this.audit('warn', 'needle.extract_failed', {
           sessionId, reason: 'no_fetch_runtime',
         })
+        this.opsLog('extract no_fetch_runtime', `sessionId=${sessionId ?? 'unknown'}`)
         this.openBreaker('transport')
         return null
       }
@@ -691,6 +718,8 @@ export class NeedleExtractorServiceImpl extends Service {
           sessionId, durationMs: r.durationMs, thrown: true,
           error: (r.err as { message?: string })?.message ?? String(r.err),
         })
+        this.opsLog(isAbort ? 'extract timeout_skip' : 'extract failed',
+          `sessionId=${sessionId ?? 'unknown'} durationMs=${r.durationMs} thrown=true reason=${isAbort ? 'timeout' : 'transport'}`)
         return null
       }
 
@@ -707,6 +736,7 @@ export class NeedleExtractorServiceImpl extends Service {
             sessionId, status: code, durationMs: r.durationMs,
             bodyPreview: r.body.slice(0, 80),
           })
+          this.opsLog('extract retry', `sessionId=${sessionId ?? 'unknown'} status=${code} durationMs=${r.durationMs}`)
           continue // 进入 retryPlan 下一轮
         }
 
@@ -722,6 +752,8 @@ export class NeedleExtractorServiceImpl extends Service {
           retried: attempt.isRetry,
           bodyPreview: r.body.slice(0, 80),
         })
+        this.opsLog(isTimeoutProxy ? 'extract timeout_skip' : 'extract failed',
+          `sessionId=${sessionId ?? 'unknown'} durationMs=${r.durationMs} status=${code} reason=${reason} retried=${attempt.isRetry}`)
         return null
       }
 
@@ -734,6 +766,8 @@ export class NeedleExtractorServiceImpl extends Service {
         queryLen: query.length, schemaCount: schemas.length,
         retried: attempt.isRetry,
       })
+      this.opsLog('extract',
+        `sessionId=${sessionId ?? 'unknown'} durationMs=${r.durationMs} status=${r.status} type=${r.parsed.type} callCount=${r.parsed.calls.length} confidence=${r.parsed.confidence.toFixed(2)} retried=${attempt.isRetry}`)
       return r.parsed
     }
 
@@ -944,6 +978,8 @@ export class NeedleExtractorServiceImpl extends Service {
             openUntilMs: this.needleBreakerOpenUntil,
             remainingMs: this.needleBreakerOpenUntil - Date.now(),
           })
+          this.opsLog('circuit open skip',
+            `sessionId=${payload.agent?.session?.id ?? 'unknown'} remainingMs=${this.needleBreakerOpenUntil - Date.now()}`)
         }
         return decision
       }
@@ -982,6 +1018,8 @@ export class NeedleExtractorServiceImpl extends Service {
           confidence: extract.confidence,
           threshold: this.needleConfidenceThreshold,
         })
+        this.opsLog('low confidence skip',
+          `sessionId=${sessionId ?? 'unknown'} type=${extract.type} callCount=${extract.calls.length} confidence=${extract.confidence.toFixed(2)} threshold=${this.needleConfidenceThreshold}`)
         return decision
       }
       this.stats.needleExtractOk += 1
@@ -1020,16 +1058,13 @@ export class NeedleExtractorServiceImpl extends Service {
         originalQueryLen: lastUser.text.length,
         messageLen: text.length,
       })
-      // ops-log 行(§7.46 纪律)
-      try {
-        this.ctx.logger?.info?.(
-          `[needle-extractor] synthesis injected sessionId=${sessionId} toolCount=${outcomes.length}` +
-          ` executedCount=${executedCount} skippedCount=${outcomes.filter(o => o.status === 'skipped').length}` +
-          ` deniedCount=${outcomes.filter(o => o.status === 'denied').length}` +
-          ` errorCount=${outcomes.filter(o => o.status === 'error').length}` +
-          ` messageLen=${text.length}`,
-        )
-      } catch { /* debug only */ }
+      // ops-log 行(§7.46 纪律,双轨到 file-logger,运维 grep 友好)
+      this.opsLog('synthesis injected',
+        `sessionId=${sessionId ?? 'unknown'} toolCount=${outcomes.length}` +
+        ` executedCount=${executedCount} skippedCount=${outcomes.filter(o => o.status === 'skipped').length}` +
+        ` deniedCount=${outcomes.filter(o => o.status === 'denied').length}` +
+        ` errorCount=${outcomes.filter(o => o.status === 'error').length}` +
+        ` messageLen=${text.length}`)
       return {
         ...decision,
         messages: [...baseMessages, injected],
@@ -1043,12 +1078,8 @@ export class NeedleExtractorServiceImpl extends Service {
         error: (err as { message?: string })?.message ?? String(err),
         hadDecision: decision !== undefined,
       })
-      try {
-        this.ctx.logger?.warn?.(
-          `[needle-extractor] handlePreStep error: ${(err as { message?: string })?.message ?? String(err)}` +
-          ` hadDecision=${decision !== undefined}`,
-        )
-      } catch { /* debug only */ }
+      this.opsLog('handlePreStep error',
+        `${(err as { message?: string })?.message ?? String(err)} hadDecision=${decision !== undefined}`)
       if (decision !== undefined) return decision
       throw err
     }
