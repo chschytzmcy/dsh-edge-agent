@@ -48,6 +48,29 @@ export const inject = ['auditLog', 'skills', 'edgeTools', 'tools'] as const
 /** Realm tag for skills and tools. 'hidden' means invisible to all agents. */
 export type RealmTag = 'LOCAL' | 'CLOUD' | 'SANITIZED' | 'hidden'
 
+/**
+ * §7.93 Phase 2 (2026-09-24): intent categories needle-extractor may request
+ * tool schemas for. REJECT never reaches needle (4xx before dispatch) and
+ * 'hidden' agents get no tools at all, so both are excluded from the input
+ * type; CLOUD is included for completeness even though the needle path skips
+ * CLOUD intents (decision #4) — callers gate, this method stays total.
+ */
+export type NeedleIntent = 'LOCAL' | 'CLOUD' | 'SANITIZED'
+
+/**
+ * §7.93 Phase 2: one tool schema in needle's flat wire format
+ * (`~/work/needle/API.md` v1.1 §4.5: `{name, description, parameters}` —
+ * NOT the OpenAI `{type:'function', function:{...}}` envelope). This matches
+ * dsh-llm's own `ToolSchema` projection (`schemas()` whitelists exactly
+ * name/description/parameters), so the conversion is a shape check, not a
+ * translation.
+ */
+export interface NeedleToolSchema {
+  name: string
+  description: string
+  parameters: Record<string, unknown>
+}
+
 export interface Config {
   /** Path to the skill-realms.json config file. */
   configPath: string
@@ -661,10 +684,17 @@ export class RealmSkillBridgeService extends Service {
    * SANITIZED special case: an agent whose input was sanitized may safely
    * use both LOCAL tools (file ops don't leak) and CLOUD tools (input was
    * already redacted). So SANITIZED agents see every non-hidden tool.
+   *
+   * §7.93 Phase 2: `options.audit === false` suppresses the
+   * `realm-skill-bridge.tools.filtered` audit entry. Used by
+   * getToolSchemasForNeedle() so the LLM-path filter audit isn't duplicated
+   * per needle call — needle-extractor emits its own `needle.*` audit kinds.
+   * Default (omitted) keeps the existing audited behavior.
    */
   filterToolsField(
     tools: ReadonlyArray<unknown>,
     agentRealm: RealmTag,
+    options?: { audit?: boolean },
   ): { tools: unknown[]; changed: boolean; removed: string[] } {
     const kept: unknown[] = []
     const removed: string[] = []
@@ -701,7 +731,7 @@ export class RealmSkillBridgeService extends Service {
         removed.push(name)
       }
     }
-    if (removed.length > 0) {
+    if (removed.length > 0 && options?.audit !== false) {
       try {
         this.auditLog?.log({
           level: 'info',
@@ -713,6 +743,52 @@ export class RealmSkillBridgeService extends Service {
       catch { /* debug only */ }
     }
     return { tools: kept, changed: removed.length > 0, removed }
+  }
+
+  // ── §7.93 Phase 2: needle tool-schema face ──────────────────────────────────
+  // needle-extractor (Phase 4+) POSTs these to needle-http :8081 /extract.
+  // Single source of truth: the SAME registry projection the LLM sees
+  // (`ctx.tools.schemas()` → name/description/parameters whitelist, per
+  // dsh-tools "Project visible definitions onto the allowlisted model-facing
+  // schema fields") filtered by the SAME realm semantics as filterToolsField.
+  // No separate tool list, no drift (user decision #8).
+
+  /**
+   * Build the needle wire-format tool schemas for one intent's realm.
+   *
+   * Pipeline: registry projection → realm filter (filterToolsField semantics,
+   * audit suppressed — caller emits `needle.*` audit) → shape normalization.
+   *
+   * Failure contract: registry unavailable (cordis proxy throw before the
+   * `tools` service mounts, §7.92.2 trap) or empty → returns []. Callers MUST
+   * treat [] as "no needle" and fall through to the LLM self-extraction path
+   * — never POST an empty tools array to needle (it would echo/hallucinate).
+   */
+  getToolSchemasForNeedle(intent: NeedleIntent): NeedleToolSchema[] {
+    const raw = this.readRegistrySchemas()
+    if (raw.length === 0) return []
+    const filtered = this.filterToolsField(raw, intent, { audit: false })
+    return normalizeNeedleSchemas(filtered.tools)
+  }
+
+  /**
+   * Defensive read of `ctx.tools.schemas()` (global view). Returns [] when
+   * the service is not mounted yet or throws — the cordis proxy raises
+   * "cannot get property tools without inject" on unbound fibers, and
+   * tools/change re-fires tagging once available (same pattern as
+   * tagToolsFromConfig, §7.92.2).
+   */
+  private readRegistrySchemas(): unknown[] {
+    try {
+      const toolsSvc = (this.ctx as unknown as {
+        tools?: { schemas?: (scope?: unknown) => unknown[] }
+      }).tools
+      const schemas = toolsSvc?.schemas?.()
+      return Array.isArray(schemas) ? schemas : []
+    }
+    catch {
+      return []
+    }
   }
 
   // ── Layer 3: Tool execution gating ──────────────────────────────────────────
@@ -745,6 +821,47 @@ export class RealmSkillBridgeService extends Service {
       payload: { tool: toolName, toolRealms: [...toolRealms], agentRealm },
     })
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §7.93 Phase 2: needle schema normalization (pure, exported for tests)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/**
+ * Normalize registry projections onto needle's flat wire contract
+ * (`{name, description, parameters}`, API.md v1.1 §4.5):
+ *
+ * - entries without a non-empty string `name` are dropped (needle keys
+ *   function_calls by name — a nameless schema is unexecutable)
+ * - missing/non-string `description` → '' (needle tolerates it; the tool
+ *   name + parameters carry the selection signal)
+ * - missing/non-object `parameters` → permissive `{type:'object',
+ *   properties:{}}` root (an unconstrained-args tool, e.g. no-arg status
+ *   probes; JSON Schema semantics: absent properties = any object)
+ *
+ * Defensive by design: the registry projection is already whitelisted
+ * upstream, but a runtime-registered tool with a hand-rolled shape must not
+ * crash the needle path — worst case it is dropped and the LLM path covers it.
+ */
+export function normalizeNeedleSchemas(tools: ReadonlyArray<unknown>): NeedleToolSchema[] {
+  const out: NeedleToolSchema[] = []
+  for (const t of tools) {
+    if (!isPlainRecord(t)) continue
+    const name = t.name
+    if (typeof name !== 'string' || name === '') continue
+    out.push({
+      name,
+      description: typeof t.description === 'string' ? t.description : '',
+      parameters: isPlainRecord(t.parameters)
+        ? t.parameters
+        : { type: 'object', properties: {} },
+    })
+  }
+  return out
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

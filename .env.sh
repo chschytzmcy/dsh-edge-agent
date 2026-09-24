@@ -168,6 +168,31 @@ export DSH_EDGE_INTENT_JEV_BOOT_PROBE_TIMEOUT_MS="${INTENT_JEV_BOOT_PROBE_TIMEOU
 export DSH_EDGE_INTENT_JEV_BREAKER_PROBE_MS="${INTENT_JEV_BREAKER_PROBE_MS}"
 export DSH_EDGE_INTENT_JEV_PROBE_TIMEOUT_MS="${INTENT_JEV_PROBE_TIMEOUT_MS}"
 
+# ── §7.93 needle tool-call prefill（全部默认 OFF，使能才生效） ────────
+# needle 服务由外部启动维护（needle-http **:8081**，契约 GET /health +
+# POST /extract，stateless 无需 /reset；playground :7860 是 needle webui，
+# 本项目不走），**只做意图/工具调用提取，服务端不翻译**（user 仲裁）。
+# 本项目纯 client；**中文→英文翻译在 client 侧由 LOCAL LLM 执行**
+# （minicpm5-2b @ LAN，local-llm-adapter + §7.41 信号量，PII 不出端）。
+# client（needle-extractor plugin，Phase 2+）视角链路：
+#   LOCAL/SANITIZED intent
+#     → [client] LOCAL LLM 翻译 zh→en（few-shot：实体保中文原文 + 数字出阿拉伯）
+#     → POST /extract {英文 query, 英文 tool schemas} → function_calls
+#     → TS tool-runner 执行（realm/PII/audit 不绕过）
+#     → **整个对话（user + tool_calls + 执行结果）给 LOCAL LLM 输出最终回复**
+# CLOUD intent 不走 needle；needle down/低置信 fall through 到现有 LLM 自提取。
+export DSH_EDGE_NEEDLE_ENABLED="${NEEDLE_ENABLED}"
+export DSH_EDGE_NEEDLE_URL="${NEEDLE_URL}"
+export DSH_EDGE_NEEDLE_TIMEOUT_MS="${NEEDLE_TIMEOUT_MS}"
+export DSH_EDGE_NEEDLE_CONFIDENCE_THRESHOLD="${NEEDLE_CONFIDENCE_THRESHOLD}"
+export DSH_EDGE_NEEDLE_TRANSLATE_ENABLED="${NEEDLE_TRANSLATE_ENABLED}"
+export DSH_EDGE_NEEDLE_TRANSLATE_PROVIDER="${NEEDLE_TRANSLATE_PROVIDER}"
+export DSH_EDGE_NEEDLE_BREAKER_TTL_MS="${NEEDLE_BREAKER_TTL_MS}"
+export DSH_EDGE_NEEDLE_BOOT_PROBE_ENABLED="${NEEDLE_BOOT_PROBE_ENABLED}"
+export DSH_EDGE_NEEDLE_BOOT_PROBE_TIMEOUT_MS="${NEEDLE_BOOT_PROBE_TIMEOUT_MS}"
+export DSH_EDGE_NEEDLE_BREAKER_PROBE_MS="${NEEDLE_BREAKER_PROBE_MS}"
+export DSH_EDGE_NEEDLE_PROBE_TIMEOUT_MS="${NEEDLE_PROBE_TIMEOUT_MS}"
+
 # ── input-guard 降级路径（cloud-key 缺失 / intent=LOCAL / sanitize 失败）──
 # §7.75: DSH_EDGE_LOCAL_MODEL **直接从 LOCAL_LLM 池派生**（不引入
 # INPUT_GUARD_LOCAL_MODEL 变量）：
