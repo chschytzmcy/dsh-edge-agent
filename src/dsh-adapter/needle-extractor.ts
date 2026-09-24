@@ -10,9 +10,6 @@
  * synthesis(§7.42 P0-1 malformed guard 留作 fallback)。
  *
  * 后续 Phase:
- *   - Phase 6:circuit breaker + boot probe + 周期恢复 probe(§7.92.6/§7.92.7
- *     jev 模板逐字复用,GET /health,**needle timeout 必须计入 breaker 失败**
- *     —— dry-run 实测 engine 当前 degradation 25x)。
  *   - Phase 7:失败路径细分(422 不重试 / 503 busy 退避 / 503 loading 走
  *     breaker / 502 降级)。
  *
@@ -53,15 +50,20 @@
  * audit 面(source 区分归属):
  *   本插件(source='needle-extractor'):
  *     needle.hook.registered         (info,apply 时一次性)
- *     needle.boot_probe              (Phase 6, info/warn)
- *     needle.probe                   (Phase 6, info)
+ *     needle.boot_probe              (info/warn,Phase 6 boot probe)
+ *     needle.boot_probe.skipped      (info,配置关掉 boot probe)
+ *     needle.boot_probe.unexpected   (error,probe 自己抛)
+ *     needle.probe                   (info,Phase 6 周期 probe)
+ *     needle.circuit_open            (warn,Phase 6,open-on-first-failure 触发)
+ *     needle.circuit_open_skip       (info,Gate 2 短路计数)
+ *     needle.recovered               (info,周期 probe 命中 2xx 关 breaker)
  *     needle.extract                 (info,每次 /extract 调用 metadata)
  *     needle.low_confidence_skip     (info,采纳门未过)
- *     needle.timeout_skip            (warn,extract 超时)
- *     needle.extract_failed          (warn,4xx/5xx)
- *     needle.circuit_open_skip       (Phase 6, info)
+ *     needle.timeout_skip            (warn,extract 超时;同时触发 openBreaker)
+ *     needle.extract_failed          (warn,4xx(不开)/5xx(开 breaker)/网络错(开))
  *     needle.synthesis_injected      (info,合成 user-role 已注入)
  *     needle.realm_unset_skip        (info,realm 未注册跳过)
+ *     needle.listener.error          (error,handlePreStep 自身 catch 兜底)
  *   tool-runner(source='tool-runner',Phase 3 已实现):
  *     needle.executed / needle.execution_failed / needle.realm_rejected /
  *     needle.fabricated_arg / needle.unknown_tool
@@ -226,6 +228,23 @@ export class NeedleExtractorServiceImpl extends Service {
   private readonly needleBreakerProbeMs: number
   private readonly needleProbeTimeoutMs: number
 
+  // ── Phase 6 runtime state:circuit breaker + boot probe + recovery probe ──
+  /** §7.92.6 (2026-09-24): ms-epoch timestamp until which the breaker is
+   *  open. 0 = closed. Mutable; reset on every successful extract /
+   *  periodic /health probe.needle 引擎当前 degradation 25x(dry-run #1)
+   *  → timeout 必须计入 breaker 失败 → open-on-first-failure 模式。 */
+  private needleBreakerOpenUntil = 0
+  /** §7.92.7: setInterval handle for the periodic recovery probe. null =
+   *  no timer running(breaker closed 或 probe disabled)。 */
+  private needleBreakerProbeTimer: ReturnType<typeof setInterval> | null = null
+  /** §7.92.7: in-flight boot probe promise。track 让 stop() / dispose
+   *  能 await 而不留下 dangling fetch racing constructor's first
+   *  classify() call。 */
+  private needleBootProbePromise: Promise<void> | null = null
+  /** §7.92.7 helper:最近一次 periodic probe wall-clock,audit
+   *  needle.recovered payload 用。 */
+  private needleLastProbeLatencyMs = 0
+
   private readonly stats: NeedleExtractorStats
 
   constructor(ctx: Context, config: Config, auditLog?: AuditLike) {
@@ -264,12 +283,16 @@ export class NeedleExtractorServiceImpl extends Service {
   // ── availability ──────────────────────────────────────────────────────
 
   /**
-   * Phase 4 语义:总开关即可用性。Phase 6 叠加 breaker 后语义变为
-   * `needleEnabled && !circuitOpen`(jev isJevAvailable 同款)。
-   * Phase 5 的 waterfall listener 以此作第一道 gate:false → next()。
+   * §7.92.6 (2026-09-24):breaker-aware availability。
+   *  - Phase 4 语义:needleEnabled。
+   *  - Phase 6 叠加:`needleEnabled && Date.now() >= needleBreakerOpenUntil`
+   *    (jev `isJevAvailable()` 同款语义)。Phase 5 listener Gate 2
+   *    `if (!isAvailable()) return decision` 因此**自动**承担
+   *    breaker-open short-circuit:0ms 短路,不付出 extract 1.5s 超时。
+   *    audit `needle.circuit_open_skip` 由 Gate 2 显式落(见 handlePreStep)。
    */
   isAvailable(): boolean {
-    return this.needleEnabled
+    return this.needleEnabled && Date.now() >= this.needleBreakerOpenUntil
   }
 
   /** 配置只读视图(ops 排查 + 测试断言;env 翻译层是否生效一眼可见)。 */
@@ -298,20 +321,210 @@ export class NeedleExtractorServiceImpl extends Service {
   }
 
   getStats(): NeedleExtractorStats {
-    return { ...this.stats }
+    // §7.92.6:needleCircuitOpen 在 snapshot 时即时计算(布尔 = 当前
+    // breaker 是否打开);其他字段从 this.stats 浅拷。
+    return {
+      ...this.stats,
+      needleCircuitOpen: Date.now() < this.needleBreakerOpenUntil,
+    }
   }
 
-  // ── lifecycle stubs(Phase 6 填实:boot probe + 周期恢复 probe)─────────
+  // ── lifecycle(Phase 6 填实:boot probe + 周期恢复 probe)──────────────
 
-  /** Phase 6:fire boot probe(GET /health,fail → 预开 breaker)。 */
+  /**
+   * §7.92.7 (2026-09-24):fire-and-forget GET /health。fail → 预开
+   * breaker(节省第一请求的 worst-case wall-clock = needleTimeoutMs);
+   * 顺手启动周期恢复 probe,免得 needle 上线时还要等满 TTL。**总是
+   * 返回 void**:probe 是 fire-and-forget,不让 apply() / cordis 等它。
+   *
+   * 模板直接抄自 intent-router.start() §7.92.7 jev。
+   */
   start(): void {
-    // 骨架期无副作用。boot probe 接线点见 §7.92.7 intent-router.start()。
-    void this.needleBootProbeEnabled // 占位引用,防 Phase 6 前 unused 误删
+    if (!this.needleEnabled) return
+    if (!this.needleBootProbeEnabled) {
+      this.audit('info', 'needle.boot_probe.skipped', {
+        reason: 'disabled-by-config',
+        needleUrl: this.needleUrl,
+      })
+      return
+    }
+    // Capture promise so stop() can await it on shutdown.
+    this.needleBootProbePromise = this.probeNeedleHealth('boot', this.needleBootProbeTimeoutMs)
+      .then((ok) => {
+        if (!ok) {
+          // Pre-open breaker AND start periodic recovery probe. 不然 needle
+          // 上线时(boot 后 30s TTL 内)还要等满 TTL 才恢复 — 周期 probe
+          // 命中 2xx 就会关掉断并 stop 自己,recovery 比通常延迟更短。
+          this.openBreaker('transport')
+        }
+      })
+      .catch((err: unknown) => {
+        // Defensive — `probeNeedleHealth` swallows transport errors and
+        // resolves false; reaching this branch means a bug in the probe
+        // itself. Log and keep the breaker closed (fail-open for the
+        // probe path)。
+        this.audit('error', 'needle.boot_probe.unexpected', {
+          error: (err as { message?: string })?.message ?? String(err),
+        })
+      })
+      .finally(() => {
+        this.needleBootProbePromise = null
+      })
   }
 
-  /** Phase 6:等 boot probe settle + 清周期 interval。 */
+  /**
+   * §7.92.7 dispose hook。await boot probe(若有)+ 清周期 interval。
+   * cordis / tests 在 plugin teardown 时调用。
+   */
   async stop(): Promise<void> {
-    // 骨架期无副作用。
+    this.stopBreakerProbe()
+    if (this.needleBootProbePromise) {
+      try { await this.needleBootProbePromise } catch { /* swallow */ }
+    }
+  }
+
+  // ── §7.92.6/§7.92.7 breaker + probe 内部 ─────────────────────────────
+
+  /**
+   * §7.92.7:probe needle /health(GET)。returns true on HTTP 2xx,
+   * false on anything else(网络错 / timeout / non-2xx)。always resolves
+   * — never throws。`phase` 区分 boot vs periodic 让 audit kind 区分
+   * (运维一眼能看出来 "boot 探 vs 周期探")。
+   *
+   * 与 jev 的 `probeJevHealth` 完全同构,只是 URL 走 needle 的
+   * `${needleUrl}/health`(API.md v1.1 §4)。
+   */
+  private async probeNeedleHealth(
+    phase: 'boot' | 'periodic',
+    timeoutMs: number,
+  ): Promise<boolean> {
+    if (phase === 'periodic') this.stats.needleProbeAttempts++
+    const probeStart = Date.now()
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), timeoutMs)
+    let ok = false
+    let httpStatus = 0
+    let errorMsg = ''
+    try {
+      const fetcher = this.fetcher()
+      if (!fetcher) {
+        errorMsg = 'no_fetch_runtime'
+      } else {
+        const r = await fetcher(`${this.needleUrl}/health`, {
+          method: 'GET',
+          signal: controller.signal,
+        })
+        httpStatus = r.status
+        ok = r.ok
+        if (!ok) {
+          try { await r.text() } catch { /* ignore */ }
+        }
+      }
+    } catch (err: unknown) {
+      errorMsg = (err as { message?: string })?.message ?? String(err)
+    } finally {
+      clearTimeout(timer)
+    }
+    const latencyMs = Date.now() - probeStart
+    if (phase === 'boot') {
+      if (ok) {
+        this.stats.needleBootProbeOk++
+        this.audit('info', 'needle.boot_probe', {
+          needleUrl: this.needleUrl,
+          httpStatus,
+          latencyMs,
+          ok: true,
+        })
+      } else {
+        this.stats.needleBootProbeFail++
+        this.audit('warn', 'needle.boot_probe', {
+          needleUrl: this.needleUrl,
+          httpStatus,
+          latencyMs,
+          ok: false,
+          error: errorMsg,
+        })
+      }
+    } else {
+      // periodic probe (always inside an open-breaker window)
+      this.needleLastProbeLatencyMs = latencyMs
+      this.audit('info', 'needle.probe', {
+        needleUrl: this.needleUrl,
+        httpStatus,
+        latencyMs,
+        ok,
+        error: ok ? undefined : errorMsg,
+      })
+    }
+    return ok
+  }
+
+  /**
+   * §7.92.7:启动周期 recovery probe。**idempotent** —— 已运行时返回。
+   * unref 让 timer 不会独自撑住 process(file-logger.ts:220 同款)。
+   *
+   * setInterval 回调捕获 probeStart 但不清晰上浮 ——
+   * needleLastProbeLatencyMs 实例字段辅助 audit 携带。
+   */
+  private startBreakerProbe(): void {
+    if (this.needleBreakerProbeTimer !== null) return // already running
+    this.needleBreakerProbeTimer = setInterval(() => {
+      void this.probeNeedleHealth('periodic', this.needleProbeTimeoutMs)
+        .then((ok) => {
+          if (!ok) return
+          // 2xx from /health → needle is back. Close breaker
+          // and stop the timer.classify() calls now hit needle
+          // normally; one of them may still trip the breaker
+          // again if /extract is broken, but the breaker-restart
+          // path is already covered by extractCalls()'s openBreaker
+          // call.
+          if (Date.now() < this.needleBreakerOpenUntil) {
+            this.needleBreakerOpenUntil = 0
+            this.stats.needleRecoveredProbe++
+            this.audit('info', 'needle.recovered', {
+              needleUrl: this.needleUrl,
+              probeLatencyMs: this.needleLastProbeLatencyMs,
+            })
+          }
+          this.stopBreakerProbe()
+        })
+        .catch(() => { /* probeNeedleHealth never throws; defensive */ })
+    }, this.needleBreakerProbeMs)
+    if (typeof this.needleBreakerProbeTimer.unref === 'function') {
+      this.needleBreakerProbeTimer.unref()
+    }
+  }
+
+  /** §7.92.7:clear the recovery probe setInterval。idempotent。 */
+  private stopBreakerProbe(): void {
+    if (this.needleBreakerProbeTimer === null) return
+    clearInterval(this.needleBreakerProbeTimer)
+    this.needleBreakerProbeTimer = null
+  }
+
+  /**
+   * §7.92.6 (2026-09-24):open-on-first-failure 模式(jev 是 all-batches
+   * 失败才开 —— needle 单 fetch 等价于"这一发失败")。**timeout 与 5xx 都
+   * 计入**(dry-run #1:engine 当前 degradation 25x,1.5s 超时全中)。
+   * 4xx(client error 比如 422 invalid body)不开 —— 不代表 engine down。
+   * idempotent:已开则 no-op。
+   */
+  private openBreaker(reason: 'timeout' | 'http_5xx' | 'transport'): void {
+    if (Date.now() < this.needleBreakerOpenUntil) return // already open
+    this.needleBreakerOpenUntil = Date.now() + this.needleBreakerTtlMs
+    this.audit('warn', 'needle.circuit_open', {
+      reason,
+      needleUrl: this.needleUrl,
+      ttlMs: this.needleBreakerTtlMs,
+      openUntilMs: this.needleBreakerOpenUntil,
+    })
+    this.startBreakerProbe()
+  }
+
+  /** §7.92.6:idempotent close。setInterval 在 startBreakerProbe 内部已 stop。 */
+  private closeBreaker(): void {
+    if (this.needleBreakerOpenUntil === 0) return // already closed
+    this.needleBreakerOpenUntil = 0
   }
 
   // ── ToolRunner 装配(Phase 3 边界的持有者)───────────────────────────────
@@ -423,6 +636,8 @@ export class NeedleExtractorServiceImpl extends Service {
       this.audit('warn', 'needle.extract_failed', {
         sessionId, reason: 'no_fetch_runtime',
       })
+      // §7.92.6:no fetch runtime → 视同 transport down → 开 breaker
+      this.openBreaker('transport')
       return null
     }
     try {
@@ -439,13 +654,18 @@ export class NeedleExtractorServiceImpl extends Service {
       const durationMs = Date.now() - start
       this.stats.needleLatencyMsTotal += durationMs
       if (!res.ok) {
-        // 422 / 503 / 502 统一 fail through(Phase 7 会细分)
+        // 422 / 503 / 502 统一 fail through(Phase 7 会细分)。
+        // §7.92.6 + dry-run #1:5xx → 开 breaker(timeout proxy 4xx/5xx
+        // 同样),4xx → 不开(client error,不代表 engine down)。
         const code = res.status
         const reason = code === 408 || code === 504 ? 'timeout_proxy' : `http_${code}`
         this.stats.needleTimeoutSkip += code === 408 || code === 504 ? 1 : 0
         this.audit('warn', code === 408 || code === 504 ? 'needle.timeout_skip' : 'needle.extract_failed', {
           sessionId, durationMs, status: code, reason,
         })
+        if (code >= 500 || code === 408 || code === 504) {
+          this.openBreaker('http_5xx')
+        }
         return null
       }
       const raw = await res.json() as Record<string, unknown>
@@ -464,6 +684,8 @@ export class NeedleExtractorServiceImpl extends Service {
           name: typeof c.name === 'string' ? c.name : '',
           arguments: c.arguments,
         }))
+      // §7.92.6:success → 关 breaker(让后续请求不再短跳)。idempotent。
+      this.closeBreaker()
       this.audit('info', 'needle.extract', {
         sessionId, durationMs, status: res.status,
         type, confidence, functionCallCount: calls.length,
@@ -482,6 +704,10 @@ export class NeedleExtractorServiceImpl extends Service {
       const isAbort = (err as { name?: string })?.name === 'AbortError' || controller.signal.aborted
       this.stats.needleTimeoutSkip += isAbort ? 1 : 0
       this.stats.needleExtractCalls += 0 // 计入了 1,但 timeout 也算 1 次 extract 调用;不双重计数
+      // §7.92.6 + dry-run #1:AbortError(本地 1.5s 超时)+ 其他网络错 → 开
+      // breaker。生产 needle 引擎当前 degradation 25x(timeout 几乎全
+      // 中),这是必要的设计应对。
+      this.openBreaker(isAbort ? 'timeout' : 'transport')
       this.audit('warn', isAbort ? 'needle.timeout_skip' : 'needle.extract_failed', {
         sessionId, durationMs, thrown: true,
         error: (err as { message?: string })?.message ?? String(err),
@@ -584,8 +810,22 @@ export class NeedleExtractorServiceImpl extends Service {
       decision = await next()
       // Gate 1:上游拒了 → 透传
       if (decision.kind === 'reject') return decision
-      // Gate 2:总开关关
-      if (!this.isAvailable()) return decision
+      // Gate 2:总开关关 或 breaker 打开(§7.92.6)。当 needleEnabled
+      // 开但 breaker 开时,显式落 needle.circuit_open_skip audit 便于
+      // 运维 grep "为什么 needle 不跑";needleEnabled=false 时静默
+      // 透传(总开关没开,没必要 audit 噪声)。
+      if (!this.isAvailable()) {
+        if (this.needleEnabled && Date.now() < this.needleBreakerOpenUntil) {
+          this.stats.needleCircuitSkip += 1
+          this.audit('info', 'needle.circuit_open_skip', {
+            sessionId: payload.agent?.session?.id,
+            needleUrl: this.needleUrl,
+            openUntilMs: this.needleBreakerOpenUntil,
+            remainingMs: this.needleBreakerOpenUntil - Date.now(),
+          })
+        }
+        return decision
+      }
       // Gate 3:sessionId 缺失(框架未就绪) → 透传
       const sessionId = payload.agent?.session?.id
       if (!sessionId) return decision

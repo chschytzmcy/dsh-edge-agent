@@ -694,3 +694,399 @@ describe('needle-extractor:Phase 5 ToolRunner 装配/执行边界', () => {
     assert.equal(svc.getStats().needleSynthesisInjected, 0)
   })
 })
+
+// ── 8. Phase 6:isAvailable breaker-aware ───────────────────────────────────
+
+describe('needle-extractor:Phase 6 isAvailable 与 breaker', () => {
+  it('isAvailable() 反映 needleEnabled + breaker 双重状态', () => {
+    const off = makeService({ needleEnabled: false }).svc
+    assert.equal(off.isAvailable(), false)
+    const on = makeService({ needleEnabled: true }).svc
+    assert.equal(on.isAvailable(), true)
+  })
+
+  it('getStats().needleCircuitOpen 初始 false(breaker 默认关闭)', () => {
+    const { svc } = makeService({ needleEnabled: true })
+    assert.equal(svc.getStats().needleCircuitOpen, false)
+  })
+})
+
+// ── 9. Phase 6:boot probe + breaker 预开 ──────────────────────────────────
+
+describe('needle-extractor:Phase 6 boot probe', () => {
+  it('boot probe 200 → breaker 不预开,needleBootProbeOk++', async () => {
+    const auditEntries: AuditEntry[] = []
+    const { ctx, logs } = makeCtx()
+    const baseCtx = ctx as any
+    baseCtx.auditLog = makeAuditLog(auditEntries)
+    baseCtx.fetch = (() => Promise.resolve(new Response('ok', { status: 200 }))) as any
+    const svc = new NeedleExtractorServiceImpl(baseCtx, { needleEnabled: true }, makeAuditLog(auditEntries))
+    svc.start()
+    // boot probe 是 fire-and-forget;给 microtask 时间 settle
+    await new Promise(r => setTimeout(r, 5))
+    const s = svc.getStats()
+    assert.equal(s.needleBootProbeOk, 1)
+    assert.equal(s.needleBootProbeFail, 0)
+    assert.equal(s.needleCircuitOpen, false, 'breaker 必须保持关闭')
+    // audit:needle.boot_probe ok=true
+    assert.ok(auditEntries.some(e => e.kind === 'needle.boot_probe'))
+    await svc.stop()
+  })
+
+  it('boot probe 非 2xx → breaker 预开 + 周期 probe 启动,needleBootProbeFail++', async () => {
+    const auditEntries: AuditEntry[] = []
+    const { ctx } = makeCtx()
+    const baseCtx = ctx as any
+    baseCtx.auditLog = makeAuditLog(auditEntries)
+    // 模拟 needle 还在暖机:503 + body
+    baseCtx.fetch = (() => Promise.resolve(new Response('loading', { status: 503 }))) as any
+    const svc = new NeedleExtractorServiceImpl(baseCtx, {
+      needleEnabled: true,
+      needleBootProbeTimeoutMs: 100,
+      needleBreakerProbeMs: 60_000, // 周期 probe 设很大,避免测试退出前反复触发
+      needleBreakerTtlMs: 5000,
+    }, makeAuditLog(auditEntries))
+    svc.start()
+    await new Promise(r => setTimeout(r, 10))
+    const s = svc.getStats()
+    assert.equal(s.needleBootProbeOk, 0)
+    assert.equal(s.needleBootProbeFail, 1)
+    assert.equal(s.needleCircuitOpen, true, 'breaker 必须预开')
+    // 周期 probe 已启动(timer 不为 null 通过 stats 间接验证 — 周期 probe
+    // 间隔很大所以本测试不会触发;但 openBreaker 路径一定走了 startBreakerProbe)
+    assert.ok(auditEntries.some(e => e.kind === 'needle.circuit_open'))
+    await svc.stop()
+    // stop() 必须清掉 timer(否则测试退出 hung)
+  })
+
+  it('boot probe network error → 同上:breaker 预开 + needleBootProbeFail++', async () => {
+    const auditEntries: AuditEntry[] = []
+    const { ctx } = makeCtx()
+    const baseCtx = ctx as any
+    baseCtx.auditLog = makeAuditLog(auditEntries)
+    baseCtx.fetch = (() => Promise.reject(new Error('ECONNREFUSED'))) as any
+    const svc = new NeedleExtractorServiceImpl(baseCtx, {
+      needleEnabled: true,
+      needleBootProbeTimeoutMs: 100,
+      needleBreakerProbeMs: 60_000,
+      needleBreakerTtlMs: 5000,
+    }, makeAuditLog(auditEntries))
+    svc.start()
+    await new Promise(r => setTimeout(r, 10))
+    const s = svc.getStats()
+    assert.equal(s.needleBootProbeFail, 1)
+    assert.equal(s.needleCircuitOpen, true)
+    await svc.stop()
+  })
+
+  it('needleBootProbeEnabled=false → 不发 probe + audit skipped', async () => {
+    const auditEntries: AuditEntry[] = []
+    const { ctx } = makeCtx()
+    const baseCtx = ctx as any
+    baseCtx.auditLog = makeAuditLog(auditEntries)
+    let fetchCalls = 0
+    baseCtx.fetch = (() => { fetchCalls++; return Promise.resolve(new Response('ok', { status: 200 })) }) as any
+    const svc = new NeedleExtractorServiceImpl(baseCtx, {
+      needleEnabled: true,
+      needleBootProbeEnabled: false,
+    }, makeAuditLog(auditEntries))
+    svc.start()
+    await new Promise(r => setTimeout(r, 5))
+    assert.equal(fetchCalls, 0, 'boot probe 关闭 → fetch 不被调用')
+    assert.ok(auditEntries.some(e => e.kind === 'needle.boot_probe.skipped'))
+    await svc.stop()
+  })
+
+  it('needleEnabled=false → start() no-op,不挂 probe 不挂 timer', async () => {
+    const { svc, entries } = makeListenerCtx({}) // needleEnabled=false(默认)
+    svc.start()
+    await new Promise(r => setTimeout(r, 5))
+    assert.equal(svc.getStats().needleBootProbeOk, 0)
+    assert.equal(svc.getStats().needleBootProbeFail, 0)
+    // 不应该有 needle.boot_probe.* audit(总开关没开)
+    assert.ok(!entries.some(e => e.kind === 'needle.boot_probe'))
+    await svc.stop()
+  })
+})
+
+// ── 10. Phase 6:open-on-first-failure 行为 ─────────────────────────────────
+
+describe('needle-extractor:Phase 6 extract 失败 → breaker 开', () => {
+  it('extract 1.5s 超时(AbortError)→ openBreaker(timeout)+ needleCircuitOpen=true', async () => {
+    const auditEntries: AuditEntry[] = []
+    const { ctx } = makeCtx()
+    const baseCtx = ctx as any
+    baseCtx.auditLog = makeAuditLog(auditEntries)
+    baseCtx.fetch = (() => new Promise((_resolve, reject) => {
+      // 模拟 1.5s 超时但永远不 resolve → AbortSignal 触发
+      setTimeout(() => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })), 50)
+    })) as any
+    const svc = new NeedleExtractorServiceImpl(baseCtx, {
+      needleEnabled: true,
+      needleTimeoutMs: 20,
+      needleBreakerProbeMs: 60_000,
+      needleBreakerTtlMs: 5000,
+    }, makeAuditLog(auditEntries))
+    const bridge = makeBridge('LOCAL', [{ name: 'bash', description: '', parameters: {} }])
+    ;(baseCtx as any).realmSkillBridge = bridge
+    const out = await svc.handlePreStep({
+      agent: { session: { id: 'sess-x' } },
+      messages: [{ role: 'user', content: 'ls' }],
+      step: 1,
+    }, async () => ({ kind: 'enter' as const, messages: [] }))
+    // 第一次请求 timeout → fall through + breaker 打开
+    assert.equal(out.kind, 'enter')
+    const s = svc.getStats()
+    assert.equal(s.needleTimeoutSkip, 1)
+    assert.equal(s.needleCircuitOpen, true, 'timeout 必须开 breaker(dry-run #1 强制要求)')
+    assert.ok(auditEntries.some(e => e.kind === 'needle.circuit_open' && (e.payload as any).reason === 'timeout'))
+    await svc.stop()
+  })
+
+  it('extract HTTP 503 → openBreaker(http_5xx)+ needleCircuitOpen=true', async () => {
+    const auditEntries: AuditEntry[] = []
+    const { ctx } = makeCtx()
+    const baseCtx = ctx as any
+    baseCtx.auditLog = makeAuditLog(auditEntries)
+    baseCtx.fetch = (() => Promise.resolve(new Response('busy', { status: 503 }))) as any
+    const svc = new NeedleExtractorServiceImpl(baseCtx, {
+      needleEnabled: true,
+      needleBreakerProbeMs: 60_000,
+      needleBreakerTtlMs: 5000,
+    }, makeAuditLog(auditEntries))
+    const bridge = makeBridge('LOCAL', [{ name: 'bash', description: '', parameters: {} }])
+    ;(baseCtx as any).realmSkillBridge = bridge
+    await svc.handlePreStep({
+      agent: { session: { id: 'sess-x' } },
+      messages: [{ role: 'user', content: 'ls' }],
+      step: 1,
+    }, async () => ({ kind: 'enter' as const, messages: [] }))
+    const s = svc.getStats()
+    assert.equal(s.needleCircuitOpen, true, '5xx 必须开 breaker')
+    assert.ok(auditEntries.some(e => e.kind === 'needle.circuit_open' && (e.payload as any).reason === 'http_5xx'))
+    await svc.stop()
+  })
+
+  it('extract HTTP 422 → 不开 breaker(client error 不是 engine down)', async () => {
+    const auditEntries: AuditEntry[] = []
+    const { ctx } = makeCtx()
+    const baseCtx = ctx as any
+    baseCtx.auditLog = makeAuditLog(auditEntries)
+    baseCtx.fetch = (() => Promise.resolve(new Response('bad request', { status: 422 }))) as any
+    const svc = new NeedleExtractorServiceImpl(baseCtx, {
+      needleEnabled: true,
+      needleBreakerProbeMs: 60_000,
+      needleBreakerTtlMs: 5000,
+    }, makeAuditLog(auditEntries))
+    const bridge = makeBridge('LOCAL', [{ name: 'bash', description: '', parameters: {} }])
+    ;(baseCtx as any).realmSkillBridge = bridge
+    await svc.handlePreStep({
+      agent: { session: { id: 'sess-x' } },
+      messages: [{ role: 'user', content: 'ls' }],
+      step: 1,
+    }, async () => ({ kind: 'enter' as const, messages: [] }))
+    assert.equal(svc.getStats().needleCircuitOpen, false, '4xx ≠ engine down → 不开')
+    // 无 needle.circuit_open audit
+    assert.ok(!auditEntries.some(e => e.kind === 'needle.circuit_open'))
+    await svc.stop()
+  })
+
+  it('extract 成功 → closeBreaker(若已开则关;未开则 no-op)', async () => {
+    const auditEntries: AuditEntry[] = []
+    const { ctx } = makeCtx()
+    const baseCtx = ctx as any
+    baseCtx.auditLog = makeAuditLog(auditEntries)
+    baseCtx.fetch = (() => Promise.resolve(new Response(JSON.stringify(NEEDLE_OK_CALL), { status: 200 }))) as any
+    const svc = new NeedleExtractorServiceImpl(baseCtx, {
+      needleEnabled: true,
+      needleBreakerProbeMs: 60_000,
+      needleBreakerTtlMs: 5000,
+    }, makeAuditLog(auditEntries))
+    const bridge = makeBridge('LOCAL', [{ name: 'bash', description: '', parameters: {} }])
+    ;(baseCtx as any).realmSkillBridge = bridge
+    // 第一次成功 — breaker 本来就是关的,closeBreaker no-op
+    await svc.handlePreStep({
+      agent: { session: { id: 'sess-x' } },
+      messages: [{ role: 'user', content: 'ls' }],
+      step: 1,
+    }, async () => ({ kind: 'enter' as const, messages: [] }))
+    assert.equal(svc.getStats().needleCircuitOpen, false)
+    await svc.stop()
+  })
+})
+
+// ── 11. Phase 6:handlePreStep Gate 2 circuit_open_skip ────────────────────
+
+describe('needle-extractor:Phase 6 Gate 2 短路', () => {
+  it('breaker 开着 + needle 启用 → handlePreStep 透传 + audit needle.circuit_open_skip + needleCircuitSkip++', async () => {
+    const auditEntries: AuditEntry[] = []
+    const { ctx } = makeCtx()
+    const baseCtx = ctx as any
+    baseCtx.auditLog = makeAuditLog(auditEntries)
+    // fetch 第一次 5xx,迫使 breaker 打开
+    let fetchCalls = 0
+    baseCtx.fetch = (() => {
+      fetchCalls++
+      return Promise.resolve(new Response('busy', { status: 503 }))
+    }) as any
+    const svc = new NeedleExtractorServiceImpl(baseCtx, {
+      needleEnabled: true,
+      needleBreakerProbeMs: 60_000,
+      needleBreakerTtlMs: 5000,
+    }, makeAuditLog(auditEntries))
+    const bridge = makeBridge('LOCAL', [{ name: 'bash', description: '', parameters: {} }])
+    ;(baseCtx as any).realmSkillBridge = bridge
+    const seed = { kind: 'enter' as const, messages: [{ role: 'user', content: 'ls' }] as any }
+    // 第一次请求:触发 5xx → breaker 打开
+    await svc.handlePreStep({ agent: { session: { id: 'sess-x' } }, messages: [{ role: 'user', content: 'ls' }], step: 1 }, async () => seed)
+    const fetchesAfterFirst = fetchCalls
+    // 第二次请求:breaker 已开 → Gate 2 短路 → fetch 不会被调用
+    const out = await svc.handlePreStep({ agent: { session: { id: 'sess-x' } }, messages: [{ role: 'user', content: 'ls' }], step: 1 }, async () => seed)
+    assert.deepEqual(out, seed)
+    assert.equal(fetchCalls, fetchesAfterFirst, 'breaker 开 → 不再发 fetch(节省 worst-case wall-clock)')
+    // 第二次应落 needle.circuit_open_skip audit
+    assert.ok(auditEntries.filter(e => e.kind === 'needle.circuit_open_skip').length >= 1)
+    assert.equal(svc.getStats().needleCircuitSkip, 1)
+    await svc.stop()
+  })
+
+  it('needleEnabled=false → handlePreStep Gate 2 透传 + 不 audit circuit_open_skip(总开关没开,不该有 audit 噪声)', async () => {
+    const auditEntries: AuditEntry[] = []
+    const { ctx } = makeCtx()
+    const baseCtx = ctx as any
+    baseCtx.auditLog = makeAuditLog(auditEntries)
+    const svc = new NeedleExtractorServiceImpl(baseCtx, { needleEnabled: false }, makeAuditLog(auditEntries))
+    const out = await svc.handlePreStep({
+      agent: { session: { id: 'sess-x' } },
+      messages: [{ role: 'user', content: 'ls' }],
+      step: 1,
+    }, async () => ({ kind: 'enter' as const, messages: [{ role: 'user', content: 'ls' }] as any }))
+    assert.equal(out.kind, 'enter')
+    assert.ok(!auditEntries.some(e => e.kind === 'needle.circuit_open_skip'))
+    await svc.stop()
+  })
+})
+
+// ── 12. Phase 6:周期 recovery probe ───────────────────────────────────────
+
+describe('needle-extractor:Phase 6 周期 recovery probe', () => {
+  it('周期 probe 命中 2xx → 关 breaker + 停 timer + needleRecoveredProbe++', async () => {
+    const auditEntries: AuditEntry[] = []
+    const { ctx } = makeCtx()
+    const baseCtx = ctx as any
+    baseCtx.auditLog = makeAuditLog(auditEntries)
+    // 周期 probe 设 30ms(快速触发),boot probe timeout 50ms
+    let probeCount = 0
+    baseCtx.fetch = (url: string) => {
+      probeCount++
+      // /health 命中 200 → recovery
+      if (url.endsWith('/health')) {
+        return Promise.resolve(new Response('ok', { status: 200 }))
+      }
+      return Promise.resolve(new Response('busy', { status: 503 }))
+    }
+    const svc = new NeedleExtractorServiceImpl(baseCtx, {
+      needleEnabled: true,
+      needleBootProbeTimeoutMs: 50,
+      needleBootProbeEnabled: true,
+      needleBreakerProbeMs: 30,
+      needleProbeTimeoutMs: 50,
+      needleBreakerTtlMs: 5000,
+    }, makeAuditLog(auditEntries))
+    const bridge = makeBridge('LOCAL', [{ name: 'bash', description: '', parameters: {} }])
+    ;(baseCtx as any).realmSkillBridge = bridge
+    // boot probe 会失败(/extract 路由失败;但 boot probe 走 /health)
+    // 等等:boot probe 也走 /health,而 fetch mock 给 /health → 200。
+    // 那 boot probe 会成功,breaker 不开。
+    // 改:让 boot probe 走 /health,但 seed breaker 打开通过先发一个 5xx
+    // 然后 periodic probe 命中 /health 200 → 关。
+    svc.start()
+    await new Promise(r => setTimeout(r, 20))
+    // boot probe 成功 → breaker 没开
+    assert.equal(svc.getStats().needleBootProbeOk, 1)
+    // 强制开 breaker:发一个 5xx extract
+    await svc.handlePreStep({ agent: { session: { id: 'sess-x' } }, messages: [{ role: 'user', content: 'ls' }], step: 1 }, async () => ({ kind: 'enter' as const, messages: [] }))
+    assert.equal(svc.getStats().needleCircuitOpen, true, '5xx → breaker 开')
+    // 周期 probe 30ms 后命中 /health 200 → 关
+    await new Promise(r => setTimeout(r, 100))
+    assert.equal(svc.getStats().needleRecoveredProbe, 1, '周期 probe 命中 2xx → recovered')
+    assert.equal(svc.getStats().needleCircuitOpen, false, 'breaker 已关')
+    // audit:needle.recovered
+    assert.ok(auditEntries.some(e => e.kind === 'needle.recovered'))
+    await svc.stop()
+  })
+
+  it('周期 probe 仍 5xx → breaker 保持开 + needleProbeAttempts++(继续探)', async () => {
+    const auditEntries: AuditEntry[] = []
+    const { ctx } = makeCtx()
+    const baseCtx = ctx as any
+    baseCtx.auditLog = makeAuditLog(auditEntries)
+    // 全 fail:boot probe /health 也 5xx
+    baseCtx.fetch = (() => Promise.resolve(new Response('still down', { status: 503 }))) as any
+    const svc = new NeedleExtractorServiceImpl(baseCtx, {
+      needleEnabled: true,
+      needleBootProbeTimeoutMs: 50,
+      needleBreakerProbeMs: 30,
+      needleProbeTimeoutMs: 50,
+      needleBreakerTtlMs: 5000,
+    }, makeAuditLog(auditEntries))
+    svc.start()
+    await new Promise(r => setTimeout(r, 20))
+    assert.equal(svc.getStats().needleBootProbeFail, 1)
+    assert.equal(svc.getStats().needleCircuitOpen, true)
+    // 等 100ms,周期 probe 应该抢一次
+    await new Promise(r => setTimeout(r, 80))
+    assert.ok(svc.getStats().needleProbeAttempts >= 1, '周期 probe 持续尝试')
+    assert.equal(svc.getStats().needleCircuitOpen, true, 'breaker 仍开')
+    assert.equal(svc.getStats().needleRecoveredProbe, 0)
+    await svc.stop()
+  })
+})
+
+// ── 13. Phase 6:stop() lifecycle ───────────────────────────────────────────
+
+describe('needle-extractor:Phase 6 stop()', () => {
+  it('stop() 清 timer(不挂 setInterval 阻进程退出)', async () => {
+    const { ctx } = makeCtx()
+    const baseCtx = ctx as any
+    baseCtx.fetch = (() => Promise.resolve(new Response('down', { status: 503 }))) as any
+    const svc = new NeedleExtractorServiceImpl(baseCtx, {
+      needleEnabled: true,
+      needleBootProbeTimeoutMs: 30,
+      needleBreakerProbeMs: 30,
+      needleBreakerTtlMs: 5000,
+    })
+    svc.start()
+    await new Promise(r => setTimeout(r, 50))
+    // 此时周期 probe timer 应在跑
+    await svc.stop()
+    // stop 之后:再 sleep 100ms,不应再有新 probe 计数
+    const attemptsBefore = svc.getStats().needleProbeAttempts
+    await new Promise(r => setTimeout(r, 80))
+    const attemptsAfter = svc.getStats().needleProbeAttempts
+    // 允许 ≤1 误差(已经 schedule 的 timer 在 stop 之前抢了一次)
+    assert.ok(attemptsAfter - attemptsBefore <= 1, 'stop 后 timer 必须清掉,probe 不再尝试')
+  })
+
+  it('stop() await in-flight boot probe(不让 dangling fetch 留下)', async () => {
+    const { ctx } = makeCtx()
+    const baseCtx = ctx as any
+    let bootProbeResolved = false
+    baseCtx.fetch = (() => new Promise<Response>(r => setTimeout(() => {
+      bootProbeResolved = true
+      r(new Response('ok', { status: 200 }))
+    }, 30))) as any
+    const svc = new NeedleExtractorServiceImpl(baseCtx, {
+      needleEnabled: true,
+      needleBootProbeTimeoutMs: 100,
+      needleBootProbeEnabled: true,
+      needleBreakerProbeMs: 60_000,
+      needleBreakerTtlMs: 5000,
+    })
+    svc.start()
+    // 立刻 stop,boot probe 还没 resolve
+    await svc.stop()
+    assert.ok(bootProbeResolved, 'stop() 必须 await boot probe settle')
+    assert.equal(svc.getStats().needleBootProbeOk, 1, 'boot probe 完成后 needleBootProbeOk++')
+  })
+})
