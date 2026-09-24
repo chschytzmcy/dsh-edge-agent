@@ -9314,3 +9314,66 @@ patch yml line 359 是 `[auditLog, skills, edgeTools, tools]` —— 之前 sour
 8. **HTML 描述里魔法字符串(`kind: 'reject'` / `'realm-blocked'` / `ops.jsonl`)要跟 source 1:1**。我之前写文档时为了简洁用了字面量字符串(`'realm-blocked'`),没意识到这是**关键字 grep 锚点** —— 排查 log 时 grep `'reject'` 找不到、grep `'realm-blocked'` 也找不到,debug 时间白白浪费。教训:**log 关键字 / 路径 / kind 字符串在文档里要跟 source 100% 一致**,不能简化或意译。
 9. **session/event × N 这种计数** 在 stage-title 里如果 N != listener 实际数,要写明是"× N types"还是"× N listener"。我之前写 `× 3` 没注单位,读者会以为是 3 个 listener,实际是 1 个 listener × 3 event type。教训:**计数单位要明示**(listener / type / 回调函数 等)。
 
+
+**§7.93 needle-extractor — cactus-needle 3.0.1 作为 LOCAL LLM tool-call prefill(2026-09-24 完成)**
+
+**痛点**:minicpm5-2b @ LAN 192.168.1.174:8911 的 function-calling 弱,§7.42 P0-1 文档 malformed tool_call(XML fragment + finish_reason=tool_calls)浪费 1-3s/chat。cactus-needle 3.0.1(8MB tool-call foundation model)在 ~/work/needle,user 已实测 production 抽取质量比大模型好 10x。
+
+**架构(locked)**:needle 只做提取,**不翻译不执行**(translation + execution 都在 client);dsh-edge-agent 执行 realm/PII/audit 不绕过;最终整段对话给 LOCAL LLM 合成回复。所有失败 fall through 到 §7.42 P0-1 LLM 自提取路径(needle 是 prefill 不是替代)。
+
+**实现 — 9 Phase 全部 committed**:
+
+| Phase | 状态 | commit | 累计测试 |
+|---|---|---|---|
+| 1 服务端 eval | ✅ 外部 session | — | — |
+| 2 getToolSchemasForNeedle + :8081 | ✅ | e3f6eb1 | 58 |
+| 3 tool-runner(needle function_calls TS 执行边界) | ✅ | 76287ce | +20 = 78 |
+| 4 needle-extractor 骨架(9 字段 schema + audit + ToolRunner 装配) | ✅ | 0d1ac4e | +20 = 98 |
+| 5 waterfall listener(agent/pre-step) | ✅ | bb4465c | +21 = 119 |
+| 5.amend 裁掉 client 翻译(管什么语种 needle 直接用) | ✅ | eb4c4d7 | -4 = 115 |
+| 6 circuit breaker + boot probe + periodic recovery | ✅ | 5c09176 | +17 = 132 |
+| 7 失败路径细分(422/503/502/timeout) | ✅ | faa735e | +10 = 142 |
+| 8 E2E + bench scripts | ✅ | 098008c | (Phase 9 后运行) |
+| 9 部署(cordis.patch.yml + .env + install.sh) | ✅ | 见下 commit | 918 全量 |
+
+**Phase 5 关键架构修正**(原计划错):
+- 注入点**不是** `agent/request`(只 config-only,无 messages,request 被 deepFreeze 锁死)
+- 真实点在 `agent/pre-step`:decision.messages → user/message events → deriveMessages
+- assistant tool_call role 在该 hook 不可达 → 只追加 **user-role message**(createUserMessage + 文本描述执行结果)
+- `assembly.tools` 在 pre-step 前已锁 → 不可清 tools,接受 P0-1 兜底
+- **plugin apply 顺序**:needle-extractor **必须早于** input-guard(needle 的 `await next()` 串到 input-guard,等 input-guard 的 classify + setSessionRealm 完成后才看得到本 turn 的 realm)
+
+**Phase 6 关键设计**(与 jev §7.92.6 差异):
+- jev 是"all-batches 失败才开" → needle 单 fetch 等价于"这一发失败" → **open-on-first-failure**
+- **timeout 必须计入 breaker 失败**(dry-run #1:engine 当前 degradation 25x,1.5s timeout 几乎全中,4xx 不开)
+
+**Phase 7 失败矩阵**:
+| code + body | retry? | openBreaker | reason |
+|---|---|---|---|
+| 422 invalid body | ❌ | ❌ | invalid_body_422 |
+| 503 + body 'loading' | ❌ | ✅ http_5xx | 503_loading |
+| 503 + body 'busy' | ✅ 200ms | ✅ if retry 503 | 503_busy |
+| 502 | ✅ 200ms | ✅ if retry 502 | http_502 |
+| 408/504 timeout proxy | ❌ | ✅ timeout | timeout_proxy |
+| 其他 5xx | ❌ | ✅ http_5xx | http_<code> |
+| AbortError | ❌ | ✅ timeout | — |
+| 其他网络错 | ❌ | ✅ transport | — |
+| no fetcher | ❌ | ✅ transport | no_fetch_runtime |
+
+**部署(patch + install.sh 接线)**:
+- `cordis.patch.yml` 加 `- id: needle-extractor` 行,**早于 input-guard**(已 diff 验过 line 583 vs 605);env 翻译层 9 字段全有
+- `.env.sh` §7.93 段去掉 NEEDLE_TRANSLATE_*(Phase 5 amend 后裁 3 env)
+- `.env.example` 同步
+- install.sh 不需改:`§2.5 rsync lib/` + `§2.6 cp cordis.patch.yml` 自动捎上 needle-extractor
+- **boot-verify 实测**:`cd ~/.dsh/profiles/dsh-edge && dsh --profile dsh-edge --dump-config 2>&1 | grep -A12 needle-extractor` → 输出完整 inject+config 块,**PASS**
+
+**E2E/bench 脚本(Phase 8 交付,Phase 9 后可运行)**:
+- `scripts/e2e-needle-extractor-zh-weather.sh` — 中文天气 query → 断言 audit chain(needle.boot_probe + needle.extract + needle.synthesis_injected + needle.executed)+ LLM 响应含天气关键字;Phase 9 前置 grep `[needle-extractor] boot enabled=true`,缺则 fail-fast
+- `scripts/e2e-needle-extractor-bench.sh` — baseline vs needle latency/malformed 对比,5 query × iter 轮 → `dist/bench-needle-${TS}/report.md`(git-ignored);Phase 9 未完时自动退化为 baseline-only + WARN
+- 2 脚本都支持 `--dry-run` 独立验证
+
+**dry-run #1 (Phase 4.5) 预期 bench 解读**:needle engine 当前 25x degradation → circuit_open 第一个请求就触发 timeout → 后续 0ms 短路;needle p50 ≈ 0ms,malformed stays at baseline rate。等 user `docker restart needle-http` 后 bench 才能体现真实收益(p50 ≈ 400-600ms + malformed → 0)。
+
+**已知风险 + 推迟项**:
+1. LLM 仍可能再 call 已执行 tool → §7.42 P0-1 + Layer 3 + 合成 prompt 强指令兜底;真正去重门(gate at tools/pre-execute 拒重 call 同名+同 args)推迟
+2. `req.sessionId` / `payload.signal` 透传确保宿主取消信号能传到 needle fetch + ToolRunner.execute
