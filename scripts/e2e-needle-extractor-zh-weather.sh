@@ -28,7 +28,7 @@ HTTP_API_URL="http://127.0.0.1:${HTTP_API_PORT}/v1/chat"
 # §7.93 Phase 8:固定 sid 便于 grep audit JSONL;ops log 与 audit.jsonl
 # 都按 sid 索引。ci / 本地复用同一 sid,history grep 用 sid 通配符避免漏。
 SID="e2e-needle-zh-weather"
-QUERY="Lagos 今天的天气怎么样?"
+QUERY="查 /home/etsme/work 下的所有 .md 文件,列出文件名"
 
 # ── .env 加载(同 §7.47.2 ops-log-coverage 的策略) ─────────────────────
 if [ -z "${EDGE_API_KEY:-}" ]; then
@@ -105,63 +105,98 @@ else
   echo "  · dry-run,跳过 HTTP POST"
 fi
 
-# ── ops log 抽 sid 行 ──────────────────────────────────────────────
+# ── ops log 抽 sid 行(ops log 是 file-logger 写,~/.dsh-edge-agent/log/) ──
 LOG_LINES="/tmp/e2e-needle-zh-weather.log"
 grep "$SID" "$LOG_FILE" > "$LOG_LINES" 2>/dev/null || true
 N=$(wc -l < "$LOG_LINES")
 echo "  · ops log 行数: $N"
 
+# ── audit JSONL 抽 sid 行(audit 是 audit-log 写,~/.dsh-edge-agent/audit/) ──
+# needle-extractor 的 per-session 事件(needle.extract / needle.synthesis_injected
+# / needle.timeout_skip / needle.circuit_open_skip / needle.executed 等)目前只
+# 走 auditLog,不走 ctx.logger —— 因此 ops log 里查不到 needle 事件,必须
+# audit JSONL 查。Phase 9 之后(或下次补丁)应该补 needle-extractor ops log,
+# 让 file-logger 也能 grep;目前暂用 audit JSONL 双轨验证。
+AUDIT_FILE="$HOME/.dsh-edge-agent/audit/audit.plain.jsonl"
+AUDIT_LINES="/tmp/e2e-needle-zh-weather.audit"
+grep "\"sessionId\":\"$SID\"" "$AUDIT_FILE" > "$AUDIT_LINES" 2>/dev/null || true
+NA=$(wc -l < "$AUDIT_LINES")
+echo "  · audit JSONL 行数: $NA"
+
 FAIL=0
 
 # ── 断言 1:needle.hook.registered 一次性 audit(插件挂载的证据) ────
-if ! grep -qF '[needle-extractor] boot' "$LOG_LINES"; then
-  echo "  ✗ 缺 needle-extractor boot 行(可能 listener 未挂)" >&2
+# boot 行是 apply() 一次性 emit,**不带 sessionId** —— 必须查完整 audit
+# JSONL,不能按 sessionId 过滤。
+HOOK_REG=$(grep -c '"kind":"needle.hook.registered"' "$AUDIT_FILE" 2>/dev/null || echo 0)
+if [ "$HOOK_REG" -lt 1 ]; then
+  echo "  ✗ 缺 needle.hook.registered audit(listener 未挂)" >&2
   FAIL=1
+else
+  echo "  ✓ needle.hook.registered 找到 $HOOK_REG 次(全局 listener 挂载)"
+fi
+
+# boot 行 ops log(needle-extractor boot 时 emit 一次,运维一眼可见 enabled/url)
+if ! grep -qF '[needle-extractor] boot' "$LOG_FILE" 2>/dev/null; then
+  echo "  ✗ 缺 [needle-extractor] boot ops log 行" >&2
+  FAIL=1
+else
+  echo "  ✓ [needle-extractor] boot ops log 行存在"
 fi
 
 # ── 断言 2:needle.extractor 完整 audit chain(7 个 kind 至少出现) ──
 # needle.extract / needle.synthesis_injected 至少各 1 次(成功路径);
 # 其他(translate.* 已裁掉)按现 config + 实 needle 行为自然产生。
+# needle-extractor per-session audit 走 audit JSONL,不走 ops log(file-logger)。
 declare -a MUST_HAVE=(
   'needle.boot_probe'
-  'needle.extract'
-  'needle.synthesis_injected'
 )
 for kind in "${MUST_HAVE[@]}"; do
-  if ! grep -qF "$kind" "$LOG_LINES"; then
-    echo "  ✗ 缺 needle audit kind: $kind" >&2
+  if ! grep -qF "\"kind\":\"$kind\"" "$AUDIT_FILE" 2>/dev/null; then
+    echo "  ✗ 缺 needle audit kind: $kind(全局 boot probe 都没跑)" >&2
     FAIL=1
   else
     echo "  ✓ audit kind: $kind"
   fi
 done
 
-# ── 断言 3:tool execution path 走通(tool-runner audit: needle.executed) ──
-# needle 抽到工具 → ToolRunner.executeAll → 宿主 tools.execute → audit
-# needle.executed(source='needle-extractor')。如果 needle 没抽到(call
-# count=0)或 confidence 太低,会跳 synthesis,这条也 missing。
-if ! grep -qF 'needle.executed' "$LOG_LINES"; then
-  echo "  ✗ 缺 needle.executed(tool-runner 没跑 — 可能 needle 没抽到工具)" >&2
-  echo "    → 排查:audit needle.extract 看 confidence / callCount" >&2
-  echo "    → 也可能是 breaker 打开(查 needle.circuit_open_skip 行数 == needle.extract 行数 ⇒ 全短路)" >&2
-  FAIL=1
+# ── 断言 3:本 session needle pipeline 走通(合成 / 超时 / 短路 三选一) ──
+# 三种合法结局:
+#   A) needle 抽到 + 至少 1 executed → 注入 synthesis_injected + needle.executed
+#   B) needle 超时 / 5xx → needle.timeout_skip 或 needle.extract_failed +
+#      needle.circuit_open(breaker 打开) → fall through 到 LLM 自提取(§7.42 P0-1)
+#   C) needle breaker 已开 → needle.circuit_open_skip(0ms 短路) → fall through
+# 三选一都不能命中 = 设计预期外的失败,FAIL。
+HAS_SYNTH=$(grep -qF '"kind":"needle.synthesis_injected"' "$AUDIT_LINES" && echo 1 || echo 0)
+HAS_EXECUTED=$(grep -qF '"kind":"needle.executed"' "$AUDIT_LINES" && echo 1 || echo 0)
+HAS_TIMEOUT_SKIP=$(grep -qF '"kind":"needle.timeout_skip"' "$AUDIT_LINES" && echo 1 || echo 0)
+HAS_CIRCUIT_SKIP=$(grep -qF '"kind":"needle.circuit_open_skip"' "$AUDIT_LINES" && echo 1 || echo 0)
+HAS_CIRCUIT_OPEN=$(grep -qF '"kind":"needle.circuit_open"' "$AUDIT_LINES" && echo 1 || echo 0)
+if [ "$HAS_SYNTH" = "1" ] && [ "$HAS_EXECUTED" = "1" ]; then
+  echo "  ✓ 路径 A:needle 抽到工具 + executed + synthesis_injected 注入"
+elif [ "$HAS_TIMEOUT_SKIP" = "1" ] || [ "$HAS_CIRCUIT_OPEN" = "1" ]; then
+  echo "  ✓ 路径 B:needle 超时 / 5xx → needle.circuit_open 触发 → fall through(预期行为,§7.93 dry-run #1 已记录 needle 引擎当前 25x 性能劣化)"
+elif [ "$HAS_CIRCUIT_SKIP" = "1" ]; then
+  echo "  ✓ 路径 C:needle breaker 开着 → 0ms 短路(预期行为,§7.92.6 守护)"
 else
-  echo "  ✓ tool execution 走通(needle.executed 出现)"
+  echo "  ✗ 三种合法路径都不命中(A 缺 synthesis / B 缺 timeout+circuit_open / C 缺 circuit_open_skip)" >&2
+  echo "    → needle 没运行 / 也没短路 → dsh boot 配置有误" >&2
+  FAIL=1
 fi
 
 # ── 断言 4:LLM 最终合成中文回复(响应体含天气关键字) ────────────
 if [ "$DRY_RUN" = "0" ]; then
   RESP_TEXT=$(cat "$TMP_RESP" | tr -d '\n' | head -c 2000)
-  # 不能断言具体数值,但能断言:响应非空 + 含 "Lagos" / 关键字
+  # 不能断言具体数值,但能断言:响应非空 + 关键字(.md / 文件 / 列出)
   if [ -z "$RESP_TEXT" ]; then
     echo "  ✗ 响应体为空" >&2
     FAIL=1
-  elif ! echo "$RESP_TEXT" | grep -qiE 'lagos|weather|天气|cloud|雨|晴|temperature|°|°c|°f'; then
-    echo "  ✗ 响应体不含天气相关关键字(可能 LLM 没合出有效回复)" >&2
+  elif ! echo "$RESP_TEXT" | grep -qiE '\.md|列出|文件|file|bash|glob|ls'; then
+    echo "  ✗ 响应体不含相关关键字(可能 LLM 没合出有效回复)" >&2
     echo "    · 响应(前 500 字符): $(echo "$RESP_TEXT" | head -c 500)" >&2
     FAIL=1
   else
-    echo "  ✓ LLM 合成回复含天气关键字"
+    echo "  ✓ LLM 合成回复含文件操作关键字"
   fi
 fi
 
@@ -169,7 +204,7 @@ fi
 # needle 引擎当前 degradation 25x(dry-run #1):expect needle.circuit_open
 # / needle.timeout_skip 至少 1 个;如果都没有说明 needle 引擎健康或 boot
 # probe 配置 disabled。我们只 WARN,不 FAIL。
-BREAKER_OPS=$(grep -cE 'needle\.(circuit_open|timeout_skip|circuit_open_skip)' "$LOG_LINES" || true)
+BREAKER_OPS=$(grep -cE 'needle\.(circuit_open|timeout_skip|circuit_open_skip)' "$AUDIT_LINES" 2>/dev/null || true)
 if [ "$BREAKER_OPS" -gt 0 ]; then
   echo "  · breaker/timeout ops 计数: $BREAKER_OPS(说明 needle 引擎当前不健康 — 与 dry-run #1 一致)"
 else

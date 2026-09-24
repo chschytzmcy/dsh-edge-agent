@@ -81,7 +81,7 @@ const EXPECTED_DEFAULTS = {
   needleBootProbeEnabled: true,
   needleBootProbeTimeoutMs: 2000,
   needleBreakerProbeMs: 5000,
-  needleProbeTimeoutMs: 1000,
+  needleProbeTimeoutMs: 2000,
 } as const
 
 // ── 1. plugin 面 ────────────────────────────────────────────────────────────

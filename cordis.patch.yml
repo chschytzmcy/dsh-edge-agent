@@ -601,7 +601,7 @@
         needleBootProbeEnabled: !!js process.env.DSH_EDGE_NEEDLE_BOOT_PROBE_ENABLED !== 'false'
         needleBootProbeTimeoutMs: !!js parseInt(process.env.DSH_EDGE_NEEDLE_BOOT_PROBE_TIMEOUT_MS ?? '2000', 10)
         needleBreakerProbeMs: !!js parseInt(process.env.DSH_EDGE_NEEDLE_BREAKER_PROBE_MS ?? '5000', 10)
-        needleProbeTimeoutMs: !!js parseInt(process.env.DSH_EDGE_NEEDLE_PROBE_TIMEOUT_MS ?? '1000', 10)
+        needleProbeTimeoutMs: !!js parseInt(process.env.DSH_EDGE_NEEDLE_PROBE_TIMEOUT_MS ?? '2000', 10)
     - id: input-guard
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/input-guard'
       inject: [promptGuard, privacyPolicy, intentRouter, sanitizer, auditLog]

@@ -150,7 +150,7 @@ export const Config: Schema<Config> = Schema.object({
   needleBootProbeEnabled: Schema.boolean().default(true),
   needleBootProbeTimeoutMs: Schema.natural().default(2000),
   needleBreakerProbeMs: Schema.natural().default(5000),
-  needleProbeTimeoutMs: Schema.natural().default(1000),
+  needleProbeTimeoutMs: Schema.natural().default(2000),
 })
 
 /** In-memory counters exposed via getStats(). Pure observability. */
@@ -264,7 +264,7 @@ export class NeedleExtractorServiceImpl extends Service {
     this.needleBootProbeEnabled = config.needleBootProbeEnabled ?? true
     this.needleBootProbeTimeoutMs = config.needleBootProbeTimeoutMs ?? 2000
     this.needleBreakerProbeMs = config.needleBreakerProbeMs ?? 5000
-    this.needleProbeTimeoutMs = config.needleProbeTimeoutMs ?? 1000
+    this.needleProbeTimeoutMs = config.needleProbeTimeoutMs ?? 2000
 
     this.stats = {
       needleEnabled: this.needleEnabled,
