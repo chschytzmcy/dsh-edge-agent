@@ -87,10 +87,39 @@ export interface GlobalConstraints {
 
 export interface PrivacyPolicy {
   version: string
+  /** §7.92.3 (2026-09-23): Intent category specs. Single source of truth
+   *  shared by:
+   *  - intent-router.classifyWithLlm() → builds LLM prompt listing each
+   *    category's `description` (replaces the hardcoded prompt block at
+   *    intent-router.ts:1046-1048).
+   *  - intent-router.classifyWithJev() → builds jev-intent → category map
+   *    by iterating each category's `jevIntents` array (replaces the
+   *    hardcoded JEV_INTENT_MAP_DEFAULT const).
+   *  Operators extend by adding entries to either field; unknown jev-intent
+   *  strings fall through to LLM (defensive). */
+  categories?: IntentCategory[]
   routingRules: RoutingRule[]
   sanitizationRules: SanitizationRule[]
   dataClassifications: DataClassification[]
   globalConstraints: GlobalConstraints
+}
+
+/** §7.92.3: One row per intent category. Used by both LLM (description)
+ *  and jev (jevIntents) so they share a single taxonomy. */
+export interface IntentCategory {
+  /** Category id (matches Intent.category + RoutingRule.realm). */
+  id: 'LOCAL' | 'CLOUD' | 'SANITIZED' | 'REJECT'
+  /** Human-readable description used in the LLM classifier prompt
+   *  (intent-router.classifyWithLlm). Replaces the previous hardcoded
+   *  "本地文件操作..." / "知识问答..." block. */
+  description: string
+  /** Optional example queries — for human readability in the JSON file
+   *  and future eval suites. NOT used at runtime. */
+  examples?: string[]
+  /** jev semantic intent labels that should map to this category.
+   *  intent-router builds a flat `jevIntent → category` lookup at
+   *  construction time by iterating every category's `jevIntents`. */
+  jevIntents: string[]
 }
 
 export interface PrivacyPolicyService {
@@ -100,6 +129,10 @@ export interface PrivacyPolicyService {
   getSanitizationRules(): SanitizationRule[]
   getClassifications(): DataClassification[]
   getConstraints(): GlobalConstraints
+  /** §7.92.3: returns the categories array (may be empty if the loaded
+   *  policy predates v1.6.0). Callers must guard with a built-in
+   *  fallback when the array is empty. */
+  getCategories(): IntentCategory[]
   /** Match input against routing rules; returns first match or null. */
   matchRouting(text: string): RoutingRule | null
   /** Classify data based on patterns; returns classification class. */
@@ -117,7 +150,41 @@ declare module '@deepseek-ai/cordis' {
  * Default policy used when no policy file exists or loading fails.
  */
 const DEFAULT_POLICY: PrivacyPolicy = {
-  version: '1.2.0',
+  // §7.92.3 (2026-09-23): bumped from '1.2.0' to '1.6.0' so the policy
+  // file's getCategories() returns the new categories[] spec. The hardcoded
+  // DEFAULT_POLICY below mirrors the v1.6.0 schema (categories added).
+  version: '1.6.0',
+  categories: [
+    {
+      id: 'LOCAL',
+      description: '本地文件操作、设备控制、数学计算、系统管理',
+      examples: ['帮我读一下文件', '看一下磁盘空间', '计算 1+1'],
+      jevIntents: ['设备控制', '文件操作', 'device_control', 'file_ops'],
+    },
+    {
+      id: 'CLOUD',
+      description: '知识问答、聊天、创意写作、需要联网的任务',
+      examples: ['今天北京天气', '翻译这段英文', '写一首诗'],
+      jevIntents: ['知识问答', '通用咨询', '天气', '翻译', '新闻', '搜索', 'knowledge', 'weather', 'translation', 'news', 'search'],
+    },
+    {
+      id: 'SANITIZED',
+      description: '包含 PII 需先脱敏后路由（订单查询、账户管理、客服等含个人信息）',
+      examples: ['查我的订单状态', '我的账户余额', '我要退款'],
+      jevIntents: [
+        '订单查询', '订单状态', '物流跟踪', '物流查询', '快递查询',
+        '退款申请', '退款查询', '账户管理', '账户余额', '账户信息',
+        '客服', '售后服务',
+        'order_inquiry', 'refund', 'refund_request', 'logistics', 'account', 'customer_service',
+      ],
+    },
+    {
+      id: 'REJECT',
+      description: '高危 / 违法 / 违规请求（危险系统操作、投诉、法务）',
+      examples: ['rm -rf /', '我要投诉', '怎么告别人'],
+      jevIntents: ['投诉', '法务咨询', '法律咨询', '举报', 'complaint', 'legal', 'legal_advice'],
+    },
+  ],
   routingRules: [
     // REJECT rules — must come first (first-match-wins)
     // Only business-dangerous operations; attack patterns handled by prompt-guard
@@ -329,6 +396,13 @@ export class PrivacyPolicyServiceImpl extends Service implements PrivacyPolicySe
 
   getConstraints(): GlobalConstraints {
     return this.policy.globalConstraints
+  }
+
+  /** §7.92.3 (2026-09-23): returns the intent categories spec table.
+   *  Falls back to [] when the loaded policy predates v1.6.0 — callers
+   *  must guard with their own built-in defaults in that case. */
+  getCategories(): IntentCategory[] {
+    return this.policy.categories ?? []
   }
 
   /** Match input against routing rules; returns first match or null. */

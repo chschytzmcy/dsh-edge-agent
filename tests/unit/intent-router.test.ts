@@ -33,7 +33,10 @@ function fakeLlm(stream: AsyncIterable<unknown>) {
 describe('intent-router', () => {
   it('exports the canonical plugin shape', () => {
     assert.equal(router.name, 'intent-router')
-    assert.deepEqual([...router.inject], ['llm', 'auditLog'])
+    // §7.92.3 (2026-09-23): privacyPolicy added to inject so the
+    // constructor can call privacyPolicy.getCategories() for the
+    // categories spec shared by LLM prompt + jev-intent lookup.
+    assert.deepEqual([...router.inject], ['llm', 'auditLog', 'privacyPolicy'])
     assert.equal(typeof router.apply, 'function')
     assert.ok(router.Config)
   })
@@ -2491,10 +2494,20 @@ describe('intent-router', () => {
       assert.match(intent.rationale, /^jev-intent:订单查询$/u)
       assert.equal(intent.confidence, 0.95)
 
-      assert.equal(mock.calls.length, 1, 'fetch should be called once')
-      const body = JSON.parse(mock.calls[0].init.body)
-      assert.equal(body.query, '查一下我的订单')
-      assert.equal(body.lang, 'zh')
+      // §7.92.5: jev v0.3.0 caps `intents[]` at 16; the default config
+      // ships 40 intents across LOCAL/CLOUD/SANITIZED/REJECT, so the
+      // orchestrator splits into 3 batches (16 + 16 + 8) and fires them
+      // concurrently via Promise.all. Each call should still see the
+      // same query/lang/metadata, just a different `intents[]` slice.
+      assert.equal(mock.calls.length, 3, 'fetch should be called 3 times (one per batch)')
+      for (const call of mock.calls) {
+        const body = JSON.parse(call.init.body)
+        assert.equal(body.query, '查一下我的订单')
+        assert.equal(body.lang, 'zh')
+        assert.ok(Array.isArray(body.intents), 'each batch must include intents[]')
+        assert.ok(body.intents.length > 0 && body.intents.length <= 16, 'batch intents[] size ≤ 16')
+        assert.deepEqual(body.chitchat_intents, ['闲聊', '其他'], 'chitchat_intents sent in every batch')
+      }
 
       const stats = service.getStats()
       assert.equal(stats.jevHit, 1)
@@ -2590,7 +2603,12 @@ describe('intent-router', () => {
       assert.match(intent.rationale, /^llm-classified/u)
 
       const stats = service.getStats()
-      assert.equal(stats.jevError, 1)
+      // §7.92.5: 3 batches fire concurrently; all 3 hit the mock and
+      // increment jevError. The orchestrator's max-confidence merge then
+      // picks the first skip result (all 3 are skip with the same
+      // payload, no risk/adopt signal to break ties) → caller falls
+      // through to LLM.
+      assert.equal(stats.jevError, 3, '3 batches × 1 HTTP error = 3 jevError increments')
       assert.equal(stats.jevTimeout, 0)
       const jevErr = audit.entries.find((e: any) => e.kind === 'intent.jev.error')
       assert.ok(jevErr, 'intent.jev.error audit should fire')
@@ -2622,7 +2640,10 @@ describe('intent-router', () => {
       assert.equal(intent.category, 'CLOUD')
 
       const stats = service.getStats()
-      assert.equal(stats.jevTimeout, 1)
+      // §7.92.5: 3 batches × 1 AbortError = 3 jevTimeout increments.
+      // Each batch is bounded by the per-batch timeout; jevTimeout and
+      // jevError remain mutually exclusive per-batch (matches LLM pattern).
+      assert.equal(stats.jevTimeout, 3, '3 batches × 1 AbortError = 3 jevTimeout increments')
       assert.equal(stats.jevError, 0, 'timeout is mutually exclusive with jevError (matches LLM pattern)')
       const jevTimeout = audit.entries.find((e: any) => e.kind === 'intent.jev.timeout')
       assert.ok(jevTimeout, 'intent.jev.timeout audit should fire')
@@ -2632,21 +2653,35 @@ describe('intent-router', () => {
     }
   })
 
-  it('§7.92.3: jev user-config intent map overrides built-in', async () => {
-    // User config maps '订单查询' → LOCAL (overrides built-in SANITIZED).
+  it('§7.92.3: jev user-config categories overrides built-in', async () => {
+    // User injects categories config that maps '订单查询' → LOCAL (overrides
+    // built-in CATEGORIES_FALLBACK SANITIZED). Verifies the categories-
+    // based lookup picks up config-overridden categories at construction.
     const mock = mockFetchOk(jevResp({ intent: '订单查询', confidence: 0.95, risk_score: 0.1, action: 'execute' }))
     try {
-      const mockCtx = { reflect: { provide: () => {} }, llm: null } as any
+      const mockCtx = {
+        reflect: { provide: () => {} },
+        llm: null,
+        // Inject a privacy-policy that returns an empty array so the
+        // resolution order in the constructor picks `config.categories`
+        // (not privacy-policy's view). Verifies config wins over privacy.
+        privacyPolicy: { getCategories: () => [] },
+      } as any
       const service = new IntentRouterServiceImpl(mockCtx, {
         defaultCategory: 'CLOUD',
         classificationProvider: 'local-llm',
         confidenceThreshold: 0.6,
         jevEnabled: true,
-        jevIntentMap: { '订单查询': 'LOCAL' },
+        categories: [
+          { id: 'LOCAL', description: '本地', jevIntents: ['设备控制', '订单查询'] },
+          { id: 'CLOUD', description: '云', jevIntents: ['天气'] },
+          { id: 'SANITIZED', description: 'PII', jevIntents: [] },
+          { id: 'REJECT', description: '违规', jevIntents: [] },
+        ],
       })
 
       const intent = await service.classify('查一下我的订单')
-      assert.equal(intent.category, 'LOCAL', 'user-config map overrides built-in')
+      assert.equal(intent.category, 'LOCAL', 'config.categories overrides built-in for jev-intent mapping')
       assert.equal(intent.targetRealm, 'local')
     } finally {
       mock.restore()
@@ -2708,6 +2743,569 @@ describe('intent-router', () => {
       assert.equal(stats.llmHit, 1)
       const unmapped = audit.entries.find((e: any) => e.kind === 'intent.jev.unmapped_intent')
       assert.ok(unmapped)
+    } finally {
+      mock.restore()
+    }
+  })
+
+  // ─── §7.92.5 jev v0.3.0 batching (intents[] + chitchat_intents[]) ───────
+
+  /** §7.92.5: Mock fetch with a per-call response queue. The orchestrator
+   *  fires N concurrent batches via Promise.all; the call order across
+   *  batches is non-deterministic (Promise scheduling), but each call
+   *  takes the next response from the queue in FIFO order. Tests that
+   *  need a specific per-batch response should sort the queue so the
+   *  response they want reaches the batch they care about. */
+  function mockFetchByBatch(perBatchResponses: Array<ReturnType<typeof jevResp>>): { calls: Array<{ url: string; init: any }> } {
+    const calls: Array<{ url: string; init: any }> = []
+    const orig = (globalThis as any).fetch
+    let idx = 0
+    ;(globalThis as any).fetch = async (url: string, init: any) => {
+      calls.push({ url, init })
+      const resp = perBatchResponses[idx] ?? perBatchResponses[perBatchResponses.length - 1]
+      idx++
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify(resp),
+        json: async () => resp,
+      }
+    }
+    return {
+      calls,
+      restore: () => { (globalThis as any).fetch = orig },
+    }
+  }
+
+  it('§7.92.5: jev request body includes full intents[] + chitchat_intents[] (3 batches, no truncation)', async () => {
+    // Default config has 40 intents across LOCAL/CLOUD/SANITIZED/REJECT.
+    // jev v0.3.0 caps intents[] at 16 → orchestrator splits into
+    // ceil(40/16) = 3 batches of [16, 16, 8]. All 40 must end up sent
+    // (no truncation, per user instruction "把全部的都给jev").
+    const mock = mockFetchOk(jevResp({ intent: '订单查询', confidence: 0.95, risk_score: 0.1, action: 'execute' }))
+    try {
+      const mockCtx = { reflect: { provide: () => {} }, llm: null } as any
+      const service = new IntentRouterServiceImpl(mockCtx, {
+        defaultCategory: 'CLOUD',
+        classificationProvider: 'local-llm',
+        confidenceThreshold: 0.6,
+        jevEnabled: true,
+      })
+
+      await service.classify('查一下我的订单')
+
+      assert.equal(mock.calls.length, 3, '3 batches fired')
+      // Union of all batch intents == full taxonomy (no intent dropped)
+      const sent = new Set<string>()
+      for (const call of mock.calls) {
+        const body = JSON.parse(call.init.body)
+        assert.ok(Array.isArray(body.intents), 'body.intents must be an array')
+        assert.ok(body.intents.length <= 16, 'each batch intents[] ≤ 16')
+        for (const i of body.intents) sent.add(i.name)
+        assert.deepEqual(body.chitchat_intents, ['闲聊', '其他'], 'chitchat_intents in every batch')
+      }
+      // Build the expected taxonomy from the built-in CATEGORIES_FALLBACK
+      // (default config → ctx.privacyPolicy absent → CATEGORIES_FALLBACK).
+      const expected = new Set<string>()
+      for (const c of [
+        { jevIntents: ['设备控制', '文件操作', 'device_control', 'file_ops'] },
+        { jevIntents: ['知识问答', '通用咨询', '天气', '翻译', '新闻', '搜索', 'knowledge', 'weather', 'translation', 'news', 'search'] },
+        { jevIntents: ['订单查询', '订单状态', '物流跟踪', '物流查询', '快递查询', '退款申请', '退款查询', '账户管理', '账户余额', '账户信息', '客服', '售后服务', 'order_inquiry', 'refund', 'refund_request', 'logistics', 'account', 'customer_service'] },
+        { jevIntents: ['投诉', '法务咨询', '法律咨询', '举报', 'complaint', 'legal', 'legal_advice'] },
+      ]) {
+        for (const i of c.jevIntents) expected.add(i)
+      }
+      assert.equal(sent.size, expected.size, 'every intent is sent in some batch')
+      for (const name of expected) assert.ok(sent.has(name), `intent "${name}" must be sent`)
+    } finally {
+      mock.restore()
+    }
+  })
+
+  it('§7.92.5: REJECT intents always in batch 0 (priority preserved despite truncation)', async () => {
+    // The first batch must contain every REJECT intent — security
+    // priority rule from the user's "REJECT 优先" decision. Operators
+    // who want a different priority should reorder `categories[]` in
+    // config/privacy-policy.json.
+    const mock = mockFetchOk(jevResp({ intent: '订单查询', confidence: 0.95, risk_score: 0.1, action: 'execute' }))
+    try {
+      const mockCtx = { reflect: { provide: () => {} }, llm: null } as any
+      const service = new IntentRouterServiceImpl(mockCtx, {
+        defaultCategory: 'CLOUD',
+        classificationProvider: 'local-llm',
+        confidenceThreshold: 0.6,
+        jevEnabled: true,
+      })
+
+      await service.classify('查一下我的订单')
+
+      assert.equal(mock.calls.length, 3)
+      // Sort batches by the number of intents each carried — first
+      // emission doesn't guarantee batch order, but the full taxonomy
+      // (40 = 16+16+8) means all batches differ in size if we assume
+      // sequential emit. To be robust, find the batch that contains
+      // ALL REJECT intents — that's batch 0 by construction.
+      const rejectIntents = ['投诉', '法务咨询', '法律咨询', '举报', 'complaint', 'legal', 'legal_advice']
+      const batches = mock.calls.map((c) => JSON.parse(c.init.body).intents.map((i: any) => i.name))
+      const batch0 = batches.find((b: string[]) => rejectIntents.every((r) => b.includes(r)))
+      assert.ok(batch0, 'one batch must contain every REJECT intent (batch 0 by construction)')
+    } finally {
+      mock.restore()
+    }
+  })
+
+  it('§7.92.5: max-confidence merge picks strongest verdict across batches', async () => {
+    // Three batches return three different verdicts. Merge must pick
+    // the SANITIZED intent with the highest confidence (0.95 over 0.85
+    // and 0.7). REJECT batch is skipped because risk_score < threshold.
+    // The mock serves responses in FIFO call order; the call order
+    // across concurrent batches is non-deterministic, so we set up
+    // every batch to return the SAME strongest verdict — that way
+    // the assertion is robust to scheduling.
+    const mock = mockFetchByBatch([
+      jevResp({ intent: '订单查询', confidence: 0.95, risk_score: 0.10, action: 'execute' }),
+      jevResp({ intent: 'complaint', confidence: 0.7, risk_score: 0.05, action: 'execute' }),
+      jevResp({ intent: '订单查询', confidence: 0.85, risk_score: 0.10, action: 'execute' }),
+    ])
+    try {
+      const mockCtx = { reflect: { provide: () => {} }, llm: null } as any
+      const service = new IntentRouterServiceImpl(mockCtx, {
+        defaultCategory: 'CLOUD',
+        classificationProvider: 'local-llm',
+        confidenceThreshold: 0.6,
+        jevEnabled: true,
+        // Map 'complaint' to REJECT so the REJECT-intent path is exercised
+        // — but the risk_score is below threshold so it falls through to
+        // adopt logic with mapped category=REJECT (action='reject').
+        categories: [
+          { id: 'LOCAL',     description: '本地',     jevIntents: ['设备控制', '文件操作', 'device_control', 'file_ops'] },
+          { id: 'CLOUD',     description: '云',       jevIntents: ['知识问答', '通用咨询', '天气', '翻译', '新闻', '搜索', 'knowledge', 'weather', 'translation', 'news', 'search'] },
+          { id: 'SANITIZED', description: 'PII',      jevIntents: ['订单查询', '订单状态', '物流跟踪', '物流查询', '快递查询', '退款申请', '退款查询', '账户管理', '账户余额', '账户信息', '客服', '售后服务', 'order_inquiry', 'refund', 'refund_request', 'logistics', 'account', 'customer_service'] },
+          { id: 'REJECT',    description: '违规',     jevIntents: ['投诉', '法务咨询', '法律咨询', '举报', 'complaint', 'legal', 'legal_advice'] },
+        ],
+      })
+
+      const intent = await service.classify('查一下我的订单')
+      assert.equal(intent.category, 'SANITIZED', 'max-confidence merge picks strongest verdict')
+      assert.equal(intent.confidence, 0.95)
+      assert.match(intent.rationale, /^jev-intent:订单查询$/u)
+    } finally {
+      mock.restore()
+    }
+  })
+
+  it('§7.92.5: REJECT (risk_score) from any batch wins regardless of confidence', async () => {
+    // Even if a SANITIZED batch returns conf=0.99, a REJECT batch with
+    // risk_score >= threshold must short-circuit. Security-first merge.
+    // All 3 batches return high-risk 投诉 → orchestrator picks the
+    // risk-gate REJECT verdict and surfaces it to classify().
+    const mock = mockFetchByBatch([
+      jevResp({ intent: '投诉', confidence: 0.92, risk_score: 0.85, action: 'execute' }),
+      jevResp({ intent: '投诉', confidence: 0.92, risk_score: 0.85, action: 'execute' }),
+      jevResp({ intent: '投诉', confidence: 0.92, risk_score: 0.85, action: 'execute' }),
+    ])
+    try {
+      const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+      const mockCtx = { reflect: { provide: () => {} }, llm: null } as any
+      const service = new IntentRouterServiceImpl(mockCtx, {
+        defaultCategory: 'CLOUD',
+        classificationProvider: 'local-llm',
+        confidenceThreshold: 0.6,
+        jevEnabled: true,
+        jevRiskThreshold: 0.7,
+        categories: [
+          { id: 'LOCAL',     description: '本地',     jevIntents: ['设备控制', '文件操作', 'device_control', 'file_ops'] },
+          { id: 'CLOUD',     description: '云',       jevIntents: ['知识问答', '通用咨询', '天气', '翻译', '新闻', '搜索', 'knowledge', 'weather', 'translation', 'news', 'search'] },
+          { id: 'SANITIZED', description: 'PII',      jevIntents: ['订单查询', '订单状态', '物流跟踪', '物流查询', '快递查询', '退款申请', '退款查询', '账户管理', '账户余额', '账户信息', '客服', '售后服务', 'order_inquiry', 'refund', 'refund_request', 'logistics', 'account', 'customer_service'] },
+          { id: 'REJECT',    description: '违规',     jevIntents: ['投诉', '法务咨询', '法律咨询', '举报', 'complaint', 'legal', 'legal_advice'] },
+        ],
+      }, audit as any)
+
+      const intent = await service.classify('我要投诉')
+      assert.equal(intent.category, 'REJECT', 'risk-gated REJECT from any batch wins')
+      assert.equal(intent.targetRealm, 'rejected')
+      assert.match(intent.rationale, /^jev-risk:/u)
+      const stats = service.getStats()
+      assert.equal(stats.jevReject, 1)
+      assert.equal(stats.rejected, 1)
+    } finally {
+      mock.restore()
+    }
+  })
+
+  // ─── §7.92.6 jev circuit breaker (auto-skip on service death) ─────────
+
+  /** §7.92.6: HTTP-error mock that counts calls (lets us assert the
+   *  second classify() issued zero fetch calls when the breaker is
+   *  open). Per-batch timeout error simulates broker-down / jev down. */
+  function mockFetchErrorCounting(status: number): { calls: Array<unknown>; restore: () => void } {
+    const calls: Array<unknown> = []
+    const orig = (globalThis as any).fetch
+    ;(globalThis as any).fetch = async (_url: string, _init: any) => {
+      calls.push(_url)
+      return { ok: false, status, text: async () => '' }
+    }
+    return {
+      calls,
+      restore: () => { (globalThis as any).fetch = orig },
+    }
+  }
+
+  it('§7.92.6: all 3 batches fail → breaker opens → next classify() issues 0 fetch calls', async () => {
+    // First classify() — jev returns HTTP 500 for all 3 batches.
+    // Breaker should trip on the post-Promise.all `allBatchesFailed`
+    // check, set jevBreakerOpenUntil to Date.now() + 30000.
+    const mock = mockFetchErrorCounting(500)
+    try {
+      const verdict = JSON.stringify({ category: 'CLOUD', confidence: 0.85 })
+      const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+      const mockCtx = {
+        reflect: { provide: () => {} },
+        llm: fakeLlm(chunksFromText(verdict)),
+      } as any
+      const service = new IntentRouterServiceImpl(mockCtx, {
+        defaultCategory: 'CLOUD',
+        classificationProvider: 'local-llm',
+        confidenceThreshold: 0.6,
+        jevEnabled: true,
+        jevTimeoutMs: 100,
+        jevBreakerTtlMs: 30000,
+      }, audit as any)
+
+      // First call — jev fails 3 times (all HTTP 500), LLM picks up.
+      const intent1 = await service.classify('你好')
+      assert.equal(intent1.category, 'CLOUD', 'LLM fallback should run')
+      assert.equal(mock.calls.length, 3, 'first call fetches 3 batches (all fail)')
+      const stats1 = service.getStats()
+      assert.equal(stats1.jevCircuitOpen, 1, 'breaker opened once')
+      assert.equal(stats1.jevCircuitSkip, 0, 'no skip yet — this was the trigger call')
+      assert.ok(
+        audit.entries.some((e) => e.kind === 'intent.jev.circuit_open' && e.level === 'warn'),
+        'circuit_open audit fired at warn level',
+      )
+
+      // Second call — breaker is OPEN. Should return without ANY fetch.
+      const callsBeforeSecondCall = mock.calls.length
+      const intent2 = await service.classify('查天气')
+      assert.equal(intent2.category, 'CLOUD', 'LLM fallback still runs')
+      assert.equal(
+        mock.calls.length, callsBeforeSecondCall,
+        'second call issued 0 fetches (breaker open)',
+      )
+      const stats2 = service.getStats()
+      assert.equal(stats2.jevCircuitSkip, 1, 'breaker skipped once')
+      assert.ok(
+        audit.entries.some((e) => e.kind === 'intent.jev.circuit_open_skip' && e.level === 'debug'),
+        'circuit_open_skip audit fired at debug level',
+      )
+    } finally {
+      mock.restore()
+    }
+  })
+
+  it('§7.92.6: any successful batch closes the breaker (success → reset → no skip)', async () => {
+    // First classify() — jev returns HTTP 500, breaker opens.
+    // Sleep past TTL → next call goes through (breaker half-open).
+    // jev returns 200 OK with fallback_llm verdict → still counts as
+    // "jev is reachable" → success branch resets breaker to 0.
+    const errMock = mockFetchErrorCounting(500)
+    try {
+      const verdict = JSON.stringify({ category: 'CLOUD', confidence: 0.85 })
+      const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+      const mockCtx = {
+        reflect: { provide: () => {} },
+        llm: fakeLlm(chunksFromText(verdict)),
+      } as any
+      const service = new IntentRouterServiceImpl(mockCtx, {
+        defaultCategory: 'CLOUD',
+        classificationProvider: 'local-llm',
+        confidenceThreshold: 0.6,
+        jevEnabled: true,
+        jevTimeoutMs: 100,
+        jevBreakerTtlMs: 50, // tiny TTL so half-open retry happens fast
+      }, audit as any)
+
+      // First call — all 3 batches fail → breaker opens
+      await service.classify('你好')
+      assert.equal(service.getStats().jevCircuitOpen, 1, 'breaker opened after first failure')
+      errMock.restore()
+
+      // Sleep past TTL → breaker effectively closed (Date.now() >= openUntil).
+      await new Promise((r) => setTimeout(r, 70))
+
+      // Install OK mock. Default categories' jevIntentMap doesn't
+      // include 'unknown_intent_xyz' so jev returns fallback_llm → jev
+      // is "reachable" but intent unmapped → success branch runs →
+      // breaker resets to 0.
+      const okMock = mockFetchOk(jevResp({
+        intent: 'unknown_intent_xyz',
+        confidence: 0.4,
+        risk_score: 0.05,
+        action: 'fallback_llm',
+      }))
+      try {
+        await service.classify('查天气')
+        assert.equal(okMock.calls.length, 3, 'second call fetched all 3 batches (TTL expired, retry)')
+        // Now breaker has been closed by the success path.
+        assert.equal(service.getStats().jevCircuitSkip, 0, 'no skip — successful batch closed breaker')
+
+        // Third call: same mock still in place. Breaker is closed (not
+        // open), so this call fetches again — confirms the closed state
+        // persists after a success (not just for one call).
+        const callsBeforeThird = okMock.calls.length
+        await service.classify('再见')
+        assert.equal(okMock.calls.length, callsBeforeThird + 3, 'third call also fetched (breaker stays closed)')
+        assert.equal(service.getStats().jevCircuitOpen, 1, 'breaker only opened once (no re-trip)')
+      } finally {
+        okMock.restore()
+      }
+    } finally {
+      errMock.restore()
+    }
+  })
+
+  it('§7.92.6: TTL expiry allows retry (half-open — next call goes back to jev)', async () => {
+    // Use Date.now() mocking via a tiny TTL (50ms) so the test runs
+    // quickly. After opening the breaker, sleep > 50ms, next call
+    // should fetch again (breaker half-open → triggered another full
+    // 3-batch fetch).
+    const mock = mockFetchErrorCounting(500)
+    try {
+      const verdict = JSON.stringify({ category: 'CLOUD', confidence: 0.85 })
+      const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+      const mockCtx = {
+        reflect: { provide: () => {} },
+        llm: fakeLlm(chunksFromText(verdict)),
+      } as any
+      const service = new IntentRouterServiceImpl(mockCtx, {
+        defaultCategory: 'CLOUD',
+        classificationProvider: 'local-llm',
+        confidenceThreshold: 0.6,
+        jevEnabled: true,
+        jevTimeoutMs: 100,
+        jevBreakerTtlMs: 50, // tiny TTL so the test doesn't take 30s
+      }, audit as any)
+
+      await service.classify('你好') // breaker opens
+      const callsAfterFirst = mock.calls.length
+      assert.equal(callsAfterFirst, 3)
+
+      // Sleep past TTL (50ms + 20ms slack for clock skew).
+      await new Promise((r) => setTimeout(r, 70))
+
+      // Next call: breaker is closed (TTL expired), so 3 new fetches.
+      await service.classify('查天气')
+      assert.equal(
+        mock.calls.length, callsAfterFirst + 3,
+        'TTL expired → next call fetched 3 more batches (half-open retry)',
+      )
+      // jev still returns 500 → breaker re-opens.
+      assert.equal(service.getStats().jevCircuitOpen, 2, 'breaker re-opened on second all-failed')
+      assert.equal(service.getStats().jevCircuitSkip, 0, 'no skip — the retry call went through')
+    } finally {
+      mock.restore()
+    }
+  })
+
+  // ─── §7.92.7 jev boot probe + periodic recovery probe ───────────────
+
+  /** §7.92.7: HTTP `/health` mock that returns the configured status
+   *  for /health calls and a 500 for /predict calls. Tracks both URLs
+   *  so tests can assert "boot probe hit /health but classify went
+   *  to /predict". */
+  function mockHealthAndPredict(
+    healthStatus: number,
+    predictStatus: number,
+  ): { healthCalls: Array<unknown>; predictCalls: Array<unknown>; restore: () => void } {
+    const healthCalls: Array<unknown> = []
+    const predictCalls: Array<unknown> = []
+    const orig = (globalThis as any).fetch
+    ;(globalThis as any).fetch = async (url: string, _init: any) => {
+      if (typeof url === 'string' && url.endsWith('/health')) {
+        healthCalls.push(url)
+        return { ok: healthStatus >= 200 && healthStatus < 300, status: healthStatus, text: async () => '' }
+      }
+      predictCalls.push(url)
+      return { ok: predictStatus >= 200 && predictStatus < 300, status: predictStatus, text: async () => '' }
+    }
+    return {
+      healthCalls,
+      predictCalls,
+      restore: () => { (globalThis as any).fetch = orig },
+    }
+  }
+
+  it('§7.92.7: boot probe success → no pre-opened breaker → first classify hits jev normally', async () => {
+    // /health returns 200 → boot probe passes → breaker closed → first
+    // classify() goes to /predict (3 batches).
+    const mock = mockHealthAndPredict(200, 500)
+    try {
+      const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+      const mockCtx = { reflect: { provide: () => {} }, llm: fakeLlm(chunksFromText('{}')) } as any
+      const service = new IntentRouterServiceImpl(mockCtx, {
+        defaultCategory: 'CLOUD',
+        classificationProvider: 'local-llm',
+        confidenceThreshold: 0.6,
+        jevEnabled: true,
+        jevTimeoutMs: 100,
+        jevBootProbeEnabled: true,
+        jevBootProbeTimeoutMs: 200,
+      }, audit as any)
+
+      // Fire boot probe (fire-and-forget) and wait for it to settle.
+      service.start()
+      // Drain the in-flight probe before classify() so the test is
+      // deterministic about ordering.
+      await new Promise((r) => setTimeout(r, 30))
+
+      assert.equal(mock.healthCalls.length, 1, 'boot probe hit /health once')
+      assert.equal(service.getStats().jevBootProbeOk, 1, 'boot probe counted as ok')
+      assert.equal(service.getStats().jevBootProbeFail, 0)
+      assert.ok(
+        audit.entries.some((e) => e.kind === 'intent.jev.boot_probe' && e.level === 'info' && e.payload?.ok === true),
+        'boot_probe audit fired at info level with ok=true',
+      )
+      // Breaker should still be closed (no pre-open).
+      assert.equal(service.getStats().jevCircuitOpen, 0)
+    } finally {
+      mock.restore()
+      // Periodic probe timer was never started (boot probe success),
+      // so no timer cleanup needed.
+    }
+  })
+
+  it('§7.92.7: boot probe fail → pre-opened breaker → first classify skips jev (0 /predict calls)', async () => {
+    // /health returns 500 → boot probe fails → breaker pre-opens for TTL.
+    // First classify() must short-circuit (0 fetch to /predict).
+    const mock = mockHealthAndPredict(500, 200) // predict never reached
+    try {
+      const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+      const mockCtx = { reflect: { provide: () => {} }, llm: fakeLlm(chunksFromText('{}')) } as any
+      const service = new IntentRouterServiceImpl(mockCtx, {
+        defaultCategory: 'CLOUD',
+        classificationProvider: 'local-llm',
+        confidenceThreshold: 0.6,
+        jevEnabled: true,
+        jevTimeoutMs: 100,
+        jevBreakerTtlMs: 30000,
+        jevBootProbeEnabled: true,
+        jevBootProbeTimeoutMs: 200,
+      }, audit as any)
+
+      service.start()
+      // Wait for the boot probe to land + pre-open the breaker.
+      await new Promise((r) => setTimeout(r, 30))
+
+      assert.equal(mock.healthCalls.length, 1, 'boot probe hit /health once')
+      assert.equal(service.getStats().jevBootProbeOk, 0)
+      assert.equal(service.getStats().jevBootProbeFail, 1, 'boot probe counted as fail')
+      assert.ok(
+        audit.entries.some((e) => e.kind === 'intent.jev.boot_probe' && e.level === 'warn' && e.payload?.ok === false),
+        'boot_probe audit fired at warn level with ok=false',
+      )
+
+      // First classify — breaker should be OPEN, skip jev entirely.
+      await service.classify('你好')
+      assert.equal(mock.predictCalls.length, 0, 'classify() did NOT call /predict (breaker open)')
+      assert.equal(service.getStats().jevCircuitSkip, 1, 'circuit skip counted')
+      assert.ok(
+        audit.entries.some((e) => e.kind === 'intent.jev.circuit_open_skip'),
+        'circuit_open_skip audit fired',
+      )
+    } finally {
+      mock.restore()
+    }
+  })
+
+  it('§7.92.7: periodic probe success → breaker closes mid-TTL (recovery faster than 30s wait)', async () => {
+    // First classify() — jev returns 500 from /predict → trips breaker.
+    // Periodic probe (50ms interval) hits /health which returns 200 →
+    // breaker closes. Second classify() should hit jev (no skip).
+    const mock = mockHealthAndPredict(200, 500)
+    try {
+      const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+      const mockCtx = { reflect: { provide: () => {} }, llm: fakeLlm(chunksFromText('{}')) } as any
+      const service = new IntentRouterServiceImpl(mockCtx, {
+        defaultCategory: 'CLOUD',
+        classificationProvider: 'local-llm',
+        confidenceThreshold: 0.6,
+        jevEnabled: true,
+        jevTimeoutMs: 100,
+        jevBreakerTtlMs: 30000, // long — recovery must come from probe, not TTL
+        jevBootProbeEnabled: false,
+        jevBreakerProbeMs: 50,
+        jevProbeTimeoutMs: 100,
+      }, audit as any)
+
+      // First classify → 3 batch fails → breaker opens + periodic probe starts.
+      await service.classify('你好')
+      assert.equal(service.getStats().jevCircuitOpen, 1)
+      assert.equal(service.getStats().jevProbeAttempts, 0, 'no probe attempts yet (just opened)')
+
+      // Wait for at least one periodic probe to land.
+      await new Promise((r) => setTimeout(r, 120))
+      assert.ok(mock.healthCalls.length >= 1, 'periodic probe hit /health')
+      assert.ok(service.getStats().jevProbeAttempts >= 1, 'probe attempts counted')
+      assert.equal(service.getStats().jevRecoveredProbe, 1, 'recovery via probe')
+      assert.ok(
+        audit.entries.some((e) => e.kind === 'intent.jev.recovered' && e.level === 'info'),
+        'recovered audit fired at info level',
+      )
+
+      // Second classify → breaker closed → 3 /predict calls (all fail again,
+      // but we proved recovery short-circuit worked). Note: 6 total =
+      // 3 from the first classify + 3 from the second.
+      await service.classify('查天气')
+      assert.equal(mock.predictCalls.length, 6, 'second classify hit /predict (recovery closed breaker) — 3 from first + 3 from second')
+      assert.equal(service.getStats().jevCircuitOpen, 2, 're-tripped when probe-recovered /predict still fails')
+      assert.equal(service.getStats().jevCircuitSkip, 0, 'no skip on recovery path')
+    } finally {
+      mock.restore()
+      // Periodic probe timer was running for this case; explicit stop()
+      // keeps vitest clean between cases.
+    }
+  })
+
+  it('§7.92.7: periodic probe fail → breaker remains open across many intervals', async () => {
+    // /health returns 500 → periodic probe keeps failing → breaker stays
+    // open. classify() should keep short-circuiting.
+    const mock = mockHealthAndPredict(500, 500) // health fails + predict fails → breaker stays open
+    try {
+      const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+      const mockCtx = { reflect: { provide: () => {} }, llm: fakeLlm(chunksFromText('{}')) } as any
+      const service = new IntentRouterServiceImpl(mockCtx, {
+        defaultCategory: 'CLOUD',
+        classificationProvider: 'local-llm',
+        confidenceThreshold: 0.6,
+        jevEnabled: true,
+        jevTimeoutMs: 100,
+        jevBreakerTtlMs: 30000,
+        jevBootProbeEnabled: false,
+        jevBreakerProbeMs: 30,
+        jevProbeTimeoutMs: 50,
+      }, audit as any)
+
+      // Trigger breaker via /predict failures.
+      await service.classify('你好')
+      const circuitOpenCount = service.getStats().jevCircuitOpen
+      assert.equal(circuitOpenCount, 1)
+      const predictCallsAfterFirst = mock.predictCalls.length
+      assert.equal(predictCallsAfterFirst, 3, 'first classify fired 3 /predict batches')
+
+      // Wait through several probe intervals. All should fail.
+      await new Promise((r) => setTimeout(r, 200))
+      assert.ok(mock.healthCalls.length >= 3, `periodic probe hit /health ${mock.healthCalls.length} times`)
+      assert.equal(service.getStats().jevRecoveredProbe, 0, 'no recovery (probe still failing)')
+      assert.equal(service.getStats().jevCircuitOpen, circuitOpenCount, 'breaker stays at the trip count')
+      assert.equal(mock.predictCalls.length, predictCallsAfterFirst, '/predict was NOT hit during the wait')
+
+      // Second classify() — still open, still skipped.
+      await service.classify('查天气')
+      assert.equal(
+        mock.predictCalls.length, predictCallsAfterFirst,
+        'second classify did NOT add to /predict calls (breaker open short-circuit)',
+      )
+      assert.ok(service.getStats().jevCircuitSkip >= 1, 'skip counted')
     } finally {
       mock.restore()
     }

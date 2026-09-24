@@ -149,12 +149,24 @@ export DSH_EDGE_INTENT_FALLBACK_KEYWORDS="${INTENT_FALLBACK_KEYWORDS}"
 # §7.92.3 (2026-09-23): jev HTTP intent recognizer (toggle, opt-in).
 # Default OFF; toggle=true 把 jev 插到 classify() 流水线里 LLM 之前。
 # jev 不可达/低置信/无映射 → fall through 到 LLM,行为不回归。
+# 意图分类 spec（描述 + jev intent 列表）从 config/privacy-policy.json#categories 读,
+# 不需要单独 env:运维人员直接编辑 JSON 文件(privacy-policy 服务热加载 pick up)。
 export DSH_EDGE_INTENT_JEV_ENABLED="${INTENT_JEV_ENABLED}"
 export DSH_EDGE_INTENT_JEV_URL="${INTENT_JEV_URL}"
 export DSH_EDGE_INTENT_JEV_TIMEOUT_MS="${INTENT_JEV_TIMEOUT_MS}"
 export DSH_EDGE_INTENT_JEV_CONFIDENCE_THRESHOLD="${INTENT_JEV_CONFIDENCE_THRESHOLD}"
 export DSH_EDGE_INTENT_JEV_RISK_THRESHOLD="${INTENT_JEV_RISK_THRESHOLD}"
-export DSH_EDGE_INTENT_JEV_INTENT_MAP="${INTENT_JEV_INTENT_MAP}"
+# §7.92.6 (2026-09-24): circuit breaker — when all 3 jev batches fail,
+# skip jev entirely for this many ms to avoid 7500ms wasted wall-clock.
+export DSH_EDGE_INTENT_JEV_BREAKER_TTL_MS="${INTENT_JEV_BREAKER_TTL_MS}"
+# §7.92.7 (2026-09-24): boot probe + 周期 recovery probe. boot probe
+# 在 apply() 时 fire-and-forget ping /health;失败即预开 breaker 让首次
+# classify 直接 short-circuit(不付 3×timeoutMs)。周期 probe 在 breaker
+# 开着期间每 N ms 探一次,2xx 即关 breaker(不必等 TTL 到期)。
+export DSH_EDGE_INTENT_JEV_BOOT_PROBE_ENABLED="${INTENT_JEV_BOOT_PROBE_ENABLED}"
+export DSH_EDGE_INTENT_JEV_BOOT_PROBE_TIMEOUT_MS="${INTENT_JEV_BOOT_PROBE_TIMEOUT_MS}"
+export DSH_EDGE_INTENT_JEV_BREAKER_PROBE_MS="${INTENT_JEV_BREAKER_PROBE_MS}"
+export DSH_EDGE_INTENT_JEV_PROBE_TIMEOUT_MS="${INTENT_JEV_PROBE_TIMEOUT_MS}"
 
 # ── input-guard 降级路径（cloud-key 缺失 / intent=LOCAL / sanitize 失败）──
 # §7.75: DSH_EDGE_LOCAL_MODEL **直接从 LOCAL_LLM 池派生**（不引入

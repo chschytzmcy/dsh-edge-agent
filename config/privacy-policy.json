@@ -1,6 +1,32 @@
 {
-  "version": "1.5.0",
+  "version": "1.6.0",
   "_comment": "sanitizationRules 的 pattern 必须与 src/dsh-adapter/pii-utils.ts 的 PII_PATTERNS 保持一致（tests/unit/pii-utils.test.ts 有一致性断言）。已移除 replacement 字段：占位符由 sanitizer-pipeline 自行生成为 [<PIITYPE>_<seq>]，该字段历史上不生效。",
+  "categories": [
+    {
+      "id": "LOCAL",
+      "description": "本地文件操作、设备控制、数学计算、系统管理",
+      "examples": ["帮我读一下文件", "看一下磁盘空间", "计算 1+1"],
+      "jevIntents": ["设备控制", "文件操作", "device_control", "file_ops"]
+    },
+    {
+      "id": "CLOUD",
+      "description": "知识问答、聊天、创意写作、需要联网的任务",
+      "examples": ["今天北京天气", "翻译这段英文", "写一首诗"],
+      "jevIntents": ["知识问答", "通用咨询", "天气", "翻译", "新闻", "搜索", "knowledge", "weather", "translation", "news", "search"]
+    },
+    {
+      "id": "SANITIZED",
+      "description": "包含 PII 需先脱敏后路由（订单查询、账户管理、客服等含个人信息）",
+      "examples": ["查我的订单状态", "我的账户余额", "我要退款"],
+      "jevIntents": ["订单查询", "订单状态", "物流跟踪", "物流查询", "快递查询", "退款申请", "退款查询", "账户管理", "账户余额", "账户信息", "客服", "售后服务", "order_inquiry", "refund", "refund_request", "logistics", "account", "customer_service"]
+    },
+    {
+      "id": "REJECT",
+      "description": "高危 / 违法 / 违规请求（危险系统操作、投诉、法务）",
+      "examples": ["rm -rf /", "我要投诉", "怎么告别人"],
+      "jevIntents": ["投诉", "法务咨询", "法律咨询", "举报", "complaint", "legal", "legal_advice"]
+    }
+  ],
   "routingRules": [
     {
       "pattern": "(导出|删除|清空|格式化).*(数据库|系统|磁盘|全部数据)",

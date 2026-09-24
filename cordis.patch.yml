@@ -417,7 +417,7 @@
 
     - id: intent-router
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/intent-router'
-      inject: [llm, auditLog]
+      inject: [llm, auditLog, privacyPolicy]
       config:
         # 2026-09-02: changed from CLOUD to SANITIZED. Old default failed open
         # (ambiguous requests → CLOUD LLM, raw data egress). New default routes
@@ -434,16 +434,31 @@
         cloudKeywords: !!js (process.env.DSH_EDGE_INTENT_CLOUD_KEYWORDS ?? '').split(',').filter(Boolean)
         localEntities: !!js (process.env.DSH_EDGE_INTENT_LOCAL_ENTITIES ?? '').split(',').filter(Boolean)
         # §7.92.3 (2026-09-23): jev HTTP intent recognizer (toggleable).
-        # Default OFF (opt-in). When ON, jev runs BEFORE the LLM classifier;
-        # failures fall through to LLM (no behavior change for any non-jev
-        # path). jevIntentMap is a JSON object string that EXTENDS the
-        # built-in intent→realm mapping in intent-router.ts.
-        jevEnabled: !!js process.env.DSH_EDGE_INTENT_JEV_ENABLED === 'true'
+        # §7.92.7 (2026-09-24): default flipped to ON. Boot probe + circuit
+        # breaker (below) make jev-down fast-fail (zero wall-clock penalty),
+        # so having the prefilter in place has no downside for operators
+        # who don't run jev — first classify() simply short-circuits via
+        # the breaker. Operators who DEFINITELY don't want jev prefilter
+        # set DSH_EDGE_INTENT_JEV_ENABLED=false.
+        jevEnabled: !!js process.env.DSH_EDGE_INTENT_JEV_ENABLED !== 'false'
         jevUrl: !!js process.env.DSH_EDGE_INTENT_JEV_URL ?? 'http://127.0.0.1:8001'
         jevTimeoutMs: !!js parseInt(process.env.DSH_EDGE_INTENT_JEV_TIMEOUT_MS ?? '2500', 10)
         jevConfidenceThreshold: !!js parseFloat(process.env.DSH_EDGE_INTENT_JEV_CONFIDENCE_THRESHOLD ?? '0.85')
         jevRiskThreshold: !!js parseFloat(process.env.DSH_EDGE_INTENT_JEV_RISK_THRESHOLD ?? '0.7')
-        jevIntentMap: !!js (() => { try { return JSON.parse(process.env.DSH_EDGE_INTENT_JEV_INTENT_MAP || '{}') } catch { return {} } })()
+        # §7.92.6 (2026-09-24): circuit-breaker TTL. 3 batches × jevTimeoutMs
+        # = up to 7500ms wasted wall-clock when jev is dead; this TTL
+        # short-circuits future calls until jev recovers.
+        jevBreakerTtlMs: !!js parseInt(process.env.DSH_EDGE_INTENT_JEV_BREAKER_TTL_MS ?? '30000', 10)
+        # §7.92.7 (2026-09-24): boot probe + periodic recovery probe.
+        # Boot probe fires GET /health at apply() time; failure pre-opens
+        # the breaker so first classify() short-circuits (no 3 × timeoutMs
+        # wall-clock penalty). Periodic probe fires every
+        # jevBreakerProbeMs while the breaker is open — recovers faster
+        # than waiting for full TTL.
+        jevBootProbeEnabled: !!js process.env.DSH_EDGE_INTENT_JEV_BOOT_PROBE_ENABLED !== 'false'
+        jevBootProbeTimeoutMs: !!js parseInt(process.env.DSH_EDGE_INTENT_JEV_BOOT_PROBE_TIMEOUT_MS ?? '2000', 10)
+        jevBreakerProbeMs: !!js parseInt(process.env.DSH_EDGE_INTENT_JEV_BREAKER_PROBE_MS ?? '5000', 10)
+        jevProbeTimeoutMs: !!js parseInt(process.env.DSH_EDGE_INTENT_JEV_PROBE_TIMEOUT_MS ?? '1000', 10)
 
     # NOTE: id renamed from `tools` to avoid colliding with dsh-base.
     - id: edge-tools-registry

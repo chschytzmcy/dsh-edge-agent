@@ -16,7 +16,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 
 export const name = 'intent-router'
 
-export const inject = ['llm', 'auditLog'] as const
+export const inject = ['llm', 'auditLog', 'privacyPolicy'] as const
 
 /** Minimal interface our router needs from the audit-log service. */
 interface AuditLike {
@@ -65,15 +65,19 @@ export interface Config {
    *  LLM verdict. Env DSH_EDGE_INTENT_LOCAL_ENTITIES (comma-sep) appends to
    *  built-in (NOT replaces), same semantics as cloudKeywords. */
   localEntities?: string[]
-  /** §7.92.3 (2026-09-23): jev HTTP intent recognizer (port 8001). Toggle
-   *  — default OFF (opt-in). When ON, jev runs BEFORE the LLM classifier
-   *  and short-circuits high-confidence / low-risk verdicts. See
+  /** §7.92.3 (2026-09-23) + §7.92.5 (2026-09-23): jev HTTP intent
+   *  recognizer (port 8001). Toggle — default OFF (opt-in). When ON,
+   *  jev runs BEFORE the LLM classifier and short-circuits high-
+   *  confidence / low-risk verdicts. See
    *  ~/work/jev-branch/docs/api_reference.md for the upstream contract.
-   *  Env DSH_EDGE_INTENT_JEV_ENABLED (literal 'true' activates). */
+   *  §7.92.5 splits the full categories[] taxonomy into ≤16-intent
+   *  batches (jev v0.3.0 hard cap) and fires them concurrently via
+   *  Promise.all. Env DSH_EDGE_INTENT_JEV_ENABLED (literal 'true' activates). */
   jevEnabled?: boolean
   /** §7.92.3: jev base URL. Env DSH_EDGE_INTENT_JEV_URL. */
   jevUrl?: string
-  /** §7.92.3: jev HTTP timeout in ms. Env DSH_EDGE_INTENT_JEV_TIMEOUT_MS. */
+  /** §7.92.3: per-batch jev HTTP timeout in ms (applies to EACH batch
+   *  fired by the §7.92.5 orchestrator). Env DSH_EDGE_INTENT_JEV_TIMEOUT_MS. */
   jevTimeoutMs?: number
   /** §7.92.3: minimum jev confidence to adopt. Below → fall through to
    *  LLM. Env DSH_EDGE_INTENT_JEV_CONFIDENCE_THRESHOLD. */
@@ -81,10 +85,49 @@ export interface Config {
   /** §7.92.3: jev risk_score gate (≥ this value → REJECT). Env
    *  DSH_EDGE_INTENT_JEV_RISK_THRESHOLD. */
   jevRiskThreshold?: number
-  /** §7.92.3: jev intent → realm mapping table. EXTENDS the built-in
-   *  default (does not replace). Env DSH_EDGE_INTENT_JEV_INTENT_MAP as a
-   *  JSON object string, e.g. `{"订单查询":"SANITIZED","refund":"CLOUD"}`. */
-  jevIntentMap?: Record<string, 'LOCAL' | 'CLOUD' | 'SANITIZED'>
+  /** §7.92.6 (2026-09-24): circuit-breaker TTL (ms). When all 3
+   *  jev batches fail (transport / parse / timeout) within one
+   *  classify() call, the breaker opens and subsequent classify()
+   *  calls skip jev entirely until TTL elapses. Any successful batch
+   * (HTTP 2xx + parse OK, even if action='fallback_llm') closes the
+   *  breaker immediately. Env DSH_EDGE_INTENT_JEV_BREAKER_TTL_MS. */
+  jevBreakerTtlMs?: number
+  /** §7.92.7 (2026-09-24): boot-time `/health` probe (toggle). When
+   *  true, the service fires a single GET `${jevUrl}/health` (timeout
+   *  = `jevBootProbeTimeoutMs`, default 2000ms) at `apply()` time. On
+   *  non-2xx / network error / timeout the breaker is **pre-opened**
+   *  with full TTL — first classify() short-circuits without paying
+   *  the ~3 × jevTimeoutMs wall-clock. Default ON; operators set
+   *  false to skip the probe (e.g. when jev boots lazily alongside
+   *  dsh-edge and is reliably up by the time chat starts). Env
+   *  DSH_EDGE_INTENT_JEV_BOOT_PROBE_ENABLED. */
+  jevBootProbeEnabled?: boolean
+  /** §7.92.7: boot probe timeout (ms). Smaller than `jevTimeoutMs`
+   *  (which is per-batch for classify-time use). Env
+   *  DSH_EDGE_INTENT_JEV_BOOT_PROBE_TIMEOUT_MS. */
+  jevBootProbeTimeoutMs?: number
+  /** §7.92.7: interval (ms) between breaker-open `/health` probes.
+   *  While the breaker is open, a setInterval pings `/health` every
+   *  N ms (timeout = `jevProbeTimeoutMs`). On 2xx the breaker closes
+   *  immediately (recovery can be faster than waiting for full TTL).
+   *  Default 5000ms — frequent enough that recovery feels snappy,
+   *  infrequent enough to avoid hammering a sick jev. Env
+   *  DSH_EDGE_INTENT_JEV_BREAKER_PROBE_MS. */
+  jevBreakerProbeMs?: number
+  /** §7.92.7: periodic probe timeout (ms). Smaller than `jevTimeoutMs`
+   *  — we want fast fail on a sick jev rather than waiting the full
+   *  classify-time budget. Env DSH_EDGE_INTENT_JEV_PROBE_TIMEOUT_MS. */
+  jevProbeTimeoutMs?: number
+  /** §7.92.3 (2026-09-23): intent category specs (LOCAL/CLOUD/SANITIZED/
+   *  REJECT descriptions + jev intent lists). Loaded from
+   *  `ctx.privacyPolicy.getCategories()` at construction. When set, used
+   *  as-is (test override path); when absent AND privacyPolicy is missing,
+   *  falls back to a hardcoded built-in. Same shape as
+   *  privacy-policy.json#categories: array of {id, description,
+   *  examples?, jevIntents[]}. Operators extend by editing
+   *  config/privacy-policy.json (hot-reload picks it up via
+   *  `policy/loaded` event); no env var override. */
+  categories?: import('./privacy-policy.js').IntentCategory[]
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -108,11 +151,13 @@ export const Config: Schema<Config> = Schema.object({
   fallbackKeywords: Schema.array(Schema.string()).default([] as string[]),
   cloudKeywords: Schema.array(Schema.string()).default([] as string[]),
   localEntities: Schema.array(Schema.string()).default([] as string[]),
-  // §7.92.3 (2026-09-23): jev HTTP intent recognizer. Toggle defaults
-  // OFF — opt-in per §7.75 .env discipline ("不允许 ${VAR:-default}",
-  // operators explicitly turn features on). When ON, jev runs BEFORE the
-  // LLM classifier; failures fall through to LLM (no behavior change for
-  // any path that doesn't go through jev).
+  // §7.92.3 (2026-09-23): jev HTTP intent recognizer. Schema default
+  // is `false` so a bare unit-test construction (no env) skips jev
+  // entirely. The PRODUCTION default is `true` — `cordis.patch.yml`
+  // reads `process.env.DSH_EDGE_INTENT_JEV_ENABLED !== 'false'`, so
+  // when the env var is unset (operator's .env doesn't write it)
+  // the toggle defaults to ON. §7.92.7 boot probe + breaker keep the
+  // no-jev-running path fast-fail.
   jevEnabled: Schema.boolean().default(false),
   jevUrl: Schema.string().default('http://127.0.0.1:8001'),
   // 2.5s = comfortably above jev's documented P95 (< 300ms) with headroom
@@ -125,11 +170,30 @@ export const Config: Schema<Config> = Schema.object({
   jevConfidenceThreshold: Schema.number().min(0).max(1).default(0.85),
   // Mirrors jev's built-in risk-score gate (>= 0.7 → clarify → REJECT).
   jevRiskThreshold: Schema.number().min(0).max(1).default(0.7),
-  // Map of jev's intent strings (config/intents.yaml on the jev side) to
-  // realm. EXTENDS built-in JEV_INTENT_MAP_DEFAULT — operators can
-  // override built-in entries with their own.
-  jevIntentMap: Schema.dict(Schema.union(['LOCAL', 'CLOUD', 'SANITIZED'] as const))
-    .default({} as Record<string, 'LOCAL' | 'CLOUD' | 'SANITIZED'>),
+  // §7.92.6 (2026-09-24): circuit-breaker TTL. 30s gives jev a chance to
+  // recover (e.g. operator restarts the container) without hammering it.
+  // Operators tune down (e.g. 5s) for fast-fail rigs, or up (e.g. 5min) for
+  // known-flaky services where jev outage is expected to last longer.
+  jevBreakerTtlMs: Schema.natural().default(30000),
+  // §7.92.7 (2026-09-24): boot probe + periodic recovery probe.
+  jevBootProbeEnabled: Schema.boolean().default(true),
+  jevBootProbeTimeoutMs: Schema.natural().default(2000),
+  jevBreakerProbeMs: Schema.natural().default(5000),
+  jevProbeTimeoutMs: Schema.natural().default(1000),
+  // §7.92.3 (2026-09-23): intent category specs (descriptions + jev
+  // intent lists). When privacy-policy is mounted, this is the runtime
+  // override surface — tests pass categories directly. Default null:
+  // constructor reads from ctx.privacyPolicy.getCategories() and only
+  // falls back to a hardcoded built-in when neither is available.
+  // Note: `examples` is optional in the privacy-policy.json schema (and
+  // optional in IntentCategory); Schemastery's `Schema.array(...).default([])`
+  // requires a non-optional inner schema so we coerce undefined → []
+  // at the type level here.
+  categories: Schema.array(Schema.object({
+    id: Schema.union(['LOCAL', 'CLOUD', 'SANITIZED', 'REJECT'] as const).required(),
+    description: Schema.string().required(),
+    jevIntents: Schema.array(Schema.string()).required(),
+  })).default([] as any[]),
 })
 
 export interface Intent {
@@ -197,76 +261,61 @@ const LOCAL_ENTITY_KEYWORDS_DEFAULT: readonly string[] = [
   '密盒', 'ets', 'etscli',
 ]
 
-/** §7.92.3 (2026-09-23): built-in jev intent-string → realm mapping.
- *  Used by classifyWithJev() when `data.intent` is set + `data.action ===
- *  'execute'` + `confidence ≥ jevConfidenceThreshold`. Operators extend
- *  (and can override individual keys) via env `INTENT_JEV_INTENT_MAP` as
- *  JSON, e.g. `{"订单查询":"SANITIZED","refund":"CLOUD"}`. Lookup is
- *  exact-string match on the jev-side `intent` field.
- *
- *  Mapping rationale (per api_reference.md §3.3 + design-v6 §4.3):
- *  - 订单查询/物流跟踪/退款申请/账户管理/客服/订单状态/物流查询 → SANITIZED
- *    (these touch PII like order id, address, payment status — must run
- *    through input-guard sanitizer before any LLM sees them; the actual
- *    order data lives behind LOCAL skills though, so the post-sanitize
- *    path routes to the LOCAL realm if applicable — but the realm set
- *    here is the classifier verdict, not the post-sanitize routing).
- *    Operators who want direct LOCAL routing can override these to LOCAL.
- *  - 投诉/法务咨询/法律咨询 → REJECT (high-risk, audit security).
- *  - 闲聊/其他 → fallback_llm (handled in classifyWithJev, NOT here —
- *    these never reach this lookup).
- *  - 知识问答/通用咨询/天气/翻译/闲聊助手 → CLOUD (clear online tasks).
- *
- *  NOTE: 闲聊 / 其他 / null are EXCLUDED — classifyWithJev short-circuits
- *  these as `action: 'skip'` (fall through to LLM) BEFORE consulting this
- *  map. Other intents not listed here fall through too (defensive: if jev
- *  returns an intent string we don't recognize, LLM classifier handles it). */
-const JEV_INTENT_MAP_DEFAULT: Readonly<Record<string, 'LOCAL' | 'CLOUD' | 'SANITIZED' | 'REJECT'>> = {
-  // ── SANITIZED: PII-likely business intents (must sanitize before cloud) ──
-  '订单查询': 'SANITIZED',
-  '订单状态': 'SANITIZED',
-  '物流跟踪': 'SANITIZED',
-  '物流查询': 'SANITIZED',
-  '快递查询': 'SANITIZED',
-  '退款申请': 'SANITIZED',
-  '退款查询': 'SANITIZED',
-  '账户管理': 'SANITIZED',
-  '账户余额': 'SANITIZED',
-  '账户信息': 'SANITIZED',
-  '客服': 'SANITIZED',
-  '售后服务': 'SANITIZED',
-  'order_inquiry': 'SANITIZED',
-  'refund': 'SANITIZED',
-  'refund_request': 'SANITIZED',
-  'logistics': 'SANITIZED',
-  'account': 'SANITIZED',
-  'customer_service': 'SANITIZED',
-  // ── REJECT: high-risk / sensitive intents (security-level audit) ──
-  '投诉': 'REJECT',
-  '法务咨询': 'REJECT',
-  '法律咨询': 'REJECT',
-  '举报': 'REJECT',
-  'complaint': 'REJECT',
-  'legal': 'REJECT',
-  'legal_advice': 'REJECT',
-  // ── CLOUD: clear online / knowledge tasks ──
-  '知识问答': 'CLOUD',
-  '通用咨询': 'CLOUD',
-  '天气': 'CLOUD',
-  '翻译': 'CLOUD',
-  '新闻': 'CLOUD',
-  '搜索': 'CLOUD',
-  'knowledge': 'CLOUD',
-  'weather': 'CLOUD',
-  'translation': 'CLOUD',
-  'news': 'CLOUD',
-  'search': 'CLOUD',
-  // ── LOCAL: clear device-bound tasks (rare from jev — usually an entity) ──
-  '设备控制': 'LOCAL',
-  '文件操作': 'LOCAL',
-  'device_control': 'LOCAL',
-  'file_ops': 'LOCAL',
+/** §7.92.5 (2026-09-23): jev v0.3.0 hard cap on the `intents[]` payload
+ *  field per `~/work/jev-branch/docs/api_reference.md §3.7`. ONNX model
+ *  has `head_max_len=256`, which translates to ~16 intents × ~16
+ *  description tokens. Source of truth is the upstream spec — bump this
+ *  constant if jev ever relaxes the cap. */
+const JEV_MAX_INTENTS = 16
+
+/** §7.92.5: pure helper that splits an array into ≤ `size`-sized
+ *  chunks. Used by `classifyWithJev()` to break the full
+ *  `categories[].jevIntents[]` payload into batches that respect the
+ *  jev v0.3.0 hard cap. Module-scope so it can be unit-tested in
+ *  isolation if needed. */
+function chunkIntents<T>(intents: T[], size: number = JEV_MAX_INTENTS): T[][] {
+  const out: T[][] = []
+  for (let i = 0; i < intents.length; i += size) {
+    out.push(intents.slice(i, i + size))
+  }
+  return out
 }
+
+/** §7.92.3 (2026-09-23): hardcoded built-in fallback for the
+ *  categories spec. Used ONLY when neither `config.categories` is set
+ *  nor `ctx.privacyPolicy.getCategories()` returns a non-empty array.
+ *  In normal operation the categories live in config/privacy-policy.json
+ *  and are loaded by the privacy-policy service at boot — operators
+ *  extend them there. The constant here keeps unit tests + early-boot
+ *  paths working without requiring the privacy-policy service to be
+ *  mounted. Mirrors `DEFAULT_POLICY.categories` in privacy-policy.ts:118. */
+const CATEGORIES_FALLBACK: readonly import('./privacy-policy.js').IntentCategory[] = [
+  {
+    id: 'LOCAL',
+    description: '本地文件操作、设备控制、数学计算、系统管理',
+    jevIntents: ['设备控制', '文件操作', 'device_control', 'file_ops'],
+  },
+  {
+    id: 'CLOUD',
+    description: '知识问答、聊天、创意写作、需要联网的任务',
+    jevIntents: ['知识问答', '通用咨询', '天气', '翻译', '新闻', '搜索', 'knowledge', 'weather', 'translation', 'news', 'search'],
+  },
+  {
+    id: 'SANITIZED',
+    description: '包含 PII 需先脱敏后路由（订单查询、账户管理、客服等含个人信息）',
+    jevIntents: [
+      '订单查询', '订单状态', '物流跟踪', '物流查询', '快递查询',
+      '退款申请', '退款查询', '账户管理', '账户余额', '账户信息',
+      '客服', '售后服务',
+      'order_inquiry', 'refund', 'refund_request', 'logistics', 'account', 'customer_service',
+    ],
+  },
+  {
+    id: 'REJECT',
+    description: '高危 / 违法 / 违规请求（危险系统操作、投诉、法务）',
+    jevIntents: ['投诉', '法务咨询', '法律咨询', '举报', 'complaint', 'legal', 'legal_advice'],
+  },
+]
 
 export class IntentRouterServiceImpl extends Service {
   private readonly defaultCategory: Intent['category']
@@ -294,8 +343,40 @@ export class IntentRouterServiceImpl extends Service {
   private readonly jevConfidenceThreshold: number
   /** §7.92.3: jev risk_score gate (>= this → REJECT). */
   private readonly jevRiskThreshold: number
-  /** §7.92.3: jev intent → realm map (merged with built-in defaults).
-   *  User config OVERRIDES built-in entries with the same key. */
+  /** §7.92.6 (2026-09-24): circuit-breaker TTL (ms). When all 3
+   *  batches fail, set `jevBreakerOpenUntil = Date.now() + ttl` and
+   *  classify() short-circuits jev (zero fetch) until that timestamp.
+   *  Any successful batch closes the breaker (sets to 0). */
+  private readonly jevBreakerTtlMs: number
+  /** §7.92.6: ms-epoch timestamp until which the breaker is open.
+   *  0 = closed. Mutable; reset on every Promise.all settle. */
+  private jevBreakerOpenUntil = 0
+  /** §7.92.7: boot probe toggle. When true, `start()` fires one
+   *  `GET ${jevUrl}/health` and pre-opens the breaker on failure. */
+  private readonly jevBootProbeEnabled: boolean
+  /** §7.92.7: boot probe timeout (ms). */
+  private readonly jevBootProbeTimeoutMs: number
+  /** §7.92.7: interval between breaker-open `/health` probes (ms).
+   *  Only active while the breaker is open. */
+  private readonly jevBreakerProbeMs: number
+  /** §7.92.7: periodic probe timeout (ms). */
+  private readonly jevProbeTimeoutMs: number
+  /** §7.92.7: setInterval handle for the periodic recovery probe.
+   *  null = no timer running (breaker closed or probe disabled). */
+  private jevBreakerProbeTimer: ReturnType<typeof setInterval> | null = null
+  /** §7.92.7: in-flight boot probe promise. Tracked so a test or
+   *  shutdown hook can `await stop()` without leaving a dangling
+   *  fetch racing the constructor's first classify() call. */
+  private jevBootProbePromise: Promise<void> | null = null
+  /** §7.92.3 (2026-09-23): categories spec — loaded from
+   *  privacyPolicy.getCategories() (hot-reload-aware via the policy/loaded
+   *  event) and cached at construction. Drives both the LLM prompt
+   *  (description field per category) AND the jev-intent → category
+   *  lookup (jevIntents[] per category, flattened into jevIntentMap).
+   *  Tests inject via `config.categories` to bypass privacy-policy. */
+  private readonly categories: readonly import('./privacy-policy.js').IntentCategory[]
+  /** §7.92.3: flat jev-intent-string → category lookup, derived from
+   *  `this.categories[].jevIntents`. Built once at construction. */
   private readonly jevIntentMap: Record<string, 'LOCAL' | 'CLOUD' | 'SANITIZED' | 'REJECT'>
   private readonly llm: any
   private readonly auditLog: AuditLike | undefined
@@ -333,6 +414,25 @@ export class IntentRouterServiceImpl extends Service {
      *  Used to compute average jev latency in ops dashboards without
      *  parsing JSONL. Reset on restart. */
     jevLatencyMsTotal: 0,
+    /** §7.92.6 (2026-09-24): circuit-breaker counters. jevCircuitOpen
+     *  climbs once per "all 3 batches failed" event (suggests jev is
+     *  flapping or down); jevCircuitSkip climbs per short-circuited
+     *  classify() call (latency saved ≈ this × ~7500ms). */
+    jevCircuitOpen: 0,
+    jevCircuitSkip: 0,
+    /** §7.92.7 (2026-09-24): boot probe counters. jevBootProbeOk fires
+     *  when the startup `GET /health` returned 2xx (no breaker pre-open);
+     *  jevBootProbeFail fires when it failed (breaker pre-opened, first
+     *  classify() short-circuits). Useful for ops to know whether jev
+     *  was healthy at boot. */
+    jevBootProbeOk: 0,
+    jevBootProbeFail: 0,
+    /** §7.92.7: periodic probe counters. jevProbeAttempts = total
+     *  `/health` pings while breaker open; jevRecoveredProbe = times
+     *  a probe succeeded and closed the breaker (recovery was faster
+     *  than waiting for full TTL). */
+    jevProbeAttempts: 0,
+    jevRecoveredProbe: 0,
     /** G9: 10-bucket histogram of LLM confidence values × (accepted | rejected).
      *  Bucket key is `Math.floor(c * 10)` clamped to [0,9]; `conf=0.0` → '0',
      *  `conf=1.0` → '9' (last bucket inclusive). Empty until first
@@ -362,16 +462,53 @@ export class IntentRouterServiceImpl extends Service {
     // §7.58 (2026-09-16): localEntities APPENDED to built-in (not replaced),
     // same safety-net semantics as cloudKeywords.
     this.localEntities = LOCAL_ENTITY_KEYWORDS_DEFAULT.concat(config.localEntities ?? [])
-    // §7.92.3 (2026-09-23): jev config. Toggle defaults false; URL keeps
-    // localhost default for dev rigs. Intent map: user config keys OVERRIDE
-    // built-in entries (Object.assign semantics, not concat) — operators
-    // explicitly declaring `{"订单查询":"LOCAL"}` should win.
+    // §7.92.3 + §7.92.7: jev config. Schema default is `false` so unit
+    // tests that construct the service with minimal config don't make
+    // real fetches. PRODUCTION default (set by cordis.patch.yml) is
+    // `true` — see schema docstring. Operators who DEFINITELY don't
+    // want jev set DSH_EDGE_INTENT_JEV_ENABLED=false.
     this.jevEnabled = config.jevEnabled ?? false
     this.jevUrl = config.jevUrl ?? 'http://127.0.0.1:8001'
     this.jevTimeoutMs = config.jevTimeoutMs ?? 2500
     this.jevConfidenceThreshold = config.jevConfidenceThreshold ?? 0.85
     this.jevRiskThreshold = config.jevRiskThreshold ?? 0.7
-    this.jevIntentMap = { ...JEV_INTENT_MAP_DEFAULT, ...(config.jevIntentMap ?? {}) }
+    // §7.92.6: circuit breaker. TTL is configurable but the open flag
+    // always starts closed — every fresh boot tries jev at least once
+    // unless the boot probe (§7.92.7) pre-opens it (fire-and-forget).
+    this.jevBreakerTtlMs = config.jevBreakerTtlMs ?? 30000
+    this.jevBreakerOpenUntil = 0
+    // §7.92.7: boot + recovery probe tunables.
+    this.jevBootProbeEnabled = config.jevBootProbeEnabled ?? true
+    this.jevBootProbeTimeoutMs = config.jevBootProbeTimeoutMs ?? 2000
+    this.jevBreakerProbeMs = config.jevBreakerProbeMs ?? 5000
+    this.jevProbeTimeoutMs = config.jevProbeTimeoutMs ?? 1000
+    // §7.92.3: categories spec — resolution order:
+    //  (1) config.categories (test override; explicit in code)
+    //  (2) ctx.privacyPolicy.getCategories() (production path — loaded
+    //      from config/privacy-policy.json at boot, hot-reloadable via
+    //      the `policy/loaded` event)
+    //  (3) CATEGORIES_FALLBACK (last-resort built-in, mirrored from
+    //      DEFAULT_POLICY.categories in privacy-policy.ts; identical
+    //      content so unit tests + early-boot paths stay sane when the
+    //      privacy-policy service isn't wired)
+    const policyCategories = (() => {
+      const policy = this.softService('privacyPolicy')
+      try { return policy?.getCategories?.() ?? [] }
+      catch { return [] }
+    })()
+    const cats = (config.categories && config.categories.length > 0)
+      ? config.categories
+      : (policyCategories.length > 0 ? policyCategories : CATEGORIES_FALLBACK)
+    this.categories = cats
+    // Flatten categories[].jevIntents → single lookup map. Iterating once
+    // at construction keeps classifyWithJev() at O(1) per call.
+    const map: Record<string, 'LOCAL' | 'CLOUD' | 'SANITIZED' | 'REJECT'> = {}
+    for (const cat of cats) {
+      for (const intent of cat.jevIntents) {
+        map[intent] = cat.id
+      }
+    }
+    this.jevIntentMap = map
     this.llm = (ctx as any).llm
     this.auditLog = auditLog
   }
@@ -632,30 +769,61 @@ export class IntentRouterServiceImpl extends Service {
     }
   }
 
-  /** §7.92.3 (2026-09-23): jev HTTP prefilter. Posts the user query to
-   *  `${this.jevUrl}/predict` and returns one of:
-   *  - `action: 'reject'`  → `risk_score >= jevRiskThreshold` (security-level)
-   *  - `action: 'adopt'`   → `data.action === 'execute'`, confidence ≥
-   *                           threshold, intent string found in jevIntentMap
-   *                           (mapped to realm)
-   *  - `action: 'skip'`    → any other condition (low-conf, fallback_llm,
-   *                           unrecognized intent, transport / parse error).
-   *                           Caller falls through to classifyWithLlm.
+  /** §7.92.5 (2026-09-23): build the full jev `intents[]` payload from
+   *  `this.categories[]`. Two-phase priority, NO 16-cap (the cap is
+   *  enforced one level up by `chunkIntents()`):
    *
-   *  Failure handling: every error path (timeout, network, parse) is
-   *  audited at warn level and produces `action: 'skip'` — jev being
-   *  unavailable MUST NOT degrade the existing LLM classification path.
-   *  This is the same fail-open contract used by classifyWithLlm's
-   *  classifyWithRules fallback.
+   *    Phase 1: emit every REJECT category's jevIntents first
+   *             (security priority — must not be dropped)
+   *    Phase 2: emit all other categories in `categories[]` config order
+   *             (LOCAL → CLOUD → SANITIZED by default)
    *
-   *  See ~/work/jev-branch/docs/api_reference.md for the wire spec.
-   *  Implementation notes:
-   *  - Uses global `fetch` (Node ≥18). AbortSignal for timeout.
-   *  - No auth header — jev is local-network by design.
-   *  - `metadata.session_id` for cross-service trace correlation.
-   *  - `lang` hardcoded 'zh' (we don't auto-detect; the operator's UI
-   *    can pass it later if multilingual queries become common). */
-  private async classifyWithJev(text: string, sessionId?: string): Promise<{
+   *  Dedup by name via a Set<string> so operators who accidentally list
+   *  the same intent in two categories don't produce a duplicate name
+   *  (which would confuse jev's own zero-shot classifier).
+   *
+   *  Returns the un-truncated array — the orchestrator batches it. */
+  private buildJevIntentsPayload(): Array<{ name: string; description: string }> {
+    const out: Array<{ name: string; description: string }> = []
+    const seen = new Set<string>()
+    const push = (cat: import('./privacy-policy.js').IntentCategory) => {
+      for (const intent of cat.jevIntents) {
+        if (seen.has(intent)) continue
+        seen.add(intent)
+        out.push({ name: intent, description: cat.description })
+      }
+    }
+    for (const cat of this.categories) {
+      if (cat.id === 'REJECT') push(cat)
+    }
+    for (const cat of this.categories) {
+      if (cat.id !== 'REJECT') push(cat)
+    }
+    return out
+  }
+
+  /** §7.92.5 (2026-09-23): single-batch jev fetcher. Extracted from
+   *  the old monolithic `classifyWithJev()` so the orchestrator can
+   *  fire N concurrent calls via `Promise.all` and merge the results.
+   *
+   *  Takes the same `text` + `sessionId` as the old function, plus an
+   *  already-≤16 `intents[]` slice and `chitchatIntents` (defensive
+   *  marker for jev v0.3.0+). Returns the same shape:
+   *  - `action: 'reject' | 'adopt' | 'skip'`
+   *  - `confidence` / `riskScore` / `latencyMs` (always set)
+   *  - `skipReason` when action='skip' — caller can tell whether to
+   *    retry the verdict on the next batch (we don't — we just merge)
+   *
+   *  Every audit / counter side-effect for THIS batch fires here, not
+   *  in the orchestrator, so partial failures are observable per-batch
+   *  in the JSONL audit stream. */
+  private async fetchJevBatch(
+    text: string,
+    sessionId: string | undefined,
+    intents: Array<{ name: string; description: string }>,
+    chitchatIntents: string[],
+    jevStart: number,
+  ): Promise<{
     action: 'reject' | 'adopt' | 'skip'
     intent?: Intent
     jevIntentString?: string
@@ -664,11 +832,11 @@ export class IntentRouterServiceImpl extends Service {
     latencyMs: number
     skipReason?: string
   }> {
-    const jevStart = Date.now()
-    this.audit('debug', 'intent.jev.start', {
+    const batchStart = Date.now()
+    this.audit('debug', 'intent.jev.batch.start', {
       textLen: text.length,
-      jevUrl: this.jevUrl,
-      timeoutMs: this.jevTimeoutMs,
+      batchSize: intents.length,
+      batchLatencyBudgetMs: this.jevTimeoutMs,
     })
 
     const controller = new AbortController()
@@ -684,6 +852,13 @@ export class IntentRouterServiceImpl extends Service {
           query: text,
           lang: 'zh',
           metadata: sessionId ? { session_id: sessionId } : {},
+          // §7.92.5: jev v0.3.0+ zero-shot taxonomy. Without these
+          // fields jev falls back to its built-in 8-intent default
+          // schema and our `categories[].jevIntents[]` table never
+          // gets used. Each batch carries ≤ 16 intents (chunked by
+          // classifyWithJev).
+          intents,
+          chitchat_intents: chitchatIntents,
         }),
         signal: controller.signal,
       })
@@ -691,7 +866,7 @@ export class IntentRouterServiceImpl extends Service {
         this.stats.jevError++
         this.audit('warn', 'intent.jev.error', {
           httpStatus: r.status,
-          latencyMs: Date.now() - jevStart,
+          batchLatencyMs: Date.now() - batchStart,
         })
         return { action: 'skip', confidence: 0, riskScore: 0, latencyMs: Date.now() - jevStart, skipReason: 'jev-error' }
       }
@@ -703,7 +878,7 @@ export class IntentRouterServiceImpl extends Service {
         this.audit('warn', 'intent.jev.error', {
           reason: 'parse-failure',
           error: parseErr?.message ?? String(parseErr),
-          latencyMs: Date.now() - jevStart,
+          batchLatencyMs: Date.now() - batchStart,
         })
         return { action: 'skip', confidence: 0, riskScore: 0, latencyMs: Date.now() - jevStart, skipReason: 'jev-error' }
       }
@@ -715,6 +890,7 @@ export class IntentRouterServiceImpl extends Service {
       this.audit('warn', isAbort ? 'intent.jev.timeout' : 'intent.jev.error', {
         latencyMs,
         timeoutMs: this.jevTimeoutMs,
+        batchLatencyMs: Date.now() - batchStart,
         error: err?.message ?? String(err),
       })
       return {
@@ -745,6 +921,7 @@ export class IntentRouterServiceImpl extends Service {
       riskScore,
       action: dataAction,
       latencyMs,
+      batchLatencyMs: Date.now() - batchStart,
     })
 
     // Risk gate: high-risk queries short-circuit to REJECT before any
@@ -885,6 +1062,149 @@ export class IntentRouterServiceImpl extends Service {
       confidence,
       riskScore,
       latencyMs,
+    }
+  }
+
+  /** §7.92.5 (2026-09-23): jev HTTP prefilter — batched orchestrator.
+   *  Splits the full `categories[].jevIntents[]` payload into ≤16-size
+   *  batches (jev v0.3.0 hard cap from `head_max_len=256`), fires all
+   *  batches concurrently via `Promise.all`, and merges the verdicts
+   *  with a max-confidence pick:
+   *
+   *    1. Any `reject` action → pick highest `riskScore` (security signal)
+   *    2. Else any `adopt` action → pick highest `confidence`; tie-break
+   *       by earlier batch index (REJECT-priority intents live in
+   *       batch 0, so the security-first ordering is preserved on ties)
+   *    3. Else all skipped → return the first skip result
+   *
+   *  Returns one of:
+   *  - `action: 'reject'`  → `risk_score >= jevRiskThreshold` (security-level)
+   *  - `action: 'adopt'`   → `data.action === 'execute'`, confidence ≥
+   *                           threshold, intent string found in jevIntentMap
+   *                           (mapped to realm)
+   *  - `action: 'skip'`    → any other condition (low-conf, fallback_llm,
+   *                           unrecognized intent, transport / parse error).
+   *                           Caller falls through to classifyWithLlm.
+   *
+   *  Failure handling: every per-batch error path (timeout, network,
+   *  parse) is audited at warn level and produces `action: 'skip'` for
+   *  THAT batch — jev being unavailable MUST NOT degrade the existing
+   *  LLM classification path. This is the same fail-open contract used
+   *  by classifyWithLlm's classifyWithRules fallback.
+   *
+   *  See ~/work/jev-branch/docs/api_reference.md for the wire spec.
+   *  Implementation notes:
+   *  - Uses global `fetch` (Node ≥18). AbortSignal for timeout.
+   *  - No auth header — jev is local-network by design.
+   *  - `metadata.session_id` for cross-service trace correlation.
+   *  - `lang` hardcoded 'zh' (we don't auto-detect; the operator's UI
+   *    can pass it later if multilingual queries become common). */
+  private async classifyWithJev(text: string, sessionId?: string): Promise<{
+    action: 'reject' | 'adopt' | 'skip'
+    intent?: Intent
+    jevIntentString?: string
+    confidence: number
+    riskScore: number
+    latencyMs: number
+    skipReason?: string
+  }> {
+    // §7.92.6 (2026-09-24): circuit breaker — short-circuit if a
+    // previous classify() within the TTL window saw all 3 batches
+    // fail. Saves up to ~3 × jevTimeoutMs = 7500ms wall-clock on every
+    // chat when jev is dead. Operators see "circuit open" once in
+    // audit, then this debug-level skip per call until recovery.
+    if (Date.now() < this.jevBreakerOpenUntil) {
+      this.stats.jevCircuitSkip++
+      this.audit('debug', 'intent.jev.circuit_open_skip', {
+        textLen: text.length,
+        jevUrl: this.jevUrl,
+        openUntilMs: this.jevBreakerOpenUntil,
+        remainingMs: this.jevBreakerOpenUntil - Date.now(),
+      })
+      return {
+        action: 'skip',
+        confidence: 0,
+        riskScore: 0,
+        latencyMs: 0,
+        skipReason: 'jev-circuit-open',
+      }
+    }
+
+    const jevStart = Date.now()
+    const allIntents = this.buildJevIntentsPayload()
+    const chitchatIntents = ['闲聊', '其他'] // §7.92.5: defensive marker for jev v0.3.0+
+    const batches = chunkIntents(allIntents, JEV_MAX_INTENTS)
+    this.audit('debug', 'intent.jev.start', {
+      textLen: text.length,
+      jevUrl: this.jevUrl,
+      timeoutMs: this.jevTimeoutMs,
+      batchCount: batches.length,
+      totalIntents: allIntents.length,
+    })
+
+    // Fire all batches concurrently. Per-batch timeout is still
+    // `this.jevTimeoutMs` — wall-clock is bounded by the slowest batch.
+    const settled = await Promise.all(
+      batches.map((intents) =>
+        this.fetchJevBatch(text, sessionId, intents, chitchatIntents, jevStart),
+      ),
+    )
+
+    // §7.92.6: breaker state machine. "All 3 batches failed" = every
+    // settled result has skipReason ∈ {'jev-error', 'jev-timeout'}.
+    // Any successful batch (HTTP 2xx + parse OK, even action=
+    // 'fallback_llm') means jev is reachable and we close the breaker.
+    const allBatchesFailed = settled.every(
+      (r) => r.skipReason === 'jev-error' || r.skipReason === 'jev-timeout',
+    )
+    if (allBatchesFailed) {
+      this.jevBreakerOpenUntil = Date.now() + this.jevBreakerTtlMs
+      this.stats.jevCircuitOpen++
+      this.audit('warn', 'intent.jev.circuit_open', {
+        openUntilMs: this.jevBreakerOpenUntil,
+        ttlMs: this.jevBreakerTtlMs,
+        jevUrl: this.jevUrl,
+        batchCount: settled.length,
+      })
+      // §7.92.7 (2026-09-24): start the recovery probe so we don't have
+      // to wait for full TTL once jev comes back. No-op when a probe
+      // timer is already running (e.g. breaker re-opened by classify()
+      // racing the timer's own check).
+      this.startBreakerProbe()
+    } else {
+      // Healthy response — clear the breaker. Any subsequent classify()
+      // within the original TTL window that previously would have been
+      // skipped will now hit jev normally. Also stop the recovery
+      // probe timer — no longer needed.
+      this.jevBreakerOpenUntil = 0
+      this.stopBreakerProbe()
+    }
+
+    // Max-confidence merge. Priority order:
+    //   1. Any reject → pick highest risk_score (security signal)
+    //   2. Else any adopt → pick highest confidence; tie-break by batch
+    //      index (earlier batches contain REJECT-priority intents, so
+    //      they're preferred on ties — i.e. SECURITY-first tie-break)
+    //   3. Else all skipped → return the first skip
+    let best: Awaited<ReturnType<typeof this.fetchJevBatch>> | null = null
+    for (let i = 0; i < settled.length; i++) {
+      const r = settled[i]
+      if (!best) { best = r; continue }
+      if (r.action === 'reject' && (best.action !== 'reject' || r.riskScore > best.riskScore)) {
+        best = r
+      } else if (r.action === 'adopt' && best.action !== 'reject') {
+        if (best.action !== 'adopt' || r.confidence > best.confidence) best = r
+      } else if (r.action === 'skip' && best.action === 'skip' && !best.skipReason) {
+        best = r
+      }
+    }
+
+    return best ?? {
+      action: 'skip',
+      confidence: 0,
+      riskScore: 0,
+      latencyMs: Date.now() - jevStart,
+      skipReason: 'all-batches-empty',
     }
   }
 
@@ -1043,12 +1363,22 @@ export class IntentRouterServiceImpl extends Service {
     // 0.98-0.99 regardless of actual certainty, making the 0.6 gate
     // ineffective. Adding explicit confidence semantics to the prompt so
     // the model learns to differentiate clear vs ambiguous requests.
+    //
+    // §7.92.3 (2026-09-23): category list is built from
+    // `this.categories` (loaded from config/privacy-policy.json via the
+    // privacy-policy service, hot-reloadable). Replaces the previous
+    // hardcoded 2-category block — now the LLM sees ALL of LOCAL/CLOUD/
+    // SANITIZED/REJECT, matching jev's 4-category capability and giving
+    // the LLM a path to surface SANITIZED/REJECT verdicts without a
+    // separate rules pass. Order matches categories[] order in the
+    // policy file so operators can control priority by reordering rows.
+    const categoryLines = this.categories.map((c) => `- ${c.id}：${c.description}`).join('\n')
+    const categoryUnion = this.categories.map((c) => c.id).join('|')
     const prompt = `判断以下用户请求属于哪类：
-- LOCAL：本地文件操作、设备控制、数学计算、系统管理
-- CLOUD：知识问答、聊天、创意写作、需要联网的任务
+${categoryLines}
 ${historyBlock}
 Respond ONLY with a single JSON object — no prose, no Markdown:
-{ "category": "LOCAL"|"CLOUD", "confidence": <0.0-1.0> }
+{ "category": ${categoryUnion}, "confidence": <0.0-1.0> }
 
 confidence 含义：
 - 1.0 = 非常确定（请求明确属于该类别，无歧义）
@@ -1164,7 +1494,13 @@ confidence 含义：
     return {
       category: verdict.category,
       confidence: verdict.confidence,
-      targetRealm: verdict.category === 'LOCAL' ? 'local' : 'cloud',
+      // §7.92.3 (2026-09-23): map all 4 verdict categories to targetRealm.
+      // Previously was binary LOCAL/CLOUD; the LLM can now return
+      // SANITIZED / REJECT directly so targetRealm must mirror them.
+      targetRealm: verdict.category === 'LOCAL' ? 'local'
+        : verdict.category === 'CLOUD' ? 'cloud'
+        : verdict.category === 'SANITIZED' ? 'sanitized'
+        : 'rejected',
       rationale: `llm-classified:${verdict.category.toLowerCase()}`,
     }
   }
@@ -1307,6 +1643,188 @@ confidence 含义：
   /** Snapshot of in-memory counters. Returned object is a copy so callers
    *  can't mutate the live state. Counters are process-local — restart
    *  zeroes them. */
+  /** §7.92.7 (2026-09-24): boot-time health probe. Fires once at
+   *  `start()` (called from `apply()`). Fire-and-forget — does NOT
+   *  block plugin init. On 2xx → no-op (the breaker stays closed;
+   *  classify() proceeds normally). On non-2xx / network error /
+   *  timeout → pre-opens the breaker for `jevBreakerTtlMs` so the
+   *  first classify() short-circuits instead of paying
+   *  3 × `jevTimeoutMs` wall-clock.
+   *
+   *  Why fire-and-forget: blocking plugin init on a 2s jev probe
+   *  adds 2s to cold boot, and a chat-less boot (e.g. CI smoke) has
+   *  no classify() to gate. Race against first classify() is fine
+   *  because: (1) plugin apply() runs before http-api opens its
+   *  port, so the earliest chat is several hundred ms away, (2) if
+   *  classify() runs first it just trips the breaker the normal
+   *  way (3 batch fails) — same outcome as the probe. */
+  start(): void {
+    if (!this.jevEnabled) return
+    if (!this.jevBootProbeEnabled) {
+      this.audit('debug', 'intent.jev.boot_probe.skipped', {
+        reason: 'disabled-by-config',
+        jevUrl: this.jevUrl,
+      })
+      return
+    }
+    // Capture the promise so stop() can await it on shutdown.
+    this.jevBootProbePromise = this.probeJevHealth('boot', this.jevBootProbeTimeoutMs, true)
+      .then((ok) => {
+        if (!ok) {
+          // Pre-open breaker AND start the periodic recovery probe
+          // — otherwise jev coming back online during the 30s TTL
+          // would have to wait full TTL for the breaker to close.
+          // The probe will close the breaker (and stop itself) the
+          // moment /health returns 2xx.
+          this.jevBreakerOpenUntil = Date.now() + this.jevBreakerTtlMs
+          this.startBreakerProbe()
+        }
+      })
+      .catch((err: any) => {
+        // Defensive — `probeJevHealth` swallows transport errors and
+        // resolves false; reaching this branch means a bug in the
+        // probe itself. Log and keep the breaker closed (fail-open
+        // for the probe path).
+        this.audit('error', 'intent.jev.boot_probe.unexpected', {
+          error: err?.message ?? String(err),
+        })
+      })
+      .finally(() => {
+        this.jevBootProbePromise = null
+      })
+  }
+
+  /** §7.92.7: dispose hook. Awaits the in-flight boot probe (if
+   *  any) and clears the recovery-probe timer. Tests call this to
+   *  keep the event loop clean between cases; cordis calls this
+   *  on plugin teardown. */
+  async stop(): Promise<void> {
+    this.stopBreakerProbe()
+    if (this.jevBootProbePromise) {
+      try { await this.jevBootProbePromise } catch { /* swallow */ }
+    }
+  }
+
+  /** §7.92.7: probe jev `/health`. Returns true on HTTP 2xx, false
+   *  on anything else (network error, timeout, non-2xx). Always
+   *  resolves — never throws. The `phase` arg distinguishes boot-time
+   *  vs periodic-recovery audit kinds so ops can tell them apart in
+   *  the log. */
+  private async probeJevHealth(
+    phase: 'boot' | 'periodic',
+    timeoutMs: number,
+    preOpenBreaker: boolean,
+  ): Promise<boolean> {
+    if (phase === 'periodic') this.stats.jevProbeAttempts++
+    const probeStart = Date.now()
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), timeoutMs)
+    let ok = false
+    let httpStatus = 0
+    let errorMsg = ''
+    try {
+      const r = await fetch(`${this.jevUrl}/health`, {
+        method: 'GET',
+        signal: controller.signal,
+      })
+      httpStatus = r.status
+      ok = r.ok
+      if (!ok) {
+        try { await r.text() } catch { /* ignore */ }
+      }
+    } catch (err: any) {
+      errorMsg = err?.message ?? String(err)
+    } finally {
+      clearTimeout(timer)
+    }
+    const latencyMs = Date.now() - probeStart
+    if (phase === 'boot') {
+      if (ok) {
+        this.stats.jevBootProbeOk++
+        this.audit('info', 'intent.jev.boot_probe', {
+          jevUrl: this.jevUrl,
+          httpStatus,
+          latencyMs,
+          ok: true,
+        })
+      } else {
+        this.stats.jevBootProbeFail++
+        this.audit('warn', 'intent.jev.boot_probe', {
+          jevUrl: this.jevUrl,
+          httpStatus,
+          latencyMs,
+          ok: false,
+          error: errorMsg,
+          preOpenBreaker,
+          // Useful for ops: how long classify() will short-circuit.
+          openUntilMs: preOpenBreaker ? Date.now() + this.jevBreakerTtlMs : 0,
+        })
+      }
+    } else {
+      // periodic probe (always inside an open-breaker window)
+      this.jevLastProbeLatencyMs = latencyMs
+      this.audit(ok ? 'debug' : 'debug', 'intent.jev.probe', {
+        jevUrl: this.jevUrl,
+        httpStatus,
+        latencyMs,
+        ok,
+        error: ok ? undefined : errorMsg,
+      })
+    }
+    return ok
+  }
+
+  /** §7.92.7: start the recovery probe setInterval. Idempotent.
+   *  Called from classifyWithJev() right after `jevBreakerOpenUntil`
+   *  is set. When the periodic probe lands on 2xx it closes the
+   *  breaker (and stops itself) — recovery is faster than waiting
+   *  for full TTL. */
+  private startBreakerProbe(): void {
+    if (this.jevBreakerProbeTimer !== null) return // already running
+    // unref so the timer never holds the process open by itself
+    // (mirrors file-logger.ts:220 pattern).
+    this.jevBreakerProbeTimer = setInterval(() => {
+      void this.probeJevHealth('periodic', this.jevProbeTimeoutMs, false)
+        .then((ok) => {
+          if (!ok) return
+          // 2xx from /health → jev is back. Close the breaker
+          // and stop the timer. classify() calls now hit jev
+          // normally; one of them may still trip the breaker
+          // again if /predict is broken (different endpoint),
+          // but the breaker restart path is already covered by
+          // classifyWithJev()'s post-Promise.all branch.
+          if (Date.now() < this.jevBreakerOpenUntil) {
+            this.jevBreakerOpenUntil = 0
+            this.stats.jevRecoveredProbe++
+            this.audit('info', 'intent.jev.recovered', {
+              jevUrl: this.jevUrl,
+              probeLatencyMs: this.jevProbeTimerLatency(),
+            })
+          }
+          this.stopBreakerProbe()
+        })
+        .catch(() => { /* probeJevHealth never throws; defensive */ })
+    }, this.jevBreakerProbeMs)
+    if (typeof this.jevBreakerProbeTimer.unref === 'function') {
+      this.jevBreakerProbeTimer.unref()
+    }
+  }
+
+  /** §7.92.7: clear the recovery probe setInterval. Idempotent. */
+  private stopBreakerProbe(): void {
+    if (this.jevBreakerProbeTimer === null) return
+    clearInterval(this.jevBreakerProbeTimer)
+    this.jevBreakerProbeTimer = null
+  }
+
+  /** §7.92.7 helper: wall-clock spent in the most recent successful
+   *  probe (used in `intent.jev.recovered` audit payload). The
+   *  setInterval callback captures `probeStart` in its closure but
+   *  doesn't surface it cleanly — keep this lightweight by storing
+   *  the latest observed latency in instance state. */
+  private jevLastProbeLatencyMs = 0
+  private jevProbeTimerLatency(): number { return this.jevLastProbeLatencyMs }
+
   getStats(): IntentRouterStats {
     // G9: deep-copy the histogram too — its nested {accepted, rejected}
     // cells would otherwise be live references into `this.stats`.
@@ -1329,7 +1847,13 @@ export function resolveIntent(intent: Intent): { realm: string; config: Record<s
 
 /** Parsed shape of the LLM's classification response. */
 interface ClassificationVerdict {
-  category: 'LOCAL' | 'CLOUD'
+  /** §7.92.3 (2026-09-23): widened from the historical 2-category union
+   *  (LOCAL | CLOUD) to match the categories spec in privacy-policy.json
+   *  — the LLM prompt now lists all 4 (LOCAL/CLOUD/SANITIZED/REJECT),
+   *  so the verdict parser must accept them too. The downstream code
+   *  (entity guardrail, classifyWithRules fallback, etc.) was already
+   *  4-category-aware via `RULE_CATEGORIES`. */
+  category: 'LOCAL' | 'CLOUD' | 'SANITIZED' | 'REJECT'
   confidence: number
 }
 
@@ -1397,6 +1921,28 @@ export interface IntentRouterStats {
    *  `getStats()` calls to compute average jev latency without
    *  parsing JSONL. */
   jevLatencyMsTotal: number
+  /** §7.92.6 (2026-09-24): circuit-breaker opened N times in this
+   *  process lifetime. Climbs → jev service is flapping. Pair with
+   *  jevCircuitSkip to estimate total bypassed latency: each skip
+   *  avoided ~3 × jevTimeoutMs = 7500ms worst-case wall-clock. */
+  jevCircuitOpen: number
+  /** §7.92.6: classify() calls that returned early because breaker
+   *  was open. Total latency saved ≈ jevCircuitSkip × 7500ms. */
+  jevCircuitSkip: number
+  /** §7.92.7 (2026-09-24): boot probe counters. jevBootProbeOk
+   *  climbs when the startup `GET /health` returned 2xx; jevBootProbeFail
+   *  climbs when it failed (breaker pre-opened, first classify()
+   *  short-circuits). Operators compare these to gauge whether jev
+   *  is consistently unhealthy at boot. */
+  jevBootProbeOk: number
+  jevBootProbeFail: number
+  /** §7.92.7: periodic recovery probe counters. jevProbeAttempts =
+   *  total `/health` pings fired while the breaker was open;
+   *  jevRecoveredProbe = times a probe succeeded and closed the
+   *  breaker (recovery was faster than waiting for full TTL).
+   *  Healthy ratio ≈ jevRecoveredProbe / jevProbeAttempts. */
+  jevProbeAttempts: number
+  jevRecoveredProbe: number
   /** G9: 10-bucket histogram of LLM confidence values × (accepted | rejected).
    *  Bucket key is `String(Math.floor(c * 10))` clamped to [0,9]. Use
    *  `getStats()` to obtain a deep copy. Empty until the first parsed
@@ -1454,12 +2000,18 @@ export function coerceClassification(obj: unknown): ClassificationVerdict | null
   if (!obj || typeof obj !== 'object') return null
   const o = obj as Record<string, unknown>
   const cat = typeof o.category === 'string' ? o.category.toUpperCase() : ''
-  if (cat !== 'LOCAL' && cat !== 'CLOUD') return null
+  // §7.92.3 (2026-09-23): accept the full 4-category union so the LLM
+  // can return SANITIZED / REJECT verdicts directly (previously dropped
+  // → fallback path; now they reach the §7.58 entity guardrail + the
+  // outer REJECT short-circuit unchanged). Categories outside the
+  // union (typos, lowercase 'sanitized' before .toUpperCase, etc.) still
+  // return null → outer classify() falls through to classifyWithRules.
+  if (cat !== 'LOCAL' && cat !== 'CLOUD' && cat !== 'SANITIZED' && cat !== 'REJECT') return null
   const confRaw = typeof o.confidence === 'number'
     ? o.confidence
     : typeof o.confidence === 'string' ? Number(o.confidence) : NaN
   const conf = Number.isFinite(confRaw) ? Math.max(0, Math.min(1, confRaw)) : 0.5
-  return { category: cat as 'LOCAL' | 'CLOUD', confidence: conf }
+  return { category: cat as 'LOCAL' | 'CLOUD' | 'SANITIZED' | 'REJECT', confidence: conf }
 }
 
 /** Best-effort extract a text payload from a recent-message object.
@@ -1489,5 +2041,11 @@ declare module '@deepseek-ai/cordis' {
 export async function apply(ctx: Context, config: Config): Promise<() => Promise<void>> {
   const auditLog = (ctx as unknown as { auditLog?: AuditLike }).auditLog
   const service = new IntentRouterServiceImpl(ctx, config, auditLog)
-  return async () => {}
+  // §7.92.7 (2026-09-24): fire boot probe (fire-and-forget). The
+  // probe pre-opens the breaker if jev is down so first classify()
+  // short-circuits instead of paying 3 × jevTimeoutMs wall-clock.
+  service.start()
+  return async () => {
+    await service.stop()
+  }
 }

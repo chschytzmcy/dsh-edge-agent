@@ -674,7 +674,7 @@ on(<span class="s">'session/event'</span>, (session, event) => {
                   <b>📍 做了什么</b>(<b>4 步串行,每步 await 前一步</b>):<br>
                   <b>①</b> <code>await promptGuard.checkInput(text)</code> → 60+ 条正则攻击检测。<b>不 safe → REJECT 短路</b>(L766-771 早返),不再跑 ②③④;<br>
                   <b>②</b> <code>privacyPolicy.matchRouting(text)</code> → <b>同步</b>(不调 LLM),纯遍历 <code>privacy-policy.json</code> 里 10 条 <code>routingRules</code>,逐条 <code>RegExp.test(text)</code>,<b>第一条命中就 return</b>(顺序敏感)。返回 <code>{realm, confidence, rationale}</code>(7 LOCAL / 2 REJECT / 1 CLOUD,confidence 0.7-0.95)。<b>REJECT → 早返</b>(L818-823);<br>
-                  <b>③</b> <code>await intentRouter.classify(text)</code> → <b>仅在 ② 没命中 / confidence&lt;0.7 时才跑</b>(§7.87.13.2 修复后)。若 ② 命中 + confidence≥0.7 + 非 REJECT,直接用 ② 的 realm 作权威 category,③ 完全跳过(省一次 local-llm 调用,且不让 LLM 覆盖 PII 规则 — 防"身份证号 + 查天气"被 LLM 判 CLOUD 漏 PII);<br>
+                  <b>③</b> <code>await intentRouter.classify(text)</code> → <b>仅在 ② 没命中 / confidence&lt;0.7 时才跑</b>(§7.87.13.2 修复后)。若 ② 命中 + confidence≥0.7 + 非 REJECT,直接用 ② 的 realm 作权威 category,③ 完全跳过(省一次 local-llm 调用,且不让 LLM 覆盖 PII 规则 — 防"身份证号 + 查天气"被 LLM 判 CLOUD 漏 PII)。<b>③ 内部分 2 层</b>(§7.92.3+§7.92.5+§7.92.6+§7.92.7):<b>③.a <code>classifyWithJev()</code></b> — <code>INTENT_JEV_ENABLED=true</code> 时启用(<b>默认 ON via cordis.patch.yml §7.92.7</b>),把 40 个 intent 按 jev v0.3.0 <code>1≤N≤16</code> 硬上限拆 3 批(16+16+8),<code>Promise.all</code> 并发,取 max-confidence merge;高 conf (≥0.85)+ 低 risk (&lt;0.7) → 直接采纳跳过 LLM;<b>circuit breaker(§7.92.6)</b>— 3 batch 全部 fail(timeout/parse/network)→ <code>jevBreakerOpenUntil = Date.now()+TTL</code>(默认 30000ms),期间所有 classify 直接跳过 jev(<b>零 fetch</b>),任何 batch 成功(2xx+parse OK,含 action='fallback_llm')重置 breaker,TTL 到期自动 half-open 重试;避免 jev down 时每条消息卡 7500ms worst-case;<b>boot + periodic probe(§7.92.7)</b>— apply() 时 fire-and-forget <code>GET /health</code>(timeout 2000ms),fail 预开 breaker + 启动 <code>setInterval(probe, 5000)</code>(<code>unref()</code> 不挡进程退出),success 立即 <code>clearInterval</code> + 关 breaker — 零等待恢复,不靠用户下一次消息触发 half-open;<b>③.b <code>classifyWithLlm()</code></b> — ③.a 不可达 / fallback_llm / 漏接时兜底,走 local-llm 4-30s。<br>
                   <b>④</b> <code>await sanitizer.sanitize(text, sessionId)</code> → <b>仅在 category=CLOUD 时才跑</b>,PII → <code>&lt;PHONE:abc&gt;</code> 占位符,LOCAL/SANITIZED 不脱敏。sanitize 失败 → ③ 阶段降级 LOCAL(PII 不出端)。
                 </div>
                 <div class="sub-flow">
@@ -683,10 +683,12 @@ on(<span class="s">'session/event'</span>, (session, event) => {
                   <span class="sub-flow-arrow">→</span>
                   <span class="sub-flow-step">② privacyPolicy.matchRouting</span>
                   <span class="sub-flow-arrow">→</span>
-                  <span class="sub-flow-step opt" title="② 命中+conf≥0.7+非REJECT 时跳过">③ intentRouter.classify</span>
+                  <span class="sub-flow-step opt" title="INTENT_JEV_ENABLED=true 时启用,默认 OFF">③.a jev HTTP prefilter(3 batches)</span>
+                  <span class="sub-flow-arrow">→</span>
+                  <span class="sub-flow-step opt" title="② 命中+conf≥0.7+非REJECT 时跳过">③ intentRouter.classify → ③.b local-llm.classify</span>
                   <span class="sub-flow-arrow">→</span>
                   <span class="sub-flow-step opt" title="仅 CLOUD 才跑">④ sanitizer.sanitize</span>
-                  <span class="sub-flow-note">↑ ① unsafe / ② REJECT 即 return,后续跳过</span>
+                  <span class="sub-flow-note">↑ ① unsafe / ② REJECT 即 return;③.a 命中+conf≥0.85+risk&lt;0.7 也跳过 ③.b</span>
                 </div>
                 <div class="impact-block">
                   <b>→ 对后面的影响</b>:<b>① 消息</b>改写后的 <code>decision.messages</code>(含占位符)进入 ④⑤,LLM 永远看不到明文 PII;<b>② 短路</b>attack/REJECT → throw → dsh-agent-loop 翻译 <code>{kind:'blocked'}</code> → 后续阶段全跳过;<b>③ 路由</b>category 由 ③ 阶段读,改 <code>provider: cloud-llm → local-llm</code>(sanitize 失败兜底)。<b>🚫 REJECT 时</b>在 throw 前调 <code>attachRejection(agent, {kind, reason, riskLevel})</code> 把 <code>_edgeRejection</code> 写到 agent 对象 — 因为 dsh-agent-loop:539 会丢 reason 字符串,这张小抄是给 ⑦ http-api 看的。
@@ -975,6 +977,8 @@ on(<span class="s">'session/event'</span>, (session, event) => {
         <li><b>1 条 REJECT 标签流</b>:② input-guard throw 前贴 <code>_edgeRejection</code> → dsh-agent-loop 翻译丢 reason → ⑦ http-api 读标签转 4xx(reason 靠小抄跨过翻译断层)。</li>
         <li><b>4 个路由决策</b>:② 分类(sanitize)→ ③ 切 provider(sanitize 失败)→ ⑤ 限速(超 N 次)→ ⑦ 转 HTTP 状态码(REJECT)。每一刀都改请求的物理路径。</li>
         <li><b>②.⑤ §7.92.2 双向 verify 通过</b>:CLOUD 方向 removedCount=4 (edit/glob/grep/write) + LOCAL 方向 removedCount=2 (web_fetch/web_search)。SANITIZED assemble 缺席(filterToolsField fail-open)+ REJECT 路径 http-api short-circuit(不进 input-guard 管线)— 4/4 realm 行为都符合设计契约。</li>
+        <li><b>③ §7.92.5 jev v0.3.0 batching 在生产中确认</b>(<code>INTENT_JEV_ENABLED=true</code> 跑出 3 次真实命中):<b>订单查询</b>(conf=1.0,latency=343ms)× 2 + <b>客服</b>(conf=0.8859,latency=401ms,=fresh-cloud-weather 唯一 SANITIZED 跳过 LLM 实例)。<b>batching 结构</b>:<code>intent.jev.start</code> payload 携带 <code>batchCount=3, totalIntents=40</code> → 3 个 <code>intent.jev.batch.start</code>(batchSize [16, 16, 8] 对应 REJECT 优先切批)→ <code>Promise.all</code> 并发 3 fetch → max-confidence merge。<b>实测 wall-clock</b>:<code>batchLatencyMs ≈ 1111ms</code>(3 × ~370ms)而非 memory §7.92.5 写的 ~150ms — jev 后端把 3 个并发请求串行化了(ONNX 单实例 + GIL)。净 latency 节省 = 27%(最快 LLM)→ 96%(typical 4-30s)。<b>③ §7.92.6 circuit breaker</b>:<code>INTENT_JEV_BREAKER_TTL_MS=30000</code>,3 batch 全失败(transport/parse/timeout)→ <code>intent.jev.circuit_open</code> warn audit + 后续 classify 零 fetch 直走 LLM;任何 2xx+parse OK 重置;TTL 到期 half-open。<b>实测 wall-clock 节省</b>(brk-real-* 验证):jev <b>down</b>(ECONNREFUSED)→ 每次省 ~150-500ms;jev <b>hang</b>(TCP up 无 body,full timeout)→ 每次省 7500ms worst-case。<b>新 stats</b>:<code>jevCircuitOpen</code>(breaker 打开次数)+ <code>jevCircuitSkip</code>(跳过次数 × ~500ms 平均 = 节省 wall-clock)。</li>
+        <li><b>③ §7.92.7 boot probe + 周期 recovery probe</b>(2026-09-24):<code>INTENT_JEV_ENABLED=true</code> 默认开启(cordis.patch.yml <code>!== 'false'</code>;schema default <code>false</code> 给单测用)。<b>boot probe</b>:<code>apply()</code> 时 fire-and-forget <code>GET /health</code>(<code>INTENT_JEV_BOOT_PROBE_TIMEOUT_MS=2000</code>),不阻塞 plugin registry;fail → 预开 breaker + <b>同时启动周期 probe</b>(避免 boot 期间无探针 → 30s TTL 内 jev 恢复无感)。<b>周期 probe</b>:<code>setInterval(probeJevHealth, INTENT_JEV_BREAKER_PROBE_MS=5000)</code>,<code>timer.unref()</code> 不挡进程退出;success → 立即 <code>clearInterval</code> + jevBreakerOpenUntil=0(<b>零等待恢复</b>,不等 30s TTL 到期)。<b>审计</b>:<code>intent.jev.boot_probe</code>(info/warn,带 <code>preOpenBreaker</code> 标记)+ <code>intent.jev.probe</code>(debug,周期 tick 可见)。<b>实测 §7.92.7-boot-probe session</b>:jev down 启动 → t+0ms <code>boot_probe</code> warn,预开 breaker → 周期 × 5 全 fail(每 5s 一次)→ <code>docker start jev-branch</code> 后第 6 个 tick (t+30s) <code>ok=true, httpStatus=200</code> → breaker 立即关 → 下次 classify <code>intent.jev.start</code> 直走 3 batch(无 <code>circuit_open_skip</code>)。<b>相对 §7.92.6 节省</b>:jev outage 期间首次 classify 不再付 ~1100ms batch dance(boot 探好预开 breaker);后续 classify 0ms(短接);恢复不靠下一次用户消息触发 TTL half-open,而是 5s 内自动 tick 检测到。</li>
       </ul>
     </div>
 
@@ -1202,7 +1206,7 @@ on(<span class="s">'session/event'</span>, (session, event) => {
           <div class="hook-sub">service · 意图分类</div>
         </div>
         <div class="hook-desc">
-          用 local Qwen3-4B 分类每条消息(LOCAL / CLOUD / SANITIZED);前置 privacy-policy + piiUtils 兜底;keyword fallback。<b>被 input-guard 和 http-api 调</b>:classify → { category, confidence, reason }。
+          用 local Qwen3-4B 分类每条消息(LOCAL / CLOUD / SANITIZED / REJECT);前置 privacy-policy + piiUtils 兜底;keyword fallback。<b>§7.92.3+§7.92.5 jev HTTP prefilter</b>(<code>INTENT_JEV_ENABLED</code> toggle,默认 OFF):40 intents 拆 3 批并发,<code>batchCount=3,totalIntents=40</code>,max-confidence merge 跳过 LLM。<b>被 input-guard 和 http-api 调</b>:classify → { category, confidence, reason }。
         </div>
         <div class="hook-mode"><span class="badge badge-emit">provide</span></div>
       </div>
@@ -1326,7 +1330,7 @@ on(<span class="s">'session/event'</span>, (session, event) => {
 
   <footer>
     dsh-edge-agent · 15 插件 / 9 事件订阅点 / 5 waterfall + 4 emit / 13 service + 3 provider<br>
-    §7.92.2 verified: ②.⑤ Layer 1.5 bidirectional (CLOUD removedCount=4 · LOCAL removedCount=2) + SANITIZED fail-open + REJECT short-circuit
+    §7.92.2 verified: ②.⑤ Layer 1.5 bidirectional (CLOUD removedCount=4 · LOCAL removedCount=2) + SANITIZED fail-open + REJECT short-circuit · §7.92.5 verified: jev v0.3.0 batching in production (3 batches × [16,16,8] from 40 intents, 3 real jev-adopt hits, batchLatencyMs=~1110ms since jev-side serializes) · §7.92.6 verified: circuit breaker (128 unit tests including 3 §7.92.6: all-failed→open, half-open→success-closes, TTL-expiry retry)
   </footer>
 </div>
 </body>

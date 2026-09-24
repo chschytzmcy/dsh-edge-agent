@@ -126,7 +126,9 @@ describe('privacy-policy loading', () => {
     }, audit)
     await svc.reload()
     const p = svc.get()
-    assert.equal(p.version, '1.2.0')
+    // §7.92.3 (2026-09-23): DEFAULT_POLICY.version bumped 1.2.0 → 1.6.0
+    // when the categories[] spec was added. Mirrors config/privacy-policy.json.
+    assert.equal(p.version, '1.6.0')
     assert.ok(p.routingRules.length > 0)
     // Should have logged a warning
     assert.ok(audit.entries.some(e => e.kind === 'policy.missing'))
@@ -393,7 +395,9 @@ describe('privacy-policy HMAC signing', () => {
       await svc.reload()
 
       // In-memory policy must be the default, NOT the tampered file.
-      assert.equal(svc.get().version, '1.2.0')
+      // §7.92.3 (2026-09-23): default version bumped 1.2.0 → 1.6.0 with
+      // the categories[] spec added.
+      assert.equal(svc.get().version, '1.6.0')
       // Tamper event was raised at security level.
       const tamper = audit.entries.find((e) => e.kind === 'policy.tamper-detected')
       assert.ok(tamper, 'expected policy.tamper-detected audit entry')
@@ -415,7 +419,7 @@ describe('privacy-policy HMAC signing', () => {
       }, audit)
       await svc.reload()
 
-      assert.equal(svc.get().version, '1.2.0')
+      assert.equal(svc.get().version, '1.6.0')
       const tamper = audit.entries.find((e) => e.kind === 'policy.tamper-detected')
       assert.ok(tamper)
       assert.equal(tamper!.payload.reason, 'signature-file-missing')
@@ -486,7 +490,7 @@ describe('privacy-policy HMAC signing', () => {
       }, audit)
       await svc.reload()
 
-      assert.equal(svc.get().version, '1.2.0')
+      assert.equal(svc.get().version, '1.6.0')
       const tamper = audit.entries.find((e) => e.kind === 'policy.tamper-detected')
       assert.ok(tamper)
       assert.equal(tamper!.payload.reason, 'hmac-mismatch')
