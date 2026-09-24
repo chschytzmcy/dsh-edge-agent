@@ -1090,3 +1090,335 @@ describe('needle-extractor:Phase 6 stop()', () => {
     assert.equal(svc.getStats().needleBootProbeOk, 1, 'boot probe 完成后 needleBootProbeOk++')
   })
 })
+
+// ── 14. Phase 7:失败路径细分(422/503/502/timeout 区分)─────────────────
+
+describe('needle-extractor:Phase 7 失败路径细分', () => {
+  it('422 invalid body → 不重试 + 不开 breaker + audit reason=invalid_body_422', async () => {
+    const auditEntries: AuditEntry[] = []
+    const { ctx } = makeCtx()
+    const baseCtx = ctx as any
+    baseCtx.auditLog = makeAuditLog(auditEntries)
+    let fetchCalls = 0
+    baseCtx.fetch = (() => {
+      fetchCalls++
+      return Promise.resolve(new Response('{"detail":"invalid query"}', { status: 422 }))
+    }) as any
+    const svc = new NeedleExtractorServiceImpl(baseCtx, {
+      needleEnabled: true,
+      needleBreakerProbeMs: 60_000,
+      needleBreakerTtlMs: 5000,
+    }, makeAuditLog(auditEntries))
+    const bridge = makeBridge('LOCAL', [{ name: 'bash', description: '', parameters: {} }])
+    ;(baseCtx as any).realmSkillBridge = bridge
+    const out = await svc.handlePreStep({
+      agent: { session: { id: 'sess-x' } },
+      messages: [{ role: 'user', content: 'ls' }],
+      step: 1,
+    }, async () => ({ kind: 'enter' as const, messages: [] }))
+    assert.equal(out.kind, 'enter') // 透传
+    assert.equal(fetchCalls, 1, '422 → 只发一次 fetch(不重试)')
+    assert.equal(svc.getStats().needleCircuitOpen, false, '422 → 不开 breaker(client error)')
+    assert.equal(svc.getStats().needleRetryAttempts, 0)
+    const audit = auditEntries.find(e => e.kind === 'needle.extract_failed')!
+    assert.equal((audit.payload as any).reason, 'invalid_body_422')
+    await svc.stop()
+  })
+
+  it('503 with "loading" body → 不重试 + 开 breaker + audit reason=503_loading', async () => {
+    const auditEntries: AuditEntry[] = []
+    const { ctx } = makeCtx()
+    const baseCtx = ctx as any
+    baseCtx.auditLog = makeAuditLog(auditEntries)
+    let fetchCalls = 0
+    baseCtx.fetch = (() => {
+      fetchCalls++
+      // needle 服务端 503 loading 一般 JSON 响应 body 含 "loading"
+      return Promise.resolve(new Response(JSON.stringify({ detail: 'engine loading, please retry later' }), { status: 503 }))
+    }) as any
+    const svc = new NeedleExtractorServiceImpl(baseCtx, {
+      needleEnabled: true,
+      needleBreakerProbeMs: 60_000,
+      needleBreakerTtlMs: 5000,
+    }, makeAuditLog(auditEntries))
+    const bridge = makeBridge('LOCAL', [{ name: 'bash', description: '', parameters: {} }])
+    ;(baseCtx as any).realmSkillBridge = bridge
+    await svc.handlePreStep({
+      agent: { session: { id: 'sess-x' } },
+      messages: [{ role: 'user', content: 'ls' }],
+      step: 1,
+    }, async () => ({ kind: 'enter' as const, messages: [] }))
+    assert.equal(fetchCalls, 1, '503 loading → 不重试')
+    assert.equal(svc.getStats().needleCircuitOpen, true, '503 loading → breaker 开')
+    assert.equal(svc.getStats().needleRetryAttempts, 0)
+    const audit = auditEntries.find(e => e.kind === 'needle.extract_failed')!
+    assert.equal((audit.payload as any).reason, '503_loading')
+    await svc.stop()
+  })
+
+  it('503 with "busy" body → 重试 1 次 + 重试也 503 → 开 breaker', async () => {
+    const auditEntries: AuditEntry[] = []
+    const { ctx } = makeCtx()
+    const baseCtx = ctx as any
+    baseCtx.auditLog = makeAuditLog(auditEntries)
+    let fetchCalls = 0
+    baseCtx.fetch = (() => {
+      fetchCalls++
+      return Promise.resolve(new Response('engine busy', { status: 503, headers: { 'x-reason': 'busy' } }))
+    }) as any
+    const svc = new NeedleExtractorServiceImpl(baseCtx, {
+      needleEnabled: true,
+      needleBreakerProbeMs: 60_000,
+      needleBreakerTtlMs: 5000,
+    }, makeAuditLog(auditEntries))
+    const bridge = makeBridge('LOCAL', [{ name: 'bash', description: '', parameters: {} }])
+    ;(baseCtx as any).realmSkillBridge = bridge
+    const start = Date.now()
+    await svc.handlePreStep({
+      agent: { session: { id: 'sess-x' } },
+      messages: [{ role: 'user', content: 'ls' }],
+      step: 1,
+    }, async () => ({ kind: 'enter' as const, messages: [] }))
+    const wall = Date.now() - start
+    assert.equal(fetchCalls, 2, '503 busy → 重试一次 = 2 次 fetch')
+    assert.ok(wall >= 180, `retry 应至少 200ms backoff(实测 ${wall}ms)`)
+    assert.equal(svc.getStats().needleCircuitOpen, true, '重试仍 503 → breaker 开')
+    assert.equal(svc.getStats().needleRetryAttempts, 1)
+    // audit 链:1 个 needle.extract_retry + 1 个 needle.extract_failed
+    const retryAudits = auditEntries.filter(e => e.kind === 'needle.extract_retry')
+    assert.equal(retryAudits.length, 1)
+    assert.equal((retryAudits[0].payload as any).status, 503)
+    const failAudit = auditEntries.find(e => e.kind === 'needle.extract_failed')!
+    assert.equal((failAudit.payload as any).reason, '503_busy')
+    assert.equal((failAudit.payload as any).retried, true)
+    await svc.stop()
+  })
+
+  it('503 busy → 首次 503,重试 200 → 合成 message 注入', async () => {
+    const auditEntries: AuditEntry[] = []
+    const { ctx } = makeCtx()
+    const baseCtx = ctx as any
+    baseCtx.auditLog = makeAuditLog(auditEntries)
+    let calls = 0
+    baseCtx.fetch = (() => {
+      calls++
+      if (calls === 1) {
+        return Promise.resolve(new Response('engine busy', { status: 503, headers: { 'x-reason': 'busy' } }))
+      }
+      // 第二次重试成功
+      return Promise.resolve(okJsonResponse(NEEDLE_OK_CALL))
+    }) as any
+    const tools = {
+      execute: async () => ({ isError: false, content: [{ type: 'text', text: 'file1.md\nfile2.md' }] }),
+    }
+    const svc = new NeedleExtractorServiceImpl(baseCtx, {
+      needleEnabled: true,
+      needleBreakerProbeMs: 60_000,
+      needleBreakerTtlMs: 5000,
+    }, makeAuditLog(auditEntries))
+    const bridge = makeBridge('LOCAL', [{ name: 'bash', description: '', parameters: {} }])
+    ;(baseCtx as any).realmSkillBridge = bridge
+    ;(baseCtx as any).tools = tools
+    const seed = { kind: 'enter' as const, messages: [{ role: 'user', content: 'ls' }] as any }
+    const out = await svc.handlePreStep({
+      agent: { session: { id: 'sess-x' } },
+      messages: [{ role: 'user', content: 'ls' }],
+      step: 1,
+    }, async () => seed)
+    assert.equal(calls, 2, '503 重试 1 次 → 200 成功')
+    assert.equal(out.kind, 'enter')
+    assert.equal((out.messages ?? []).length, 2, '原 + 合成 message')
+    assert.equal(svc.getStats().needleCircuitOpen, false, '成功 → 不开 breaker')
+    assert.equal(svc.getStats().needleRetryAttempts, 1)
+    assert.equal(svc.getStats().needleSynthesisInjected, 1)
+    await svc.stop()
+  })
+
+  it('502 engine internal → 不重试 + 开 breaker + audit reason=http_502', async () => {
+    const auditEntries: AuditEntry[] = []
+    const { ctx } = makeCtx()
+    const baseCtx = ctx as any
+    baseCtx.auditLog = makeAuditLog(auditEntries)
+    let fetchCalls = 0
+    baseCtx.fetch = (() => {
+      fetchCalls++
+      return Promise.resolve(new Response('engine crash', { status: 502 }))
+    }) as any
+    const svc = new NeedleExtractorServiceImpl(baseCtx, {
+      needleEnabled: true,
+      needleBreakerProbeMs: 60_000,
+      needleBreakerTtlMs: 5000,
+    }, makeAuditLog(auditEntries))
+    const bridge = makeBridge('LOCAL', [{ name: 'bash', description: '', parameters: {} }])
+    ;(baseCtx as any).realmSkillBridge = bridge
+    await svc.handlePreStep({
+      agent: { session: { id: 'sess-x' } },
+      messages: [{ role: 'user', content: 'ls' }],
+      step: 1,
+    }, async () => ({ kind: 'enter' as const, messages: [] }))
+    // 502 在 retryPlan 第一次发 + 第二次也发(重试),还是 first only?
+    // 期望:first attempt isRetryable(502 算),retryPlan[1] 也尝试一次(也是 502)
+    // 所以 fetchCalls === 2(Phase 7 retry-once 包含 502)
+    assert.equal(fetchCalls, 2, '502 → 重试一次 = 2 次 fetch')
+    assert.equal(svc.getStats().needleCircuitOpen, true, '重试仍 502 → breaker 开')
+    assert.equal(svc.getStats().needleRetryAttempts, 1)
+    const failAudit = auditEntries.find(e => e.kind === 'needle.extract_failed')!
+    assert.equal((failAudit.payload as any).reason, 'http_502')
+    assert.equal((failAudit.payload as any).retried, true)
+    await svc.stop()
+  })
+
+  it('408 timeout proxy → 不重试 + 开 breaker + audit needle.timeout_skip', async () => {
+    const auditEntries: AuditEntry[] = []
+    const { ctx } = makeCtx()
+    const baseCtx = ctx as any
+    baseCtx.auditLog = makeAuditLog(auditEntries)
+    baseCtx.fetch = (() => Promise.resolve(new Response('gateway timeout', { status: 408 }))) as any
+    const svc = new NeedleExtractorServiceImpl(baseCtx, {
+      needleEnabled: true,
+      needleBreakerProbeMs: 60_000,
+      needleBreakerTtlMs: 5000,
+    }, makeAuditLog(auditEntries))
+    const bridge = makeBridge('LOCAL', [{ name: 'bash', description: '', parameters: {} }])
+    ;(baseCtx as any).realmSkillBridge = bridge
+    await svc.handlePreStep({
+      agent: { session: { id: 'sess-x' } },
+      messages: [{ role: 'user', content: 'ls' }],
+      step: 1,
+    }, async () => ({ kind: 'enter' as const, messages: [] }))
+    assert.equal(svc.getStats().needleTimeoutSkip, 1)
+    assert.equal(svc.getStats().needleCircuitOpen, true)
+    assert.ok(auditEntries.some(e => e.kind === 'needle.timeout_skip'))
+    const audit = auditEntries.find(e => e.kind === 'needle.timeout_skip')!
+    assert.equal((audit.payload as any).reason, 'timeout_proxy')
+    await svc.stop()
+  })
+
+  it('其它 5xx(如 500)→ 不重试 + 开 breaker + audit reason=http_500', async () => {
+    const auditEntries: AuditEntry[] = []
+    const { ctx } = makeCtx()
+    const baseCtx = ctx as any
+    baseCtx.auditLog = makeAuditLog(auditEntries)
+    let fetchCalls = 0
+    baseCtx.fetch = (() => {
+      fetchCalls++
+      return Promise.resolve(new Response('internal error', { status: 500 }))
+    }) as any
+    const svc = new NeedleExtractorServiceImpl(baseCtx, {
+      needleEnabled: true,
+      needleBreakerProbeMs: 60_000,
+      needleBreakerTtlMs: 5000,
+    }, makeAuditLog(auditEntries))
+    const bridge = makeBridge('LOCAL', [{ name: 'bash', description: '', parameters: {} }])
+    ;(baseCtx as any).realmSkillBridge = bridge
+    await svc.handlePreStep({
+      agent: { session: { id: 'sess-x' } },
+      messages: [{ role: 'user', content: 'ls' }],
+      step: 1,
+    }, async () => ({ kind: 'enter' as const, messages: [] }))
+    assert.equal(fetchCalls, 1, '500 → 不在 retry 列表 → 1 次 fetch')
+    assert.equal(svc.getStats().needleCircuitOpen, true)
+    assert.equal(svc.getStats().needleRetryAttempts, 0)
+    const audit = auditEntries.find(e => e.kind === 'needle.extract_failed')!
+    assert.equal((audit.payload as any).reason, 'http_500')
+    await svc.stop()
+  })
+
+  it('retry 路径 wall-clock ≥ 200ms(退避预算的 ops 可观测性)', async () => {
+    const auditEntries: AuditEntry[] = []
+    const { ctx } = makeCtx()
+    const baseCtx = ctx as any
+    baseCtx.auditLog = makeAuditLog(auditEntries)
+    baseCtx.fetch = (() => Promise.resolve(new Response('busy', { status: 503, headers: { 'x-reason': 'busy' } }))) as any
+    const svc = new NeedleExtractorServiceImpl(baseCtx, {
+      needleEnabled: true,
+      needleBreakerProbeMs: 60_000,
+      needleBreakerTtlMs: 5000,
+    }, makeAuditLog(auditEntries))
+    const bridge = makeBridge('LOCAL', [{ name: 'bash', description: '', parameters: {} }])
+    ;(baseCtx as any).realmSkillBridge = bridge
+    const start = Date.now()
+    await svc.handlePreStep({
+      agent: { session: { id: 'sess-x' } },
+      messages: [{ role: 'user', content: 'ls' }],
+      step: 1,
+    }, async () => ({ kind: 'enter' as const, messages: [] }))
+    const wall = Date.now() - start
+    assert.ok(wall >= 180, `retry path 至少 200ms(实测 ${wall}ms)`)
+    await svc.stop()
+  })
+})
+
+// ── 15. Phase 7:parseExtractResponse 纯函数 ──────────────────────────────
+
+describe('needle-extractor:Phase 7 parseExtractResponse', () => {
+  // 通过 ctx.fetch mock 间接测(parseExtractResponse 是 private)
+  it('response 缺 confidence → 默认 0', async () => {
+    const auditEntries: AuditEntry[] = []
+    const { ctx } = makeCtx()
+    const baseCtx = ctx as any
+    baseCtx.auditLog = makeAuditLog(auditEntries)
+    baseCtx.fetch = (() => Promise.resolve(okJsonResponse({
+      type: 'call',
+      function_calls: [{ name: 'bash', arguments: { command: 'ls' } }],
+      // no confidence
+    }))) as any
+    const svc = new NeedleExtractorServiceImpl(baseCtx, {
+      needleEnabled: true,
+      needleBreakerProbeMs: 60_000,
+      needleBreakerTtlMs: 5000,
+    }, makeAuditLog(auditEntries))
+    const bridge = makeBridge('LOCAL', [{ name: 'bash', description: '', parameters: {} }])
+    ;(baseCtx as any).realmSkillBridge = bridge
+    const tools = {
+      execute: async () => ({ isError: false, content: [{ type: 'text', text: 'file.md' }] }),
+    }
+    ;(baseCtx as any).tools = tools
+    const seed = { kind: 'enter' as const, messages: [{ role: 'user', content: 'ls' }] as any }
+    const out = await svc.handlePreStep({
+      agent: { session: { id: 'sess-x' } },
+      messages: [{ role: 'user', content: 'ls' }],
+      step: 1,
+    }, async () => seed)
+    // confidence 缺 → 0 → < threshold 0.7 → adopt gate fails → 不注入
+    assert.equal(out.kind, 'enter')
+    assert.equal((out.messages ?? []).length, 1, 'seed + nothing → 只剩 seed')
+    assert.equal(svc.getStats().needleSynthesisInjected, 0)
+    assert.equal(svc.getStats().needleLowConfSkip, 1)
+    await svc.stop()
+  })
+
+  it('response 缺 validation.ungrounded → 默认 []', async () => {
+    const auditEntries: AuditEntry[] = []
+    const { ctx } = makeCtx()
+    const baseCtx = ctx as any
+    baseCtx.auditLog = makeAuditLog(auditEntries)
+    baseCtx.fetch = (() => Promise.resolve(okJsonResponse({
+      type: 'call',
+      function_calls: [{ name: 'bash', arguments: { command: 'ls' } }],
+      confidence: 0.95,
+      // no validation
+    }))) as any
+    const svc = new NeedleExtractorServiceImpl(baseCtx, {
+      needleEnabled: true,
+      needleBreakerProbeMs: 60_000,
+      needleBreakerTtlMs: 5000,
+    }, makeAuditLog(auditEntries))
+    const bridge = makeBridge('LOCAL', [{ name: 'bash', description: '', parameters: {} }])
+    ;(baseCtx as any).realmSkillBridge = bridge
+    const tools = {
+      execute: async () => ({ isError: false, content: [{ type: 'text', text: 'x' }] }),
+    }
+    ;(baseCtx as any).tools = tools
+    const seed = { kind: 'enter' as const, messages: [{ role: 'user', content: 'ls' }] as any }
+    const out = await svc.handlePreStep({
+      agent: { session: { id: 'sess-x' } },
+      messages: [{ role: 'user', content: 'ls' }],
+      step: 1,
+    }, async () => seed)
+    // ungrounded=[] → 不跳 → 执行 → 注入
+    assert.equal((out.messages ?? []).length, 2)
+    assert.equal(svc.getStats().needleSynthesisInjected, 1)
+    await svc.stop()
+  })
+})

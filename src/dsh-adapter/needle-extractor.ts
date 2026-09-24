@@ -10,8 +10,10 @@
  * synthesis(§7.42 P0-1 malformed guard 留作 fallback)。
  *
  * 后续 Phase:
- *   - Phase 7:失败路径细分(422 不重试 / 503 busy 退避 / 503 loading 走
- *     breaker / 502 降级)。
+ *   - Phase 8:E2E + bench(本地真机对话,latency / malformed 率测量)。
+ *   - Phase 9:cordis.patch.yml + install.sh + docs(PROGRESS.md §7.93
+ *     + dsh-edge-flow.html)+ 部署(boot-verify `dsh --profile dsh-edge
+ *     --dump-config`)。
  *
  * 服务边界(user 终裁,needle-extractor-integration memory):
  *   - needle 服务端只提取,**不翻译不执行**(P1 中文数字归一化是服务端内置
@@ -60,6 +62,7 @@
  *     needle.extract                 (info,每次 /extract 调用 metadata)
  *     needle.low_confidence_skip     (info,采纳门未过)
  *     needle.timeout_skip            (warn,extract 超时;同时触发 openBreaker)
+ *     needle.extract_retry            (warn,Phase 7 退避重试 503/502)
  *     needle.extract_failed          (warn,4xx(不开)/5xx(开 breaker)/网络错(开))
  *     needle.synthesis_injected      (info,合成 user-role 已注入)
  *     needle.realm_unset_skip        (info,realm 未注册跳过)
@@ -179,6 +182,9 @@ export interface NeedleExtractorStats {
   needleSynthesisInjected: number
   /** /extract 累计延迟(取驱动决策的响应,均值 = total/calls)。 */
   needleLatencyMsTotal: number
+  /** Phase 7:503/502 退避重试的尝试次数(不算首次);一次 logical extract
+   *  call 最多 +1。运维看 retry 高说明 needle 引擎瞬时拥塞。 */
+  needleRetryAttempts: number
 }
 
 // ── helpers(纯函数,可单测)────────────────────────────────────────────
@@ -277,6 +283,7 @@ export class NeedleExtractorServiceImpl extends Service {
       needleErrors: 0,
       needleSynthesisInjected: 0,
       needleLatencyMsTotal: 0,
+      needleRetryAttempts: 0,
     }
   }
 
@@ -611,6 +618,23 @@ export class NeedleExtractorServiceImpl extends Service {
    *   - 解析成功的 {type, calls, confidence, validation, raw}
    *   - null:网络/超时/HTTP 非 2xx/JSON 解析失败(均 fail through)
    */
+  /**
+   * POST ${needleUrl}/extract(API.md v1.1 §4.5)—— Phase 7 失败路径
+   * 细分。返回:
+   *   - 解析成功的 {type, calls, confidence, validation, raw}
+   *   - null:fail through(各种 failure,看 audit kind 区分)
+   *
+   * 失败路径(API.md §6 + dry-run #1):
+   *   422 invalid body       → 不重试,不开 breaker(client error)
+   *   503 engine busy        → 重试 1 次,200ms backoff;二次仍 503 → breaker
+   *   503 loading (warmup)   → 不重试,开 breaker(暖机 = 视同 down)
+   *   502 engine internal    → 不重试,开 breaker(engine bug → down)
+   *   408/504 timeout proxy  → 不重试,开 breaker(timeout proxy 跟本地 timeout 同质)
+   *   其它 5xx              → 不重试,开 breaker
+   *   AbortError(本地 1.5s) → 不重试,开 breaker(dry-run #1:timeout 几乎全中)
+   *   其它网络错             → 不重试,开 breaker
+   *   no fetcher             → 不重试,开 breaker
+   */
   private async extractCalls(
     query: string,
     schemas: ReadonlyArray<{ name: string; description: string; parameters: Record<string, unknown> }>,
@@ -623,97 +647,194 @@ export class NeedleExtractorServiceImpl extends Service {
     validation: { ungrounded: readonly string[] }
     raw: Record<string, unknown>
   } | null> {
+    // Phase 7:最多 2 次 attempt(首次 + 1 次 retry-on-transient)。retry
+    // 只对 503/502 触发;其它 5xx / 408/504 / timeout / 4xx 一次就够。
+    const retryPlan = [
+      { delayMs: 0, isRetry: false },
+      { delayMs: 200, isRetry: true },
+    ] as const
+    this.stats.needleExtractCalls += 1
+
+    for (const attempt of retryPlan) {
+      if (attempt.delayMs > 0) {
+        await new Promise<void>(r => setTimeout(r, attempt.delayMs))
+        this.stats.needleRetryAttempts += 1
+      }
+
+      const r = await this.attemptExtractOnce(query, schemas, sessionId, upstreamSignal)
+
+      // 422 → 立刻终止,不开 breaker
+      if (r.kind === 'fatal_422') {
+        this.audit('warn', 'needle.extract_failed', {
+          sessionId, durationMs: r.durationMs, status: 422,
+          reason: 'invalid_body_422',
+          bodyPreview: r.body.slice(0, 80),
+          retried: attempt.isRetry,
+        })
+        return null
+      }
+
+      // no_fetcher / transport / 5xx non-retryable → terminal
+      if (r.kind === 'no_fetcher') {
+        this.audit('warn', 'needle.extract_failed', {
+          sessionId, reason: 'no_fetch_runtime',
+        })
+        this.openBreaker('transport')
+        return null
+      }
+
+      if (r.kind === 'transport') {
+        const isAbort = (r.err as { name?: string })?.name === 'AbortError'
+        if (isAbort) this.stats.needleTimeoutSkip += 1
+        this.openBreaker(isAbort ? 'timeout' : 'transport')
+        this.audit('warn', isAbort ? 'needle.timeout_skip' : 'needle.extract_failed', {
+          sessionId, durationMs: r.durationMs, thrown: true,
+          error: (r.err as { message?: string })?.message ?? String(r.err),
+        })
+        return null
+      }
+
+      if (r.kind === 'http') {
+        const code = r.code
+        const isTimeoutProxy = code === 408 || code === 504
+        const isLoading503 = code === 503 && r.body.includes('loading')
+        // retry 只对 503-busy / 502 触发:503-loading 是 warmup(视同 down)
+        // 不重试;timeout proxy 跟本地 timeout 同质也不重试。
+        const isRetryable503or502 = !isLoading503 && !isTimeoutProxy && (code === 503 || code === 502) && !attempt.isRetry
+
+        if (isRetryable503or502) {
+          this.audit('warn', 'needle.extract_retry', {
+            sessionId, status: code, durationMs: r.durationMs,
+            bodyPreview: r.body.slice(0, 80),
+          })
+          continue // 进入 retryPlan 下一轮
+        }
+
+        // terminal:开 breaker + audit
+        const reason = isTimeoutProxy ? 'timeout_proxy'
+                     : code === 503 && r.body.includes('loading') ? '503_loading'
+                     : code === 503 ? '503_busy'
+                     : `http_${code}`
+        if (isTimeoutProxy) this.stats.needleTimeoutSkip += 1
+        this.openBreaker(isTimeoutProxy ? 'timeout' : 'http_5xx')
+        this.audit('warn', isTimeoutProxy ? 'needle.timeout_skip' : 'needle.extract_failed', {
+          sessionId, durationMs: r.durationMs, status: code, reason,
+          retried: attempt.isRetry,
+          bodyPreview: r.body.slice(0, 80),
+        })
+        return null
+      }
+
+      // r.kind === 'success'
+      this.closeBreaker()
+      this.audit('info', 'needle.extract', {
+        sessionId, durationMs: r.durationMs, status: r.status,
+        type: r.parsed.type, confidence: r.parsed.confidence,
+        functionCallCount: r.parsed.calls.length,
+        queryLen: query.length, schemaCount: schemas.length,
+        retried: attempt.isRetry,
+      })
+      return r.parsed
+    }
+
+    // 不该到这里(retryPlan 第二次必然 terminal),但防御性 no-op:
+    return null
+  }
+
+  /**
+   * 单次 POST /extract 尝试。Phase 7 拆出此 helper 是为了让
+   * extractCalls 主路径只剩 retry + audit + breaker 协调,实际
+   * HTTP/parse 在这里集中。**永不 throw**——一切异常归一成
+   * discriminated return(§7.93 Phase 3 永不 throw 契约的延续)。
+   */
+  private async attemptExtractOnce(
+    query: string,
+    schemas: ReadonlyArray<{ name: string; description: string; parameters: Record<string, unknown> }>,
+    sessionId: string | undefined,
+    upstreamSignal: AbortSignal | undefined,
+  ): Promise<
+    | { kind: 'success'; status: number; durationMs: number; parsed: {
+        type: 'call' | 'respond'
+        calls: ReadonlyArray<{ name: string; arguments: unknown }>
+        confidence: number
+        validation: { ungrounded: readonly string[] }
+        raw: Record<string, unknown>
+      } }
+    | { kind: 'fatal_422'; durationMs: number; body: string }
+    | { kind: 'http'; code: number; durationMs: number; body: string }
+    | { kind: 'transport'; err: unknown; durationMs: number }
+    | { kind: 'no_fetcher' }
+  > {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), this.needleTimeoutMs)
     if (upstreamSignal) {
       if (upstreamSignal.aborted) controller.abort()
       else upstreamSignal.addEventListener('abort', () => controller.abort(), { once: true })
     }
-    this.stats.needleExtractCalls += 1
-    const start = Date.now()
     const fetcher = this.fetcher()
     if (!fetcher) {
-      this.audit('warn', 'needle.extract_failed', {
-        sessionId, reason: 'no_fetch_runtime',
-      })
-      // §7.92.6:no fetch runtime → 视同 transport down → 开 breaker
-      this.openBreaker('transport')
-      return null
+      clearTimeout(timer)
+      return { kind: 'no_fetcher' }
     }
+    const start = Date.now()
     try {
       const res = await fetcher(`${this.needleUrl}/extract`, {
         method: 'POST',
         signal: controller.signal,
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          query,
-          tools: schemas,
-        }),
+        body: JSON.stringify({ query, tools: schemas }),
       })
       clearTimeout(timer)
       const durationMs = Date.now() - start
       this.stats.needleLatencyMsTotal += durationMs
-      if (!res.ok) {
-        // 422 / 503 / 502 统一 fail through(Phase 7 会细分)。
-        // §7.92.6 + dry-run #1:5xx → 开 breaker(timeout proxy 4xx/5xx
-        // 同样),4xx → 不开(client error,不代表 engine down)。
-        const code = res.status
-        const reason = code === 408 || code === 504 ? 'timeout_proxy' : `http_${code}`
-        this.stats.needleTimeoutSkip += code === 408 || code === 504 ? 1 : 0
-        this.audit('warn', code === 408 || code === 504 ? 'needle.timeout_skip' : 'needle.extract_failed', {
-          sessionId, durationMs, status: code, reason,
-        })
-        if (code >= 500 || code === 408 || code === 504) {
-          this.openBreaker('http_5xx')
+      if (res.ok) {
+        const raw = await res.json() as Record<string, unknown>
+        return {
+          kind: 'success', status: res.status, durationMs,
+          parsed: this.parseExtractResponse(raw),
         }
-        return null
       }
-      const raw = await res.json() as Record<string, unknown>
-      const type = raw.type === 'call' || raw.type === 'respond' ? raw.type : 'respond'
-      const confidence = typeof raw.confidence === 'number' ? raw.confidence : 0
-      const validation = (raw.validation && typeof raw.validation === 'object')
-        ? raw.validation as Record<string, unknown>
-        : {}
-      const ungrounded = Array.isArray(validation.ungrounded)
-        ? validation.ungrounded.filter((x): x is string => typeof x === 'string')
-        : []
-      const callsRaw = Array.isArray(raw.function_calls) ? raw.function_calls : []
-      const calls = callsRaw
-        .filter((c): c is Record<string, unknown> => !!c && typeof c === 'object')
-        .map(c => ({
-          name: typeof c.name === 'string' ? c.name : '',
-          arguments: c.arguments,
-        }))
-      // §7.92.6:success → 关 breaker(让后续请求不再短跳)。idempotent。
-      this.closeBreaker()
-      this.audit('info', 'needle.extract', {
-        sessionId, durationMs, status: res.status,
-        type, confidence, functionCallCount: calls.length,
-        queryLen: query.length, schemaCount: schemas.length,
-      })
-      return {
-        type,
-        calls,
-        confidence,
-        validation: { ungrounded },
-        raw,
+      // non-2xx:读 body 一次(后续 retry 可能再读)
+      let body = ''
+      try { body = await res.text() } catch { /* ignore */ }
+      if (res.status === 422) {
+        return { kind: 'fatal_422', durationMs, body }
       }
+      return { kind: 'http', code: res.status, durationMs, body }
     } catch (err: unknown) {
       clearTimeout(timer)
       const durationMs = Date.now() - start
-      const isAbort = (err as { name?: string })?.name === 'AbortError' || controller.signal.aborted
-      this.stats.needleTimeoutSkip += isAbort ? 1 : 0
-      this.stats.needleExtractCalls += 0 // 计入了 1,但 timeout 也算 1 次 extract 调用;不双重计数
-      // §7.92.6 + dry-run #1:AbortError(本地 1.5s 超时)+ 其他网络错 → 开
-      // breaker。生产 needle 引擎当前 degradation 25x(timeout 几乎全
-      // 中),这是必要的设计应对。
-      this.openBreaker(isAbort ? 'timeout' : 'transport')
-      this.audit('warn', isAbort ? 'needle.timeout_skip' : 'needle.extract_failed', {
-        sessionId, durationMs, thrown: true,
-        error: (err as { message?: string })?.message ?? String(err),
-      })
-      return null
+      return { kind: 'transport', err, durationMs }
     }
+  }
+
+  /**
+   * 解析 needle /extract 200 response 字段(API.md v1.1 §4.5)。纯函数,
+   * extract 出来便于测试 + 复用。PII 纪律:不读 raw content(只取元数据字段)。
+   */
+  private parseExtractResponse(raw: Record<string, unknown>): {
+    type: 'call' | 'respond'
+    calls: ReadonlyArray<{ name: string; arguments: unknown }>
+    confidence: number
+    validation: { ungrounded: readonly string[] }
+    raw: Record<string, unknown>
+  } {
+    const type = raw.type === 'call' || raw.type === 'respond' ? raw.type : 'respond'
+    const confidence = typeof raw.confidence === 'number' ? raw.confidence : 0
+    const validation = (raw.validation && typeof raw.validation === 'object')
+      ? raw.validation as Record<string, unknown>
+      : {}
+    const ungrounded = Array.isArray(validation.ungrounded)
+      ? validation.ungrounded.filter((x): x is string => typeof x === 'string')
+      : []
+    const callsRaw = Array.isArray(raw.function_calls) ? raw.function_calls : []
+    const calls = callsRaw
+      .filter((c): c is Record<string, unknown> => !!c && typeof c === 'object')
+      .map(c => ({
+        name: typeof c.name === 'string' ? c.name : '',
+        arguments: c.arguments,
+      }))
+    return { type, calls, confidence, validation: { ungrounded }, raw }
   }
 
   // ── synthesis context builder ─────────────────────────────────────────
