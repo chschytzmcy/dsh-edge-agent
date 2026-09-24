@@ -59,7 +59,7 @@ done
 # 会误导运维)。核对策略:从最新 audit 行反向找 needle-extractor 插件 boot
 # 行;或更直接 — 从 dsh-edge-agent.log 最近 N 行 grep "[needle-extractor]
 # boot"。
-NEEDLE_BOOT_LINE=$(grep '\[needle-extractor\] boot' "$LOG_FILE" 2>/dev/null | tail -1 || true)
+NEEDLE_BOOT_LINE=$(grep '\[needle-extractor\] boot enabled=' "$LOG_FILE" 2>/dev/null | tail -1 || true)
 if [ -z "$NEEDLE_BOOT_LINE" ]; then
   echo "✗ [FATAL] $LOG_FILE 找不到 '[needle-extractor] boot' 行" >&2
   echo "    → needle-extractor 插件未在 dsh 启动时挂载。" >&2
@@ -137,11 +137,11 @@ else
 fi
 
 # boot 行 ops log(needle-extractor boot 时 emit 一次,运维一眼可见 enabled/url)
-if ! grep -qF '[needle-extractor] boot' "$LOG_FILE" 2>/dev/null; then
-  echo "  ✗ 缺 [needle-extractor] boot ops log 行" >&2
+if ! grep -qF '[needle-extractor] boot enabled=' "$LOG_FILE" 2>/dev/null; then
+  echo "  ✗ 缺 [needle-extractor] boot enabled= ops log 行" >&2
   FAIL=1
 else
-  echo "  ✓ [needle-extractor] boot ops log 行存在"
+  echo "  ✓ [needle-extractor] boot enabled= ops log 行存在"
 fi
 
 # ── 断言 2:needle.extractor 完整 audit chain(7 个 kind 至少出现) ──
