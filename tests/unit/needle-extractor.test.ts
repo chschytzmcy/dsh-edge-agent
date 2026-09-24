@@ -4,16 +4,17 @@
  * 骨架期契约(全部在此锁死):
  *  1. inject 列表 = §7.92.2 proxy trap 防线:读 ctx.X 前必先列 inject;
  *     privacyPolicy 刻意不在列表(插件不读 categories,intent 判定归 intent-router)。
+ *     Phase 5 末 llm 也裁掉:不再 client 翻译,直接 needle(自带 cn_grounding)。
  *  2. Config schema 默认值 = .env / memory 契约逐字段一致(needleEnabled=false、
- *     url=:8081、timeout=1500、threshold=0.7、translate=on/local-llm、
+ *     url=:8081、timeout=1500、threshold=0.7、
  *     breaker/probe 四件套 = §7.92.6/§7.92.7 jev 同款默认)。
  *  3. service 构造期 `??` 回退与 schema 默认镜像一致(cordis 走 schema,
  *     测试/手工构造走 ??,两条路必须给同一个值)。
  *  4. isAvailable() = 总开关(Phase 6 才叠加 breaker;Phase 5 listener 的第一道 gate)。
  *  5. getStats() 返回副本 —— 调用方改不坏内部计数。
- *  6. apply() 零 waterfall 副作用:llm/tools/realmSkillBridge 全缺席也能
+ *  6. apply() 零 waterfall 副作用:tools/realmSkillBridge 全缺席也能
  *     boot/dispose(骨架期一次 HTTP 都不发,listener 一个都不挂)。
- *  7. boot ops-log 一行(§7.46 纪律):enabled/url/translate/timeout/threshold
+ *  7. boot ops-log 一行(§7.46 纪律):enabled/url/timeout/threshold
  *     全在行内,运维排查"needle 为什么没生效"第一眼。
  *  8. createToolRunner() 惰性 loose-read:依赖齐 → ToolRunner;缺任一 /
  *     cordis proxy throw(§7.92.2)→ undefined(调用方 fall through)。
@@ -44,7 +45,6 @@ function makeCtx(extra: Record<string, unknown> = {}) {
       info: (m: string) => logs.push(m),
       warn: (m: string) => logs.push(m),
     },
-    llm: null,
     ...extra,
   } as any
   return { ctx, logs }
@@ -68,15 +68,15 @@ function makeService(config: Record<string, unknown> = {}, ctxExtra: Record<stri
   return { svc, ctx, logs, entries }
 }
 
-/** §7.93 memory 契约:12 个字段的权威默认值(.env 翻译层未生效时的兜底)。 */
+/** §7.93 memory 契约:9 个字段的权威默认值(.env 翻译层未生效时的兜底)。
+ *  (Phase 5 末 user 终裁:不管什么语种 needle 自带 cn_grounding,直接用,
+ *  不再过 client 翻译;原 12 字段裁掉 needleTranslateTimeoutMs /
+ *  needleTranslateEnabled / needleTranslateProvider。) */
 const EXPECTED_DEFAULTS = {
   needleEnabled: false,
   needleUrl: 'http://127.0.0.1:8081',
   needleTimeoutMs: 1500,
-  needleTranslateTimeoutMs: 3000,
   needleConfidenceThreshold: 0.7,
-  needleTranslateEnabled: true,
-  needleTranslateProvider: 'local-llm',
   needleBreakerTtlMs: 30000,
   needleBootProbeEnabled: true,
   needleBootProbeTimeoutMs: 2000,
@@ -91,12 +91,13 @@ describe('needle-extractor:plugin 面', () => {
     assert.equal(pluginName, 'needle-extractor')
   })
 
-  it('§7.92.2 inject 锁:llm/auditLog/realmSkillBridge/tools 四项,privacyPolicy 刻意缺席', () => {
+  it('§7.92.2 inject 锁:auditLog/realmSkillBridge/tools 三项,llm+privacyPolicy 刻意缺席', () => {
     // 读 ctx.X 前必须先列 inject(cordis proxy 静默 throw "cannot get
     // property X without inject")。少列 = Phase 5/6 接线时静默失败;
-    // 多列 privacyPolicy = 声明了不消费的依赖(计划草稿已裁掉:本插件
-    // 不读 categories,intent 判定归 intent-router)。
-    assert.deepEqual([...inject], ['llm', 'auditLog', 'realmSkillBridge', 'tools'])
+    // 多列 llm = 翻译已裁掉,本插件不调 LLM;多列 privacyPolicy =
+    // 声明了不消费的依赖(intent 判定归 intent-router)。
+    assert.deepEqual([...inject], ['auditLog', 'realmSkillBridge', 'tools'])
+    assert.ok(!(inject as readonly string[]).includes('llm'))
     assert.ok(!(inject as readonly string[]).includes('privacyPolicy'))
   })
 })
@@ -104,7 +105,7 @@ describe('needle-extractor:plugin 面', () => {
 // ── 2. config schema 默认值 ─────────────────────────────────────────────────
 
 describe('needle-extractor:config 默认值', () => {
-  it('schema resolve 空 config → 12 字段与 .env/memory 契约逐字一致', () => {
+  it('schema resolve 空 config → 9 字段与 .env/memory 契约逐字一致', () => {
     // schemastery schema 可调用:ConfigSchema({}) 即 cordis 挂载时的 resolve 路径。
     const resolved = ConfigSchema({} as never) as Record<string, unknown>
     for (const [k, v] of Object.entries(EXPECTED_DEFAULTS)) {
@@ -168,7 +169,7 @@ describe('needle-extractor:availability 与 stats', () => {
 // ── 4. apply 生命周期(零副作用)─────────────────────────────────────────────
 
 describe('needle-extractor:apply 生命周期', () => {
-  it('llm/tools/realmSkillBridge 全缺席也能 boot + dispose(骨架期零 HTTP 零 listener)', () => {
+  it('tools/realmSkillBridge 全缺席也能 boot + dispose(骨架期零 HTTP 零 listener)', () => {
     // ctx 上没有 on/registry/waterfall 任何东西:apply 若偷偷挂 listener
     // 或发 probe,这里会直接 TypeError —— "零副作用"由 fake ctx 的贫瘠证明。
     const { ctx, logs } = makeCtx()
@@ -179,13 +180,11 @@ describe('needle-extractor:apply 生命周期', () => {
     })
   })
 
-  it('boot ops-log 一行含 enabled/url/translate/timeout/threshold(§7.46 纪律,metadata only)', async () => {
+  it('boot ops-log 一行含 enabled/url/timeout/threshold(§7.46 纪律,metadata only)', async () => {
     const { ctx, logs } = makeCtx()
     const dispose = await apply(ctx, {
       needleEnabled: true,
       needleUrl: 'http://127.0.0.1:8081',
-      needleTranslateEnabled: false,
-      needleTranslateProvider: 'local-llm',
       needleTimeoutMs: 1500,
       needleConfidenceThreshold: 0.7,
     } as never)
@@ -193,7 +192,6 @@ describe('needle-extractor:apply 生命周期', () => {
     const boot = logs.find(l => l.includes('[needle-extractor] boot'))!
     assert.match(boot, /enabled=true/)
     assert.match(boot, /url=http:\/\/127\.0\.0\.1:8081/)
-    assert.match(boot, /translate=false\/local-llm/)
     assert.match(boot, /timeoutMs=1500/)
     assert.match(boot, /threshold=0\.7/)
   })
@@ -300,7 +298,7 @@ function makeBridge(realm: 'LOCAL' | 'CLOUD' | 'SANITIZED' | undefined, schemas:
  *  4. sessionId 缺失 → 透传
  *  5. realm 未注册 / 非 LOCAL|SANITIZED → needleRealmUnsetSkip++ / 透传
  *  6. 真用户最后一条文本为空 → 透传
- *  7. translate 失败(无 llm / disabled / timeout / error / empty) → 透传
+ *  7. extract 失败(无 fetcher / HTTP 非 2xx / 超时 / JSON 烂) → 透传
  *  8. getToolSchemasForNeedle 空 → 透传
  *  9. extract HTTP 非 2xx / JSON 烂 / 超时 → 透传
  * 10. adopt gate 未过 → needleLowConfSkip++ / 透传
@@ -460,50 +458,12 @@ describe('needle-extractor:Phase 5 listener 透传语义', () => {
     assert.deepEqual(out, seed)
   })
 
-  it('translate 关闭 + query 英文 → 直通 extract,无 llm 调用', async () => {
-    // 验证 needleTranslateEnabled=false 时 query 不被翻译,直接进 extract
-    const bridge = makeBridge('LOCAL')
-    let llmStreamCalls = 0
-    const llm = { stream: () => { llmStreamCalls++; throw new Error('llm should not be called when translate disabled') } }
-    const fetchMock = (() => Promise.reject(new Error('extract should not be called when schemas empty'))) as any
-    const { svc } = makeListenerCtx(
-      { needleEnabled: true, needleTranslateEnabled: false },
-      { realmSkillBridge: bridge, llm, fetch: fetchMock },
-    )
-    const seed = { kind: 'enter' as const, messages: [{ role: 'user', content: 'list files' }] as any }
-    const out = await svc.handlePreStep({
-      agent: { session: { id: 'sess-x' } },
-      messages: [{ role: 'user', content: 'list files' }],
-      step: 1,
-    }, async () => seed as any)
-    assert.deepEqual(out, seed)
-    assert.equal(llmStreamCalls, 0) // translate 关,llm 不被调
-  })
-
-  it('translate 启用但 llm 缺席 → 透传(不炸穿 turn)', async () => {
-    const bridge = makeBridge('LOCAL', [{ name: 'bash', description: '', parameters: {} }])
-    const { svc } = makeListenerCtx(
-      { needleEnabled: true, needleTranslateEnabled: true },
-      { realmSkillBridge: bridge, llm: null }, // 故意无 llm
-    )
-    const seed = { kind: 'enter' as const, messages: [{ role: 'user', content: '查文档' }] as any }
-    const out = await svc.handlePreStep({
-      agent: { session: { id: 'sess-x' } },
-      messages: [{ role: 'user', content: '查文档' }],
-      step: 1,
-    }, async () => seed as any)
-    assert.deepEqual(out, seed)
-  })
-
   it('extract HTTP 非 2xx → 透传(不注入)', async () => {
     const bridge = makeBridge('LOCAL', [{ name: 'bash', description: '', parameters: {} }])
-    // 构造 minimal llm.stream 返回的 async iterable(英文直通,绕开 translate)
-    async function* llmStream() { yield { type: 'text-delta', text: 'list files' } }
-    const llm = { stream: () => llmStream() }
     const fetchMock = (() => Promise.resolve(new Response('upstream busy', { status: 503 }))) as any
     const { svc } = makeListenerCtx(
-      { needleEnabled: true, needleTranslateEnabled: false }, // 关掉 translate 走最简路径
-      { realmSkillBridge: bridge, llm, fetch: fetchMock },
+      { needleEnabled: true },
+      { realmSkillBridge: bridge, fetch: fetchMock },
     )
     const seed = { kind: 'enter' as const, messages: [{ role: 'user', content: 'list files' }] as any }
     const out = await svc.handlePreStep({
@@ -523,7 +483,7 @@ describe('needle-extractor:Phase 5 listener 透传语义', () => {
     const llm = { stream: () => llmStream() }
     const fetchMock = (() => Promise.resolve(okJsonResponse({ ...NEEDLE_OK_CALL, confidence: 0.3 }))) as any
     const { svc } = makeListenerCtx(
-      { needleEnabled: true, needleTranslateEnabled: false, needleConfidenceThreshold: 0.7 },
+      { needleEnabled: true, needleConfidenceThreshold: 0.7 },
       { realmSkillBridge: bridge, llm, fetch: fetchMock },
     )
     const seed = { kind: 'enter' as const, messages: [{ role: 'user', content: 'list files' }] as any }
@@ -549,7 +509,7 @@ describe('needle-extractor:Phase 5 listener 透传语义', () => {
       text: 'no tools needed',
     }))) as any
     const { svc } = makeListenerCtx(
-      { needleEnabled: true, needleTranslateEnabled: false },
+      { needleEnabled: true },
       { realmSkillBridge: bridge, llm, fetch: fetchMock },
     )
     const seed = { kind: 'enter' as const, messages: [{ role: 'user', content: 'list files' }] as any }
@@ -573,7 +533,7 @@ describe('needle-extractor:Phase 5 happy path 注入', () => {
       execute: async () => ({ isError: false, content: [{ type: 'text', text: 'file1.md\nfile2.md' }] }),
     }
     const { svc, entries } = makeListenerCtx(
-      { needleEnabled: true, needleTranslateEnabled: false },
+      { needleEnabled: true },
       { realmSkillBridge: bridge, llm, fetch: fetchMock, tools },
     )
     const seed = { kind: 'enter' as const, messages: [{ role: 'user', content: 'list files' }] as any }
@@ -611,7 +571,7 @@ describe('needle-extractor:Phase 5 happy path 注入', () => {
     // tools.execute 抛错 → 全部 outcome=error(0 executed)
     const tools = { execute: async () => { throw new Error('tool down') } }
     const { svc } = makeListenerCtx(
-      { needleEnabled: true, needleTranslateEnabled: false },
+      { needleEnabled: true },
       { realmSkillBridge: bridge, llm, fetch: fetchMock, tools },
     )
     const seed = { kind: 'enter' as const, messages: [{ role: 'user', content: 'list files' }] as any }
@@ -662,7 +622,7 @@ describe('needle-extractor:Phase 5 异常/异常路径', () => {
     // fetch 抛非 AbortError → extract 内部 try/catch 收 → needle.extract_failed
     const fetchMock = (() => { throw new Error('fetch kaboom sync') }) as any
     const { svc, entries } = makeListenerCtx(
-      { needleEnabled: true, needleTranslateEnabled: false },
+      { needleEnabled: true },
       { realmSkillBridge: bridge, llm, fetch: fetchMock },
     )
     const seed = { kind: 'enter' as const, messages: [{ role: 'user', content: 'list files' }] as any }
@@ -700,7 +660,7 @@ describe('needle-extractor:Phase 5 ToolRunner 装配/执行边界', () => {
     let fetchCalled = false
     const fetchMock = (() => { fetchCalled = true; return Promise.resolve(okJsonResponse(NEEDLE_OK_CALL)) }) as any
     const { svc } = makeListenerCtx(
-      { needleEnabled: true, needleTranslateEnabled: false },
+      { needleEnabled: true },
       { realmSkillBridge: bridge, llm, fetch: fetchMock },
     )
     const seed = { kind: 'enter' as const, messages: [{ role: 'user', content: 'list files' }] as any }
@@ -720,7 +680,7 @@ describe('needle-extractor:Phase 5 ToolRunner 装配/执行边界', () => {
     const fetchMock = (() => Promise.resolve(okJsonResponse(NEEDLE_OK_CALL))) as any
     // 故意 tools 形状不对(无 execute)
     const { svc } = makeListenerCtx(
-      { needleEnabled: true, needleTranslateEnabled: false },
+      { needleEnabled: true },
       { realmSkillBridge: bridge, llm, fetch: fetchMock, tools: { schemas: () => [] } },
     )
     const seed = { kind: 'enter' as const, messages: [{ role: 'user', content: 'list files' }] as any }
@@ -732,55 +692,5 @@ describe('needle-extractor:Phase 5 ToolRunner 装配/执行边界', () => {
     assert.deepEqual(out, seed)
     assert.equal(svc.getStats().needleExecuted, 0)
     assert.equal(svc.getStats().needleSynthesisInjected, 0)
-  })
-})
-
-describe('needle-extractor:Phase 5 repairEntities 兜底(dry-run 经验)', () => {
-  // 通过 translate 走真路径难以在单测里观察 repairEntities(私有),
-  // 这里走 sibling 间接路径:让 translate OK 但 extract 5xx → 走
-  // audit 链,验证 translate.ok(query) 的 query 已 repair。
-  // 因为 repairEntities 是文件内私有函数且未导出,本组测试聚焦
-  // translate 的端到端可观测性:audit needle.translate 的
-  // repaired=true / outputLen 等 metadata 字段。
-  it('translate 输出含原文路径 → audit needle.translate.repaired=false', async () => {
-    const bridge = makeBridge('LOCAL') // 让 extract 不进,审计更容易抓
-    async function* llmStream() {
-      yield { type: 'text-delta', text: 'List files in 【/home/etsme/work】' }
-    }
-    const llm = { stream: () => llmStream() }
-    const { svc, entries } = makeListenerCtx(
-      { needleEnabled: true, needleTranslateEnabled: true },
-      { realmSkillBridge: bridge, llm },
-    )
-    const seed = { kind: 'enter' as const, messages: [{ role: 'user', content: '查 /home/etsme/work 下的文件' }] as any }
-    await svc.handlePreStep({
-      agent: { session: { id: 'sess-x' } },
-      messages: [{ role: 'user', content: '查 /home/etsme/work 下的文件' }],
-      step: 1,
-    }, async () => seed as any)
-    const tr = entries.find(e => e.kind === 'needle.translate')!
-    assert.equal((tr.payload as any).repaired, false) // 【/home/etsme/work】 已含原文
-    assert.ok((tr.payload as any).outputLen > 0)
-  })
-
-  it('translate 丢路径(写出 /home/etsween) → repairEntities 替换 【..】 段 → audit repaired=true', async () => {
-    const bridge = makeBridge('LOCAL')
-    async function* llmStream() {
-      // 模拟 dry-run 复现的 entity corruption
-      yield { type: 'text-delta', text: 'List files in 【/home/etsween/work】' }
-    }
-    const llm = { stream: () => llmStream() }
-    const { svc, entries } = makeListenerCtx(
-      { needleEnabled: true, needleTranslateEnabled: true },
-      { realmSkillBridge: bridge, llm },
-    )
-    const seed = { kind: 'enter' as const, messages: [{ role: 'user', content: '查 /home/etsme/work 下的文件' }] as any }
-    await svc.handlePreStep({
-      agent: { session: { id: 'sess-x' } },
-      messages: [{ role: 'user', content: '查 /home/etsme/work 下的文件' }],
-      step: 1,
-    }, async () => seed as any)
-    const tr = entries.find(e => e.kind === 'needle.translate')!
-    assert.equal((tr.payload as any).repaired, true)
   })
 })

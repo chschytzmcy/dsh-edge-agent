@@ -4,10 +4,10 @@
  *
  * **Phase 4 = 骨架**:config schema + audit 面 + stats + ToolRunner 装配。
  * **Phase 5 = waterfall listener**:agent/pre-step 上挂全局监听器,gates →
- * translate(zh→en,client 侧 LOCAL LLM,repair 实体保真)→ realmSkillBridge
- * .getToolSchemasForNeedle → POST /extract → adopt gate → ToolRunner
- * .executeAll → 合成 user-role message 注入 decision.messages → 让 LOCAL
- * LLM 只做 chat synthesis(§7.42 P0-1 malformed guard 留作 fallback)。
+ * realmSkillBridge.getToolSchemasForNeedle → POST /extract(user 原文直入,
+ * 不翻译,不管什么语言)→ adopt gate → ToolRunner.executeAll → 合成
+ * user-role message 注入 decision.messages → 让 LOCAL LLM 只做 chat
+ * synthesis(§7.42 P0-1 malformed guard 留作 fallback)。
  *
  * 后续 Phase:
  *   - Phase 6:circuit breaker + boot probe + 周期恢复 probe(§7.92.6/§7.92.7
@@ -17,13 +17,13 @@
  *     breaker / 502 降级)。
  *
  * 服务边界(user 终裁,needle-extractor-integration memory):
- *   - needle 服务端只提取,**不翻译不执行**;翻译在 client(本插件)由
- *     LOCAL LLM 执行(few-shot + 【】 实体保真 + repairEntities 兜底);
- *     执行走 tool-runner → ctx.tools.execute(realm/PII/audit 零绕过);
- *     最终整段对话给 LOCAL LLM 合成回复。
- *   - 一切失败(needle down / 超时 / 低置信 / 空 schemas / 翻译失败 / 0
- *     executed)fall through 到 LLM 自提取路径(§7.42 P0-1 patch 保留,
- *     是 fallback 不是被替代者)。
+ *   - needle 服务端只提取,**不翻译不执行**(P1 中文数字归一化是服务端内置
+ *     cn_grounding.py,client 不管语种直接 POST query);执行走 tool-runner →
+ *     ctx.tools.execute(realm/PII/audit 零绕过);最终整段对话给 LOCAL
+ *     LLM 合成回复。
+ *   - 一切失败(needle down / 超时 / 低置信 / 空 schemas / 0 executed)
+ *     fall through 到 LLM 自提取路径(§7.42 P0-1 patch 保留,是 fallback
+ *     不是被替代者)。
  *   - CLOUD intent 跳过 needle(云端 LLM 自带 native tool calling);REJECT
  *     intent input-guard 已拒、我们看不到 realm;undefined realm 跳过
  *     (稳健于启动时序:即使 apply 顺序出错也不会 crash,只是不优化)。
@@ -55,10 +55,6 @@
  *     needle.hook.registered         (info,apply 时一次性)
  *     needle.boot_probe              (Phase 6, info/warn)
  *     needle.probe                   (Phase 6, info)
- *     needle.translate               (info,每次翻译调用 metadata)
- *     needle.translate.timeout       (warn,AbortError)
- *     needle.translate.empty         (info,LLM 返回空文本)
- *     needle.translate.error         (warn,非 timeout 错误)
  *     needle.extract                 (info,每次 /extract 调用 metadata)
  *     needle.low_confidence_skip     (info,采纳门未过)
  *     needle.timeout_skip            (warn,extract 超时)
@@ -75,13 +71,12 @@
  *   绝不落 query/arguments/result 内容。
  *
  * inject(§7.92.2 proxy trap:读 ctx.X 前必须先列 inject):
- *   - llm               Phase 5 翻译走 local-llm provider
  *   - auditLog          审计
  *   - realmSkillBridge  getToolSchemasForNeedle + getSessionRealm
  *   - tools             宿主 ToolRuntime,ToolRunner 的执行面
- *   (计划草稿里的 privacyPolicy 已去掉:本插件不读 categories ——
- *   intent 判定归 intent-router + privacy-policy,needle 只在 verdict
- *   之后工作。intent-router 也不读:不依赖其 classification model。)
+ *   (原计划草稿里的 llm + privacyPolicy 已去掉:不依赖翻译 → 不读
+ *   llm;不读 categories,intent 判定归 intent-router,needle 只在 verdict
+ *   之后工作。)
  *
  * @module dsh-edge-agent/needle-extractor
  */
@@ -94,7 +89,7 @@ import { ToolRunner } from './tool-runner.js'
 
 export const name = 'needle-extractor'
 
-export const inject = ['llm', 'auditLog', 'realmSkillBridge', 'tools'] as const
+export const inject = ['auditLog', 'realmSkillBridge', 'tools'] as const
 
 /** Minimal interface for the audit-log service (same shape as intent-router). */
 interface AuditLike {
@@ -122,19 +117,9 @@ export interface Config {
   /** 单次 POST /extract 超时(ms)。实测 376-548ms → 1500ms 有 3x 余量;
    *  超时 fall through 到 LLM 自提取(needleTimeoutSkip)。 */
   needleTimeoutMs?: number
-  /** 翻译独立超时预算(ms)。LAN minicpm5-2b 实测 0.6-8s,3000ms 取
-   *  1x-典型上限;**timeout → fall through 不进 needle**(避免中文原文
-   *  二次浪费 extract 1.5s);非 timeout 错误 → 用原文试 extract。 */
-  needleTranslateTimeoutMs?: number
   /** 采纳阈值:confidence < 此值 → fall through(实测 conf=0.99 也可能
    *  幻觉,threshold 不救翻译问题,但挡低置信噪声)。 */
   needleConfidenceThreshold?: number
-  /** zh→en 翻译开关(client 侧 LOCAL LLM 执行;needle 服务端不翻译)。
-   *  false 时 query 原文直入 /extract —— 仅英文 query 有意义。 */
-  needleTranslateEnabled?: boolean
-  /** 翻译用的 provider 路由 id(local-llm = LAN minicpm5-2b,§7.41
-   *  FIFO 信号量自动生效)。 */
-  needleTranslateProvider?: string
   /** breaker 打开后的 TTL(ms);期间 classify 跳过 needle 直走 LLM,
    *  省 needleTimeoutMs 的 worst-case wall-clock(§7.92.6 同款)。 */
   needleBreakerTtlMs?: number
@@ -155,12 +140,7 @@ export const Config: Schema<Config> = Schema.object({
   // 实测 /extract 376-548ms(API.md §7);1.5s ≈ 3x P95 余量,又显著小于
   // LLM 自提取的 2-6s —— 超时了 fall through 也比等 needle 划算的上限。
   needleTimeoutMs: Schema.natural().default(1500),
-  // 翻译独立预算:dry-run 实测 LAN 0.6-8s;3000ms 取典型上限,timeout
-  // 直接 fall through(省二次 extract)。
-  needleTranslateTimeoutMs: Schema.natural().default(3000),
   needleConfidenceThreshold: Schema.number().min(0).max(1).default(0.7),
-  needleTranslateEnabled: Schema.boolean().default(true),
-  needleTranslateProvider: Schema.string().default('local-llm'),
   needleBreakerTtlMs: Schema.natural().default(30000),
   needleBootProbeEnabled: Schema.boolean().default(true),
   needleBootProbeTimeoutMs: Schema.natural().default(2000),
@@ -189,10 +169,6 @@ export interface NeedleExtractorStats {
   needleExtractOk: number
   needleLowConfSkip: number
   needleTimeoutSkip: number
-  /** Phase 5:翻译调用数(fail → 原文直入,不阻断)。 */
-  needleTranslateCalls: number
-  needleTranslateTimeout: number
-  needleTranslateError: number
   /** Phase 5:ToolRunner 汇总(needle.executed / denied / skipped / errors
    *  是 tool-runner 自己的 audit;这里只记 executedCount 用于合成 gate)。 */
   needleExecuted: number
@@ -236,60 +212,6 @@ function findLastUserText(
   return undefined
 }
 
-/**
- * 实体保真兜底 —— §7.93 Phase 4.5 dry-run 发现 minicpm5-2b 翻译时
- * 会把 "/home/etsme/..." 错写成 "/home/etsween/..."(即便指令了
- * "preserve entities in 【】")。从原文抽 path / URL,若翻译结果里没
- * 出现原文形态,把翻译中第一个 【...】 段替成原文实体(假设翻译至少
- * 标记了第一个实体)。
- *
- * @param zh 原文(中文)
- * @param translated 翻译结果(英文,可能含 【】 标记或不含)
- * @returns 修复后的翻译;若原文没 path/URL,原样返回
- */
-function repairEntities(zh: string, translated: string): string {
-  if (!translated) return translated
-  // 路径形态:以 / 开头,含 word/./-/_ 中的至少一个
-  const entities: string[] = []
-  const pathRe = /\/[\w./-]+/g
-  const urlRe = /https?:\/\/\S+/g
-  let m: RegExpExecArray | null
-  while ((m = pathRe.exec(zh)) !== null) {
-    if (m[0].length > 1) entities.push(m[0])
-  }
-  while ((m = urlRe.exec(zh)) !== null) {
-    if (m[0].length > 7) entities.push(m[0])
-  }
-  if (entities.length === 0) return translated
-  // dedup(保留顺序)
-  const seen = new Set<string>()
-  const unique = entities.filter(e => (seen.has(e) ? false : (seen.add(e), true)))
-  let out = translated
-  for (const ent of unique) {
-    if (!out.includes(ent)) {
-      // 翻译丢了实体:把第一个 【...】 段(若存在)替换为原文实体
-      const bracketRe = /【[^】]+】/
-      if (bracketRe.test(out)) {
-        out = out.replace(bracketRe, `【${ent}】`)
-      } else {
-        // 没 【】 标记:无脑追加(保守,不破坏句子)
-        out = `${out} (path: ${ent})`
-      }
-    }
-  }
-  return out
-}
-
-/**
- * 翻译 prompt(简洁版)。few-shot 在 §7.93 Phase 4.5 dry-run 有效但
- * 模型仍出错 → Phase 5 只取强指令 + repairEntities 兜底,避免 prompt
- * 膨胀拉高单次翻译耗时。
- */
-const TRANSLATE_PROMPT =
-  'Translate the following Chinese query to English. Preserve ALL file paths, URLs, ' +
-  'and identifiers EXACTLY as written (wrap each in 【】 brackets). Return ONLY the ' +
-  'translation, no explanations.\n\nQuery: '
-
 // ── Service ────────────────────────────────────────────────────────────
 
 export class NeedleExtractorServiceImpl extends Service {
@@ -297,10 +219,7 @@ export class NeedleExtractorServiceImpl extends Service {
   private readonly needleEnabled: boolean
   private readonly needleUrl: string
   private readonly needleTimeoutMs: number
-  private readonly needleTranslateTimeoutMs: number
   private readonly needleConfidenceThreshold: number
-  private readonly needleTranslateEnabled: boolean
-  private readonly needleTranslateProvider: string
   private readonly needleBreakerTtlMs: number
   private readonly needleBootProbeEnabled: boolean
   private readonly needleBootProbeTimeoutMs: number
@@ -315,12 +234,7 @@ export class NeedleExtractorServiceImpl extends Service {
     this.needleEnabled = config.needleEnabled ?? false
     this.needleUrl = config.needleUrl ?? 'http://127.0.0.1:8081'
     this.needleTimeoutMs = config.needleTimeoutMs ?? 1500
-    this.needleTranslateTimeoutMs = config.needleTranslateTimeoutMs ?? 3000
     this.needleConfidenceThreshold = config.needleConfidenceThreshold ?? 0.7
-    this.needleTranslateEnabled = config.needleTranslateEnabled ?? true
-    this.needleTranslateProvider = typeof config.needleTranslateProvider === 'string' && config.needleTranslateProvider
-      ? config.needleTranslateProvider
-      : 'local-llm'
     this.needleBreakerTtlMs = config.needleBreakerTtlMs ?? 30000
     this.needleBootProbeEnabled = config.needleBootProbeEnabled ?? true
     this.needleBootProbeTimeoutMs = config.needleBootProbeTimeoutMs ?? 2000
@@ -340,9 +254,6 @@ export class NeedleExtractorServiceImpl extends Service {
       needleExtractOk: 0,
       needleLowConfSkip: 0,
       needleTimeoutSkip: 0,
-      needleTranslateCalls: 0,
-      needleTranslateTimeout: 0,
-      needleTranslateError: 0,
       needleExecuted: 0,
       needleErrors: 0,
       needleSynthesisInjected: 0,
@@ -366,10 +277,7 @@ export class NeedleExtractorServiceImpl extends Service {
     needleEnabled: boolean
     needleUrl: string
     needleTimeoutMs: number
-    needleTranslateTimeoutMs: number
     needleConfidenceThreshold: number
-    needleTranslateEnabled: boolean
-    needleTranslateProvider: string
     needleBreakerTtlMs: number
     needleBootProbeEnabled: boolean
     needleBootProbeTimeoutMs: number
@@ -380,10 +288,7 @@ export class NeedleExtractorServiceImpl extends Service {
       needleEnabled: this.needleEnabled,
       needleUrl: this.needleUrl,
       needleTimeoutMs: this.needleTimeoutMs,
-      needleTranslateTimeoutMs: this.needleTranslateTimeoutMs,
       needleConfidenceThreshold: this.needleConfidenceThreshold,
-      needleTranslateEnabled: this.needleTranslateEnabled,
-      needleTranslateProvider: this.needleTranslateProvider,
       needleBreakerTtlMs: this.needleBreakerTtlMs,
       needleBootProbeEnabled: this.needleBootProbeEnabled,
       needleBootProbeTimeoutMs: this.needleBootProbeTimeoutMs,
@@ -469,15 +374,6 @@ export class NeedleExtractorServiceImpl extends Service {
     }
   }
 
-  /** lazy loose-read llm;未挂载时 translate 必然失败 → fall through。 */
-  private llm(): { stream?: (opts: unknown) => unknown } | undefined {
-    try {
-      return (this.ctx as unknown as { llm?: { stream?: (opts: unknown) => unknown } }).llm
-    } catch {
-      return undefined
-    }
-  }
-
   /**
    * lazy loose-read fetch:tests 通过 ctx.fetch 注入 mock;生产用 global
    * fetch(node 18+ / undici)。未挂载 + global 不可用 → 返回 undefined,
@@ -493,95 +389,6 @@ export class NeedleExtractorServiceImpl extends Service {
       if (typeof g === 'function') return g
     } catch { /* nothing */ }
     return undefined
-  }
-
-  // ── translate ─────────────────────────────────────────────────────────
-
-  /**
-   * zh → en 翻译。返回:
-   *   - string: 翻译成功(或 translate=false 直通)的 query,可送 needle
-   *   - null:   翻译失败(timeout / LLM 错误),调用方**直接 fall through**,
-   *             **不进 needle**(避免 1.5s 二次浪费在 CJK 原文上;
-   *             §7.93 Phase 4.5 实测 CJK 在 needle 上质量不稳定)
-   *
-   * 实现模板:intent-router.ts:1395-1455 的 classifyWithLlm stream 模式
-   * (provider/model/messages/signal/sessionId;thenable 检查;text-delta
-   * 收集;AbortController + setTimeout;timeout 与 error 区分审计)。
-   *
-   * ⚠️ 翻译模型名:**与 intent-router.classificationModel 对齐** ——
-   * 同为 local-llm provider,同 LAN 部署,共用一个上游模型。默认
-   * 'qwen3-4b'(intent-router schema default)。如果部署切换到不同的
-   * local 模型,需同时调整 intent-router 与 needle 两侧(或 Phase 9
-   * 通过 cordis.patch.yml 翻译层覆盖)。
-   */
-  private async translateQuery(
-    text: string,
-    sessionId: string | undefined,
-    upstreamSignal: AbortSignal | undefined,
-  ): Promise<{ query: string; ok: true } | { ok: false; reason: 'disabled' | 'no_llm' | 'timeout' | 'empty' | 'error' }> {
-    if (!this.needleTranslateEnabled) return { query: text, ok: true }
-    const llm = this.llm()
-    if (!llm?.stream) return { ok: false, reason: 'no_llm' }
-
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), this.needleTranslateTimeoutMs)
-    if (upstreamSignal) {
-      if (upstreamSignal.aborted) controller.abort()
-      else upstreamSignal.addEventListener('abort', () => controller.abort(), { once: true })
-    }
-
-    this.stats.needleTranslateCalls += 1
-    const start = Date.now()
-    try {
-      const userMessage = createUserMessage({
-        content: [{ type: 'text', text: TRANSLATE_PROMPT + text }],
-        source: { kind: 'user' },
-      })
-      const streamRaw = llm.stream({
-        provider: this.needleTranslateProvider,
-        model: 'qwen3-4b', // 与 intent-router.classificationModel 对齐;见 docstring
-        messages: [userMessage],
-        signal: controller.signal,
-        ...(sessionId ? { sessionId } : {}),
-      })
-      // §7.37:llm.stream 可能返回 Promise<AsyncIterable>(dsh-llm 0.1.2-rc.1+)
-      const stream = (streamRaw != null && typeof (streamRaw as { then?: unknown }).then === 'function')
-        ? await (streamRaw as unknown as Promise<AsyncIterable<{ type: string; text?: string }>>)
-        : streamRaw as AsyncIterable<{ type: string; text?: string }>
-
-      let translated = ''
-      for await (const chunk of stream) {
-        if (chunk && chunk.type === 'text-delta' && typeof chunk.text === 'string') {
-          translated += chunk.text
-        }
-      }
-      clearTimeout(timer)
-      const durationMs = Date.now() - start
-      const trimmed = translated.trim()
-      if (!trimmed) {
-        this.stats.needleTranslateError += 1
-        this.audit('info', 'needle.translate.empty', {
-          sessionId, durationMs, inputLen: text.length,
-        })
-        return { ok: false, reason: 'empty' }
-      }
-      const repaired = repairEntities(text, trimmed)
-      this.audit('info', 'needle.translate', {
-        sessionId, durationMs, inputLen: text.length, outputLen: trimmed.length,
-        repaired: repaired !== trimmed,
-      })
-      return { query: repaired, ok: true }
-    } catch (err: unknown) {
-      clearTimeout(timer)
-      const durationMs = Date.now() - start
-      const isAbort = (err as { name?: string })?.name === 'AbortError' || controller.signal.aborted
-      this.stats.needleTranslateTimeout += isAbort ? 1 : 0
-      this.stats.needleTranslateError += isAbort ? 0 : 1
-      this.audit('warn', isAbort ? 'needle.translate.timeout' : 'needle.translate.error', {
-        sessionId, durationMs, error: (err as { message?: string })?.message ?? String(err),
-      })
-      return { ok: false, reason: isAbort ? 'timeout' : 'error' }
-    }
   }
 
   // ── extract ───────────────────────────────────────────────────────────
@@ -749,8 +556,6 @@ export class NeedleExtractorServiceImpl extends Service {
    *   ├─ sessionId 缺失                → 透传
    *   ├─ realm 未注册 / 非 LOCAL|SANITIZED → needleRealmUnsetSkip++
    *   ├─ 用户最后一条文本为空           → 透传
-   *   ├─ translate → fail(reason)        → 透传(不进 needle)
-   *   ├─ translate.ok(query)             → 继续
    *   ├─ getToolSchemasForNeedle 空     → 透传
    *   ├─ extract → null                  → 透传
    *   ├─ adopt gate 未过                  → needleLowConfSkip++ / 透传
@@ -798,14 +603,11 @@ export class NeedleExtractorServiceImpl extends Service {
       const lastUser = findLastUserText(payload.messages)
       if (!lastUser || !lastUser.text.trim()) return decision
 
-      // ── translate ──
-      const tr = await this.translateQuery(lastUser.text, sessionId, payload.signal)
-      if (!tr.ok) return decision
-
-      // ── schemas → extract ──
+      // ── schemas → extract(用户原文直入,不限语种,needle 自带
+      //    cn_grounding.py 归一化中文数字)──
       const schemas = bridge.getToolSchemasForNeedle(realm)
       if (schemas.length === 0) return decision
-      const extract = await this.extractCalls(tr.query, schemas, sessionId, payload.signal)
+      const extract = await this.extractCalls(lastUser.text, schemas, sessionId, payload.signal)
       if (!extract) return decision
 
       // ── adopt gate ──
@@ -907,8 +709,6 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
   try {
     ctx.logger?.info?.(
       `[needle-extractor] boot enabled=${service.isAvailable()} url=${config.needleUrl ?? 'http://127.0.0.1:8081'}` +
-      ` translate=${config.needleTranslateEnabled ?? true}/${config.needleTranslateProvider ?? 'local-llm'}` +
-      ` translateTimeoutMs=${config.needleTranslateTimeoutMs ?? 3000}` +
       ` timeoutMs=${config.needleTimeoutMs ?? 1500} threshold=${config.needleConfidenceThreshold ?? 0.7}`,
     )
   } catch { /* debug only */ }
