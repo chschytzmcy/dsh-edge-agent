@@ -1602,3 +1602,137 @@ function baseCtxFakes(
   if (extras.realmSkillBridge !== undefined) (ctx as any).realmSkillBridge = extras.realmSkillBridge
   if (extras.tools !== undefined) (ctx as any).tools = extras.tools
 }
+
+// ────────────────────────────────────────────────────────────────────────
+// §7.94 — HTTP 契约边界元数据 + callerId 注入
+// ────────────────────────────────────────────────────────────────────────
+
+describe('§7.94:ExternalToolCaller 只读元数据', () => {
+  it('NeedleHttpCaller.id === "needle-http"', () => {
+    const { svc } = makeService()
+    // 通过构造 service 触发 NeedleHttpCaller 构造,从内部 caller 读
+    const caller = (svc as any).caller
+    assert.equal(caller.id, 'needle-http')
+  })
+
+  it('NeedleHttpCaller.kind === "http"', () => {
+    const { svc } = makeService()
+    const caller = (svc as any).caller
+    assert.equal(caller.kind, 'http')
+  })
+
+  it('NeedleHttpCaller.capabilities.maxTools === 64', () => {
+    const { svc } = makeService()
+    const caller = (svc as any).caller
+    assert.equal(caller.capabilities.maxTools, 64)
+  })
+
+  it('NeedleHttpCaller.capabilities.maxQueryLen === 8192', () => {
+    const { svc } = makeService()
+    const caller = (svc as any).caller
+    assert.equal(caller.capabilities.maxQueryLen, 8192)
+  })
+
+  it('NeedleHttpCaller.capabilities.supportsUngrounded === true', () => {
+    const { svc } = makeService()
+    const caller = (svc as any).caller
+    assert.equal(caller.capabilities.supportsUngrounded, true)
+  })
+})
+
+describe('§7.94:audit callerId 注入(全 16 callsite)', () => {
+  // §7.94:全 16 处 this.audit callsite 都必须携带 callerId。
+  // 策略:触发每个路径 → 找对应 kind → assert payload.callerId === 'needle-http'。
+  // 这里挑核心路径做覆盖,机械枚举 kind 字符串即可。
+
+  it('external.boot_probe audit payload 含 callerId', async () => {
+    const { svc, ctx, entries } = makeService({ functionCallExternalEnabled: true })
+    // boot probe 不需要 network — 假 fetch 让 /health 失败,触发 audit
+    ;(ctx as any).fetch = () => Promise.resolve({ status: 200, ok: true, text: () => Promise.resolve('') } as Response)
+    await svc.start()
+    await new Promise(r => setTimeout(r, 10))
+    const bootProbe = entries.find(e => e.kind === 'external.boot_probe')
+    assert.ok(bootProbe, 'external.boot_probe audit 应 emit')
+    assert.equal(bootProbe!.payload.callerId, 'needle-http')
+    await svc.stop()
+  })
+
+  it('external.circuit_open audit payload 含 callerId', async () => {
+    // 仿照现有 Phase 6 测试:fetch 必须在 service 构造**之前**挂到 ctx 上,
+    // 否则 NeedleHttpCaller 走 globalThis.fetch(Node 18+ 真实网络)。
+    const auditEntries: AuditEntry[] = []
+    const { ctx } = makeCtx()
+    const baseCtx = ctx as any
+    baseCtx.auditLog = makeAuditLog(auditEntries)
+    baseCtx.fetch = (() => Promise.reject(new Error('ECONNREFUSED'))) as any
+    const svc = new FunctionCallExternalServiceImpl(baseCtx, {
+      functionCallExternalEnabled: true,
+      functionCallExternalBootProbeTimeoutMs: 100,
+    }, makeAuditLog(auditEntries))
+    svc.start()
+    await new Promise(r => setTimeout(r, 50))
+    const open = auditEntries.find(e => e.kind === 'external.circuit_open')
+    assert.ok(open, 'external.circuit_open audit 应 emit(boot probe fail 触发)')
+    assert.equal(open!.payload.callerId, 'needle-http')
+    await svc.stop()
+  })
+
+  it('external.extract audit payload 含 callerId', async () => {
+    const { svc, ctx, entries } = makeService({
+      functionCallExternalEnabled: true,
+      functionCallExternalBreakerProbeMs: 60_000,
+      functionCallExternalBootProbeEnabled: false,
+    })
+    const fetchMock = (url: string) => {
+      if (url.includes('/health')) return Promise.resolve({ status: 200, ok: true, text: () => Promise.resolve('') } as Response)
+      // /extract → 200 + type=respond(无 call,直接 fall through)
+      return Promise.resolve({ status: 200, ok: true, text: () => Promise.resolve('{"type":"respond","confidence":1}') } as Response)
+    }
+    ;(ctx as any).fetch = fetchMock
+    const bridge = {
+      getSessionRealm: () => 'LOCAL' as const,
+      getToolSchemasForExternal: () => [{ name: 'bash', description: '', parameters: {} }],
+    }
+    ;(ctx as any).realmSkillBridge = bridge
+    await svc.start()
+    const seed = { kind: 'enter' as const, messages: [{ role: 'user', content: 'ls' }] as any }
+    await svc.handlePreStep({ agent: { session: { id: 'audit-extract' } }, messages: [{ role: 'user', content: 'ls' }] }, async () => seed)
+    const extract = entries.find(e => e.kind === 'external.extract')
+    assert.ok(extract, 'external.extract audit 应 emit')
+    assert.equal(extract!.payload.callerId, 'needle-http')
+    await svc.stop()
+  })
+
+  it('external.listener.error audit payload 含 callerId(catch 兜底时 caller 可能为 null → "unknown")', async () => {
+    const { svc, ctx, entries } = makeService({ functionCallExternalEnabled: true })
+    // 模拟 listener 自身 catch 路径 —— next() 抛错 + decision undefined → handlePreStep 重抛
+    // 然后构造 ctx 让 handlePreStep 走 try/catch 但 catch 拿到 decision(undefined)的路径
+    // 直接构造 try/catch 分支:让 payload 触发一个 throw 让外部 catch 路径走 audit
+    let caught: unknown
+    try {
+      const seed = (async () => { throw new Error('next-throw') })()
+      await svc.handlePreStep({ agent: { session: { id: 'lerr' } }, messages: [{ role: 'user', content: 'x' }] }, () => seed as any)
+    } catch (err) {
+      caught = err
+    }
+    assert.ok(caught, 'next-throw 应被 handlePreStep 重抛')
+    const lerr = entries.find(e => e.kind === 'external.listener.error')
+    assert.ok(lerr, 'external.listener.error audit 应 emit(handlePreStep catch 路径)')
+    // callerId 是 'needle-http' 或 'unknown'(caller 还没建好的兜底)
+    assert.ok(['needle-http', 'unknown'].includes(lerr!.payload.callerId as string),
+      `external.listener.error.callerId 应是 'needle-http' 或 'unknown',got: ${lerr!.payload.callerId}`)
+  })
+})
+
+describe('§7.94:向后兼容', () => {
+  it('interface 扩展后 NeedleHttpCaller 仍满足原契约(healthCheck/extract 行为不变)', () => {
+    const { svc } = makeService()
+    const caller = (svc as any).caller
+    assert.equal(typeof caller.healthCheck, 'function', 'healthCheck 仍存在')
+    assert.equal(typeof caller.extract, 'function', 'extract 仍存在')
+    // 3 个新字段都是 readonly,不破坏既有行为
+    assert.equal(typeof caller.id, 'string')
+    assert.equal(typeof caller.kind, 'string')
+    assert.equal(typeof caller.capabilities, 'object')
+  })
+})

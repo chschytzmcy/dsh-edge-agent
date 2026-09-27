@@ -621,6 +621,34 @@ curl http://127.0.0.1:21017/v1/openapi.json
 
 ---
 
+## 🔌 扩展 function-call-external（§7.94）
+
+`function-call-external` 插件采用 **HTTP 契约边界** —— 任何实现
+[docs/function-call-external-http-contract.md](docs/function-call-external-http-contract.md)
+的 HTTP 服务都可接入，只需修改环境变量：
+
+```bash
+FUNCTION_CALL_EXTERNAL_URL=http://127.0.0.1:8081   # 任意 HTTP 实现
+FUNCTION_CALL_EXTERNAL_ENABLED=true
+```
+
+### 支持的实现形态
+
+- **cactus-needle** (当前默认,`callerId='needle-http'`)
+- **自训端侧 function-call 模型** —— 包装成 HTTP 服务即可
+- **第三方 hosted API** —— 反向代理 / 直连均可
+
+### 接入步骤
+
+1. 实现 `GET /health` (返回 2xx healthy / 503 loading|busy)
+2. 实现 `POST /extract` (按契约返回 `type` / `function_calls` / `confidence` / `validation.ungrounded`)
+3. 启动服务,设置 `FUNCTION_CALL_EXTERNAL_URL`
+4. `audit.jsonl` 中所有 `external.*` event 自动携带 `callerId` 标识
+
+**plugin 主体零修改**。详细失败语义、breaker 行为、retry 策略见契约文档。
+
+---
+
 ## 🧪 手动测试
 
 ### Webui smoke（推荐，web profile 默认已装并启动）

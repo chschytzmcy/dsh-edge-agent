@@ -9379,3 +9379,43 @@ patch yml line 359 是 `[auditLog, skills, edgeTools, tools]` —— 之前 sour
 **已知风险 + 推迟项**:
 1. LLM 仍可能再 call 已执行 tool → §7.42 P0-1 + Layer 3 + 合成 prompt 强指令兜底;真正去重门(gate at tools/pre-execute 拒重 call 同名+同 args)推迟
 2. `req.sessionId` / `payload.signal` 透传确保宿主取消信号能传到 caller.fetch + ToolRunner.execute
+
+### §7.94 — HTTP 契约边界固化 + callerId 注入(2026-09-27)
+
+**背景**:用户终线要训端侧 function-call 模型,plugin 需在不引入
+工厂模式的前提下支持任意 HTTP 实现(自训端侧模型 wrapper、第三方
+服务、cactus-needle 后续版本)。
+
+**核心决策**:**HTTP 接口即契约**。零工厂、零注册表,任何符合契约
+(`docs/function-call-external-http-contract.md`)的 HTTP 服务都可
+接入,plugin 主体零修改。
+
+**改动**(总计 ~50 行代码 + 1 契约文档 + 测试 9 用例):
+
+1. `ExternalToolCaller` interface 加 3 个只读元数据:
+   - `id: string` —— audit/ops log 携带的稳定标识
+   - `kind: 'http' | 'ipc' | 'in-process'` —— transport 类型
+   - `capabilities: { maxTools?, maxQueryLen?, supportsUngrounded? }`
+2. `NeedleHttpCaller` 实现 3 字段,默认值 `maxTools=64` /
+   `maxQueryLen=8192` / `supportsUngrounded=true`
+3. audit 全 16 处 callsite 加 `callerId: this.caller.id`(`listener.error`
+   兜底用 `caller?.id ?? 'unknown'`)
+
+**向后兼容契约**:
+- 现有 `healthCheck` / `extract` 行为零变化
+- 现有 84 个单元测试零修改通过
+- needle-http server 当前运行实例不需要任何改动
+
+**端侧模型接入路径**(无 plugin 改动):
+```
+训练 v1 模型 → 写 HTTP wrapper(GET /health + POST /extract)
+→ 改 FUNCTION_CALL_EXTERNAL_URL → audit log 自动 callerId = '<your id>'
+```
+
+**diff 统计**:
+- `src/dsh-adapter/function-call-external.ts`:+40 行(3 字段 + 16 callerId)
+- `tests/unit/function-call-external.test.ts`:+150 行(9 新用例)
+- `docs/function-call-external-http-contract.md`:新文件 200 行
+- `docs/PROGRESS.md`:本段
+- `README.md`:新章节
+

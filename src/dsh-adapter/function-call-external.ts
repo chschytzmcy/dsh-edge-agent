@@ -84,14 +84,37 @@ interface AuditLike {
   log(entry: { level: 'debug' | 'info' | 'warn' | 'error' | 'security'; kind: string; source: string; payload: Record<string, unknown> }): Promise<unknown>
 }
 
-/** ── Provider abstraction (§7.93.1) ─────────────────────────────────────────
+/** ── Provider abstraction (§7.93.1 + §7.94) ────────────────────────────────
  *  ExternalToolCaller:把 HTTP 协议层隔离开。Plugin 持有 caller,所有 HTTP/JSON
  *  逻辑都在 caller 里。Plugin 只关心:
  *    - caller.healthCheck(signal) → 是否能用
  *    - caller.extract({query, tools, signal, system?}) → 是否成功 + 原始响应
- *  替换实现 = 写一个新 class implements 这个 interface,改 apply() 一行。
- *  当前实现 = `NeedleHttpCaller`(cactus-needle 3.0.1,API.md v1.1 §4) */
+ *
+ *  §7.94:HTTP 契约即接口边界(详见 docs/function-call-external-http-contract.md)。
+ *  当前实现 = `NeedleHttpCaller`(cactus-needle 3.0.1,API.md v1.1 §4)。
+ *  未来端侧模型 = 自暴露 GET /health + POST /extract,改
+ *  `FUNCTION_CALL_EXTERNAL_URL` 即可,plugin 零改动。
+ *
+ *  3 个只读元数据(`id` / `kind` / `capabilities`)纯可观测,无新行为:
+ *    - `id`:稳定标识,audit/ops log 携带('needle-http' / 未来 'native-onnx-v1')
+ *    - `kind`:transport 类型(HTTP / IPC / in-process),影响 ops log 字段
+ *    - `capabilities`:能力声明(maxTools / maxQueryLen / supportsUngrounded)
+ */
 export interface ExternalToolCaller {
+  /** §7.94:稳定标识 —— audit/ops log 通过 callerId 索引 */
+  readonly id: string
+  /** §7.94:transport 类型 */
+  readonly kind: 'http' | 'ipc' | 'in-process'
+  /** §7.94:能力声明 —— maxTools / maxQueryLen / supportsUngrounded */
+  readonly capabilities: Readonly<{
+    /** 单次请求支持的 max tools(schema context 上限) */
+    maxTools?: number
+    /** 单次请求支持的 max query 长度(字符) */
+    maxQueryLen?: number
+    /** 是否支持 validation.ungrounded 字段 */
+    supportsUngrounded?: boolean
+  }>
+
   /** /health probe. throws on transport error. ok=false on non-2xx. */
   healthCheck(signal: AbortSignal): Promise<{
     ok: boolean
@@ -123,6 +146,19 @@ export interface ExternalToolCaller {
  *    实测)。
  *  - 替换实现时,这个 class 可以整个删掉,写新 caller 即可。 */
 class NeedleHttpCaller implements ExternalToolCaller {
+  // ── §7.94:只读元数据(纯可观测,无新行为)────────────────────────────
+  readonly id = 'needle-http'
+  readonly kind = 'http' as const
+  readonly capabilities: Readonly<{
+    maxTools: number
+    maxQueryLen: number
+    supportsUngrounded: boolean
+  }> = {
+    maxTools: 64,
+    maxQueryLen: 8192,
+    supportsUngrounded: true,
+  }
+
   constructor(
     private readonly url: string,
     private readonly auditLog: AuditLike | undefined,
@@ -444,6 +480,7 @@ export class FunctionCallExternalServiceImpl extends Service {
     if (!this.functionCallExternalEnabled) return
     if (!this.functionCallExternalBootProbeEnabled) {
       this.audit('info', 'external.boot_probe.skipped', {
+        callerId: this.caller.id,
         reason: 'disabled-by-config',
         url: this.functionCallExternalUrl,
       })
@@ -458,6 +495,7 @@ export class FunctionCallExternalServiceImpl extends Service {
       })
       .catch((err: unknown) => {
         this.audit('error', 'external.boot_probe.unexpected', {
+          callerId: this.caller.id,
           error: (err as { message?: string })?.message ?? String(err),
         })
       })
@@ -502,12 +540,14 @@ export class FunctionCallExternalServiceImpl extends Service {
       if (ok) {
         this.stats.functionCallExternalBootProbeOk++
         this.audit('info', 'external.boot_probe', {
+          callerId: this.caller.id,
           url: this.functionCallExternalUrl, httpStatus, latencyMs, ok: true,
         })
         this.opsLog('boot probe', `ok=true latencyMs=${latencyMs}ms httpStatus=${httpStatus}`)
       } else {
         this.stats.functionCallExternalBootProbeFail++
         this.audit('warn', 'external.boot_probe', {
+          callerId: this.caller.id,
           url: this.functionCallExternalUrl, httpStatus, latencyMs, ok: false, error: errorMsg,
         })
         this.opsLog('boot probe', `ok=false latencyMs=${latencyMs}ms httpStatus=${httpStatus} error=${errorMsg || 'none'}`)
@@ -515,6 +555,7 @@ export class FunctionCallExternalServiceImpl extends Service {
     } else {
       this.functionCallExternalLastProbeLatencyMs = latencyMs
       this.audit('info', 'external.probe', {
+        callerId: this.caller.id,
         url: this.functionCallExternalUrl, httpStatus, latencyMs, ok,
         error: ok ? undefined : errorMsg,
       })
@@ -536,6 +577,7 @@ export class FunctionCallExternalServiceImpl extends Service {
             this.functionCallExternalBreakerOpenUntil = 0
             this.stats.functionCallExternalRecoveredProbe++
             this.audit('info', 'external.recovered', {
+              callerId: this.caller.id,
               url: this.functionCallExternalUrl,
               probeLatencyMs: this.functionCallExternalLastProbeLatencyMs,
             })
@@ -566,6 +608,7 @@ export class FunctionCallExternalServiceImpl extends Service {
     if (Date.now() < this.functionCallExternalBreakerOpenUntil) return
     this.functionCallExternalBreakerOpenUntil = Date.now() + this.functionCallExternalBreakerTtlMs
     this.audit('warn', 'external.circuit_open', {
+      callerId: this.caller.id,
       reason,
       url: this.functionCallExternalUrl,
       ttlMs: this.functionCallExternalBreakerTtlMs,
@@ -683,6 +726,7 @@ export class FunctionCallExternalServiceImpl extends Service {
 
       if (r.kind === 'fatal_422') {
         this.audit('warn', 'external.extract_failed', {
+          callerId: this.caller.id,
           sessionId, durationMs: r.durationMs, status: 422,
           reason: 'invalid_body_422',
           bodyPreview: r.body.slice(0, 80),
@@ -697,6 +741,7 @@ export class FunctionCallExternalServiceImpl extends Service {
         if (isAbort) this.stats.functionCallExternalTimeoutSkip += 1
         this.openBreaker(isAbort ? 'timeout' : 'transport')
         this.audit('warn', isAbort ? 'external.timeout_skip' : 'external.extract_failed', {
+          callerId: this.caller.id,
           sessionId, durationMs: r.durationMs, thrown: true,
           error: (r.err as { message?: string })?.message ?? String(r.err),
         })
@@ -713,6 +758,7 @@ export class FunctionCallExternalServiceImpl extends Service {
 
         if (isRetryable503or502) {
           this.audit('warn', 'external.extract_retry', {
+            callerId: this.caller.id,
             sessionId, status: code, durationMs: r.durationMs,
             bodyPreview: r.body.slice(0, 80),
           })
@@ -727,6 +773,7 @@ export class FunctionCallExternalServiceImpl extends Service {
         if (isTimeoutProxy) this.stats.functionCallExternalTimeoutSkip += 1
         this.openBreaker(isTimeoutProxy ? 'timeout' : 'http_5xx')
         this.audit('warn', isTimeoutProxy ? 'external.timeout_skip' : 'external.extract_failed', {
+          callerId: this.caller.id,
           sessionId, durationMs: r.durationMs, status: code, reason,
           retried: attempt.isRetry,
           bodyPreview: r.body.slice(0, 80),
@@ -739,6 +786,7 @@ export class FunctionCallExternalServiceImpl extends Service {
       // r.kind === 'success'
       this.closeBreaker()
       this.audit('info', 'external.extract', {
+        callerId: this.caller.id,
         sessionId, durationMs: r.durationMs, status: r.status,
         type: r.parsed.type, confidence: r.parsed.confidence,
         functionCallCount: r.parsed.calls.length,
@@ -917,6 +965,7 @@ export class FunctionCallExternalServiceImpl extends Service {
         if (this.functionCallExternalEnabled && Date.now() < this.functionCallExternalBreakerOpenUntil) {
           this.stats.functionCallExternalCircuitSkip += 1
           this.audit('info', 'external.circuit_open_skip', {
+            callerId: this.caller.id,
             sessionId: payload.agent?.session?.id,
             url: this.functionCallExternalUrl,
             openUntilMs: this.functionCallExternalBreakerOpenUntil,
@@ -948,6 +997,7 @@ export class FunctionCallExternalServiceImpl extends Service {
           || extract.confidence < this.functionCallExternalConfidenceThreshold) {
         this.stats.functionCallExternalLowConfSkip += 1
         this.audit('info', 'external.low_confidence_skip', {
+          callerId: this.caller.id,
           sessionId,
           type: extract.type,
           callCount: extract.calls.length,
@@ -983,6 +1033,7 @@ export class FunctionCallExternalServiceImpl extends Service {
       const baseMessages = decision.messages ?? payload.messages
       this.stats.functionCallExternalSynthesisInjected += 1
       this.audit('info', 'external.synthesis_injected', {
+        callerId: this.caller.id,
         sessionId,
         toolCount: outcomes.length,
         executedCount,
@@ -1004,6 +1055,7 @@ export class FunctionCallExternalServiceImpl extends Service {
       }
     } catch (err: unknown) {
       this.audit('error', 'external.listener.error', {
+        callerId: this.caller?.id ?? 'unknown',
         sessionId: payload.agent?.session?.id,
         error: (err as { message?: string })?.message ?? String(err),
         hadDecision: decision !== undefined,
