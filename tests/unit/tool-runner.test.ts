@@ -5,7 +5,7 @@
  *   - schema 面校验:幻觉工具名拒(不 POST 给 needle 的名字不执行)
  *   - ungrounded:required 捏造 → skip(不执行,留给 synthesis);
  *     非 required → drop 后照常执行;别的工具的条目不误伤
- *   - realm 预检:deny → needle.realm_rejected(security 级),宿主不进
+ *   - realm 预检:deny → external.realm_rejected(security 级),宿主不进
  *   - 宿主执行:ctx.tools.execute 收 {callId,name,arguments,agent(同一性
  *     透传 — Layer 3 靠 agent.session.id 解析 realm),signal}
  *   - 失败契约:host throw / isError 都归一成 outcome,永不 throw
@@ -201,11 +201,11 @@ describe('tool-runner: executed', () => {
     assert.deepEqual(input.arguments, { city: 'Lagos' })
     assert.equal(input.agent, AGENT, 'agent 必须同一性透传 —— Layer 3 靠 agent.session.id 解析 realm,假 agent = fail-open')
     assert.equal(input.callId, outcome.callId)
-    assert.ok(input.callId.startsWith('needle-sess-abc-00'), `callId 带 session 前缀: ${input.callId}`)
+    assert.ok(input.callId.startsWith('fcx-sess-abc-00'), `callId 带 session 前缀: ${input.callId}`)
     assert.ok(input.signal instanceof AbortSignal, '缺省 signal 时 runner 自建超时信号')
 
-    // audit:needle.executed(info 级,metadata only)
-    const executed = a.find('needle.executed')
+    // audit:external.executed(info 级,metadata only)
+    const executed = a.find('external.executed')
     assert.ok(executed, `audit kinds: ${a.kinds()}`)
     assert.equal(executed!.level, 'info')
     assert.equal(executed!.payload?.name, 'get_weather')
@@ -243,7 +243,7 @@ describe('tool-runner: executed', () => {
 // ── realm / schema enforcement ──────────────────────────────────────────────
 
 describe('tool-runner: 执法链', () => {
-  it('realm 预检 deny → denied + needle.realm_rejected(security 级),宿主不进', async () => {
+  it('realm 预检 deny → denied + external.realm_rejected(security 级),宿主不进', async () => {
     const h = makeHost()
     const a = makeAudit()
     const { bridge } = makeBridge({ realm: 'LOCAL', denyReason: 'Tool "web_search" (CLOUD) not allowed in LOCAL realm' })
@@ -256,13 +256,13 @@ describe('tool-runner: 执法链', () => {
     assert.equal(outcome.status, 'denied')
     assert.match(outcome.reason!, /not allowed in LOCAL realm/)
     assert.equal(h.calls.length, 0, 'deny 后宿主管线不进')
-    const rej = a.find('needle.realm_rejected')
+    const rej = a.find('external.realm_rejected')
     assert.ok(rej)
     assert.equal(rej!.level, 'security')
     assert.equal(rej!.payload?.agentRealm, 'LOCAL')
   })
 
-  it('幻觉工具名(∉ POST 给 needle 的 schemas)→ denied + needle.unknown_tool,宿主不进', async () => {
+  it('幻觉工具名(∉ POST 给 needle 的 schemas)→ denied + external.unknown_tool,宿主不进', async () => {
     const h = makeHost()
     const a = makeAudit()
     const { runner } = makeRunner({ host: h.host, auditLog: a.auditLog })
@@ -274,7 +274,7 @@ describe('tool-runner: 执法链', () => {
     assert.equal(outcome.status, 'denied')
     assert.match(outcome.reason!, /unknown_tool/)
     assert.equal(h.calls.length, 0)
-    assert.equal(a.find('needle.unknown_tool')?.level, 'warn')
+    assert.equal(a.find('external.unknown_tool')?.level, 'warn')
   })
 
   it('name 缺失/非 string → denied invalid_call', async () => {
@@ -286,7 +286,7 @@ describe('tool-runner: 执法链', () => {
     assert.equal(h.calls.length, 0)
   })
 
-  it('ungrounded required → skipped + needle.fabricated_arg(action=skip),宿主不进', async () => {
+  it('ungrounded required → skipped + external.fabricated_arg(action=skip),宿主不进', async () => {
     // 实测场景(memory v2):"Send a message to 张三" → text 被捏造成 "👍",
     // validation.ungrounded=["send_message.text"] → 不执行,留给 synthesis。
     const h = makeHost()
@@ -302,7 +302,7 @@ describe('tool-runner: 执法链', () => {
     assert.deepEqual(outcome.fabricatedArgs, ['text'])
     assert.match(outcome.reason!, /fabricated required argument/)
     assert.equal(h.calls.length, 0, 'required 捏造的 call 绝不执行')
-    const fab = a.find('needle.fabricated_arg')
+    const fab = a.find('external.fabricated_arg')
     assert.ok(fab)
     assert.equal(fab!.payload?.action, 'skip')
     assert.deepEqual(fab!.payload?.fabricatedArgs, ['text'])
@@ -322,7 +322,7 @@ describe('tool-runner: 执法链', () => {
     assert.deepEqual(outcome.executedArguments, { city: 'Lagos' }, '捏造的 date 已剥除')
     assert.deepEqual(outcome.fabricatedArgs, ['date'])
     assert.deepEqual(h.calls[0]!.arguments, { city: 'Lagos' })
-    assert.equal(a.find('needle.fabricated_arg')?.payload?.action, 'drop')
+    assert.equal(a.find('external.fabricated_arg')?.payload?.action, 'drop')
   })
 
   it('别家工具的 ungrounded 条目不误伤本 call', async () => {
@@ -340,7 +340,7 @@ describe('tool-runner: 执法链', () => {
 // ── failure paths ───────────────────────────────────────────────────────────
 
 describe('tool-runner: 失败契约(永不 throw)', () => {
-  it('宿主 execute throw → error + needle.execution_failed(thrown=true)', async () => {
+  it('宿主 execute throw → error + external.execution_failed(thrown=true)', async () => {
     const h = makeHost(async () => { throw new Error('cannot get property tools without inject') })
     const a = makeAudit()
     const { runner } = makeRunner({ host: h.host, auditLog: a.auditLog })
@@ -349,13 +349,13 @@ describe('tool-runner: 失败契约(永不 throw)', () => {
 
     assert.equal(outcome.status, 'error')
     assert.match(outcome.reason!, /without inject/)
-    const failed = a.find('needle.execution_failed')
+    const failed = a.find('external.execution_failed')
     assert.ok(failed)
     assert.equal(failed!.level, 'warn')
     assert.equal(failed!.payload?.thrown, true)
   })
 
-  it('宿主返回 isError → error + needle.execution_failed(带 errorCode)', async () => {
+  it('宿主返回 isError → error + external.execution_failed(带 errorCode)', async () => {
     const h = makeHost(async () => ({
       isError: true,
       error: { message: 'network unreachable', info: { name: 'WebFetchError', code: 'NETWORK' } },
@@ -368,7 +368,7 @@ describe('tool-runner: 失败契约(永不 throw)', () => {
 
     assert.equal(outcome.status, 'error')
     assert.equal(outcome.reason, 'network unreachable')
-    assert.equal(a.find('needle.execution_failed')?.payload?.errorCode, 'NETWORK')
+    assert.equal(a.find('external.execution_failed')?.payload?.errorCode, 'NETWORK')
   })
 
   it('auditLog.log 自身 throw → 执行链不断(audit 失败不阻断)', async () => {
@@ -410,8 +410,8 @@ describe('tool-runner: executeAll', () => {
     assert.equal(outcomes[1]!.reason, 'boom')
     assert.equal(outcomes[2]!.text, 'ok-send_message')
     // 每个 executed/error 都有对应 audit
-    assert.equal(a.entries.filter(e => e.kind === 'needle.executed').length, 2)
-    assert.equal(a.entries.filter(e => e.kind === 'needle.execution_failed').length, 1)
+    assert.equal(a.entries.filter(e => e.kind === 'external.executed').length, 2)
+    assert.equal(a.entries.filter(e => e.kind === 'external.execution_failed').length, 1)
   })
 
   it('空 calls / undefined → [](绝不 POST 空集给 needle 的对偶:空集不执行)', async () => {
@@ -451,7 +451,7 @@ describe('tool-runner: audit 只落 metadata', () => {
     assert.ok(!logDump.includes(PII_MARKER_ARGS), 'ops log 落了 arguments 内容')
     assert.ok(!logDump.includes(PII_MARKER_RESULT), 'ops log 落了 result 内容')
     // metadata 该有的都有
-    const executed = a.find('needle.executed')!
+    const executed = a.find('external.executed')!
     assert.equal(typeof executed.payload?.durationMs, 'number')
     assert.equal(typeof executed.payload?.resultLen, 'number')
   })
@@ -467,6 +467,6 @@ describe('tool-runner: audit 只落 metadata', () => {
     })
     await runner.execute(baseReq())
     assert.equal(logs.lines.length, 1)
-    assert.match(logs.lines[0]!, /\[tool-runner\] executed tool=get_weather callId=needle-\S+ sessionId=sess-abc-0001 durationMs=\d+/)
+    assert.match(logs.lines[0]!, /\[tool-runner\] executed tool=get_weather callId=fcx-\S+ sessionId=sess-abc-0001 durationMs=\d+/)
   })
 })

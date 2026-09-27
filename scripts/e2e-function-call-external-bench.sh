@@ -1,24 +1,24 @@
 #!/usr/bin/env bash
-# ── e2e-needle-extractor-bench.sh ───────────────────────────────────
+# ── e2e-function-call-external-bench.sh ───────────────────────────────────
 # §7.93 Phase 8 bench:LOCAL intent chat latency + malformed tool_call
-# 率对比,**baseline (NEEDLE_ENABLED=false) vs needle-enabled (true)**。
+# 率对比,**baseline (FUNCTION_CALL_EXTERNAL_ENABLED=false) vs function-call-external-enabled (true)**。
 #
 # 用法:
-#   bash scripts/e2e-needle-extractor-bench.sh --iter 5          # 5 个 query × 2 轮 = 10 请求
-#   bash scripts/e2e-needle-extractor-bench.sh --only baseline   # 只跑 baseline
-#   bash scripts/e2e-needle-extractor-bench.sh --only needle      # 只跑 needle 启用
-#   bash scripts/e2e-needle-extractor-bench.sh --dry-run         # 只打印计划,不实际 POST
+#   bash scripts/e2e-function-call-external-bench.sh --iter 5          # 5 个 query × 2 轮 = 10 请求
+#   bash scripts/e2e-function-call-external-bench.sh --only baseline   # 只跑 baseline
+#   bash scripts/e2e-function-call-external-bench.sh --only function-call-external      # 只跑 function-call-external 启用
+#   bash scripts/e2e-function-call-external-bench.sh --dry-run         # 只打印计划,不实际 POST
 #
-# 输出:$REPO_ROOT/dist/bench-needle-${TS}/report.md + scores.json + traces/
+# 输出:$REPO_ROOT/dist/bench-fcx-${TS}/report.md + scores.json + traces/
 #       (git-ignored)
 #
 # 设计参考:
 #   scripts/e2e-ops-log-coverage.sh  (banner + arg parse + 颜色)
 #   scripts/e2e-model-quality-bench.sh (bench 落盘到 dist/bench-*/)
 #
-# ⚠️ **Phase 9 前置**:同 e2e-needle-extractor-zh-weather.sh —— 脚本要求
-# needle-extractor 已在 dsh boot 时挂载(查 [needle-extractor] boot 行)。
-# baseline 跑可独立(不需要 needle 插件),needle 跑需要 Phase 9 部署完成。
+# ⚠️ **Phase 9 前置**:同 e2e-function-call-external-zh-weather.sh —— 脚本要求
+# function-call-external 已在 dsh boot 时挂载(查 [function-call-external] boot 行)。
+# baseline 跑可独立(不需要 function-call-external 插件),function-call-external 跑需要 Phase 9 部署完成。
 
 set -uo pipefail
 
@@ -53,7 +53,7 @@ QUERIES=(
   "查 Elon Musk 最近的一条新闻"
 )
 # §7.42 P0-1 malformed 检测:§7.42 修复路径下基本为 0;但某些弱 LLM
-# (minicpm5-2b)在没有 needle 辅助时仍会偶发。bench 量化这个率。
+# (minicpm5-2b)在没有 function-call-external 辅助时仍会偶发。bench 量化这个率。
 MALFORMED_PATTERNS=(
   'xml'             # XML fragment 残留
   '<function_call>' # 未关闭的 tag
@@ -74,30 +74,30 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-# ── Phase 9 prerequisite 探测(仅 needle 模式需要) ──────────────────
-NEEDLE_BOOT_LINE=$(grep '\[needle-extractor\] boot' "$LOG_FILE" 2>/dev/null | tail -1 || true)
-NEEDLE_AVAILABLE=0
-if [ -n "$NEEDLE_BOOT_LINE" ]; then
-  NEEDLE_ENABLED=$(echo "$NEEDLE_BOOT_LINE" | grep -oE 'enabled=[a-z]+' || echo "enabled=false")
-  if [[ "$NEEDLE_ENABLED" == "enabled=true" ]]; then
-    NEEDLE_AVAILABLE=1
+# ── Phase 9 prerequisite 探测(仅 function-call-external 模式需要) ──────────────────
+FCX_BOOT_LINE=$(grep '\[function-call-external\] boot' "$LOG_FILE" 2>/dev/null | tail -1 || true)
+FCX_AVAILABLE=0
+if [ -n "$FCX_BOOT_LINE" ]; then
+  FUNCTION_CALL_EXTERNAL_ENABLED=$(echo "$FCX_BOOT_LINE" | grep -oE 'enabled=[a-z]+' || echo "enabled=false")
+  if [[ "$FUNCTION_CALL_EXTERNAL_ENABLED" == "enabled=true" ]]; then
+    FCX_AVAILABLE=1
   fi
 fi
-if [ -z "$ONLY" ] && [ "$NEEDLE_AVAILABLE" -eq 0 ]; then
-  echo -e "${YELLOW}⚠ needle-extractor 插件未在 dsh 启动时挂载(查 [needle-extractor] boot 行无 enabled=true)。${NC}" >&2
-  echo -e "${YELLOW}  needle 模式将退化为 baseline(无 needle 介入)。Phase 9 部署完成后会自然生效。${NC}" >&2
+if [ -z "$ONLY" ] && [ "$FCX_AVAILABLE" -eq 0 ]; then
+  echo -e "${YELLOW}⚠ function-call-external 插件未在 dsh 启动时挂载(查 [function-call-external] boot 行无 enabled=true)。${NC}" >&2
+  echo -e "${YELLOW}  function-call-external 模式将退化为 baseline(无 caller 介入)。Phase 9 部署完成后会自然生效。${NC}" >&2
   echo ""
 fi
 
 # ── 落盘目录 ────────────────────────────────────────────────────────
 TS="$(date -u +%Y%m%dT%H%M%SZ)"
-OUT_DIR="$REPO_ROOT/dist/bench-needle-$TS"
+OUT_DIR="$REPO_ROOT/dist/bench-fcx-$TS"
 mkdir -p "$OUT_DIR/traces"
 
 # ── 一轮请求:发 query,采 wall-clock + body ─────────────────────────
 run_one() {
   local tag="$1" q="$2" idx="$3"
-  local sid="bench-needle-${tag}-${idx}-$$"
+  local sid="bench-fcx-${tag}-${idx}-$$"
   local body resp_file http_code wall_ms start
   body=$(printf '{"message":"%s","sessionId":"%s"}' "$q" "$sid")
   resp_file="$OUT_DIR/traces/${tag}-${idx}.json"
@@ -174,19 +174,19 @@ if [ "$DRY_RUN" = "1" ]; then
   echo -e "${CYAN}── dry-run plan ──${NC}"
   echo "  iter=$ITER queries=${#QUERIES[@]}"
   echo "  out=$OUT_DIR"
-  echo "  needle_avail=$NEEDLE_AVAILABLE (0=baseline-only fallback)"
+  echo "  needle_avail=$FCX_AVAILABLE (0=baseline-only fallback)"
   exit 0
 fi
 
 # ── 主路径 ──────────────────────────────────────────────────────────
 echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
-echo -e "${BLUE}  §7.93 Phase 8 needle-extractor bench${NC}"
+echo -e "${BLUE}  §7.93 Phase 8 function-call-external bench${NC}"
 echo -e "${BLUE}  iter=$ITER queries=${#QUERIES[@]} out=$OUT_DIR${NC}"
 echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
 echo ""
 
 if [ -z "$ONLY" ] || [ "$ONLY" = "baseline" ]; then
-  echo -e "${CYAN}▶ baseline (NEEDLE_ENABLED=false,fall through to minicpm 自提取)${NC}"
+  echo -e "${CYAN}▶ baseline (FUNCTION_CALL_EXTERNAL_ENABLED=false,fall through to minicpm 自提取)${NC}"
   run_round "baseline"
   BASE_P=$(compute_percentiles "$OUT_DIR/baseline.csv")
   BASE_MAL=$(count_malformed_total "$OUT_DIR/baseline.csv")
@@ -197,30 +197,30 @@ if [ -z "$ONLY" ] || [ "$ONLY" = "baseline" ]; then
   echo ""
 fi
 
-if [ -z "$ONLY" ] || [ "$ONLY" = "needle" ]; then
-  echo -e "${CYAN}▶ needle-enabled (NEEDLE_ENABLED=true)${NC}"
-  if [ "$NEEDLE_AVAILABLE" -eq 0 ]; then
-    echo -e "  ${YELLOW}· needle 插件未挂载,这次等同于 baseline(diagnostic)${NC}"
+if [ -z "$ONLY" ] || [ "$ONLY" = "function-call-external" ]; then
+  echo -e "${CYAN}▶ function-call-external-enabled (FUNCTION_CALL_EXTERNAL_ENABLED=true)${NC}"
+  if [ "$FCX_AVAILABLE" -eq 0 ]; then
+    echo -e "  ${YELLOW}· caller 插件未挂载,这次等同于 baseline(diagnostic)${NC}"
   fi
-  run_round "needle"
-  NEEDLE_P=$(compute_percentiles "$OUT_DIR/needle.csv")
-  NEEDLE_MAL=$(count_malformed_total "$OUT_DIR/needle.csv")
+  run_round "function-call-external"
+  FCX_P=$(compute_percentiles "$OUT_DIR/function-call-external.csv")
+  FCX_MAL=$(count_malformed_total "$OUT_DIR/function-call-external.csv")
   NEEDLE_P50=$(echo "$NEEDLE_P" | cut -d'|' -f1)
   NEEDLE_P95=$(echo "$NEEDLE_P" | cut -d'|' -f2)
-  NEEDLE_N=$(echo "$NEEDLE_P" | cut -d'|' -f3)
-  echo "  · needle: n=$NEEDLE_N p50=${NEEDLE_P50}ms p95=${NEEDLE_P95}ms malformed_total=$NEEDLE_MAL"
+  FCX_N=$(echo "$NEEDLE_P" | cut -d'|' -f3)
+  echo "  · function-call-external: n=$NEEDLE_N p50=${FCX_P50}ms p95=${FCX_P95}ms malformed_total=$NEEDLE_MAL"
   echo ""
 fi
 
 # ── 报告 ─────────────────────────────────────────────────────────────
 REPORT="$OUT_DIR/report.md"
 {
-  echo "# §7.93 Phase 8 needle-extractor bench report"
+  echo "# §7.93 Phase 8 function-call-external bench report"
   echo ""
   echo "**timestamp**: $TS"
   echo "**iter × queries**: $ITER × ${#QUERIES[@]} = $(( ITER * ${#QUERIES[@]} ))"
   echo "**out**: \`$OUT_DIR\`"
-  echo "**needle-extractor available**: $NEEDLE_AVAILABLE"
+  echo "**function-call-external available**: $FCX_AVAILABLE"
   echo ""
   echo "## results"
   echo ""
@@ -229,27 +229,27 @@ REPORT="$OUT_DIR/report.md"
   if [ -z "$ONLY" ] || [ "$ONLY" = "baseline" ]; then
     echo "| baseline | $BASE_N | $BASE_P50 | $BASE_P95 | $BASE_MAL |"
   fi
-  if [ -z "$ONLY" ] || [ "$ONLY" = "needle" ]; then
-    echo "| needle | $NEEDLE_N | $NEEDLE_P50 | $NEEDLE_P95 | $NEEDLE_MAL |"
+  if [ -z "$ONLY" ] || [ "$ONLY" = "function-call-external" ]; then
+    echo "| function-call-external | $NEEDLE_N | $NEEDLE_P50 | $NEEDLE_P95 | $NEEDLE_MAL |"
   fi
   echo ""
   echo "## interpretation"
   echo ""
-  echo "**Goal** (per §7.93 plan):needle-enabled p50 < 1500ms, malformed_total → 0."
+  echo "**Goal** (per §7.93.1 plan):function-call-external-enabled p50 < 1500ms, malformed_total → 0."
   echo ""
-  echo "**Reality check** (per §7.93 Phase 4.5 dry-run):needle engine currently"
+  echo "**Reality check** (per §7.93 Phase 4.5 dry-run):external caller engine currently"
   echo "degrades 25x (prefill 17-36 tok/s vs spec 436-491),timeout almost"
   echo "always hits at 1500ms. expect:"
-  echo "- needle circuit breaker OPENS within first request (timeout path)"
+  echo "- external circuit breaker OPENS within first request (timeout path)"
   echo "- subsequent requests short-circuit (0ms wall-clock) via"
-  echo "  needle.circuit_open_skip"
-  echo "- if needle 100% short-circuits:needle p50 ≈ 0ms,malformed stays"
+  echo "  external.circuit_open_skip"
+  echo "- if function-call-external 100% short-circuits:external p50 ≈ 0ms,malformed stays"
   echo "  at baseline rate(because LLM 自提取 path is unchanged)"
   echo ""
   echo "**When engine recovers** (post \`docker restart needle-http\` per"
-  echo "dry-run #1):expect needle p50 ≈ 400-600ms (per API.md §7 spec"
+  echo "dry-run #1):expect external p50 ≈ 400-600ms (per API.md §7 spec"
   echo "376-548ms /extract),malformed should drop to 0 for queries where"
-  echo "needle extracted ≥1 high-confidence call."
+  echo "external extracted ≥1 high-confidence call."
   echo ""
   echo "## malformed patterns tracked"
   echo ""

@@ -573,35 +573,38 @@
     #
     # 设计详见：docs/input-guard-design.md
 
-    # ── §7.93 needle-extractor:cactus-needle 3.0.1 作为 LOCAL LLM tool-call
-    # prefill(解决 §7.42 P0-1 minicpm5-2b malformed tool_call)
-    # **必须早于 input-guard apply**:needle 是 agent/pre-step waterfall 的最
-    # 外层 listener(await next() 串到 input-guard,input-guard 的 classify +
-    # setSessionRealm 完成后才返回给我们,我们才看得到本 turn 的 realm)。
-    # 否则 needle 读到 undefined 或上 turn 旧 realm → 触发跳过路径。
+    # ── §7.93.1(2026-09-25 通用化):function-call-external 插件
+    # 把 tool-call prefill 抽象成 ExternalToolCaller 接口(healthCheck +
+    # extract);当前实现 = NeedleHttpCaller(cactus-needle 3.0.1,API.md v1.1)。
+    # 后续替换 = 新增 class implements ExternalToolCaller + 改 apply() 一行。
+    # **必须早于 input-guard apply**:本插件是 agent/pre-step waterfall 的最
+    # 外层 listener(await next() 串到 input-guard,等 input-guard 的 classify +
+    # setSessionRealm 完成后才返回,我们才看得到本 turn 的 realm)。
+    # 否则读到 undefined 或上 turn 旧 realm → 触发跳过路径。
     # cordis waterfall 注册顺序 = 执行顺序(shift 第一个 = 最外层)。
-    - id: needle-extractor
-      name: '@deepseek-harness-edge-agent/dsh-edge-agent/needle-extractor'
+    - id: function-call-external
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/function-call-external'
       inject: [auditLog, realmSkillBridge, tools]
       config:
         # 默认关(user 终裁):schema default false;生产需 env 设 true。
-        needleEnabled: !!js process.env.DSH_EDGE_NEEDLE_ENABLED === 'true'
-        # API.md v1.1:GET /health + POST /extract(stateless 无 /reset;
-        # P1 中文数字归一化服务端内置;client 不做翻译,管什么语种 needle 自带 cn_grounding)。
-        needleUrl: !!js process.env.DSH_EDGE_NEEDLE_URL ?? 'http://127.0.0.1:8081'
-        # 实测 /extract 376-548ms(API.md §7);1.5s ≈ 3x P95 余量,
-        # 又 < LLM 自提取 2-6s。超时就开 breaker(Phase 6+dry-run #1)。
-        needleTimeoutMs: !!js parseInt(process.env.DSH_EDGE_NEEDLE_TIMEOUT_MS ?? '1500', 10)
-        needleConfidenceThreshold: !!js parseFloat(process.env.DSH_EDGE_NEEDLE_CONFIDENCE_THRESHOLD ?? '0.7')
+        functionCallExternalEnabled: !!js process.env.DSH_EDGE_FUNCTION_CALL_EXTERNAL_ENABLED === 'true'
+        # 当前实现 = cactus-needle 3.0.1:GET /health + POST /extract(stateless 无 /reset;
+        # P1 中文数字归一化服务端内置;client 不做翻译,管什么语种 caller 自带 cn_grounding)。
+        functionCallExternalUrl: !!js process.env.DSH_EDGE_FUNCTION_CALL_EXTERNAL_URL ?? 'http://127.0.0.1:8081'
+        # 实测 /extract 在 caller 当前 LAN 引擎下需 4-7s(dry-run #1 标 376-548ms 是
+        # API.md spec 理想值,实际 25-30x degradation);10s 给单请求 1x 余量。
+        # 后续引擎恢复 < 1s 时再调低。
+        functionCallExternalTimeoutMs: !!js parseInt(process.env.DSH_EDGE_FUNCTION_CALL_EXTERNAL_TIMEOUT_MS ?? '10000', 10)
+        functionCallExternalConfidenceThreshold: !!js parseFloat(process.env.DSH_EDGE_FUNCTION_CALL_EXTERNAL_CONFIDENCE_THRESHOLD ?? '0.5')
         # §7.92.6:circuit breaker(单 fetch 模式,open-on-first-failure,jev
         # all-batches 失败才开的等价位)。dry-run #1 验证 timeout 几乎全中,
         # breaker 必须计入 timeout。
-        needleBreakerTtlMs: !!js parseInt(process.env.DSH_EDGE_NEEDLE_BREAKER_TTL_MS ?? '30000', 10)
+        functionCallExternalBreakerTtlMs: !!js parseInt(process.env.DSH_EDGE_FUNCTION_CALL_EXTERNAL_BREAKER_TTL_MS ?? '30000', 10)
         # §7.92.7:boot probe + 周期恢复 probe(GET /health)
-        needleBootProbeEnabled: !!js process.env.DSH_EDGE_NEEDLE_BOOT_PROBE_ENABLED !== 'false'
-        needleBootProbeTimeoutMs: !!js parseInt(process.env.DSH_EDGE_NEEDLE_BOOT_PROBE_TIMEOUT_MS ?? '2000', 10)
-        needleBreakerProbeMs: !!js parseInt(process.env.DSH_EDGE_NEEDLE_BREAKER_PROBE_MS ?? '5000', 10)
-        needleProbeTimeoutMs: !!js parseInt(process.env.DSH_EDGE_NEEDLE_PROBE_TIMEOUT_MS ?? '2000', 10)
+        functionCallExternalBootProbeEnabled: !!js process.env.DSH_EDGE_FUNCTION_CALL_EXTERNAL_BOOT_PROBE_ENABLED !== 'false'
+        functionCallExternalBootProbeTimeoutMs: !!js parseInt(process.env.DSH_EDGE_FUNCTION_CALL_EXTERNAL_BOOT_PROBE_TIMEOUT_MS ?? '2000', 10)
+        functionCallExternalBreakerProbeMs: !!js parseInt(process.env.DSH_EDGE_FUNCTION_CALL_EXTERNAL_BREAKER_PROBE_MS ?? '5000', 10)
+        functionCallExternalProbeTimeoutMs: !!js parseInt(process.env.DSH_EDGE_FUNCTION_CALL_EXTERNAL_PROBE_TIMEOUT_MS ?? '2000', 10)
     - id: input-guard
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/input-guard'
       inject: [promptGuard, privacyPolicy, intentRouter, sanitizer, auditLog]

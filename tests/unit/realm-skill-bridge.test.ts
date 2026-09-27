@@ -1314,9 +1314,9 @@ ${allSkillLines.join('\n')}
     })
   })
 
-  // ── §7.93 Phase 2: needle tool-schema face ────────────────────────────────
+  // ── §7.93.1 Phase 2: external tool-schema face ────────────────────────────────
 
-  describe('getToolSchemasForNeedle (§7.93 Phase 2)', () => {
+  describe('getToolSchemasForExternal (§7.93 Phase 2)', () => {
     /** Registry projection as dsh-tools `schemas()` returns it: flat
      *  {name, description, parameters} (dsh-llm ToolSchema whitelist). */
     const REGISTRY_SCHEMAS = [
@@ -1326,7 +1326,7 @@ ${allSkillLines.join('\n')}
       { name: 'untyped_tool' }, // runtime-registered, hand-rolled shape
     ]
 
-    function needleCtx(schemas: unknown[] | 'throw') {
+    function externalToolCallCtx(schemas: unknown[] | 'throw') {
       return {
         reflect: { provide(_n: string, _v: unknown) { return () => {} } },
         provide(_n: string, _v: unknown) { return () => {} },
@@ -1345,7 +1345,7 @@ ${allSkillLines.join('\n')}
       }
     }
 
-    async function makeNeedleService(ctx: unknown, audit = fakeAuditLog()) {
+    async function makeExternalToolCallService(ctx: unknown, audit = fakeAuditLog()) {
       const configPath = writeConfig('skill-realms.json', {
         skills: {},
         tools: { bash: 'LOCAL', web_search: 'CLOUD', secret_admin: 'hidden' },
@@ -1360,45 +1360,45 @@ ${allSkillLines.join('\n')}
       return { service, audit }
     }
 
-    it('returns flat needle wire format {name, description, parameters}', async () => {
-      const { service } = await makeNeedleService(needleCtx(REGISTRY_SCHEMAS))
-      const schemas = service.getToolSchemasForNeedle('LOCAL')
+    it('returns flat external wire format {name, description, parameters}', async () => {
+      const { service } = await makeExternalToolCallService(externalToolCallCtx(REGISTRY_SCHEMAS))
+      const schemas = service.getToolSchemasForExternal('LOCAL')
       const bash = schemas.find((s) => s.name === 'bash')
       assert.ok(bash, 'bash (LOCAL) present for LOCAL intent')
-      assert.deepEqual(Object.keys(bash).sort(), ['description', 'name', 'parameters'], 'exactly the 3 needle fields, no envelope')
+      assert.deepEqual(Object.keys(bash).sort(), ['description', 'name', 'parameters'], 'exactly the 3 external fields, no envelope')
       assert.equal(bash.description, 'Execute shell commands')
       assert.deepEqual(bash.parameters, REGISTRY_SCHEMAS[0].parameters, 'parameters passed through verbatim')
       service.stop()
     })
 
     it('realm filtering matches filterToolsField semantics (single source of truth)', async () => {
-      const ctx = needleCtx(REGISTRY_SCHEMAS)
-      const { service } = await makeNeedleService(ctx)
+      const ctx = externalToolCallCtx(REGISTRY_SCHEMAS)
+      const { service } = await makeExternalToolCallService(ctx)
 
-      const localNames = service.getToolSchemasForNeedle('LOCAL').map((s) => s.name).sort()
+      const localNames = service.getToolSchemasForExternal('LOCAL').map((s) => s.name).sort()
       assert.deepEqual(localNames, ['bash', 'untyped_tool'], 'LOCAL: bash + untagged pass-through; no web_search (CLOUD), no secret_admin (hidden)')
 
       // SANITIZED sees all non-hidden (§7.37)
-      const sanNames = service.getToolSchemasForNeedle('SANITIZED').map((s) => s.name).sort()
+      const sanNames = service.getToolSchemasForExternal('SANITIZED').map((s) => s.name).sort()
       assert.deepEqual(sanNames, ['bash', 'untyped_tool', 'web_search'], 'SANITIZED: LOCAL + CLOUD visible, hidden removed')
 
       // Cross-check against the LLM-path filter on the SAME input — the sets
-      // must be identical or needle/LLM would see different tools (drift).
+      // must be identical or external / LLM would see different tools (drift).
       const llmView = service.filterToolsField(REGISTRY_SCHEMAS, 'LOCAL', { audit: false })
       const llmNames = llmView.tools.map((t: any) => t.name).sort()
-      assert.deepEqual(localNames, llmNames, 'needle schema set === LLM schema set')
+      assert.deepEqual(localNames, llmNames, 'external schema set === LLM schema set')
       service.stop()
     })
 
     it('normalizes hand-rolled entries: missing description → "", missing parameters → permissive root, nameless dropped', async () => {
-      const { service } = await makeNeedleService(needleCtx([
+      const { service } = await makeExternalToolCallService(externalToolCallCtx([
         { name: 'no_desc_tool' },
         { name: 'bad_params', description: 'd', parameters: 'not-an-object' },
         { description: 'nameless — must be dropped' },
         { name: '', description: 'empty name — must be dropped' },
         'string-entry-must-be-dropped',
       ]))
-      const schemas = service.getToolSchemasForNeedle('LOCAL')
+      const schemas = service.getToolSchemasForExternal('LOCAL')
       assert.equal(schemas.length, 2)
       const noDesc = schemas.find((s) => s.name === 'no_desc_tool')!
       assert.equal(noDesc.description, '')
@@ -1409,31 +1409,31 @@ ${allSkillLines.join('\n')}
     })
 
     it('registry unavailable or throwing → [] (caller falls through to LLM extraction)', async () => {
-      const throwing = await makeNeedleService(needleCtx('throw'))
-      assert.deepEqual(throwing.service.getToolSchemasForNeedle('LOCAL'), [], 'proxy throw → empty, no crash')
+      const throwing = await makeExternalToolCallService(externalToolCallCtx('throw'))
+      assert.deepEqual(throwing.service.getToolSchemasForExternal('LOCAL'), [], 'proxy throw → empty, no crash')
       throwing.service.stop()
 
-      const noTools = await makeNeedleService({
+      const noTools = await makeExternalToolCallService({
         reflect: { provide(_n: string, _v: unknown) { return () => {} } },
         provide(_n: string, _v: unknown) { return () => {} },
         skills: { async list() { return [] }, async snapshot() { return { skills: [], complete: true } } },
         logger: { info: () => {}, warn: () => {} },
       })
-      assert.deepEqual(noTools.service.getToolSchemasForNeedle('LOCAL'), [], 'missing tools service → empty')
+      assert.deepEqual(noTools.service.getToolSchemasForExternal('LOCAL'), [], 'missing tools service → empty')
       noTools.service.stop()
 
-      const emptyRegistry = await makeNeedleService(needleCtx([]))
-      assert.deepEqual(emptyRegistry.service.getToolSchemasForNeedle('LOCAL'), [], 'empty registry → empty')
+      const emptyRegistry = await makeExternalToolCallService(externalToolCallCtx([]))
+      assert.deepEqual(emptyRegistry.service.getToolSchemasForExternal('LOCAL'), [], 'empty registry → empty')
       emptyRegistry.service.stop()
     })
 
     it('does not emit the LLM-path tools.filtered audit; filterToolsField default still does', async () => {
-      const { service, audit } = await makeNeedleService(needleCtx(REGISTRY_SCHEMAS))
-      service.getToolSchemasForNeedle('LOCAL')
+      const { service, audit } = await makeExternalToolCallService(externalToolCallCtx(REGISTRY_SCHEMAS))
+      service.getToolSchemasForExternal('LOCAL')
       assert.equal(
         audit.entries.filter((e) => e.kind === 'realm-skill-bridge.tools.filtered').length,
         0,
-        'needle path is audit-silent (needle-extractor emits its own needle.* events)',
+        'external path is audit-silent (function-call-external emits its own external.* events)',
       )
       // Backward compat: default (no options) still audits removals.
       service.filterToolsField(REGISTRY_SCHEMAS, 'LOCAL')
@@ -1445,12 +1445,12 @@ ${allSkillLines.join('\n')}
       service.stop()
     })
 
-    it('normalizeNeedleSchemas is exported as a pure function', async () => {
-      const { normalizeNeedleSchemas } = await import('../../src/dsh-adapter/realm-skill-bridge.ts')
-      assert.equal(typeof normalizeNeedleSchemas, 'function')
-      assert.deepEqual(normalizeNeedleSchemas([]), [])
+    it('normalizeExternalToolSchemas is exported as a pure function', async () => {
+      const { normalizeExternalToolSchemas } = await import('../../src/dsh-adapter/realm-skill-bridge.ts')
+      assert.equal(typeof normalizeExternalToolSchemas, 'function')
+      assert.deepEqual(normalizeExternalToolSchemas([]), [])
       assert.deepEqual(
-        normalizeNeedleSchemas([{ name: 'x', description: 'd', parameters: { type: 'object' } }]),
+        normalizeExternalToolSchemas([{ name: 'x', description: 'd', parameters: { type: 'object' } }]),
         [{ name: 'x', description: 'd', parameters: { type: 'object' } }],
       )
     })

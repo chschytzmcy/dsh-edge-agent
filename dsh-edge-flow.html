@@ -666,19 +666,19 @@ on(<span class="s">'session/event'</span>, (session, event) => {
           <div class="plugin-list">
             <div class="plugin">
               <div class="plugin-row">
-                <span class="plugin-name">needle-extractor (cactus-needle tool-call prefill)</span>
+                <span class="plugin-name">function-call-external (externalized tool-call prefill)</span>
                 <span class="badge badge-waterfall">waterfall</span>
               </div>
               <div class="plugin-detail">
                 <div class="local-block">
                   <b>📍 做了什么</b>(<b>§7.93 全 9 phase 已完成</b>):<br>
-                  <b>注册顺序</b>:<b>必须早于 input-guard apply</b>(cordis.patch.yml - insert: 数组里 needle 在前)— cordis waterfall 注册顺序 = 执行顺序(shift 第一个 = 最外层)。needle 的 <code>await next()</code> 串到 input-guard,等 input-guard 的 classify + setSessionRealm 完成后才返回给我们,我们才看得到本 turn 的 realm。否则读到 undefined 或上 turn 旧 realm → 触发跳过路径。<br>
+                  <b>注册顺序</b>:<b>必须早于 input-guard apply</b>(cordis.patch.yml - insert: 数组里 function-call-external 在前)— cordis waterfall 注册顺序 = 执行顺序(shift 第一个 = 最外层)。本插件的 <code>await next()</code> 串到 input-guard,等 input-guard 的 classify + setSessionRealm 完成后才返回给我们,我们才看得到本 turn 的 realm。否则读到 undefined 或上 turn 旧 realm → 触发跳过路径。<br>
                   <b>8 道 fail-open gate</b>:reject / !isAvailable / sessionId 缺失 / realm∉{LOCAL,SANITIZED} / lastUser 空 / schemas=[] / extract null / adopt gate(createToolRunner undef / outcomes=0 executed 任一触发立即透传,决策面零修改);<b>整个 body 包 try/catch,decision 提到 try 外</b>:catch 拿到 decision → 透传(不污染 cordis dispatch),catch 没 decision(await next() 自身抛)→ 重抛。<br>
-                  <b>失败矩阵(§7.93 Phase 7)</b>:422 invalid body → 不重试不开 breaker(reason=invalid_body_422);503 + body 'loading' → 不重试开 breaker(503_loading);503 + body 'busy' / 502 → 重试 1 次 200ms backoff,重试仍 fail → 开 breaker;408/504 timeout proxy → 不重试开 breaker(timeout_proxy);AbortError(本地 1.5s 超时)→ 不重试开 breaker(<b>§7.93 dry-run 实测 needle engine 25x 性能劣化,1.5s timeout 几乎全中 → breaker 必开</b>);其他网络错 → 不重试开 breaker。<br>
-                  <b>circuit breaker(§7.92.6 + dry-run #1 强化)</b>:<b>open-on-first-failure</b>(jev 是 all-batches 失败才开,needle 单 fetch 等价于"这一发失败");<b>timeout 必须计入 breaker 失败</b>(不只 503)—— 这是 dry-run #1 的关键落地。isAvailable() = <code>needleEnabled &amp;&amp; Date.now() >= needleBreakerOpenUntil</code>;handlePreStep Gate 2 因此自动承担 short-circuit,needleCircuitSkip++ + audit <code>needle.circuit_open_skip</code>。<br>
-                  <b>boot probe + 周期 recovery(§7.92.7)</b>:apply() 时 fire-and-forget <code>GET /health</code>(timeout 2000ms);失败 → 预开 breaker + 启动 <code>setInterval(probe, 5000)</code>(<code>unref()</code> 不挡进程退出);2xx → clearInterval + 关 breaker + needleRecoveredProbe++。<br>
-                  <b>合成 message 注入</b>:needle 抽到 ≥1 call + ToolRunner.executeAll ≥1 executed → 取最末 user-role message 后追加 <code>createUserMessage({content:[{type:'text', text: synthesis-context}], source:{kind:'user'}})</code>。decision.messages 全 user/message events append(<b>assistant tool_call role 在该 hook 不可达</b>— dsh-agent-loop line 559)→ LLM 看到自然语言"工具已执行,以下是结果"。<br>
-                  <b>vs §7.42 P0-1</b>:needle 是 prefill 不是替代 — 一切失败(needle down / 超时 / 低置信 / 空 schemas / 0 executed)fall through 到 §7.42 P0-1 LLM 自提取路径,P0-1 patch 保留作 fallback。
+                  <b>失败矩阵(§7.93 Phase 7)</b>:422 invalid body → 不重试不开 breaker(reason=invalid_body_422);503 + body 'loading' → 不重试开 breaker(503_loading);503 + body 'busy' / 502 → 重试 1 次 200ms backoff,重试仍 fail → 开 breaker;408/504 timeout proxy → 不重试开 breaker(timeout_proxy);AbortError(本地 1.5s 超时)→ 不重试开 breaker(<b>§7.93 dry-run 实测 caller 引擎 25x 性能劣化,1.5s timeout 几乎全中 → breaker 必开</b>);其他网络错 → 不重试开 breaker。<br>
+                  <b>circuit breaker(§7.92.6 + dry-run #1 强化)</b>:<b>open-on-first-failure</b>(jev 是 all-batches 失败才开,caller 单 fetch 等价于"这一发失败");<b>timeout 必须计入 breaker 失败</b>(不只 503)—— 这是 dry-run #1 的关键落地。isAvailable() = <code>functionCallExternalEnabled &amp;&amp; Date.now() >= functionCallExternalBreakerOpenUntil</code>;handlePreStep Gate 2 因此自动承担 short-circuit,functionCallExternalCircuitSkip++ + audit <code>external.circuit_open_skip</code>。<br>
+                  <b>boot probe + 周期 recovery(§7.92.7)</b>:apply() 时 fire-and-forget <code>GET /health</code>(timeout 2000ms);失败 → 预开 breaker + 启动 <code>setInterval(probe, 5000)</code>(<code>unref()</code> 不挡进程退出);2xx → clearInterval + 关 breaker + functionCallExternalRecoveredProbe++。<br>
+                  <b>合成 message 注入</b>:caller 抽到 ≥1 call + ToolRunner.executeAll ≥1 executed → 取最末 user-role message 后追加 <code>createUserMessage({content:[{type:'text', text: synthesis-context}], source:{kind:'user'}})</code>。decision.messages 全 user/message events append(<b>assistant tool_call role 在该 hook 不可达</b>— dsh-agent-loop line 559)→ LLM 看到自然语言"工具已执行,以下是结果"。<br>
+                  <b>vs §7.42 P0-1</b>:function-call-external 是 prefill 不是替代 — 一切失败(caller down / 超时 / 低置信 / 空 schemas / 0 executed)fall through 到 §7.42 P0-1 LLM 自提取路径,P0-1 patch 保留作 fallback。
                 </div>
               </div>
             </div>
@@ -986,7 +986,7 @@ on(<span class="s">'session/event'</span>, (session, event) => {
     <div class="overall-effect">
       <div class="overall-effect-title">🌐 整体效果</div>
       <p style="font-size: 12.5px; color: var(--ink-soft); margin: 0 0 10px 0; line-height: 1.6;">
-        <b>请求流向</b>:客户端 POST <code>:21017/v1/chat/stream</code> → ① http-api 拆 4 元组 → ② <b>needle-extractor</b>(cactus-needle prefill,8 道 fail-open gate + circuit breaker + boot probe)→ ② input-guard 隐私 4 步管线 + realm Layer 1 目录过滤 → ②.⑤ realm Layer 1.5 tool schema 过滤(assemble)→ ③ input-guard provider 改写 → ④ LLM 流式调用 + 反脱敏 → ⑤ realm Layer 3 拒执行 → ⑥ audit/ops 落盘 → ⑦ http-api SSE 回流 + REJECT 标签读 → 浏览器收到 token。
+        <b>请求流向</b>:客户端 POST <code>:21017/v1/chat/stream</code> → ① http-api 拆 4 元组 → ② <b>function-call-external</b>(cactus-needle prefill,8 道 fail-open gate + circuit breaker + boot probe)→ ② input-guard 隐私 4 步管线 + realm Layer 1 目录过滤 → ②.⑤ realm Layer 1.5 tool schema 过滤(assemble)→ ③ input-guard provider 改写 → ④ LLM 流式调用 + 反脱敏 → ⑤ realm Layer 3 拒执行 → ⑥ audit/ops 落盘 → ⑦ http-api SSE 回流 + REJECT 标签读 → 浏览器收到 token。
       </p>
       <ul>
         <li><b>3 道防御纵深</b>:② Layer 1 目录过滤(skills)+ ②.⑤ Layer 1.5 schema 过滤(tools)+ ⑤ Layer 3 执行拦截(realm tag)。<b>实战生效双闸</b>:Layer 1 §7.37 当前 no-op(<code>decision.messages</code> 在 pre-step 为空)→ Layer 1.5 + Layer 3 = 真正独立可挡的两道;Layer 1 作 future-proof + §7.45 SANITIZED 兜底。</li>

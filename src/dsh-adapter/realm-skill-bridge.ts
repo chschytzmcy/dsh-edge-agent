@@ -49,23 +49,25 @@ export const inject = ['auditLog', 'skills', 'edgeTools', 'tools'] as const
 export type RealmTag = 'LOCAL' | 'CLOUD' | 'SANITIZED' | 'hidden'
 
 /**
- * §7.93 Phase 2 (2026-09-24): intent categories needle-extractor may request
- * tool schemas for. REJECT never reaches needle (4xx before dispatch) and
- * 'hidden' agents get no tools at all, so both are excluded from the input
- * type; CLOUD is included for completeness even though the needle path skips
- * CLOUD intents (decision #4) — callers gate, this method stays total.
+ * §7.93 Phase 2 (2026-09-24,§7.93.1 通用化 2026-09-25): intent categories
+ * function-call-external may request tool schemas for. REJECT never reaches
+ * the external caller (4xx before dispatch) and 'hidden' agents get no tools
+ * at all, so both are excluded from the input type; CLOUD is included for
+ * completeness even though the external path skips CLOUD intents
+ * (decision #4) — callers gate, this method stays total.
  */
-export type NeedleIntent = 'LOCAL' | 'CLOUD' | 'SANITIZED'
+export type ExternalToolCallIntent = 'LOCAL' | 'CLOUD' | 'SANITIZED'
 
 /**
- * §7.93 Phase 2: one tool schema in needle's flat wire format
- * (`~/work/needle/API.md` v1.1 §4.5: `{name, description, parameters}` —
+ * §7.93 Phase 2 (§7.93.1 通用化): one tool schema in the external caller's
+ * flat wire format (cactus-needle 3.0.1 / `~/work/needle/API.md` v1.1 §4.5:
+ * `{name, description, parameters}` —
  * NOT the OpenAI `{type:'function', function:{...}}` envelope). This matches
  * dsh-llm's own `ToolSchema` projection (`schemas()` whitelists exactly
  * name/description/parameters), so the conversion is a shape check, not a
  * translation.
  */
-export interface NeedleToolSchema {
+export interface ExternalToolSchema {
   name: string
   description: string
   parameters: Record<string, unknown>
@@ -685,11 +687,11 @@ export class RealmSkillBridgeService extends Service {
    * use both LOCAL tools (file ops don't leak) and CLOUD tools (input was
    * already redacted). So SANITIZED agents see every non-hidden tool.
    *
-   * §7.93 Phase 2: `options.audit === false` suppresses the
+   * §7.93 Phase 2 (§7.93.1 通用化): `options.audit === false` suppresses the
    * `realm-skill-bridge.tools.filtered` audit entry. Used by
-   * getToolSchemasForNeedle() so the LLM-path filter audit isn't duplicated
-   * per needle call — needle-extractor emits its own `needle.*` audit kinds.
-   * Default (omitted) keeps the existing audited behavior.
+   * getToolSchemasForExternal() so the LLM-path filter audit isn't duplicated
+   * per external call — function-call-external emits its own `external.*`
+   * audit kinds. Default (omitted) keeps the existing audited behavior.
    */
   filterToolsField(
     tools: ReadonlyArray<unknown>,
@@ -745,8 +747,9 @@ export class RealmSkillBridgeService extends Service {
     return { tools: kept, changed: removed.length > 0, removed }
   }
 
-  // ── §7.93 Phase 2: needle tool-schema face ──────────────────────────────────
-  // needle-extractor (Phase 4+) POSTs these to needle-http :8081 /extract.
+  // ── §7.93 Phase 2 (§7.93.1 通用化): external tool-schema face ───────────────
+  // function-call-external (Phase 4+) POSTs these to the external caller's
+  // /extract endpoint (current: cactus-needle 3.0.1 / needle-http :8081).
   // Single source of truth: the SAME registry projection the LLM sees
   // (`ctx.tools.schemas()` → name/description/parameters whitelist, per
   // dsh-tools "Project visible definitions onto the allowlisted model-facing
@@ -754,21 +757,22 @@ export class RealmSkillBridgeService extends Service {
   // No separate tool list, no drift (user decision #8).
 
   /**
-   * Build the needle wire-format tool schemas for one intent's realm.
+   * Build the external caller's wire-format tool schemas for one intent's realm.
    *
    * Pipeline: registry projection → realm filter (filterToolsField semantics,
-   * audit suppressed — caller emits `needle.*` audit) → shape normalization.
+   * audit suppressed — caller emits `external.*` audit) → shape normalization.
    *
    * Failure contract: registry unavailable (cordis proxy throw before the
    * `tools` service mounts, §7.92.2 trap) or empty → returns []. Callers MUST
-   * treat [] as "no needle" and fall through to the LLM self-extraction path
-   * — never POST an empty tools array to needle (it would echo/hallucinate).
+   * treat [] as "no external caller" and fall through to the LLM
+   * self-extraction path — never POST an empty tools array to the external
+   * caller (it would echo/hallucinate).
    */
-  getToolSchemasForNeedle(intent: NeedleIntent): NeedleToolSchema[] {
+  getToolSchemasForExternal(intent: ExternalToolCallIntent): ExternalToolSchema[] {
     const raw = this.readRegistrySchemas()
     if (raw.length === 0) return []
     const filtered = this.filterToolsField(raw, intent, { audit: false })
-    return normalizeNeedleSchemas(filtered.tools)
+    return normalizeExternalToolSchemas(filtered.tools)
   }
 
   /**
@@ -824,7 +828,7 @@ export class RealmSkillBridgeService extends Service {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §7.93 Phase 2: needle schema normalization (pure, exported for tests)
+// §7.93 Phase 2 (§7.93.1 通用化): external schema normalization (pure, exported for tests)
 // ─────────────────────────────────────────────────────────────────────────────
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
@@ -832,12 +836,13 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Normalize registry projections onto needle's flat wire contract
- * (`{name, description, parameters}`, API.md v1.1 §4.5):
+ * Normalize registry projections onto the external caller's flat wire contract
+ * (`{name, description, parameters}`; current cactus-needle 3.0.1 impl follows
+ * `~/work/needle/API.md` v1.1 §4.5):
  *
- * - entries without a non-empty string `name` are dropped (needle keys
+ * - entries without a non-empty string `name` are dropped (caller keys
  *   function_calls by name — a nameless schema is unexecutable)
- * - missing/non-string `description` → '' (needle tolerates it; the tool
+ * - missing/non-string `description` → '' (caller tolerates it; the tool
  *   name + parameters carry the selection signal)
  * - missing/non-object `parameters` → permissive `{type:'object',
  *   properties:{}}` root (an unconstrained-args tool, e.g. no-arg status
@@ -845,10 +850,10 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
  *
  * Defensive by design: the registry projection is already whitelisted
  * upstream, but a runtime-registered tool with a hand-rolled shape must not
- * crash the needle path — worst case it is dropped and the LLM path covers it.
+ * crash the external path — worst case it is dropped and the LLM path covers it.
  */
-export function normalizeNeedleSchemas(tools: ReadonlyArray<unknown>): NeedleToolSchema[] {
-  const out: NeedleToolSchema[] = []
+export function normalizeExternalToolSchemas(tools: ReadonlyArray<unknown>): ExternalToolSchema[] {
+  const out: ExternalToolSchema[] = []
   for (const t of tools) {
     if (!isPlainRecord(t)) continue
     const name = t.name

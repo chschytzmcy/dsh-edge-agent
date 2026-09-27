@@ -72,9 +72,9 @@
       "types": "./lib/types/dsh-adapter/model-router.d.ts",
       "import": "./lib/types/dsh-adapter/model-router.js"
     },
-    "./needle-extractor": {
-      "types": "./lib/types/dsh-adapter/needle-extractor.d.ts",
-      "import": "./lib/types/dsh-adapter/needle-extractor.js"
+    "./function-call-external": {
+      "types": "./lib/types/dsh-adapter/function-call-external.d.ts",
+      "import": "./lib/types/dsh-adapter/function-call-external.js"
     },
     "./ohttp-gateway": {
       "types": "./lib/types/dsh-adapter/ohttp-gateway.d.ts",

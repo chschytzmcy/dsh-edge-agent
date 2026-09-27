@@ -168,27 +168,27 @@ export DSH_EDGE_INTENT_JEV_BOOT_PROBE_TIMEOUT_MS="${INTENT_JEV_BOOT_PROBE_TIMEOU
 export DSH_EDGE_INTENT_JEV_BREAKER_PROBE_MS="${INTENT_JEV_BREAKER_PROBE_MS}"
 export DSH_EDGE_INTENT_JEV_PROBE_TIMEOUT_MS="${INTENT_JEV_PROBE_TIMEOUT_MS}"
 
-# ── §7.93 needle tool-call prefill（全部默认 OFF，使能才生效） ────────
-# needle 服务由外部启动维护（needle-http **:8081**，契约 GET /health +
-# POST /extract，stateless 无需 /reset；playground :7860 是 needle webui，
-# 本项目不走），**只做意图/工具调用提取，服务端不翻译**（user 仲裁 v2）。
-# client（needle-extractor plugin）视角链路：
+# ── §7.93.1(2026-09-25 通用化)function-call-external prefill（全部默认 OFF，使能才生效） ────────
+# ExternalToolCaller 由外部启动维护（current: cactus-needle 3.0.1 在 needle-http **:8081**，契约 GET /health +
+# POST /extract，stateless 无需 /reset；playground 是外部 webui，本项目不走），**只做意图/工具调用提取，
+# 服务端不翻译**（user 仲裁 v2）。
+# client（function-call-external plugin）视角链路：
 #   LOCAL/SANITIZED intent
-#     → POST /extract {原文 query（中文直入，needle 自带 cn_grounding 归一化数字）, 英文 tool schemas} → function_calls
+#     → POST /extract {原文 query（中文直入，外部 caller 自带 cn_grounding 归一化数字），英文 tool schemas} → function_calls
 #     → TS tool-runner 执行（realm/PII/audit 不绕过）
 #     → **整个对话（user + tool_calls + 执行结果）给 LOCAL LLM 输出最终回复**
-# CLOUD intent 不走 needle；needle down/低置信 fall through 到现有 LLM 自提取。
-# Phase 5 末 user 终裁：去掉 client 翻译（管什么语种 needle 直接用）→ 原
-# NEEDLE_TRANSLATE_* 三个 env 全删，schema 也已对齐（9 字段无 translate）。
-export DSH_EDGE_NEEDLE_ENABLED="${NEEDLE_ENABLED}"
-export DSH_EDGE_NEEDLE_URL="${NEEDLE_URL}"
-export DSH_EDGE_NEEDLE_TIMEOUT_MS="${NEEDLE_TIMEOUT_MS}"
-export DSH_EDGE_NEEDLE_CONFIDENCE_THRESHOLD="${NEEDLE_CONFIDENCE_THRESHOLD}"
-export DSH_EDGE_NEEDLE_BREAKER_TTL_MS="${NEEDLE_BREAKER_TTL_MS}"
-export DSH_EDGE_NEEDLE_BOOT_PROBE_ENABLED="${NEEDLE_BOOT_PROBE_ENABLED}"
-export DSH_EDGE_NEEDLE_BOOT_PROBE_TIMEOUT_MS="${NEEDLE_BOOT_PROBE_TIMEOUT_MS}"
-export DSH_EDGE_NEEDLE_BREAKER_PROBE_MS="${NEEDLE_BREAKER_PROBE_MS}"
-export DSH_EDGE_NEEDLE_PROBE_TIMEOUT_MS="${NEEDLE_PROBE_TIMEOUT_MS}"
+# CLOUD intent 不走 caller；caller down/低置信 fall through 到现有 LLM 自提取。
+# §7.93 Phase 5 末 user 终裁：管什么语种 caller 直接用；NEEDLE_TRANSLATE_* 三个 env 在 §7.93.5
+# 全部删除（原 12 字段 → 9 字段），
+export DSH_EDGE_FUNCTION_CALL_EXTERNAL_ENABLED="${FUNCTION_CALL_EXTERNAL_ENABLED:-false}"
+export DSH_EDGE_FUNCTION_CALL_EXTERNAL_URL="${FUNCTION_CALL_EXTERNAL_URL:-http://127.0.0.1:8081}"
+export DSH_EDGE_FUNCTION_CALL_EXTERNAL_TIMEOUT_MS="${FUNCTION_CALL_EXTERNAL_TIMEOUT_MS:-10000}"
+export DSH_EDGE_FUNCTION_CALL_EXTERNAL_CONFIDENCE_THRESHOLD="${FUNCTION_CALL_EXTERNAL_CONFIDENCE_THRESHOLD:-0.5}"
+export DSH_EDGE_FUNCTION_CALL_EXTERNAL_BREAKER_TTL_MS="${FUNCTION_CALL_EXTERNAL_BREAKER_TTL_MS:-30000}"
+export DSH_EDGE_FUNCTION_CALL_EXTERNAL_BOOT_PROBE_ENABLED="${FUNCTION_CALL_EXTERNAL_BOOT_PROBE_ENABLED:-true}"
+export DSH_EDGE_FUNCTION_CALL_EXTERNAL_BOOT_PROBE_TIMEOUT_MS="${FUNCTION_CALL_EXTERNAL_BOOT_PROBE_TIMEOUT_MS:-2000}"
+export DSH_EDGE_FUNCTION_CALL_EXTERNAL_BREAKER_PROBE_MS="${FUNCTION_CALL_EXTERNAL_BREAKER_PROBE_MS:-5000}"
+export DSH_EDGE_FUNCTION_CALL_EXTERNAL_PROBE_TIMEOUT_MS="${FUNCTION_CALL_EXTERNAL_PROBE_TIMEOUT_MS:-2000}"
 
 # ── input-guard 降级路径（cloud-key 缺失 / intent=LOCAL / sanitize 失败）──
 # §7.75: DSH_EDGE_LOCAL_MODEL **直接从 LOCAL_LLM 池派生**（不引入

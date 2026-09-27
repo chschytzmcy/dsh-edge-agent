@@ -6,13 +6,13 @@
  * 与 LLM-produced tool_calls 享受完全相同的执法链:
  *
  *   1. schema 面校验 —— call.name 必须 ∈ POST 给 needle 的同一份 schemas
- *      (getToolSchemasForNeedle 产物,单一真相源);幻觉工具名直接拒。
+ *      (getToolSchemasForExternal 产物,单一真相源);幻觉工具名直接拒。
  *   2. ungrounded 处理(API.md v1.1 `validation.ungrounded`)——
- *      required 参数被捏造 → **不执行**(skipped + audit needle.fabricated_arg,
+ *      required 参数被捏造 → **不执行**(skipped + audit external.fabricated_arg,
  *      留给 LOCAL LLM synthesis 阶段补);非 required 被捏造 → 从 arguments
  *      剥除后执行(drop),不带幻觉值进工具。
  *   3. realm 预检(defense-in-depth)—— 复用 realm-skill-bridge
- *      checkToolRealm(name, getAgentRealm(agent));deny → needle.realm_rejected
+ *      checkToolRealm(name, getAgentRealm(agent));deny → external.realm_rejected
  *      (security 级),宿主管线都不进。
  *   4. 宿主执行 —— `ctx.tools.execute()`(dsh-tools ToolRuntime),自动跑完整
  *      pre-execute(Layer 3 权威 realm gate 再查一遍,零绕过)/ guards /
@@ -25,8 +25,8 @@
  * 分工一致(ops log = 过程流水 metadata only;audit = 安全账本 redacted)。
  *
  * 失败契约:execute()/executeAll() **永不 throw** —— 一切异常归一成
- * status:'error' outcome + needle.execution_failed audit,调用方
- * (needle-extractor Phase 5)拿 outcome 决定合成消息或 fall through。
+ * status:'error' outcome + external.execution_failed audit,调用方
+ * (function-call-external Phase 5)拿 outcome 决定合成消息或 fall through。
  *
  * 并发:executeAll 是**顺序**执行(不是计划草稿里的 Promise.all)——
  * 并行调度是宿主 scheduler 的领地(isConcurrencySafe 门控),本边界不绕过;
@@ -34,7 +34,7 @@
  * 消息顺序确定。
  *
  * 本模块**不是 cordis plugin**(无 export const inject / apply):它是纯类,
- * 由 needle-extractor(Phase 4)构造并持有。类型全部结构化 loose-coupling
+ * 由 function-call-external(Phase 4)构造并持有。类型全部结构化 loose-coupling
  * (不 import dsh-tools/dsh-llm 类型,与 realm-skill-bridge 同款纪律);
  * ToolCallId 在运行时就是普通 string(brand 只在类型层)。
  *
@@ -74,15 +74,15 @@ export interface AuditLogLike {
   log(entry: { level: string; kind: string; source: string; payload?: Record<string, unknown> }): void
 }
 
-/** Phase 2 产物:getToolSchemasForNeedle 返回的平面 wire schema。 */
-export interface NeedleToolSchemaLike {
+/** Phase 2 产物:getToolSchemasForExternal 返回的平面 wire schema。 */
+export interface ExternalToolSchemaLike {
   name: string
   description: string
   parameters: Record<string, unknown>
 }
 
 /** needle /extract 返回的单个 function_call(API.md v1.1)。 */
-export interface NeedleFunctionCall {
+export interface ExternalFunctionCall {
   name: string
   /** needle 已做 JSON 解析;防御性当 unknown 收,入口再校验。 */
   arguments?: unknown
@@ -117,7 +117,7 @@ export interface ToolRunOutcome {
 }
 
 export interface ToolRunRequest {
-  call: NeedleFunctionCall
+  call: ExternalFunctionCall
   /**
    * payload 里的**真 agent**(带 session.id)。Layer 3 gate 与 realm 预检都靠
    * getAgentRealm(agent) → sessionRealms.get(session.id) 解析 realm;
@@ -126,7 +126,7 @@ export interface ToolRunRequest {
   agent: unknown
   sessionId?: string
   /** POST 给 needle 的同一份 schemas(单一真相源,幻觉名在此拒)。 */
-  schemas: readonly NeedleToolSchemaLike[]
+  schemas: readonly ExternalToolSchemaLike[]
   /** needle `validation.ungrounded`,形如 ["send_message.text"];可空。 */
   ungrounded?: readonly string[]
   /** caller 的取消信号;缺省时 runner 自建 executeTimeoutMs 超时信号。 */
@@ -164,7 +164,7 @@ export function extractResultText(content: ToolExecutionResultLike['content']): 
 }
 
 /** schema.parameters.required 里的字符串数组(JSON Schema 语义,防御性抽取)。 */
-export function requiredArgsOf(schema: NeedleToolSchemaLike | undefined): string[] {
+export function requiredArgsOf(schema: ExternalToolSchemaLike | undefined): string[] {
   const req = schema?.parameters?.required
   if (!Array.isArray(req)) return []
   return req.filter((x): x is string => typeof x === 'string')
@@ -178,7 +178,7 @@ export function requiredArgsOf(schema: NeedleToolSchemaLike | undefined): string
 export function partitionUngrounded(
   toolName: string,
   ungrounded: readonly string[] | undefined,
-  schema: NeedleToolSchemaLike | undefined,
+  schema: ExternalToolSchemaLike | undefined,
 ): { skip: string[]; drop: string[] } {
   const skip: string[] = []
   const drop: string[] = []
@@ -239,7 +239,7 @@ export class ToolRunner {
     // ── 1. schema 面校验(幻觉工具名拒;与 POST 给 needle 的同一份) ──────
     const schema = req.schemas.find(s => s.name === name)
     if (!schema) {
-      this.audit('warn', 'needle.unknown_tool', { name, callId, sessionId: req.sessionId, schemaCount: req.schemas.length })
+      this.audit('warn', 'external.unknown_tool', { name, callId, sessionId: req.sessionId, schemaCount: req.schemas.length })
       return this.finish({
         status: 'denied', text: '', name, callId,
         reason: 'unknown_tool: not in the schema set given to needle',
@@ -250,7 +250,7 @@ export class ToolRunner {
     // ── 2. ungrounded 处理(required 捏造 → skip;非 required → drop) ────
     const { skip, drop } = partitionUngrounded(name, req.ungrounded, schema)
     if (skip.length > 0) {
-      this.audit('warn', 'needle.fabricated_arg', {
+      this.audit('warn', 'external.fabricated_arg', {
         action: 'skip', name, callId, sessionId: req.sessionId,
         fabricatedArgs: skip, ungroundedCount: (req.ungrounded ?? []).length,
       })
@@ -265,7 +265,7 @@ export class ToolRunner {
     if (drop.length > 0) {
       args = { ...argsIn }
       for (const k of drop) delete args[k]
-      this.audit('warn', 'needle.fabricated_arg', {
+      this.audit('warn', 'external.fabricated_arg', {
         action: 'drop', name, callId, sessionId: req.sessionId,
         fabricatedArgs: drop, ungroundedCount: (req.ungrounded ?? []).length,
       })
@@ -275,7 +275,7 @@ export class ToolRunner {
     const agentRealm = this.bridge.getAgentRealm(req.agent)
     const denyReason = this.bridge.checkToolRealm(name, agentRealm)
     if (denyReason !== undefined) {
-      this.audit('security', 'needle.realm_rejected', {
+      this.audit('security', 'external.realm_rejected', {
         name, callId, sessionId: req.sessionId,
         agentRealm: agentRealm ?? 'unknown', reason: denyReason,
       })
@@ -294,7 +294,7 @@ export class ToolRunner {
       const durationMs = Date.now() - start
       if (result?.isError) {
         const message = result.error?.message ?? 'tool execution failed'
-        this.audit('warn', 'needle.execution_failed', {
+        this.audit('warn', 'external.execution_failed', {
           name, callId, sessionId: req.sessionId, durationMs,
           errorCode: result.error?.info?.code, errorLen: message.length,
         })
@@ -304,7 +304,7 @@ export class ToolRunner {
         }, undefined, req)
       }
       const text = extractResultText(result?.content)
-      this.audit('info', 'needle.executed', {
+      this.audit('info', 'external.executed', {
         name, callId, sessionId: req.sessionId, durationMs,
         resultLen: text.length, droppedFabricated: drop.length,
       })
@@ -320,7 +320,7 @@ export class ToolRunner {
       // 但 registry 未挂载 / cordis proxy trap(§7.92.2)等仍可能炸 —— 归一。
       const durationMs = Date.now() - start
       const message = err instanceof Error ? err.message : String(err)
-      this.audit('warn', 'needle.execution_failed', {
+      this.audit('warn', 'external.execution_failed', {
         name, callId, sessionId: req.sessionId, durationMs,
         thrown: true, errorLen: message.length,
       })
@@ -336,7 +336,7 @@ export class ToolRunner {
    * 见文件头)。单个失败不中断后续:每个 outcome 独立归一。
    */
   async executeAll(
-    calls: readonly NeedleFunctionCall[],
+    calls: readonly ExternalFunctionCall[],
     shared: Omit<ToolRunRequest, 'call'>,
   ): Promise<ToolRunOutcome[]> {
     const out: ToolRunOutcome[] = []
@@ -351,7 +351,7 @@ export class ToolRunner {
   private nextCallId(sessionId: string | undefined): string {
     this.callSeq += 1
     const sess = sessionId ? `-${sessionId.slice(0, 12)}` : ''
-    return `needle${sess}-${Date.now().toString(36)}-${this.callSeq}`
+    return `fcx${sess}-${Date.now().toString(36)}-${this.callSeq}`
   }
 
   /** ops log 一行(可观测性纪律 §7.46:每个关键环节都在 ops log 体现)。 */
