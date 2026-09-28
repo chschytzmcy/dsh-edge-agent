@@ -9419,3 +9419,55 @@ patch yml line 359 是 `[auditLog, skills, edgeTools, tools]` —— 之前 sour
 - `docs/PROGRESS.md`:本段
 - `README.md`:新章节
 
+### §7.94.1 — E2E 实测:cactus-needle 中文不可用,`ENABLED` 回落 false(2026-09-28)
+
+**背景**:§7.94 交付后开 `FUNCTION_CALL_EXTERNAL_ENABLED=true` 跑真实 E2E,发现
+needle 3.0.1 对中文 query 大面积失败。写可复用测试套件量化,作为上游 bug 报告证据。
+
+**测试套件**(`scripts/needle-cn-en-compat-test.py`):
+- 5 个 tool 数量(1/3/5/8/13)× 中英双语言 × 3 次重复 = 30 次请求
+- 中英 query **语义等价**,tool schema 从固定 13 项目录取前缀 → 隔离"语言"与"数量"两个变量
+- 失败分类:`utf8_decode` / `token_budget` / `busy` / `transport`
+- `--render-only <dir>` 从已存 results.json 重渲报告(调格式不重跑服务)
+- 退出码:任一 case 未全过 → 1(CI 可用)
+
+**结果**(两次独立运行,结果完全一致,可稳定复现):
+
+| 语言 | HTTP 成功率 | **有效产出率** |
+|---|---|---|
+| English | 100% (15/15) | **20%** (3/15) |
+| Chinese | 20% (3/15) | **0%** (0/15) |
+
+**关键判定 —— "英文 100% 成功"是误导指标**:
+有效产出率 = HTTP 200 **且** `function_calls` 非空。英文 15 次成功里只有 3 次真
+返回 tool call,其余 `calls: []`,部分还报 `confidence≈1.0` 却空产出(模型"非常确定"
+不用调工具)。对 prefill 场景,空产出与 502 等价。
+
+**中文失败根因**:`utf8_decode` ×12,与 tool 数量 / query 长度**无关**。定位到
+`~/work/needle/needle/_worker.py:90-109`:
+```python
+output = ctypes.create_string_buffer(int(config["buffer_size"]))  # 声明 65536
+...
+"response": output.value.decode("utf-8")   # ← 抛 'utf-8' codec can't decode
+```
+native 库实际输出被截在 ~200 字节(远小于声明的 64KB),截断点落进多字节
+UTF-8 字符中间。**client 侧无法绕**(截断发生在引擎内部)。
+
+**决策**:`FUNCTION_CALL_EXTERNAL_ENABLED` 回落 **false**(user "只要能用就行")。
+开着净效果为负 —— 中文场景 80% 白等满 timeout + 熔断器反复开关,20% 也是空产出。
+`FUNCTION_CALL_EXTERNAL_TIMEOUT_MS` 10000→30000 保留(未来 caller 慢时有 4x 余量,
+但对当前 needle 无效 —— 它返 502 错误码不是超时)。
+
+**§7.94 架构价值验证**:接口抽象让"换 caller"成本为零。等自训端侧模型就位,
+实现同一份 HTTP 契约 + 改 `FUNCTION_CALL_EXTERNAL_URL` 即可,plugin 一行不改。
+
+**产出**:
+- `scripts/needle-cn-en-compat-test.py` — 可复用套件
+- `docs/bench/needle-cn-en/report.md` — 6 节完整报告(摘要/逐 case/失败样本/复现/影响/建议)
+- `docs/bench/needle-cn-en/results.json` — 机读结果
+
+**脚本自身修的 2 个 bug**(记录以免重犯):
+1. 报告渲染 `r.failure_class` → 应为 `failure_classes`(属性名错,崩溃)
+2. **先渲染报告后落 json** → 渲染一崩,30 次请求结果全丢。改为**先落数据再渲染**
+
+

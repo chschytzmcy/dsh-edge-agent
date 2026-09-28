@@ -1,0 +1,314 @@
+{
+  "generatedAt": "20260928T022057Z",
+  "service": "http://127.0.0.1:8081",
+  "health": {
+    "status": "ok",
+    "model_loaded": true,
+    "version": "3.0.1",
+    "cn_grounding": true,
+    "extract_count": 258,
+    "queue_depth": 0,
+    "peak_queue": 7,
+    "queue_limit": 6,
+    "last_error": null
+  },
+  "trialsPerCase": 3,
+  "toolCatalog": [
+    [
+      "skill",
+      "invoke a named skill to perform a task"
+    ],
+    [
+      "web_search",
+      "search the web and return result snippets"
+    ],
+    [
+      "web_fetch",
+      "fetch a URL and return its text content"
+    ],
+    [
+      "glob",
+      "find files matching a glob pattern"
+    ],
+    [
+      "grep",
+      "search file contents with a regular expression"
+    ],
+    [
+      "exit_plan_mode",
+      "leave plan mode and present the plan for approval"
+    ],
+    [
+      "todo_write",
+      "create and update the task list for the current session"
+    ],
+    [
+      "str_replace_editor",
+      "perform an exact string replacement inside a file"
+    ],
+    [
+      "read",
+      "read the contents of a file from the local filesystem"
+    ],
+    [
+      "write",
+      "write text contents to a file on the local filesystem"
+    ],
+    [
+      "edit",
+      "apply a single exact string edit to a file"
+    ],
+    [
+      "bash",
+      "execute a shell command and return its stdout and stderr"
+    ],
+    [
+      "read_image",
+      "read an image file and return it as a vision input"
+    ]
+  ],
+  "queries": {
+    "en": "list all .md files under /home/etsme/work and show their names",
+    "cn": "列出 /home/etsme/work 下的所有 .md 文件并显示文件名"
+  },
+  "summary": {
+    "en": {
+      "passed": 15,
+      "trials": 15,
+      "rate": 1.0
+    },
+    "cn": {
+      "passed": 3,
+      "trials": 15,
+      "rate": 0.2
+    }
+  },
+  "cases": [
+    {
+      "case_id": "en-01",
+      "lang": "en",
+      "tool_count": 1,
+      "trials": 3,
+      "passed": 3,
+      "failed": 0,
+      "failure_classes": {},
+      "latencies": [
+        3.98,
+        3.44,
+        5.73
+      ],
+      "calls_when_ok": [
+        0,
+        0,
+        0
+      ],
+      "confidences": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "sample_error": null
+    },
+    {
+      "case_id": "en-03",
+      "lang": "en",
+      "tool_count": 3,
+      "trials": 3,
+      "passed": 3,
+      "failed": 0,
+      "failure_classes": {},
+      "latencies": [
+        12.65,
+        8.45,
+        1.36
+      ],
+      "calls_when_ok": [
+        0,
+        0,
+        0
+      ],
+      "confidences": [
+        0.6434,
+        0.6434,
+        0.6434
+      ],
+      "sample_error": null
+    },
+    {
+      "case_id": "en-05",
+      "lang": "en",
+      "tool_count": 5,
+      "trials": 3,
+      "passed": 3,
+      "failed": 0,
+      "failure_classes": {},
+      "latencies": [
+        20.57,
+        11.53,
+        5.3
+      ],
+      "calls_when_ok": [
+        0,
+        0,
+        0
+      ],
+      "confidences": [
+        0.6106,
+        0.6106,
+        0.6106
+      ],
+      "sample_error": null
+    },
+    {
+      "case_id": "en-08",
+      "lang": "en",
+      "tool_count": 8,
+      "trials": 3,
+      "passed": 3,
+      "failed": 0,
+      "failure_classes": {},
+      "latencies": [
+        18.96,
+        8.03,
+        5.19
+      ],
+      "calls_when_ok": [
+        1,
+        1,
+        1
+      ],
+      "confidences": [
+        0.5487,
+        0.5487,
+        0.5487
+      ],
+      "sample_error": null
+    },
+    {
+      "case_id": "en-13",
+      "lang": "en",
+      "tool_count": 13,
+      "trials": 3,
+      "passed": 3,
+      "failed": 0,
+      "failure_classes": {},
+      "latencies": [
+        23.48,
+        10.25,
+        14.22
+      ],
+      "calls_when_ok": [
+        0,
+        0,
+        0
+      ],
+      "confidences": [
+        0.5289,
+        0.5289,
+        0.5289
+      ],
+      "sample_error": null
+    },
+    {
+      "case_id": "cn-01",
+      "lang": "cn",
+      "tool_count": 1,
+      "trials": 3,
+      "passed": 0,
+      "failed": 3,
+      "failure_classes": {
+        "utf8_decode": 3
+      },
+      "latencies": [
+        3.04,
+        9.29,
+        5.46
+      ],
+      "calls_when_ok": [],
+      "confidences": [],
+      "sample_error": "engine error: 'utf-8' codec can't decode bytes in position 237-238: invalid continuation byte"
+    },
+    {
+      "case_id": "cn-03",
+      "lang": "cn",
+      "tool_count": 3,
+      "trials": 3,
+      "passed": 0,
+      "failed": 3,
+      "failure_classes": {
+        "utf8_decode": 3
+      },
+      "latencies": [
+        3.21,
+        9.04,
+        1.58
+      ],
+      "calls_when_ok": [],
+      "confidences": [],
+      "sample_error": "engine error: 'utf-8' codec can't decode bytes in position 243-244: invalid continuation byte"
+    },
+    {
+      "case_id": "cn-05",
+      "lang": "cn",
+      "tool_count": 5,
+      "trials": 3,
+      "passed": 0,
+      "failed": 3,
+      "failure_classes": {
+        "utf8_decode": 3
+      },
+      "latencies": [
+        4.36,
+        7.73,
+        8.5
+      ],
+      "calls_when_ok": [],
+      "confidences": [],
+      "sample_error": "engine error: 'utf-8' codec can't decode bytes in position 243-244: invalid continuation byte"
+    },
+    {
+      "case_id": "cn-08",
+      "lang": "cn",
+      "tool_count": 8,
+      "trials": 3,
+      "passed": 3,
+      "failed": 0,
+      "failure_classes": {},
+      "latencies": [
+        13.83,
+        10.39,
+        13.38
+      ],
+      "calls_when_ok": [
+        0,
+        0,
+        0
+      ],
+      "confidences": [
+        0.7189,
+        0.7189,
+        0.7189
+      ],
+      "sample_error": null
+    },
+    {
+      "case_id": "cn-13",
+      "lang": "cn",
+      "tool_count": 13,
+      "trials": 3,
+      "passed": 0,
+      "failed": 3,
+      "failure_classes": {
+        "utf8_decode": 3
+      },
+      "latencies": [
+        24.54,
+        4.15,
+        2.79
+      ],
+      "calls_when_ok": [],
+      "confidences": [],
+      "sample_error": "engine error: 'utf-8' codec can't decode bytes in position 243-244: invalid continuation byte"
+    }
+  ]
+}
