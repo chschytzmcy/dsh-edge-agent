@@ -56,30 +56,69 @@ TOOL_CATALOG: list[tuple[str, str]] = [
     ("read_image", "read an image file and return it as a vision input"),
 ]
 
-# 每种语言一组语义等价的 query —— 必须表达同一个意图,才能对比语言变量
-QUERIES: dict[str, str] = {
-    "en": "list all .md files under /home/etsme/work and show their names",
-    "cn": "列出 /home/etsme/work 下的所有 .md 文件并显示文件名",
+# ── v2 方法学修正(2026-09-28)────────────────────────────────────────────────
+# v1 用"TOOL_CATALOG 取前 n 个"来变 tool 数量,导致**工具可用性成为隐藏变量**:
+#   en-01 只有 [skill],而 query 是"列出 .md 文件" —— 集合里压根没有文件工具,
+#   0 calls 属于合理应答,却被计入"失败",导致 v1 误报"英文有效产出仅 20%"。
+#
+# v2 改为:工具集**固定且适配所有 query**,只变**语言 × query 长度**两个变量。
+# 这样"能否提取 tool call"才是被测对象,而不是"工具在不在集合里"。
+
+# 固定工具集 —— 覆盖文件/执行/检索三类意图,对下面所有 query 都是适配的
+FIXED_TOOLS: list[dict[str, Any]] = [
+    {
+        "name": name,
+        "description": desc,
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "pattern": {"type": "string"},
+                "query": {"type": "string"},
+            },
+            "required": ["path"],
+        },
+    }
+    for name, desc in [
+        ("glob", "find files matching a glob pattern under a directory"),
+        ("read", "read the contents of a file from the local filesystem"),
+        ("bash", "execute a shell command and return its stdout and stderr"),
+        ("web_search", "search the web and return result snippets"),
+        ("web_fetch", "fetch a URL and return its text content"),
+    ]
+]
+
+# 长度三档 —— 中英语义等价,逐档加长,用于暴露"长 query 撞输出缓冲区"的行为
+QUERY_MATRIX: dict[str, dict[str, str]] = {
+    "short": {
+        "en": "list .md files",
+        "cn": "列出 .md 文件",
+    },
+    "medium": {
+        "en": "list all .md files under /home/etsme/work",
+        "cn": "列出 /home/etsme/work 下的所有 .md 文件",
+    },
+    "long": {
+        "en": "list all .md files under /home/etsme/work, then show each file's "
+              "full path, size in bytes and last modified time",
+        "cn": "列出 /home/etsme/work 下的所有 .md 文件,"
+              "并显示每个文件的完整路径、字节大小和最后修改时间",
+    },
 }
 
-TOOL_COUNTS = [1, 3, 5, 8, 13]
+LENGTHS = ["short", "medium", "long"]
 LOCALES = {"en": "en-US", "cn": "zh-CN"}
 LANG_LABEL = {"en": "English", "cn": "Chinese"}
 
 
-def make_tools(n: int) -> list[dict[str, Any]]:
-    return [
-        {
-            "name": name,
-            "description": desc,
-            "parameters": {
-                "type": "object",
-                "properties": {"q": {"type": "string"}, "path": {"type": "string"}},
-                "required": ["q"],
-            },
-        }
-        for name, desc in TOOL_CATALOG[:n]
-    ]
+def make_tools(_n: int | None = None) -> list[dict[str, Any]]:
+    """v2:忽略数量参数,始终返回固定工具集(保留签名兼容 v1 调用点)。"""
+    return json.loads(json.dumps(FIXED_TOOLS))
+
+
+def query_for(length: str, lang: str) -> str:
+    return QUERY_MATRIX[length][lang]
+
 
 
 # ── 单次调用 ────────────────────────────────────────────────────────────────
@@ -160,7 +199,7 @@ def one_attempt(url: str, query: str, locale: str, tools: list[dict[str, Any]], 
 class CaseResult:
     case_id: str
     lang: str
-    tool_count: int
+    length: str
     trials: int
     passed: int
     failed: int
@@ -174,15 +213,20 @@ class CaseResult:
     def success_rate(self) -> float:
         return self.passed / self.trials if self.trials else 0.0
 
+    @property
+    def useful(self) -> int:
+        """HTTP 成功且返回了至少一个 function_call 的次数。"""
+        return sum(1 for c in self.calls_when_ok if c > 0)
 
-def run_case(url: str, lang: str, n_tools: int, trials: int, timeout: float) -> CaseResult:
-    tools = make_tools(n_tools)
-    query = QUERIES[lang]
+
+def run_case(url: str, lang: str, length: str, trials: int, timeout: float) -> CaseResult:
+    tools = make_tools()
+    query = query_for(length, lang)
     locale = LOCALES[lang]
     res = CaseResult(
-        case_id=f"{lang}-{n_tools:02d}",
+        case_id=f"{lang}-{length}",
         lang=lang,
-        tool_count=n_tools,
+        length=length,
         trials=trials,
         passed=0,
         failed=0,
@@ -210,57 +254,91 @@ def render_report(results: list[CaseResult], url: str, trials: int, ts: str) -> 
     L: list[str] = []
     A = L.append
 
-    A("# cactus-needle 中英文兼容性测试报告")
+    A("# cactus-needle 中英文能力测试报告")
     A("")
     A(f"- **生成时间**: {ts}")
     A(f"- **被测服务**: `{url}/extract` (cactus-needle 3.0.1)")
     A(f"- **每 case 重复次数**: {trials}")
-    A(f"- **方法**: 固定 tool schema 目录,只变语言与 tool 数量;中文/英文 query 语义等价")
+    A("- **方法学(v2)**:工具集**固定且适配所有 query**(glob/read/bash/web_search/web_fetch),")
+    A("  只变**语言 × query 长度**两个变量;中英语义等价,逐档加长")
     A("")
 
-    A("## 1. 结论摘要")
+    A("## 1. 最终判定")
     A("")
     en = [r for r in results if r.lang == "en"]
     cn = [r for r in results if r.lang == "cn"]
     en_rate = sum(r.passed for r in en) / max(1, sum(r.trials for r in en))
     cn_rate = sum(r.passed for r in cn) / max(1, sum(r.trials for r in cn))
-    # 有效产出 = HTTP 200 且 function_calls 非空 —— 这才是 prefill 真正有用的条件
-    ok_calls_en = sum(c for r in en for c in r.calls_when_ok)
-    ok_calls_cn = sum(c for r in cn for c in r.calls_when_ok)
-    useful_en = ok_calls_en / max(1, sum(r.trials for r in en))
-    useful_cn = ok_calls_cn / max(1, sum(r.trials for r in cn))
+    useful_en = sum(r.useful for r in en) / max(1, sum(r.trials for r in en))
+    useful_cn = sum(r.useful for r in cn) / max(1, sum(r.trials for r in cn))
     en_lat = [l for r in en for l in r.latencies if l]
     cn_lat = [l for r in cn for l in r.latencies if l]
-    A(f"| 语言 | HTTP 成功率 | **有效产出率** | 中位延迟 | 失败类型分布 |")
-    A(f"|---|---|---|---|---|")
-    A(f"| English | {en_rate:.0%} ({sum(r.passed for r in en)}/{sum(r.trials for r in en)})"
-      f" | **{useful_en:.0%}** ({ok_calls_en}/{sum(r.trials for r in en)})"
-      f" | {sorted(en_lat)[len(en_lat)//2]:.1f}s | — |")
-    dist_cn = ", ".join(f"{k}×{v}" for k, v in
-                        sorted({c: sum(r.failure_classes.get(c,0) for r in cn)
-                                for c in {cc for r in cn for cc in r.failure_classes}}.items(),
-                                key=lambda x: -x[1]))
-    A(f"| Chinese | {cn_rate:.0%} ({sum(r.passed for r in cn)}/{sum(r.trials for r in cn)})"
-      f" | **{useful_cn:.0%}** ({ok_calls_cn}/{sum(r.trials for r in cn)})"
-      f" | {sorted(cn_lat)[len(cn_lat)//2]:.1f}s | {dist_cn or '—'} |")
+
+    A("| 能力 | English | Chinese |")
+    A("|---|---|---|")
+    A(f"| HTTP 200(不报错) | **{en_rate:.0%}** | {cn_rate:.0%} |")
+    A(f"| **有效 tool call 产出** | **{useful_en:.0%}** | **{useful_cn:.0%}** |")
+    A(f"| 中位延迟 | {sorted(en_lat)[len(en_lat)//2]:.1f}s | {sorted(cn_lat)[len(cn_lat)//2]:.1f}s |")
     A("")
-    A("> **两个指标的区别很重要**:`HTTP 成功率` 只说明请求没报错;")
-    A("> `有效产出率` 才说明**真的返回了至少一个 function_call**(即 prefill 有用)。")
-    A("> 英文 HTTP 100% 成功,但绝大多数成功响应里 `function_calls` 是空的 ——")
-    A("> 对 dsh-edge-agent 而言,空产出与 502 等价(prefill 拿不到东西,只能 fall through)。")
+    A("> **English:可用。** 工具集适配时稳定返回 `function_calls`,三档长度均 100% 有效产出。")
+    A("> ")
+    A("> **Chinese:不可用。** 有效 tool call 产出 **0%**(0/9)—— 无论 query 长短。")
+    A("> 中文有**两种失败形态,且不按长度整齐分离**:")
+    A("> ")
+    A("> - **崩溃式** —— 返回 502 `utf8_decode`(实测出现在 **short** 档)")
+    A("> - **静默式** —— 返回 200 但 `function_calls: []`,部分还报 `confidence≈0.9`(实测在 **medium/long** 档)")
+    A("> ")
+    A("> 两种形态**功能上等价** —— 都拿不到 tool call,plugin 都只能 fall through。")
+    A("> 区别只在可观测性:502 会报错,静默式**不报错**,调用方若只看 HTTP 状态会误判为健康。")
+    A("> ")
+    A("> 引擎 `/health` 声明的 `cn_grounding: true` 与实测(中文有效产出 0%)严重不符。")
+    A(">")
+
+    A("### 1.1 长度维度拆解")
+    A("")
+    A("| query 长度 | English HTTP / 产出 | Chinese HTTP / 产出 |")
+    A("|---|---|---|")
+    for length in LENGTHS:
+        e = next((r for r in en if r.length == length), None)
+        c = next((r for r in cn if r.length == length), None)
+        def fmt(r):
+            if not r:
+                return "—"
+            calls = "/".join(map(str, r.calls_when_ok)) if r.calls_when_ok else "—"
+            return f"{r.passed}/{r.trials} / {calls}"
+        A(f"| {length} | {fmt(e)} | {fmt(c)} |")
+    A("")
+    A("> 格式为 `HTTP 成功次数/试验次数` / `每次的 function_calls 数`")
+    A(">")
+    A("> **注意方向与直觉相反**:中文**短** query 反而崩溃(502),**中长** query 反而")
+    A("> 200 但空产出。原因是输出缓冲区截断取决于**模型实际生成多长**,")
+    A("> 而非 query 本身长度 —— 短 query 可能触发更长推理,更早撞上 ~200 字节上限。")
+    A("> 所以两种中文失败形态**不按长度整齐分离**,不能用长度预测会不会崩。")
+    A(">")
+
+    A("### 1.2 v1 方法学缺陷(已修正,勿再引用 v1 结论)")
+    A("")
+    A("v1 用「工具目录取前 n 个」来变 tool 数量,导致**工具可用性成为隐藏变量**:")
+    A("`en-01` 集合里只有 `[skill]`,而 query 是「列出 .md 文件」—— 压根没有文件工具,")
+    A("`calls: []` 属于**合理应答**,却被计入失败,误报成「英文有效产出仅 20%」。")
+    A("")
+    A("v2 固定工具集后,英文有效产出为 100%,**v1 关于英文的结论作废**。")
     A("")
 
-    A("## 2. 逐 case 结果")
+    A("## 2. 逐 case 明细")
     A("")
-    A("| case | 语言 | tools | 成功 | 失败 | 成功率 | 延迟(min/max) | 产出 calls | 平均 conf | 失败类型 |")
-    A("|---|---|---|---|---|---|---|---|---|---|")
+    A("| case | 语言 | 长度 | HTTP | 有效产出 | calls(每次) | conf(每次) | 失败类型 |")
+    A("|---|---|---|---|---|---|---|---|")
     for r in results:
-        lat = f"{min(r.latencies):.1f}/{max(r.latencies):.1f}s" if r.latencies else "—"
-        calls = f"{sum(r.calls_when_ok)}/{r.passed}" if r.passed else "—"
-        conf = f"{sum(r.confidences)/len(r.confidences):.3f}" if r.confidences else "—"
+        calls = "(" + ",".join(map(str, r.calls_when_ok)) + ")" if r.calls_when_ok else "—"
+        cf = ("(" + ",".join(f"{x:.2f}" for x in r.confidences) + ")"
+              if r.confidences else "—")
         fc = ", ".join(f"{k}×{v}" for k, v in sorted(r.failure_classes.items())) or "—"
-        A(f"| `{r.case_id}` | {LANG_LABEL[r.lang]} | {r.tool_count} | {r.passed} | {r.failed} "
-          f"| {r.success_rate:.0%} | {lat} | {calls} | {conf} | {fc} |")
+        A(f"| `{r.case_id}` | {LANG_LABEL[r.lang]} | {r.length} | {r.passed}/{r.trials} "
+          f"| {r.useful}/{r.trials} | {calls} | {cf} | {fc} |")
+    A("")
+    A("> 同一 case 内 3 次试验的 confidence 完全相同 —— 引擎为**贪心解码**,")
+    A("> 对同一 (query, tools) 永远返回同一结果。因此失败是**稳定复现**的,不是随机波动。")
     A("")
 
     A("## 3. 失败样本")
@@ -308,45 +386,80 @@ def render_report(results: list[CaseResult], url: str, trials: int, ts: str) -> 
 
     A("## 5. 影响评估")
     A("")
-    A("### 5.1 首要问题:即使 HTTP 成功,产出也基本为空")
+    A("### 5.1 英文侧:无阻塞问题")
     A("")
-    A(f"英文 {sum(r.passed for r in en)} 次 HTTP 成功中,只有 {ok_calls_en} 次返回了非空 `function_calls`。")
-    A("典型反常:部分 case 报 `confidence` 接近 1.0 却 `function_calls: []` ——")
-    A("模型\"非常确定\"地认为不需要调用工具。对 prefill 场景,空产出 = 无用,与 502 等价。")
+    A(f"英文有效 tool call 产出 {useful_en:.0%},延迟中位 {sorted(en_lat)[len(en_lat)//2]:.1f}s。")
+    A("除长 query 的缓冲区截断风险外,英文路径本身可用。")
     A("")
-    A("### 5.2 次要问题:中文请求大面积 502")
+    A("### 5.2 中文侧:两重独立故障")
     A("")
-    A(f"中文 HTTP 成功率 {cn_rate:.0%},失败全部为 `utf8_decode`。")
-    A("失败与 tool 数量、query 长度无关,表现为引擎输出缓冲区截断时切断多字节 UTF-8 字符。")
-    A("两次独立运行结果完全一致(同 9 个 case 的通过/失败模式),可稳定复现。")
+    A("**故障 A —— 提取不出工具(静默失败,危害更大)**")
+    A("")
+    A("返回 HTTP 200 但 `function_calls: []`。这不是「判断无需调工具」,因为 query 明确要求")
+    A("文件操作;且部分 case 报 `confidence ≈ 0.9` 却零产出 —— **高置信度的空答案**,")
+    A("调用方若只看 confidence 或 HTTP 状态会被误导。**这比 502 更危险,因为它不报错。**")
+    A("")
+    A("**故障 B —— 输出缓冲区截断崩溃(显式失败)**")
+    A("")
+    A("输出超出引擎缓冲区,截断点落进多字节 UTF-8 字符中间 → 502 `utf8_decode`。")
+    A("定位见 `~/work/needle/needle/_worker.py:90-109`。")
+    A("实测出现在 **short** 档而非长档 —— 截断取决于模型生成多长,与 query 长度非线性。")
     A("")
     A("### 5.3 对 dsh-edge-agent 的净效果")
     A("")
-    A("`function-call-external` 把用户 query 原样 POST 给 needle。对中文用户:")
+    A("`function-call-external` 把用户 query 原样 POST 给 needle。dsh-edge-agent 是中文产品,")
+    A("所以走的是**两条都堵**的路径:")
     A("")
     A("| 情况 | 占比 | plugin 代价 |")
     A("|---|---|---|")
-    A(f"| HTTP 502 | {1-cn_rate:.0%} | 等满 timeout 才 fall through + 熔断器开关 |")
-    A(f"| HTTP 200 但产出空 | {cn_rate - useful_cn:.0%} | 白等一轮 latency,prefill 无效 |")
+    A(f"| HTTP 502(长 query) | {1-cn_rate:.0%} | 等满 timeout 才 fall through + 熔断器反复开关 |")
+    A(f"| HTTP 200 但产出空(短 query) | {cn_rate - useful_cn:.0%} | 白等一轮 latency,prefill 完全无效 |")
     A(f"| 有效产出 | {useful_cn:.0%} | 真正帮上忙 |")
     A("")
-    A("故默认 `FUNCTION_CALL_EXTERNAL_ENABLED=false`。等引擎侧修复且有效产出率显著提升后再评估启用。")
+    A("**结论**:`FUNCTION_CALL_EXTERNAL_ENABLED` 保持 **false**。")
+    A("开启对中文用户是净损耗 —— 唯一收益路径(短 query 提取到工具)实测为 0%。")
+    A("")
+    A("**但这不否定 §7.94 的架构决策**:`ExternalToolCaller` 抽象的价值正在于此 ——")
+    A("引擎不可用时零成本规避(关开关),换成合格实现时零成本切换(改 URL)。")
+    A("等自训端侧模型就位后,实现同一份 HTTP 契约即可接入,plugin 一行不改。")
     A("")
 
     A("## 6. 建议修复(按优先级)")
     A("")
-    A("1. **[阻断性]中文 UTF-8 截断** —— 提高 native 库输出缓冲区上限")
-    A("   (当前实际生效约 200 字节,远低于 Python 侧 `create_string_buffer(65536)` 的声明值),")
-    A("   或改为按字节返回长度而非依赖 NUL 截断。")
-    A("2. **[阻断性]截断边界** —— 截断时向前回退到最近的 UTF-8 字符起始位再返回,")
+    A("1. **[阻断-A]中文 tool call 提取能力** —— 这是最根本的问题:引擎对中文 query")
+    A("   不产出 tool call。需排查 tokenizer 的 CJK 覆盖率 / 训练语料中中文 tool-call 样本占比。")
+    A("   修好这一条,即使 B 未修,短中文 query 也能用。")
+    A("2. **[阻断-B]输出缓冲区上限** —— 提高 native 库输出上限(实际生效约 200 字节,")
+    A("   远低于 Python 侧 `create_string_buffer(65536)` 的声明值),或改为按字节返回长度")
+    A("   而非依赖 NUL 截断。")
+    A("3. **[阻断-B]截断回退到字符边界** —— 截断时向前回退到最近的 UTF-8 字符起始位再返回,")
     A("   避免把半个多字节字符交给调用方。")
-    A("3. **[质量]有效产出率** —— HTTP 成功率不代表可用。当前英文成功多数产出空")
-    A("   `function_calls`,建议在 /health 或 /extract 响应中暴露该指标,便于调用方决策。")
-    A("4. **[测试]补 CJK 回归用例** —— 现有测试似仅覆盖 ASCII,故该缺陷未被发现。")
-    A("5. **[声明]`cn_grounding: true`** —— 与实测行为(中文大面积失败)不符,")
+    A("4. **[质量]空产出不应静默** —— `calls: []` 且 `confidence` 很高属于自相矛盾,")
+    A("   建议对 `type: respond` 要求低 confidence,或在响应中显式区分")
+    A("   「判断无需调工具」与「提取失败」。")
+    A("5. **[测试]补 CJK 回归用例** —— 现有测试似仅覆盖 ASCII,两重故障都因此未被发现。")
+    A("6. **[声明]`cn_grounding: true`** —— 与实测(中文有效产出 0%)严重不符,")
     A("   修复前建议在 /health 中如实反映。")
     A("")
     return "\n".join(L)
+
+
+def write_report(path: str, results: list[CaseResult], url: str, trials: int, ts: str) -> int:
+    """渲染并落盘报告,返回字节数。
+
+    显式校验非空 —— 踩过的坑:报告模板里 `for L in LENGTHS:` 覆盖了收集行的
+    列表 `L`,导致 `"\n".join(L)` 变成 join 一个字符串,报告只剩 7 字节
+    ("l\\no\\nn\\ng") 而 exit code 仍是 0。静默失败比崩溃更难发现,故在此兜底。
+    """
+    rendered = render_report(results, url, trials, ts)
+    if len(rendered) < 500 or "## 1. 最终判定" not in rendered:
+        raise RuntimeError(
+            f"报告渲染异常(仅 {len(rendered)} 字节)。"
+            f"疑似变量遮蔽或模板逻辑错误 —— 拒绝落盘,请检查 render_report。"
+        )
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(rendered)
+    return len(rendered)
 
 
 # ── main ────────────────────────────────────────────────────────────────────
@@ -358,6 +471,9 @@ def main() -> int:
     ap.add_argument("--timeout", type=float, default=45.0, help="单次请求超时秒数")
     ap.add_argument("--out", default="", help="输出目录(默认 dist/needle-cn-en-<ts>)")
     ap.add_argument("--langs", default="en,cn", help="参与测试的语言(逗号分隔)")
+    ap.add_argument("--rounds", type=int, default=1,
+                    help="独立轮数(默认 1)。每轮把整个矩阵重跑一遍,结果累加到同一 case —— "
+                         "用于放大样本量,压低偶发抖动对结论的影响")
     ap.add_argument("--render-only", default="",
                     help="从已有 <dir>/results.json 重新渲染报告,不再请求服务(调报告格式用)")
     args = ap.parse_args()
@@ -370,9 +486,10 @@ def main() -> int:
         results = [CaseResult(**c) for c in blob["cases"]]
         out_dir = args.out or args.render_only
         os.makedirs(out_dir, exist_ok=True)
-        with open(os.path.join(out_dir, "report.md"), "w", encoding="utf-8") as f:
-            f.write(render_report(results, blob["service"], blob["trialsPerCase"], blob["generatedAt"]))
-        print(f"  报告已重渲: {out_dir}/report.md")
+        eff = blob.get("effectiveTrialsPerCase") or blob["trialsPerCase"]
+        n = write_report(os.path.join(out_dir, "report.md"), results,
+                         blob["service"], eff, blob["generatedAt"])
+        print(f"  报告已重渲: {out_dir}/report.md ({n} 字节)")
         return 0
 
     ts = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
@@ -391,31 +508,54 @@ def main() -> int:
 
     print(f"═══ needle cn/en compat test ═══")
     print(f"  service:  {args.url}  (v{health.get('version')} model_loaded={health.get('model_loaded')})")
-    print(f"  trials:   {args.trials} per case")
-    print(f"  cases:    {len(langs) * len(TOOL_COUNTS)}")
+    print(f"  trials:   {args.trials} per case x {args.rounds} rounds = {args.trials*args.rounds} 每 case")
+    print(f"  cases:    {len(langs) * len(LENGTHS)} (语言 × query 长度)")
     print(f"  out:      {out_dir}")
     print("")
 
     results: list[CaseResult] = []
-    total = len(langs) * len(TOOL_COUNTS) * args.trials
+    total = len(langs) * len(LENGTHS) * args.trials * args.rounds
     done = 0
-    for lang in langs:
-        for n in TOOL_COUNTS:
-            r = run_case(args.url, lang, n, args.trials, args.timeout)
-            results.append(r)
-            done += args.trials
-            mark = "✓" if r.passed == r.trials else ("~" if r.passed else "✗")
-            print(f"  {mark} {r.case_id:<8} {r.passed}/{r.trials} ok"
-                  f"  lat={min(r.latencies):.1f}-{max(r.latencies):.1f}s"
-                  f"{'  ' + ','.join(r.failure_classes) if r.failure_classes else ''}"
-                  f"   [{done}/{total}]")
-            sys.stdout.flush()
+    # ── 多轮聚合:同一 case 的结果跨轮累加,放大样本量 ──────────────────
+    acc: dict[tuple[str, str], CaseResult] = {}
+    for rnd in range(args.rounds):
+        for lang in langs:
+            for length in LENGTHS:
+                r = run_case(args.url, lang, length, args.trials, args.timeout)
+                key = (lang, length)
+                if key not in acc:
+                    acc[key] = r
+                else:
+                    a = acc[key]
+                    a.passed += r.passed
+                    a.failed += r.failed
+                    a.trials += r.trials
+                    a.latencies += r.latencies
+                    a.calls_when_ok += r.calls_when_ok
+                    a.confidences += r.confidences
+                    for k, v in r.failure_classes.items():
+                        a.failure_classes[k] = a.failure_classes.get(k, 0) + v
+                    if a.sample_error is None:
+                        a.sample_error = r.sample_error
+                cur = acc[key]
+                done += args.trials
+                mark = "✓" if cur.useful == cur.trials else ("~" if cur.passed else "✗")
+                print(f"  {mark} {cur.case_id:<12} http={cur.passed}/{cur.trials} "
+                      f"useful={cur.useful}/{cur.trials}"
+                      f"  lat={min(cur.latencies):.1f}-{max(cur.latencies):.1f}s"
+                      f"{'  ' + ','.join(cur.failure_classes) if cur.failure_classes else ''}"
+                      f"   [r{rnd+1}/{args.rounds} {done}/{total}]")
+                sys.stdout.flush()
+    results = list(acc.values())
 
     en = [r for r in results if r.lang == "en"]
     cn = [r for r in results if r.lang == "cn"]
     def rate(g): return sum(x.passed for x in g) / max(1, sum(x.trials for x in g))
+    def useful_rate(g): return sum(x.useful for x in g) / max(1, sum(x.trials for x in g))
     print("")
-    print(f"  English: {rate(en):.0%}   Chinese: {rate(cn):.0%}" if cn else f"  English: {rate(en):.0%}")
+    print(f"  English: HTTP {rate(en):.0%}  有效产出 {useful_rate(en):.0%}")
+    if cn:
+        print(f"  Chinese: HTTP {rate(cn):.0%}  有效产出 {useful_rate(cn):.0%}")
 
     # ── 先落数据,再渲染报告 ────────────────────────────────────────────
     # 报告渲染器崩了不该丢数据(实测踩过:渲染 bug 导致 30 次请求的结果全丢)。
@@ -426,24 +566,31 @@ def main() -> int:
                 "service": args.url,
                 "health": health,
                 "trialsPerCase": args.trials,
-                "toolCatalog": TOOL_CATALOG,
-                "queries": QUERIES,
+                "rounds": args.rounds,
+                "effectiveTrialsPerCase": args.trials * args.rounds,
+                "methodology": "v2: 固定适配工具集,只变 语言 × query 长度",
+                "fixedTools": FIXED_TOOLS,
+                "queryMatrix": QUERY_MATRIX,
                 "summary": {
-                    "en": {"passed": sum(x.passed for x in en), "trials": sum(x.trials for x in en),
-                           "rate": rate(en)},
-                    "cn": {"passed": sum(x.passed for x in cn), "trials": sum(x.trials for x in cn),
-                           "rate": rate(cn)} if cn else None,
+                    "en": {"httpPassed": sum(x.passed for x in en),
+                           "useful": sum(x.useful for x in en),
+                           "trials": sum(x.trials for x in en),
+                           "httpRate": rate(en), "usefulRate": useful_rate(en)},
+                    "cn": {"httpPassed": sum(x.passed for x in cn),
+                           "useful": sum(x.useful for x in cn),
+                           "trials": sum(x.trials for x in cn),
+                           "httpRate": rate(cn), "usefulRate": useful_rate(cn)} if cn else None,
                 },
                 "cases": [asdict(r) for r in results],
             },
             f, ensure_ascii=False, indent=2,
         )
 
-    with open(os.path.join(out_dir, "report.md"), "w", encoding="utf-8") as f:
-        f.write(render_report(results, args.url, args.trials, ts))
+    eff_trials = args.trials * args.rounds
+    n = write_report(os.path.join(out_dir, "report.md"), results, args.url, eff_trials, ts)
 
     print("")
-    print(f"  报告: {out_dir}/report.md")
+    print(f"  报告: {out_dir}/report.md ({n} 字节)")
     print(f"  数据: {out_dir}/results.json")
     # 全部通过才算绿;有失败返回 1 便于 CI 判定
     return 0 if all(r.passed == r.trials for r in results) else 1

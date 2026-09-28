@@ -9419,32 +9419,43 @@ patch yml line 359 是 `[auditLog, skills, edgeTools, tools]` —— 之前 sour
 - `docs/PROGRESS.md`:本段
 - `README.md`:新章节
 
-### §7.94.1 — E2E 实测:cactus-needle 中文不可用,`ENABLED` 回落 false(2026-09-28)
+### §7.94.1 — E2E 实测:cactus-needle 中文 0% 有效产出,`ENABLED` 回落 false(2026-09-28)
 
 **背景**:§7.94 交付后开 `FUNCTION_CALL_EXTERNAL_ENABLED=true` 跑真实 E2E,发现
 needle 3.0.1 对中文 query 大面积失败。写可复用测试套件量化,作为上游 bug 报告证据。
 
 **测试套件**(`scripts/needle-cn-en-compat-test.py`):
-- 5 个 tool 数量(1/3/5/8/13)× 中英双语言 × 3 次重复 = 30 次请求
-- 中英 query **语义等价**,tool schema 从固定 13 项目录取前缀 → 隔离"语言"与"数量"两个变量
+- **v2 方法学**(最终版):工具集**固定且适配所有 query**(`glob/read/bash/web_search/web_fetch`),
+  只变**语言 × query 长度**(short/medium/long)两个变量
+- 中英 query **语义等价**,逐档加长;3 轮 × 3 次 = 每 case 9 次,共 54 次请求
 - 失败分类:`utf8_decode` / `token_budget` / `busy` / `transport`
-- `--render-only <dir>` 从已存 results.json 重渲报告(调格式不重跑服务)
+- `--rounds N` 多轮聚合放大样本量;`--render-only <dir>` 从已存 json 重渲(不重跑服务)
 - 退出码:任一 case 未全过 → 1(CI 可用)
 
-**结果**(两次独立运行,结果完全一致,可稳定复现):
+**最终结果**(每 case 9 次试验,**每一次结果完全相同,零抖动**):
 
-| 语言 | HTTP 成功率 | **有效产出率** |
+| 能力 | English | Chinese |
 |---|---|---|
-| English | 100% (15/15) | **20%** (3/15) |
-| Chinese | 20% (3/15) | **0%** (0/15) |
+| HTTP 200(不报错) | **100%** (27/27) | 67% (18/27) |
+| **有效 tool call 产出** | **100%** (27/27) | **0%** (0/27) |
+| 中位延迟 | 6.2s | 7.8s |
 
-**关键判定 —— "英文 100% 成功"是误导指标**:
-有效产出率 = HTTP 200 **且** `function_calls` 非空。英文 15 次成功里只有 3 次真
-返回 tool call,其余 `calls: []`,部分还报 `confidence≈1.0` 却空产出(模型"非常确定"
-不用调工具)。对 prefill 场景,空产出与 502 等价。
+逐 case(每次的 `function_calls` 数):
+- `en-short/medium/long`:`1,1,1,1,1,1,1,1,1` —— 27/27 全部 `calls=1`
+- `cn-short`:**9/9 全部 502** `utf8_decode`
+- `cn-medium/long`:`0,0,0,0,0,0,0,0,0` —— 200 但零产出
 
-**中文失败根因**:`utf8_decode` ×12,与 tool 数量 / query 长度**无关**。定位到
-`~/work/needle/needle/_worker.py:90-109`:
+**中文两种失败形态(不按长度整齐分离)**:
+1. **崩溃式** —— 502 `utf8_decode`(实测在 **short** 档)
+2. **静默式** —— 200 但 `function_calls: []`,部分还报 `confidence≈0.9`(实测在 medium/long 档)
+
+⚠️ 方向与直觉相反:**短** query 反而崩溃,**中长** query 反而 200 但空产出。
+截断取决于**模型实际生成多长**而非 query 长度 —— 短 query 可能触发更长推理,
+更早撞上 ~200 字节上限。**不能用长度预测会不会崩。**
+
+静默式**比 502 更危险** —— 不报错,调用方只看 HTTP 状态会误判为健康。
+
+**中文失败根因**(`~/work/needle/needle/_worker.py:90-109`):
 ```python
 output = ctypes.create_string_buffer(int(config["buffer_size"]))  # 声明 65536
 ...
@@ -9452,22 +9463,39 @@ output = ctypes.create_string_buffer(int(config["buffer_size"]))  # 声明 65536
 ```
 native 库实际输出被截在 ~200 字节(远小于声明的 64KB),截断点落进多字节
 UTF-8 字符中间。**client 侧无法绕**(截断发生在引擎内部)。
+而"提取不出工具"是更根本的问题 —— 需排查 tokenizer CJK 覆盖率 / 训练语料
+中文 tool-call 样本占比。
 
 **决策**:`FUNCTION_CALL_EXTERNAL_ENABLED` 回落 **false**(user "只要能用就行")。
-开着净效果为负 —— 中文场景 80% 白等满 timeout + 熔断器反复开关,20% 也是空产出。
+dsh-edge-agent 是中文产品,走的是**两条都堵**的路径,唯一收益路径实测 0%。
 `FUNCTION_CALL_EXTERNAL_TIMEOUT_MS` 10000→30000 保留(未来 caller 慢时有 4x 余量,
 但对当前 needle 无效 —— 它返 502 错误码不是超时)。
 
-**§7.94 架构价值验证**:接口抽象让"换 caller"成本为零。等自训端侧模型就位,
-实现同一份 HTTP 契约 + 改 `FUNCTION_CALL_EXTERNAL_URL` 即可,plugin 一行不改。
+**§7.94 架构价值验证**:接口抽象让"换 caller"成本为零。引擎不可用时零成本规避
+(关开关),换成合格实现时零成本切换(改 URL)。等自训端侧模型就位,实现同一份
+HTTP 契约即可接入,plugin 一行不改。
 
 **产出**:
 - `scripts/needle-cn-en-compat-test.py` — 可复用套件
-- `docs/bench/needle-cn-en/report.md` — 6 节完整报告(摘要/逐 case/失败样本/复现/影响/建议)
+- `docs/bench/needle-cn-en/report.md` — 6 节完整报告
 - `docs/bench/needle-cn-en/results.json` — 机读结果
 
-**脚本自身修的 2 个 bug**(记录以免重犯):
-1. 报告渲染 `r.failure_class` → 应为 `failure_classes`(属性名错,崩溃)
-2. **先渲染报告后落 json** → 渲染一崩,30 次请求结果全丢。改为**先落数据再渲染**
+### §7.94.2 — 测试套件自身的方法学缺陷与 3 个 bug(记录以免重犯)
 
+**v1 方法学缺陷(已修正,勿再引用 v1 结论)**:
+v1 用"工具目录取前 n 个"变 tool 数量,导致**工具可用性成为隐藏变量** —— `en-01`
+集合里只有 `[skill]`,而 query 是"列出 .md 文件",压根没有文件工具,`calls: []`
+属于**合理应答**却被计入失败,误报成"英文有效产出仅 20%"。v2 固定工具集后,
+英文有效产出为 **100%**。**v1 关于英文的结论作废。**
+
+**3 个 bug**(全是"测试工具的失败没被测到"):
+1. 报告渲染 `r.failure_class` → 应为 `failure_classes`(属性名错,崩溃)
+2. **先渲染报告后落 json** → 渲染一崩,30 次请求数据全丢。改为**先落数据再渲染**
+3. **变量遮蔽** —— 报告模板里 `A = L.append` 收集行,又在长度拆解用 `L` 当循环变量,
+   `"\n".join(L)` join 的是字符串 → 报告只剩 7 字节 `l\no\nn\ng` 而 **exit code 仍是 0**。
+   静默失败比崩溃更难发现。
+
+**防护**:新增 `write_report()` 落盘前校验(字节数 + 关键章节),异常则拒绝落盘并抛错;
+已用注入故障的方式负向验证两种失败模式(遮蔽 / 缺章节)均能拦截。
+**教训**:退出码 0 不等于成功 —— 凡是有产物落盘的步骤,都要校验产物本身。
 

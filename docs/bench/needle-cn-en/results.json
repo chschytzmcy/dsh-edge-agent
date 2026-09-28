@@ -1,314 +1,398 @@
 {
-  "generatedAt": "20260928T022057Z",
+  "generatedAt": "20260928T045556Z",
   "service": "http://127.0.0.1:8081",
   "health": {
     "status": "ok",
     "model_loaded": true,
     "version": "3.0.1",
     "cn_grounding": true,
-    "extract_count": 258,
+    "extract_count": 303,
     "queue_depth": 0,
     "peak_queue": 7,
     "queue_limit": 6,
     "last_error": null
   },
   "trialsPerCase": 3,
-  "toolCatalog": [
-    [
-      "skill",
-      "invoke a named skill to perform a task"
-    ],
-    [
-      "web_search",
-      "search the web and return result snippets"
-    ],
-    [
-      "web_fetch",
-      "fetch a URL and return its text content"
-    ],
-    [
-      "glob",
-      "find files matching a glob pattern"
-    ],
-    [
-      "grep",
-      "search file contents with a regular expression"
-    ],
-    [
-      "exit_plan_mode",
-      "leave plan mode and present the plan for approval"
-    ],
-    [
-      "todo_write",
-      "create and update the task list for the current session"
-    ],
-    [
-      "str_replace_editor",
-      "perform an exact string replacement inside a file"
-    ],
-    [
-      "read",
-      "read the contents of a file from the local filesystem"
-    ],
-    [
-      "write",
-      "write text contents to a file on the local filesystem"
-    ],
-    [
-      "edit",
-      "apply a single exact string edit to a file"
-    ],
-    [
-      "bash",
-      "execute a shell command and return its stdout and stderr"
-    ],
-    [
-      "read_image",
-      "read an image file and return it as a vision input"
-    ]
+  "methodology": "v2: 固定适配工具集,只变 语言 × query 长度;3 轮 × 3 次 = 每 case 9 次",
+  "fixedTools": [
+    {
+      "name": "glob",
+      "description": "find files matching a glob pattern under a directory",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "pattern": {
+            "type": "string"
+          },
+          "query": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ]
+      }
+    },
+    {
+      "name": "read",
+      "description": "read the contents of a file from the local filesystem",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "pattern": {
+            "type": "string"
+          },
+          "query": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ]
+      }
+    },
+    {
+      "name": "bash",
+      "description": "execute a shell command and return its stdout and stderr",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "pattern": {
+            "type": "string"
+          },
+          "query": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ]
+      }
+    },
+    {
+      "name": "web_search",
+      "description": "search the web and return result snippets",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "pattern": {
+            "type": "string"
+          },
+          "query": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ]
+      }
+    },
+    {
+      "name": "web_fetch",
+      "description": "fetch a URL and return its text content",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "pattern": {
+            "type": "string"
+          },
+          "query": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ]
+      }
+    }
   ],
-  "queries": {
-    "en": "list all .md files under /home/etsme/work and show their names",
-    "cn": "列出 /home/etsme/work 下的所有 .md 文件并显示文件名"
+  "queryMatrix": {
+    "short": {
+      "en": "list .md files",
+      "cn": "列出 .md 文件"
+    },
+    "medium": {
+      "en": "list all .md files under /home/etsme/work",
+      "cn": "列出 /home/etsme/work 下的所有 .md 文件"
+    },
+    "long": {
+      "en": "list all .md files under /home/etsme/work, then show each file's full path, size in bytes and last modified time",
+      "cn": "列出 /home/etsme/work 下的所有 .md 文件,并显示每个文件的完整路径、字节大小和最后修改时间"
+    }
   },
   "summary": {
     "en": {
-      "passed": 15,
-      "trials": 15,
-      "rate": 1.0
+      "httpPassed": 27,
+      "useful": 27,
+      "trials": 27,
+      "httpRate": 1.0,
+      "usefulRate": 1.0
     },
     "cn": {
-      "passed": 3,
-      "trials": 15,
-      "rate": 0.2
+      "httpPassed": 18,
+      "useful": 0,
+      "trials": 27,
+      "httpRate": 0.6666666666666666,
+      "usefulRate": 0.0
     }
   },
   "cases": [
     {
-      "case_id": "en-01",
+      "case_id": "en-short",
       "lang": "en",
-      "tool_count": 1,
-      "trials": 3,
-      "passed": 3,
+      "length": "short",
+      "trials": 9,
+      "passed": 9,
       "failed": 0,
       "failure_classes": {},
       "latencies": [
-        3.98,
-        3.44,
-        5.73
+        7.59,
+        4.38,
+        3.66,
+        17.46,
+        1.32,
+        5.57,
+        14.82,
+        4.57,
+        11.02
       ],
       "calls_when_ok": [
-        0,
-        0,
-        0
-      ],
-      "confidences": [
-        1.0,
-        1.0,
-        1.0
-      ],
-      "sample_error": null
-    },
-    {
-      "case_id": "en-03",
-      "lang": "en",
-      "tool_count": 3,
-      "trials": 3,
-      "passed": 3,
-      "failed": 0,
-      "failure_classes": {},
-      "latencies": [
-        12.65,
-        8.45,
-        1.36
-      ],
-      "calls_when_ok": [
-        0,
-        0,
-        0
-      ],
-      "confidences": [
-        0.6434,
-        0.6434,
-        0.6434
-      ],
-      "sample_error": null
-    },
-    {
-      "case_id": "en-05",
-      "lang": "en",
-      "tool_count": 5,
-      "trials": 3,
-      "passed": 3,
-      "failed": 0,
-      "failure_classes": {},
-      "latencies": [
-        20.57,
-        11.53,
-        5.3
-      ],
-      "calls_when_ok": [
-        0,
-        0,
-        0
-      ],
-      "confidences": [
-        0.6106,
-        0.6106,
-        0.6106
-      ],
-      "sample_error": null
-    },
-    {
-      "case_id": "en-08",
-      "lang": "en",
-      "tool_count": 8,
-      "trials": 3,
-      "passed": 3,
-      "failed": 0,
-      "failure_classes": {},
-      "latencies": [
-        18.96,
-        8.03,
-        5.19
-      ],
-      "calls_when_ok": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
         1,
         1,
         1
       ],
       "confidences": [
-        0.5487,
-        0.5487,
-        0.5487
+        0.9904,
+        0.9904,
+        0.9904,
+        0.9904,
+        0.9904,
+        0.9904,
+        0.9904,
+        0.9904,
+        0.9904
       ],
       "sample_error": null
     },
     {
-      "case_id": "en-13",
+      "case_id": "en-medium",
       "lang": "en",
-      "tool_count": 13,
-      "trials": 3,
-      "passed": 3,
+      "length": "medium",
+      "trials": 9,
+      "passed": 9,
       "failed": 0,
       "failure_classes": {},
       "latencies": [
-        23.48,
-        10.25,
-        14.22
-      ],
-      "calls_when_ok": [
-        0,
-        0,
-        0
-      ],
-      "confidences": [
-        0.5289,
-        0.5289,
-        0.5289
-      ],
-      "sample_error": null
-    },
-    {
-      "case_id": "cn-01",
-      "lang": "cn",
-      "tool_count": 1,
-      "trials": 3,
-      "passed": 0,
-      "failed": 3,
-      "failure_classes": {
-        "utf8_decode": 3
-      },
-      "latencies": [
-        3.04,
-        9.29,
-        5.46
-      ],
-      "calls_when_ok": [],
-      "confidences": [],
-      "sample_error": "engine error: 'utf-8' codec can't decode bytes in position 237-238: invalid continuation byte"
-    },
-    {
-      "case_id": "cn-03",
-      "lang": "cn",
-      "tool_count": 3,
-      "trials": 3,
-      "passed": 0,
-      "failed": 3,
-      "failure_classes": {
-        "utf8_decode": 3
-      },
-      "latencies": [
-        3.21,
-        9.04,
-        1.58
-      ],
-      "calls_when_ok": [],
-      "confidences": [],
-      "sample_error": "engine error: 'utf-8' codec can't decode bytes in position 243-244: invalid continuation byte"
-    },
-    {
-      "case_id": "cn-05",
-      "lang": "cn",
-      "tool_count": 5,
-      "trials": 3,
-      "passed": 0,
-      "failed": 3,
-      "failure_classes": {
-        "utf8_decode": 3
-      },
-      "latencies": [
-        4.36,
-        7.73,
-        8.5
-      ],
-      "calls_when_ok": [],
-      "confidences": [],
-      "sample_error": "engine error: 'utf-8' codec can't decode bytes in position 243-244: invalid continuation byte"
-    },
-    {
-      "case_id": "cn-08",
-      "lang": "cn",
-      "tool_count": 8,
-      "trials": 3,
-      "passed": 3,
-      "failed": 0,
-      "failure_classes": {},
-      "latencies": [
-        13.83,
-        10.39,
-        13.38
-      ],
-      "calls_when_ok": [
-        0,
-        0,
-        0
-      ],
-      "confidences": [
-        0.7189,
-        0.7189,
-        0.7189
-      ],
-      "sample_error": null
-    },
-    {
-      "case_id": "cn-13",
-      "lang": "cn",
-      "tool_count": 13,
-      "trials": 3,
-      "passed": 0,
-      "failed": 3,
-      "failure_classes": {
-        "utf8_decode": 3
-      },
-      "latencies": [
-        24.54,
+        13.79,
+        2.08,
         4.15,
-        2.79
+        1.22,
+        8.67,
+        6.64,
+        7.59,
+        6.24,
+        4.86
+      ],
+      "calls_when_ok": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "confidences": [
+        0.5144,
+        0.5144,
+        0.5144,
+        0.5144,
+        0.5144,
+        0.5144,
+        0.5144,
+        0.5144,
+        0.5144
+      ],
+      "sample_error": null
+    },
+    {
+      "case_id": "en-long",
+      "lang": "en",
+      "length": "long",
+      "trials": 9,
+      "passed": 9,
+      "failed": 0,
+      "failure_classes": {},
+      "latencies": [
+        10.17,
+        5.64,
+        1.97,
+        11.85,
+        7.01,
+        9.68,
+        5.87,
+        8.48,
+        4.02
+      ],
+      "calls_when_ok": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "confidences": [
+        0.4496,
+        0.4496,
+        0.4496,
+        0.4496,
+        0.4496,
+        0.4496,
+        0.4496,
+        0.4496,
+        0.4496
+      ],
+      "sample_error": null
+    },
+    {
+      "case_id": "cn-short",
+      "lang": "cn",
+      "length": "short",
+      "trials": 9,
+      "passed": 0,
+      "failed": 9,
+      "failure_classes": {
+        "utf8_decode": 9
+      },
+      "latencies": [
+        16.66,
+        6.9,
+        8.68,
+        14.34,
+        15.16,
+        3.21,
+        14.08,
+        2.79,
+        1.96
       ],
       "calls_when_ok": [],
       "confidences": [],
-      "sample_error": "engine error: 'utf-8' codec can't decode bytes in position 243-244: invalid continuation byte"
+      "sample_error": "engine error: 'utf-8' codec can't decode bytes in position 218-219: invalid continuation byte"
+    },
+    {
+      "case_id": "cn-medium",
+      "lang": "cn",
+      "length": "medium",
+      "trials": 9,
+      "passed": 9,
+      "failed": 0,
+      "failure_classes": {},
+      "latencies": [
+        10.29,
+        5.79,
+        12.58,
+        3.38,
+        4.4,
+        9.42,
+        3.67,
+        4.23,
+        8.76
+      ],
+      "calls_when_ok": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "confidences": [
+        0.7195,
+        0.7195,
+        0.7195,
+        0.7195,
+        0.7195,
+        0.7195,
+        0.7195,
+        0.7195,
+        0.7195
+      ],
+      "sample_error": null
+    },
+    {
+      "case_id": "cn-long",
+      "lang": "cn",
+      "length": "long",
+      "trials": 9,
+      "passed": 9,
+      "failed": 0,
+      "failure_classes": {},
+      "latencies": [
+        6.78,
+        10.65,
+        7.85,
+        8.87,
+        6.45,
+        15.36,
+        4.84,
+        5.56,
+        11.78
+      ],
+      "calls_when_ok": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "confidences": [
+        0.6567,
+        0.6567,
+        0.6567,
+        0.6567,
+        0.6567,
+        0.6567,
+        0.6567,
+        0.6567,
+        0.6567
+      ],
+      "sample_error": null
     }
-  ]
+  ],
+  "rounds": 3,
+  "effectiveTrialsPerCase": 9
 }
