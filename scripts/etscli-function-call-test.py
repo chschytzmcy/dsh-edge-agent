@@ -558,11 +558,26 @@ def render_report(results: list[CaseResult], url: str, trials: int, ts: str,
     # ── 4 语料 ──
     A("## 4. 测试语料")
     A("")
-    A("| case | service | 期望命令 | 中文 query | English query |")
-    A("|---|---|---|---|---|")
+    A("> 中英文**分表列出**而非并排 —— 并排时两列紧邻,长 query 容易被误读成")
+    A("> 另一列的延续。两侧 query 语义等价,只用于对比语言维度。")
+    A("")
+
+    A("### 4.1 English")
+    A("")
+    A("| case | service | expect | query |")
+    A("|---|---|---|---|")
+    for c in CASES:
+        exp = f"`{c.expect}`" if c.expect else "_no call expected_"
+        A(f"| `{c.cid}` | {c.domain} | {exp} | {c.en} |")
+    A("")
+
+    A("### 4.2 中文")
+    A("")
+    A("| case | service | 期望命令 | query |")
+    A("|---|---|---|---|")
     for c in CASES:
         exp = f"`{c.expect}`" if c.expect else "_不应调用_"
-        A(f"| `{c.cid}` | {c.domain} | {exp} | {c.cn} | {c.en} |")
+        A(f"| `{c.cid}` | {c.domain} | {exp} | {c.cn} |")
     A("")
     A("> 语料来源:`etscli -h` 的 11 个 service + `~/work/etsme/etscli/skills/*/SKILL.md`")
     A("> 的命令表。期望命令取各 skill 中**确定性唯一**的映射 —— 避免出现多个合理答案。")
@@ -643,8 +658,12 @@ def main() -> int:
         src = os.path.join(args.render_only, "results.json")
         with open(src, encoding="utf-8") as f:
             blob = json.load(f)
-        results = [CaseResult(**c) for c in blob["cases"]]
-        measured = any("contract_violations" in c for c in blob["cases"])
+        rows = blob.get("results") or blob.get("cases_results")
+        if not rows:
+            print("✗ results.json 中找不到结果行(results / cases_results)", file=sys.stderr)
+            return 3
+        results = [CaseResult(**c) for c in rows]
+        measured = any("contract_violations" in c for c in rows)
         out_dir = args.out or args.render_only
         os.makedirs(out_dir, exist_ok=True)
         eff = blob.get("effectiveTrialsPerCase") or blob["trialsPerCase"]
@@ -737,7 +756,7 @@ def main() -> int:
             "contractDoc": "docs/function-call-external-http-contract.md",
             "corpusSource": "etscli -h + ~/work/etsme/etscli/skills/*/SKILL.md",
             "tools": TOOLS,
-            "cases": [{
+            "corpus": [{
                 "cid": c.cid, "domain": c.domain, "expect": c.expect,
                 "en": c.en, "cn": c.cn, "negative": c.negative,
             } for c in CASES],
@@ -749,8 +768,6 @@ def main() -> int:
                                          for r in pick(lang)),
             } for lang in langs},
             "results": [asdict(r) for r in results],
-            # 兼容旧 key,便于既有工具读取
-            "cases_results": [asdict(r) for r in results],
         }, f, ensure_ascii=False, indent=2)
 
     n = write_report(os.path.join(out_dir, "report.md"), results, base_url, eff_trials, ts, health)

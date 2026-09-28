@@ -9559,3 +9559,44 @@ etscli 是**确定性 CLI**,同一意图只有一个正确命令(`auth status` �
 python3 scripts/etscli-function-call-test.py --url http://127.0.0.1:9000 --rounds 3
 # 退出码:0 全通过 / 1 有 case 未全过 / 2 有契约违规 / 3 服务不可达
 ```
+
+**双语完整实测**(20 case × 2 次 = 80 次请求,needle):
+
+| 指标 | English | Chinese |
+|---|---|---|
+| HTTP 成功 | 100% (40/40) | 25% (10/40) |
+| 有效产出 | 45% | 30% |
+| **命令正确率** | **5%** | **5%** |
+| 契约违规 | 0 | 0 |
+
+18 个正例**中英全军覆没(0/36)**。唯一的 5% 来自 `negative-knowledge`
+(正确弃答)—— 真实业务场景一个都没对。
+
+**具体行为(不是"命令选错",是根本不做工具选择)**:
+```
+[auth-status/en]       期望 etscli auth status  →  产出 []              不产出
+[system-info/en]       期望 etscli system info  →  read(file_path:"system info")
+                                                            选错工具 + 幻觉参数
+[negative-greeting/en] "hello, thanks..."      →  read(file_path:"hello")
+                                                            闲聊也触发,幻觉出文件
+[negative-greeting/cn] "你好,谢谢你的帮助"      →  read(file_path:"你好")
+```
+规律:**把 query 里的词当文件路径** —— 不是在选工具,是在做浅层词汇匹配。
+且 `negative-greeting` 中英均**过度触发**(正确行为是不调用)。这比漏调用更危险 ——
+真实场景下 `fs rm` / `user delete` 被幻觉触发会有非预期副作用。
+
+中文 HTTP 仅 25% = 14/20 case 撞 502 `utf8_decode`(缓冲区截断,见 §7.94.1)。
+
+**最终结论**:needle 在 etscli 场景下**中英双侧均不可用**(命令正确率各 5%,
+且该 5% 全部来自"正确弃答")。再次印证 §7.94.2 合成场景的"English 100% 有效产出"
+是过拟合到「列文件 → 调 bash」的假象。
+
+### §7.94.4 — 报告呈现与 results.json 键名修正
+
+- **语料表拆分为 §4.1 English / §4.2 中文两张独立表**。并排时两列紧邻,
+  长 query 容易被误读成另一列的延续。已程序化验证英文侧 query / expect /
+  tools 描述 / system 字段**均无 CJK 混入且为纯 ASCII**。
+- **results.json 键名理清**:此前 `cases` 键被同时用作「语料定义」与「结果行」,
+  导致 `--render-only` 读错而报 `unexpected keyword argument 'cid'`。
+  现分为 `corpus`(语料)与 `results`(结果行),并删除为"兼容"保留的重复键 ——
+  那个兼容本身就是混淆来源,不是解决。
