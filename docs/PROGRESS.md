@@ -9424,7 +9424,7 @@ patch yml line 359 是 `[auditLog, skills, edgeTools, tools]` —— 之前 sour
 **背景**:§7.94 交付后开 `FUNCTION_CALL_EXTERNAL_ENABLED=true` 跑真实 E2E,发现
 needle 3.0.1 对中文 query 大面积失败。写可复用测试套件量化,作为上游 bug 报告证据。
 
-**测试套件**(`scripts/needle-cn-en-compat-test.py`):
+**测试套件**(`scripts/etscli-function-call-test.py`):
 - **v2 方法学**(最终版):工具集**固定且适配所有 query**(`glob/read/bash/web_search/web_fetch`),
   只变**语言 × query 长度**(short/medium/long)两个变量
 - 中英 query **语义等价**,逐档加长;3 轮 × 3 次 = 每 case 9 次,共 54 次请求
@@ -9476,9 +9476,9 @@ dsh-edge-agent 是中文产品,走的是**两条都堵**的路径,唯一收益�
 HTTP 契约即可接入,plugin 一行不改。
 
 **产出**:
-- `scripts/needle-cn-en-compat-test.py` — 可复用套件
-- `docs/bench/needle-cn-en/report.md` — 6 节完整报告
-- `docs/bench/needle-cn-en/results.json` — 机读结果
+- `scripts/etscli-function-call-test.py` — 可复用套件
+- `docs/bench/etscli-function-call/report.md` — 6 节完整报告
+- `docs/bench/etscli-function-call/results.json` — 机读结果
 
 ### §7.94.2 — 测试套件自身的方法学缺陷与 3 个 bug(记录以免重犯)
 
@@ -9499,3 +9499,63 @@ v1 用"工具目录取前 n 个"变 tool 数量,导致**工具可用性成为隐
 已用注入故障的方式负向验证两种失败模式(遮蔽 / 缺章节)均能拦截。
 **教训**:退出码 0 不等于成功 —— 凡是有产物落盘的步骤,都要校验产物本身。
 
+
+### §7.94.3 — etscli 真实场景套件:引入"命令正确率"指标,并推翻合成场景结论(2026-09-28)
+
+**背景**:user 终线要基于 **etscli** 训练端侧 function-call 模型。原套件用合成场景
+(「列出 .md 文件」+ 通用工具描述),与真实目标领域脱节,故重建语料。
+
+**新套件** `scripts/etscli-function-call-test.py`:
+- 语料源:`etscli -h` 的 10 个 service + `~/work/etsme/etscli/skills/*/SKILL.md` 命令表
+- **20 个 case**:18 正例(覆盖 auth/fs/file/meeting/chat/system/user/sharing/discover
+  九个 service)+ **2 负例**(闲聊 / 知识问答,检测过度触发)
+- 中英双语言,query 语义等价;工具集固定为 `bash`(etscli 专用描述)+ `read`(干扰项)
+- **逐响应做 HTTP 契约符合性校验**(必填字段/类型/`confidence ∈ [0,1]`/`function_calls[]` 结构)
+
+**核心增量 —— 三层评分**:
+| 层 | 含义 |
+|---|---|
+| HTTP 成功 | 服务没报错 |
+| 有效产出 | 产出了至少一个 `function_call` |
+| **命令正确率** | 产出里出现**期望的 etscli 命令** ← 关键 |
+
+etscli 是**确定性 CLI**,同一意图只有一个正确命令(`auth status` 不能写成
+`auth list`)。因此前两层通过但命令选错,对智能体而言**依然是失败**。
+**选型应以命令正确率为准,而非产出率。**
+
+**实测推翻前一版结论**(needle,英文 20 case × 1 次):
+
+| 套件 | 场景 | needle 英文表现 |
+|---|---|---|
+| §7.94.2(合成) | 「列出 .md 文件」+ 通用 `bash/glob` | HTTP 100% / 有效产出 100% |
+| **§7.94.3(etscli)** | 「查询密盒登录状态」+ etscli 专用 `bash` | HTTP 100% / **命令正确率 5%** |
+
+18 个正例**全部**返回 `function_calls: []`(一次调用都没产出),已核对
+`results.json` 的 `sample_call` 确认是真实失败,**非匹配逻辑误判**
+(匹配逻辑另经 6 项单测验证:正例命中 / `cd &&` 包装 / 服务选错 / 无调用 /
+负例未触发 / 负例误触发)。
+
+**结论**:needle 此前的高分是**过拟合到「列文件 → 调 bash」这一简单模式**的。
+合成场景的测试**给出了虚假的高分** —— 这是本轮最重要教训。
+
+**对既有结论的修正**:
+- ✅ 仍然成立:中文 502 `utf8_decode`(引擎层,与语料无关)、中文 `calls: []` 静默失败、
+  中文有效产出 0%
+- ❌ **已推翻**:`English 100% 可用` → 仅为合成场景下的过拟合表现。
+  `docs/bench/needle-cn-en/report.md` 已加显著警告横幅,说明适用范围。
+
+**教训(方法学)**:
+> 合成语料测出来的能力**不能外推到真实领域**。测试语料必须与训练/使用
+> 分布一致,否则测的是「模型对测试模式的过拟合能力」。
+> 更根本的:能断言**正确性**的测试(确定性 CLI 有唯一正确答案)比只能断言
+> 「有无产出」的测试信息量高一个量级。
+
+**产出**:
+- `scripts/etscli-function-call-test.py` — etscli 场景套件(20 case,三层评分)
+- `docs/bench/etscli-function-call/{report.md,results.json}` — 冒烟实测
+
+**用法**(换模型后):
+```bash
+python3 scripts/etscli-function-call-test.py --url http://127.0.0.1:9000 --rounds 3
+# 退出码:0 全通过 / 1 有 case 未全过 / 2 有契约违规 / 3 服务不可达
+```

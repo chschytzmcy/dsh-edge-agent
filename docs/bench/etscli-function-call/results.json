@@ -1,0 +1,1187 @@
+{
+  "generatedAt": "20260928T054752Z",
+  "service": "http://127.0.0.1:8081",
+  "health": {
+    "status": "ok",
+    "model_loaded": true,
+    "version": "3.0.1",
+    "cn_grounding": true,
+    "extract_count": 354,
+    "queue_depth": 0,
+    "peak_queue": 7,
+    "queue_limit": 6,
+    "last_error": null
+  },
+  "trialsPerCase": 1,
+  "rounds": 1,
+  "effectiveTrialsPerCase": 1,
+  "methodology": "etscli 真实场景;三层评分(HTTP/有效产出/命令正确率);工具集固定为 bash+read",
+  "contractDoc": "docs/function-call-external-http-contract.md",
+  "corpusSource": "etscli -h + ~/work/etsme/etscli/skills/*/SKILL.md",
+  "tools": [
+    {
+      "name": "bash",
+      "description": "Execute a shell command in a persistent session and return its output. Use etscli to manage the ETS box: auth, user, chat, meeting, file, fs, migrate, sharing, system, discover.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "command": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "command"
+        ]
+      }
+    },
+    {
+      "name": "read",
+      "description": "Read a file from the local filesystem. Not for running commands.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "file_path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "file_path"
+        ]
+      }
+    }
+  ],
+  "cases": [
+    {
+      "cid": "auth-status",
+      "domain": "auth",
+      "expect": "etscli auth status",
+      "en": "check whether the box is logged in",
+      "cn": "查询密盒的登录状态",
+      "negative": false
+    },
+    {
+      "cid": "auth-list",
+      "domain": "auth",
+      "expect": "etscli auth list",
+      "en": "list all saved login profiles",
+      "cn": "列出所有已保存的 profile",
+      "negative": false
+    },
+    {
+      "cid": "auth-switch",
+      "domain": "auth",
+      "expect": "etscli auth switch",
+      "en": "switch to the office profile",
+      "cn": "切换到 office 这个 profile",
+      "negative": false
+    },
+    {
+      "cid": "fs-ls",
+      "domain": "fs",
+      "expect": "etscli fs ls",
+      "en": "show the files in my album folder",
+      "cn": "列出我的相册目录下的文件",
+      "negative": false
+    },
+    {
+      "cid": "fs-mkdir",
+      "domain": "fs",
+      "expect": "etscli fs mkdir",
+      "en": "create a new folder named backup in the box",
+      "cn": "在密盒里新建一个名为 backup 的文件夹",
+      "negative": false
+    },
+    {
+      "cid": "fs-rm",
+      "domain": "fs",
+      "expect": "etscli fs rm",
+      "en": "delete the file named old.txt from the box",
+      "cn": "删掉密盒里名为 old.txt 的文件",
+      "negative": false
+    },
+    {
+      "cid": "file-search",
+      "domain": "file",
+      "expect": "etscli file search",
+      "en": "search the box for files whose name contains report",
+      "cn": "搜索密盒里名字包含报告的文件",
+      "negative": false
+    },
+    {
+      "cid": "file-detail",
+      "domain": "file",
+      "expect": "etscli file detail",
+      "en": "show the details of a file given its id",
+      "cn": "查看指定文件 id 的详细信息",
+      "negative": false
+    },
+    {
+      "cid": "meeting-list",
+      "domain": "meeting",
+      "expect": "etscli meeting list",
+      "en": "list all the meetings on the box",
+      "cn": "列出密盒上所有的会议",
+      "negative": false
+    },
+    {
+      "cid": "meeting-summary",
+      "domain": "meeting",
+      "expect": "etscli meeting summary",
+      "en": "get the summary of the latest meeting",
+      "cn": "获取最近一次会议的纪要",
+      "negative": false
+    },
+    {
+      "cid": "meeting-create",
+      "domain": "meeting",
+      "expect": "etscli meeting create",
+      "en": "create a new meeting called weekly sync",
+      "cn": "创建一个名为 weekly sync 的新会议",
+      "negative": false
+    },
+    {
+      "cid": "chat-list",
+      "domain": "chat",
+      "expect": "etscli chat list",
+      "en": "list my group chats",
+      "cn": "列出我的群聊列表",
+      "negative": false
+    },
+    {
+      "cid": "chat-send",
+      "domain": "chat",
+      "expect": "etscli chat send",
+      "en": "send a message to a group chat",
+      "cn": "往群聊里发一条消息",
+      "negative": false
+    },
+    {
+      "cid": "system-health",
+      "domain": "system",
+      "expect": "etscli system health",
+      "en": "check the health of the box",
+      "cn": "检查密盒的健康状态",
+      "negative": false
+    },
+    {
+      "cid": "system-info",
+      "domain": "system",
+      "expect": "etscli system info",
+      "en": "show the system information of the box",
+      "cn": "显示密盒的系统信息",
+      "negative": false
+    },
+    {
+      "cid": "user-list",
+      "domain": "user",
+      "expect": "etscli user list",
+      "en": "list all the users on the box",
+      "cn": "列出密盒上的所有用户",
+      "negative": false
+    },
+    {
+      "cid": "sharing-list",
+      "domain": "sharing",
+      "expect": "etscli sharing list",
+      "en": "list all the sharing links I created",
+      "cn": "列出我创建的所有分享链接",
+      "negative": false
+    },
+    {
+      "cid": "discover-scan",
+      "domain": "discover",
+      "expect": "etscli discover scan",
+      "en": "scan the local network for boxes",
+      "cn": "扫描局域网里的密盒设备",
+      "negative": false
+    },
+    {
+      "cid": "negative-greeting",
+      "domain": "negative",
+      "expect": null,
+      "en": "hello, thanks for your help",
+      "cn": "你好,谢谢你的帮助",
+      "negative": true
+    },
+    {
+      "cid": "negative-knowledge",
+      "domain": "negative",
+      "expect": null,
+      "en": "what is the capital of France",
+      "cn": "法国的首都是哪里",
+      "negative": true
+    }
+  ],
+  "summary": {
+    "en": {
+      "httpPassed": 20,
+      "correct": 1,
+      "trials": 20,
+      "contractViolations": 0
+    }
+  },
+  "results": [
+    {
+      "case_id": "auth-status",
+      "lang": "en",
+      "domain": "auth",
+      "expect": "etscli auth status",
+      "trials": 1,
+      "passed": 1,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        2.73
+      ],
+      "calls_when_ok": [
+        0
+      ],
+      "confidences": [
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]"
+    },
+    {
+      "case_id": "auth-list",
+      "lang": "en",
+      "domain": "auth",
+      "expect": "etscli auth list",
+      "trials": 1,
+      "passed": 1,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.67
+      ],
+      "calls_when_ok": [
+        0
+      ],
+      "confidences": [
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]"
+    },
+    {
+      "case_id": "auth-switch",
+      "lang": "en",
+      "domain": "auth",
+      "expect": "etscli auth switch",
+      "trials": 1,
+      "passed": 1,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        2.31
+      ],
+      "calls_when_ok": [
+        0
+      ],
+      "confidences": [
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]"
+    },
+    {
+      "case_id": "fs-ls",
+      "lang": "en",
+      "domain": "fs",
+      "expect": "etscli fs ls",
+      "trials": 1,
+      "passed": 1,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        1.89
+      ],
+      "calls_when_ok": [
+        0
+      ],
+      "confidences": [
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]"
+    },
+    {
+      "case_id": "fs-mkdir",
+      "lang": "en",
+      "domain": "fs",
+      "expect": "etscli fs mkdir",
+      "trials": 1,
+      "passed": 1,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.89
+      ],
+      "calls_when_ok": [
+        0
+      ],
+      "confidences": [
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]"
+    },
+    {
+      "case_id": "fs-rm",
+      "lang": "en",
+      "domain": "fs",
+      "expect": "etscli fs rm",
+      "trials": 1,
+      "passed": 1,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        3.38
+      ],
+      "calls_when_ok": [
+        0
+      ],
+      "confidences": [
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]"
+    },
+    {
+      "case_id": "file-search",
+      "lang": "en",
+      "domain": "file",
+      "expect": "etscli file search",
+      "trials": 1,
+      "passed": 1,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        2.06
+      ],
+      "calls_when_ok": [
+        0
+      ],
+      "confidences": [
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]"
+    },
+    {
+      "case_id": "file-detail",
+      "lang": "en",
+      "domain": "file",
+      "expect": "etscli file detail",
+      "trials": 1,
+      "passed": 1,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        2.38
+      ],
+      "calls_when_ok": [
+        1
+      ],
+      "confidences": [
+        0.9223
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[{\"name\": \"read\", \"arguments\": {\"file_path\": \"file given its id\"}}]"
+    },
+    {
+      "case_id": "meeting-list",
+      "lang": "en",
+      "domain": "meeting",
+      "expect": "etscli meeting list",
+      "trials": 1,
+      "passed": 1,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        3.51
+      ],
+      "calls_when_ok": [
+        0
+      ],
+      "confidences": [
+        0.6364
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]"
+    },
+    {
+      "case_id": "meeting-summary",
+      "lang": "en",
+      "domain": "meeting",
+      "expect": "etscli meeting summary",
+      "trials": 1,
+      "passed": 1,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.92
+      ],
+      "calls_when_ok": [
+        1
+      ],
+      "confidences": [
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[{\"name\": \"read\", \"arguments\": {\"file_path\": \"latest meeting\"}}]"
+    },
+    {
+      "case_id": "meeting-create",
+      "lang": "en",
+      "domain": "meeting",
+      "expect": "etscli meeting create",
+      "trials": 1,
+      "passed": 1,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        1.38
+      ],
+      "calls_when_ok": [
+        0
+      ],
+      "confidences": [
+        0.9729
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]"
+    },
+    {
+      "case_id": "chat-list",
+      "lang": "en",
+      "domain": "chat",
+      "expect": "etscli chat list",
+      "trials": 1,
+      "passed": 1,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.51
+      ],
+      "calls_when_ok": [
+        0
+      ],
+      "confidences": [
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]"
+    },
+    {
+      "case_id": "chat-send",
+      "lang": "en",
+      "domain": "chat",
+      "expect": "etscli chat send",
+      "trials": 1,
+      "passed": 1,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.45
+      ],
+      "calls_when_ok": [
+        0
+      ],
+      "confidences": [
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]"
+    },
+    {
+      "case_id": "system-health",
+      "lang": "en",
+      "domain": "system",
+      "expect": "etscli system health",
+      "trials": 1,
+      "passed": 1,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        3.42
+      ],
+      "calls_when_ok": [
+        1
+      ],
+      "confidences": [
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[{\"name\": \"read\", \"arguments\": {\"file_path\": \"health\"}}]"
+    },
+    {
+      "case_id": "system-info",
+      "lang": "en",
+      "domain": "system",
+      "expect": "etscli system info",
+      "trials": 1,
+      "passed": 1,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        1.51
+      ],
+      "calls_when_ok": [
+        1
+      ],
+      "confidences": [
+        0.9984
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[{\"name\": \"read\", \"arguments\": {\"file_path\": \"system info\"}}]"
+    },
+    {
+      "case_id": "user-list",
+      "lang": "en",
+      "domain": "user",
+      "expect": "etscli user list",
+      "trials": 1,
+      "passed": 1,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        10.34
+      ],
+      "calls_when_ok": [
+        1
+      ],
+      "confidences": [
+        0.1155
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[{\"name\": \"read\", \"arguments\": {\"file_path\": \"/users/user/box.txt\"}}]"
+    },
+    {
+      "case_id": "sharing-list",
+      "lang": "en",
+      "domain": "sharing",
+      "expect": "etscli sharing list",
+      "trials": 1,
+      "passed": 1,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.54
+      ],
+      "calls_when_ok": [
+        0
+      ],
+      "confidences": [
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]"
+    },
+    {
+      "case_id": "discover-scan",
+      "lang": "en",
+      "domain": "discover",
+      "expect": "etscli discover scan",
+      "trials": 1,
+      "passed": 1,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        11.11
+      ],
+      "calls_when_ok": [
+        1
+      ],
+      "confidences": [
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[{\"name\": \"read\", \"arguments\": {\"file_path\": \"boxes\"}}]"
+    },
+    {
+      "case_id": "negative-greeting",
+      "lang": "en",
+      "domain": "negative",
+      "expect": null,
+      "trials": 1,
+      "passed": 1,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        6.82
+      ],
+      "calls_when_ok": [
+        1
+      ],
+      "confidences": [
+        0.9974
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[{\"name\": \"read\", \"arguments\": {\"file_path\": \"hello\"}}]"
+    },
+    {
+      "case_id": "negative-knowledge",
+      "lang": "en",
+      "domain": "negative",
+      "expect": null,
+      "trials": 1,
+      "passed": 1,
+      "failed": 0,
+      "correct": 1,
+      "failure_classes": {},
+      "latencies": [
+        1.99
+      ],
+      "calls_when_ok": [
+        0
+      ],
+      "confidences": [
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": null
+    }
+  ],
+  "cases_results": [
+    {
+      "case_id": "auth-status",
+      "lang": "en",
+      "domain": "auth",
+      "expect": "etscli auth status",
+      "trials": 1,
+      "passed": 1,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        2.73
+      ],
+      "calls_when_ok": [
+        0
+      ],
+      "confidences": [
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]"
+    },
+    {
+      "case_id": "auth-list",
+      "lang": "en",
+      "domain": "auth",
+      "expect": "etscli auth list",
+      "trials": 1,
+      "passed": 1,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.67
+      ],
+      "calls_when_ok": [
+        0
+      ],
+      "confidences": [
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]"
+    },
+    {
+      "case_id": "auth-switch",
+      "lang": "en",
+      "domain": "auth",
+      "expect": "etscli auth switch",
+      "trials": 1,
+      "passed": 1,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        2.31
+      ],
+      "calls_when_ok": [
+        0
+      ],
+      "confidences": [
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]"
+    },
+    {
+      "case_id": "fs-ls",
+      "lang": "en",
+      "domain": "fs",
+      "expect": "etscli fs ls",
+      "trials": 1,
+      "passed": 1,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        1.89
+      ],
+      "calls_when_ok": [
+        0
+      ],
+      "confidences": [
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]"
+    },
+    {
+      "case_id": "fs-mkdir",
+      "lang": "en",
+      "domain": "fs",
+      "expect": "etscli fs mkdir",
+      "trials": 1,
+      "passed": 1,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.89
+      ],
+      "calls_when_ok": [
+        0
+      ],
+      "confidences": [
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]"
+    },
+    {
+      "case_id": "fs-rm",
+      "lang": "en",
+      "domain": "fs",
+      "expect": "etscli fs rm",
+      "trials": 1,
+      "passed": 1,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        3.38
+      ],
+      "calls_when_ok": [
+        0
+      ],
+      "confidences": [
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]"
+    },
+    {
+      "case_id": "file-search",
+      "lang": "en",
+      "domain": "file",
+      "expect": "etscli file search",
+      "trials": 1,
+      "passed": 1,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        2.06
+      ],
+      "calls_when_ok": [
+        0
+      ],
+      "confidences": [
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]"
+    },
+    {
+      "case_id": "file-detail",
+      "lang": "en",
+      "domain": "file",
+      "expect": "etscli file detail",
+      "trials": 1,
+      "passed": 1,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        2.38
+      ],
+      "calls_when_ok": [
+        1
+      ],
+      "confidences": [
+        0.9223
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[{\"name\": \"read\", \"arguments\": {\"file_path\": \"file given its id\"}}]"
+    },
+    {
+      "case_id": "meeting-list",
+      "lang": "en",
+      "domain": "meeting",
+      "expect": "etscli meeting list",
+      "trials": 1,
+      "passed": 1,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        3.51
+      ],
+      "calls_when_ok": [
+        0
+      ],
+      "confidences": [
+        0.6364
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]"
+    },
+    {
+      "case_id": "meeting-summary",
+      "lang": "en",
+      "domain": "meeting",
+      "expect": "etscli meeting summary",
+      "trials": 1,
+      "passed": 1,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.92
+      ],
+      "calls_when_ok": [
+        1
+      ],
+      "confidences": [
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[{\"name\": \"read\", \"arguments\": {\"file_path\": \"latest meeting\"}}]"
+    },
+    {
+      "case_id": "meeting-create",
+      "lang": "en",
+      "domain": "meeting",
+      "expect": "etscli meeting create",
+      "trials": 1,
+      "passed": 1,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        1.38
+      ],
+      "calls_when_ok": [
+        0
+      ],
+      "confidences": [
+        0.9729
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]"
+    },
+    {
+      "case_id": "chat-list",
+      "lang": "en",
+      "domain": "chat",
+      "expect": "etscli chat list",
+      "trials": 1,
+      "passed": 1,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.51
+      ],
+      "calls_when_ok": [
+        0
+      ],
+      "confidences": [
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]"
+    },
+    {
+      "case_id": "chat-send",
+      "lang": "en",
+      "domain": "chat",
+      "expect": "etscli chat send",
+      "trials": 1,
+      "passed": 1,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.45
+      ],
+      "calls_when_ok": [
+        0
+      ],
+      "confidences": [
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]"
+    },
+    {
+      "case_id": "system-health",
+      "lang": "en",
+      "domain": "system",
+      "expect": "etscli system health",
+      "trials": 1,
+      "passed": 1,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        3.42
+      ],
+      "calls_when_ok": [
+        1
+      ],
+      "confidences": [
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[{\"name\": \"read\", \"arguments\": {\"file_path\": \"health\"}}]"
+    },
+    {
+      "case_id": "system-info",
+      "lang": "en",
+      "domain": "system",
+      "expect": "etscli system info",
+      "trials": 1,
+      "passed": 1,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        1.51
+      ],
+      "calls_when_ok": [
+        1
+      ],
+      "confidences": [
+        0.9984
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[{\"name\": \"read\", \"arguments\": {\"file_path\": \"system info\"}}]"
+    },
+    {
+      "case_id": "user-list",
+      "lang": "en",
+      "domain": "user",
+      "expect": "etscli user list",
+      "trials": 1,
+      "passed": 1,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        10.34
+      ],
+      "calls_when_ok": [
+        1
+      ],
+      "confidences": [
+        0.1155
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[{\"name\": \"read\", \"arguments\": {\"file_path\": \"/users/user/box.txt\"}}]"
+    },
+    {
+      "case_id": "sharing-list",
+      "lang": "en",
+      "domain": "sharing",
+      "expect": "etscli sharing list",
+      "trials": 1,
+      "passed": 1,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.54
+      ],
+      "calls_when_ok": [
+        0
+      ],
+      "confidences": [
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]"
+    },
+    {
+      "case_id": "discover-scan",
+      "lang": "en",
+      "domain": "discover",
+      "expect": "etscli discover scan",
+      "trials": 1,
+      "passed": 1,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        11.11
+      ],
+      "calls_when_ok": [
+        1
+      ],
+      "confidences": [
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[{\"name\": \"read\", \"arguments\": {\"file_path\": \"boxes\"}}]"
+    },
+    {
+      "case_id": "negative-greeting",
+      "lang": "en",
+      "domain": "negative",
+      "expect": null,
+      "trials": 1,
+      "passed": 1,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        6.82
+      ],
+      "calls_when_ok": [
+        1
+      ],
+      "confidences": [
+        0.9974
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[{\"name\": \"read\", \"arguments\": {\"file_path\": \"hello\"}}]"
+    },
+    {
+      "case_id": "negative-knowledge",
+      "lang": "en",
+      "domain": "negative",
+      "expect": null,
+      "trials": 1,
+      "passed": 1,
+      "failed": 0,
+      "correct": 1,
+      "failure_classes": {},
+      "latencies": [
+        1.99
+      ],
+      "calls_when_ok": [
+        0
+      ],
+      "confidences": [
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": null
+    }
+  ]
+}
