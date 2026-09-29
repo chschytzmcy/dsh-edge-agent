@@ -9718,3 +9718,56 @@ bash 形态:   read(file_path: "hello")              ← 幻觉,与问题完全�
 - `scripts/etscli-tools-test.py` — 直出形态套件(47 工具,工具名精确匹配)
 - `docs/bench/etscli-tools/{report.md,results.json}` — 直出形态基线
 - `docs/bench/etscli-function-call/{report.md,results.json}` — bash 形态基线
+
+### §7.94.7 — 套件合并为直出唯一形态 + 干扰项实测:虚高 73%(2026-09-29)
+
+**结论**:needle 直出形态的英文基线 26% **经不起同义干扰考验 —— 基线答对 22 次中
+16 次(73%)被干扰项改口**;注入 3 个近义工具后 en 26%→18%、cn 3%→3%(但 cn 基线
+唯一答对的 case `migrate-verify` 同样被改口,剩余 2 次"对"来自噪声新命中)。**needle
+的工具选择主要是词形相似猜测,不是语义判别**。对后续端侧模型验收的直接影响:
+**正式口径必须带干扰项**(`--distractors 3`),裸基线分数一律视为虚高。
+
+**user 决策落地**:「去除 bash 形态,只保留直出形态,增加干扰项变体来测虚高」。
+
+1. **bash 形态套件删除**:`scripts/etscli-function-call-test.py` 与
+   `docs/bench/etscli-function-call/` 移除。理由(§7.94.6 已实证):bash 描述里
+   根本没有 etscli 子命令定义,模型答对需凭空生成命令 → 测的是预训练知识,不是
+   function call 能力,且 BARE/DETAILED 对照实验证明富描述不改变 bash 形态 0/156。
+   ⚠️ PROGRESS 历史章节(§7.94.2-6)中引用的旧脚本/旧报告路径为**历史记录**,不回改。
+2. **`scripts/etscli-tools-test.py` 自包含化**:42 例语料、契约校验、Attempt/
+   classify_error 全部内联(原 import 姊妹脚本),无跨文件依赖。
+3. **干扰项机制 `--distractors N`**:每个**正例** case 追加 N 个近义工具,期望工具不变:
+   - 跨 service 混淆对(`etscli_file_search`↔`etscli_fs_search` 等 4 组,按 id vs 按路径)
+   - 同族后缀变体(`_raw/_export/_history/_preview/_batch/_verbose`,描述与期望工具几乎同义)
+   - 负例不注入(期望本就是"不调用");`picked_distractor` 计数入 results.json;
+     报告 §1.3 呈现"选了干扰项 vs 其他错误";`scripts/inflation-diff.py` 按
+     (case,lang) 对齐基线/干扰两次运行,输出改口清单与虚高率。
+4. **实测**(needle @ :8081,trials=2×rounds=1,168 req/次,贪心解码):
+   - 基线**精确复现**已提交数据(en 26%=20/78,cn 3%=2/78,HTTP 90/93%,0 违规)
+     → A/B 分差可完全归因于注入的 3×39=117 个干扰工具
+   - en:正确 26%→18%;基线全对的 7 个 case(chat-messages/fs-ls/fs-mkdir/
+     meeting-create/migrate-verify/sharing-list/system-info)**整案 2/2→0/2 塌到干扰项**
+   - en 干扰项着陆率 46%(36/78)vs 均匀瞎选的机会值 3/50=6% → **7.7× 机会率**
+     (cn 21% → 3.5×);另有 5 个 case 反向"错→对"(prompt 变动的噪声,双向不稳)
+   - **虚高口径**:16/22 = 73% 基线正确答复现于近义兄弟面前即失守
+
+**验收门槛更新**(替代 §7.94.6 表,阈值加在带干扰口径上):
+
+| 指标 | 门槛 | needle @ d3 |
+|---|---|---|
+| en 工具正确率 `--distractors 3` | ≥ 60% | 18% |
+| cn 工具正确率 `--distractors 3` | ≥ 40% | 3% |
+| 干扰项着陆率 | ≤ 15% | en 46% / cn 21% |
+| cn HTTP 200 | ≥ 90% | 93% |
+| 契约违规 | = 0 | 0 |
+
+**方法学教训**:确定性贪心解码让"同 query 同 tools 必同输出"成立,但**换 tool 列表
+即换输出** —— 所以改口既可能朝干扰项也可能朝正确工具,必须**双向计数**(改口 vs
+噪声新命中)再下"被诱导"结论,只看单 case 翻转会被 prompt 敏感性骗。
+
+**产出**:
+- `scripts/etscli-tools-test.py` — 唯一 etscli 形态套件(47 工具 + 干扰项注入)
+- `scripts/inflation-diff.py` — 基线/干扰双运行对照器
+- `docs/bench/etscli-tools/report.md` — 直出基线(重渲染,清除姊妹脚本引用)
+- `docs/bench/etscli-tools/inflation-d3/{report.md,results.json,diff.txt}` — 虚高实测
+- 删除:`scripts/etscli-function-call-test.py`、`docs/bench/etscli-function-call/`

@@ -1,10 +1,10 @@
 # etscli 直出工具形态 · function-call caller 测试报告
 
-- **生成时间**: 20260929T044605Z
+- **生成时间**: 20260929T055435Z
 - **被测服务**: `http://127.0.0.1:8081` —— 3.0.1
 - **工具形态**: **47 个 etscli 工具直出**(非 bash 包装),描述语言 `cn`
 - **每 case 试验次数**: 2
-- **语料**: 与 `etscli-function-call-test.py` 共用 42 例(39 正例 + 3 负例)
+- **语料**: 42 例(39 正例 + 3 负例),源自 `etscli <service> --help` 与 `~/work/etsme/etscli/skills/*/SKILL.md` 的真实命令表
 
 ## 1. 判定
 
@@ -19,9 +19,9 @@
 > **工具直出形态下,`etscli_auth_status` 与 `etscli_auth_logout` 是两个不同工具**,
 > 判定为精确匹配,没有模糊空间。
 >
-> 与 bash 包装形态的关键差异:错误更**可诊断**。bash 形态下模型可能产出
-> `read(file_path: "hello")` 这种浅层幻觉(完全无关);直出形态下它至少
-> 会产出某个 etscli 工具(选对 service、错选子命令),信息量高得多。
+> **但直出形态有虚高风险**:工具名本身是强词法线索
+> (`etscli_auth_status` 直接对上「登录状态」),词法匹配型模型可能靠
+> "名字像 query"蒙对而未真正理解。`--distractors N` 用于量化这一虚高。
 
 ### 1.1 过度触发(负例)
 
@@ -59,35 +59,35 @@
 | `user-detail` | English | `etscli_user_detail` | 2/2 | 2/2 | 0/2 | ["etscli_user_list"] |
 | `user-register` | English | `etscli_user_register` | 2/2 | 2/2 | 0/2 | ["etscli_meeting_create"] |
 | `user-passwd` | English | `etscli_user_passwd` | 2/2 | 2/2 | 0/2 | ["etscli_user_detail"] |
-| `chat-list` | English | `etscli_chat_list` | 2/2 | 2/2 | 2/2 | — |
-| `chat-messages` | English | `etscli_chat_messages` | 2/2 | 2/2 | 2/2 | — |
+| `chat-list` | English | `etscli_chat_list` | 2/2 | 2/2 | 2/2 | ["etscli_chat_list"] |
+| `chat-messages` | English | `etscli_chat_messages` | 2/2 | 2/2 | 2/2 | ["etscli_chat_messages"] |
 | `chat-send` | English | `etscli_chat_send` | 0/2 | 0/0 | 0/2 | — |
 | `chat-send-file` | English | `etscli_chat_send_file` | 2/2 | 2/2 | 0/2 | ["etscli_meeting_create"] |
 | `meeting-list` | English | `etscli_meeting_list` | 0/2 | 0/0 | 0/2 | — |
 | `meeting-summary` | English | `etscli_meeting_summary` | 0/2 | 0/0 | 0/2 | — |
-| `meeting-detail` | English | `etscli_meeting_detail` | 2/2 | 2/2 | 2/2 | — |
-| `meeting-create` | English | `etscli_meeting_create` | 2/2 | 2/2 | 2/2 | — |
+| `meeting-detail` | English | `etscli_meeting_detail` | 2/2 | 2/2 | 2/2 | ["etscli_meeting_detail"] |
+| `meeting-create` | English | `etscli_meeting_create` | 2/2 | 2/2 | 2/2 | ["etscli_meeting_create"] |
 | `meeting-finish` | English | `etscli_meeting_finish` | 2/2 | 2/2 | 0/2 | ["etscli_meeting_detail"] |
 | `file-search` | English | `etscli_file_search` | 2/2 | 2/2 | 0/2 | ["etscli_fs_search"] |
 | `file-detail` | English | `etscli_file_detail` | 0/2 | 0/0 | 0/2 | — |
 | `file-upload` | English | `etscli_file_upload_dir` | 2/2 | 2/2 | 0/2 | ["etscli_file_upload"] |
 | `file-download` | English | `etscli_file_download` | 2/2 | 2/2 | 0/2 | ["etscli_file_upload"] |
 | `file-delete` | English | `etscli_file_delete` / `etscli_fs_rm` | 2/2 | 2/2 | 0/2 | ["etscli_fs_search"] |
-| `fs-ls` | English | `etscli_fs_ls` | 2/2 | 2/2 | 2/2 | — |
-| `fs-mkdir` | English | `etscli_fs_mkdir` | 2/2 | 2/2 | 2/2 | — |
+| `fs-ls` | English | `etscli_fs_ls` | 2/2 | 2/2 | 2/2 | ["etscli_fs_ls"] |
+| `fs-mkdir` | English | `etscli_fs_mkdir` | 2/2 | 2/2 | 2/2 | ["etscli_fs_mkdir"] |
 | `fs-rm` | English | `etscli_fs_rm` / `etscli_file_delete` | 2/2 | 2/2 | 0/2 | ["etscli_migrate_verify"] |
-| `fs-search` | English | `etscli_fs_search` | 2/2 | 2/2 | 2/2 | — |
+| `fs-search` | English | `etscli_fs_search` | 2/2 | 2/2 | 2/2 | ["etscli_fs_search"] |
 | `fs-stat` | English | `etscli_fs_stats` | 2/2 | 2/2 | 0/2 | ["etscli_fs_stat"] |
 | `fs-add` | English | `etscli_fs_add` | 2/2 | 2/2 | 0/2 | ["etscli_fs_search"] |
-| `sharing-list` | English | `etscli_sharing_list` | 2/2 | 2/2 | 2/2 | — |
+| `sharing-list` | English | `etscli_sharing_list` | 2/2 | 2/2 | 2/2 | ["etscli_sharing_list"] |
 | `sharing-create` | English | `etscli_sharing_create` | 2/2 | 2/2 | 0/2 | ["etscli_fs_search"] |
 | `sharing-delete` | English | `etscli_sharing_delete` | 2/2 | 2/2 | 0/2 | ["etscli_sharing_list"] |
-| `system-info` | English | `etscli_system_info` | 2/2 | 2/2 | 2/2 | — |
+| `system-info` | English | `etscli_system_info` | 2/2 | 2/2 | 2/2 | ["etscli_system_info"] |
 | `system-health` | English | `etscli_system_health` | 2/2 | 2/2 | 0/2 | ["etscli_fs_search"] |
 | `system-alarm` | English | `etscli_system_alarm_list` | 2/2 | 2/2 | 0/2 | ["etscli_migrate_session_login"] |
 | `discover-scan` | English | `etscli_discover_scan` | 2/2 | 2/2 | 0/2 | ["etscli_system_info"] |
 | `migrate-transfer` | English | `etscli_migrate_transfer` | 2/2 | 2/2 | 0/2 | ["etscli_migrate_session_login"] |
-| `migrate-verify` | English | `etscli_migrate_verify` | 2/2 | 2/2 | 2/2 | — |
+| `migrate-verify` | English | `etscli_migrate_verify` | 2/2 | 2/2 | 2/2 | ["etscli_migrate_verify"] |
 | `negative-greeting` | English | _不应调用_ | 2/2 | 2/2 | 0/2 | ["etscli_migrate_session_login"] |
 | `negative-knowledge` | English | _不应调用_ | 2/2 | 2/2 | 0/2 | ["etscli_fs_mkdir"] |
 | `negative-weather` | English | _不应调用_ | 2/2 | 2/2 | 0/2 | ["etscli_migrate_session_login"] |
@@ -129,10 +129,10 @@
 | `system-alarm` | Chinese | `etscli_system_alarm_list` | 2/2 | 2/2 | 0/2 | ["etscli_migrate_session_login"] |
 | `discover-scan` | Chinese | `etscli_discover_scan` | 2/2 | 2/2 | 0/2 | ["etscli_migrate_transfer"] |
 | `migrate-transfer` | Chinese | `etscli_migrate_transfer` | 2/2 | 2/2 | 0/2 | ["etscli_migrate_session_login"] |
-| `migrate-verify` | Chinese | `etscli_migrate_verify` | 2/2 | 2/2 | 2/2 | — |
+| `migrate-verify` | Chinese | `etscli_migrate_verify` | 2/2 | 2/2 | 2/2 | ["etscli_migrate_verify"] |
 | `negative-greeting` | Chinese | _不应调用_ | 2/2 | 2/2 | 0/2 | ["etscli_fs_mkdir"] |
 | `negative-knowledge` | Chinese | _不应调用_ | 2/2 | 2/2 | 0/2 | ["etscli_migrate_verify"] |
-| `negative-weather` | Chinese | _不应调用_ | 2/2 | 0/2 | 2/2 | — |
+| `negative-weather` | Chinese | _不应调用_ | 2/2 | 0/2 | 2/2 | [] (未产出调用) |
 
 ## 3. 失败样本
 

@@ -1,12 +1,12 @@
 {
-  "generatedAt": "20260929T044605Z",
+  "generatedAt": "20260929T055435Z",
   "service": "http://127.0.0.1:8081",
   "health": {
     "status": "ok",
     "model_loaded": true,
     "version": "3.0.1",
     "cn_grounding": true,
-    "extract_count": 793,
+    "extract_count": 958,
     "queue_depth": 0,
     "peak_queue": 7,
     "queue_limit": 6,
@@ -15,10 +15,11 @@
   "form": "etscli-tools-direct",
   "descLang": "cn",
   "toolCount": 47,
+  "distractors": 0,
   "trialsPerCase": 2,
   "rounds": 1,
   "effectiveTrialsPerCase": 2,
-  "methodology": "45 个 etscli 工具直出;工具名精确匹配判定;语料与 etscli-function-call-test.py 共用",
+  "methodology": "47 个 etscli 工具直出;工具名精确匹配判定;语料源自 `etscli <service> --help` 真实命令表;干扰项 0/case",
   "tools": [
     {
       "name": "etscli_auth_status",
@@ -714,8 +715,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        16.04,
-        0.37
+        15.0,
+        0.38
       ],
       "calls_when_ok": [
         1,
@@ -728,7 +729,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[\"etscli_fs_ls\"]"
+      "sample_call": "[\"etscli_fs_ls\"]",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "auth-list",
@@ -743,8 +746,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.4,
-        0.37
+        0.38,
+        0.4
       ],
       "calls_when_ok": [
         1,
@@ -757,7 +760,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[\"etscli_migrate_session_login\"]"
+      "sample_call": "[\"etscli_migrate_session_login\"]",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "auth-switch",
@@ -772,8 +777,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.37,
-        0.4
+        0.5,
+        0.46
       ],
       "calls_when_ok": [
         1,
@@ -786,7 +791,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[\"etscli_fs_stat\"]"
+      "sample_call": "[\"etscli_fs_stat\"]",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "auth-rename",
@@ -801,8 +808,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.51,
-        0.55
+        0.55,
+        0.49
       ],
       "calls_when_ok": [
         1,
@@ -815,7 +822,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[\"etscli_fs_search\"]"
+      "sample_call": "[\"etscli_fs_search\"]",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "auth-login",
@@ -830,8 +839,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.56,
-        0.61
+        0.51,
+        0.51
       ],
       "calls_when_ok": [
         1,
@@ -844,7 +853,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[\"etscli_migrate_session_login\"]"
+      "sample_call": "[\"etscli_migrate_session_login\"]",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "auth-logout",
@@ -859,8 +870,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.42,
-        0.52
+        0.54,
+        0.48
       ],
       "calls_when_ok": [
         1,
@@ -873,7 +884,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[\"etscli_migrate_session_login\"]"
+      "sample_call": "[\"etscli_migrate_session_login\"]",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "user-list",
@@ -888,8 +901,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.39,
-        0.56
+        0.43,
+        0.52
       ],
       "calls_when_ok": [
         1,
@@ -902,7 +915,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[\"etscli_fs_stat\"]"
+      "sample_call": "[\"etscli_fs_stat\"]",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "user-detail",
@@ -917,8 +932,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.52,
-        0.37
+        0.39,
+        0.42
       ],
       "calls_when_ok": [
         1,
@@ -931,7 +946,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[\"etscli_user_list\"]"
+      "sample_call": "[\"etscli_user_list\"]",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "user-register",
@@ -939,659 +956,6 @@
       "domain": "user",
       "expect_tools": [
         "etscli_user_register"
-      ],
-      "trials": 2,
-      "passed": 2,
-      "failed": 0,
-      "correct": 0,
-      "failure_classes": {},
-      "latencies": [
-        0.48,
-        0.5
-      ],
-      "calls_when_ok": [
-        1,
-        1
-      ],
-      "confidences": [
-        0.2722,
-        0.2722
-      ],
-      "contract_violations": {},
-      "sample_error": null,
-      "sample_violation": null,
-      "sample_call": "[\"etscli_meeting_create\"]"
-    },
-    {
-      "case_id": "user-passwd",
-      "lang": "en",
-      "domain": "user",
-      "expect_tools": [
-        "etscli_user_passwd"
-      ],
-      "trials": 2,
-      "passed": 2,
-      "failed": 0,
-      "correct": 0,
-      "failure_classes": {},
-      "latencies": [
-        0.36,
-        0.36
-      ],
-      "calls_when_ok": [
-        1,
-        1
-      ],
-      "confidences": [
-        0.2767,
-        0.2767
-      ],
-      "contract_violations": {},
-      "sample_error": null,
-      "sample_violation": null,
-      "sample_call": "[\"etscli_user_detail\"]"
-    },
-    {
-      "case_id": "chat-list",
-      "lang": "en",
-      "domain": "chat",
-      "expect_tools": [
-        "etscli_chat_list"
-      ],
-      "trials": 2,
-      "passed": 2,
-      "failed": 0,
-      "correct": 2,
-      "failure_classes": {},
-      "latencies": [
-        0.41,
-        0.41
-      ],
-      "calls_when_ok": [
-        1,
-        1
-      ],
-      "confidences": [
-        0.5569,
-        0.5569
-      ],
-      "contract_violations": {},
-      "sample_error": null,
-      "sample_violation": null,
-      "sample_call": null
-    },
-    {
-      "case_id": "chat-messages",
-      "lang": "en",
-      "domain": "chat",
-      "expect_tools": [
-        "etscli_chat_messages"
-      ],
-      "trials": 2,
-      "passed": 2,
-      "failed": 0,
-      "correct": 2,
-      "failure_classes": {},
-      "latencies": [
-        0.5,
-        0.48
-      ],
-      "calls_when_ok": [
-        1,
-        1
-      ],
-      "confidences": [
-        0.6375,
-        0.6375
-      ],
-      "contract_violations": {},
-      "sample_error": null,
-      "sample_violation": null,
-      "sample_call": null
-    },
-    {
-      "case_id": "chat-send",
-      "lang": "en",
-      "domain": "chat",
-      "expect_tools": [
-        "etscli_chat_send"
-      ],
-      "trials": 2,
-      "passed": 0,
-      "failed": 2,
-      "correct": 0,
-      "failure_classes": {
-        "encoding": 2
-      },
-      "latencies": [
-        0.62,
-        0.53
-      ],
-      "calls_when_ok": [],
-      "confidences": [],
-      "contract_violations": {},
-      "sample_error": "engine error: 'utf-8' codec can't decode byte 0xf0 in position 316: invalid continuation byte",
-      "sample_violation": null,
-      "sample_call": null
-    },
-    {
-      "case_id": "chat-send-file",
-      "lang": "en",
-      "domain": "chat",
-      "expect_tools": [
-        "etscli_chat_send_file"
-      ],
-      "trials": 2,
-      "passed": 2,
-      "failed": 0,
-      "correct": 0,
-      "failure_classes": {},
-      "latencies": [
-        0.57,
-        0.59
-      ],
-      "calls_when_ok": [
-        1,
-        1
-      ],
-      "confidences": [
-        0.1191,
-        0.1191
-      ],
-      "contract_violations": {},
-      "sample_error": null,
-      "sample_violation": null,
-      "sample_call": "[\"etscli_meeting_create\"]"
-    },
-    {
-      "case_id": "meeting-list",
-      "lang": "en",
-      "domain": "meeting",
-      "expect_tools": [
-        "etscli_meeting_list"
-      ],
-      "trials": 2,
-      "passed": 0,
-      "failed": 2,
-      "correct": 0,
-      "failure_classes": {
-        "encoding": 2
-      },
-      "latencies": [
-        0.53,
-        0.46
-      ],
-      "calls_when_ok": [],
-      "confidences": [],
-      "contract_violations": {},
-      "sample_error": "engine error: 'utf-8' codec can't decode bytes in position 251-252: invalid continuation byte",
-      "sample_violation": null,
-      "sample_call": null
-    },
-    {
-      "case_id": "meeting-summary",
-      "lang": "en",
-      "domain": "meeting",
-      "expect_tools": [
-        "etscli_meeting_summary"
-      ],
-      "trials": 2,
-      "passed": 0,
-      "failed": 2,
-      "correct": 0,
-      "failure_classes": {
-        "encoding": 2
-      },
-      "latencies": [
-        0.56,
-        0.48
-      ],
-      "calls_when_ok": [],
-      "confidences": [],
-      "contract_violations": {},
-      "sample_error": "engine error: 'utf-8' codec can't decode bytes in position 254-255: invalid continuation byte",
-      "sample_violation": null,
-      "sample_call": null
-    },
-    {
-      "case_id": "meeting-detail",
-      "lang": "en",
-      "domain": "meeting",
-      "expect_tools": [
-        "etscli_meeting_detail"
-      ],
-      "trials": 2,
-      "passed": 2,
-      "failed": 0,
-      "correct": 2,
-      "failure_classes": {},
-      "latencies": [
-        0.65,
-        0.54
-      ],
-      "calls_when_ok": [
-        1,
-        1
-      ],
-      "confidences": [
-        0.8813,
-        0.8813
-      ],
-      "contract_violations": {},
-      "sample_error": null,
-      "sample_violation": null,
-      "sample_call": null
-    },
-    {
-      "case_id": "meeting-create",
-      "lang": "en",
-      "domain": "meeting",
-      "expect_tools": [
-        "etscli_meeting_create"
-      ],
-      "trials": 2,
-      "passed": 2,
-      "failed": 0,
-      "correct": 2,
-      "failure_classes": {},
-      "latencies": [
-        0.43,
-        0.41
-      ],
-      "calls_when_ok": [
-        1,
-        1
-      ],
-      "confidences": [
-        0.7956,
-        0.7956
-      ],
-      "contract_violations": {},
-      "sample_error": null,
-      "sample_violation": null,
-      "sample_call": null
-    },
-    {
-      "case_id": "meeting-finish",
-      "lang": "en",
-      "domain": "meeting",
-      "expect_tools": [
-        "etscli_meeting_finish"
-      ],
-      "trials": 2,
-      "passed": 2,
-      "failed": 0,
-      "correct": 0,
-      "failure_classes": {},
-      "latencies": [
-        0.49,
-        1.07
-      ],
-      "calls_when_ok": [
-        1,
-        1
-      ],
-      "confidences": [
-        0.605,
-        0.605
-      ],
-      "contract_violations": {},
-      "sample_error": null,
-      "sample_violation": null,
-      "sample_call": "[\"etscli_meeting_detail\"]"
-    },
-    {
-      "case_id": "file-search",
-      "lang": "en",
-      "domain": "file",
-      "expect_tools": [
-        "etscli_file_search"
-      ],
-      "trials": 2,
-      "passed": 2,
-      "failed": 0,
-      "correct": 0,
-      "failure_classes": {},
-      "latencies": [
-        0.39,
-        0.48
-      ],
-      "calls_when_ok": [
-        1,
-        1
-      ],
-      "confidences": [
-        0.5388,
-        0.5388
-      ],
-      "contract_violations": {},
-      "sample_error": null,
-      "sample_violation": null,
-      "sample_call": "[\"etscli_fs_search\"]"
-    },
-    {
-      "case_id": "file-detail",
-      "lang": "en",
-      "domain": "file",
-      "expect_tools": [
-        "etscli_file_detail"
-      ],
-      "trials": 2,
-      "passed": 0,
-      "failed": 2,
-      "correct": 0,
-      "failure_classes": {
-        "encoding": 2
-      },
-      "latencies": [
-        0.58,
-        0.59
-      ],
-      "calls_when_ok": [],
-      "confidences": [],
-      "contract_violations": {},
-      "sample_error": "engine error: 'utf-8' codec can't decode byte 0xe5 in position 261: invalid continuation byte",
-      "sample_violation": null,
-      "sample_call": null
-    },
-    {
-      "case_id": "file-upload",
-      "lang": "en",
-      "domain": "file",
-      "expect_tools": [
-        "etscli_file_upload_dir"
-      ],
-      "trials": 2,
-      "passed": 2,
-      "failed": 0,
-      "correct": 0,
-      "failure_classes": {},
-      "latencies": [
-        0.48,
-        0.5
-      ],
-      "calls_when_ok": [
-        1,
-        1
-      ],
-      "confidences": [
-        0.5223,
-        0.5223
-      ],
-      "contract_violations": {},
-      "sample_error": null,
-      "sample_violation": null,
-      "sample_call": "[\"etscli_file_upload\"]"
-    },
-    {
-      "case_id": "file-download",
-      "lang": "en",
-      "domain": "file",
-      "expect_tools": [
-        "etscli_file_download"
-      ],
-      "trials": 2,
-      "passed": 2,
-      "failed": 0,
-      "correct": 0,
-      "failure_classes": {},
-      "latencies": [
-        0.47,
-        0.49
-      ],
-      "calls_when_ok": [
-        1,
-        1
-      ],
-      "confidences": [
-        0.4513,
-        0.4513
-      ],
-      "contract_violations": {},
-      "sample_error": null,
-      "sample_violation": null,
-      "sample_call": "[\"etscli_file_upload\"]"
-    },
-    {
-      "case_id": "file-delete",
-      "lang": "en",
-      "domain": "file",
-      "expect_tools": [
-        "etscli_file_delete",
-        "etscli_fs_rm"
-      ],
-      "trials": 2,
-      "passed": 2,
-      "failed": 0,
-      "correct": 0,
-      "failure_classes": {},
-      "latencies": [
-        0.52,
-        0.61
-      ],
-      "calls_when_ok": [
-        1,
-        1
-      ],
-      "confidences": [
-        0.4261,
-        0.4261
-      ],
-      "contract_violations": {},
-      "sample_error": null,
-      "sample_violation": null,
-      "sample_call": "[\"etscli_fs_search\"]"
-    },
-    {
-      "case_id": "fs-ls",
-      "lang": "en",
-      "domain": "fs",
-      "expect_tools": [
-        "etscli_fs_ls"
-      ],
-      "trials": 2,
-      "passed": 2,
-      "failed": 0,
-      "correct": 2,
-      "failure_classes": {},
-      "latencies": [
-        0.45,
-        0.54
-      ],
-      "calls_when_ok": [
-        1,
-        1
-      ],
-      "confidences": [
-        0.3113,
-        0.3113
-      ],
-      "contract_violations": {},
-      "sample_error": null,
-      "sample_violation": null,
-      "sample_call": null
-    },
-    {
-      "case_id": "fs-mkdir",
-      "lang": "en",
-      "domain": "fs",
-      "expect_tools": [
-        "etscli_fs_mkdir"
-      ],
-      "trials": 2,
-      "passed": 2,
-      "failed": 0,
-      "correct": 2,
-      "failure_classes": {},
-      "latencies": [
-        0.63,
-        0.44
-      ],
-      "calls_when_ok": [
-        1,
-        1
-      ],
-      "confidences": [
-        0.3116,
-        0.3116
-      ],
-      "contract_violations": {},
-      "sample_error": null,
-      "sample_violation": null,
-      "sample_call": null
-    },
-    {
-      "case_id": "fs-rm",
-      "lang": "en",
-      "domain": "fs",
-      "expect_tools": [
-        "etscli_fs_rm",
-        "etscli_file_delete"
-      ],
-      "trials": 2,
-      "passed": 2,
-      "failed": 0,
-      "correct": 0,
-      "failure_classes": {},
-      "latencies": [
-        0.52,
-        0.49
-      ],
-      "calls_when_ok": [
-        1,
-        1
-      ],
-      "confidences": [
-        0.3596,
-        0.3596
-      ],
-      "contract_violations": {},
-      "sample_error": null,
-      "sample_violation": null,
-      "sample_call": "[\"etscli_migrate_verify\"]"
-    },
-    {
-      "case_id": "fs-search",
-      "lang": "en",
-      "domain": "fs",
-      "expect_tools": [
-        "etscli_fs_search"
-      ],
-      "trials": 2,
-      "passed": 2,
-      "failed": 0,
-      "correct": 2,
-      "failure_classes": {},
-      "latencies": [
-        0.57,
-        0.53
-      ],
-      "calls_when_ok": [
-        1,
-        1
-      ],
-      "confidences": [
-        0.5585,
-        0.5585
-      ],
-      "contract_violations": {},
-      "sample_error": null,
-      "sample_violation": null,
-      "sample_call": null
-    },
-    {
-      "case_id": "fs-stat",
-      "lang": "en",
-      "domain": "fs",
-      "expect_tools": [
-        "etscli_fs_stats"
-      ],
-      "trials": 2,
-      "passed": 2,
-      "failed": 0,
-      "correct": 0,
-      "failure_classes": {},
-      "latencies": [
-        0.48,
-        0.44
-      ],
-      "calls_when_ok": [
-        1,
-        1
-      ],
-      "confidences": [
-        0.3947,
-        0.3947
-      ],
-      "contract_violations": {},
-      "sample_error": null,
-      "sample_violation": null,
-      "sample_call": "[\"etscli_fs_stat\"]"
-    },
-    {
-      "case_id": "fs-add",
-      "lang": "en",
-      "domain": "fs",
-      "expect_tools": [
-        "etscli_fs_add"
-      ],
-      "trials": 2,
-      "passed": 2,
-      "failed": 0,
-      "correct": 0,
-      "failure_classes": {},
-      "latencies": [
-        0.57,
-        0.53
-      ],
-      "calls_when_ok": [
-        1,
-        1
-      ],
-      "confidences": [
-        0.3199,
-        0.3199
-      ],
-      "contract_violations": {},
-      "sample_error": null,
-      "sample_violation": null,
-      "sample_call": "[\"etscli_fs_search\"]"
-    },
-    {
-      "case_id": "sharing-list",
-      "lang": "en",
-      "domain": "sharing",
-      "expect_tools": [
-        "etscli_sharing_list"
-      ],
-      "trials": 2,
-      "passed": 2,
-      "failed": 0,
-      "correct": 2,
-      "failure_classes": {},
-      "latencies": [
-        0.55,
-        0.57
-      ],
-      "calls_when_ok": [
-        1,
-        1
-      ],
-      "confidences": [
-        1.0,
-        1.0
-      ],
-      "contract_violations": {},
-      "sample_error": null,
-      "sample_violation": null,
-      "sample_call": null
-    },
-    {
-      "case_id": "sharing-create",
-      "lang": "en",
-      "domain": "sharing",
-      "expect_tools": [
-        "etscli_sharing_create"
       ],
       "trials": 2,
       "passed": 2,
@@ -1607,20 +971,22 @@
         1
       ],
       "confidences": [
-        0.3949,
-        0.3949
+        0.2722,
+        0.2722
       ],
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[\"etscli_fs_search\"]"
+      "sample_call": "[\"etscli_meeting_create\"]",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
-      "case_id": "sharing-delete",
+      "case_id": "user-passwd",
       "lang": "en",
-      "domain": "sharing",
+      "domain": "user",
       "expect_tools": [
-        "etscli_sharing_delete"
+        "etscli_user_passwd"
       ],
       "trials": 2,
       "passed": 2,
@@ -1628,28 +994,449 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.46,
-        0.44
+        0.39,
+        0.4
       ],
       "calls_when_ok": [
         1,
         1
       ],
       "confidences": [
-        0.9586,
-        0.9586
+        0.2767,
+        0.2767
       ],
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[\"etscli_sharing_list\"]"
+      "sample_call": "[\"etscli_user_detail\"]",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
-      "case_id": "system-info",
+      "case_id": "chat-list",
       "lang": "en",
-      "domain": "system",
+      "domain": "chat",
       "expect_tools": [
-        "etscli_system_info"
+        "etscli_chat_list"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 2,
+      "failure_classes": {},
+      "latencies": [
+        0.42,
+        0.42
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.5569,
+        0.5569
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_chat_list\"]",
+      "distractors": [],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "chat-messages",
+      "lang": "en",
+      "domain": "chat",
+      "expect_tools": [
+        "etscli_chat_messages"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 2,
+      "failure_classes": {},
+      "latencies": [
+        0.51,
+        0.58
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.6375,
+        0.6375
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_chat_messages\"]",
+      "distractors": [],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "chat-send",
+      "lang": "en",
+      "domain": "chat",
+      "expect_tools": [
+        "etscli_chat_send"
+      ],
+      "trials": 2,
+      "passed": 0,
+      "failed": 2,
+      "correct": 0,
+      "failure_classes": {
+        "encoding": 2
+      },
+      "latencies": [
+        0.58,
+        0.57
+      ],
+      "calls_when_ok": [],
+      "confidences": [],
+      "contract_violations": {},
+      "sample_error": "engine error: 'utf-8' codec can't decode byte 0xf0 in position 316: invalid continuation byte",
+      "sample_violation": null,
+      "sample_call": null,
+      "distractors": [],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "chat-send-file",
+      "lang": "en",
+      "domain": "chat",
+      "expect_tools": [
+        "etscli_chat_send_file"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.58,
+        0.54
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.1191,
+        0.1191
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_meeting_create\"]",
+      "distractors": [],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "meeting-list",
+      "lang": "en",
+      "domain": "meeting",
+      "expect_tools": [
+        "etscli_meeting_list"
+      ],
+      "trials": 2,
+      "passed": 0,
+      "failed": 2,
+      "correct": 0,
+      "failure_classes": {
+        "encoding": 2
+      },
+      "latencies": [
+        0.48,
+        0.54
+      ],
+      "calls_when_ok": [],
+      "confidences": [],
+      "contract_violations": {},
+      "sample_error": "engine error: 'utf-8' codec can't decode bytes in position 251-252: invalid continuation byte",
+      "sample_violation": null,
+      "sample_call": null,
+      "distractors": [],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "meeting-summary",
+      "lang": "en",
+      "domain": "meeting",
+      "expect_tools": [
+        "etscli_meeting_summary"
+      ],
+      "trials": 2,
+      "passed": 0,
+      "failed": 2,
+      "correct": 0,
+      "failure_classes": {
+        "encoding": 2
+      },
+      "latencies": [
+        0.68,
+        0.5
+      ],
+      "calls_when_ok": [],
+      "confidences": [],
+      "contract_violations": {},
+      "sample_error": "engine error: 'utf-8' codec can't decode bytes in position 254-255: invalid continuation byte",
+      "sample_violation": null,
+      "sample_call": null,
+      "distractors": [],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "meeting-detail",
+      "lang": "en",
+      "domain": "meeting",
+      "expect_tools": [
+        "etscli_meeting_detail"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 2,
+      "failure_classes": {},
+      "latencies": [
+        0.6,
+        0.49
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.8813,
+        0.8813
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_meeting_detail\"]",
+      "distractors": [],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "meeting-create",
+      "lang": "en",
+      "domain": "meeting",
+      "expect_tools": [
+        "etscli_meeting_create"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 2,
+      "failure_classes": {},
+      "latencies": [
+        0.44,
+        0.46
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.7956,
+        0.7956
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_meeting_create\"]",
+      "distractors": [],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "meeting-finish",
+      "lang": "en",
+      "domain": "meeting",
+      "expect_tools": [
+        "etscli_meeting_finish"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.48,
+        0.53
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.605,
+        0.605
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_meeting_detail\"]",
+      "distractors": [],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "file-search",
+      "lang": "en",
+      "domain": "file",
+      "expect_tools": [
+        "etscli_file_search"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.47,
+        0.43
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.5388,
+        0.5388
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_fs_search\"]",
+      "distractors": [],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "file-detail",
+      "lang": "en",
+      "domain": "file",
+      "expect_tools": [
+        "etscli_file_detail"
+      ],
+      "trials": 2,
+      "passed": 0,
+      "failed": 2,
+      "correct": 0,
+      "failure_classes": {
+        "encoding": 2
+      },
+      "latencies": [
+        0.83,
+        0.63
+      ],
+      "calls_when_ok": [],
+      "confidences": [],
+      "contract_violations": {},
+      "sample_error": "engine error: 'utf-8' codec can't decode byte 0xe5 in position 261: invalid continuation byte",
+      "sample_violation": null,
+      "sample_call": null,
+      "distractors": [],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "file-upload",
+      "lang": "en",
+      "domain": "file",
+      "expect_tools": [
+        "etscli_file_upload_dir"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.86,
+        0.54
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.5223,
+        0.5223
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_file_upload\"]",
+      "distractors": [],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "file-download",
+      "lang": "en",
+      "domain": "file",
+      "expect_tools": [
+        "etscli_file_download"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.47,
+        0.48
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.4513,
+        0.4513
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_file_upload\"]",
+      "distractors": [],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "file-delete",
+      "lang": "en",
+      "domain": "file",
+      "expect_tools": [
+        "etscli_file_delete",
+        "etscli_fs_rm"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.55,
+        0.65
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.4261,
+        0.4261
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_fs_search\"]",
+      "distractors": [],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "fs-ls",
+      "lang": "en",
+      "domain": "fs",
+      "expect_tools": [
+        "etscli_fs_ls"
       ],
       "trials": 2,
       "passed": 2,
@@ -1665,13 +1452,295 @@
         1
       ],
       "confidences": [
+        0.3113,
+        0.3113
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_fs_ls\"]",
+      "distractors": [],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "fs-mkdir",
+      "lang": "en",
+      "domain": "fs",
+      "expect_tools": [
+        "etscli_fs_mkdir"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 2,
+      "failure_classes": {},
+      "latencies": [
+        0.45,
+        1.18
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.3116,
+        0.3116
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_fs_mkdir\"]",
+      "distractors": [],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "fs-rm",
+      "lang": "en",
+      "domain": "fs",
+      "expect_tools": [
+        "etscli_fs_rm",
+        "etscli_file_delete"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.53,
+        0.61
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.3596,
+        0.3596
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_migrate_verify\"]",
+      "distractors": [],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "fs-search",
+      "lang": "en",
+      "domain": "fs",
+      "expect_tools": [
+        "etscli_fs_search"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 2,
+      "failure_classes": {},
+      "latencies": [
+        0.55,
+        0.55
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.5585,
+        0.5585
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_fs_search\"]",
+      "distractors": [],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "fs-stat",
+      "lang": "en",
+      "domain": "fs",
+      "expect_tools": [
+        "etscli_fs_stats"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.43,
+        0.42
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.3947,
+        0.3947
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_fs_stat\"]",
+      "distractors": [],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "fs-add",
+      "lang": "en",
+      "domain": "fs",
+      "expect_tools": [
+        "etscli_fs_add"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.64,
+        0.67
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.3199,
+        0.3199
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_fs_search\"]",
+      "distractors": [],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "sharing-list",
+      "lang": "en",
+      "domain": "sharing",
+      "expect_tools": [
+        "etscli_sharing_list"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 2,
+      "failure_classes": {},
+      "latencies": [
+        0.53,
+        0.48
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        1.0,
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_sharing_list\"]",
+      "distractors": [],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "sharing-create",
+      "lang": "en",
+      "domain": "sharing",
+      "expect_tools": [
+        "etscli_sharing_create"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.45,
+        0.46
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.3949,
+        0.3949
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_fs_search\"]",
+      "distractors": [],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "sharing-delete",
+      "lang": "en",
+      "domain": "sharing",
+      "expect_tools": [
+        "etscli_sharing_delete"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.47,
+        0.46
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.9586,
+        0.9586
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_sharing_list\"]",
+      "distractors": [],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "system-info",
+      "lang": "en",
+      "domain": "system",
+      "expect_tools": [
+        "etscli_system_info"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 2,
+      "failure_classes": {},
+      "latencies": [
+        0.6,
+        0.69
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
         0.9447,
         0.9447
       ],
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": null
+      "sample_call": "[\"etscli_system_info\"]",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "system-health",
@@ -1686,8 +1755,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.43,
-        0.54
+        0.42,
+        0.53
       ],
       "calls_when_ok": [
         1,
@@ -1700,7 +1769,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[\"etscli_fs_search\"]"
+      "sample_call": "[\"etscli_fs_search\"]",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "system-alarm",
@@ -1715,8 +1786,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.43,
-        0.58
+        0.39,
+        0.38
       ],
       "calls_when_ok": [
         1,
@@ -1729,7 +1800,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[\"etscli_migrate_session_login\"]"
+      "sample_call": "[\"etscli_migrate_session_login\"]",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "discover-scan",
@@ -1744,8 +1817,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.43,
-        0.39
+        0.58,
+        0.43
       ],
       "calls_when_ok": [
         1,
@@ -1758,7 +1831,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[\"etscli_system_info\"]"
+      "sample_call": "[\"etscli_system_info\"]",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "migrate-transfer",
@@ -1773,8 +1848,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.76,
-        0.58
+        0.68,
+        0.56
       ],
       "calls_when_ok": [
         1,
@@ -1787,7 +1862,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[\"etscli_migrate_session_login\"]"
+      "sample_call": "[\"etscli_migrate_session_login\"]",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "migrate-verify",
@@ -1802,8 +1879,8 @@
       "correct": 2,
       "failure_classes": {},
       "latencies": [
-        0.35,
-        0.33
+        0.33,
+        0.34
       ],
       "calls_when_ok": [
         1,
@@ -1816,7 +1893,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": null
+      "sample_call": "[\"etscli_migrate_verify\"]",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "negative-greeting",
@@ -1829,8 +1908,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.42,
-        0.39
+        0.43,
+        0.45
       ],
       "calls_when_ok": [
         1,
@@ -1843,7 +1922,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[\"etscli_migrate_session_login\"]"
+      "sample_call": "[\"etscli_migrate_session_login\"]",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "negative-knowledge",
@@ -1856,8 +1937,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.54,
-        0.42
+        0.43,
+        0.43
       ],
       "calls_when_ok": [
         1,
@@ -1870,7 +1951,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[\"etscli_fs_mkdir\"]"
+      "sample_call": "[\"etscli_fs_mkdir\"]",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "negative-weather",
@@ -1883,8 +1966,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.54,
-        0.51
+        0.52,
+        0.47
       ],
       "calls_when_ok": [
         1,
@@ -1897,7 +1980,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[\"etscli_migrate_session_login\"]"
+      "sample_call": "[\"etscli_migrate_session_login\"]",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "auth-status",
@@ -1912,8 +1997,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        17.68,
-        0.72
+        17.8,
+        0.77
       ],
       "calls_when_ok": [
         0,
@@ -1926,7 +2011,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[] (未产出调用)"
+      "sample_call": "[] (未产出调用)",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "auth-list",
@@ -1941,8 +2028,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.64,
-        0.7
+        0.76,
+        0.69
       ],
       "calls_when_ok": [
         1,
@@ -1955,7 +2042,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[\"etscli_migrate_verify\"]"
+      "sample_call": "[\"etscli_migrate_verify\"]",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "auth-switch",
@@ -1970,8 +2059,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.6,
-        0.58
+        0.62,
+        0.62
       ],
       "calls_when_ok": [
         1,
@@ -1984,7 +2073,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[\"etscli_fs_stat\"]"
+      "sample_call": "[\"etscli_fs_stat\"]",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "auth-rename",
@@ -1999,8 +2090,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.64,
-        0.65
+        0.76,
+        0.71
       ],
       "calls_when_ok": [
         1,
@@ -2013,7 +2104,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[\"etscli_fs_stat\"]"
+      "sample_call": "[\"etscli_fs_stat\"]",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "auth-login",
@@ -2028,8 +2121,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.78,
-        1.0
+        0.89,
+        0.88
       ],
       "calls_when_ok": [
         1,
@@ -2042,7 +2135,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[\"etscli_fs_mkdir\"]"
+      "sample_call": "[\"etscli_fs_mkdir\"]",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "auth-logout",
@@ -2057,8 +2152,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.64,
-        0.62
+        0.69,
+        0.75
       ],
       "calls_when_ok": [
         0,
@@ -2071,7 +2166,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[] (未产出调用)"
+      "sample_call": "[] (未产出调用)",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "user-list",
@@ -2086,8 +2183,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.78,
-        0.81
+        0.76,
+        0.74
       ],
       "calls_when_ok": [
         1,
@@ -2100,7 +2197,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[\"etscli_migrate_session_login\"]"
+      "sample_call": "[\"etscli_migrate_session_login\"]",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "user-detail",
@@ -2117,7 +2216,7 @@
         "encoding": 2
       },
       "latencies": [
-        0.72,
+        0.71,
         0.63
       ],
       "calls_when_ok": [],
@@ -2125,7 +2224,9 @@
       "contract_violations": {},
       "sample_error": "engine error: 'utf-8' codec can't decode byte 0xe4 in position 244: invalid continuation byte",
       "sample_violation": null,
-      "sample_call": null
+      "sample_call": null,
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "user-register",
@@ -2140,8 +2241,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.76,
-        0.83
+        0.86,
+        0.93
       ],
       "calls_when_ok": [
         1,
@@ -2154,7 +2255,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[\"etscli_fs_mkdir\"]"
+      "sample_call": "[\"etscli_fs_mkdir\"]",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "user-passwd",
@@ -2169,8 +2272,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.64,
-        0.56
+        0.62,
+        0.55
       ],
       "calls_when_ok": [
         1,
@@ -2183,7 +2286,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[\"etscli_fs_mkdir\"]"
+      "sample_call": "[\"etscli_fs_mkdir\"]",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "chat-list",
@@ -2198,8 +2303,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.72,
-        0.68
+        0.73,
+        0.79
       ],
       "calls_when_ok": [
         0,
@@ -2212,7 +2317,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[] (未产出调用)"
+      "sample_call": "[] (未产出调用)",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "chat-messages",
@@ -2227,8 +2334,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.76,
-        0.77
+        0.79,
+        0.92
       ],
       "calls_when_ok": [
         0,
@@ -2241,7 +2348,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[] (未产出调用)"
+      "sample_call": "[] (未产出调用)",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "chat-send",
@@ -2256,8 +2365,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.84,
-        0.76
+        0.77,
+        0.84
       ],
       "calls_when_ok": [
         0,
@@ -2270,7 +2379,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[] (未产出调用)"
+      "sample_call": "[] (未产出调用)",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "chat-send-file",
@@ -2285,8 +2396,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.56,
-        0.69
+        0.55,
+        0.57
       ],
       "calls_when_ok": [
         1,
@@ -2299,7 +2410,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[\"etscli_migrate_session_login\"]"
+      "sample_call": "[\"etscli_migrate_session_login\"]",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "meeting-list",
@@ -2314,8 +2427,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        1.29,
-        0.72
+        0.69,
+        0.67
       ],
       "calls_when_ok": [
         1,
@@ -2328,7 +2441,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[\"etscli_migrate_session_login\"]"
+      "sample_call": "[\"etscli_migrate_session_login\"]",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "meeting-summary",
@@ -2343,8 +2458,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.96,
-        0.79
+        0.79,
+        0.85
       ],
       "calls_when_ok": [
         0,
@@ -2357,7 +2472,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[] (未产出调用)"
+      "sample_call": "[] (未产出调用)",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "meeting-detail",
@@ -2372,7 +2489,7 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.81,
+        0.83,
         0.69
       ],
       "calls_when_ok": [
@@ -2386,7 +2503,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[\"etscli_migrate_session_login\"]"
+      "sample_call": "[\"etscli_migrate_session_login\"]",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "meeting-create",
@@ -2403,15 +2522,17 @@
         "encoding": 2
       },
       "latencies": [
-        0.72,
-        0.75
+        0.88,
+        0.96
       ],
       "calls_when_ok": [],
       "confidences": [],
       "contract_violations": {},
       "sample_error": "engine error: 'utf-8' codec can't decode bytes in position 233-234: invalid continuation byte",
       "sample_violation": null,
-      "sample_call": null
+      "sample_call": null,
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "meeting-finish",
@@ -2426,8 +2547,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.96,
-        1.0
+        1.55,
+        0.76
       ],
       "calls_when_ok": [
         1,
@@ -2440,7 +2561,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[\"etscli_meeting_summary\"]"
+      "sample_call": "[\"etscli_meeting_summary\"]",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "file-search",
@@ -2455,8 +2578,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        1.01,
-        0.95
+        0.91,
+        0.84
       ],
       "calls_when_ok": [
         0,
@@ -2469,7 +2592,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[] (未产出调用)"
+      "sample_call": "[] (未产出调用)",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "file-detail",
@@ -2484,8 +2609,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.9,
-        0.77
+        0.78,
+        0.82
       ],
       "calls_when_ok": [
         1,
@@ -2498,7 +2623,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[\"etscli_fs_mkdir\"]"
+      "sample_call": "[\"etscli_fs_mkdir\"]",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "file-upload",
@@ -2513,8 +2640,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.73,
-        0.79
+        0.81,
+        0.85
       ],
       "calls_when_ok": [
         0,
@@ -2527,7 +2654,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[] (未产出调用)"
+      "sample_call": "[] (未产出调用)",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "file-download",
@@ -2542,7 +2671,7 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.72,
+        1.18,
         0.72
       ],
       "calls_when_ok": [
@@ -2556,7 +2685,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[] (未产出调用)"
+      "sample_call": "[] (未产出调用)",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "file-delete",
@@ -2572,8 +2703,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.75,
-        0.78
+        0.86,
+        0.85
       ],
       "calls_when_ok": [
         0,
@@ -2586,7 +2717,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[] (未产出调用)"
+      "sample_call": "[] (未产出调用)",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "fs-ls",
@@ -2603,15 +2736,17 @@
         "encoding": 2
       },
       "latencies": [
-        0.91,
-        0.88
+        0.84,
+        0.83
       ],
       "calls_when_ok": [],
       "confidences": [],
       "contract_violations": {},
       "sample_error": "engine error: 'utf-8' codec can't decode byte 0xe5 in position 273: invalid continuation byte",
       "sample_violation": null,
-      "sample_call": null
+      "sample_call": null,
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "fs-mkdir",
@@ -2626,8 +2761,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.75,
-        0.62
+        0.61,
+        0.63
       ],
       "calls_when_ok": [
         1,
@@ -2640,7 +2775,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[\"etscli_migrate_session_login\"]"
+      "sample_call": "[\"etscli_migrate_session_login\"]",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "fs-rm",
@@ -2656,7 +2793,7 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        1.0,
+        0.8,
         0.83
       ],
       "calls_when_ok": [
@@ -2670,7 +2807,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[] (未产出调用)"
+      "sample_call": "[] (未产出调用)",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "fs-search",
@@ -2685,7 +2824,7 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.62,
+        0.63,
         0.65
       ],
       "calls_when_ok": [
@@ -2699,7 +2838,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[\"etscli_migrate_session_login\"]"
+      "sample_call": "[\"etscli_migrate_session_login\"]",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "fs-stat",
@@ -2714,8 +2855,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.83,
-        0.65
+        0.61,
+        0.69
       ],
       "calls_when_ok": [
         1,
@@ -2728,7 +2869,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[\"etscli_migrate_session_login\"]"
+      "sample_call": "[\"etscli_migrate_session_login\"]",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "fs-add",
@@ -2743,8 +2886,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.77,
-        0.65
+        0.67,
+        0.77
       ],
       "calls_when_ok": [
         1,
@@ -2757,7 +2900,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[\"etscli_migrate_session_login\"]"
+      "sample_call": "[\"etscli_migrate_session_login\"]",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "sharing-list",
@@ -2772,8 +2917,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.61,
-        0.58
+        0.6,
+        0.6
       ],
       "calls_when_ok": [
         1,
@@ -2786,7 +2931,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[\"etscli_migrate_session_login\"]"
+      "sample_call": "[\"etscli_migrate_session_login\"]",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "sharing-create",
@@ -2802,7 +2949,7 @@
       "failure_classes": {},
       "latencies": [
         0.75,
-        0.75
+        0.81
       ],
       "calls_when_ok": [
         1,
@@ -2815,7 +2962,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[\"etscli_fs_mkdir\"]"
+      "sample_call": "[\"etscli_fs_mkdir\"]",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "sharing-delete",
@@ -2830,8 +2979,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.95,
-        0.72
+        0.83,
+        0.79
       ],
       "calls_when_ok": [
         0,
@@ -2844,7 +2993,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[] (未产出调用)"
+      "sample_call": "[] (未产出调用)",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "system-info",
@@ -2859,8 +3010,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.69,
-        1.38
+        0.78,
+        0.65
       ],
       "calls_when_ok": [
         1,
@@ -2873,7 +3024,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[\"etscli_migrate_session_login\"]"
+      "sample_call": "[\"etscli_migrate_session_login\"]",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "system-health",
@@ -2888,8 +3041,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.74,
-        0.74
+        0.76,
+        0.8
       ],
       "calls_when_ok": [
         0,
@@ -2902,7 +3055,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[] (未产出调用)"
+      "sample_call": "[] (未产出调用)",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "system-alarm",
@@ -2917,8 +3072,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.66,
-        0.81
+        0.71,
+        0.68
       ],
       "calls_when_ok": [
         1,
@@ -2931,7 +3086,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[\"etscli_migrate_session_login\"]"
+      "sample_call": "[\"etscli_migrate_session_login\"]",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "discover-scan",
@@ -2946,8 +3103,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.61,
-        0.57
+        0.59,
+        0.59
       ],
       "calls_when_ok": [
         1,
@@ -2960,7 +3117,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[\"etscli_migrate_transfer\"]"
+      "sample_call": "[\"etscli_migrate_transfer\"]",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "migrate-transfer",
@@ -2975,8 +3134,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.76,
-        0.86
+        0.74,
+        0.61
       ],
       "calls_when_ok": [
         1,
@@ -2989,7 +3148,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[\"etscli_migrate_session_login\"]"
+      "sample_call": "[\"etscli_migrate_session_login\"]",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "migrate-verify",
@@ -3004,8 +3165,8 @@
       "correct": 2,
       "failure_classes": {},
       "latencies": [
-        0.89,
-        0.6
+        1.38,
+        0.59
       ],
       "calls_when_ok": [
         1,
@@ -3018,7 +3179,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": null
+      "sample_call": "[\"etscli_migrate_verify\"]",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "negative-greeting",
@@ -3031,8 +3194,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.85,
-        0.76
+        0.84,
+        0.75
       ],
       "calls_when_ok": [
         1,
@@ -3045,7 +3208,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[\"etscli_fs_mkdir\"]"
+      "sample_call": "[\"etscli_fs_mkdir\"]",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "negative-knowledge",
@@ -3058,8 +3223,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.81,
-        0.51
+        0.57,
+        0.58
       ],
       "calls_when_ok": [
         1,
@@ -3072,7 +3237,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[\"etscli_migrate_verify\"]"
+      "sample_call": "[\"etscli_migrate_verify\"]",
+      "distractors": [],
+      "picked_distractor": 0
     },
     {
       "case_id": "negative-weather",
@@ -3099,7 +3266,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": null
+      "sample_call": "[] (未产出调用)",
+      "distractors": [],
+      "picked_distractor": 0
     }
   ]
 }

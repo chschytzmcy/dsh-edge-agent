@@ -1,0 +1,18 @@
+基线: dist/infl-base (distractors=0, trials=2)
+干扰: dist/infl-d3 (distractors=3, trials=2)
+
+── en ──  (78 次正例试验)
+  工具正确率:基线 20/78 (26%) → 干扰 14/78 (18%)  Δ -8%
+  被诱导改口:14 次试验(涉及 7 个 case)
+    chat-messages(选干扰2,对2→0), fs-ls(选干扰2,对2→0), fs-mkdir(选干扰2,对2→0), meeting-create(选干扰2,对2→0), migrate-verify(选干扰2,对2→0), sharing-list(选干扰2,对2→0), system-info(选干扰2,对2→0)
+  基线已错仍选中干扰项:22 次(非虚高,本就错)
+  错→对(噪声):5 个 case file-search,fs-add,sharing-create,sharing-delete,user-register
+
+── cn ──  (78 次正例试验)
+  工具正确率:基线 2/78 (3%) → 干扰 2/78 (3%)  Δ +0%
+  被诱导改口:2 次试验(涉及 1 个 case)
+    migrate-verify(选干扰2,对2→0)
+  基线已错仍选中干扰项:14 次(非虚高,本就错)
+  错→对(噪声):1 个 case file-detail
+
+== 虚高口径 == 基线共答对 22 次,其中 16 次被同义干扰改口 → 基线分数的 73% 经不起词形近义考验
