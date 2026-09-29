@@ -46,7 +46,31 @@
 | discover | 0% (0/2) | 0% (0/2) |
 | migrate | 0% (0/4) | 0% (0/4) |
 
-### 1.3 虚高检测(已注入干扰项)
+### 1.3 错误模式分类(全错正例)
+
+> 只统计 `correct == 0` 的正例 case(所有试验都没答对期望工具)。分类取该 case
+> 首个**错误**选择,按与期望工具的结构关系归入固定枚举。每一类直接对应端侧
+> 训练数据需要补的**最小对照对**(minimal pair),不是事后解释性的标签。
+
+**English**:正例 12 全对 / 0 部分对 / **27 全错**(下表只计全错)
+
+| 类别 | case 数 | 例(期望→实选) |
+|---|---|---|
+| 静默弃答(HTTP 200 但不调用) | 1 | `auth-login` auth_login→∅ |
+| 同族后缀丢失(x ↔ x_file / x_dir / x_raw ...) | 18 | `auth-logout` auth_logout→auth_logout_raw; `user-list` user_list→user_list_raw; `user-detail` user_detail→user_detail_raw … |
+| 同 service 高频兜底(list/search) | 3 | `file-download` file_download→file_search; `file-delete` file_delete→file_search; `fs-ls` fs_ls→fs_search |
+| 跨 service 无关误选(近似幻觉) | 5 | `auth-status` auth_status→system_info; `auth-rename` auth_rename→migrate_transfer; `fs-mkdir` fs_mkdir→meeting_create … |
+
+**Chinese**:正例 1 全对 / 0 部分对 / **38 全错**(下表只计全错)
+
+| 类别 | case 数 | 例(期望→实选) |
+|---|---|---|
+| 静默弃答(HTTP 200 但不调用) | 11 | `auth-logout` auth_logout→∅; `user-list` user_list→∅; `chat-list` chat_list→∅ … |
+| 同族后缀丢失(x ↔ x_file / x_dir / x_raw ...) | 7 | `user-detail` user_detail→user_detail_raw; `user-passwd` user_passwd→user_passwd_raw; `meeting-summary` meeting_summary→meeting_summary_export … |
+| 跨 service 无关误选(近似幻觉) | 16 | `auth-status` auth_status→migrate_verify; `auth-list` auth_list→fs_stat; `auth-switch` auth_switch→fs_stat … |
+| 仅 HTTP 失败(无可判定的响应) | 4 | `chat-send` chat_send→无 200 响应; `meeting-create` meeting_create→无 200 响应; `discover-scan` discover_scan→无 200 响应 … |
+
+### 1.4 虚高检测(已注入干扰项)
 
 每个正例 case 对应 **3** 个近义干扰工具。干扰项分两类:
 

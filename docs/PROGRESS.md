@@ -9819,3 +9819,37 @@ migrate-verify / sharing-list / system-info / user-list —— 基线"会选"的
 
 **产物导航**:`docs/bench/etscli-tools/README.md`(match-d0/ 与 match-d3/ 为正式口径;
 顶层 report.md 与 inflation-d3/ 标注为历史 cn 口径)。
+
+### §7.94.9 — 错误模式分类进报告(1.3 节,永久化):四类错法 → 四类最小对照样本(2026-09-29)
+
+user 要求把 §7.94.8 里一次性口头做的 en 失败拆解**写进报告**,做法不是补一段散文,而是
+把分类器固化进 `scripts/etscli-tools-test.py`:今后每次运行(含端侧模型复测)自动产出。
+
+**实现**:
+- `CaseResult.sample_wrong` —— 记录首个**错误**选择的工具名 JSON(`sample_call` 可能是对的,
+  不能拿来分类);rounds 合并时 `or` 保留。
+- `classify_error_pattern(expect, got_json)` —— 固定 9 类枚举,判定顺序:无响应 → 静默弃答 →
+  同族后缀(`x ↔ x_*` 前缀互含)→ file↔fs 专项 → 动词对 service 错(跨 service 同动词)→
+  同 service list/search 高频兜底 → 同 service 动词错 → 跨 service 无关(近似幻觉)。
+  兼容旧 blob(无 `sample_wrong` 时回退 `sample_call`,`"[] (未产出调用)"` 串识别为弃答)。
+- 报告新增 `### 1.3 错误模式分类(全错正例)`,原虚高检测顺延为 1.4;只统计 `correct==0`
+  的正例,表格给类别 / case 数 / 代表例 `case_id 期望→实选`。
+
+**实测分类结果(match 口径,四份报告已 `--render-only` 重渲)**:
+
+| | en(match-d0,22 全错) | en(match-d3,27 全错) | cn(match-d0,38 全错) |
+|---|---|---|---|
+| 静默弃答 | 5 | 1 | 12 |
+| 同族后缀丢失 | 2 | **18**(干扰项所致) | 7(d3) |
+| file↔fs 混淆 | 2 | 0 | 1 |
+| 动词对 service 错 | 2 | 0 | 0 |
+| 高频兜底 list/search | 4 | 3 | 0 |
+| 同 service 动词错 | 2 | 0 | 2 |
+| 跨 service 无关(近幻觉) | 5 | 5 | **21** |
+| 仅 HTTP 失败 | 0 | 0 | 2 |
+
+**读法与训练含义**:en 的错误**结构高度可辨**——兜底/混淆/后缀/动词错都占一头,每一类
+对应端侧训练要补的最小对照对:`detail↔list`、`file↔fs`、`x↔x_file/x_dir`、
+`login/logout/status` 近义动词对;补上这些 pair 才可能从 ~44% 往上走。cn 的错误 55% 是
+无关误选 + 32% 弃答,几乎不成结构,印证 §7.94.8 结论:中文瓶颈在模型能力而非词法线索,
+最小对照对救不了它。

@@ -708,6 +708,8 @@ class CaseResult:
     sample_error: str | None = None
     sample_violation: str | None = None
     sample_call: str | None = None
+    #: 首个**错误**选择的工具名 JSON(错误模式分类专用;sample_call 可能是对的)
+    sample_wrong: str | None = None
     distractors: list[str] = field(default_factory=list)
     picked_distractor: int = 0   # 选了干扰项的次数(被诱导,区别于"本来就乱选")
 
@@ -746,6 +748,9 @@ def run_case(url: str, case: Case, lang: str, tools: list[dict],
             if res.sample_call is None:
                 res.sample_call = (json.dumps(got, ensure_ascii=False) if got
                                    else "[] (未产出调用)")
+            if not is_correct(a.calls, allowed) and res.sample_wrong is None:
+                res.sample_wrong = (json.dumps(got, ensure_ascii=False) if got
+                                    else "[]")
         else:
             res.failed += 1
             cls = a.failure_class or "unknown"
@@ -753,6 +758,57 @@ def run_case(url: str, case: Case, lang: str, tools: list[dict],
             if res.sample_error is None:
                 res.sample_error = a.error
     return res
+
+
+def _split_tool(t: str) -> tuple[str, str]:
+    """`etscli_file_search` → (file, search);`etscli_migrate_session_login` → (migrate, session_login)。"""
+    body = t[len("etscli_"):] if t.startswith("etscli_") else t
+    parts = body.split("_", 1)
+    return parts[0], (parts[1] if len(parts) > 1 else "")
+
+
+_ERR_ORDER = [
+    "静默弃答(HTTP 200 但不调用)",
+    "同族后缀丢失(x ↔ x_file / x_dir / x_raw ...)",
+    "file↔fs 跨 service 混淆(按 id vs 按路径)",
+    "动词对、service 错(跨 service 塌缩)",
+    "同 service 高频兜底(list/search)",
+    "同 service 动词语义错",
+    "跨 service 无关误选(近似幻觉)",
+    "仅 HTTP 失败(无可判定的响应)",
+    "其他",
+]
+
+
+def classify_error_pattern(expect: list[str], got_json: str | None) -> str:
+    """对答错 case 的选择结构给出固定枚举分类(报告 1.3 与训练数据定向用)。"""
+    if got_json is None:
+        return "仅 HTTP 失败(无可判定的响应)"
+    if "未产出调用" in got_json:      # 旧 blob 只有 sample_call,空产出写作 "[] (未产出调用)"
+        return "静默弃答(HTTP 200 但不调用)"
+    try:
+        got = json.loads(got_json)
+    except Exception:
+        return "其他"
+    got = [g for g in got if isinstance(g, str)]
+    if not got:
+        return "静默弃答(HTTP 200 但不调用)"
+    e, g = expect[0], got[0]
+    if g == e:
+        return "其他"
+    if g.startswith(e + "_") or e.startswith(g + "_"):
+        return "同族后缀丢失(x ↔ x_file / x_dir / x_raw ...)"
+    d_e, v_e = _split_tool(e)
+    d_g, v_g = _split_tool(g)
+    if {d_e, d_g} == {"file", "fs"}:
+        return "file↔fs 跨 service 混淆(按 id vs 按路径)"
+    if d_e != d_g and v_e.split("_")[0] == v_g.split("_")[0] and v_e:
+        return "动词对、service 错(跨 service 塌缩)"
+    if d_e == d_g and v_g in ("list", "search"):
+        return "同 service 高频兜底(list/search)"
+    if d_e == d_g:
+        return "同 service 动词语义错"
+    return "跨 service 无关误选(近似幻觉)"
 
 
 # ── 报告渲染 ────────────────────────────────────────────────────────────────
@@ -843,13 +899,59 @@ def render_report(results: list[CaseResult], url: str, trials: int, ts: str,
         A(f"| {dom} | {fmt(e)} | {fmt(c)} |")
     A("")
 
-    # ── 1.3 虚高检测 ──
+    # ── 1.3 错误模式分类 ──
+    A("### 1.3 错误模式分类(全错正例)")
+    A("")
+    A("> 只统计 `correct == 0` 的正例 case(所有试验都没答对期望工具)。分类取该 case")
+    A("> 首个**错误**选择,按与期望工具的结构关系归入固定枚举。每一类直接对应端侧")
+    A("> 训练数据需要补的**最小对照对**(minimal pair),不是事后解释性的标签。")
+    A("")
+
+    def _err_example(r: "CaseResult") -> str:
+        exp = r.expect_tools[0].removeprefix("etscli_")
+        s = r.sample_wrong if r.sample_wrong is not None else (r.sample_call or "")
+        if not s:
+            return f"`{r.case_id}` {exp}→无 200 响应"
+        try:
+            gotl = [x for x in json.loads(s) if isinstance(x, str)]
+        except Exception:
+            gotl = []
+        g = gotl[0].removeprefix("etscli_") if gotl else "∅"
+        return f"`{r.case_id}` {exp}→{g}"
+
+    for label, g in (("English", pos_en), ("Chinese", pos_cn)):
+        full = sum(1 for r in g if r.correct == r.trials)
+        part = sum(1 for r in g if 0 < r.correct < r.trials)
+        zero = [r for r in g if r.correct == 0]
+        A(f"**{label}**:正例 {full} 全对 / {part} 部分对 / **{len(zero)} 全错**"
+          "(下表只计全错)")
+        A("")
+        if not zero:
+            A("无全错正例。")
+            A("")
+            continue
+        buckets: dict[str, list[str]] = {}
+        for r in zero:
+            s = r.sample_wrong if r.sample_wrong is not None else r.sample_call
+            buckets.setdefault(classify_error_pattern(r.expect_tools, s), []).append(
+                _err_example(r))
+        A("| 类别 | case 数 | 例(期望→实选) |")
+        A("|---|---|---|")
+        for cls in _ERR_ORDER:
+            if cls in buckets:
+                items = buckets[cls]
+                ex = "; ".join(items[:3])
+                A(f"| {cls} | {len(items)} | {ex}"
+                  f"{' …' if len(items) > 3 else ''} |")
+        A("")
+
+    # ── 1.4 虚高检测 ──
     if n_distractors > 0:
         trapped = sum(r.picked_distractor for r in pos_en) + \
                   sum(r.picked_distractor for r in pos_cn)
         pos_t_all = tr(pos_en) + tr(pos_cn)
         corr_all = agg(pos_en, "correct") + agg(pos_cn, "correct")
-        A("### 1.3 虚高检测(已注入干扰项)")
+        A("### 1.4 虚高检测(已注入干扰项)")
         A("")
         A(f"每个正例 case 对应 **{n_distractors}** 个近义干扰工具。干扰项分两类:")
         A("")
@@ -1054,6 +1156,7 @@ def main() -> int:
                     a.sample_error = a.sample_error or r.sample_error
                     a.sample_violation = a.sample_violation or r.sample_violation
                     a.sample_call = a.sample_call or r.sample_call
+                    a.sample_wrong = a.sample_wrong or r.sample_wrong
                 cur = acc[key]
                 done += args.trials
                 mark = "✓" if cur.correct == cur.trials else ("~" if cur.passed else "✗")

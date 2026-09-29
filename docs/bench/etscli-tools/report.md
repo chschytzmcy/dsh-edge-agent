@@ -45,6 +45,33 @@
 | discover | 0% (0/2) | 0% (0/2) |
 | migrate | 50% (2/4) | 50% (2/4) |
 
+### 1.3 错误模式分类(全错正例)
+
+> 只统计 `correct == 0` 的正例 case(所有试验都没答对期望工具)。分类取该 case
+> 首个**错误**选择,按与期望工具的结构关系归入固定枚举。每一类直接对应端侧
+> 训练数据需要补的**最小对照对**(minimal pair),不是事后解释性的标签。
+
+**English**:正例 10 全对 / 0 部分对 / **29 全错**(下表只计全错)
+
+| 类别 | case 数 | 例(期望→实选) |
+|---|---|---|
+| 同族后缀丢失(x ↔ x_file / x_dir / x_raw ...) | 1 | `file-upload` file_upload_dir→file_upload |
+| file↔fs 跨 service 混淆(按 id vs 按路径) | 2 | `file-search` file_search→fs_search; `file-delete` file_delete→fs_search |
+| 同 service 高频兜底(list/search) | 3 | `user-detail` user_detail→user_list; `fs-add` fs_add→fs_search; `sharing-delete` sharing_delete→sharing_list |
+| 同 service 动词语义错 | 5 | `user-passwd` user_passwd→user_detail; `meeting-finish` meeting_finish→meeting_detail; `file-download` file_download→file_upload … |
+| 跨 service 无关误选(近似幻觉) | 14 | `auth-status` auth_status→fs_ls; `auth-list` auth_list→migrate_session_login; `auth-switch` auth_switch→fs_stat … |
+| 仅 HTTP 失败(无可判定的响应) | 4 | `chat-send` chat_send→无 200 响应; `meeting-list` meeting_list→无 200 响应; `meeting-summary` meeting_summary→无 200 响应 … |
+
+**Chinese**:正例 1 全对 / 0 部分对 / **38 全错**(下表只计全错)
+
+| 类别 | case 数 | 例(期望→实选) |
+|---|---|---|
+| 静默弃答(HTTP 200 但不调用) | 13 | `auth-status` auth_status→∅; `auth-logout` auth_logout→∅; `chat-list` chat_list→∅ … |
+| file↔fs 跨 service 混淆(按 id vs 按路径) | 1 | `file-detail` file_detail→fs_mkdir |
+| 同 service 动词语义错 | 2 | `meeting-finish` meeting_finish→meeting_summary; `migrate-transfer` migrate_transfer→migrate_session_login |
+| 跨 service 无关误选(近似幻觉) | 19 | `auth-list` auth_list→migrate_verify; `auth-switch` auth_switch→fs_stat; `auth-rename` auth_rename→fs_stat … |
+| 仅 HTTP 失败(无可判定的响应) | 3 | `user-detail` user_detail→无 200 响应; `meeting-create` meeting_create→无 200 响应; `fs-ls` fs_ls→无 200 响应 |
+
 ## 2. 逐 case 明细
 
 | case | 语言 | 期望工具 | HTTP | 产出 | 正确 | 实际产出 |

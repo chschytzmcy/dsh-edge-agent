@@ -46,9 +46,35 @@
 | discover | 0% (0/2) | 0% (0/2) |
 | migrate | 0% (0/4) | 0% (0/4) |
 
-### 1.3 虚高检测(已注入干扰项)
+### 1.3 错误模式分类(全错正例)
 
-每个 case 注入了 **3** 个近义干扰工具。干扰项分两类:
+> 只统计 `correct == 0` 的正例 case(所有试验都没答对期望工具)。分类取该 case
+> 首个**错误**选择,按与期望工具的结构关系归入固定枚举。每一类直接对应端侧
+> 训练数据需要补的**最小对照对**(minimal pair),不是事后解释性的标签。
+
+**English**:正例 7 全对 / 0 部分对 / **32 全错**(下表只计全错)
+
+| 类别 | case 数 | 例(期望→实选) |
+|---|---|---|
+| 静默弃答(HTTP 200 但不调用) | 2 | `file-detail` file_detail→∅; `file-delete` file_delete→∅ |
+| 同族后缀丢失(x ↔ x_file / x_dir / x_raw ...) | 18 | `auth-status` auth_status→auth_status_raw; `user-list` user_list→user_list_raw; `user-detail` user_detail→user_detail_raw … |
+| file↔fs 跨 service 混淆(按 id vs 按路径) | 1 | `fs-search` fs_search→file_search |
+| 动词对、service 错(跨 service 塌缩) | 1 | `auth-rename` auth_rename→fs_rename |
+| 跨 service 无关误选(近似幻觉) | 9 | `auth-list` auth_list→migrate_verify; `auth-switch` auth_switch→fs_stat; `auth-login` auth_login→fs_mv … |
+| 仅 HTTP 失败(无可判定的响应) | 1 | `fs-rm` fs_rm→无 200 响应 |
+
+**Chinese**:正例 1 全对 / 0 部分对 / **38 全错**(下表只计全错)
+
+| 类别 | case 数 | 例(期望→实选) |
+|---|---|---|
+| 静默弃答(HTTP 200 但不调用) | 13 | `auth-list` auth_list→∅; `auth-logout` auth_logout→∅; `user-list` user_list→∅ … |
+| 同族后缀丢失(x ↔ x_file / x_dir / x_raw ...) | 8 | `user-detail` user_detail→user_detail_raw; `user-passwd` user_passwd→user_passwd_raw; `meeting-summary` meeting_summary→meeting_summary_export … |
+| 跨 service 无关误选(近似幻觉) | 14 | `auth-status` auth_status→migrate_verify; `auth-switch` auth_switch→fs_stat; `auth-rename` auth_rename→fs_stat … |
+| 仅 HTTP 失败(无可判定的响应) | 3 | `chat-send` chat_send→无 200 响应; `meeting-create` meeting_create→无 200 响应; `discover-scan` discover_scan→无 200 响应 |
+
+### 1.4 虚高检测(已注入干扰项)
+
+每个正例 case 对应 **3** 个近义干扰工具。干扰项分两类:
 
 1. **跨 service 混淆** —— 如 `file_search` vs `fs_search`、`file_delete` vs
    `fs_rm`(按 id 操作 vs 按路径操作,是真实产品里最易混的一对)

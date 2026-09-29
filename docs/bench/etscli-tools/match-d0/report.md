@@ -45,6 +45,34 @@
 | discover | 0% (0/2) | 0% (0/2) |
 | migrate | 100% (4/4) | 50% (2/4) |
 
+### 1.3 错误模式分类(全错正例)
+
+> 只统计 `correct == 0` 的正例 case(所有试验都没答对期望工具)。分类取该 case
+> 首个**错误**选择,按与期望工具的结构关系归入固定枚举。每一类直接对应端侧
+> 训练数据需要补的**最小对照对**(minimal pair),不是事后解释性的标签。
+
+**English**:正例 17 全对 / 0 部分对 / **22 全错**(下表只计全错)
+
+| 类别 | case 数 | 例(期望→实选) |
+|---|---|---|
+| 静默弃答(HTTP 200 但不调用) | 5 | `auth-login` auth_login→∅; `chat-send` chat_send→∅; `meeting-finish` meeting_finish→∅ … |
+| 同族后缀丢失(x ↔ x_file / x_dir / x_raw ...) | 2 | `chat-send-file` chat_send_file→chat_send; `file-upload` file_upload_dir→file_upload |
+| file↔fs 跨 service 混淆(按 id vs 按路径) | 2 | `file-search` file_search→fs_search; `fs-ls` fs_ls→file_search |
+| 动词对、service 错(跨 service 塌缩) | 2 | `auth-list` auth_list→user_list; `auth-rename` auth_rename→fs_rename |
+| 同 service 高频兜底(list/search) | 4 | `user-detail` user_detail→user_list; `user-passwd` user_passwd→user_list; `file-detail` file_detail→file_search … |
+| 同 service 动词语义错 | 2 | `chat-messages` chat_messages→chat_files; `sharing-delete` sharing_delete→sharing_create |
+| 跨 service 无关误选(近似幻觉) | 5 | `fs-mkdir` fs_mkdir→meeting_create; `sharing-create` sharing_create→fs_search; `system-health` system_health→fs_rename … |
+
+**Chinese**:正例 1 全对 / 0 部分对 / **38 全错**(下表只计全错)
+
+| 类别 | case 数 | 例(期望→实选) |
+|---|---|---|
+| 静默弃答(HTTP 200 但不调用) | 12 | `auth-status` auth_status→∅; `chat-list` chat_list→∅; `chat-messages` chat_messages→∅ … |
+| file↔fs 跨 service 混淆(按 id vs 按路径) | 1 | `file-detail` file_detail→fs_mkdir |
+| 同 service 动词语义错 | 2 | `meeting-finish` meeting_finish→meeting_summary; `migrate-transfer` migrate_transfer→migrate_verify |
+| 跨 service 无关误选(近似幻觉) | 21 | `auth-list` auth_list→migrate_verify; `auth-switch` auth_switch→fs_stat; `auth-rename` auth_rename→migrate_verify … |
+| 仅 HTTP 失败(无可判定的响应) | 2 | `user-detail` user_detail→无 200 响应; `meeting-create` meeting_create→无 200 响应 |
+
 ## 2. 逐 case 明细
 
 | case | 语言 | 期望工具 | HTTP | 产出 | 正确 | 实际产出 |
