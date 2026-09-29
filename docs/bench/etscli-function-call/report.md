@@ -1,9 +1,9 @@
 # etscli 场景 function-call caller 测试报告
 
-- **生成时间**: 20260929T012341Z
+- **生成时间**: 20260929T024353Z
 - **被测服务**: `http://127.0.0.1:8081` —— 自报 `未自报` 3.0.1
 - **语料**: etscli 真实场景,39 正例 + 3 负例,覆盖 11 个 service
-- **每 case 试验次数**: 2
+- **每 case 试验次数**: 4
 - **工具集**: `bash`(执行 etscli)+ `read`(干扰项,测工具选择)
 
 ## 1. 判定
@@ -13,7 +13,7 @@
 | HTTP 成功 | 100% | 43% |
 | 有效产出(有调用) | 38% | 17% |
 | **命令正确率** | **5%** | **2%** |
-| 中位延迟 | 0.2s | 0.4s |
+| 中位延迟 | 0.2s | 0.5s |
 
 > **三层评分的区别很重要:**
 >
@@ -32,8 +32,8 @@
 
 | 语言 | 负例 | 正确(未触发) | 过度触发率 |
 |---|---|---|---|
-| English | 6 | 4 | 33% |
-| Chinese | 6 | 2 | 67% |
+| English | 12 | 8 | 33% |
+| Chinese | 12 | 4 | 67% |
 
 > 闲聊/知识问答**不该**产生 etscli 调用。过度触发会白白执行命令,
 > 严重时产生非预期副作用(如 `fs rm`)。
@@ -47,106 +47,106 @@
 
 | case | 语言 | 期望命令 | HTTP | 有效产出 | 正确 | conf | 失败类型 |
 |---|---|---|---|---|---|---|---|
-| `auth-status` | English | `etscli auth status` | 2/2 | 0/2 | 0/2 | 1.00 | — |
-| `auth-list` | English | `etscli auth list` | 2/2 | 0/2 | 0/2 | 1.00 | — |
-| `auth-switch` | English | `etscli auth switch` | 2/2 | 0/2 | 0/2 | 1.00 | — |
-| `auth-rename` | English | `etscli auth rename` | 2/2 | 0/2 | 0/2 | 1.00 | — |
-| `auth-login` | English | `etscli auth login` | 2/2 | 2/2 | 0/2 | 0.95 | — |
-| `auth-logout` | English | `etscli auth logout` | 2/2 | 0/2 | 0/2 | 1.00 | — |
-| `user-list` | English | `etscli user list` | 2/2 | 2/2 | 0/2 | 0.12 | — |
-| `user-detail` | English | `etscli user detail` | 2/2 | 2/2 | 0/2 | 1.00 | — |
-| `user-register` | English | `etscli user register` | 2/2 | 0/2 | 0/2 | 1.00 | — |
-| `user-passwd` | English | `etscli user passwd` | 2/2 | 0/2 | 0/2 | 0.98 | — |
-| `chat-list` | English | `etscli chat list` | 2/2 | 0/2 | 0/2 | 1.00 | — |
-| `chat-messages` | English | `etscli chat messages` | 2/2 | 0/2 | 0/2 | 1.00 | — |
-| `chat-send` | English | `etscli chat send` | 2/2 | 0/2 | 0/2 | 1.00 | — |
-| `chat-send-file` | English | `etscli chat send-file` | 2/2 | 0/2 | 0/2 | 1.00 | — |
-| `meeting-list` | English | `etscli meeting list` | 2/2 | 0/2 | 0/2 | 0.64 | — |
-| `meeting-summary` | English | `etscli meeting summary` | 2/2 | 2/2 | 0/2 | 1.00 | — |
-| `meeting-detail` | English | `etscli meeting detail` | 2/2 | 2/2 | 0/2 | 0.96 | — |
-| `meeting-create` | English | `etscli meeting create` | 2/2 | 0/2 | 0/2 | 0.97 | — |
-| `meeting-finish` | English | `etscli meeting finish` | 2/2 | 2/2 | 0/2 | 0.69 | — |
-| `file-search` | English | `etscli file search` | 2/2 | 0/2 | 0/2 | 1.00 | — |
-| `file-detail` | English | `etscli file detail` | 2/2 | 2/2 | 0/2 | 0.92 | — |
-| `file-upload` | English | `etscli file upload`<br/>或 `etscli file upload-dir` | 2/2 | 2/2 | 0/2 | 1.00 | — |
-| `file-download` | English | `etscli file download` | 2/2 | 2/2 | 0/2 | 1.00 | — |
-| `file-delete` | English | `etscli file delete`<br/>或 `etscli fs rm` | 2/2 | 0/2 | 0/2 | 1.00 | — |
-| `fs-ls` | English | `etscli fs ls` | 2/2 | 0/2 | 0/2 | 1.00 | — |
-| `fs-mkdir` | English | `etscli fs mkdir` | 2/2 | 0/2 | 0/2 | 1.00 | — |
-| `fs-rm` | English | `etscli fs rm`<br/>或 `etscli file delete` | 2/2 | 0/2 | 0/2 | 1.00 | — |
-| `fs-search` | English | `etscli fs search` | 2/2 | 0/2 | 0/2 | 1.00 | — |
-| `fs-stat` | English | `etscli fs stat`<br/>或 `etscli fs stats` | 2/2 | 2/2 | 0/2 | 1.00 | — |
-| `fs-add` | English | `etscli fs add` | 2/2 | 0/2 | 0/2 | 1.00 | — |
-| `sharing-list` | English | `etscli sharing list` | 2/2 | 0/2 | 0/2 | 1.00 | — |
-| `sharing-create` | English | `etscli sharing create` | 2/2 | 0/2 | 0/2 | 1.00 | — |
-| `sharing-delete` | English | `etscli sharing delete` | 2/2 | 0/2 | 0/2 | 1.00 | — |
-| `system-info` | English | `etscli system info` | 2/2 | 2/2 | 0/2 | 1.00 | — |
-| `system-health` | English | `etscli system health` | 2/2 | 2/2 | 0/2 | 1.00 | — |
-| `system-alarm` | English | `etscli system alarm`<br/>或 `etscli system alarm list` | 2/2 | 0/2 | 0/2 | 0.83 | — |
-| `discover-scan` | English | `etscli discover scan` | 2/2 | 2/2 | 0/2 | 1.00 | — |
-| `migrate-transfer` | English | `etscli migrate transfer` | 2/2 | 2/2 | 0/2 | 1.00 | — |
-| `migrate-verify` | English | `etscli migrate verify` | 2/2 | 2/2 | 0/2 | 1.00 | — |
-| `negative-greeting` | English | _不应调用_ | 2/2 | 2/2 | 0/2 | 1.00 | — |
-| `negative-knowledge` | English | _不应调用_ | 2/2 | 0/2 | 2/2 | 1.00 | — |
-| `negative-weather` | English | _不应调用_ | 2/2 | 0/2 | 2/2 | 0.93 | — |
-| `auth-status` | Chinese | `etscli auth status` | 0/2 | 0/0 | 0/2 | — | encoding×2 |
-| `auth-list` | Chinese | `etscli auth list` | 2/2 | 0/2 | 0/2 | 0.78 | — |
-| `auth-switch` | Chinese | `etscli auth switch` | 2/2 | 2/2 | 0/2 | 0.77 | — |
-| `auth-rename` | Chinese | `etscli auth rename` | 2/2 | 0/2 | 0/2 | 0.42 | — |
-| `auth-login` | Chinese | `etscli auth login` | 2/2 | 0/2 | 0/2 | 0.74 | — |
-| `auth-logout` | Chinese | `etscli auth logout` | 0/2 | 0/0 | 0/2 | — | encoding×2 |
-| `user-list` | Chinese | `etscli user list` | 0/2 | 0/0 | 0/2 | — | encoding×2 |
-| `user-detail` | Chinese | `etscli user detail` | 2/2 | 2/2 | 0/2 | 0.51 | — |
-| `user-register` | Chinese | `etscli user register` | 2/2 | 2/2 | 0/2 | 0.65 | — |
-| `user-passwd` | Chinese | `etscli user passwd` | 2/2 | 2/2 | 0/2 | 0.28 | — |
-| `chat-list` | Chinese | `etscli chat list` | 0/2 | 0/0 | 0/2 | — | encoding×2 |
-| `chat-messages` | Chinese | `etscli chat messages` | 0/2 | 0/0 | 0/2 | — | encoding×2 |
-| `chat-send` | Chinese | `etscli chat send` | 0/2 | 0/0 | 0/2 | — | encoding×2 |
-| `chat-send-file` | Chinese | `etscli chat send-file` | 2/2 | 0/2 | 0/2 | 0.88 | — |
-| `meeting-list` | Chinese | `etscli meeting list` | 0/2 | 0/0 | 0/2 | — | encoding×2 |
-| `meeting-summary` | Chinese | `etscli meeting summary` | 0/2 | 0/0 | 0/2 | — | encoding×2 |
-| `meeting-detail` | Chinese | `etscli meeting detail` | 0/2 | 0/0 | 0/2 | — | encoding×2 |
-| `meeting-create` | Chinese | `etscli meeting create` | 0/2 | 0/0 | 0/2 | — | encoding×2 |
-| `meeting-finish` | Chinese | `etscli meeting finish` | 0/2 | 0/0 | 0/2 | — | encoding×2 |
-| `file-search` | Chinese | `etscli file search` | 0/2 | 0/0 | 0/2 | — | encoding×2 |
-| `file-detail` | Chinese | `etscli file detail` | 2/2 | 2/2 | 0/2 | 0.95 | — |
-| `file-upload` | Chinese | `etscli file upload`<br/>或 `etscli file upload-dir` | 0/2 | 0/0 | 0/2 | — | encoding×1, other×1 |
-| `file-download` | Chinese | `etscli file download` | 2/2 | 0/2 | 0/2 | 0.97 | — |
-| `file-delete` | Chinese | `etscli file delete`<br/>或 `etscli fs rm` | 2/2 | 0/2 | 0/2 | 0.98 | — |
-| `fs-ls` | Chinese | `etscli fs ls` | 0/2 | 0/0 | 0/2 | — | encoding×2 |
-| `fs-mkdir` | Chinese | `etscli fs mkdir` | 0/2 | 0/0 | 0/2 | — | encoding×2 |
-| `fs-rm` | Chinese | `etscli fs rm`<br/>或 `etscli file delete` | 0/2 | 0/0 | 0/2 | — | encoding×2 |
-| `fs-search` | Chinese | `etscli fs search` | 0/2 | 0/0 | 0/2 | — | encoding×2 |
-| `fs-stat` | Chinese | `etscli fs stat`<br/>或 `etscli fs stats` | 2/2 | 0/2 | 0/2 | 0.75 | — |
-| `fs-add` | Chinese | `etscli fs add` | 0/2 | 0/0 | 0/2 | — | encoding×2 |
-| `sharing-list` | Chinese | `etscli sharing list` | 0/2 | 0/0 | 0/2 | — | encoding×2 |
-| `sharing-create` | Chinese | `etscli sharing create` | 0/2 | 0/0 | 0/2 | — | encoding×2 |
-| `sharing-delete` | Chinese | `etscli sharing delete` | 2/2 | 0/2 | 0/2 | 0.96 | — |
-| `system-info` | Chinese | `etscli system info` | 2/2 | 0/2 | 0/2 | 0.90 | — |
-| `system-health` | Chinese | `etscli system health` | 0/2 | 0/0 | 0/2 | — | encoding×2 |
-| `system-alarm` | Chinese | `etscli system alarm`<br/>或 `etscli system alarm list` | 2/2 | 0/2 | 0/2 | 0.80 | — |
-| `discover-scan` | Chinese | `etscli discover scan` | 0/2 | 0/0 | 0/2 | — | encoding×2 |
-| `migrate-transfer` | Chinese | `etscli migrate transfer` | 0/2 | 0/0 | 0/2 | — | encoding×2 |
-| `migrate-verify` | Chinese | `etscli migrate verify` | 2/2 | 2/2 | 0/2 | 0.10 | — |
-| `negative-greeting` | Chinese | _不应调用_ | 2/2 | 2/2 | 0/2 | 0.81 | — |
-| `negative-knowledge` | Chinese | _不应调用_ | 2/2 | 0/2 | 2/2 | 0.79 | — |
-| `negative-weather` | Chinese | _不应调用_ | 0/2 | 0/0 | 0/2 | — | encoding×2 |
+| `auth-status` | English | `etscli auth status` | 4/4 | 0/4 | 0/4 | 1.00 | — |
+| `auth-list` | English | `etscli auth list` | 4/4 | 0/4 | 0/4 | 1.00 | — |
+| `auth-switch` | English | `etscli auth switch` | 4/4 | 0/4 | 0/4 | 1.00 | — |
+| `auth-rename` | English | `etscli auth rename` | 4/4 | 0/4 | 0/4 | 1.00 | — |
+| `auth-login` | English | `etscli auth login` | 4/4 | 4/4 | 0/4 | 0.95 | — |
+| `auth-logout` | English | `etscli auth logout` | 4/4 | 0/4 | 0/4 | 1.00 | — |
+| `user-list` | English | `etscli user list` | 4/4 | 4/4 | 0/4 | 0.12 | — |
+| `user-detail` | English | `etscli user detail` | 4/4 | 4/4 | 0/4 | 1.00 | — |
+| `user-register` | English | `etscli user register` | 4/4 | 0/4 | 0/4 | 1.00 | — |
+| `user-passwd` | English | `etscli user passwd` | 4/4 | 0/4 | 0/4 | 0.98 | — |
+| `chat-list` | English | `etscli chat list` | 4/4 | 0/4 | 0/4 | 1.00 | — |
+| `chat-messages` | English | `etscli chat messages` | 4/4 | 0/4 | 0/4 | 1.00 | — |
+| `chat-send` | English | `etscli chat send` | 4/4 | 0/4 | 0/4 | 1.00 | — |
+| `chat-send-file` | English | `etscli chat send-file` | 4/4 | 0/4 | 0/4 | 1.00 | — |
+| `meeting-list` | English | `etscli meeting list` | 4/4 | 0/4 | 0/4 | 0.64 | — |
+| `meeting-summary` | English | `etscli meeting summary` | 4/4 | 4/4 | 0/4 | 1.00 | — |
+| `meeting-detail` | English | `etscli meeting detail` | 4/4 | 4/4 | 0/4 | 0.96 | — |
+| `meeting-create` | English | `etscli meeting create` | 4/4 | 0/4 | 0/4 | 0.97 | — |
+| `meeting-finish` | English | `etscli meeting finish` | 4/4 | 4/4 | 0/4 | 0.69 | — |
+| `file-search` | English | `etscli file search` | 4/4 | 0/4 | 0/4 | 1.00 | — |
+| `file-detail` | English | `etscli file detail` | 4/4 | 4/4 | 0/4 | 0.92 | — |
+| `file-upload` | English | `etscli file upload`<br/>或 `etscli file upload-dir` | 4/4 | 4/4 | 0/4 | 1.00 | — |
+| `file-download` | English | `etscli file download` | 4/4 | 4/4 | 0/4 | 1.00 | — |
+| `file-delete` | English | `etscli file delete`<br/>或 `etscli fs rm` | 4/4 | 0/4 | 0/4 | 1.00 | — |
+| `fs-ls` | English | `etscli fs ls` | 4/4 | 0/4 | 0/4 | 1.00 | — |
+| `fs-mkdir` | English | `etscli fs mkdir` | 4/4 | 0/4 | 0/4 | 1.00 | — |
+| `fs-rm` | English | `etscli fs rm`<br/>或 `etscli file delete` | 4/4 | 0/4 | 0/4 | 1.00 | — |
+| `fs-search` | English | `etscli fs search` | 4/4 | 0/4 | 0/4 | 1.00 | — |
+| `fs-stat` | English | `etscli fs stat`<br/>或 `etscli fs stats` | 4/4 | 4/4 | 0/4 | 1.00 | — |
+| `fs-add` | English | `etscli fs add` | 4/4 | 0/4 | 0/4 | 1.00 | — |
+| `sharing-list` | English | `etscli sharing list` | 4/4 | 0/4 | 0/4 | 1.00 | — |
+| `sharing-create` | English | `etscli sharing create` | 4/4 | 0/4 | 0/4 | 1.00 | — |
+| `sharing-delete` | English | `etscli sharing delete` | 4/4 | 0/4 | 0/4 | 1.00 | — |
+| `system-info` | English | `etscli system info` | 4/4 | 4/4 | 0/4 | 1.00 | — |
+| `system-health` | English | `etscli system health` | 4/4 | 4/4 | 0/4 | 1.00 | — |
+| `system-alarm` | English | `etscli system alarm`<br/>或 `etscli system alarm list` | 4/4 | 0/4 | 0/4 | 0.83 | — |
+| `discover-scan` | English | `etscli discover scan` | 4/4 | 4/4 | 0/4 | 1.00 | — |
+| `migrate-transfer` | English | `etscli migrate transfer` | 4/4 | 4/4 | 0/4 | 1.00 | — |
+| `migrate-verify` | English | `etscli migrate verify` | 4/4 | 4/4 | 0/4 | 1.00 | — |
+| `negative-greeting` | English | _不应调用_ | 4/4 | 4/4 | 0/4 | 1.00 | — |
+| `negative-knowledge` | English | _不应调用_ | 4/4 | 0/4 | 4/4 | 1.00 | — |
+| `negative-weather` | English | _不应调用_ | 4/4 | 0/4 | 4/4 | 0.93 | — |
+| `auth-status` | Chinese | `etscli auth status` | 0/4 | 0/0 | 0/4 | — | encoding×4 |
+| `auth-list` | Chinese | `etscli auth list` | 4/4 | 0/4 | 0/4 | 0.78 | — |
+| `auth-switch` | Chinese | `etscli auth switch` | 4/4 | 4/4 | 0/4 | 0.77 | — |
+| `auth-rename` | Chinese | `etscli auth rename` | 4/4 | 0/4 | 0/4 | 0.42 | — |
+| `auth-login` | Chinese | `etscli auth login` | 4/4 | 0/4 | 0/4 | 0.74 | — |
+| `auth-logout` | Chinese | `etscli auth logout` | 0/4 | 0/0 | 0/4 | — | encoding×4 |
+| `user-list` | Chinese | `etscli user list` | 0/4 | 0/0 | 0/4 | — | encoding×4 |
+| `user-detail` | Chinese | `etscli user detail` | 4/4 | 4/4 | 0/4 | 0.51 | — |
+| `user-register` | Chinese | `etscli user register` | 4/4 | 4/4 | 0/4 | 0.65 | — |
+| `user-passwd` | Chinese | `etscli user passwd` | 4/4 | 4/4 | 0/4 | 0.28 | — |
+| `chat-list` | Chinese | `etscli chat list` | 0/4 | 0/0 | 0/4 | — | encoding×4 |
+| `chat-messages` | Chinese | `etscli chat messages` | 0/4 | 0/0 | 0/4 | — | encoding×4 |
+| `chat-send` | Chinese | `etscli chat send` | 0/4 | 0/0 | 0/4 | — | encoding×4 |
+| `chat-send-file` | Chinese | `etscli chat send-file` | 4/4 | 0/4 | 0/4 | 0.88 | — |
+| `meeting-list` | Chinese | `etscli meeting list` | 0/4 | 0/0 | 0/4 | — | encoding×4 |
+| `meeting-summary` | Chinese | `etscli meeting summary` | 0/4 | 0/0 | 0/4 | — | encoding×4 |
+| `meeting-detail` | Chinese | `etscli meeting detail` | 0/4 | 0/0 | 0/4 | — | encoding×4 |
+| `meeting-create` | Chinese | `etscli meeting create` | 0/4 | 0/0 | 0/4 | — | encoding×4 |
+| `meeting-finish` | Chinese | `etscli meeting finish` | 0/4 | 0/0 | 0/4 | — | encoding×4 |
+| `file-search` | Chinese | `etscli file search` | 0/4 | 0/0 | 0/4 | — | encoding×4 |
+| `file-detail` | Chinese | `etscli file detail` | 4/4 | 4/4 | 0/4 | 0.95 | — |
+| `file-upload` | Chinese | `etscli file upload`<br/>或 `etscli file upload-dir` | 0/4 | 0/0 | 0/4 | — | encoding×4 |
+| `file-download` | Chinese | `etscli file download` | 4/4 | 0/4 | 0/4 | 0.97 | — |
+| `file-delete` | Chinese | `etscli file delete`<br/>或 `etscli fs rm` | 4/4 | 0/4 | 0/4 | 0.98 | — |
+| `fs-ls` | Chinese | `etscli fs ls` | 0/4 | 0/0 | 0/4 | — | encoding×4 |
+| `fs-mkdir` | Chinese | `etscli fs mkdir` | 0/4 | 0/0 | 0/4 | — | encoding×4 |
+| `fs-rm` | Chinese | `etscli fs rm`<br/>或 `etscli file delete` | 0/4 | 0/0 | 0/4 | — | encoding×4 |
+| `fs-search` | Chinese | `etscli fs search` | 0/4 | 0/0 | 0/4 | — | encoding×4 |
+| `fs-stat` | Chinese | `etscli fs stat`<br/>或 `etscli fs stats` | 4/4 | 0/4 | 0/4 | 0.75 | — |
+| `fs-add` | Chinese | `etscli fs add` | 0/4 | 0/0 | 0/4 | — | encoding×4 |
+| `sharing-list` | Chinese | `etscli sharing list` | 0/4 | 0/0 | 0/4 | — | encoding×4 |
+| `sharing-create` | Chinese | `etscli sharing create` | 0/4 | 0/0 | 0/4 | — | encoding×4 |
+| `sharing-delete` | Chinese | `etscli sharing delete` | 4/4 | 0/4 | 0/4 | 0.96 | — |
+| `system-info` | Chinese | `etscli system info` | 4/4 | 0/4 | 0/4 | 0.90 | — |
+| `system-health` | Chinese | `etscli system health` | 0/4 | 0/0 | 0/4 | — | encoding×4 |
+| `system-alarm` | Chinese | `etscli system alarm`<br/>或 `etscli system alarm list` | 4/4 | 0/4 | 0/4 | 0.80 | — |
+| `discover-scan` | Chinese | `etscli discover scan` | 0/4 | 0/0 | 0/4 | — | encoding×4 |
+| `migrate-transfer` | Chinese | `etscli migrate transfer` | 0/4 | 0/0 | 0/4 | — | encoding×4 |
+| `migrate-verify` | Chinese | `etscli migrate verify` | 4/4 | 4/4 | 0/4 | 0.10 | — |
+| `negative-greeting` | Chinese | _不应调用_ | 4/4 | 4/4 | 0/4 | 0.81 | — |
+| `negative-knowledge` | Chinese | _不应调用_ | 4/4 | 0/4 | 4/4 | 0.79 | — |
+| `negative-weather` | Chinese | _不应调用_ | 0/4 | 0/0 | 0/4 | — | encoding×4 |
 
 ### 2.1 按 service 的命令正确率
 
 | service | English 正确率 | Chinese 正确率 |
 |---|---|---|
-| auth | 0% (0/12) | 0% (0/12) |
-| user | 0% (0/8) | 0% (0/8) |
-| chat | 0% (0/8) | 0% (0/8) |
-| meeting | 0% (0/10) | 0% (0/10) |
-| file | 0% (0/10) | 0% (0/10) |
-| fs | 0% (0/12) | 0% (0/12) |
-| sharing | 0% (0/6) | 0% (0/6) |
-| system | 0% (0/6) | 0% (0/6) |
-| discover | 0% (0/2) | 0% (0/2) |
-| migrate | 0% (0/4) | 0% (0/4) |
-| negative | 67% (4/6) | 33% (2/6) |
+| auth | 0% (0/24) | 0% (0/24) |
+| user | 0% (0/16) | 0% (0/16) |
+| chat | 0% (0/16) | 0% (0/16) |
+| meeting | 0% (0/20) | 0% (0/20) |
+| file | 0% (0/20) | 0% (0/20) |
+| fs | 0% (0/24) | 0% (0/24) |
+| sharing | 0% (0/12) | 0% (0/12) |
+| system | 0% (0/12) | 0% (0/12) |
+| discover | 0% (0/4) | 0% (0/4) |
+| migrate | 0% (0/8) | 0% (0/8) |
+| negative | 67% (8/12) | 33% (4/12) |
 
 ### 2.2 歧义 case(命中 `expect` 或 `alt` 都算对)
 
@@ -208,16 +208,10 @@
 
 _另有 51 条,见 results.json_
 
-**`encoding`**(case `auth-status`,2/2 次):
+**`encoding`**(case `auth-status`,4/4 次):
 
 ```
 engine error: 'utf-8' codec can't decode byte 0xe7 in position 261: invalid continuation byte
-```
-
-**`other`**(case `file-upload`,1/2 次):
-
-```
-engine error: 'utf-8' codec can't decode byte 0xe7 in position 226: invalid continuation byte
 ```
 
 ## 4. 测试语料

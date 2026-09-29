@@ -1,20 +1,20 @@
 {
-  "generatedAt": "20260929T012341Z",
+  "generatedAt": "20260929T024353Z",
   "service": "http://127.0.0.1:8081",
   "health": {
     "status": "ok",
     "model_loaded": true,
     "version": "3.0.1",
     "cn_grounding": true,
-    "extract_count": 424,
+    "extract_count": 544,
     "queue_depth": 0,
     "peak_queue": 7,
     "queue_limit": 6,
     "last_error": null
   },
   "trialsPerCase": 2,
-  "rounds": 1,
-  "effectiveTrialsPerCase": 2,
+  "rounds": 2,
+  "effectiveTrialsPerCase": 4,
   "methodology": "etscli 真实场景;三层评分(HTTP/有效产出/命令正确率);工具集固定为 bash+read",
   "contractDoc": "docs/function-call-external-http-contract.md",
   "corpusSource": "etscli -h + ~/work/etsme/etscli/skills/*/SKILL.md",
@@ -474,15 +474,15 @@
   ],
   "summary": {
     "en": {
-      "httpPassed": 84,
-      "correct": 4,
-      "trials": 84,
+      "httpPassed": 168,
+      "correct": 8,
+      "trials": 168,
       "contractViolations": 0
     },
     "cn": {
-      "httpPassed": 36,
-      "correct": 2,
-      "trials": 84,
+      "httpPassed": 72,
+      "correct": 4,
+      "trials": 168,
       "contractViolations": 0
     }
   },
@@ -492,20 +492,26 @@
       "lang": "en",
       "domain": "auth",
       "expect": "etscli auth status",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.41,
-        0.2
+        0.63,
+        0.16,
+        0.52,
+        0.15
       ],
       "calls_when_ok": [
+        0,
+        0,
         0,
         0
       ],
       "confidences": [
+        1.0,
+        1.0,
         1.0,
         1.0
       ],
@@ -521,20 +527,26 @@
       "lang": "en",
       "domain": "auth",
       "expect": "etscli auth list",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.19,
-        0.16
+        0.13,
+        0.15,
+        0.16,
+        0.17
       ],
       "calls_when_ok": [
+        0,
+        0,
         0,
         0
       ],
       "confidences": [
+        1.0,
+        1.0,
         1.0,
         1.0
       ],
@@ -550,20 +562,26 @@
       "lang": "en",
       "domain": "auth",
       "expect": "etscli auth switch",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.09,
-        0.13
+        0.1,
+        0.15,
+        0.19,
+        0.14
       ],
       "calls_when_ok": [
+        0,
+        0,
         0,
         0
       ],
       "confidences": [
+        1.0,
+        1.0,
         1.0,
         1.0
       ],
@@ -579,20 +597,26 @@
       "lang": "en",
       "domain": "auth",
       "expect": "etscli auth rename",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.14,
-        0.18
+        0.26,
+        0.12,
+        0.18,
+        0.16
       ],
       "calls_when_ok": [
+        0,
+        0,
         0,
         0
       ],
       "confidences": [
+        1.0,
+        1.0,
         1.0,
         1.0
       ],
@@ -608,20 +632,26 @@
       "lang": "en",
       "domain": "auth",
       "expect": "etscli auth login",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.3,
-        0.32
+        0.38,
+        0.28,
+        0.41,
+        0.38
       ],
       "calls_when_ok": [
+        1,
+        1,
         1,
         1
       ],
       "confidences": [
+        0.9485,
+        0.9485,
         0.9485,
         0.9485
       ],
@@ -637,20 +667,26 @@
       "lang": "en",
       "domain": "auth",
       "expect": "etscli auth logout",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.13,
-        0.13
+        0.18,
+        0.12,
+        0.16,
+        0.24
       ],
       "calls_when_ok": [
+        0,
+        0,
         0,
         0
       ],
       "confidences": [
+        1.0,
+        1.0,
         1.0,
         1.0
       ],
@@ -666,20 +702,26 @@
       "lang": "en",
       "domain": "user",
       "expect": "etscli user list",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.41,
-        0.28
+        0.28,
+        0.26,
+        0.34,
+        0.4
       ],
       "calls_when_ok": [
+        1,
+        1,
         1,
         1
       ],
       "confidences": [
+        0.1155,
+        0.1155,
         0.1155,
         0.1155
       ],
@@ -695,20 +737,26 @@
       "lang": "en",
       "domain": "user",
       "expect": "etscli user detail",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.29,
-        0.27
+        0.22,
+        0.23,
+        0.44,
+        0.28
       ],
       "calls_when_ok": [
+        1,
+        1,
         1,
         1
       ],
       "confidences": [
+        1.0,
+        1.0,
         1.0,
         1.0
       ],
@@ -724,20 +772,26 @@
       "lang": "en",
       "domain": "user",
       "expect": "etscli user register",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
         0.12,
-        0.12
+        0.12,
+        0.16,
+        0.15
       ],
       "calls_when_ok": [
+        0,
+        0,
         0,
         0
       ],
       "confidences": [
+        1.0,
+        1.0,
         1.0,
         1.0
       ],
@@ -753,20 +807,26 @@
       "lang": "en",
       "domain": "user",
       "expect": "etscli user passwd",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.32,
-        0.14
+        0.15,
+        0.17,
+        0.23,
+        0.18
       ],
       "calls_when_ok": [
+        0,
+        0,
         0,
         0
       ],
       "confidences": [
+        0.9752,
+        0.9752,
         0.9752,
         0.9752
       ],
@@ -782,20 +842,26 @@
       "lang": "en",
       "domain": "chat",
       "expect": "etscli chat list",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
+        0.15,
         0.12,
-        0.13
+        0.16,
+        0.14
       ],
       "calls_when_ok": [
+        0,
+        0,
         0,
         0
       ],
       "confidences": [
+        1.0,
+        1.0,
         1.0,
         1.0
       ],
@@ -811,20 +877,26 @@
       "lang": "en",
       "domain": "chat",
       "expect": "etscli chat messages",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
+        0.12,
+        0.11,
         0.14,
         0.17
       ],
       "calls_when_ok": [
         0,
+        0,
+        0,
         0
       ],
       "confidences": [
+        1.0,
+        1.0,
         1.0,
         1.0
       ],
@@ -840,20 +912,26 @@
       "lang": "en",
       "domain": "chat",
       "expect": "etscli chat send",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.14,
+        0.38,
+        0.13,
+        0.15,
         0.15
       ],
       "calls_when_ok": [
         0,
+        0,
+        0,
         0
       ],
       "confidences": [
+        1.0,
+        1.0,
         1.0,
         1.0
       ],
@@ -869,20 +947,26 @@
       "lang": "en",
       "domain": "chat",
       "expect": "etscli chat send-file",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.12,
-        0.11
+        0.14,
+        0.11,
+        0.17,
+        0.13
       ],
       "calls_when_ok": [
+        0,
+        0,
         0,
         0
       ],
       "confidences": [
+        1.0,
+        1.0,
         1.0,
         1.0
       ],
@@ -898,20 +982,26 @@
       "lang": "en",
       "domain": "meeting",
       "expect": "etscli meeting list",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.19,
-        0.15
+        0.21,
+        0.18,
+        0.2,
+        0.2
       ],
       "calls_when_ok": [
+        0,
+        0,
         0,
         0
       ],
       "confidences": [
+        0.6364,
+        0.6364,
         0.6364,
         0.6364
       ],
@@ -927,20 +1017,26 @@
       "lang": "en",
       "domain": "meeting",
       "expect": "etscli meeting summary",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.22,
-        0.23
+        0.24,
+        0.25,
+        0.26,
+        0.26
       ],
       "calls_when_ok": [
+        1,
+        1,
         1,
         1
       ],
       "confidences": [
+        1.0,
+        1.0,
         1.0,
         1.0
       ],
@@ -956,20 +1052,26 @@
       "lang": "en",
       "domain": "meeting",
       "expect": "etscli meeting detail",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
+        0.3,
         0.33,
-        0.35
+        0.36,
+        0.42
       ],
       "calls_when_ok": [
+        1,
+        1,
         1,
         1
       ],
       "confidences": [
+        0.9577,
+        0.9577,
         0.9577,
         0.9577
       ],
@@ -985,20 +1087,26 @@
       "lang": "en",
       "domain": "meeting",
       "expect": "etscli meeting create",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.15,
-        0.11
+        0.13,
+        0.11,
+        0.14,
+        0.14
       ],
       "calls_when_ok": [
+        0,
+        0,
         0,
         0
       ],
       "confidences": [
+        0.9729,
+        0.9729,
         0.9729,
         0.9729
       ],
@@ -1014,20 +1122,26 @@
       "lang": "en",
       "domain": "meeting",
       "expect": "etscli meeting finish",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.26,
-        0.25
+        0.2,
+        0.19,
+        0.23,
+        0.23
       ],
       "calls_when_ok": [
+        1,
+        1,
         1,
         1
       ],
       "confidences": [
+        0.6907,
+        0.6907,
         0.6907,
         0.6907
       ],
@@ -1043,20 +1157,26 @@
       "lang": "en",
       "domain": "file",
       "expect": "etscli file search",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.15,
-        0.13
+        0.11,
+        0.12,
+        0.13,
+        0.14
       ],
       "calls_when_ok": [
+        0,
+        0,
         0,
         0
       ],
       "confidences": [
+        1.0,
+        1.0,
         1.0,
         1.0
       ],
@@ -1072,20 +1192,26 @@
       "lang": "en",
       "domain": "file",
       "expect": "etscli file detail",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.28,
-        0.25
+        0.25,
+        0.24,
+        0.31,
+        0.31
       ],
       "calls_when_ok": [
+        1,
+        1,
         1,
         1
       ],
       "confidences": [
+        0.9225,
+        0.9225,
         0.9225,
         0.9225
       ],
@@ -1101,20 +1227,26 @@
       "lang": "en",
       "domain": "file",
       "expect": "etscli file upload",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.23,
-        0.21
+        0.22,
+        0.27,
+        0.25,
+        0.26
       ],
       "calls_when_ok": [
+        1,
+        1,
         1,
         1
       ],
       "confidences": [
+        1.0,
+        1.0,
         1.0,
         1.0
       ],
@@ -1130,20 +1262,26 @@
       "lang": "en",
       "domain": "file",
       "expect": "etscli file download",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.21,
-        0.23
+        0.22,
+        0.23,
+        0.24,
+        0.25
       ],
       "calls_when_ok": [
+        1,
+        1,
         1,
         1
       ],
       "confidences": [
+        1.0,
+        1.0,
         1.0,
         1.0
       ],
@@ -1159,20 +1297,26 @@
       "lang": "en",
       "domain": "file",
       "expect": "etscli file delete",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.17,
-        0.13
+        0.12,
+        0.12,
+        0.16,
+        0.15
       ],
       "calls_when_ok": [
+        0,
+        0,
         0,
         0
       ],
       "confidences": [
+        1.0,
+        1.0,
         1.0,
         1.0
       ],
@@ -1188,20 +1332,26 @@
       "lang": "en",
       "domain": "fs",
       "expect": "etscli fs ls",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
+        0.13,
         0.11,
-        0.11
+        0.12,
+        0.23
       ],
       "calls_when_ok": [
+        0,
+        0,
         0,
         0
       ],
       "confidences": [
+        1.0,
+        1.0,
         1.0,
         1.0
       ],
@@ -1217,20 +1367,26 @@
       "lang": "en",
       "domain": "fs",
       "expect": "etscli fs mkdir",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.14,
-        0.12
+        0.12,
+        0.12,
+        0.17,
+        0.14
       ],
       "calls_when_ok": [
+        0,
+        0,
         0,
         0
       ],
       "confidences": [
+        1.0,
+        1.0,
         1.0,
         1.0
       ],
@@ -1246,20 +1402,26 @@
       "lang": "en",
       "domain": "fs",
       "expect": "etscli fs rm",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.15,
-        0.14
+        0.19,
+        0.12,
+        0.18,
+        0.16
       ],
       "calls_when_ok": [
+        0,
+        0,
         0,
         0
       ],
       "confidences": [
+        1.0,
+        1.0,
         1.0,
         1.0
       ],
@@ -1275,20 +1437,26 @@
       "lang": "en",
       "domain": "fs",
       "expect": "etscli fs search",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.12,
-        0.13
+        0.17,
+        0.14,
+        0.14,
+        0.14
       ],
       "calls_when_ok": [
+        0,
+        0,
         0,
         0
       ],
       "confidences": [
+        1.0,
+        1.0,
         1.0,
         1.0
       ],
@@ -1304,20 +1472,26 @@
       "lang": "en",
       "domain": "fs",
       "expect": "etscli fs stat",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.21,
-        0.22
+        0.77,
+        0.29,
+        0.31,
+        0.26
       ],
       "calls_when_ok": [
+        1,
+        1,
         1,
         1
       ],
       "confidences": [
+        1.0,
+        1.0,
         1.0,
         1.0
       ],
@@ -1333,20 +1507,26 @@
       "lang": "en",
       "domain": "fs",
       "expect": "etscli fs add",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
         0.17,
-        0.12
+        0.16,
+        0.15,
+        0.16
       ],
       "calls_when_ok": [
+        0,
+        0,
         0,
         0
       ],
       "confidences": [
+        1.0,
+        1.0,
         1.0,
         1.0
       ],
@@ -1362,20 +1542,26 @@
       "lang": "en",
       "domain": "sharing",
       "expect": "etscli sharing list",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
         0.13,
-        0.14
+        0.14,
+        0.17,
+        0.19
       ],
       "calls_when_ok": [
+        0,
+        0,
         0,
         0
       ],
       "confidences": [
+        1.0,
+        1.0,
         1.0,
         1.0
       ],
@@ -1391,20 +1577,26 @@
       "lang": "en",
       "domain": "sharing",
       "expect": "etscli sharing create",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.14,
-        0.12
+        0.13,
+        0.12,
+        0.16,
+        0.31
       ],
       "calls_when_ok": [
+        0,
+        0,
         0,
         0
       ],
       "confidences": [
+        1.0,
+        1.0,
         1.0,
         1.0
       ],
@@ -1420,20 +1612,26 @@
       "lang": "en",
       "domain": "sharing",
       "expect": "etscli sharing delete",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
         0.14,
-        0.11
+        0.12,
+        0.13,
+        0.12
       ],
       "calls_when_ok": [
+        0,
+        0,
         0,
         0
       ],
       "confidences": [
+        1.0,
+        1.0,
         1.0,
         1.0
       ],
@@ -1449,20 +1647,26 @@
       "lang": "en",
       "domain": "system",
       "expect": "etscli system info",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.35,
-        0.73
+        0.24,
+        0.23,
+        0.29,
+        0.26
       ],
       "calls_when_ok": [
+        1,
+        1,
         1,
         1
       ],
       "confidences": [
+        0.9984,
+        0.9984,
         0.9984,
         0.9984
       ],
@@ -1478,20 +1682,26 @@
       "lang": "en",
       "domain": "system",
       "expect": "etscli system health",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.34,
+        0.23,
+        0.23,
+        0.33,
         0.26
       ],
       "calls_when_ok": [
         1,
+        1,
+        1,
         1
       ],
       "confidences": [
+        1.0,
+        1.0,
         1.0,
         1.0
       ],
@@ -1507,20 +1717,26 @@
       "lang": "en",
       "domain": "system",
       "expect": "etscli system alarm",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
+        0.18,
         0.17,
-        0.17
+        0.18,
+        0.18
       ],
       "calls_when_ok": [
+        0,
+        0,
         0,
         0
       ],
       "confidences": [
+        0.8322,
+        0.8322,
         0.8322,
         0.8322
       ],
@@ -1536,20 +1752,26 @@
       "lang": "en",
       "domain": "discover",
       "expect": "etscli discover scan",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
         0.26,
-        0.33
+        0.24,
+        0.33,
+        0.39
       ],
       "calls_when_ok": [
+        1,
+        1,
         1,
         1
       ],
       "confidences": [
+        1.0,
+        1.0,
         1.0,
         1.0
       ],
@@ -1565,20 +1787,26 @@
       "lang": "en",
       "domain": "migrate",
       "expect": "etscli migrate transfer",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.27,
-        0.32
+        0.28,
+        0.29,
+        0.89,
+        0.31
       ],
       "calls_when_ok": [
+        1,
+        1,
         1,
         1
       ],
       "confidences": [
+        1.0,
+        1.0,
         1.0,
         1.0
       ],
@@ -1594,20 +1822,26 @@
       "lang": "en",
       "domain": "migrate",
       "expect": "etscli migrate verify",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.54,
-        0.27
+        0.28,
+        0.27,
+        0.32,
+        0.3
       ],
       "calls_when_ok": [
+        1,
+        1,
         1,
         1
       ],
       "confidences": [
+        0.997,
+        0.997,
         0.997,
         0.997
       ],
@@ -1623,20 +1857,26 @@
       "lang": "en",
       "domain": "negative",
       "expect": null,
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.39,
-        0.34
+        0.25,
+        0.29,
+        0.34,
+        0.31
       ],
       "calls_when_ok": [
+        1,
+        1,
         1,
         1
       ],
       "confidences": [
+        0.9974,
+        0.9974,
         0.9974,
         0.9974
       ],
@@ -1652,20 +1892,26 @@
       "lang": "en",
       "domain": "negative",
       "expect": null,
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
-      "correct": 2,
+      "correct": 4,
       "failure_classes": {},
       "latencies": [
-        0.16,
-        0.17
+        0.14,
+        0.17,
+        0.14,
+        0.18
       ],
       "calls_when_ok": [
+        0,
+        0,
         0,
         0
       ],
       "confidences": [
+        1.0,
+        1.0,
         1.0,
         1.0
       ],
@@ -1681,20 +1927,26 @@
       "lang": "en",
       "domain": "negative",
       "expect": null,
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
-      "correct": 2,
+      "correct": 4,
       "failure_classes": {},
       "latencies": [
-        0.25,
-        0.16
+        0.18,
+        0.15,
+        0.18,
+        0.17
       ],
       "calls_when_ok": [
+        0,
+        0,
         0,
         0
       ],
       "confidences": [
+        0.9349,
+        0.9349,
         0.9349,
         0.9349
       ],
@@ -1710,16 +1962,18 @@
       "lang": "cn",
       "domain": "auth",
       "expect": "etscli auth status",
-      "trials": 2,
+      "trials": 4,
       "passed": 0,
-      "failed": 2,
+      "failed": 4,
       "correct": 0,
       "failure_classes": {
-        "encoding": 2
+        "encoding": 4
       },
       "latencies": [
-        0.92,
-        0.53
+        0.74,
+        0.39,
+        0.78,
+        0.44
       ],
       "calls_when_ok": [],
       "confidences": [],
@@ -1735,20 +1989,26 @@
       "lang": "cn",
       "domain": "auth",
       "expect": "etscli auth list",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.41,
-        0.48
+        0.44,
+        0.6,
+        0.46,
+        0.42
       ],
       "calls_when_ok": [
+        0,
+        0,
         0,
         0
       ],
       "confidences": [
+        0.7806,
+        0.7806,
         0.7806,
         0.7806
       ],
@@ -1764,20 +2024,26 @@
       "lang": "cn",
       "domain": "auth",
       "expect": "etscli auth switch",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.43,
-        0.52
+        0.37,
+        0.35,
+        0.37,
+        0.36
       ],
       "calls_when_ok": [
+        1,
+        1,
         1,
         1
       ],
       "confidences": [
+        0.7654,
+        0.7654,
         0.7654,
         0.7654
       ],
@@ -1793,20 +2059,26 @@
       "lang": "cn",
       "domain": "auth",
       "expect": "etscli auth rename",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.61,
-        0.42
+        0.39,
+        0.42,
+        0.4,
+        0.45
       ],
       "calls_when_ok": [
+        0,
+        0,
         0,
         0
       ],
       "confidences": [
+        0.4162,
+        0.4162,
         0.4162,
         0.4162
       ],
@@ -1822,20 +2094,26 @@
       "lang": "cn",
       "domain": "auth",
       "expect": "etscli auth login",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.46,
-        0.46
+        0.43,
+        0.54,
+        0.45,
+        0.54
       ],
       "calls_when_ok": [
+        0,
+        0,
         0,
         0
       ],
       "confidences": [
+        0.7431,
+        0.7431,
         0.7431,
         0.7431
       ],
@@ -1851,16 +2129,18 @@
       "lang": "cn",
       "domain": "auth",
       "expect": "etscli auth logout",
-      "trials": 2,
+      "trials": 4,
       "passed": 0,
-      "failed": 2,
+      "failed": 4,
       "correct": 0,
       "failure_classes": {
-        "encoding": 2
+        "encoding": 4
       },
       "latencies": [
-        0.46,
-        0.38
+        0.38,
+        0.36,
+        0.39,
+        0.4
       ],
       "calls_when_ok": [],
       "confidences": [],
@@ -1876,16 +2156,18 @@
       "lang": "cn",
       "domain": "user",
       "expect": "etscli user list",
-      "trials": 2,
+      "trials": 4,
       "passed": 0,
-      "failed": 2,
+      "failed": 4,
       "correct": 0,
       "failure_classes": {
-        "encoding": 2
+        "encoding": 4
       },
       "latencies": [
-        0.41,
-        0.43
+        0.43,
+        0.44,
+        0.44,
+        0.41
       ],
       "calls_when_ok": [],
       "confidences": [],
@@ -1901,20 +2183,26 @@
       "lang": "cn",
       "domain": "user",
       "expect": "etscli user detail",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
         0.37,
-        0.41
+        0.35,
+        0.37,
+        0.37
       ],
       "calls_when_ok": [
+        1,
+        1,
         1,
         1
       ],
       "confidences": [
+        0.5093,
+        0.5093,
         0.5093,
         0.5093
       ],
@@ -1930,20 +2218,26 @@
       "lang": "cn",
       "domain": "user",
       "expect": "etscli user register",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.44,
-        0.46
+        0.42,
+        0.45,
+        0.47,
+        0.45
       ],
       "calls_when_ok": [
+        1,
+        1,
         1,
         1
       ],
       "confidences": [
+        0.6516,
+        0.6516,
         0.6516,
         0.6516
       ],
@@ -1959,20 +2253,26 @@
       "lang": "cn",
       "domain": "user",
       "expect": "etscli user passwd",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.36,
-        0.37
+        0.42,
+        0.37,
+        0.45,
+        0.4
       ],
       "calls_when_ok": [
+        1,
+        1,
         1,
         1
       ],
       "confidences": [
+        0.2843,
+        0.2843,
         0.2843,
         0.2843
       ],
@@ -1988,16 +2288,18 @@
       "lang": "cn",
       "domain": "chat",
       "expect": "etscli chat list",
-      "trials": 2,
+      "trials": 4,
       "passed": 0,
-      "failed": 2,
+      "failed": 4,
       "correct": 0,
       "failure_classes": {
-        "encoding": 2
+        "encoding": 4
       },
       "latencies": [
-        0.58,
-        0.4
+        0.44,
+        0.5,
+        0.43,
+        0.5
       ],
       "calls_when_ok": [],
       "confidences": [],
@@ -2013,16 +2315,18 @@
       "lang": "cn",
       "domain": "chat",
       "expect": "etscli chat messages",
-      "trials": 2,
+      "trials": 4,
       "passed": 0,
-      "failed": 2,
+      "failed": 4,
       "correct": 0,
       "failure_classes": {
-        "encoding": 2
+        "encoding": 4
       },
       "latencies": [
-        0.44,
-        0.42
+        0.48,
+        0.42,
+        0.48,
+        0.48
       ],
       "calls_when_ok": [],
       "confidences": [],
@@ -2038,16 +2342,18 @@
       "lang": "cn",
       "domain": "chat",
       "expect": "etscli chat send",
-      "trials": 2,
+      "trials": 4,
       "passed": 0,
-      "failed": 2,
+      "failed": 4,
       "correct": 0,
       "failure_classes": {
-        "encoding": 2
+        "encoding": 4
       },
       "latencies": [
-        0.47,
-        0.44
+        0.48,
+        0.42,
+        0.44,
+        0.45
       ],
       "calls_when_ok": [],
       "confidences": [],
@@ -2063,20 +2369,26 @@
       "lang": "cn",
       "domain": "chat",
       "expect": "etscli chat send-file",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.42,
-        0.48
+        0.44,
+        0.41,
+        0.53,
+        0.47
       ],
       "calls_when_ok": [
+        0,
+        0,
         0,
         0
       ],
       "confidences": [
+        0.8846,
+        0.8846,
         0.8846,
         0.8846
       ],
@@ -2092,16 +2404,18 @@
       "lang": "cn",
       "domain": "meeting",
       "expect": "etscli meeting list",
-      "trials": 2,
+      "trials": 4,
       "passed": 0,
-      "failed": 2,
+      "failed": 4,
       "correct": 0,
       "failure_classes": {
-        "encoding": 2
+        "encoding": 4
       },
       "latencies": [
-        0.46,
-        0.43
+        0.55,
+        0.43,
+        0.44,
+        0.46
       ],
       "calls_when_ok": [],
       "confidences": [],
@@ -2117,16 +2431,18 @@
       "lang": "cn",
       "domain": "meeting",
       "expect": "etscli meeting summary",
-      "trials": 2,
+      "trials": 4,
       "passed": 0,
-      "failed": 2,
+      "failed": 4,
       "correct": 0,
       "failure_classes": {
-        "encoding": 2
+        "encoding": 4
       },
       "latencies": [
-        0.42,
-        0.48
+        0.44,
+        0.45,
+        0.47,
+        0.44
       ],
       "calls_when_ok": [],
       "confidences": [],
@@ -2142,16 +2458,18 @@
       "lang": "cn",
       "domain": "meeting",
       "expect": "etscli meeting detail",
-      "trials": 2,
+      "trials": 4,
       "passed": 0,
-      "failed": 2,
+      "failed": 4,
       "correct": 0,
       "failure_classes": {
-        "encoding": 2
+        "encoding": 4
       },
       "latencies": [
-        0.42,
-        0.48
+        0.44,
+        0.46,
+        0.6,
+        0.44
       ],
       "calls_when_ok": [],
       "confidences": [],
@@ -2167,16 +2485,18 @@
       "lang": "cn",
       "domain": "meeting",
       "expect": "etscli meeting create",
-      "trials": 2,
+      "trials": 4,
       "passed": 0,
-      "failed": 2,
+      "failed": 4,
       "correct": 0,
       "failure_classes": {
-        "encoding": 2
+        "encoding": 4
       },
       "latencies": [
         0.46,
-        0.47
+        0.48,
+        0.49,
+        0.44
       ],
       "calls_when_ok": [],
       "confidences": [],
@@ -2192,16 +2512,18 @@
       "lang": "cn",
       "domain": "meeting",
       "expect": "etscli meeting finish",
-      "trials": 2,
+      "trials": 4,
       "passed": 0,
-      "failed": 2,
+      "failed": 4,
       "correct": 0,
       "failure_classes": {
-        "encoding": 2
+        "encoding": 4
       },
       "latencies": [
-        0.42,
-        0.44
+        0.47,
+        0.44,
+        0.45,
+        0.43
       ],
       "calls_when_ok": [],
       "confidences": [],
@@ -2217,16 +2539,18 @@
       "lang": "cn",
       "domain": "file",
       "expect": "etscli file search",
-      "trials": 2,
+      "trials": 4,
       "passed": 0,
-      "failed": 2,
+      "failed": 4,
       "correct": 0,
       "failure_classes": {
-        "encoding": 2
+        "encoding": 4
       },
       "latencies": [
+        0.47,
         0.46,
-        0.51
+        0.76,
+        0.49
       ],
       "calls_when_ok": [],
       "confidences": [],
@@ -2242,20 +2566,26 @@
       "lang": "cn",
       "domain": "file",
       "expect": "etscli file detail",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.42,
-        0.41
+        0.41,
+        0.41,
+        0.44,
+        0.43
       ],
       "calls_when_ok": [
+        1,
+        1,
         1,
         1
       ],
       "confidences": [
+        0.9537,
+        0.9537,
         0.9537,
         0.9537
       ],
@@ -2271,17 +2601,18 @@
       "lang": "cn",
       "domain": "file",
       "expect": "etscli file upload",
-      "trials": 2,
+      "trials": 4,
       "passed": 0,
-      "failed": 2,
+      "failed": 4,
       "correct": 0,
       "failure_classes": {
-        "encoding": 1,
-        "other": 1
+        "encoding": 4
       },
       "latencies": [
-        0.44,
-        0.0
+        0.42,
+        0.43,
+        0.46,
+        0.47
       ],
       "calls_when_ok": [],
       "confidences": [],
@@ -2297,20 +2628,26 @@
       "lang": "cn",
       "domain": "file",
       "expect": "etscli file download",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.41,
-        0.46
+        0.42,
+        0.49,
+        0.43,
+        0.54
       ],
       "calls_when_ok": [
+        0,
+        0,
         0,
         0
       ],
       "confidences": [
+        0.9674,
+        0.9674,
         0.9674,
         0.9674
       ],
@@ -2326,20 +2663,26 @@
       "lang": "cn",
       "domain": "file",
       "expect": "etscli file delete",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.41,
-        0.41
+        0.46,
+        0.49,
+        0.44,
+        0.44
       ],
       "calls_when_ok": [
+        0,
+        0,
         0,
         0
       ],
       "confidences": [
+        0.9828,
+        0.9828,
         0.9828,
         0.9828
       ],
@@ -2355,16 +2698,18 @@
       "lang": "cn",
       "domain": "fs",
       "expect": "etscli fs ls",
-      "trials": 2,
+      "trials": 4,
       "passed": 0,
-      "failed": 2,
+      "failed": 4,
       "correct": 0,
       "failure_classes": {
-        "encoding": 2
+        "encoding": 4
       },
       "latencies": [
-        0.5,
-        0.5
+        0.46,
+        0.48,
+        0.46,
+        0.54
       ],
       "calls_when_ok": [],
       "confidences": [],
@@ -2380,16 +2725,18 @@
       "lang": "cn",
       "domain": "fs",
       "expect": "etscli fs mkdir",
-      "trials": 2,
+      "trials": 4,
       "passed": 0,
-      "failed": 2,
+      "failed": 4,
       "correct": 0,
       "failure_classes": {
-        "encoding": 2
+        "encoding": 4
       },
       "latencies": [
-        0.5,
-        0.5
+        0.45,
+        0.48,
+        0.47,
+        0.51
       ],
       "calls_when_ok": [],
       "confidences": [],
@@ -2405,16 +2752,18 @@
       "lang": "cn",
       "domain": "fs",
       "expect": "etscli fs rm",
-      "trials": 2,
+      "trials": 4,
       "passed": 0,
-      "failed": 2,
+      "failed": 4,
       "correct": 0,
       "failure_classes": {
-        "encoding": 2
+        "encoding": 4
       },
       "latencies": [
-        0.52,
-        0.44
+        0.47,
+        0.48,
+        0.44,
+        0.46
       ],
       "calls_when_ok": [],
       "confidences": [],
@@ -2430,16 +2779,18 @@
       "lang": "cn",
       "domain": "fs",
       "expect": "etscli fs search",
-      "trials": 2,
+      "trials": 4,
       "passed": 0,
-      "failed": 2,
+      "failed": 4,
       "correct": 0,
       "failure_classes": {
-        "encoding": 2
+        "encoding": 4
       },
       "latencies": [
-        0.47,
-        0.45
+        1.09,
+        0.65,
+        0.51,
+        0.48
       ],
       "calls_when_ok": [],
       "confidences": [],
@@ -2455,20 +2806,26 @@
       "lang": "cn",
       "domain": "fs",
       "expect": "etscli fs stat",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        1.02,
-        0.5
+        0.45,
+        0.44,
+        0.46,
+        0.48
       ],
       "calls_when_ok": [
+        0,
+        0,
         0,
         0
       ],
       "confidences": [
+        0.749,
+        0.749,
         0.749,
         0.749
       ],
@@ -2484,16 +2841,18 @@
       "lang": "cn",
       "domain": "fs",
       "expect": "etscli fs add",
-      "trials": 2,
+      "trials": 4,
       "passed": 0,
-      "failed": 2,
+      "failed": 4,
       "correct": 0,
       "failure_classes": {
-        "encoding": 2
+        "encoding": 4
       },
       "latencies": [
-        0.45,
-        0.48
+        0.51,
+        0.47,
+        0.55,
+        1.19
       ],
       "calls_when_ok": [],
       "confidences": [],
@@ -2509,16 +2868,18 @@
       "lang": "cn",
       "domain": "sharing",
       "expect": "etscli sharing list",
-      "trials": 2,
+      "trials": 4,
       "passed": 0,
-      "failed": 2,
+      "failed": 4,
       "correct": 0,
       "failure_classes": {
-        "encoding": 2
+        "encoding": 4
       },
       "latencies": [
-        0.46,
-        0.62
+        0.45,
+        0.45,
+        0.95,
+        0.47
       ],
       "calls_when_ok": [],
       "confidences": [],
@@ -2534,16 +2895,18 @@
       "lang": "cn",
       "domain": "sharing",
       "expect": "etscli sharing create",
-      "trials": 2,
+      "trials": 4,
       "passed": 0,
-      "failed": 2,
+      "failed": 4,
       "correct": 0,
       "failure_classes": {
-        "encoding": 2
+        "encoding": 4
       },
       "latencies": [
-        0.45,
-        0.5
+        0.47,
+        0.49,
+        0.51,
+        0.49
       ],
       "calls_when_ok": [],
       "confidences": [],
@@ -2559,20 +2922,26 @@
       "lang": "cn",
       "domain": "sharing",
       "expect": "etscli sharing delete",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.43,
-        0.54
+        0.44,
+        0.44,
+        0.41,
+        0.45
       ],
       "calls_when_ok": [
+        0,
+        0,
         0,
         0
       ],
       "confidences": [
+        0.9584,
+        0.9584,
         0.9584,
         0.9584
       ],
@@ -2588,20 +2957,26 @@
       "lang": "cn",
       "domain": "system",
       "expect": "etscli system info",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.44,
-        0.42
+        0.49,
+        0.45,
+        0.45,
+        0.46
       ],
       "calls_when_ok": [
+        0,
+        0,
         0,
         0
       ],
       "confidences": [
+        0.8984,
+        0.8984,
         0.8984,
         0.8984
       ],
@@ -2617,16 +2992,18 @@
       "lang": "cn",
       "domain": "system",
       "expect": "etscli system health",
-      "trials": 2,
+      "trials": 4,
       "passed": 0,
-      "failed": 2,
+      "failed": 4,
       "correct": 0,
       "failure_classes": {
-        "encoding": 2
+        "encoding": 4
       },
       "latencies": [
-        0.45,
-        0.4
+        0.43,
+        0.44,
+        0.42,
+        0.45
       ],
       "calls_when_ok": [],
       "confidences": [],
@@ -2642,20 +3019,26 @@
       "lang": "cn",
       "domain": "system",
       "expect": "etscli system alarm",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.43,
-        0.42
+        0.42,
+        0.44,
+        0.44,
+        0.41
       ],
       "calls_when_ok": [
+        0,
+        0,
         0,
         0
       ],
       "confidences": [
+        0.7964,
+        0.7964,
         0.7964,
         0.7964
       ],
@@ -2671,15 +3054,17 @@
       "lang": "cn",
       "domain": "discover",
       "expect": "etscli discover scan",
-      "trials": 2,
+      "trials": 4,
       "passed": 0,
-      "failed": 2,
+      "failed": 4,
       "correct": 0,
       "failure_classes": {
-        "encoding": 2
+        "encoding": 4
       },
       "latencies": [
-        0.52,
+        0.57,
+        0.46,
+        0.49,
         0.45
       ],
       "calls_when_ok": [],
@@ -2696,15 +3081,17 @@
       "lang": "cn",
       "domain": "migrate",
       "expect": "etscli migrate transfer",
-      "trials": 2,
+      "trials": 4,
       "passed": 0,
-      "failed": 2,
+      "failed": 4,
       "correct": 0,
       "failure_classes": {
-        "encoding": 2
+        "encoding": 4
       },
       "latencies": [
-        0.47,
+        0.49,
+        0.52,
+        0.51,
         0.46
       ],
       "calls_when_ok": [],
@@ -2721,20 +3108,26 @@
       "lang": "cn",
       "domain": "migrate",
       "expect": "etscli migrate verify",
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.4,
-        0.42
+        0.42,
+        0.51,
+        0.47,
+        0.43
       ],
       "calls_when_ok": [
+        1,
+        1,
         1,
         1
       ],
       "confidences": [
+        0.1002,
+        0.1002,
         0.1002,
         0.1002
       ],
@@ -2750,20 +3143,26 @@
       "lang": "cn",
       "domain": "negative",
       "expect": null,
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
+        0.39,
         0.35,
-        0.39
+        0.36,
+        0.45
       ],
       "calls_when_ok": [
+        1,
+        1,
         1,
         1
       ],
       "confidences": [
+        0.8097,
+        0.8097,
         0.8097,
         0.8097
       ],
@@ -2779,20 +3178,26 @@
       "lang": "cn",
       "domain": "negative",
       "expect": null,
-      "trials": 2,
-      "passed": 2,
+      "trials": 4,
+      "passed": 4,
       "failed": 0,
-      "correct": 2,
+      "correct": 4,
       "failure_classes": {},
       "latencies": [
-        0.39,
-        0.4
+        0.42,
+        0.42,
+        0.41,
+        0.44
       ],
       "calls_when_ok": [
+        0,
+        0,
         0,
         0
       ],
       "confidences": [
+        0.792,
+        0.792,
         0.792,
         0.792
       ],
@@ -2808,16 +3213,18 @@
       "lang": "cn",
       "domain": "negative",
       "expect": null,
-      "trials": 2,
+      "trials": 4,
       "passed": 0,
-      "failed": 2,
+      "failed": 4,
       "correct": 0,
       "failure_classes": {
-        "encoding": 2
+        "encoding": 4
       },
       "latencies": [
+        0.45,
+        0.48,
         0.43,
-        0.41
+        0.46
       ],
       "calls_when_ok": [],
       "confidences": [],

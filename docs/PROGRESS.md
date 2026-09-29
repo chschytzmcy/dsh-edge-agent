@@ -9657,3 +9657,64 @@ python3 scripts/etscli-function-call-test.py --url http://127.0.0.1:9000 --round
 - `scripts/etscli-function-call-test.py` — 39+3 case,5 alt 处理
 - `docs/bench/etscli-function-call/{report.md,results.json}` — 新基线
 
+
+### §7.94.6 — etscli 直出工具形态:与 bash 形态的横向对照(2026-09-29)
+
+**动机**:§7.94.3-5 的套件用 bash 包装形态(2 个工具)。但 dsh 真实的 tool 注册表是
+**细粒度具体工具**(`glob`/`read`/`web_search`),不是"自己拼 shell"。user 指出这点后
+补建直出形态套件 —— user 终线要基于 etscli 训练,工具直出才是自然形态。
+
+**新增** `scripts/etscli-tools-test.py`:
+- **47 个 etscli 工具直出**(全部核对自 `etscli <service> --help`)
+- 判定从"命令前缀字符串匹配"改为"**工具名精确匹配**"(直出形态下
+  `etscli_auth_status` 与 `etscli_auth_logout` 是两个工具,无模糊空间)
+- 语料从姊妹脚本 `import` 复用(42 例),保证两套横向可比
+- `--desc-lang cn|en|both` 控制工具描述语言(默认 `cn`)
+- 命令组/别名(`etscli system alarm` → `etscli_system_alarm_list`)归一
+
+**两套形态横向对照**(needle @ 127.0.0.1:8081,同一份 42 例语料):
+
+| 指标 | bash 形态 | **etscli 直出** | 变化 |
+|---|---|---|---|
+| en HTTP 200 | 100% (168/168) | 90% (76/84) | — |
+| **en 工具正确率** | **0%** (0/156) | **26%** (20/78) | **+26pp** |
+| **cn HTTP 200** | 43% (72/168) | **93%** (78/84) | **+50pp** |
+| **cn 工具正确率** | **0%** (0/156) | **3%** (2/78) | +3pp |
+| 契约违规 | 0 | 0 | — |
+
+**中文 HTTP 43% → 93% 的成因(重要)**:502 `utf8_decode` 截断是**被长输出触发的**
+(§7.94.1 定位的 ~200 字节 buffer 上限)。bash 形态要生成
+`etscli auth status -p office` 这样的长命令串 → 撞上限;直出形态只需输出
+`{"name":"etscli_auth_status","arguments":{}}` → 输出短 → **绕过了该 bug**。
+不是模型变强,是**故障模式被规避**。直出形态下仍有 14 次 encoding(7%)。
+
+**英文 26% 的错误模式是可诊断性的实质改进**:
+```
+bash 形态:   read(file_path: "hello")              ← 幻觉,与问题完全无关
+直出形态:    auth_status → etscli_fs_ls            ← 选错工具
+             user_detail → etscli_user_list        ← service 对,子命令错
+```
+后者"知道大概该干什么但选错",正是细粒度工具训练能修的错误类型。
+
+**中英差距 26% vs 3%** 依然悬殊 → **中文理解是主要瓶颈**,不是工具选择机制。
+但需注意当前 `--desc-lang cn` 让工具描述是纯中文,英文 query 额外承担"跨语言读
+描述"压力,对英文不利。`--desc-lang both` 可分离"语言能力"与"工具选择能力",
+建议新模型进来时两者都跑。
+
+**新模型验收门槛(直出形态)**:
+| 指标 | 门槛 | needle 基线 |
+|---|---|---|
+| en 工具正确率 | ≥ 70% | 26% |
+| cn 工具正确率 | ≥ 50% | 3% |
+| cn HTTP 200 | ≥ 90% | 93% |
+| 契约违规 | = 0 | 0 |
+
+**建套件时守卫生效**: `expected_tools` 启动时校验"期望工具必须在注册表里",
+当场抓到 3 个同步 bug(`etscli_chat_send-file` 连字符 vs 下划线、
+`etscli_file_upload-dir` 不存在、`etscli system alarm` 是命令组不是工具)。
+这类不同步若放过,会让**模型答对却被判错**且不报错,分数莫名偏低极难排查。
+
+**产出**:
+- `scripts/etscli-tools-test.py` — 直出形态套件(47 工具,工具名精确匹配)
+- `docs/bench/etscli-tools/{report.md,results.json}` — 直出形态基线
+- `docs/bench/etscli-function-call/{report.md,results.json}` — bash 形态基线
