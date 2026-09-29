@@ -13,9 +13,13 @@ etscli-tools-test.py — etscli-as-tool 形态的 function-call caller 测试套
 判定从"命令前缀命中"改为"**工具名精确匹配**"—— 因为工具直出形态下
 `etscli_auth_status` 与 `etscli_auth_logout` 是两个不同的工具,没有模糊空间。
 
-**工具描述语言**:`--desc-lang cn|en|both`(默认 `cn`)。中文产品用中文描述是
-现实选择;但若只用中文描述,英文 query 就额外承担了"跨语言读描述"的压力。
-`both` 让中英测试公平对照(代价:payload 约翻倍)。
+**工具描述语言**:`--desc-lang match|cn|en|both`(**默认 `match`**)。
+`match` = 语言对齐:en 用例发**纯英文**工具描述,cn 用例发**纯中文**描述 ——
+中英两条腿都不承担"跨语言读描述"压力,正确率差才能归因为语言能力本身
+(§7.94.7 之前的历次实测用全局 `cn`,英文成绩里混着跨语言负担,横向对比时注意)。
+`cn|en|both` 保留为全局单一语言模式(`cn` 用于复现历史基线;`both` 双语拼接,
+代价 payload 约翻倍)。props 参数描述的英文对照表 `_PROP_DESC_EN` 缺译会在
+build 期 KeyError,不会静默把中文漏进英文用例。
 
 **虚高检测(`--distractors N`)**:工具直出形态下,工具名本身是强词法线索
 (`etscli_auth_status` ↔「登录状态」),词法匹配可能蒙对而未真正理解。
@@ -25,7 +29,8 @@ etscli-tools-test.py — etscli-as-tool 形态的 function-call caller 测试套
 幅度就是**词法虚高幅度**。负例不注入干扰(期望本就是"不调用")。
 
 **用法**:
-  python3 scripts/etscli-tools-test.py
+  python3 scripts/etscli-tools-test.py                      # match 口径(默认)
+  python3 scripts/etscli-tools-test.py --desc-lang cn       # 复现 §7.94.x 历史基线
   python3 scripts/etscli-tools-test.py --url http://127.0.0.1:9000 --desc-lang both
   python3 scripts/etscli-tools-test.py --langs cn --rounds 3
   python3 scripts/etscli-tools-test.py --distractors 3 --out dist/etscli-tools-d3
@@ -467,6 +472,25 @@ _TOOL_SPEC: list[tuple[str, str, str, dict[str, Any]]] = [
 TOOL_NAMES = [t[0] for t in _TOOL_SPEC]
 
 
+#: props 里中文参数描述的英文对照。新工具加中文 description 而此处缺译 →
+#: en/match 模式 build 期 KeyError,**启动即暴露**,不会静默漏中文。
+_PROP_DESC_EN = {"目标 profile 名": "name of the target profile"}
+
+def _loc_props(props: dict[str, Any], desc_lang: str) -> dict[str, Any]:
+    """把 props 里的参数描述按 desc_lang 本地化(cn 原样 / en 译文 / both 拼接)。"""
+    if desc_lang == "cn":
+        return props
+    out: dict[str, Any] = {}
+    for k, v in props.items():
+        v2 = dict(v)
+        d = v2.get("description")
+        if isinstance(d, str) and any("一" <= ch <= "鿿" for ch in d):
+            en = _PROP_DESC_EN[d]          # 缺译 = KeyError(启动期守卫)
+            v2["description"] = en if desc_lang == "en" else f"{d} / {en}"
+        out[k] = v2
+    return out
+
+
 def build_tools(desc_lang: str = "cn") -> list[dict[str, Any]]:
     """按指定语言生成工具 schema(desc_lang: cn | en | both)。"""
     out = []
@@ -478,7 +502,7 @@ def build_tools(desc_lang: str = "cn") -> list[dict[str, Any]]:
             "description": desc,
             "parameters": {
                 "type": "object",
-                "properties": props,
+                "properties": _loc_props(props, desc_lang),
                 **({"required": required} if required else {}),
             },
         })
@@ -497,12 +521,18 @@ def build_tools(desc_lang: str = "cn") -> list[dict[str, Any]]:
 # (如 `file_detail` vs `file_detail_raw` —— 后者不是真答案)。
 
 _DISTRACTOR_SUFFIX = [
-    ("_raw", "原始(未格式化)输出,不含摘要字段"),
-    ("_export", "导出为外部格式(CSV/JSON),不做展示"),
-    ("_history", "历史记录查询,仅返回归档条目"),
-    ("_preview", "生成预览,不落库不返回完整结果"),
-    ("_batch", "批量版本,要求显式提供条目列表"),
-    ("_verbose", "详细模式,额外返回调试字段"),
+    ("_raw", "原始(未格式化)输出,不含摘要字段",
+     "raw (unformatted) output, without summary fields"),
+    ("_export", "导出为外部格式(CSV/JSON),不做展示",
+     "export to external format (CSV/JSON), no display"),
+    ("_history", "历史记录查询,仅返回归档条目",
+     "history lookup, returns archived entries only"),
+    ("_preview", "生成预览,不落库不返回完整结果",
+     "generate a preview; does not persist or return full results"),
+    ("_batch", "批量版本,要求显式提供条目列表",
+     "batch version; requires an explicit list of entries"),
+    ("_verbose", "详细模式,额外返回调试字段",
+     "verbose mode, additionally returns debug fields"),
 ]
 
 #: 跨 service 的天然混淆对 —— 真实产品里 file(按 id)与 fs(按路径)职责相近,
@@ -533,13 +563,13 @@ def build_distractors(case: Case, n: int, desc_lang: str) -> list[dict[str, Any]
     # 再补同族近义兄弟
     i = 0
     while len(out) < n and i < len(_DISTRACTOR_SUFFIX):
-        suffix, desc = _DISTRACTOR_SUFFIX[i]
+        suffix, cn_d, en_d = _DISTRACTOR_SUFFIX[i]
         name = f"{base}{suffix}"
         if name not in known:
+            desc = {"cn": cn_d, "en": en_d, "both": f"{cn_d} / {en_d}"}[desc_lang]
             out.append({
                 "name": name,
-                "description": desc if desc_lang == "cn" else
-                               f"({desc}) - not the canonical command, do not use for normal queries",
+                "description": desc,
                 "parameters": {"type": "object", "properties": {}},
             })
         i += 1
@@ -551,7 +581,7 @@ def _mk_tool(spec: tuple, desc_lang: str) -> dict[str, Any]:
     return {
         "name": name,
         "description": {"cn": cn, "en": en, "both": f"{cn} / {en}"}[desc_lang],
-        "parameters": {"type": "object", "properties": props},
+        "parameters": {"type": "object", "properties": _loc_props(props, desc_lang)},
     }
 
 
@@ -617,11 +647,16 @@ def is_correct(calls: list[dict], allowed: list[str]) -> bool:
 
 # ── 单次调用 ────────────────────────────────────────────────────────────────
 
+_WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+_gm = time.gmtime()
+SYS_DATE = f"{_gm.tm_year:04d}-{_gm.tm_mon:02d}-{_gm.tm_mday:02d} {_WEEKDAYS[_gm.tm_wday]}"
+
+
 def one_attempt(url: str, query: str, locale: str, tools: list[dict],
                 timeout: float) -> Attempt:
     body = json.dumps(
         {"query": query, "tools": tools,
-         "system": f"date: 2026-09-28 Mon; locale: {locale}"},
+         "system": f"date: {SYS_DATE}; locale: {locale}"},
         ensure_ascii=False,
     ).encode("utf-8")
     req = urllib.request.Request(f"{url}/extract", data=body,
@@ -682,10 +717,14 @@ def run_case(url: str, case: Case, lang: str, tools: list[dict],
              desc_lang: str = "cn") -> CaseResult:
     allowed = expected_tools(case)
     distractors = build_distractors(case, n_distractors, desc_lang)
-    sent_tools = tools + distractors
+    # 跨 service 混淆项(file↔fs)本就在 47 工具基集里 → 只去重发送,
+    # **归因保留**(选错到它仍算"被近义诱导",而非普通乱选)
+    base_names = {t["name"] for t in tools}
+    sent_tools = tools + [d for d in distractors if d["name"] not in base_names]
     res = CaseResult(case_id=case.cid, lang=lang, domain=case.domain,
                      expect_tools=allowed, trials=trials, passed=0, failed=0, correct=0,
-                     distractors=[d["name"] for d in distractors])
+                     distractors=[d["name"] for d in distractors
+                                  if d["name"] not in base_names])
     trap_names = {d["name"] for d in distractors}
     for _ in range(trials):
         a = one_attempt(url, getattr(case, lang), LOCALES[lang], sent_tools, timeout)
@@ -746,7 +785,10 @@ def render_report(results: list[CaseResult], url: str, trials: int, ts: str,
     A("")
     A(f"- **生成时间**: {ts}")
     A(f"- **被测服务**: `{url}` —— {svc}")
-    A(f"- **工具形态**: **{n_tools} 个 etscli 工具直出**(非 bash 包装),描述语言 `{desc_lang}`")
+    dl_disp = ("match(en 用例→纯英文描述 / cn 用例→纯中文描述)"
+               if desc_lang == "match" else f"`{desc_lang}`")
+    A(f"- **工具形态**: **{n_tools} 个 etscli 工具直出**(非 bash 包装),"
+      f"描述语言 {dl_disp}")
     if n_distractors > 0:
         A(f"- **干扰项注入**: 每个正例 case 追加 **{n_distractors}** 个近义工具"
           f"(词法虚高检测,期望工具不变)")
@@ -809,7 +851,7 @@ def render_report(results: list[CaseResult], url: str, trials: int, ts: str,
         corr_all = agg(pos_en, "correct") + agg(pos_cn, "correct")
         A("### 1.3 虚高检测(已注入干扰项)")
         A("")
-        A(f"每个 case 注入了 **{n_distractors}** 个近义干扰工具。干扰项分两类:")
+        A(f"每个正例 case 对应 **{n_distractors}** 个近义干扰工具。干扰项分两类:")
         A("")
         A("1. **跨 service 混淆** —— 如 `file_search` vs `fs_search`、`file_delete` vs")
         A("   `fs_rm`(按 id 操作 vs 按路径操作,是真实产品里最易混的一对)")
@@ -931,8 +973,10 @@ def main() -> int:
     ap.add_argument("--distractors", type=int, default=0, metavar="N",
                     help="每个 case 注入 N 个近义干扰工具(默认 0)。"
                          "用于量化'词法匹配虚高' —— 加干扰后正确率的下降幅度即为虚高")
-    ap.add_argument("--desc-lang", default="cn", choices=["cn", "en", "both"],
-                    help="工具描述语言(默认 cn;both 让中英测试公平对照,代价 payload 翻倍)")
+    ap.add_argument("--desc-lang", default="match",
+                    choices=["match", "cn", "en", "both"],
+                    help="工具描述语言(默认 match:en 用例→纯英文描述,cn 用例→纯中文描述;"
+                         "cn/en/both 为全局单一语言,历史基线复现用 --desc-lang cn)")
     ap.add_argument("--render-only", default="")
     args = ap.parse_args()
 
@@ -959,7 +1003,14 @@ def main() -> int:
     os.makedirs(out_dir, exist_ok=True)
     langs = [x.strip() for x in args.langs.split(",") if x.strip()]
     base_url = args.url.rstrip("/")
-    tools = build_tools(args.desc_lang)
+    mode = args.desc_lang
+
+    def desc_for(lang: str) -> str:
+        """该用例语言对应的有效描述语言:match→与 query 同语言,其余→全局值。"""
+        return lang if mode == "match" else mode
+
+    tools_by_lang = {lang: build_tools(desc_for(lang)) for lang in langs}
+    tools = tools_by_lang[langs[0]]
 
     try:
         with urllib.request.urlopen(f"{base_url}/health", timeout=5) as r:
@@ -971,7 +1022,8 @@ def main() -> int:
     eff = args.trials * args.rounds
     print("═══ etscli tools-form conformance test ═══")
     print(f"  service: {base_url}  ({health.get('version') or ''})".rstrip())
-    print(f"  tools:   {len(tools)} etscli 工具直出, desc-lang={args.desc_lang}")
+    print(f"  tools:   {len(tools)} etscli 工具直出, desc-lang={mode}"
+          + (" (en→英文描述 / cn→中文描述)" if mode == "match" else ""))
     print(f"  cases:   {len(CASES)} × {len(langs)} langs")
     print(f"  trials:  {args.trials} × {args.rounds} rounds = {eff}/case")
     print("")
@@ -982,8 +1034,9 @@ def main() -> int:
     for rnd in range(args.rounds):
         for lang in langs:
             for case in CASES:
-                r = run_case(base_url, case, lang, tools, args.trials, args.timeout,
-                             args.distractors, args.desc_lang)
+                r = run_case(base_url, case, lang, tools_by_lang[lang],
+                             args.trials, args.timeout,
+                             args.distractors, desc_for(lang))
                 key = (case.cid, lang)
                 if key not in acc:
                     acc[key] = r
@@ -1029,19 +1082,20 @@ def main() -> int:
         json.dump({
             "generatedAt": ts, "service": base_url, "health": health,
             "form": "etscli-tools-direct",
-            "descLang": args.desc_lang, "toolCount": len(tools),
+            "descLang": mode, "toolCount": len(tools),
             "distractors": args.distractors,
             "trialsPerCase": args.trials, "rounds": args.rounds,
             "effectiveTrialsPerCase": eff,
             "methodology": f"{len(tools)} 个 etscli 工具直出;工具名精确匹配判定;"
                            "语料源自 `etscli <service> --help` 真实命令表;"
+                           f"描述语言 {mode};"
                            f"干扰项 {args.distractors}/case",
-            "tools": tools,
+            "tools": tools_by_lang if mode == "match" else tools,
             "results": [asdict(r) for r in results],
         }, f, ensure_ascii=False, indent=2)
 
     n = write_report(os.path.join(out_dir, "report.md"), results, base_url,
-                     eff, ts, health, args.desc_lang, len(tools), args.distractors)
+                     eff, ts, health, mode, len(tools), args.distractors)
     print("")
     print(f"  报告: {out_dir}/report.md ({n} 字节)")
     if viol:

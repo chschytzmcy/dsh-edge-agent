@@ -1,0 +1,4273 @@
+{
+  "generatedAt": "20260929T082400Z",
+  "service": "http://127.0.0.1:8081",
+  "health": {
+    "status": "ok",
+    "model_loaded": true,
+    "version": "3.0.1",
+    "cn_grounding": true,
+    "extract_count": 1436,
+    "queue_depth": 0,
+    "peak_queue": 7,
+    "queue_limit": 6,
+    "last_error": null
+  },
+  "form": "etscli-tools-direct",
+  "descLang": "match",
+  "toolCount": 47,
+  "distractors": 3,
+  "trialsPerCase": 2,
+  "rounds": 1,
+  "effectiveTrialsPerCase": 2,
+  "methodology": "47 个 etscli 工具直出;工具名精确匹配判定;语料源自 `etscli <service> --help` 真实命令表;描述语言 match;干扰项 3/case",
+  "tools": {
+    "en": [
+      {
+        "name": "etscli_auth_status",
+        "description": "show the authentication status of the current profile",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "etscli_auth_list",
+        "description": "list all saved login profiles",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "etscli_auth_switch",
+        "description": "switch to another profile",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "name of the target profile"
+            }
+          },
+          "required": [
+            "name"
+          ]
+        }
+      },
+      {
+        "name": "etscli_auth_login",
+        "description": "log in with username and password",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "server": {
+              "type": "string"
+            },
+            "username": {
+              "type": "string"
+            },
+            "password": {
+              "type": "string"
+            },
+            "profile": {
+              "type": "string"
+            },
+            "password_stdin": {
+              "type": "boolean"
+            },
+            "no_remember_password": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "server",
+            "username",
+            "password"
+          ]
+        }
+      },
+      {
+        "name": "etscli_auth_logout",
+        "description": "log out and clear stored credentials",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "profile": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      {
+        "name": "etscli_auth_rename",
+        "description": "rename an existing profile",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "old": {
+              "type": "string"
+            },
+            "new": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "old",
+            "new"
+          ]
+        }
+      },
+      {
+        "name": "etscli_user_list",
+        "description": "list all users on the box",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "etscli_user_detail",
+        "description": "show details of a specific user",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "uid": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "uid"
+          ]
+        }
+      },
+      {
+        "name": "etscli_user_register",
+        "description": "register a new user",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "username": {
+              "type": "string"
+            },
+            "password": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "username",
+            "password"
+          ]
+        }
+      },
+      {
+        "name": "etscli_user_passwd",
+        "description": "change the password of a user",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "uid": {
+              "type": "string"
+            },
+            "new_password": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "uid",
+            "new_password"
+          ]
+        }
+      },
+      {
+        "name": "etscli_user_delete",
+        "description": "delete a user",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "uid": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "uid"
+          ]
+        }
+      },
+      {
+        "name": "etscli_chat_list",
+        "description": "list group chats",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "etscli_chat_messages",
+        "description": "show messages in a group chat",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "chat_id": {
+              "type": "string"
+            },
+            "limit": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "chat_id"
+          ]
+        }
+      },
+      {
+        "name": "etscli_chat_files",
+        "description": "list files shared in a group chat",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "chat_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "chat_id"
+          ]
+        }
+      },
+      {
+        "name": "etscli_chat_send",
+        "description": "send a text message to a group chat",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "chat_id": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "chat_id",
+            "text"
+          ]
+        }
+      },
+      {
+        "name": "etscli_chat_send_file",
+        "description": "send a file to a group chat",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "chat_id": {
+              "type": "string"
+            },
+            "file": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "chat_id",
+            "file"
+          ]
+        }
+      },
+      {
+        "name": "etscli_meeting_list",
+        "description": "list all meetings",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "etscli_meeting_detail",
+        "description": "show details of a specific meeting",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "meeting_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "meeting_id"
+          ]
+        }
+      },
+      {
+        "name": "etscli_meeting_create",
+        "description": "create a new meeting",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name"
+          ]
+        }
+      },
+      {
+        "name": "etscli_meeting_finish",
+        "description": "finish an ongoing meeting",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "meeting_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "meeting_id"
+          ]
+        }
+      },
+      {
+        "name": "etscli_meeting_summary",
+        "description": "get the summary of a meeting",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "meeting_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "meeting_id"
+          ]
+        }
+      },
+      {
+        "name": "etscli_file_search",
+        "description": "search box files by keyword",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "keyword": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "keyword"
+          ]
+        }
+      },
+      {
+        "name": "etscli_file_detail",
+        "description": "show details of a box file by its file id",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "file_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "file_id"
+          ]
+        }
+      },
+      {
+        "name": "etscli_file_upload",
+        "description": "upload a single local file to the box",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "file": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "file"
+          ]
+        }
+      },
+      {
+        "name": "etscli_file_upload_dir",
+        "description": "upload a local directory to the box",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "dir": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "dir"
+          ]
+        }
+      },
+      {
+        "name": "etscli_file_download",
+        "description": "download a box file by its file id",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "file_id": {
+              "type": "string"
+            },
+            "output": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "file_id",
+            "output"
+          ]
+        }
+      },
+      {
+        "name": "etscli_file_delete",
+        "description": "delete box files by their file ids",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "file_ids": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "file_ids"
+          ]
+        }
+      },
+      {
+        "name": "etscli_fs_ls",
+        "description": "list files in a directory",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      {
+        "name": "etscli_fs_mkdir",
+        "description": "create a directory",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ]
+        }
+      },
+      {
+        "name": "etscli_fs_stat",
+        "description": "show stat info of a file",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ]
+        }
+      },
+      {
+        "name": "etscli_fs_stats",
+        "description": "show statistics of a directory",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ]
+        }
+      },
+      {
+        "name": "etscli_fs_rm",
+        "description": "delete a file or directory by path",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ]
+        }
+      },
+      {
+        "name": "etscli_fs_mv",
+        "description": "move a file or directory by path",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "src": {
+              "type": "string"
+            },
+            "dst": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "src",
+            "dst"
+          ]
+        }
+      },
+      {
+        "name": "etscli_fs_rename",
+        "description": "rename a file or directory by path",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "src": {
+              "type": "string"
+            },
+            "dst": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "src",
+            "dst"
+          ]
+        }
+      },
+      {
+        "name": "etscli_fs_search",
+        "description": "search files by name under a directory",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      {
+        "name": "etscli_fs_add",
+        "description": "add a local file into a box directory",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "local": {
+              "type": "string"
+            },
+            "remote": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "local",
+            "remote"
+          ]
+        }
+      },
+      {
+        "name": "etscli_sharing_list",
+        "description": "list all sharing links",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "etscli_sharing_create",
+        "description": "create a sharing link for a file",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "file_id": {
+              "type": "string"
+            },
+            "duration": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "file_id"
+          ]
+        }
+      },
+      {
+        "name": "etscli_sharing_delete",
+        "description": "delete a sharing link",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "share_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "share_id"
+          ]
+        }
+      },
+      {
+        "name": "etscli_system_info",
+        "description": "show system information of the box",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "etscli_system_health",
+        "description": "check the health of the box",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "etscli_system_alarm_list",
+        "description": "list alarms on the box",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "limit": {
+              "type": "integer"
+            }
+          }
+        }
+      },
+      {
+        "name": "etscli_discover_scan",
+        "description": "scan the local network for boxes",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "timeout": {
+              "type": "integer"
+            }
+          }
+        }
+      },
+      {
+        "name": "etscli_migrate_session_login",
+        "description": "establish a session for migration",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "etscli_migrate_transfer",
+        "description": "migrate data from an old box to the current box",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "all": {
+              "type": "boolean"
+            },
+            "dry_run": {
+              "type": "boolean"
+            }
+          }
+        }
+      },
+      {
+        "name": "etscli_migrate_verify",
+        "description": "verify the migration result",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "etscli_migrate_record",
+        "description": "show migration records",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        }
+      }
+    ],
+    "cn": [
+      {
+        "name": "etscli_auth_status",
+        "description": "查看当前 profile 认证状态(含自动重新登录开关)",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "etscli_auth_list",
+        "description": "列出所有已保存的 profile",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "etscli_auth_switch",
+        "description": "切换当前使用的 profile",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "目标 profile 名"
+            }
+          },
+          "required": [
+            "name"
+          ]
+        }
+      },
+      {
+        "name": "etscli_auth_login",
+        "description": "账号登录并存储凭证",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "server": {
+              "type": "string"
+            },
+            "username": {
+              "type": "string"
+            },
+            "password": {
+              "type": "string"
+            },
+            "profile": {
+              "type": "string"
+            },
+            "password_stdin": {
+              "type": "boolean"
+            },
+            "no_remember_password": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "server",
+            "username",
+            "password"
+          ]
+        }
+      },
+      {
+        "name": "etscli_auth_logout",
+        "description": "登出并清除凭证",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "profile": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      {
+        "name": "etscli_auth_rename",
+        "description": "重命名一个已存在的 profile",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "old": {
+              "type": "string"
+            },
+            "new": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "old",
+            "new"
+          ]
+        }
+      },
+      {
+        "name": "etscli_user_list",
+        "description": "列出设备上的所有用户",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "etscli_user_detail",
+        "description": "查看指定用户的详细信息",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "uid": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "uid"
+          ]
+        }
+      },
+      {
+        "name": "etscli_user_register",
+        "description": "注册一个新用户",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "username": {
+              "type": "string"
+            },
+            "password": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "username",
+            "password"
+          ]
+        }
+      },
+      {
+        "name": "etscli_user_passwd",
+        "description": "修改指定用户的密码",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "uid": {
+              "type": "string"
+            },
+            "new_password": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "uid",
+            "new_password"
+          ]
+        }
+      },
+      {
+        "name": "etscli_user_delete",
+        "description": "删除指定用户",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "uid": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "uid"
+          ]
+        }
+      },
+      {
+        "name": "etscli_chat_list",
+        "description": "列出群聊",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "etscli_chat_messages",
+        "description": "查看群聊中的消息",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "chat_id": {
+              "type": "string"
+            },
+            "limit": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "chat_id"
+          ]
+        }
+      },
+      {
+        "name": "etscli_chat_files",
+        "description": "查看群聊中的文件",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "chat_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "chat_id"
+          ]
+        }
+      },
+      {
+        "name": "etscli_chat_send",
+        "description": "向群聊发送一条文字消息",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "chat_id": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "chat_id",
+            "text"
+          ]
+        }
+      },
+      {
+        "name": "etscli_chat_send_file",
+        "description": "向群聊发送一个文件",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "chat_id": {
+              "type": "string"
+            },
+            "file": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "chat_id",
+            "file"
+          ]
+        }
+      },
+      {
+        "name": "etscli_meeting_list",
+        "description": "列出所有会议",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "etscli_meeting_detail",
+        "description": "查看指定会议的详细信息",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "meeting_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "meeting_id"
+          ]
+        }
+      },
+      {
+        "name": "etscli_meeting_create",
+        "description": "创建一个新会议",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name"
+          ]
+        }
+      },
+      {
+        "name": "etscli_meeting_finish",
+        "description": "结束一个进行中的会议",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "meeting_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "meeting_id"
+          ]
+        }
+      },
+      {
+        "name": "etscli_meeting_summary",
+        "description": "获取会议纪要",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "meeting_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "meeting_id"
+          ]
+        }
+      },
+      {
+        "name": "etscli_file_search",
+        "description": "按关键字搜索密盒中的文件",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "keyword": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "keyword"
+          ]
+        }
+      },
+      {
+        "name": "etscli_file_detail",
+        "description": "按 file id 查看文件详情",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "file_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "file_id"
+          ]
+        }
+      },
+      {
+        "name": "etscli_file_upload",
+        "description": "上传一个本地文件到密盒",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "file": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "file"
+          ]
+        }
+      },
+      {
+        "name": "etscli_file_upload_dir",
+        "description": "上传一个本地目录到密盒",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "dir": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "dir"
+          ]
+        }
+      },
+      {
+        "name": "etscli_file_download",
+        "description": "按 file id 下载文件到本地",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "file_id": {
+              "type": "string"
+            },
+            "output": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "file_id",
+            "output"
+          ]
+        }
+      },
+      {
+        "name": "etscli_file_delete",
+        "description": "按 file id 删除文件",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "file_ids": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "file_ids"
+          ]
+        }
+      },
+      {
+        "name": "etscli_fs_ls",
+        "description": "列出指定目录下的文件",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      {
+        "name": "etscli_fs_mkdir",
+        "description": "创建一个目录",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ]
+        }
+      },
+      {
+        "name": "etscli_fs_stat",
+        "description": "查看文件的状态信息(stat)",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ]
+        }
+      },
+      {
+        "name": "etscli_fs_stats",
+        "description": "查看目录的统计信息",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ]
+        }
+      },
+      {
+        "name": "etscli_fs_rm",
+        "description": "按路径删除文件或目录",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ]
+        }
+      },
+      {
+        "name": "etscli_fs_mv",
+        "description": "按路径移动文件或目录",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "src": {
+              "type": "string"
+            },
+            "dst": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "src",
+            "dst"
+          ]
+        }
+      },
+      {
+        "name": "etscli_fs_rename",
+        "description": "按路径重命名文件或目录",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "src": {
+              "type": "string"
+            },
+            "dst": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "src",
+            "dst"
+          ]
+        }
+      },
+      {
+        "name": "etscli_fs_search",
+        "description": "按名称在目录下搜索文件",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      {
+        "name": "etscli_fs_add",
+        "description": "把本地文件添加到密盒的指定目录",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "local": {
+              "type": "string"
+            },
+            "remote": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "local",
+            "remote"
+          ]
+        }
+      },
+      {
+        "name": "etscli_sharing_list",
+        "description": "列出所有分享链接",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "etscli_sharing_create",
+        "description": "为文件创建分享链接",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "file_id": {
+              "type": "string"
+            },
+            "duration": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "file_id"
+          ]
+        }
+      },
+      {
+        "name": "etscli_sharing_delete",
+        "description": "删除一个分享链接",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "share_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "share_id"
+          ]
+        }
+      },
+      {
+        "name": "etscli_system_info",
+        "description": "查看设备的系统信息",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "etscli_system_health",
+        "description": "查看设备的健康状态",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "etscli_system_alarm_list",
+        "description": "列出设备上的告警",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "limit": {
+              "type": "integer"
+            }
+          }
+        }
+      },
+      {
+        "name": "etscli_discover_scan",
+        "description": "扫描局域网中的密盒设备",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "timeout": {
+              "type": "integer"
+            }
+          }
+        }
+      },
+      {
+        "name": "etscli_migrate_session_login",
+        "description": "为迁移流程建立会话",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "etscli_migrate_transfer",
+        "description": "把旧设备的数据迁移到当前设备",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "all": {
+              "type": "boolean"
+            },
+            "dry_run": {
+              "type": "boolean"
+            }
+          }
+        }
+      },
+      {
+        "name": "etscli_migrate_verify",
+        "description": "验证迁移结果",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "etscli_migrate_record",
+        "description": "查看迁移记录",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        }
+      }
+    ]
+  },
+  "results": [
+    {
+      "case_id": "auth-status",
+      "lang": "en",
+      "domain": "auth",
+      "expect_tools": [
+        "etscli_auth_status"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        11.4,
+        0.43
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.9823,
+        0.9823
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_system_info\"]",
+      "distractors": [
+        "etscli_auth_status_raw",
+        "etscli_auth_status_export",
+        "etscli_auth_status_history"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "auth-list",
+      "lang": "en",
+      "domain": "auth",
+      "expect_tools": [
+        "etscli_auth_list"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 2,
+      "failure_classes": {},
+      "latencies": [
+        10.83,
+        0.42
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.4912,
+        0.4912
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_auth_list\"]",
+      "distractors": [
+        "etscli_auth_list_raw",
+        "etscli_auth_list_export",
+        "etscli_auth_list_history"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "auth-switch",
+      "lang": "en",
+      "domain": "auth",
+      "expect_tools": [
+        "etscli_auth_switch"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 2,
+      "failure_classes": {},
+      "latencies": [
+        11.19,
+        0.37
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.6727,
+        0.6727
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_auth_switch\"]",
+      "distractors": [
+        "etscli_auth_switch_raw",
+        "etscli_auth_switch_export",
+        "etscli_auth_switch_history"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "auth-rename",
+      "lang": "en",
+      "domain": "auth",
+      "expect_tools": [
+        "etscli_auth_rename"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        11.39,
+        0.59
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.4429,
+        0.4429
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_migrate_transfer\"]",
+      "distractors": [
+        "etscli_auth_rename_raw",
+        "etscli_auth_rename_export",
+        "etscli_auth_rename_history"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "auth-login",
+      "lang": "en",
+      "domain": "auth",
+      "expect_tools": [
+        "etscli_auth_login"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        11.22,
+        0.68
+      ],
+      "calls_when_ok": [
+        0,
+        0
+      ],
+      "confidences": [
+        0.5244,
+        0.5244
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[] (未产出调用)",
+      "distractors": [
+        "etscli_auth_login_raw",
+        "etscli_auth_login_export",
+        "etscli_auth_login_history"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "auth-logout",
+      "lang": "en",
+      "domain": "auth",
+      "expect_tools": [
+        "etscli_auth_logout"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        11.8,
+        0.4
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.8631,
+        0.8631
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_auth_logout_raw\"]",
+      "distractors": [
+        "etscli_auth_logout_raw",
+        "etscli_auth_logout_export",
+        "etscli_auth_logout_history"
+      ],
+      "picked_distractor": 2
+    },
+    {
+      "case_id": "user-list",
+      "lang": "en",
+      "domain": "user",
+      "expect_tools": [
+        "etscli_user_list"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        11.44,
+        0.5
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        1.0,
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_user_list_raw\"]",
+      "distractors": [
+        "etscli_user_list_raw",
+        "etscli_user_list_export",
+        "etscli_user_list_history"
+      ],
+      "picked_distractor": 2
+    },
+    {
+      "case_id": "user-detail",
+      "lang": "en",
+      "domain": "user",
+      "expect_tools": [
+        "etscli_user_detail"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        11.57,
+        0.55
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        1.0,
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_user_detail_raw\"]",
+      "distractors": [
+        "etscli_user_detail_raw",
+        "etscli_user_detail_export",
+        "etscli_user_detail_history"
+      ],
+      "picked_distractor": 2
+    },
+    {
+      "case_id": "user-register",
+      "lang": "en",
+      "domain": "user",
+      "expect_tools": [
+        "etscli_user_register"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 2,
+      "failure_classes": {},
+      "latencies": [
+        11.33,
+        0.49
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.4566,
+        0.4566
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_user_register\"]",
+      "distractors": [
+        "etscli_user_register_raw",
+        "etscli_user_register_export",
+        "etscli_user_register_history"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "user-passwd",
+      "lang": "en",
+      "domain": "user",
+      "expect_tools": [
+        "etscli_user_passwd"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 2,
+      "failure_classes": {},
+      "latencies": [
+        11.28,
+        0.55
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.5199,
+        0.5199
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_user_passwd\"]",
+      "distractors": [
+        "etscli_user_passwd_raw",
+        "etscli_user_passwd_export",
+        "etscli_user_passwd_history"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "chat-list",
+      "lang": "en",
+      "domain": "chat",
+      "expect_tools": [
+        "etscli_chat_list"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 2,
+      "failure_classes": {},
+      "latencies": [
+        12.83,
+        0.4
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.8483,
+        0.8483
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_chat_list\"]",
+      "distractors": [
+        "etscli_chat_list_raw",
+        "etscli_chat_list_export",
+        "etscli_chat_list_history"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "chat-messages",
+      "lang": "en",
+      "domain": "chat",
+      "expect_tools": [
+        "etscli_chat_messages"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        11.01,
+        0.5
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.6731,
+        0.6731
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_chat_messages_history\"]",
+      "distractors": [
+        "etscli_chat_messages_raw",
+        "etscli_chat_messages_export",
+        "etscli_chat_messages_history"
+      ],
+      "picked_distractor": 2
+    },
+    {
+      "case_id": "chat-send",
+      "lang": "en",
+      "domain": "chat",
+      "expect_tools": [
+        "etscli_chat_send"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        11.8,
+        0.64
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.2134,
+        0.2134
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_chat_send_file\"]",
+      "distractors": [
+        "etscli_chat_send_raw",
+        "etscli_chat_send_export",
+        "etscli_chat_send_history"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "chat-send-file",
+      "lang": "en",
+      "domain": "chat",
+      "expect_tools": [
+        "etscli_chat_send_file"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 2,
+      "failure_classes": {},
+      "latencies": [
+        11.52,
+        0.53
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.2137,
+        0.2137
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_chat_send_file\"]",
+      "distractors": [
+        "etscli_chat_send_file_raw",
+        "etscli_chat_send_file_export",
+        "etscli_chat_send_file_history"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "meeting-list",
+      "lang": "en",
+      "domain": "meeting",
+      "expect_tools": [
+        "etscli_meeting_list"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        11.22,
+        0.43
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.7932,
+        0.7932
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_meeting_list_export\"]",
+      "distractors": [
+        "etscli_meeting_list_raw",
+        "etscli_meeting_list_export",
+        "etscli_meeting_list_history"
+      ],
+      "picked_distractor": 2
+    },
+    {
+      "case_id": "meeting-summary",
+      "lang": "en",
+      "domain": "meeting",
+      "expect_tools": [
+        "etscli_meeting_summary"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        12.44,
+        0.74
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.738,
+        0.738
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_meeting_summary_export\"]",
+      "distractors": [
+        "etscli_meeting_summary_raw",
+        "etscli_meeting_summary_export",
+        "etscli_meeting_summary_history"
+      ],
+      "picked_distractor": 2
+    },
+    {
+      "case_id": "meeting-detail",
+      "lang": "en",
+      "domain": "meeting",
+      "expect_tools": [
+        "etscli_meeting_detail"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 2,
+      "failure_classes": {},
+      "latencies": [
+        12.0,
+        0.55
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.938,
+        0.938
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_meeting_detail\"]",
+      "distractors": [
+        "etscli_meeting_detail_raw",
+        "etscli_meeting_detail_export",
+        "etscli_meeting_detail_history"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "meeting-create",
+      "lang": "en",
+      "domain": "meeting",
+      "expect_tools": [
+        "etscli_meeting_create"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        11.8,
+        0.41
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.8601,
+        0.8601
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_meeting_create_export\"]",
+      "distractors": [
+        "etscli_meeting_create_raw",
+        "etscli_meeting_create_export",
+        "etscli_meeting_create_history"
+      ],
+      "picked_distractor": 2
+    },
+    {
+      "case_id": "meeting-finish",
+      "lang": "en",
+      "domain": "meeting",
+      "expect_tools": [
+        "etscli_meeting_finish"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        11.27,
+        0.4
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.7258,
+        0.7258
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_meeting_finish_export\"]",
+      "distractors": [
+        "etscli_meeting_finish_raw",
+        "etscli_meeting_finish_export",
+        "etscli_meeting_finish_history"
+      ],
+      "picked_distractor": 2
+    },
+    {
+      "case_id": "file-search",
+      "lang": "en",
+      "domain": "file",
+      "expect_tools": [
+        "etscli_file_search"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 2,
+      "failure_classes": {},
+      "latencies": [
+        11.61,
+        0.45
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.6094,
+        0.6094
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_file_search\"]",
+      "distractors": [
+        "etscli_file_search_raw",
+        "etscli_file_search_export"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "file-detail",
+      "lang": "en",
+      "domain": "file",
+      "expect_tools": [
+        "etscli_file_detail"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 2,
+      "failure_classes": {},
+      "latencies": [
+        11.68,
+        0.43
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.7587,
+        0.7587
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_file_detail\"]",
+      "distractors": [
+        "etscli_file_detail_raw",
+        "etscli_file_detail_export"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "file-upload",
+      "lang": "en",
+      "domain": "file",
+      "expect_tools": [
+        "etscli_file_upload_dir"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        11.41,
+        0.48
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.5666,
+        0.5666
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_file_upload\"]",
+      "distractors": [
+        "etscli_file_upload_dir_raw",
+        "etscli_file_upload_dir_export",
+        "etscli_file_upload_dir_history"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "file-download",
+      "lang": "en",
+      "domain": "file",
+      "expect_tools": [
+        "etscli_file_download"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        11.64,
+        1.21
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.3641,
+        0.3641
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_file_search\"]",
+      "distractors": [
+        "etscli_file_download_raw",
+        "etscli_file_download_export"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "file-delete",
+      "lang": "en",
+      "domain": "file",
+      "expect_tools": [
+        "etscli_file_delete",
+        "etscli_fs_rm"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        11.6,
+        0.56
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.3606,
+        0.3606
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_file_search\"]",
+      "distractors": [
+        "etscli_file_delete_raw",
+        "etscli_file_delete_export"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "fs-ls",
+      "lang": "en",
+      "domain": "fs",
+      "expect_tools": [
+        "etscli_fs_ls"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        11.13,
+        0.47
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.2457,
+        0.2457
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_fs_search\"]",
+      "distractors": [
+        "etscli_fs_ls_raw",
+        "etscli_fs_ls_export",
+        "etscli_fs_ls_history"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "fs-mkdir",
+      "lang": "en",
+      "domain": "fs",
+      "expect_tools": [
+        "etscli_fs_mkdir"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        13.13,
+        0.48
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.7953,
+        0.7953
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_meeting_create\"]",
+      "distractors": [
+        "etscli_fs_mkdir_raw",
+        "etscli_fs_mkdir_export",
+        "etscli_fs_mkdir_history"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "fs-rm",
+      "lang": "en",
+      "domain": "fs",
+      "expect_tools": [
+        "etscli_fs_rm",
+        "etscli_file_delete"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 2,
+      "failure_classes": {},
+      "latencies": [
+        11.9,
+        0.6
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.4455,
+        0.4455
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_file_delete\"]",
+      "distractors": [
+        "etscli_fs_rm_raw",
+        "etscli_fs_rm_export",
+        "etscli_fs_rm_history"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "fs-search",
+      "lang": "en",
+      "domain": "fs",
+      "expect_tools": [
+        "etscli_fs_search"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 2,
+      "failure_classes": {},
+      "latencies": [
+        11.36,
+        0.58
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.5794,
+        0.5794
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_fs_search\"]",
+      "distractors": [
+        "etscli_fs_search_raw",
+        "etscli_fs_search_export",
+        "etscli_fs_search_history"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "fs-stat",
+      "lang": "en",
+      "domain": "fs",
+      "expect_tools": [
+        "etscli_fs_stats"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        11.22,
+        0.51
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.9216,
+        0.9216
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_fs_stats_raw\"]",
+      "distractors": [
+        "etscli_fs_stats_raw",
+        "etscli_fs_stats_export",
+        "etscli_fs_stats_history"
+      ],
+      "picked_distractor": 2
+    },
+    {
+      "case_id": "fs-add",
+      "lang": "en",
+      "domain": "fs",
+      "expect_tools": [
+        "etscli_fs_add"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 2,
+      "failure_classes": {},
+      "latencies": [
+        11.9,
+        0.66
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.6685,
+        0.6685
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_fs_add\"]",
+      "distractors": [
+        "etscli_fs_add_raw",
+        "etscli_fs_add_export",
+        "etscli_fs_add_history"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "sharing-list",
+      "lang": "en",
+      "domain": "sharing",
+      "expect_tools": [
+        "etscli_sharing_list"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        12.77,
+        0.53
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.6789,
+        0.6789
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_sharing_list_export\"]",
+      "distractors": [
+        "etscli_sharing_list_raw",
+        "etscli_sharing_list_export",
+        "etscli_sharing_list_history"
+      ],
+      "picked_distractor": 2
+    },
+    {
+      "case_id": "sharing-create",
+      "lang": "en",
+      "domain": "sharing",
+      "expect_tools": [
+        "etscli_sharing_create"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        11.97,
+        0.58
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.1669,
+        0.1669
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_fs_search\"]",
+      "distractors": [
+        "etscli_sharing_create_raw",
+        "etscli_sharing_create_export",
+        "etscli_sharing_create_history"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "sharing-delete",
+      "lang": "en",
+      "domain": "sharing",
+      "expect_tools": [
+        "etscli_sharing_delete"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        11.03,
+        0.42
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.7399,
+        0.7399
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_sharing_delete_raw\"]",
+      "distractors": [
+        "etscli_sharing_delete_raw",
+        "etscli_sharing_delete_export",
+        "etscli_sharing_delete_history"
+      ],
+      "picked_distractor": 2
+    },
+    {
+      "case_id": "system-info",
+      "lang": "en",
+      "domain": "system",
+      "expect_tools": [
+        "etscli_system_info"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        12.38,
+        0.5
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.9923,
+        0.9923
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_system_info_raw\"]",
+      "distractors": [
+        "etscli_system_info_raw",
+        "etscli_system_info_export",
+        "etscli_system_info_history"
+      ],
+      "picked_distractor": 2
+    },
+    {
+      "case_id": "system-health",
+      "lang": "en",
+      "domain": "system",
+      "expect_tools": [
+        "etscli_system_health"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        12.19,
+        0.46
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.7717,
+        0.7717
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_system_health_raw\"]",
+      "distractors": [
+        "etscli_system_health_raw",
+        "etscli_system_health_export",
+        "etscli_system_health_history"
+      ],
+      "picked_distractor": 2
+    },
+    {
+      "case_id": "system-alarm",
+      "lang": "en",
+      "domain": "system",
+      "expect_tools": [
+        "etscli_system_alarm_list"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        12.28,
+        0.53
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.6464,
+        0.6464
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_system_alarm_list_history\"]",
+      "distractors": [
+        "etscli_system_alarm_list_raw",
+        "etscli_system_alarm_list_export",
+        "etscli_system_alarm_list_history"
+      ],
+      "picked_distractor": 2
+    },
+    {
+      "case_id": "discover-scan",
+      "lang": "en",
+      "domain": "discover",
+      "expect_tools": [
+        "etscli_discover_scan"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        11.24,
+        0.62
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.2499,
+        0.2499
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_fs_search\"]",
+      "distractors": [
+        "etscli_discover_scan_raw",
+        "etscli_discover_scan_export",
+        "etscli_discover_scan_history"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "migrate-transfer",
+      "lang": "en",
+      "domain": "migrate",
+      "expect_tools": [
+        "etscli_migrate_transfer"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        12.19,
+        0.67
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.9074,
+        0.9074
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_migrate_transfer_raw\"]",
+      "distractors": [
+        "etscli_migrate_transfer_raw",
+        "etscli_migrate_transfer_export",
+        "etscli_migrate_transfer_history"
+      ],
+      "picked_distractor": 2
+    },
+    {
+      "case_id": "migrate-verify",
+      "lang": "en",
+      "domain": "migrate",
+      "expect_tools": [
+        "etscli_migrate_verify"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        12.44,
+        0.5
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.9046,
+        0.9046
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_migrate_verify_history\"]",
+      "distractors": [
+        "etscli_migrate_verify_raw",
+        "etscli_migrate_verify_export",
+        "etscli_migrate_verify_history"
+      ],
+      "picked_distractor": 2
+    },
+    {
+      "case_id": "negative-greeting",
+      "lang": "en",
+      "domain": "negative",
+      "expect_tools": [],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        11.27,
+        0.42
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.7432,
+        0.7432
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_migrate_session_login\"]",
+      "distractors": [],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "negative-knowledge",
+      "lang": "en",
+      "domain": "negative",
+      "expect_tools": [],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 2,
+      "failure_classes": {},
+      "latencies": [
+        0.62,
+        0.72
+      ],
+      "calls_when_ok": [
+        0,
+        0
+      ],
+      "confidences": [
+        0.1015,
+        0.1015
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[] (未产出调用)",
+      "distractors": [],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "negative-weather",
+      "lang": "en",
+      "domain": "negative",
+      "expect_tools": [],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.47,
+        0.53
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.3087,
+        0.3087
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_migrate_session_login\"]",
+      "distractors": [],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "auth-status",
+      "lang": "cn",
+      "domain": "auth",
+      "expect_tools": [
+        "etscli_auth_status"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        20.94,
+        0.8
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.5776,
+        0.5776
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_migrate_verify\"]",
+      "distractors": [
+        "etscli_auth_status_raw",
+        "etscli_auth_status_export",
+        "etscli_auth_status_history"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "auth-list",
+      "lang": "cn",
+      "domain": "auth",
+      "expect_tools": [
+        "etscli_auth_list"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        20.29,
+        0.79
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.2159,
+        0.2159
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_fs_stat\"]",
+      "distractors": [
+        "etscli_auth_list_raw",
+        "etscli_auth_list_export",
+        "etscli_auth_list_history"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "auth-switch",
+      "lang": "cn",
+      "domain": "auth",
+      "expect_tools": [
+        "etscli_auth_switch"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        21.24,
+        0.65
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.5042,
+        0.5042
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_fs_stat\"]",
+      "distractors": [
+        "etscli_auth_switch_raw",
+        "etscli_auth_switch_export",
+        "etscli_auth_switch_history"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "auth-rename",
+      "lang": "cn",
+      "domain": "auth",
+      "expect_tools": [
+        "etscli_auth_rename"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        18.78,
+        0.59
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.5218,
+        0.5218
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_fs_stat\"]",
+      "distractors": [
+        "etscli_auth_rename_raw",
+        "etscli_auth_rename_export",
+        "etscli_auth_rename_history"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "auth-login",
+      "lang": "cn",
+      "domain": "auth",
+      "expect_tools": [
+        "etscli_auth_login"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        19.36,
+        0.83
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.5178,
+        0.5178
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_fs_rm\"]",
+      "distractors": [
+        "etscli_auth_login_raw",
+        "etscli_auth_login_export",
+        "etscli_auth_login_history"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "auth-logout",
+      "lang": "cn",
+      "domain": "auth",
+      "expect_tools": [
+        "etscli_auth_logout"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        20.87,
+        0.7
+      ],
+      "calls_when_ok": [
+        0,
+        0
+      ],
+      "confidences": [
+        0.3951,
+        0.3951
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[] (未产出调用)",
+      "distractors": [
+        "etscli_auth_logout_raw",
+        "etscli_auth_logout_export",
+        "etscli_auth_logout_history"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "user-list",
+      "lang": "cn",
+      "domain": "user",
+      "expect_tools": [
+        "etscli_user_list"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        19.19,
+        0.74
+      ],
+      "calls_when_ok": [
+        0,
+        0
+      ],
+      "confidences": [
+        0.2943,
+        0.2943
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[] (未产出调用)",
+      "distractors": [
+        "etscli_user_list_raw",
+        "etscli_user_list_export",
+        "etscli_user_list_history"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "user-detail",
+      "lang": "cn",
+      "domain": "user",
+      "expect_tools": [
+        "etscli_user_detail"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        18.76,
+        0.58
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.844,
+        0.844
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_user_detail_raw\"]",
+      "distractors": [
+        "etscli_user_detail_raw",
+        "etscli_user_detail_export",
+        "etscli_user_detail_history"
+      ],
+      "picked_distractor": 2
+    },
+    {
+      "case_id": "user-register",
+      "lang": "cn",
+      "domain": "user",
+      "expect_tools": [
+        "etscli_user_register"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        22.27,
+        0.74
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.3067,
+        0.3067
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_fs_stats\"]",
+      "distractors": [
+        "etscli_user_register_raw",
+        "etscli_user_register_export",
+        "etscli_user_register_history"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "user-passwd",
+      "lang": "cn",
+      "domain": "user",
+      "expect_tools": [
+        "etscli_user_passwd"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        18.99,
+        0.67
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.7756,
+        0.7756
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_user_passwd_raw\"]",
+      "distractors": [
+        "etscli_user_passwd_raw",
+        "etscli_user_passwd_export",
+        "etscli_user_passwd_history"
+      ],
+      "picked_distractor": 2
+    },
+    {
+      "case_id": "chat-list",
+      "lang": "cn",
+      "domain": "chat",
+      "expect_tools": [
+        "etscli_chat_list"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        21.3,
+        0.78
+      ],
+      "calls_when_ok": [
+        0,
+        0
+      ],
+      "confidences": [
+        0.3566,
+        0.3566
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[] (未产出调用)",
+      "distractors": [
+        "etscli_chat_list_raw",
+        "etscli_chat_list_export",
+        "etscli_chat_list_history"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "chat-messages",
+      "lang": "cn",
+      "domain": "chat",
+      "expect_tools": [
+        "etscli_chat_messages"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        21.3,
+        0.7
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.2895,
+        0.2895
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_fs_stats\"]",
+      "distractors": [
+        "etscli_chat_messages_raw",
+        "etscli_chat_messages_export",
+        "etscli_chat_messages_history"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "chat-send",
+      "lang": "cn",
+      "domain": "chat",
+      "expect_tools": [
+        "etscli_chat_send"
+      ],
+      "trials": 2,
+      "passed": 0,
+      "failed": 2,
+      "correct": 0,
+      "failure_classes": {
+        "encoding": 2
+      },
+      "latencies": [
+        18.51,
+        0.78
+      ],
+      "calls_when_ok": [],
+      "confidences": [],
+      "contract_violations": {},
+      "sample_error": "engine error: 'utf-8' codec can't decode bytes in position 241-242: invalid continuation byte",
+      "sample_violation": null,
+      "sample_call": null,
+      "distractors": [
+        "etscli_chat_send_raw",
+        "etscli_chat_send_export",
+        "etscli_chat_send_history"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "chat-send-file",
+      "lang": "cn",
+      "domain": "chat",
+      "expect_tools": [
+        "etscli_chat_send_file"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        20.0,
+        0.81
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.2447,
+        0.2447
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_meeting_summary\"]",
+      "distractors": [
+        "etscli_chat_send_file_raw",
+        "etscli_chat_send_file_export",
+        "etscli_chat_send_file_history"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "meeting-list",
+      "lang": "cn",
+      "domain": "meeting",
+      "expect_tools": [
+        "etscli_meeting_list"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        21.49,
+        0.9
+      ],
+      "calls_when_ok": [
+        0,
+        0
+      ],
+      "confidences": [
+        0.3399,
+        0.3399
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[] (未产出调用)",
+      "distractors": [
+        "etscli_meeting_list_raw",
+        "etscli_meeting_list_export",
+        "etscli_meeting_list_history"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "meeting-summary",
+      "lang": "cn",
+      "domain": "meeting",
+      "expect_tools": [
+        "etscli_meeting_summary"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        18.9,
+        0.63
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.5865,
+        0.5865
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_meeting_summary_export\"]",
+      "distractors": [
+        "etscli_meeting_summary_raw",
+        "etscli_meeting_summary_export",
+        "etscli_meeting_summary_history"
+      ],
+      "picked_distractor": 2
+    },
+    {
+      "case_id": "meeting-detail",
+      "lang": "cn",
+      "domain": "meeting",
+      "expect_tools": [
+        "etscli_meeting_detail"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        19.98,
+        0.8
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.2549,
+        0.2549
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_fs_mkdir\"]",
+      "distractors": [
+        "etscli_meeting_detail_raw",
+        "etscli_meeting_detail_export",
+        "etscli_meeting_detail_history"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "meeting-create",
+      "lang": "cn",
+      "domain": "meeting",
+      "expect_tools": [
+        "etscli_meeting_create"
+      ],
+      "trials": 2,
+      "passed": 0,
+      "failed": 2,
+      "correct": 0,
+      "failure_classes": {
+        "encoding": 2
+      },
+      "latencies": [
+        20.76,
+        0.76
+      ],
+      "calls_when_ok": [],
+      "confidences": [],
+      "contract_violations": {},
+      "sample_error": "engine error: 'utf-8' codec can't decode byte 0xe5 in position 238: invalid continuation byte",
+      "sample_violation": null,
+      "sample_call": null,
+      "distractors": [
+        "etscli_meeting_create_raw",
+        "etscli_meeting_create_export",
+        "etscli_meeting_create_history"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "meeting-finish",
+      "lang": "cn",
+      "domain": "meeting",
+      "expect_tools": [
+        "etscli_meeting_finish"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        19.51,
+        0.62
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.5643,
+        0.5643
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_meeting_finish_raw\"]",
+      "distractors": [
+        "etscli_meeting_finish_raw",
+        "etscli_meeting_finish_export",
+        "etscli_meeting_finish_history"
+      ],
+      "picked_distractor": 2
+    },
+    {
+      "case_id": "file-search",
+      "lang": "cn",
+      "domain": "file",
+      "expect_tools": [
+        "etscli_file_search"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        19.92,
+        0.81
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        1.0,
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_migrate_verify\"]",
+      "distractors": [
+        "etscli_file_search_raw",
+        "etscli_file_search_export"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "file-detail",
+      "lang": "cn",
+      "domain": "file",
+      "expect_tools": [
+        "etscli_file_detail"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 2,
+      "failure_classes": {},
+      "latencies": [
+        20.6,
+        0.78
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.6595,
+        0.6595
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_file_detail\"]",
+      "distractors": [
+        "etscli_file_detail_raw",
+        "etscli_file_detail_export"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "file-upload",
+      "lang": "cn",
+      "domain": "file",
+      "expect_tools": [
+        "etscli_file_upload_dir"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        19.4,
+        0.71
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.7544,
+        0.7544
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_migrate_transfer\"]",
+      "distractors": [
+        "etscli_file_upload_dir_raw",
+        "etscli_file_upload_dir_export",
+        "etscli_file_upload_dir_history"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "file-download",
+      "lang": "cn",
+      "domain": "file",
+      "expect_tools": [
+        "etscli_file_download"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        20.72,
+        0.7
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.6332,
+        0.6332
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_file_download_raw\"]",
+      "distractors": [
+        "etscli_file_download_raw",
+        "etscli_file_download_export"
+      ],
+      "picked_distractor": 2
+    },
+    {
+      "case_id": "file-delete",
+      "lang": "cn",
+      "domain": "file",
+      "expect_tools": [
+        "etscli_file_delete",
+        "etscli_fs_rm"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        20.47,
+        0.73
+      ],
+      "calls_when_ok": [
+        0,
+        0
+      ],
+      "confidences": [
+        0.4774,
+        0.4774
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[] (未产出调用)",
+      "distractors": [
+        "etscli_file_delete_raw",
+        "etscli_file_delete_export"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "fs-ls",
+      "lang": "cn",
+      "domain": "fs",
+      "expect_tools": [
+        "etscli_fs_ls"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        18.59,
+        0.77
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.6611,
+        0.6611
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_fs_ls_raw\"]",
+      "distractors": [
+        "etscli_fs_ls_raw",
+        "etscli_fs_ls_export",
+        "etscli_fs_ls_history"
+      ],
+      "picked_distractor": 2
+    },
+    {
+      "case_id": "fs-mkdir",
+      "lang": "cn",
+      "domain": "fs",
+      "expect_tools": [
+        "etscli_fs_mkdir"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        20.8,
+        0.72
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.3962,
+        0.3962
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_migrate_session_login\"]",
+      "distractors": [
+        "etscli_fs_mkdir_raw",
+        "etscli_fs_mkdir_export",
+        "etscli_fs_mkdir_history"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "fs-rm",
+      "lang": "cn",
+      "domain": "fs",
+      "expect_tools": [
+        "etscli_fs_rm",
+        "etscli_file_delete"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        21.27,
+        0.92
+      ],
+      "calls_when_ok": [
+        0,
+        0
+      ],
+      "confidences": [
+        0.3712,
+        0.3712
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[] (未产出调用)",
+      "distractors": [
+        "etscli_fs_rm_raw",
+        "etscli_fs_rm_export",
+        "etscli_fs_rm_history"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "fs-search",
+      "lang": "cn",
+      "domain": "fs",
+      "expect_tools": [
+        "etscli_fs_search"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        19.22,
+        0.82
+      ],
+      "calls_when_ok": [
+        0,
+        0
+      ],
+      "confidences": [
+        0.2636,
+        0.2636
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[] (未产出调用)",
+      "distractors": [
+        "etscli_fs_search_raw",
+        "etscli_fs_search_export",
+        "etscli_fs_search_history"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "fs-stat",
+      "lang": "cn",
+      "domain": "fs",
+      "expect_tools": [
+        "etscli_fs_stats"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        20.6,
+        0.77
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.5042,
+        0.5042
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_migrate_session_login\"]",
+      "distractors": [
+        "etscli_fs_stats_raw",
+        "etscli_fs_stats_export",
+        "etscli_fs_stats_history"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "fs-add",
+      "lang": "cn",
+      "domain": "fs",
+      "expect_tools": [
+        "etscli_fs_add"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        21.46,
+        1.0
+      ],
+      "calls_when_ok": [
+        0,
+        0
+      ],
+      "confidences": [
+        0.5893,
+        0.5893
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[] (未产出调用)",
+      "distractors": [
+        "etscli_fs_add_raw",
+        "etscli_fs_add_export",
+        "etscli_fs_add_history"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "sharing-list",
+      "lang": "cn",
+      "domain": "sharing",
+      "expect_tools": [
+        "etscli_sharing_list"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        19.71,
+        0.84
+      ],
+      "calls_when_ok": [
+        0,
+        0
+      ],
+      "confidences": [
+        0.2958,
+        0.2958
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[] (未产出调用)",
+      "distractors": [
+        "etscli_sharing_list_raw",
+        "etscli_sharing_list_export",
+        "etscli_sharing_list_history"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "sharing-create",
+      "lang": "cn",
+      "domain": "sharing",
+      "expect_tools": [
+        "etscli_sharing_create"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        19.69,
+        0.69
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.4416,
+        0.4416
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_fs_rm\"]",
+      "distractors": [
+        "etscli_sharing_create_raw",
+        "etscli_sharing_create_export",
+        "etscli_sharing_create_history"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "sharing-delete",
+      "lang": "cn",
+      "domain": "sharing",
+      "expect_tools": [
+        "etscli_sharing_delete"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        20.73,
+        0.78
+      ],
+      "calls_when_ok": [
+        0,
+        0
+      ],
+      "confidences": [
+        0.8474,
+        0.8474
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[] (未产出调用)",
+      "distractors": [
+        "etscli_sharing_delete_raw",
+        "etscli_sharing_delete_export",
+        "etscli_sharing_delete_history"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "system-info",
+      "lang": "cn",
+      "domain": "system",
+      "expect_tools": [
+        "etscli_system_info"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        20.02,
+        0.68
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        1.0,
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_migrate_verify\"]",
+      "distractors": [
+        "etscli_system_info_raw",
+        "etscli_system_info_export",
+        "etscli_system_info_history"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "system-health",
+      "lang": "cn",
+      "domain": "system",
+      "expect_tools": [
+        "etscli_system_health"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        19.58,
+        1.16
+      ],
+      "calls_when_ok": [
+        0,
+        0
+      ],
+      "confidences": [
+        0.3358,
+        0.3358
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[] (未产出调用)",
+      "distractors": [
+        "etscli_system_health_raw",
+        "etscli_system_health_export",
+        "etscli_system_health_history"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "system-alarm",
+      "lang": "cn",
+      "domain": "system",
+      "expect_tools": [
+        "etscli_system_alarm_list"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        21.25,
+        0.67
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.6279,
+        0.6279
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_fs_rm\"]",
+      "distractors": [
+        "etscli_system_alarm_list_raw",
+        "etscli_system_alarm_list_export",
+        "etscli_system_alarm_list_history"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "discover-scan",
+      "lang": "cn",
+      "domain": "discover",
+      "expect_tools": [
+        "etscli_discover_scan"
+      ],
+      "trials": 2,
+      "passed": 0,
+      "failed": 2,
+      "correct": 0,
+      "failure_classes": {
+        "encoding": 2
+      },
+      "latencies": [
+        19.27,
+        0.7
+      ],
+      "calls_when_ok": [],
+      "confidences": [],
+      "contract_violations": {},
+      "sample_error": "engine error: 'utf-8' codec can't decode byte 0xe5 in position 243: invalid continuation byte",
+      "sample_violation": null,
+      "sample_call": null,
+      "distractors": [
+        "etscli_discover_scan_raw",
+        "etscli_discover_scan_export",
+        "etscli_discover_scan_history"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "migrate-transfer",
+      "lang": "cn",
+      "domain": "migrate",
+      "expect_tools": [
+        "etscli_migrate_transfer"
+      ],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        19.65,
+        0.69
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.6418,
+        0.6418
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_migrate_transfer_export\"]",
+      "distractors": [
+        "etscli_migrate_transfer_raw",
+        "etscli_migrate_transfer_export",
+        "etscli_migrate_transfer_history"
+      ],
+      "picked_distractor": 2
+    },
+    {
+      "case_id": "migrate-verify",
+      "lang": "cn",
+      "domain": "migrate",
+      "expect_tools": [
+        "etscli_migrate_verify"
+      ],
+      "trials": 2,
+      "passed": 0,
+      "failed": 2,
+      "correct": 0,
+      "failure_classes": {
+        "encoding": 2
+      },
+      "latencies": [
+        20.8,
+        0.72
+      ],
+      "calls_when_ok": [],
+      "confidences": [],
+      "contract_violations": {},
+      "sample_error": "engine error: 'utf-8' codec can't decode byte 0xe7 in position 272: invalid continuation byte",
+      "sample_violation": null,
+      "sample_call": null,
+      "distractors": [
+        "etscli_migrate_verify_raw",
+        "etscli_migrate_verify_export",
+        "etscli_migrate_verify_history"
+      ],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "negative-greeting",
+      "lang": "cn",
+      "domain": "negative",
+      "expect_tools": [],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        17.57,
+        0.68
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.3431,
+        0.3431
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_fs_mkdir\"]",
+      "distractors": [],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "negative-knowledge",
+      "lang": "cn",
+      "domain": "negative",
+      "expect_tools": [],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.52,
+        0.51
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.5832,
+        0.5832
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[\"etscli_migrate_verify\"]",
+      "distractors": [],
+      "picked_distractor": 0
+    },
+    {
+      "case_id": "negative-weather",
+      "lang": "cn",
+      "domain": "negative",
+      "expect_tools": [],
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 2,
+      "failure_classes": {},
+      "latencies": [
+        0.8,
+        0.81
+      ],
+      "calls_when_ok": [
+        0,
+        0
+      ],
+      "confidences": [
+        0.2593,
+        0.2593
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[] (未产出调用)",
+      "distractors": [],
+      "picked_distractor": 0
+    }
+  ]
+}

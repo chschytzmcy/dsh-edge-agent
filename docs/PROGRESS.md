@@ -9771,3 +9771,51 @@ bash 形态:   read(file_path: "hello")              ← 幻觉,与问题完全�
 - `docs/bench/etscli-tools/report.md` — 直出基线(重渲染,清除姊妹脚本引用)
 - `docs/bench/etscli-tools/inflation-d3/{report.md,results.json,diff.txt}` — 虚高实测
 - 删除:`scripts/etscli-function-call-test.py`、`docs/bench/etscli-function-call/`
+
+### §7.94.8 — desc-lang `match` 定稿为正式口径:英文成绩 26%→44%,虚高 56%(2026-09-29)
+
+**user 定稿**:「确定下:英文用例就用纯英文 description,中文用例就用纯中文 description」。
+`--desc-lang` 新增 **`match` 模式并设为默认**(工具描述语言跟随用例语言);`cn|en|both`
+保留为全局单一语言(复现历史用 `--desc-lang cn`)。
+
+**此前口径的真实缺陷**:历次实测英文用例读的是**中文**工具描述 —— 英文分数混着
+跨语言读描述的压力,不是纯 function-call 能力。
+
+**match 口径重测**(needle,trials=2,168 req/次):
+
+| 指标 | 旧口径 (desc=cn) | **match** | 解读 |
+|---|---|---|---|
+| en 基线正确率 | 26% | **44%** (+18pp) | 旧英文成绩 4 成 deficit 是跨语言负担 |
+| en HTTP 200 | 90% | **100%** | en 用例的 502 encoding 是**中文描述里的 CJK**触发的(非 query 语言)→ 再证 §7.94.1 buffer 截断根因 |
+| cn 基线正确率 | 3% | 3% | **中文瓶颈与描述语言无关**,坐实是中文理解能力问题 |
+| en `d3` 正确率 | 18% | **31%** | |
+| **虚高率**(被诱导改口/基线答对) | 73% (16/22) | **56%** (20/36) | en 单看 59% (20/34);cn 0(2 次答对全存活) |
+| en 干扰着陆率 | 46% (7.7×机会) | 41% (6.8×机会) | cn 18% (3×) |
+| 负例过度触发 | 67% | 67% | 未变(两语言各 2/6) |
+
+**match 口径被诱导 case(en,10 个整案 2/2→0/2)**:auth-logout / fs-stat /
+meeting-create / meeting-list / meeting-summary / migrate-transfer /
+migrate-verify / sharing-list / system-info / user-list —— 基线"会选"的多数经不起
+`_raw/_export/...` 同义后缀考验。**needle 终评(所有口径一致)**:en 真实水平
+31-44%,cn ≈ 3%,词法猜测占半数以上,不可用于生产。
+
+**顺带修复(方法学)**:
+1. `system` 行日期从写死 `2026-09-28 Mon` 改为运行时动态(旧数据是 09-28 payload,跨日
+   对比注意此项 + 描述语言两项差异)
+2. **干扰项与基集去重**:跨 service 混淆对(file↔fs)本就在 47 工具基集里,旧 d3 运行
+   把它们**重复发送**了一次;现在发送去重、**归因保留**(选错到混淆对仍算"被近义诱导")
+3. props 参数描述英文对照表 `_PROP_DESC_EN`,缺译 build 期 KeyError,防止未来中文
+   静默漏进英文用例(实测 en 工具集 + 117 个 en 干扰项 0 中文残留)
+
+**验收门槛(正式版,match 口径,替代 §7.94.6/7 表)**:
+
+| 指标 | 门槛 | needle (match d3) |
+|---|---|---|
+| en 工具正确率 @ `--distractors 3` | ≥ 60% | 31% |
+| cn 工具正确率 @ `--distractors 3` | ≥ 40% | 3% |
+| 干扰着陆率 | ≤ 15% | en 41% / cn 18% |
+| cn HTTP 200 | ≥ 90% | 90% |
+| 契约违规 | = 0 | 0 |
+
+**产物导航**:`docs/bench/etscli-tools/README.md`(match-d0/ 与 match-d3/ 为正式口径;
+顶层 report.md 与 inflation-d3/ 标注为历史 cn 口径)。
