@@ -139,10 +139,14 @@ class Case:
     en: str
     cn: str
     negative: bool = False
+    alt: str | None = None  # 等价替代命令(如 file delete vs fs rm);命中任一即算对
+    note: str = ""          # 歧义/注意事项,会印在报告里提醒判读
 
 
+# 语料命令全部核对自 `etscli <service> --help`,未杜撰。
+# 覆盖 10 个 service 共 48 个子命令中的 39 个。
 CASES: list[Case] = [
-    # ── auth ──
+    # ── auth (7 子命令,取 6)────────────────────────��─────────────────
     Case("auth-status", "auth", "etscli auth status",
          "check whether the box is logged in",
          "查询密盒的登录状态"),
@@ -152,70 +156,159 @@ CASES: list[Case] = [
     Case("auth-switch", "auth", "etscli auth switch",
          "switch to the office profile",
          "切换到 office 这个 profile"),
-    # ── fs ──
-    Case("fs-ls", "fs", "etscli fs ls",
-         "show the files in my album folder",
-         "列出我的相册目录下的文件"),
-    Case("fs-mkdir", "fs", "etscli fs mkdir",
-         "create a new folder named backup in the box",
-         "在密盒里新建一个名为 backup 的文件夹"),
-    Case("fs-rm", "fs", "etscli fs rm",
-         "delete the file named old.txt from the box",
-         "删掉密盒里名为 old.txt 的文件"),
-    # ── file ──
-    Case("file-search", "file", "etscli file search",
-         "search the box for files whose name contains report",
-         "搜索密盒里名字包含报告的文件"),
-    Case("file-detail", "file", "etscli file detail",
-         "show the details of a file given its id",
-         "查看指定文件 id 的详细信息"),
-    # ── meeting ──
+    Case("auth-rename", "auth", "etscli auth rename",
+         "rename the office profile to company",
+         "把 office 这个 profile 重命名为 company"),
+    Case("auth-login", "auth", "etscli auth login",
+         "log in to the box at 192.168.1.100 as admin",
+         "登录到 192.168.1.100 的密盒,用户名 admin"),
+    Case("auth-logout", "auth", "etscli auth logout",
+         "log out of the current profile",
+         "登出当前的 profile"),
+
+    # ── user (5 子命令,取 4)─────────────────────────────────────────
+    Case("user-list", "user", "etscli user list",
+         "list all the users on the box",
+         "列出密盒上的所有用户"),
+    Case("user-detail", "user", "etscli user detail",
+         "show the details of user user01",
+         "查看 user01 的详细信息"),
+    Case("user-register", "user", "etscli user register",
+         "register a new user called bob",
+         "注册一个名为 bob 的新用户"),
+    Case("user-passwd", "user", "etscli user passwd",
+         "change the password of user user01",
+         "修改 user01 的密码"),
+
+    # ── chat (5 子命令,取 4)──────────────────────────────────────────
+    Case("chat-list", "chat", "etscli chat list",
+         "list my group chats",
+         "列出我的群聊列表"),
+    Case("chat-messages", "chat", "etscli chat messages",
+         "show the recent messages in a group chat",
+         "查看某个群聊的最近消息"),
+    Case("chat-send", "chat", "etscli chat send",
+         "send a text message to a group chat",
+         "往群聊里发一条文字消息"),
+    Case("chat-send-file", "chat", "etscli chat send-file",
+         "send a file to a group chat",
+         "把文件发送到群聊里"),
+
+    # ── meeting (6 子命令,取 5)───────────────────────────────────────
     Case("meeting-list", "meeting", "etscli meeting list",
          "list all the meetings on the box",
          "列出密盒上所有的会议"),
     Case("meeting-summary", "meeting", "etscli meeting summary",
          "get the summary of the latest meeting",
          "获取最近一次会议的纪要"),
+    Case("meeting-detail", "meeting", "etscli meeting detail",
+         "show the details of the meeting with id mtg001",
+         "查看 id 为 mtg001 的会议详情"),
     Case("meeting-create", "meeting", "etscli meeting create",
          "create a new meeting called weekly sync",
          "创建一个名为 weekly sync 的新会议"),
-    # ── chat ──
-    Case("chat-list", "chat", "etscli chat list",
-         "list my group chats",
-         "列出我的群聊列表"),
-    Case("chat-send", "chat", "etscli chat send",
-         "send a message to a group chat",
-         "往群聊里发一条消息"),
-    # ── system ──
-    Case("system-health", "system", "etscli system health",
-         "check the health of the box",
-         "检查密盒的健康状态"),
-    Case("system-info", "system", "etscli system info",
-         "show the system information of the box",
-         "显示密盒的系统信息"),
-    # ── user ──
-    Case("user-list", "user", "etscli user list",
-         "list all the users on the box",
-         "列出密盒上的所有用户"),
-    # ── sharing ──
+    Case("meeting-finish", "meeting", "etscli meeting finish",
+         "end the meeting that is currently running",
+         "结束当前正在进行的会议"),
+
+    # ── file (10 子命令,取 5)─────────────────────────────────────────
+    Case("file-search", "file", "etscli file search",
+         "search the box for files whose name contains report",
+         "搜索密盒里名字包含报告的文件"),
+    Case("file-detail", "file", "etscli file detail",
+         "show the details of a box file given its file id",
+         "查看指定 file id 的文件详情",
+         note="按 file id 操作,应走 file 而非 fs"),
+    Case("file-upload", "file", "etscli file upload",
+         "upload a local file to the box",
+         "把本地文件上传到密盒",
+         alt="etscli file upload-dir",
+         note="upload / upload-dir 均可接受"),
+    Case("file-download", "file", "etscli file download",
+         "download a file from the box by its file id",
+         "按 file id 从密盒下载文件",
+         note="按 file id 操作,应走 file 而非 fs"),
+    Case("file-delete", "file", "etscli file delete",
+         "delete a box file given its file id",
+         "按 file id 删除密盒里的文件",
+         alt="etscli fs rm",
+         note="⚠ 歧义:fs rm 按路径删除同样说得通,两者皆可接受"),
+
+    # ── fs (9 子命令,取 6)────────────────────────────────────────────
+    Case("fs-ls", "fs", "etscli fs ls",
+         "show the files in my album folder",
+         "列出我的相册目录下的文件"),
+    Case("fs-mkdir", "fs", "etscli fs mkdir",
+         "create a new folder named backup on the box",
+         "在密盒上新建一个名为 backup 的文件夹"),
+    Case("fs-rm", "fs", "etscli fs rm",
+         "delete a file on the box by its path",
+         "按路径删除密盒上的文件",
+         alt="etscli file delete",
+         note="⚠ 歧义:file delete 按 id 删除同样说得通,两者皆可接受"),
+    Case("fs-search", "fs", "etscli fs search",
+         "search for files by name under a folder on the box",
+         "在密盒上按文件名搜索文件"),
+    Case("fs-stat", "fs", "etscli fs stat",
+         "show the stat info of a file on the box",
+         "查看密盒上某个文件的 stat 信息",
+         alt="etscli fs stats",
+         note="stat / stats 均可接受"),
+    Case("fs-add", "fs", "etscli fs add",
+         "add a local file into a folder on the box",
+         "把本地文件添加到密盒的某个目录"),
+
+    # ── sharing (3 子命令,全取)───────────────────────────────────────
     Case("sharing-list", "sharing", "etscli sharing list",
          "list all the sharing links I created",
          "列出我创建的所有分享链接"),
-    # ── discover ──
+    Case("sharing-create", "sharing", "etscli sharing create",
+         "create a sharing link for a box file",
+         "为密盒里的某个文件创建分享链接"),
+    Case("sharing-delete", "sharing", "etscli sharing delete",
+         "delete a sharing link",
+         "删除一个分享链接"),
+
+    # ── system (3 子命令,全取)────────────────────────────────────────
+    Case("system-info", "system", "etscli system info",
+         "show the system information of the box",
+         "显示密盒的系统信息"),
+    Case("system-health", "system", "etscli system health",
+         "check the health of the box",
+         "检查密盒的健康状态"),
+    Case("system-alarm", "system", "etscli system alarm",
+         "list the alarms on the box",
+         "列出密盒上的告警",
+         alt="etscli system alarm list",
+         note="alarm 及其子命令 list 均可接受"),
+
+    # ── discover (1 子命令,全取)──────────────────────────────────────
     Case("discover-scan", "discover", "etscli discover scan",
          "scan the local network for boxes",
          "扫描局域网里的密盒设备"),
-    # ── 负例:不应触发任何调用(检测过度触发)──
+
+    # ── migrate (5 子命令,取 2)───────────────────────────────────────
+    Case("migrate-transfer", "migrate", "etscli migrate transfer",
+         "migrate the data from the old box to the new one",
+         "把旧盒子的数据迁移到新盒子"),
+    Case("migrate-verify", "migrate", "etscli migrate verify",
+         "verify the migration result",
+         "验证迁移的结果"),
+
+    # ── 负例:不应触发任何调用(检测过度触发)─────────────────────────
     Case("negative-greeting", "negative", None,
          "hello, thanks for your help",
          "你好,谢谢你的帮助", negative=True),
     Case("negative-knowledge", "negative", None,
          "what is the capital of France",
          "法国的首都是哪里", negative=True),
+    Case("negative-weather", "negative", None,
+         "what is the weather like in Tokyo today",
+         "今天东京的天气怎么样", negative=True),
 ]
 
-DOMAIN_ORDER = ["auth", "fs", "file", "meeting", "chat", "system", "user",
-                "sharing", "discover", "negative"]
+DOMAIN_ORDER = ["auth", "user", "chat", "meeting", "file", "fs", "sharing",
+                "system", "discover", "migrate", "negative"]
 LOCALES = {"en": "en-US", "cn": "zh-CN"}
 LANG_LABEL = {"en": "English", "cn": "Chinese"}
 
@@ -237,12 +330,14 @@ def _args_text(arguments: Any) -> str:
         return str(arguments)
 
 
-def is_correct(calls: list[dict], expect: str | None) -> bool:
+def is_correct(calls: list[dict], expect: str | None, alt: str | None = None) -> bool:
     """判断产出的调用是否命中期望命令。
 
     - 负例(expect=None):不产生调用才算正确
     - 正例:任一调用的参数文本里出现 `etscli <service> <command>` 前缀即算命中。
       允许前置 `cd` / `&&` 等包装,只要求期望子命令完整出现。
+    - `alt` 为语义等价的替代命令(如 `fs rm` vs `file delete`):
+      命中任一即正确 —— 这类 case 属于本质歧义,不应因此判负。
     """
     produced = [(c.get("name"), _args_text(c.get("arguments"))) for c in calls
                 if isinstance(c, dict)]
@@ -250,9 +345,10 @@ def is_correct(calls: list[dict], expect: str | None) -> bool:
         return len(produced) == 0
     if not produced:
         return False
-    needle = _WS.sub(" ", expect).lower()
-    for name, text in produced:
-        if needle in _WS.sub(" ", text).lower():
+    targets = [_WS.sub(" ", t).lower() for t in (expect, alt) if t]
+    for _name, text in produced:
+        flat = _WS.sub(" ", text).lower()
+        if any(t in flat for t in targets):
             return True
     return False
 
@@ -338,6 +434,8 @@ class CaseResult:
     sample_error: str | None = None
     sample_violation: str | None = None
     sample_call: str | None = None
+    alt: str | None = None
+    note: str = ""
 
     @property
     def success_rate(self) -> float:
@@ -352,7 +450,8 @@ def run_case(url: str, case: Case, lang: str, trials: int, timeout: float) -> Ca
     query = getattr(case, lang)
     locale = LOCALES[lang]
     res = CaseResult(case_id=case.cid, lang=lang, domain=case.domain, expect=case.expect,
-                     trials=trials, passed=0, failed=0, correct=0)
+                     trials=trials, passed=0, failed=0, correct=0,
+                     alt=case.alt, note=case.note)
     for _ in range(trials):
         a = one_attempt(url, query, locale, timeout)
         res.latencies.append(a.latency_s)
@@ -365,7 +464,7 @@ def run_case(url: str, case: Case, lang: str, trials: int, timeout: float) -> Ca
             res.calls_when_ok.append(len(a.calls))
             if a.confidence is not None:
                 res.confidences.append(a.confidence)
-            if is_correct(a.calls, case.expect):
+            if is_correct(a.calls, case.expect, case.alt):
                 res.correct += 1
             elif res.sample_call is None:
                 res.sample_call = json.dumps(a.calls, ensure_ascii=False)[:200]
@@ -382,7 +481,10 @@ def run_case(url: str, case: Case, lang: str, trials: int, timeout: float) -> Ca
 
 def render_report(results: list[CaseResult], url: str, trials: int, ts: str,
                   health: dict | None = None,
-                  conformance_measured: bool = True) -> str:
+                  conformance_measured: bool = True,
+                  corpus: list[Case] | None = None) -> str:
+    if corpus is None:
+        corpus = CASES   # 回退到模块级(代码内运行时)
     L: list[str] = []
     A = L.append
 
@@ -488,7 +590,12 @@ def render_report(results: list[CaseResult], url: str, trials: int, ts: str,
     A("| case | 语言 | 期望命令 | HTTP | 有效产出 | 正确 | conf | 失败类型 |")
     A("|---|---|---|---|---|---|---|---|")
     for r in results:
-        exp = f"`{r.expect}`" if r.expect else "_不应调用_"
+        if r.expect is None:
+            exp = "_不应调用_"
+        elif r.alt:
+            exp = f"`{r.expect}`<br/>或 `{r.alt}`"
+        else:
+            exp = f"`{r.expect}`"
         useful = sum(1 for c in r.calls_when_ok if c > 0)
         cf = f"{r.confidences[0]:.2f}" if r.confidences else "—"
         fc = ", ".join(f"{k}×{v}" for k, v in sorted(r.failure_classes.items())) or "—"
@@ -516,6 +623,25 @@ def render_report(results: list[CaseResult], url: str, trials: int, ts: str,
 
         A(f"| {dom} | {fmt(e)} | {fmt(c)} |")
     A("")
+
+    # ── 2.2 歧义 case ──
+    ambig = [r for r in results if r.alt]
+    if ambig:
+        A("### 2.2 歧义 case(命中 `expect` 或 `alt` 都算对)")
+        A("")
+        A("| case | 语言 | 期望 | 也接受 |")
+        A("|---|---|---|---|")
+        seen_pairs = set()
+        for r in ambig:
+            key = (r.case_id, r.lang)
+            if key in seen_pairs:
+                continue
+            seen_pairs.add(key)
+            A(f"| `{r.case_id}` | {LANG_LABEL[r.lang]} | `{r.expect}` | `{r.alt}` |")
+        A("")
+        A("> 例:`fs-rm`(「按路径删除文件」)既可用 `etscli fs rm` 也可用")
+        A("> `etscli file delete`(按 id 删除)。这类本质歧义不应让模型被扣分。")
+        A("")
 
     # ── 3 错例样本 ──
     A("## 3. 错例样本")
@@ -564,23 +690,28 @@ def render_report(results: list[CaseResult], url: str, trials: int, ts: str,
 
     A("### 4.1 English")
     A("")
-    A("| case | service | expect | query |")
-    A("|---|---|---|---|")
+    A("| case | service | expect | alt | note | query |")
+    A("|---|---|---|---|---|---|")
     for c in CASES:
         exp = f"`{c.expect}`" if c.expect else "_no call expected_"
-        A(f"| `{c.cid}` | {c.domain} | {exp} | {c.en} |")
+        alt = f"`{c.alt}`" if c.alt else "—"
+        note = c.note.replace("⚠", "**⚠**") if c.note else "—"
+        A(f"| `{c.cid}` | {c.domain} | {exp} | {alt} | {note} | {c.en} |")
     A("")
 
     A("### 4.2 中文")
     A("")
-    A("| case | service | 期望命令 | query |")
-    A("|---|---|---|---|")
+    A("| case | service | 期望命令 | 也接受 | 备注 | query |")
+    A("|---|---|---|---|---|---|")
     for c in CASES:
         exp = f"`{c.expect}`" if c.expect else "_不应调用_"
-        A(f"| `{c.cid}` | {c.domain} | {exp} | {c.cn} |")
+        alt = f"`{c.alt}`" if c.alt else "—"
+        note = c.note.replace("⚠", "**⚠**") if c.note else "—"
+        A(f"| `{c.cid}` | {c.domain} | {exp} | {alt} | {note} | {c.cn} |")
     A("")
-    A("> 语料来源:`etscli -h` 的 11 个 service + `~/work/etsme/etscli/skills/*/SKILL.md`")
-    A("> 的命令表。期望命令取各 skill 中**确定性唯一**的映射 —— 避免出现多个合理答案。")
+    A("> 语料来源:`etscli <service> --help` 的 10 个 service + `~/work/etsme/etscli/skills/*/SKILL.md`")
+    A("> 的命令表。每条期望命令都核对过子命令确实存在。")
+    A("> `⚠` 标注的 case 存在本质歧义(如按路径 vs 按 id 删除),接受任一合理答案。")
     A("")
 
     # ── 5 影响 ──
@@ -625,14 +756,15 @@ def render_report(results: list[CaseResult], url: str, trials: int, ts: str,
 
 
 def write_report(path: str, results: list[CaseResult], url: str, trials: int, ts: str,
-                 health: dict | None = None, conformance_measured: bool = True) -> int:
+                 health: dict | None = None, conformance_measured: bool = True,
+                 corpus: list[Case] | None = None) -> int:
     """渲染并落盘,返回字节数。
 
     显式校验非空 —— 踩过的坑:模板里 `for L in LENGTHS:` 覆盖了收集行的列表 `L`,
     `"\n".join(L)` join 的是字符串,报告只剩 7 字节而 exit code 仍 0。
     静默失败比崩溃更难发现,故在此兜底。
     """
-    rendered = render_report(results, url, trials, ts, health, conformance_measured)
+    rendered = render_report(results, url, trials, ts, health, conformance_measured, corpus)
     if len(rendered) < 500 or "## 1. 判定" not in rendered:
         raise RuntimeError(f"报告渲染异常(仅 {len(rendered)} 字节),拒绝落盘")
     with open(path, "w", encoding="utf-8") as f:
@@ -664,11 +796,20 @@ def main() -> int:
             return 3
         results = [CaseResult(**c) for c in rows]
         measured = any("contract_violations" in c for c in rows)
+        # 优先用 json 里的语料(结果与当时语料一一对应);回退到模块级
+        corpus_dicts = blob.get("corpus") or [
+            {"cid": c.cid, "domain": c.domain, "expect": c.expect,
+             "en": c.en, "cn": c.cn, "negative": c.negative,
+             "alt": c.alt, "note": c.note} for c in CASES
+        ]
+        corpus = [Case(**{k: v for k, v in cd.items() if k in Case.__dataclass_fields__})
+                  for cd in corpus_dicts]
         out_dir = args.out or args.render_only
         os.makedirs(out_dir, exist_ok=True)
         eff = blob.get("effectiveTrialsPerCase") or blob["trialsPerCase"]
         n = write_report(os.path.join(out_dir, "report.md"), results,
-                         blob["service"], eff, blob["generatedAt"], blob.get("health"), measured)
+                         blob["service"], eff, blob["generatedAt"],
+                         blob.get("health"), measured, corpus)
         print(f"  报告已重渲: {out_dir}/report.md ({n} 字节)")
         return 0
 
@@ -759,6 +900,7 @@ def main() -> int:
             "corpus": [{
                 "cid": c.cid, "domain": c.domain, "expect": c.expect,
                 "en": c.en, "cn": c.cn, "negative": c.negative,
+                "alt": c.alt, "note": c.note,
             } for c in CASES],
             "summary": {lang: {
                 "httpPassed": sum(r.passed for r in pick(lang)),

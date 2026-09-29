@@ -1,12 +1,12 @@
 {
-  "generatedAt": "20260928T055219Z",
+  "generatedAt": "20260929T012341Z",
   "service": "http://127.0.0.1:8081",
   "health": {
     "status": "ok",
     "model_loaded": true,
     "version": "3.0.1",
     "cn_grounding": true,
-    "extract_count": 374,
+    "extract_count": 424,
     "queue_depth": 0,
     "peak_queue": 7,
     "queue_limit": 6,
@@ -50,17 +50,439 @@
       }
     }
   ],
+  "corpus": [
+    {
+      "cid": "auth-status",
+      "domain": "auth",
+      "expect": "etscli auth status",
+      "en": "check whether the box is logged in",
+      "cn": "查询密盒的登录状态",
+      "negative": false,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "cid": "auth-list",
+      "domain": "auth",
+      "expect": "etscli auth list",
+      "en": "list all saved login profiles",
+      "cn": "列出所有已保存的 profile",
+      "negative": false,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "cid": "auth-switch",
+      "domain": "auth",
+      "expect": "etscli auth switch",
+      "en": "switch to the office profile",
+      "cn": "切换到 office 这个 profile",
+      "negative": false,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "cid": "auth-rename",
+      "domain": "auth",
+      "expect": "etscli auth rename",
+      "en": "rename the office profile to company",
+      "cn": "把 office 这个 profile 重命名为 company",
+      "negative": false,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "cid": "auth-login",
+      "domain": "auth",
+      "expect": "etscli auth login",
+      "en": "log in to the box at 192.168.1.100 as admin",
+      "cn": "登录到 192.168.1.100 的密盒,用户名 admin",
+      "negative": false,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "cid": "auth-logout",
+      "domain": "auth",
+      "expect": "etscli auth logout",
+      "en": "log out of the current profile",
+      "cn": "登出当前的 profile",
+      "negative": false,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "cid": "user-list",
+      "domain": "user",
+      "expect": "etscli user list",
+      "en": "list all the users on the box",
+      "cn": "列出密盒上的所有用户",
+      "negative": false,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "cid": "user-detail",
+      "domain": "user",
+      "expect": "etscli user detail",
+      "en": "show the details of user user01",
+      "cn": "查看 user01 的详细信息",
+      "negative": false,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "cid": "user-register",
+      "domain": "user",
+      "expect": "etscli user register",
+      "en": "register a new user called bob",
+      "cn": "注册一个名为 bob 的新用户",
+      "negative": false,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "cid": "user-passwd",
+      "domain": "user",
+      "expect": "etscli user passwd",
+      "en": "change the password of user user01",
+      "cn": "修改 user01 的密码",
+      "negative": false,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "cid": "chat-list",
+      "domain": "chat",
+      "expect": "etscli chat list",
+      "en": "list my group chats",
+      "cn": "列出我的群聊列表",
+      "negative": false,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "cid": "chat-messages",
+      "domain": "chat",
+      "expect": "etscli chat messages",
+      "en": "show the recent messages in a group chat",
+      "cn": "查看某个群聊的最近消息",
+      "negative": false,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "cid": "chat-send",
+      "domain": "chat",
+      "expect": "etscli chat send",
+      "en": "send a text message to a group chat",
+      "cn": "往群聊里发一条文字消息",
+      "negative": false,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "cid": "chat-send-file",
+      "domain": "chat",
+      "expect": "etscli chat send-file",
+      "en": "send a file to a group chat",
+      "cn": "把文件发送到群聊里",
+      "negative": false,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "cid": "meeting-list",
+      "domain": "meeting",
+      "expect": "etscli meeting list",
+      "en": "list all the meetings on the box",
+      "cn": "列出密盒上所有的会议",
+      "negative": false,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "cid": "meeting-summary",
+      "domain": "meeting",
+      "expect": "etscli meeting summary",
+      "en": "get the summary of the latest meeting",
+      "cn": "获取最近一次会议的纪要",
+      "negative": false,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "cid": "meeting-detail",
+      "domain": "meeting",
+      "expect": "etscli meeting detail",
+      "en": "show the details of the meeting with id mtg001",
+      "cn": "查看 id 为 mtg001 的会议详情",
+      "negative": false,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "cid": "meeting-create",
+      "domain": "meeting",
+      "expect": "etscli meeting create",
+      "en": "create a new meeting called weekly sync",
+      "cn": "创建一个名为 weekly sync 的新会议",
+      "negative": false,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "cid": "meeting-finish",
+      "domain": "meeting",
+      "expect": "etscli meeting finish",
+      "en": "end the meeting that is currently running",
+      "cn": "结束当前正在进行的会议",
+      "negative": false,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "cid": "file-search",
+      "domain": "file",
+      "expect": "etscli file search",
+      "en": "search the box for files whose name contains report",
+      "cn": "搜索密盒里名字包含报告的文件",
+      "negative": false,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "cid": "file-detail",
+      "domain": "file",
+      "expect": "etscli file detail",
+      "en": "show the details of a box file given its file id",
+      "cn": "查看指定 file id 的文件详情",
+      "negative": false,
+      "alt": null,
+      "note": "按 file id 操作,应走 file 而非 fs"
+    },
+    {
+      "cid": "file-upload",
+      "domain": "file",
+      "expect": "etscli file upload",
+      "en": "upload a local file to the box",
+      "cn": "把本地文件上传到密盒",
+      "negative": false,
+      "alt": "etscli file upload-dir",
+      "note": "upload / upload-dir 均可接受"
+    },
+    {
+      "cid": "file-download",
+      "domain": "file",
+      "expect": "etscli file download",
+      "en": "download a file from the box by its file id",
+      "cn": "按 file id 从密盒下载文件",
+      "negative": false,
+      "alt": null,
+      "note": "按 file id 操作,应走 file 而非 fs"
+    },
+    {
+      "cid": "file-delete",
+      "domain": "file",
+      "expect": "etscli file delete",
+      "en": "delete a box file given its file id",
+      "cn": "按 file id 删除密盒里的文件",
+      "negative": false,
+      "alt": "etscli fs rm",
+      "note": "⚠ 歧义:fs rm 按路径删除同样说得通,两者皆可接受"
+    },
+    {
+      "cid": "fs-ls",
+      "domain": "fs",
+      "expect": "etscli fs ls",
+      "en": "show the files in my album folder",
+      "cn": "列出我的相册目录下的文件",
+      "negative": false,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "cid": "fs-mkdir",
+      "domain": "fs",
+      "expect": "etscli fs mkdir",
+      "en": "create a new folder named backup on the box",
+      "cn": "在密盒上新建一个名为 backup 的文件夹",
+      "negative": false,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "cid": "fs-rm",
+      "domain": "fs",
+      "expect": "etscli fs rm",
+      "en": "delete a file on the box by its path",
+      "cn": "按路径删除密盒上的文件",
+      "negative": false,
+      "alt": "etscli file delete",
+      "note": "⚠ 歧义:file delete 按 id 删除同样说得通,两者皆可接受"
+    },
+    {
+      "cid": "fs-search",
+      "domain": "fs",
+      "expect": "etscli fs search",
+      "en": "search for files by name under a folder on the box",
+      "cn": "在密盒上按文件名搜索文件",
+      "negative": false,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "cid": "fs-stat",
+      "domain": "fs",
+      "expect": "etscli fs stat",
+      "en": "show the stat info of a file on the box",
+      "cn": "查看密盒上某个文件的 stat 信息",
+      "negative": false,
+      "alt": "etscli fs stats",
+      "note": "stat / stats 均可接受"
+    },
+    {
+      "cid": "fs-add",
+      "domain": "fs",
+      "expect": "etscli fs add",
+      "en": "add a local file into a folder on the box",
+      "cn": "把本地文件添加到密盒的某个目录",
+      "negative": false,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "cid": "sharing-list",
+      "domain": "sharing",
+      "expect": "etscli sharing list",
+      "en": "list all the sharing links I created",
+      "cn": "列出我创建的所有分享链接",
+      "negative": false,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "cid": "sharing-create",
+      "domain": "sharing",
+      "expect": "etscli sharing create",
+      "en": "create a sharing link for a box file",
+      "cn": "为密盒里的某个文件创建分享链接",
+      "negative": false,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "cid": "sharing-delete",
+      "domain": "sharing",
+      "expect": "etscli sharing delete",
+      "en": "delete a sharing link",
+      "cn": "删除一个分享链接",
+      "negative": false,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "cid": "system-info",
+      "domain": "system",
+      "expect": "etscli system info",
+      "en": "show the system information of the box",
+      "cn": "显示密盒的系统信息",
+      "negative": false,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "cid": "system-health",
+      "domain": "system",
+      "expect": "etscli system health",
+      "en": "check the health of the box",
+      "cn": "检查密盒的健康状态",
+      "negative": false,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "cid": "system-alarm",
+      "domain": "system",
+      "expect": "etscli system alarm",
+      "en": "list the alarms on the box",
+      "cn": "列出密盒上的告警",
+      "negative": false,
+      "alt": "etscli system alarm list",
+      "note": "alarm 及其子命令 list 均可接受"
+    },
+    {
+      "cid": "discover-scan",
+      "domain": "discover",
+      "expect": "etscli discover scan",
+      "en": "scan the local network for boxes",
+      "cn": "扫描局域网里的密盒设备",
+      "negative": false,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "cid": "migrate-transfer",
+      "domain": "migrate",
+      "expect": "etscli migrate transfer",
+      "en": "migrate the data from the old box to the new one",
+      "cn": "把旧盒子的数据迁移到新盒子",
+      "negative": false,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "cid": "migrate-verify",
+      "domain": "migrate",
+      "expect": "etscli migrate verify",
+      "en": "verify the migration result",
+      "cn": "验证迁移的结果",
+      "negative": false,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "cid": "negative-greeting",
+      "domain": "negative",
+      "expect": null,
+      "en": "hello, thanks for your help",
+      "cn": "你好,谢谢你的帮助",
+      "negative": true,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "cid": "negative-knowledge",
+      "domain": "negative",
+      "expect": null,
+      "en": "what is the capital of France",
+      "cn": "法国的首都是哪里",
+      "negative": true,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "cid": "negative-weather",
+      "domain": "negative",
+      "expect": null,
+      "en": "what is the weather like in Tokyo today",
+      "cn": "今天东京的天气怎么样",
+      "negative": true,
+      "alt": null,
+      "note": ""
+    }
+  ],
   "summary": {
     "en": {
-      "httpPassed": 40,
-      "correct": 2,
-      "trials": 40,
+      "httpPassed": 84,
+      "correct": 4,
+      "trials": 84,
       "contractViolations": 0
     },
     "cn": {
-      "httpPassed": 10,
+      "httpPassed": 36,
       "correct": 2,
-      "trials": 40,
+      "trials": 84,
       "contractViolations": 0
     }
   },
@@ -76,8 +498,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        1.68,
-        1.98
+        0.41,
+        0.2
       ],
       "calls_when_ok": [
         0,
@@ -90,7 +512,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[]"
+      "sample_call": "[]",
+      "alt": null,
+      "note": ""
     },
     {
       "case_id": "auth-list",
@@ -103,8 +527,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        2.96,
-        1.64
+        0.19,
+        0.16
       ],
       "calls_when_ok": [
         0,
@@ -117,7 +541,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[]"
+      "sample_call": "[]",
+      "alt": null,
+      "note": ""
     },
     {
       "case_id": "auth-switch",
@@ -130,8 +556,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        0.39,
-        4.6
+        0.09,
+        0.13
       ],
       "calls_when_ok": [
         0,
@@ -144,21 +570,23 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[]"
+      "sample_call": "[]",
+      "alt": null,
+      "note": ""
     },
     {
-      "case_id": "fs-ls",
+      "case_id": "auth-rename",
       "lang": "en",
-      "domain": "fs",
-      "expect": "etscli fs ls",
+      "domain": "auth",
+      "expect": "etscli auth rename",
       "trials": 2,
       "passed": 2,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        4.0,
-        1.66
+        0.14,
+        0.18
       ],
       "calls_when_ok": [
         0,
@@ -171,210 +599,52 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[]"
+      "sample_call": "[]",
+      "alt": null,
+      "note": ""
     },
     {
-      "case_id": "fs-mkdir",
+      "case_id": "auth-login",
       "lang": "en",
-      "domain": "fs",
-      "expect": "etscli fs mkdir",
+      "domain": "auth",
+      "expect": "etscli auth login",
       "trials": 2,
       "passed": 2,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        3.89,
-        2.46
-      ],
-      "calls_when_ok": [
-        0,
-        0
-      ],
-      "confidences": [
-        1.0,
-        1.0
-      ],
-      "contract_violations": {},
-      "sample_error": null,
-      "sample_violation": null,
-      "sample_call": "[]"
-    },
-    {
-      "case_id": "fs-rm",
-      "lang": "en",
-      "domain": "fs",
-      "expect": "etscli fs rm",
-      "trials": 2,
-      "passed": 2,
-      "failed": 0,
-      "correct": 0,
-      "failure_classes": {},
-      "latencies": [
-        0.51,
-        1.17
-      ],
-      "calls_when_ok": [
-        0,
-        0
-      ],
-      "confidences": [
-        1.0,
-        1.0
-      ],
-      "contract_violations": {},
-      "sample_error": null,
-      "sample_violation": null,
-      "sample_call": "[]"
-    },
-    {
-      "case_id": "file-search",
-      "lang": "en",
-      "domain": "file",
-      "expect": "etscli file search",
-      "trials": 2,
-      "passed": 2,
-      "failed": 0,
-      "correct": 0,
-      "failure_classes": {},
-      "latencies": [
-        3.53,
-        3.37
-      ],
-      "calls_when_ok": [
-        0,
-        0
-      ],
-      "confidences": [
-        1.0,
-        1.0
-      ],
-      "contract_violations": {},
-      "sample_error": null,
-      "sample_violation": null,
-      "sample_call": "[]"
-    },
-    {
-      "case_id": "file-detail",
-      "lang": "en",
-      "domain": "file",
-      "expect": "etscli file detail",
-      "trials": 2,
-      "passed": 2,
-      "failed": 0,
-      "correct": 0,
-      "failure_classes": {},
-      "latencies": [
-        7.58,
-        4.51
+        0.3,
+        0.32
       ],
       "calls_when_ok": [
         1,
         1
       ],
       "confidences": [
-        0.9223,
-        0.9223
+        0.9485,
+        0.9485
       ],
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[{\"name\": \"read\", \"arguments\": {\"file_path\": \"file given its id\"}}]"
+      "sample_call": "[{\"name\": \"read\", \"arguments\": {\"file_path\": \"192.168.1.100\"}}]",
+      "alt": null,
+      "note": ""
     },
     {
-      "case_id": "meeting-list",
+      "case_id": "auth-logout",
       "lang": "en",
-      "domain": "meeting",
-      "expect": "etscli meeting list",
+      "domain": "auth",
+      "expect": "etscli auth logout",
       "trials": 2,
       "passed": 2,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        1.84,
-        1.12
-      ],
-      "calls_when_ok": [
-        0,
-        0
-      ],
-      "confidences": [
-        0.6364,
-        0.6364
-      ],
-      "contract_violations": {},
-      "sample_error": null,
-      "sample_violation": null,
-      "sample_call": "[]"
-    },
-    {
-      "case_id": "meeting-summary",
-      "lang": "en",
-      "domain": "meeting",
-      "expect": "etscli meeting summary",
-      "trials": 2,
-      "passed": 2,
-      "failed": 0,
-      "correct": 0,
-      "failure_classes": {},
-      "latencies": [
-        7.46,
-        3.1
-      ],
-      "calls_when_ok": [
-        1,
-        1
-      ],
-      "confidences": [
-        1.0,
-        1.0
-      ],
-      "contract_violations": {},
-      "sample_error": null,
-      "sample_violation": null,
-      "sample_call": "[{\"name\": \"read\", \"arguments\": {\"file_path\": \"latest meeting\"}}]"
-    },
-    {
-      "case_id": "meeting-create",
-      "lang": "en",
-      "domain": "meeting",
-      "expect": "etscli meeting create",
-      "trials": 2,
-      "passed": 2,
-      "failed": 0,
-      "correct": 0,
-      "failure_classes": {},
-      "latencies": [
-        0.75,
-        0.45
-      ],
-      "calls_when_ok": [
-        0,
-        0
-      ],
-      "confidences": [
-        0.9729,
-        0.9729
-      ],
-      "contract_violations": {},
-      "sample_error": null,
-      "sample_violation": null,
-      "sample_call": "[]"
-    },
-    {
-      "case_id": "chat-list",
-      "lang": "en",
-      "domain": "chat",
-      "expect": "etscli chat list",
-      "trials": 2,
-      "passed": 2,
-      "failed": 0,
-      "correct": 0,
-      "failure_classes": {},
-      "latencies": [
-        0.51,
-        6.47
+        0.13,
+        0.13
       ],
       "calls_when_ok": [
         0,
@@ -387,88 +657,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[]"
-    },
-    {
-      "case_id": "chat-send",
-      "lang": "en",
-      "domain": "chat",
-      "expect": "etscli chat send",
-      "trials": 2,
-      "passed": 2,
-      "failed": 0,
-      "correct": 0,
-      "failure_classes": {},
-      "latencies": [
-        1.41,
-        0.46
-      ],
-      "calls_when_ok": [
-        0,
-        0
-      ],
-      "confidences": [
-        1.0,
-        1.0
-      ],
-      "contract_violations": {},
-      "sample_error": null,
-      "sample_violation": null,
-      "sample_call": "[]"
-    },
-    {
-      "case_id": "system-health",
-      "lang": "en",
-      "domain": "system",
-      "expect": "etscli system health",
-      "trials": 2,
-      "passed": 2,
-      "failed": 0,
-      "correct": 0,
-      "failure_classes": {},
-      "latencies": [
-        3.8,
-        9.21
-      ],
-      "calls_when_ok": [
-        1,
-        1
-      ],
-      "confidences": [
-        1.0,
-        1.0
-      ],
-      "contract_violations": {},
-      "sample_error": null,
-      "sample_violation": null,
-      "sample_call": "[{\"name\": \"read\", \"arguments\": {\"file_path\": \"health\"}}]"
-    },
-    {
-      "case_id": "system-info",
-      "lang": "en",
-      "domain": "system",
-      "expect": "etscli system info",
-      "trials": 2,
-      "passed": 2,
-      "failed": 0,
-      "correct": 0,
-      "failure_classes": {},
-      "latencies": [
-        2.44,
-        4.52
-      ],
-      "calls_when_ok": [
-        1,
-        1
-      ],
-      "confidences": [
-        0.9984,
-        0.9984
-      ],
-      "contract_violations": {},
-      "sample_error": null,
-      "sample_violation": null,
-      "sample_call": "[{\"name\": \"read\", \"arguments\": {\"file_path\": \"system info\"}}]"
+      "sample_call": "[]",
+      "alt": null,
+      "note": ""
     },
     {
       "case_id": "user-list",
@@ -481,8 +672,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        3.23,
-        6.03
+        0.41,
+        0.28
       ],
       "calls_when_ok": [
         1,
@@ -495,7 +686,676 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[{\"name\": \"read\", \"arguments\": {\"file_path\": \"/users/user/box.txt\"}}]"
+      "sample_call": "[{\"name\": \"read\", \"arguments\": {\"file_path\": \"/users/user/box.txt\"}}]",
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "user-detail",
+      "lang": "en",
+      "domain": "user",
+      "expect": "etscli user detail",
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.29,
+        0.27
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        1.0,
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[{\"name\": \"read\", \"arguments\": {\"file_path\": \"user01\"}}]",
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "user-register",
+      "lang": "en",
+      "domain": "user",
+      "expect": "etscli user register",
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.12,
+        0.12
+      ],
+      "calls_when_ok": [
+        0,
+        0
+      ],
+      "confidences": [
+        1.0,
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]",
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "user-passwd",
+      "lang": "en",
+      "domain": "user",
+      "expect": "etscli user passwd",
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.32,
+        0.14
+      ],
+      "calls_when_ok": [
+        0,
+        0
+      ],
+      "confidences": [
+        0.9752,
+        0.9752
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]",
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "chat-list",
+      "lang": "en",
+      "domain": "chat",
+      "expect": "etscli chat list",
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.12,
+        0.13
+      ],
+      "calls_when_ok": [
+        0,
+        0
+      ],
+      "confidences": [
+        1.0,
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]",
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "chat-messages",
+      "lang": "en",
+      "domain": "chat",
+      "expect": "etscli chat messages",
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.14,
+        0.17
+      ],
+      "calls_when_ok": [
+        0,
+        0
+      ],
+      "confidences": [
+        1.0,
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]",
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "chat-send",
+      "lang": "en",
+      "domain": "chat",
+      "expect": "etscli chat send",
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.14,
+        0.15
+      ],
+      "calls_when_ok": [
+        0,
+        0
+      ],
+      "confidences": [
+        1.0,
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]",
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "chat-send-file",
+      "lang": "en",
+      "domain": "chat",
+      "expect": "etscli chat send-file",
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.12,
+        0.11
+      ],
+      "calls_when_ok": [
+        0,
+        0
+      ],
+      "confidences": [
+        1.0,
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]",
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "meeting-list",
+      "lang": "en",
+      "domain": "meeting",
+      "expect": "etscli meeting list",
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.19,
+        0.15
+      ],
+      "calls_when_ok": [
+        0,
+        0
+      ],
+      "confidences": [
+        0.6364,
+        0.6364
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]",
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "meeting-summary",
+      "lang": "en",
+      "domain": "meeting",
+      "expect": "etscli meeting summary",
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.22,
+        0.23
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        1.0,
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[{\"name\": \"read\", \"arguments\": {\"file_path\": \"latest meeting\"}}]",
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "meeting-detail",
+      "lang": "en",
+      "domain": "meeting",
+      "expect": "etscli meeting detail",
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.33,
+        0.35
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.9577,
+        0.9577
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[{\"name\": \"read\", \"arguments\": {\"file_path\": \"meeting_id_mtg001\"}}]",
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "meeting-create",
+      "lang": "en",
+      "domain": "meeting",
+      "expect": "etscli meeting create",
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.15,
+        0.11
+      ],
+      "calls_when_ok": [
+        0,
+        0
+      ],
+      "confidences": [
+        0.9729,
+        0.9729
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]",
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "meeting-finish",
+      "lang": "en",
+      "domain": "meeting",
+      "expect": "etscli meeting finish",
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.26,
+        0.25
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.6907,
+        0.6907
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[{\"name\": \"read\", \"arguments\": {\"file_path\": \"meeting\"}}]",
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "file-search",
+      "lang": "en",
+      "domain": "file",
+      "expect": "etscli file search",
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.15,
+        0.13
+      ],
+      "calls_when_ok": [
+        0,
+        0
+      ],
+      "confidences": [
+        1.0,
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]",
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "file-detail",
+      "lang": "en",
+      "domain": "file",
+      "expect": "etscli file detail",
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.28,
+        0.25
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.9225,
+        0.9225
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[{\"name\": \"read\", \"arguments\": {\"file_path\": \"box file given its file id\"}}]",
+      "alt": null,
+      "note": "按 file id 操作,应走 file 而非 fs"
+    },
+    {
+      "case_id": "file-upload",
+      "lang": "en",
+      "domain": "file",
+      "expect": "etscli file upload",
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.23,
+        0.21
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        1.0,
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[{\"name\": \"read\", \"arguments\": {\"file_path\": \"local file\"}}]",
+      "alt": "etscli file upload-dir",
+      "note": "upload / upload-dir 均可接受"
+    },
+    {
+      "case_id": "file-download",
+      "lang": "en",
+      "domain": "file",
+      "expect": "etscli file download",
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.21,
+        0.23
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        1.0,
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[{\"name\": \"read\", \"arguments\": {\"file_path\": \"file id\"}}]",
+      "alt": null,
+      "note": "按 file id 操作,应走 file 而非 fs"
+    },
+    {
+      "case_id": "file-delete",
+      "lang": "en",
+      "domain": "file",
+      "expect": "etscli file delete",
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.17,
+        0.13
+      ],
+      "calls_when_ok": [
+        0,
+        0
+      ],
+      "confidences": [
+        1.0,
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]",
+      "alt": "etscli fs rm",
+      "note": "⚠ 歧义:fs rm 按路径删除同样说得通,两者皆可接受"
+    },
+    {
+      "case_id": "fs-ls",
+      "lang": "en",
+      "domain": "fs",
+      "expect": "etscli fs ls",
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.11,
+        0.11
+      ],
+      "calls_when_ok": [
+        0,
+        0
+      ],
+      "confidences": [
+        1.0,
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]",
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "fs-mkdir",
+      "lang": "en",
+      "domain": "fs",
+      "expect": "etscli fs mkdir",
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.14,
+        0.12
+      ],
+      "calls_when_ok": [
+        0,
+        0
+      ],
+      "confidences": [
+        1.0,
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]",
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "fs-rm",
+      "lang": "en",
+      "domain": "fs",
+      "expect": "etscli fs rm",
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.15,
+        0.14
+      ],
+      "calls_when_ok": [
+        0,
+        0
+      ],
+      "confidences": [
+        1.0,
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]",
+      "alt": "etscli file delete",
+      "note": "⚠ 歧义:file delete 按 id 删除同样说得通,两者皆可接受"
+    },
+    {
+      "case_id": "fs-search",
+      "lang": "en",
+      "domain": "fs",
+      "expect": "etscli fs search",
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.12,
+        0.13
+      ],
+      "calls_when_ok": [
+        0,
+        0
+      ],
+      "confidences": [
+        1.0,
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]",
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "fs-stat",
+      "lang": "en",
+      "domain": "fs",
+      "expect": "etscli fs stat",
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.21,
+        0.22
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        1.0,
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[{\"name\": \"read\", \"arguments\": {\"file_path\": \"stat info\"}}]",
+      "alt": "etscli fs stats",
+      "note": "stat / stats 均可接受"
+    },
+    {
+      "case_id": "fs-add",
+      "lang": "en",
+      "domain": "fs",
+      "expect": "etscli fs add",
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.17,
+        0.12
+      ],
+      "calls_when_ok": [
+        0,
+        0
+      ],
+      "confidences": [
+        1.0,
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]",
+      "alt": null,
+      "note": ""
     },
     {
       "case_id": "sharing-list",
@@ -508,8 +1368,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        1.39,
-        1.7
+        0.13,
+        0.14
       ],
       "calls_when_ok": [
         0,
@@ -522,7 +1382,154 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[]"
+      "sample_call": "[]",
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "sharing-create",
+      "lang": "en",
+      "domain": "sharing",
+      "expect": "etscli sharing create",
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.14,
+        0.12
+      ],
+      "calls_when_ok": [
+        0,
+        0
+      ],
+      "confidences": [
+        1.0,
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]",
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "sharing-delete",
+      "lang": "en",
+      "domain": "sharing",
+      "expect": "etscli sharing delete",
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.14,
+        0.11
+      ],
+      "calls_when_ok": [
+        0,
+        0
+      ],
+      "confidences": [
+        1.0,
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]",
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "system-info",
+      "lang": "en",
+      "domain": "system",
+      "expect": "etscli system info",
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.35,
+        0.73
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.9984,
+        0.9984
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[{\"name\": \"read\", \"arguments\": {\"file_path\": \"system info\"}}]",
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "system-health",
+      "lang": "en",
+      "domain": "system",
+      "expect": "etscli system health",
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.34,
+        0.26
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        1.0,
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[{\"name\": \"read\", \"arguments\": {\"file_path\": \"health\"}}]",
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "system-alarm",
+      "lang": "en",
+      "domain": "system",
+      "expect": "etscli system alarm",
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.17,
+        0.17
+      ],
+      "calls_when_ok": [
+        0,
+        0
+      ],
+      "confidences": [
+        0.8322,
+        0.8322
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]",
+      "alt": "etscli system alarm list",
+      "note": "alarm 及其子命令 list 均可接受"
     },
     {
       "case_id": "discover-scan",
@@ -535,8 +1542,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        2.37,
-        3.71
+        0.26,
+        0.33
       ],
       "calls_when_ok": [
         1,
@@ -549,7 +1556,67 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[{\"name\": \"read\", \"arguments\": {\"file_path\": \"boxes\"}}]"
+      "sample_call": "[{\"name\": \"read\", \"arguments\": {\"file_path\": \"boxes\"}}]",
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "migrate-transfer",
+      "lang": "en",
+      "domain": "migrate",
+      "expect": "etscli migrate transfer",
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.27,
+        0.32
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        1.0,
+        1.0
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[{\"name\": \"read\", \"arguments\": {\"file_path\": \"old box\"}}]",
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "migrate-verify",
+      "lang": "en",
+      "domain": "migrate",
+      "expect": "etscli migrate verify",
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.54,
+        0.27
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.997,
+        0.997
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[{\"name\": \"read\", \"arguments\": {\"file_path\": \"migration result\"}}]",
+      "alt": null,
+      "note": ""
     },
     {
       "case_id": "negative-greeting",
@@ -562,8 +1629,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        1.82,
-        7.48
+        0.39,
+        0.34
       ],
       "calls_when_ok": [
         1,
@@ -576,7 +1643,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[{\"name\": \"read\", \"arguments\": {\"file_path\": \"hello\"}}]"
+      "sample_call": "[{\"name\": \"read\", \"arguments\": {\"file_path\": \"hello\"}}]",
+      "alt": null,
+      "note": ""
     },
     {
       "case_id": "negative-knowledge",
@@ -589,8 +1658,8 @@
       "correct": 2,
       "failure_classes": {},
       "latencies": [
-        2.79,
-        4.8
+        0.16,
+        0.17
       ],
       "calls_when_ok": [
         0,
@@ -603,7 +1672,38 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": null
+      "sample_call": null,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "negative-weather",
+      "lang": "en",
+      "domain": "negative",
+      "expect": null,
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 2,
+      "failure_classes": {},
+      "latencies": [
+        0.25,
+        0.16
+      ],
+      "calls_when_ok": [
+        0,
+        0
+      ],
+      "confidences": [
+        0.9349,
+        0.9349
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": null,
+      "alt": null,
+      "note": ""
     },
     {
       "case_id": "auth-status",
@@ -618,15 +1718,17 @@
         "encoding": 2
       },
       "latencies": [
-        18.8,
-        4.16
+        0.92,
+        0.53
       ],
       "calls_when_ok": [],
       "confidences": [],
       "contract_violations": {},
       "sample_error": "engine error: 'utf-8' codec can't decode byte 0xe7 in position 261: invalid continuation byte",
       "sample_violation": null,
-      "sample_call": null
+      "sample_call": null,
+      "alt": null,
+      "note": ""
     },
     {
       "case_id": "auth-list",
@@ -639,8 +1741,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        6.56,
-        6.37
+        0.41,
+        0.48
       ],
       "calls_when_ok": [
         0,
@@ -653,7 +1755,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[]"
+      "sample_call": "[]",
+      "alt": null,
+      "note": ""
     },
     {
       "case_id": "auth-switch",
@@ -666,8 +1770,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        4.58,
-        10.88
+        0.43,
+        0.52
       ],
       "calls_when_ok": [
         1,
@@ -680,287 +1784,92 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[{\"name\": \"read\", \"arguments\": {\"file_path\": \"切换到\"}}]"
+      "sample_call": "[{\"name\": \"read\", \"arguments\": {\"file_path\": \"切换到\"}}]",
+      "alt": null,
+      "note": ""
     },
     {
-      "case_id": "fs-ls",
+      "case_id": "auth-rename",
       "lang": "cn",
-      "domain": "fs",
-      "expect": "etscli fs ls",
-      "trials": 2,
-      "passed": 0,
-      "failed": 2,
-      "correct": 0,
-      "failure_classes": {
-        "encoding": 2
-      },
-      "latencies": [
-        8.15,
-        1.49
-      ],
-      "calls_when_ok": [],
-      "confidences": [],
-      "contract_violations": {},
-      "sample_error": "engine error: 'utf-8' codec can't decode bytes in position 237-238: invalid continuation byte",
-      "sample_violation": null,
-      "sample_call": null
-    },
-    {
-      "case_id": "fs-mkdir",
-      "lang": "cn",
-      "domain": "fs",
-      "expect": "etscli fs mkdir",
-      "trials": 2,
-      "passed": 0,
-      "failed": 2,
-      "correct": 0,
-      "failure_classes": {
-        "encoding": 2
-      },
-      "latencies": [
-        10.17,
-        5.31
-      ],
-      "calls_when_ok": [],
-      "confidences": [],
-      "contract_violations": {},
-      "sample_error": "engine error: 'utf-8' codec can't decode byte 0xe4 in position 226: invalid continuation byte",
-      "sample_violation": null,
-      "sample_call": null
-    },
-    {
-      "case_id": "fs-rm",
-      "lang": "cn",
-      "domain": "fs",
-      "expect": "etscli fs rm",
-      "trials": 2,
-      "passed": 0,
-      "failed": 2,
-      "correct": 0,
-      "failure_classes": {
-        "encoding": 2
-      },
-      "latencies": [
-        1.55,
-        7.61
-      ],
-      "calls_when_ok": [],
-      "confidences": [],
-      "contract_violations": {},
-      "sample_error": "engine error: 'utf-8' codec can't decode bytes in position 229-230: invalid continuation byte",
-      "sample_violation": null,
-      "sample_call": null
-    },
-    {
-      "case_id": "file-search",
-      "lang": "cn",
-      "domain": "file",
-      "expect": "etscli file search",
-      "trials": 2,
-      "passed": 0,
-      "failed": 2,
-      "correct": 0,
-      "failure_classes": {
-        "encoding": 2
-      },
-      "latencies": [
-        4.25,
-        6.16
-      ],
-      "calls_when_ok": [],
-      "confidences": [],
-      "contract_violations": {},
-      "sample_error": "engine error: 'utf-8' codec can't decode byte 0xe6 in position 226: invalid continuation byte",
-      "sample_violation": null,
-      "sample_call": null
-    },
-    {
-      "case_id": "file-detail",
-      "lang": "cn",
-      "domain": "file",
-      "expect": "etscli file detail",
-      "trials": 2,
-      "passed": 0,
-      "failed": 2,
-      "correct": 0,
-      "failure_classes": {
-        "encoding": 2
-      },
-      "latencies": [
-        3.86,
-        2.55
-      ],
-      "calls_when_ok": [],
-      "confidences": [],
-      "contract_violations": {},
-      "sample_error": "engine error: 'utf-8' codec can't decode bytes in position 227-228: invalid continuation byte",
-      "sample_violation": null,
-      "sample_call": null
-    },
-    {
-      "case_id": "meeting-list",
-      "lang": "cn",
-      "domain": "meeting",
-      "expect": "etscli meeting list",
-      "trials": 2,
-      "passed": 0,
-      "failed": 2,
-      "correct": 0,
-      "failure_classes": {
-        "encoding": 2
-      },
-      "latencies": [
-        5.29,
-        4.77
-      ],
-      "calls_when_ok": [],
-      "confidences": [],
-      "contract_violations": {},
-      "sample_error": "engine error: 'utf-8' codec can't decode byte 0xe8 in position 226: invalid continuation byte",
-      "sample_violation": null,
-      "sample_call": null
-    },
-    {
-      "case_id": "meeting-summary",
-      "lang": "cn",
-      "domain": "meeting",
-      "expect": "etscli meeting summary",
-      "trials": 2,
-      "passed": 0,
-      "failed": 2,
-      "correct": 0,
-      "failure_classes": {
-        "encoding": 2
-      },
-      "latencies": [
-        6.26,
-        7.62
-      ],
-      "calls_when_ok": [],
-      "confidences": [],
-      "contract_violations": {},
-      "sample_error": "engine error: 'utf-8' codec can't decode bytes in position 220-221: invalid continuation byte",
-      "sample_violation": null,
-      "sample_call": null
-    },
-    {
-      "case_id": "meeting-create",
-      "lang": "cn",
-      "domain": "meeting",
-      "expect": "etscli meeting create",
-      "trials": 2,
-      "passed": 0,
-      "failed": 2,
-      "correct": 0,
-      "failure_classes": {
-        "encoding": 2
-      },
-      "latencies": [
-        15.86,
-        5.18
-      ],
-      "calls_when_ok": [],
-      "confidences": [],
-      "contract_violations": {},
-      "sample_error": "engine error: 'utf-8' codec can't decode bytes in position 230-231: invalid continuation byte",
-      "sample_violation": null,
-      "sample_call": null
-    },
-    {
-      "case_id": "chat-list",
-      "lang": "cn",
-      "domain": "chat",
-      "expect": "etscli chat list",
-      "trials": 2,
-      "passed": 0,
-      "failed": 2,
-      "correct": 0,
-      "failure_classes": {
-        "encoding": 2
-      },
-      "latencies": [
-        2.49,
-        9.81
-      ],
-      "calls_when_ok": [],
-      "confidences": [],
-      "contract_violations": {},
-      "sample_error": "engine error: 'utf-8' codec can't decode bytes in position 242-243: invalid continuation byte",
-      "sample_violation": null,
-      "sample_call": null
-    },
-    {
-      "case_id": "chat-send",
-      "lang": "cn",
-      "domain": "chat",
-      "expect": "etscli chat send",
-      "trials": 2,
-      "passed": 0,
-      "failed": 2,
-      "correct": 0,
-      "failure_classes": {
-        "encoding": 2
-      },
-      "latencies": [
-        5.15,
-        6.7
-      ],
-      "calls_when_ok": [],
-      "confidences": [],
-      "contract_violations": {},
-      "sample_error": "engine error: 'utf-8' codec can't decode byte 0xe6 in position 241: invalid continuation byte",
-      "sample_violation": null,
-      "sample_call": null
-    },
-    {
-      "case_id": "system-health",
-      "lang": "cn",
-      "domain": "system",
-      "expect": "etscli system health",
-      "trials": 2,
-      "passed": 0,
-      "failed": 2,
-      "correct": 0,
-      "failure_classes": {
-        "encoding": 2
-      },
-      "latencies": [
-        6.58,
-        8.33
-      ],
-      "calls_when_ok": [],
-      "confidences": [],
-      "contract_violations": {},
-      "sample_error": "engine error: 'utf-8' codec can't decode byte 0xe5 in position 261: invalid continuation byte",
-      "sample_violation": null,
-      "sample_call": null
-    },
-    {
-      "case_id": "system-info",
-      "lang": "cn",
-      "domain": "system",
-      "expect": "etscli system info",
+      "domain": "auth",
+      "expect": "etscli auth rename",
       "trials": 2,
       "passed": 2,
       "failed": 0,
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        12.75,
-        7.54
+        0.61,
+        0.42
       ],
       "calls_when_ok": [
         0,
         0
       ],
       "confidences": [
-        0.8984,
-        0.8984
+        0.4162,
+        0.4162
       ],
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[]"
+      "sample_call": "[]",
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "auth-login",
+      "lang": "cn",
+      "domain": "auth",
+      "expect": "etscli auth login",
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.46,
+        0.46
+      ],
+      "calls_when_ok": [
+        0,
+        0
+      ],
+      "confidences": [
+        0.7431,
+        0.7431
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]",
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "auth-logout",
+      "lang": "cn",
+      "domain": "auth",
+      "expect": "etscli auth logout",
+      "trials": 2,
+      "passed": 0,
+      "failed": 2,
+      "correct": 0,
+      "failure_classes": {
+        "encoding": 2
+      },
+      "latencies": [
+        0.46,
+        0.38
+      ],
+      "calls_when_ok": [],
+      "confidences": [],
+      "contract_violations": {},
+      "sample_error": "engine error: 'utf-8' codec can't decode bytes in position 247-248: invalid continuation byte",
+      "sample_violation": null,
+      "sample_call": null,
+      "alt": null,
+      "note": ""
     },
     {
       "case_id": "user-list",
@@ -975,15 +1884,625 @@
         "encoding": 2
       },
       "latencies": [
-        7.2,
-        12.22
+        0.41,
+        0.43
       ],
       "calls_when_ok": [],
       "confidences": [],
       "contract_violations": {},
       "sample_error": "engine error: 'utf-8' codec can't decode byte 0xe6 in position 226: invalid continuation byte",
       "sample_violation": null,
-      "sample_call": null
+      "sample_call": null,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "user-detail",
+      "lang": "cn",
+      "domain": "user",
+      "expect": "etscli user detail",
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.37,
+        0.41
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.5093,
+        0.5093
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[{\"name\": \"bash\", \"arguments\": {\"command\": \"查看 user01\"}}]",
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "user-register",
+      "lang": "cn",
+      "domain": "user",
+      "expect": "etscli user register",
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.44,
+        0.46
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.6516,
+        0.6516
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[{\"name\": \"read\", \"arguments\": {\"file_path\": \"注册个名为\"}}]",
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "user-passwd",
+      "lang": "cn",
+      "domain": "user",
+      "expect": "etscli user passwd",
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.36,
+        0.37
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.2843,
+        0.2843
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[{\"name\": \"read\", \"arguments\": {\"file_path\": \"修改密码\"}}]",
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "chat-list",
+      "lang": "cn",
+      "domain": "chat",
+      "expect": "etscli chat list",
+      "trials": 2,
+      "passed": 0,
+      "failed": 2,
+      "correct": 0,
+      "failure_classes": {
+        "encoding": 2
+      },
+      "latencies": [
+        0.58,
+        0.4
+      ],
+      "calls_when_ok": [],
+      "confidences": [],
+      "contract_violations": {},
+      "sample_error": "engine error: 'utf-8' codec can't decode bytes in position 242-243: invalid continuation byte",
+      "sample_violation": null,
+      "sample_call": null,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "chat-messages",
+      "lang": "cn",
+      "domain": "chat",
+      "expect": "etscli chat messages",
+      "trials": 2,
+      "passed": 0,
+      "failed": 2,
+      "correct": 0,
+      "failure_classes": {
+        "encoding": 2
+      },
+      "latencies": [
+        0.44,
+        0.42
+      ],
+      "calls_when_ok": [],
+      "confidences": [],
+      "contract_violations": {},
+      "sample_error": "engine error: 'utf-8' codec can't decode byte 0xe7 in position 261: invalid continuation byte",
+      "sample_violation": null,
+      "sample_call": null,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "chat-send",
+      "lang": "cn",
+      "domain": "chat",
+      "expect": "etscli chat send",
+      "trials": 2,
+      "passed": 0,
+      "failed": 2,
+      "correct": 0,
+      "failure_classes": {
+        "encoding": 2
+      },
+      "latencies": [
+        0.47,
+        0.44
+      ],
+      "calls_when_ok": [],
+      "confidences": [],
+      "contract_violations": {},
+      "sample_error": "engine error: 'utf-8' codec can't decode byte 0xe6 in position 241: invalid continuation byte",
+      "sample_violation": null,
+      "sample_call": null,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "chat-send-file",
+      "lang": "cn",
+      "domain": "chat",
+      "expect": "etscli chat send-file",
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.42,
+        0.48
+      ],
+      "calls_when_ok": [
+        0,
+        0
+      ],
+      "confidences": [
+        0.8846,
+        0.8846
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]",
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "meeting-list",
+      "lang": "cn",
+      "domain": "meeting",
+      "expect": "etscli meeting list",
+      "trials": 2,
+      "passed": 0,
+      "failed": 2,
+      "correct": 0,
+      "failure_classes": {
+        "encoding": 2
+      },
+      "latencies": [
+        0.46,
+        0.43
+      ],
+      "calls_when_ok": [],
+      "confidences": [],
+      "contract_violations": {},
+      "sample_error": "engine error: 'utf-8' codec can't decode byte 0xe8 in position 226: invalid continuation byte",
+      "sample_violation": null,
+      "sample_call": null,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "meeting-summary",
+      "lang": "cn",
+      "domain": "meeting",
+      "expect": "etscli meeting summary",
+      "trials": 2,
+      "passed": 0,
+      "failed": 2,
+      "correct": 0,
+      "failure_classes": {
+        "encoding": 2
+      },
+      "latencies": [
+        0.42,
+        0.48
+      ],
+      "calls_when_ok": [],
+      "confidences": [],
+      "contract_violations": {},
+      "sample_error": "engine error: 'utf-8' codec can't decode bytes in position 220-221: invalid continuation byte",
+      "sample_violation": null,
+      "sample_call": null,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "meeting-detail",
+      "lang": "cn",
+      "domain": "meeting",
+      "expect": "etscli meeting detail",
+      "trials": 2,
+      "passed": 0,
+      "failed": 2,
+      "correct": 0,
+      "failure_classes": {
+        "encoding": 2
+      },
+      "latencies": [
+        0.42,
+        0.48
+      ],
+      "calls_when_ok": [],
+      "confidences": [],
+      "contract_violations": {},
+      "sample_error": "engine error: 'utf-8' codec can't decode bytes in position 229-230: invalid continuation byte",
+      "sample_violation": null,
+      "sample_call": null,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "meeting-create",
+      "lang": "cn",
+      "domain": "meeting",
+      "expect": "etscli meeting create",
+      "trials": 2,
+      "passed": 0,
+      "failed": 2,
+      "correct": 0,
+      "failure_classes": {
+        "encoding": 2
+      },
+      "latencies": [
+        0.46,
+        0.47
+      ],
+      "calls_when_ok": [],
+      "confidences": [],
+      "contract_violations": {},
+      "sample_error": "engine error: 'utf-8' codec can't decode bytes in position 230-231: invalid continuation byte",
+      "sample_violation": null,
+      "sample_call": null,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "meeting-finish",
+      "lang": "cn",
+      "domain": "meeting",
+      "expect": "etscli meeting finish",
+      "trials": 2,
+      "passed": 0,
+      "failed": 2,
+      "correct": 0,
+      "failure_classes": {
+        "encoding": 2
+      },
+      "latencies": [
+        0.42,
+        0.44
+      ],
+      "calls_when_ok": [],
+      "confidences": [],
+      "contract_violations": {},
+      "sample_error": "engine error: 'utf-8' codec can't decode byte 0xe4 in position 226: invalid continuation byte",
+      "sample_violation": null,
+      "sample_call": null,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "file-search",
+      "lang": "cn",
+      "domain": "file",
+      "expect": "etscli file search",
+      "trials": 2,
+      "passed": 0,
+      "failed": 2,
+      "correct": 0,
+      "failure_classes": {
+        "encoding": 2
+      },
+      "latencies": [
+        0.46,
+        0.51
+      ],
+      "calls_when_ok": [],
+      "confidences": [],
+      "contract_violations": {},
+      "sample_error": "engine error: 'utf-8' codec can't decode byte 0xe6 in position 226: invalid continuation byte",
+      "sample_violation": null,
+      "sample_call": null,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "file-detail",
+      "lang": "cn",
+      "domain": "file",
+      "expect": "etscli file detail",
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.42,
+        0.41
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.9537,
+        0.9537
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[{\"name\": \"read\", \"arguments\": {\"file_path\": \"的文件详情\"}}]",
+      "alt": null,
+      "note": "按 file id 操作,应走 file 而非 fs"
+    },
+    {
+      "case_id": "file-upload",
+      "lang": "cn",
+      "domain": "file",
+      "expect": "etscli file upload",
+      "trials": 2,
+      "passed": 0,
+      "failed": 2,
+      "correct": 0,
+      "failure_classes": {
+        "encoding": 1,
+        "other": 1
+      },
+      "latencies": [
+        0.44,
+        0.0
+      ],
+      "calls_when_ok": [],
+      "confidences": [],
+      "contract_violations": {},
+      "sample_error": "engine error: 'utf-8' codec can't decode byte 0xe7 in position 226: invalid continuation byte",
+      "sample_violation": null,
+      "sample_call": null,
+      "alt": "etscli file upload-dir",
+      "note": "upload / upload-dir 均可接受"
+    },
+    {
+      "case_id": "file-download",
+      "lang": "cn",
+      "domain": "file",
+      "expect": "etscli file download",
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.41,
+        0.46
+      ],
+      "calls_when_ok": [
+        0,
+        0
+      ],
+      "confidences": [
+        0.9674,
+        0.9674
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]",
+      "alt": null,
+      "note": "按 file id 操作,应走 file 而非 fs"
+    },
+    {
+      "case_id": "file-delete",
+      "lang": "cn",
+      "domain": "file",
+      "expect": "etscli file delete",
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.41,
+        0.41
+      ],
+      "calls_when_ok": [
+        0,
+        0
+      ],
+      "confidences": [
+        0.9828,
+        0.9828
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]",
+      "alt": "etscli fs rm",
+      "note": "⚠ 歧义:fs rm 按路径删除同样说得通,两者皆可接受"
+    },
+    {
+      "case_id": "fs-ls",
+      "lang": "cn",
+      "domain": "fs",
+      "expect": "etscli fs ls",
+      "trials": 2,
+      "passed": 0,
+      "failed": 2,
+      "correct": 0,
+      "failure_classes": {
+        "encoding": 2
+      },
+      "latencies": [
+        0.5,
+        0.5
+      ],
+      "calls_when_ok": [],
+      "confidences": [],
+      "contract_violations": {},
+      "sample_error": "engine error: 'utf-8' codec can't decode bytes in position 237-238: invalid continuation byte",
+      "sample_violation": null,
+      "sample_call": null,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "fs-mkdir",
+      "lang": "cn",
+      "domain": "fs",
+      "expect": "etscli fs mkdir",
+      "trials": 2,
+      "passed": 0,
+      "failed": 2,
+      "correct": 0,
+      "failure_classes": {
+        "encoding": 2
+      },
+      "latencies": [
+        0.5,
+        0.5
+      ],
+      "calls_when_ok": [],
+      "confidences": [],
+      "contract_violations": {},
+      "sample_error": "engine error: 'utf-8' codec can't decode byte 0xe4 in position 226: invalid continuation byte",
+      "sample_violation": null,
+      "sample_call": null,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "fs-rm",
+      "lang": "cn",
+      "domain": "fs",
+      "expect": "etscli fs rm",
+      "trials": 2,
+      "passed": 0,
+      "failed": 2,
+      "correct": 0,
+      "failure_classes": {
+        "encoding": 2
+      },
+      "latencies": [
+        0.52,
+        0.44
+      ],
+      "calls_when_ok": [],
+      "confidences": [],
+      "contract_violations": {},
+      "sample_error": "engine error: 'utf-8' codec can't decode byte 0xe7 in position 261: invalid continuation byte",
+      "sample_violation": null,
+      "sample_call": null,
+      "alt": "etscli file delete",
+      "note": "⚠ 歧义:file delete 按 id 删除同样说得通,两者皆可接受"
+    },
+    {
+      "case_id": "fs-search",
+      "lang": "cn",
+      "domain": "fs",
+      "expect": "etscli fs search",
+      "trials": 2,
+      "passed": 0,
+      "failed": 2,
+      "correct": 0,
+      "failure_classes": {
+        "encoding": 2
+      },
+      "latencies": [
+        0.47,
+        0.45
+      ],
+      "calls_when_ok": [],
+      "confidences": [],
+      "contract_violations": {},
+      "sample_error": "engine error: 'utf-8' codec can't decode byte 0xe7 in position 226: invalid continuation byte",
+      "sample_violation": null,
+      "sample_call": null,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "fs-stat",
+      "lang": "cn",
+      "domain": "fs",
+      "expect": "etscli fs stat",
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        1.02,
+        0.5
+      ],
+      "calls_when_ok": [
+        0,
+        0
+      ],
+      "confidences": [
+        0.749,
+        0.749
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]",
+      "alt": "etscli fs stats",
+      "note": "stat / stats 均可接受"
+    },
+    {
+      "case_id": "fs-add",
+      "lang": "cn",
+      "domain": "fs",
+      "expect": "etscli fs add",
+      "trials": 2,
+      "passed": 0,
+      "failed": 2,
+      "correct": 0,
+      "failure_classes": {
+        "encoding": 2
+      },
+      "latencies": [
+        0.45,
+        0.48
+      ],
+      "calls_when_ok": [],
+      "confidences": [],
+      "contract_violations": {},
+      "sample_error": "engine error: 'utf-8' codec can't decode bytes in position 242-243: invalid continuation byte",
+      "sample_violation": null,
+      "sample_call": null,
+      "alt": null,
+      "note": ""
     },
     {
       "case_id": "sharing-list",
@@ -998,15 +2517,154 @@
         "encoding": 2
       },
       "latencies": [
-        12.08,
-        8.57
+        0.46,
+        0.62
       ],
       "calls_when_ok": [],
       "confidences": [],
       "contract_violations": {},
       "sample_error": "engine error: 'utf-8' codec can't decode byte 0xe6 in position 261: invalid continuation byte",
       "sample_violation": null,
-      "sample_call": null
+      "sample_call": null,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "sharing-create",
+      "lang": "cn",
+      "domain": "sharing",
+      "expect": "etscli sharing create",
+      "trials": 2,
+      "passed": 0,
+      "failed": 2,
+      "correct": 0,
+      "failure_classes": {
+        "encoding": 2
+      },
+      "latencies": [
+        0.45,
+        0.5
+      ],
+      "calls_when_ok": [],
+      "confidences": [],
+      "contract_violations": {},
+      "sample_error": "engine error: 'utf-8' codec can't decode byte 0xe5 in position 226: invalid continuation byte",
+      "sample_violation": null,
+      "sample_call": null,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "sharing-delete",
+      "lang": "cn",
+      "domain": "sharing",
+      "expect": "etscli sharing delete",
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.43,
+        0.54
+      ],
+      "calls_when_ok": [
+        0,
+        0
+      ],
+      "confidences": [
+        0.9584,
+        0.9584
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]",
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "system-info",
+      "lang": "cn",
+      "domain": "system",
+      "expect": "etscli system info",
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.44,
+        0.42
+      ],
+      "calls_when_ok": [
+        0,
+        0
+      ],
+      "confidences": [
+        0.8984,
+        0.8984
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]",
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "system-health",
+      "lang": "cn",
+      "domain": "system",
+      "expect": "etscli system health",
+      "trials": 2,
+      "passed": 0,
+      "failed": 2,
+      "correct": 0,
+      "failure_classes": {
+        "encoding": 2
+      },
+      "latencies": [
+        0.45,
+        0.4
+      ],
+      "calls_when_ok": [],
+      "confidences": [],
+      "contract_violations": {},
+      "sample_error": "engine error: 'utf-8' codec can't decode byte 0xe5 in position 261: invalid continuation byte",
+      "sample_violation": null,
+      "sample_call": null,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "system-alarm",
+      "lang": "cn",
+      "domain": "system",
+      "expect": "etscli system alarm",
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.43,
+        0.42
+      ],
+      "calls_when_ok": [
+        0,
+        0
+      ],
+      "confidences": [
+        0.7964,
+        0.7964
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[]",
+      "alt": "etscli system alarm list",
+      "note": "alarm 及其子命令 list 均可接受"
     },
     {
       "case_id": "discover-scan",
@@ -1021,15 +2679,71 @@
         "encoding": 2
       },
       "latencies": [
-        1.72,
-        13.92
+        0.52,
+        0.45
       ],
       "calls_when_ok": [],
       "confidences": [],
       "contract_violations": {},
       "sample_error": "engine error: 'utf-8' codec can't decode bytes in position 242-243: invalid continuation byte",
       "sample_violation": null,
-      "sample_call": null
+      "sample_call": null,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "migrate-transfer",
+      "lang": "cn",
+      "domain": "migrate",
+      "expect": "etscli migrate transfer",
+      "trials": 2,
+      "passed": 0,
+      "failed": 2,
+      "correct": 0,
+      "failure_classes": {
+        "encoding": 2
+      },
+      "latencies": [
+        0.47,
+        0.46
+      ],
+      "calls_when_ok": [],
+      "confidences": [],
+      "contract_violations": {},
+      "sample_error": "engine error: 'utf-8' codec can't decode byte 0xe6 in position 261: invalid continuation byte",
+      "sample_violation": null,
+      "sample_call": null,
+      "alt": null,
+      "note": ""
+    },
+    {
+      "case_id": "migrate-verify",
+      "lang": "cn",
+      "domain": "migrate",
+      "expect": "etscli migrate verify",
+      "trials": 2,
+      "passed": 2,
+      "failed": 0,
+      "correct": 0,
+      "failure_classes": {},
+      "latencies": [
+        0.4,
+        0.42
+      ],
+      "calls_when_ok": [
+        1,
+        1
+      ],
+      "confidences": [
+        0.1002,
+        0.1002
+      ],
+      "contract_violations": {},
+      "sample_error": null,
+      "sample_violation": null,
+      "sample_call": "[{\"name\": \"read\", \"arguments\": {\"file_path\": \"验定的结果\"}}]",
+      "alt": null,
+      "note": ""
     },
     {
       "case_id": "negative-greeting",
@@ -1042,8 +2756,8 @@
       "correct": 0,
       "failure_classes": {},
       "latencies": [
-        4.87,
-        8.36
+        0.35,
+        0.39
       ],
       "calls_when_ok": [
         1,
@@ -1056,7 +2770,9 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": "[{\"name\": \"read\", \"arguments\": {\"file_path\": \"你好\"}}]"
+      "sample_call": "[{\"name\": \"read\", \"arguments\": {\"file_path\": \"你好\"}}]",
+      "alt": null,
+      "note": ""
     },
     {
       "case_id": "negative-knowledge",
@@ -1069,8 +2785,8 @@
       "correct": 2,
       "failure_classes": {},
       "latencies": [
-        5.97,
-        5.36
+        0.39,
+        0.4
       ],
       "calls_when_ok": [
         0,
@@ -1083,169 +2799,34 @@
       "contract_violations": {},
       "sample_error": null,
       "sample_violation": null,
-      "sample_call": null
-    }
-  ],
-  "corpus": [
-    {
-      "cid": "auth-status",
-      "domain": "auth",
-      "expect": "etscli auth status",
-      "en": "check whether the box is logged in",
-      "cn": "查询密盒的登录状态",
-      "negative": false
+      "sample_call": null,
+      "alt": null,
+      "note": ""
     },
     {
-      "cid": "auth-list",
-      "domain": "auth",
-      "expect": "etscli auth list",
-      "en": "list all saved login profiles",
-      "cn": "列出所有已保存的 profile",
-      "negative": false
-    },
-    {
-      "cid": "auth-switch",
-      "domain": "auth",
-      "expect": "etscli auth switch",
-      "en": "switch to the office profile",
-      "cn": "切换到 office 这个 profile",
-      "negative": false
-    },
-    {
-      "cid": "fs-ls",
-      "domain": "fs",
-      "expect": "etscli fs ls",
-      "en": "show the files in my album folder",
-      "cn": "列出我的相册目录下的文件",
-      "negative": false
-    },
-    {
-      "cid": "fs-mkdir",
-      "domain": "fs",
-      "expect": "etscli fs mkdir",
-      "en": "create a new folder named backup in the box",
-      "cn": "在密盒里新建一个名为 backup 的文件夹",
-      "negative": false
-    },
-    {
-      "cid": "fs-rm",
-      "domain": "fs",
-      "expect": "etscli fs rm",
-      "en": "delete the file named old.txt from the box",
-      "cn": "删掉密盒里名为 old.txt 的文件",
-      "negative": false
-    },
-    {
-      "cid": "file-search",
-      "domain": "file",
-      "expect": "etscli file search",
-      "en": "search the box for files whose name contains report",
-      "cn": "搜索密盒里名字包含报告的文件",
-      "negative": false
-    },
-    {
-      "cid": "file-detail",
-      "domain": "file",
-      "expect": "etscli file detail",
-      "en": "show the details of a file given its id",
-      "cn": "查看指定文件 id 的详细信息",
-      "negative": false
-    },
-    {
-      "cid": "meeting-list",
-      "domain": "meeting",
-      "expect": "etscli meeting list",
-      "en": "list all the meetings on the box",
-      "cn": "列出密盒上所有的会议",
-      "negative": false
-    },
-    {
-      "cid": "meeting-summary",
-      "domain": "meeting",
-      "expect": "etscli meeting summary",
-      "en": "get the summary of the latest meeting",
-      "cn": "获取最近一次会议的纪要",
-      "negative": false
-    },
-    {
-      "cid": "meeting-create",
-      "domain": "meeting",
-      "expect": "etscli meeting create",
-      "en": "create a new meeting called weekly sync",
-      "cn": "创建一个名为 weekly sync 的新会议",
-      "negative": false
-    },
-    {
-      "cid": "chat-list",
-      "domain": "chat",
-      "expect": "etscli chat list",
-      "en": "list my group chats",
-      "cn": "列出我的群聊列表",
-      "negative": false
-    },
-    {
-      "cid": "chat-send",
-      "domain": "chat",
-      "expect": "etscli chat send",
-      "en": "send a message to a group chat",
-      "cn": "往群聊里发一条消息",
-      "negative": false
-    },
-    {
-      "cid": "system-health",
-      "domain": "system",
-      "expect": "etscli system health",
-      "en": "check the health of the box",
-      "cn": "检查密盒的健康状态",
-      "negative": false
-    },
-    {
-      "cid": "system-info",
-      "domain": "system",
-      "expect": "etscli system info",
-      "en": "show the system information of the box",
-      "cn": "显示密盒的系统信息",
-      "negative": false
-    },
-    {
-      "cid": "user-list",
-      "domain": "user",
-      "expect": "etscli user list",
-      "en": "list all the users on the box",
-      "cn": "列出密盒上的所有用户",
-      "negative": false
-    },
-    {
-      "cid": "sharing-list",
-      "domain": "sharing",
-      "expect": "etscli sharing list",
-      "en": "list all the sharing links I created",
-      "cn": "列出我创建的所有分享链接",
-      "negative": false
-    },
-    {
-      "cid": "discover-scan",
-      "domain": "discover",
-      "expect": "etscli discover scan",
-      "en": "scan the local network for boxes",
-      "cn": "扫描局域网里的密盒设备",
-      "negative": false
-    },
-    {
-      "cid": "negative-greeting",
+      "case_id": "negative-weather",
+      "lang": "cn",
       "domain": "negative",
       "expect": null,
-      "en": "hello, thanks for your help",
-      "cn": "你好,谢谢你的帮助",
-      "negative": true
-    },
-    {
-      "cid": "negative-knowledge",
-      "domain": "negative",
-      "expect": null,
-      "en": "what is the capital of France",
-      "cn": "法国的首都是哪里",
-      "negative": true
+      "trials": 2,
+      "passed": 0,
+      "failed": 2,
+      "correct": 0,
+      "failure_classes": {
+        "encoding": 2
+      },
+      "latencies": [
+        0.43,
+        0.41
+      ],
+      "calls_when_ok": [],
+      "confidences": [],
+      "contract_violations": {},
+      "sample_error": "engine error: 'utf-8' codec can't decode byte 0xe6 in position 252: invalid continuation byte",
+      "sample_violation": null,
+      "sample_call": null,
+      "alt": null,
+      "note": ""
     }
   ]
 }

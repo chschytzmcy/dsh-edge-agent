@@ -9600,3 +9600,60 @@ python3 scripts/etscli-function-call-test.py --url http://127.0.0.1:9000 --round
   导致 `--render-only` 读错而报 `unexpected keyword argument 'cid'`。
   现分为 `corpus`(语料)与 `results`(结果行),并删除为"兼容"保留的重复键 ——
   那个兼容本身就是混淆来源,不是解决。
+
+### §7.94.5 — etscli 语料扩充到 42 case + 本质歧义处理(2026-09-29)
+
+**修订理由**:`user 修正`指出原 §7.94.3 语料过薄(20 case,覆盖子命令 18/48 = 37%)
+且**未处理本质歧义**(`fs rm` vs `file delete` 都说得通时,模型被扣分不公平)。
+
+**新增**:
+- 正例 18 → **39**(覆盖 10 个 service,39/48 = 81% 子命令)
+- 负例 2 → **3**(新增 `negative-weather`)
+- 5 个 case 标注 `alt`(语义等价命令),命中任一即算对:
+  | case | expect | alt | 原因 |
+  |---|---|---|---|
+  | `file-upload` | `file upload` | `file upload-dir` | 批量上传两种命令都说得通 |
+  | `file-delete` | `file delete` | `fs rm` | 按 id vs 按路径 |
+  | `fs-rm` | `fs rm` | `file delete` | 同上反向对称 |
+  | `fs-stat` | `fs stat` | `fs stats` | stats 是 stat 的复数别名 |
+  | `system-alarm` | `system alarm` | `system alarm list` | alarm 本身是 group |
+- 语料表新增 `alt` / `note` 两列,歧义 case 用 ⚠ 标记
+- 报告新增 §2.2 歧义 case 表 + §4 语料表加 alt/note 列
+- `results.json` 持久化 `corpus` 字段,`--render-only` 优先读 json 里的语料
+
+**期望命令全部核对过**:`etscli <service> --help` 列出 48 个子命令,本套件覆盖 39 个,
+未杜撰任何一个命令。
+
+**新基线测量结果**(42 case × 2 trial = 84 次请求,needle @ 127.0.0.1:8081):
+
+| 指标 | English | Chinese |
+|---|---|---|
+| HTTP 200 | 100% (84/84) | 43% (36/84) |
+| 有效产出(正例中 calls>0) | 38% (30/78) | 15% (12/78) |
+| **命令正确率**(正例) | **0%** (0/78) | **0%** (0/78) |
+| 负例正确(未触发) | 4/6 | 2/6 |
+
+中文 47 次失败全部是 `encoding`(502 utf8_decode,§7.94.1 已定位)。
+
+**命令正确率 0% 的含义**:即使把 5 个歧义 case 全部纳入 alt 命中范围,仍然
+0/78 全错 —— 因为 needle 在 etscli 场景下根本**不产出 etscli 命令**。
+典型产出仍是浅层词汇匹配幻觉:`read(file_path: "local file")`、
+`read(file_path: "stat info")` —— 详见 §7.94.3。
+
+**对比 §7.94.3**(20 case):
+- 英文 5% → 0%:5% 全来自 `negative-knowledge`,扩到 3 个负例后绝对数仍是 1,
+  但 84/168 整体基数增大 → 比例下降;39 个正例仍 0 命中
+- 中文 5% → 0%:同样原因,基数变大稀释了**正确弃答**的占比
+- 业务命令正确率(去掉负例)实际是 0/78 = 0%,与 §7.94.3 一致
+
+**对新模型的意义**:
+- 该套件现在有充足语料与歧义处理,新模型测得的任何正例命中都是**真实进步**
+- 推荐门槛:英文命令正确率 ≥ 70%、中文 ≥ 50%、契约零违规 —— 任何超出
+  needle 0% 基线的表现都值得纳入候选
+- `alt` 接受让判断更公平,但不会让 needle"虚增分数"—— needle 0 产出,
+  alt 机制用不上
+
+**产出**:
+- `scripts/etscli-function-call-test.py` — 39+3 case,5 alt 处理
+- `docs/bench/etscli-function-call/{report.md,results.json}` — 新基线
+
