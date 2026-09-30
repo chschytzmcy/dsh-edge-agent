@@ -10026,15 +10026,17 @@ LOCAL LLM 的提示只有干巴巴的 outcome 列表,LLM 不知道该如何处�
 | discover | 100% (3/3) | 100% (3/3) |
 | migrate | 100% (6/6) | 100% (6/6) |
 
-**Track A(needle LoRA 微调)状态**:user 终裁跳过。`scripts/p0-to-needle.py` 转换器已写
-(62 条 P0 → needle JSONL 格式),但未跑训练。Parked on disk,未 commit。
-如果将来要做 Track A,流程:
-```
-python3 scripts/p0-to-needle.py --val-split 0.2
-cd ~/work/needle && needle finetune dataset/p0-minimal-pairs.jsonl --rank 4 --epochs 3
-needle build --lora needle_lora.safetensors --out p0-tuned.cact
-# 改 docker-compose NEEDLE_WEIGHTS → 重启
-```
+**Track A(needle 微调)= 永久不做**(user 项目定调,2026-09-30):「本项目不做 needle 的微调,
+只做客户端的调优」。这不是本轮跳过,是方向性排除 —— 任何「训 needle 提准确率」的方案
+(LoRA / fine-tune / 换权重 / `NEEDLE_WEIGHTS` 指向自训 `.cact`)都不在本项目范围内。
+
+**这条约束的直接后果**:
+- EN 72% / CN 64% 是 **needle 的能力天花板**,客户端侧改不动 —— bench 测的正是 needle 选工具
+- `scripts/p0-to-needle.py`(62 条 P0 → needle JSONL 转换器)已写但永远不会跑,未 commit,死代码
+- `docs/bench/etscli-tools/train/p0.jsonl` 62 条 + `scripts/etscli-minimal-pairs.py` 的 142 条
+  清单,要发挥价值只能走客户端路线(如 LOCAL LLM 二次选工具、客户端侧 minimal pair 判定规则),
+  不能进 needle 训练管线
+- CN auth 17% 这个短板在不做微调的前提下**没有解** —— 除非引入 needle 之外的独立选工具路径
 
 **方法学沉淀**:synthesis prompt 的改进无法用工具选择 bench 衡量。要测 synthesis 质量需要
 另一套评测:固定 needle 的错误输出,看 LOCAL LLM 的回复是否「澄清 / 自填 / 摆烂」三类归一。
