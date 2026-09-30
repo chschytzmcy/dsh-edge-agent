@@ -305,12 +305,47 @@ def emit_md() -> str:
     return "\n".join(L)
 
 
+def corpus_overlap(rows: list[dict]) -> list[tuple[str, str, float]]:
+    """P0 query 与 42 例验收语料的撞题检测。
+
+    验收语料(`CASES`)是**新模型的判卷卷子**;训练样本若与卷子逐字相同或近重复,
+    训完再考就是背答案,§7.94.8 的验收门槛会虚高。返回 [(样本 id, 撞上的 case, Jaccard)]。
+    中文按 2-gram 切(整句当一个 token 会让任何两句相似度都是 0)。
+    """
+    import re
+
+    def toks(s: str) -> set[str]:
+        t = set(re.findall(r"[a-z_0-9]+", s.lower()))
+        for run in re.findall(r"[一-鿿]+", s):
+            t |= {run[i:i + 2] for i in range(len(run) - 1)} or {run}
+        return t
+
+    corpus = {(c.cid, lang): getattr(c, lang) for c in _t.CASES for lang in ("en", "cn")}
+    hits = []
+    for r in rows:
+        q, lang = r["messages"][0]["content"], r["lang"]
+        tq = toks(q)
+        best, bj = "", 0.0
+        for (cid, l), c in corpus.items():
+            if l != lang:
+                continue
+            tc = toks(c)
+            j = len(tq & tc) / max(1, len(tq | tc))
+            if j > bj:
+                best, bj = cid, j
+        if bj >= 0.5:                      # 逐字相同 = 1.0,近重复阈值
+            hits.append((r["id"], best, round(bj, 2)))
+    return sorted(hits, key=lambda h: -h[2])
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="导出 P0 minimal pair 训练样本")
     ap.add_argument("--out", default="docs/bench/etscli-tools/train")
     ap.add_argument("--with-tools", action="store_true",
                     help="每行内联该语言的完整 47 工具集(自包含,体积 ×~40)")
     ap.add_argument("--check", action="store_true", help="只校验不落盘")
+    ap.add_argument("--check-corpus", action="store_true",
+                    help="撞题检测:训练样本 vs 42 例验收语料(逐字/近重复)")
     ap.add_argument("--emit-md", action="store_true", help="打印 P0 表格")
     args = ap.parse_args()
 
@@ -319,6 +354,17 @@ def main() -> int:
         return 0
 
     rows = build_samples(args.with_tools)
+    if args.check_corpus:
+        hits = corpus_overlap(rows)
+        exact = [h for h in hits if h[2] == 1.0]
+        near = [h for h in hits if h[2] < 1.0]
+        print(f"撞题检测:{len(rows)} 条样本 vs 42 例验收语料")
+        print(f"  逐字相同 {len(exact)} 条({len(exact)/max(1,len(rows)):.0%})"
+              f" · 近重复 J≥0.5 {len(near)} 条"
+              f" · 独立 {len(rows)-len(hits)} 条({1-len(hits)/max(1,len(rows)):.0%})")
+        for sid, cid, j in hits:
+            print(f"  {'=' if j == 1.0 else '~'} {sid} vs {cid:<16} J={j}")
+        return 1 if exact else 0
     errs = check(rows)
     if errs:
         for e in errs:
