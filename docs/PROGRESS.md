@@ -10109,7 +10109,23 @@ python3 scripts/etscli-tools-test.py --desc-lang match --distractors 3 --trials 
 | 契约违规 | = 0 | 0 | **0** | ✅ 通过 |
 
 **EN 侧三项门槛全部通过,且不需要任何客户端改动、不需要微调 needle。**
-**needle 工具选择这件事可以收了** —— 当前 74% 已超门槛 14pp,剩余空间属能力边界,不是 bug。
+
+> **⚠️ 这 74% 是 needle 的能力上限(ceiling),不是 dsh-edge-agent 的分数。**
+> 被测对象是 `cactus-needle` 裸 `/extract` 接口,输入是 `etscli-tools-test.py:320` 里
+> **硬编码的 47 个合成 schema**,判定只问「选了哪个工具名」。
+>
+> **本项目当前的系统级分数是「未测量」,且端到端能力为 0** —— 因为:
+> - 47 个 etscli 工具**从未注册进 `ctx.tools`**,`src/` 全仓无 `spawn`/`child_process`
+> - 完整链路(needle → tool-runner → 真实执行 → synthesis)**从未成功走通一次**
+>   (audit 里 `external.executed` 计数为 **0**)
+> - `buildSynthesisContext()` 只在 `executedCount >= 1` 时触发,而没有工具注册时
+>   needle 选的每个工具都会撞 `external.unknown_tool` → denied → 恒为 0
+>   → **§7.96 Track B 那 36 行 synthesis 代码在当前部署下不可达**
+> - LOCAL LLM(`192.168.65.2`)无可用端点;`.env` 的 `LOCAL_LLM_STRIP_TOOLS=true`
+>   还使 fall-through 降级成纯文本回答
+>
+> 换句话说:**needle 这一层已经够用甚至偏宽裕(74% > 60% 门槛),瓶颈不在它。**
+> 我们自己的集成层(工具注册 → 执法 → synthesis → 出回复)既未实现,也未测量。
 
 **EN 残留失分**(10 个全错 case,§1.3):6 例属「跨 service 无关误选(近似幻觉)」——
 `auth_status→system_health`、`auth_login→migrate_transfer`、`meeting_list→system_alarm_list`;
