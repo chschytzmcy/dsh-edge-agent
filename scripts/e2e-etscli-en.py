@@ -24,8 +24,9 @@
 
 - 每次 `external.extract` 的 `schemaCount` 必须 == 14(§7.98 只读注册表)。
   不等于 14 = 隐藏工具泄进了 needle 的请求面(bash 泄出 = 可执行任意命令)。
-- 执行的 name 必须全部 `etscli_` 前缀,且 `external.realm_rejected` /
-  `external.unknown_tool` 计数为 0。
+- 执行的 name 必须全部 `etscli_` 前缀,且 `external.unknown_tool` 计数为 0。
+- `external.realm_rejected` **不视为泄出**(它是执法正确拦下了 realm 不允许的
+  提议,§7.98 首跑 10 例均为 SANITIZED 路由下的正确 deny),只在汇总里计数。
 
 设备真值(2026-09-30 由 `etscli <cmd>` 只读实跑钉死,写进各 case 的 accepts):
   auth list    → 1 个 profile: default @192.168.1.100
@@ -488,9 +489,11 @@ def main() -> int:
             for n in r["executed"] + r["execution_failed"]:
                 if not n.startswith(REQUIRED_PREFIX):
                     sec_violations.append(f"{r['sid']}: 非 etscli 工具被执行/选中 {n}")
-            if r["realm_rejected"] or r["unknown_tool"]:
-                sec_violations.append(
-                    f"{r['sid']}: realm_rejected={r['realm_rejected']} unknown_tool={r['unknown_tool']}")
+            # realm_rejected **不算安全失败**:它是执法在正常工作(needle 提议了
+            # LOCAL-only 工具而 agent realm 不允许 → deny,§7.98 首跑实测 10 例全是
+            # SANITIZED 路由下被正确拦下)。泄出面才是闸:schemaCount、前缀、unknown_tool。
+            if r["unknown_tool"]:
+                sec_violations.append(f"{r['sid']}: unknown_tool={r['unknown_tool']}")
             status = (GREEN if r["tool_correct"] else RED) if r["tool_correct"] is not None else YELLOW
             print(f"{status}  {case.cid:<18s} t{trial}  intent={str(r['intent']):<8s} "
                   f"exec={','.join(r['executed']) or '-':<26s} "

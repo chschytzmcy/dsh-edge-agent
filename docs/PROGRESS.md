@@ -10153,3 +10153,110 @@ needle 的裸水平。要让「只做客户端调优」这个方向可度量,必
 bench**:needle 选工具 → `tool-runner` 执法(含 §7.95 空参 gate / realm 预检)→ synthesis →
 LOCAL LLM 出回复,判分看**最终回复是否正确完成任务**,而不是 needle 选了哪个工具。
 在这条 bench 建成之前,客户端调优只能靠单测 + 日常使用观察,不存在可信的量化收益。
+
+### §7.98 — 端到端首次打通 + 首跑系统基线:**0%**,失分全部定位在三层从未测过的环节(2026-09-30)
+
+**结论先行**:
+
+1. **链路第一次真通**:audit 里 `external.executed`(真实 etscli 执行,49ms)与
+   `external.synthesis_injected` 首次非零;§7.97 的两个断言(「端到端能力为 0」「Track B
+   代码不可达」)就此作废。
+2. **安全闸 3/3 全过**:每一次 needle extract 的 `schemaCount=14`(= 只读注册表,
+   `removedCount=13 removed=bash,…` 实测)、执行名 100% `etscli_` 前缀、`unknown_tool=0`。
+   **bash 从未进入 needle 请求面。**
+3. **首个系统分数:工具选择 0/26 = 0%**(needle 裸测 ceiling 74%)。
+   **但这不是 needle 独有问题** —— 失分干净地分解为三层,每层都是 §7.97 的 bench
+   结构上测不到的:
+
+| 层 | 失分 | 证据(audit) | 性质 |
+|---|---|---|---|
+| **L1 意图门** | 16/26 trial(8 case ×2)被判 **SANITIZED** 而非 LOCAL | `rationale:"default:sanitized" conf=0.5` —— jev/pattern 对简短英文设备查询**无命中,兜底默认** | 路由配置问题,needle 根本没被给予机会 |
+| **L2 云路径空回复** | 全部 SANITIZED+CLOUD 会话 `resultLen:0`(18-26s 白烧) | MiniMax-M2.7-highspeed 路由后空返回(§7.50 型故障特征) | 基础设施/key 问题,**与本项目工具层正交** |
+| **L3 needle 在真实 schema 面 + 回复编造** | 走通 LOCAL 的 10 trial:6 次执行**全选错**(0/6),4 次 needle 弃答;且回复编造 | `auth-list→user_list ×2 (conf 0.84)`、`file-search/fs-stat→system_info ×4`;fs-ls 无执行却答 "The command executed successfully" | 真实工具描述远薄于 bench 合成 `_TOOL_SPEC` → **客户端第一大调优杠杆** |
+
+4. **负例 0 过度触发**(6/6),needle 裸测(§7.97)的这个优点在真实链路**保持住了**。
+5. 本报告数字**不可与 74% 直接比大小** —— 74% 是 needle 单独的能力上限,0% 是
+   全系统的当前真实水平。这个差值本身就是本节要测的东西。
+
+## 1. 为什么先补的不是 bench 而是集成层
+
+`ctx.tools` 里原本**一个 etscli 工具都没有** —— 47 个 schema 只活在
+`scripts/etscli-tools-test.py:320` 的硬编码里,直接 POST needle 裸 `/extract`。
+三条链全断:needle 选中任何 etscli 工具 → `external.unknown_tool` → denied →
+`executedCount` 恒 0 → `buildSynthesisContext()` 永不触发(§7.96 Track B 36 行死代码)
+→ 没有真实执行。首跑里 auth-list 的两次 mispick 反而第一次**行为级**证明了 Track B:
+模型拿到错工具结果后没有盲传,而是按 few-shot 的「选项 A/B」形式发起了澄清。
+
+## 2. `src/dsh-adapter/etscli-tools.ts`(新,14 个只读工具)
+
+- **只读白名单即注册表本身**:「不注册」= 不进 `ctx.tools` = needle 物理上选不到。
+  27 个写类工具排除表(含两个骗人名字:`fs rm` 默认 `--delete-type 2` = 永久删、
+  `migrate verify` 触发自动重传)依据 `etscli <svc> --help` 原文,记在模块头。
+- **固定 argv + 真实 flag 映射**(`fs ls/stats→--parent`、`fs stat→--file-id`、
+  `alarm list→--number`)—— 照抄 bench 抽象参数名会静默空结果。
+- **执行走 `ctx.shell`**(`bash -c`):参数逐个 `shellQuote`(POSIX `'…'\''…'`),
+  13 项单测用注入载荷断言裸区无 shell 元字符。
+- **⚠️ smoke 实测修正 —— null 字段必须省略**:受限 `output.schema` 表达不了 nullable,
+  正常退出 `signal:null` 撞 `"value.signal" must be a string` → `INVALID_TOOL_OUTPUT`
+  整次执行被拒。非 null 才进对象,render 端按 `undefined` 兜底。
+
+## 3. realm 白名单:`~/.dsh-edge-agent/skill-realms.json`(零代码)
+
+realm 过滤 **fail-open**(未点名工具保留,`realm-skill-bridge.ts:713-717`)——
+只注册 14 个**不等于** needle 只看 14 个,`bash` 会照样泄进请求面。必须对注册表全量
+27 工具逐个显式标 `hidden` + `defaultRealm:"hidden"` 兜新工具。5s 热重载。
+
+**教训:fail-open 白名单要用全量真实清单来标** —— apply() 里的 registry dump 时机太早
+(`total=25`,bash 还没注册),权威源是 boot 后 `[http-api] edgeTools.list() → 27` 那行。
+
+## 4. 部署壳的两个坑(smoke 前 45 分钟的假阴性)
+
+1. INVALID_TOOL_OUTPUT(见 §2)。
+2. **wrapper 只 source `.env` 没 source `.env.sh`**:patch 读 `DSH_EDGE_*`,`.env` 只有
+   裸名 `LOCAL_LLM_*`,翻译层在 `.env.sh:120-122` —— 漏 source 时进程继承 ambient 旧
+   LAN 值(174/minicpm5-2b),表现为「新端点没生效 + 空回复」。修正后
+   `provider_model=local-llm/Qwen3.5-9B` 落位。
+
+## 5. bench:`scripts/e2e-etscli-en.py`(16 case × 2 trials,判分读 audit)
+
+与 needle 裸测的根本区别:**这条 bench 打在客户端代码上**(意图路由 / realm 执法 /
+tool-runner / synthesis / 最终回复全在链路里),客户端调优第一次有可量化验收面。
+空真值用例(meeting/chat/alarm 实测为空、sharing 实测 E_NOT_SUPPORT —— 14 条命令
+逐一只读实跑钉死真值)按「说不存在才算对」设计 —— **首跑幻觉=0,判分维度成立**。
+
+**安全闸语义修正(本次)**:`realm_rejected>0` 不算泄出 —— 首跑 10 例拒绝全是执法在
+正常工作(SANITIZED 路由下 needle 提议 LOCAL-only 工具被 deny)。硬闸只留
+`schemaCount≠14` / 非 `etscli_` 执行 / `unknown_tool>0`。
+
+## 6. 首跑数字(32 trial,dist/bench-e2e-etscli-en-20260930-172020/)
+
+| 指标 | 值 | 说明 |
+|---|---|---|
+| 系统工具准确率 | **0%** (0/26) | 见 L1-L3 分解 |
+| 链路走通率 | 23.1% (6/26) | 6 次真执行,全为 needle mispick |
+| synthesis 注入率 | 23.1% (6/26) | Track B 可达 ✓ |
+| 负例过度触发 | **0** ✓ | §7.97 优点在链路中保持 |
+| 空真值幻觉 | **0** ✓ | 无一例编造会议/告警 |
+| 安全闸(schemaCount/前缀/unknown) | **全过** ✓ | 每 extract 恰 14 schema |
+
+**延迟剖面**:LOCAL-routed trial 76-97s = 意图分类 4.8s + prompt-guard 15.5s + needle 0.7s
++ 执行 0.05s + **最终回复 ~67s**(共享 GPU 对 10k-prompt 的实测,Qwen3.5-9B 小 prompt 仅
+1.9s,非客户端 bug);SANITIZED/CLOUD trial 14-27s 全烧在空回复上。
+
+## 7. 下一步(按杠杆大小排序,全部可被本 bench 度量)
+
+1. **修云路径空回复**(MiniMax key/balance/namespace —— 先 `curl /user_balance` 类探活,
+   [[minimax-namespace-gotcha]] §7.50 家族)。**不修它,L1/L2 会把一切回复判分污染成 0**。
+2. **意图门覆盖**:设备/box 类英文查询应落 LOCAL,而不是 pattern-miss 后
+   `default:sanitized`。加 pattern 或 jev intent(§7.92.4 single-source 纪律)。
+   预期直接回收 16/26 trial 进 needle 路径。
+3. **工具描述对齐 `_TOOL_SPEC` 丰富度**(客户端第一大杠杆):真实面 0/6 vs 合成面 74%
+   的差,首要嫌疑就是单行短描述。改描述 → 本 bench 直接可见,不再「bench 零耦合」。
+4. **synthesis 契约强化**:file-search 案例证明模型会**无视执行真相**编造工作流
+   (实际跑了 system_info,回复自称跑了 grep 管线);fs-ls 弃答时编造 "executed
+   successfully"。候选:回复前 grounding 校验(回复声称的执行 vs audit 实际执行)。
+5. 判分盲区补一枚:「回复声称执行但 `executed=0`」自动记 fabricated-success(本次靠
+   人工读 traces 发现)。
+
+**记忆锚**:needle 的 74% 是「输入富环境」下的数字;把同一模型放进真实注册表,
+它的表现要重新测 —— 这正是端到端 bench 存在的意义。
