@@ -15,3 +15,9 @@ python3 scripts/etscli-tools-test.py --trials 2 --out dist/x            # match+
 python3 scripts/etscli-tools-test.py --trials 2 --distractors 3 --out dist/y   # match+d3
 python3 scripts/inflation-diff.py dist/x dist/y                          # 虚高对照
 ```
+
+## 训练用产物
+
+| 文档 | 说明 |
+|---|---|
+| [`minimal-pairs.md`](minimal-pairs.md) | 端侧训练要补的 minimal pair 清单(P0 18 对 / P1 14 对 / 兜底 8 例,≈142 条),由 match-d0/d3 的错误模式分类反推 |

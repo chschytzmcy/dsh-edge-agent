@@ -9853,3 +9853,30 @@ user 要求把 §7.94.8 里一次性口头做的 en 失败拆解**写进报告**
 `login/logout/status` 近义动词对;补上这些 pair 才可能从 ~44% 往上走。cn 的错误 55% 是
 无关误选 + 32% 弃答,几乎不成结构,印证 §7.94.8 结论:中文瓶颈在模型能力而非词法线索,
 最小对照对救不了它。
+
+### §7.94.10 — 端侧训练 minimal pair 补数据清单(2026-09-30)
+
+把 §7.94.9 的错误模式分类**翻成可执行的训练数据清单**:`docs/bench/etscli-tools/minimal-pairs.md`。
+
+**交叉统计出的新事实(此前没单独量化)**:把误选落点与语料覆盖对齐后 —— match-d0 的
+41 次误选里 **18 次(44%)落在 8 个零正向用例的工具上**,`migrate_session_login` 一个
+就吃掉 12 次,`fs_rename`/`fs_stat` 各 2,`chat_files`/`file_upload` 各 1;match-d3 降到
+12%(干扰项把注意力吸走后)。结论:模型不只是"选错",是**很多工具压根没有正确答案可选**。
+→ 补零用例正例的优先级**高于**补对照对。
+
+**清单结构**(约 142 条,en:cn ≥ 1:1):
+- P0-A 同动词跨 service 14 对(证据:auth_list→user_list、auth_rename→fs_rename 等)——
+  根因是模型缺"名词→service"绑定,不是不懂动词
+- P0-B 同 service 近义动词 3 对(chat_send↔send_file、upload↔upload_dir、finish↔summary)
+- P0-C 反弃答正例 5 条(en 侧 200 空产出全是明确祈使句)
+- P1-D file↔fs 按 id/按路径轴 4 对(**训练集不许用 alt 双可接受标签**,语料里
+  file-delete/fs-rm/fs-stat/system-alarm 有 alt,那是测试宽容,训练必须唯一 gold)
+- P1-E 8 个零用例工具兜底正例(误选磁吸区)
+- P1-F `fs_stat`/`fs_stats`/`fs_ls` 三兄弟(mistyped prefix 同族)
+- P2 抗干扰对照(`x` vs `x_raw`,不注册新工具;干扰项着陆率 ≤15% 仍是验收门槛)
+
+**方法学要点**:每对必须**双向**呈现(单向对教偏见不教分辨);一对两条 query 句式逐字
+相同只换名词;cn 侧 pair 无效(错误无结构)要靠普通正例堆量;每 5 对配 1 条邻近负例防过度触发。
+
+**训练后验证**:复用 `etscli-tools-test.py --desc-lang match --distractors 3`,看报告 1.3
+各类计数逐项下降,"动词对 service 错"与"同 service 兜底"应先归零。

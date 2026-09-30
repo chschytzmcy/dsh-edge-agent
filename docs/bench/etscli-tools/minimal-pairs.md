@@ -1,0 +1,176 @@
+# 端侧训练 minimal pair 补数据清单
+
+> 数据来源:`docs/bench/etscli-tools/match-d0/` + `match-d3/`(正式口径,§7.94.8/§7.94.9)
+> 工具集:47 个 etscli 直出工具,全部核对自 `etscli <service> --help`
+> 用途:给端侧 function-call 模型补**判别性对照样本**,不是补知识量
+
+## 结论
+
+1. **en 的错误是可枚举的结构性错误**(§7.94.9:兜底 4 / 后缀 2 / file↔fs 2 / 动词对 service 错 2 /
+   弃答 5 / 幻觉 5),每一类都有确定的判别线索 → **minimal pair 有效**,按下面 P0 清单补即可。
+2. **44% 的误选落在 8 个零正向用例的工具上**(`migrate_session_login` 12 次、`fs_rename` 2、
+   `fs_stat` 2、`chat_files` 1、`file_upload` 1;match-d3 里 `fs_stat` 再 3 次)。
+   模型不是"选错",是**没有一个正确答案可以选**。→ 补用例的优先级**高于**补对照对。
+3. **cn 的错误没有结构**(55% 无关幻觉 + 32% 弃答),minimal pair 救不了;中文侧的
+   唯一有效动作是把训练集里 cn 的量拉起来,而不是设计更精巧的对。
+4. 总量:**P0 18 对 + P1 14 对 + 8 条兜底正例 = 约 150 条**样本(见文末配方)。
+   这不是大工程,是**定向补盲**。
+
+---
+
+## P0 —— 直接对应已观测错误(先补这 18 对)
+
+每对**必须双向**呈现(`A→A'` 与 `B→B`),单向对会把模型教成"偏好 X"而不是"能分辨 X/Y"。
+en / cn 各一条,query 模板只改名词,其余措辞**逐字相同**(否则模型学的是句式不是判别)。
+
+### A 组 · 同动词跨 service(对应「动词对、service 错」+「list 塌缩」)
+
+这是 en 侧 `auth_list→user_list`、`auth_rename→fs_rename`、`file_detail→file_search`
+三类错误的共同根因:**query 里的名词决定 service,动词不决定**。模型缺的是"名词→service"
+的绑定,不是动词理解。
+
+| # | A | B | 判别线索(query 里的名词) | en 模板 | cn 模板 | 证据 |
+|---|---|---|---|---|---|---|
+| 1 | `auth_list` | `user_list` | profile vs 用户 | list all saved login profiles / list all the users on the box | 列出所有已保存的 profile / 列出密盒上的所有用户 | auth_list→user_list |
+| 2 | `user_list` | `chat_list` | 用户 vs 群聊 | list all the users on the box / list my group chats | 列出密盒上的所有用户 / 列出我的群聊列表 | user_list 塌缩 |
+| 3 | `chat_list` | `meeting_list` | 群聊 vs 会议 | list my group chats / list all the meetings on the box | 列出我的群聊列表 / 列出密盒上所有的会议 | cn 幻觉集中区 |
+| 4 | `meeting_list` | `sharing_list` | 会议 vs 分享链接 | list all the meetings on the box / list all the sharing links I created | 列出密盒上所有的会议 / 列出我创建的所有分享链接 | sharing-list→乱选 |
+| 5 | `user_detail` | `meeting_detail` | 用户 id vs 会议 id | show the details of user user01 / show the details of the meeting with id mtg001 | 查看 user01 的详细信息 / 查看 id 为 mtg001 的会议详情 | meeting_detail 类 |
+| 6 | `user_detail` | `file_detail` | uid vs file id | show the details of user user01 / show the details of a box file given its file id | 查看 user01 的详细信息 / 查看指定 file id 的文件详情 | detail 塌缩 |
+| 7 | `file_search` | `fs_search` | 关键字全局 vs 目录下按名 | search the box for files whose name contains report / search for files by name under a folder on the box | 搜索密盒里名字包含报告的文件 / 在密盒上按文件名搜索文件 | **file↔fs 双向** |
+| 8 | `meeting_create` | `sharing_create` | 会议 vs 分享链接 | create a new meeting called weekly sync / create a sharing link for a box file | 创建一个名为 weekly sync 的新会议 / 为密盒里的某个文件创建分享链接 | sharing_delete→sharing_create |
+| 9 | `user_register` | `fs_mkdir` | 用户 vs 目录 | register a new user called bob / create a new folder named backup on the box | 注册一个名为 bob 的新用户 / 在密盒上新建一个名为 backup 的文件夹 | fs_mkdir 误选 5 次 |
+| 10 | `auth_rename` | `fs_rename` | profile vs 路径 | rename the office profile to company / rename a file on the box by its path | 把 office 这个 profile 重命名为 company / 按路径重命名密盒上的文件 | auth_rename→fs_rename |
+| 11 | `auth_login` | `migrate_session_login` | 账号凭证 vs 迁移流程 | log in to the box at 192.168.1.100 as admin / establish a session for the migration | 登录到 192.168.1.100 的密盒,用户名 admin / 为迁移流程建立会话 | **12 次误选,头号磁吸** |
+| 12 | `migrate_transfer` | `migrate_verify` | 执行迁移 vs 校验结果 | migrate the data from the old box to the new one / verify the migration result | 把旧盒子的数据迁移到新盒子 / 验证迁移的结果 | transfer↔verify 互换 |
+| 13 | `file_delete` | `sharing_delete` | 密盒文件 vs 分享链接 | delete a box file given its file id / delete a sharing link | 按 file id 删除密盒里的文件 / 删除一个分享链接 | cn 误选落点 |
+| 14 | `system_info` | `system_health` | 配置信息 vs 健康状态 | show the system information of the box / check the health of the box | 显示密盒的系统信息 / 检查密盒的健康状态 | health→幻觉 2 次 |
+
+### B 组 · 同 service 近义动词(对应「同 service 动词语义错」+「静默弃答」)
+
+同一 service 内动词语义相邻,模型塌缩到"高频那个"。
+
+| # | A | B | 判别线索 | en 模板 | cn 模板 | 证据 |
+|---|---|---|---|---|---|---|
+| 15 | `chat_send` | `chat_send_file` | 文字 vs 文件(参数 `text` / `file`) | send a text message to a group chat / send a file to a group chat | 往群聊里发一条文字消息 / 把文件发送到群聊里 | chat_send_file→chat_send |
+| 16 | `file_upload` | `file_upload_dir` | 单文件 vs 目录(参数 `file` / `dir`) | upload a local file to the box / upload a local directory to the box | 把本地文件上传到密盒 / 把本地目录上传到密盒 | upload_dir→upload |
+| 17 | `meeting_finish` | `meeting_summary` | 结束 vs 取纪要 | end the meeting that is currently running / get the summary of the latest meeting | 结束当前正在进行的会议 / 获取最近一次会议的纪要 | cn finish→summary |
+
+### C 组 · 「必须有调用」正例补齐(对应 5 个 en 静默弃答)
+
+这不是 pair,是**反弃答**样本:query 是明确祈使句,却返回 200 空产出。
+模型要学到的是"祈使句 ⇒ 必有调用",空产出永远不是合法答案。
+
+| 工具 | en query | cn query |
+|---|---|---|
+| `auth_login` | log in to the box at 192.168.1.100 as admin | 登录到 192.168.1.100 的密盒,用户名 admin |
+| `chat_send` | send a text message to a group chat | 往群聊里发一条文字消息 |
+| `meeting_finish` | end the meeting that is currently running | 结束当前正在进行的会议 |
+| `file_delete` | delete a box file given its file id | 按 file id 删除密盒里的文件 |
+| `fs_add` | add a local file into a folder on the box | 把本地文件添加到密盒的某个目录 |
+
+---
+
+## P1 —— 结构性易混但当前没测到(补完即进回归套件)
+
+### D 组 · file↔fs 轴:按 id vs 按路径
+
+这是**产品真实存在的双入口**,不是模型缺陷。`file_*` 按 file id,`fs_*` 按路径。
+模型必须学会的唯一判别线索是 **query 里出现的是 id 还是 path**。
+
+| A(按 id) | B(按路径) | 判别线索必须出现在 query 里 |
+|---|---|---|
+| `file_detail` (file_id) | `fs_stat` (path) | "given its file id" vs "under the path ..." |
+| `file_delete` (file_ids) | `fs_rm` (path) | "by its file id" vs "by its path" |
+| `file_search` (keyword) | `fs_search` (path+name) | "whose name contains X"(全局) vs "under folder F named X" |
+| `file_upload` (file→根) | `fs_add` (local+remote) | "to the box" vs "into folder F on the box" |
+
+⚠️ 现有语料里 `file-delete` / `fs-rm` / `file-upload` 用了 `alt` 双可接受标签。
+**训练集里不能这样** —— 必须按上表的线索词指定唯一 gold label,否则是在喂噪声。
+（测试语料可以放宽,训练语料必须收紧。）
+
+### E 组 · 8 个零正向用例的工具(误选磁吸区,优先级等同 P0)
+
+每个工具至少 1 条正向用例(en+cn),让它们在训练分布里"有正确答案可选"。
+
+| 工具 | en query | cn query | 被误选次数 |
+|---|---|---|---|
+| `migrate_session_login` | establish a session for the migration | 为迁移流程建立会话 | 12 |
+| `fs_stat` | show the stat info of the file at /photos/a.jpg | 查看 /photos/a.jpg 的 stat 信息 | 5 |
+| `fs_rename` | rename the folder /photos/a to /photos/b | 把目录 /photos/a 重命名为 /photos/b | 2 |
+| `chat_files` | list the files shared in a group chat | 查看群聊里共享的文件 | 1 |
+| `file_upload` | upload report.pdf to the box | 把 report.pdf 上传到密盒 | 1 |
+| `fs_mv` | move /photos/a.jpg into /photos/archive | 把 /photos/a.jpg 移动到 /photos/archive | 0 |
+| `migrate_record` | show the migration records | 查看迁移记录 | 0 |
+| `user_delete` | delete the user named tom on the box | 删除密盒上名为 tom 的用户 | 0 |
+
+`fs_mv` / `migrate_record` / `user_delete` 虽未被误选,但与已误选工具同族(`fs_rename` /
+`migrate_session_login` / `file_delete`),一并补齐防止训练后漂移。
+
+### F 组 · fs 内部三兄弟
+
+`fs_stat`(文件 stat)/ `fs_stats`(目录统计) / `fs_ls`(列目录)——
+三者 query 措辞极近,是 `fs` 域的天然 minimal triple。
+
+| 工具 | 判别线索 | en | cn |
+|---|---|---|---|
+| `fs_stat` | 具体文件路径 | show the stat info of the file at /a.txt | 查看 /a.txt 的 stat 信息 |
+| `fs_stats` | 目录路径 + "statistics" | show the statistics of the folder /photos | 查看目录 /photos 的统计信息 |
+| `fs_ls` | 目录路径 + "list the files" | list the files in my album folder | 列出我的相册目录下的文件 |
+
+---
+
+## P2 —— 抗干扰负样本(不是新工具)
+
+§7.94.8 测出 match-d3 下 en 56% 的基线分被 `_raw/_export/_history` 类同族后缀拽走
+(同族后缀丢失类 27 个全错里占 18 个)。对策**不是**再注册 117 个假工具,而是:
+
+- 训练集里把 `x` 与 `x_raw` 形态的**对照**放在一起(query 明确说明需要格式化/摘要/原始输出
+  时才选 `_raw`),让"后缀是有语义的,不是随机的";
+- 回归测试继续用 `--distractors 3` 测**抗干扰**(干扰项着陆率 ≤ 15% 是验收门槛之一)。
+
+---
+
+## 数据配方
+
+| 组 | 对数 | 方向 | 语言 | 条数 |
+|---|---|---|---|---|
+| P0-A 同动词跨 service | 14 | ×2 双向 | en+cn | 56 |
+| P0-B 同 service 动词 | 3 | ×2 双向 | en+cn | 12 |
+| P0-C 反弃答正例 | 5 | 单向 | en+cn | 10 |
+| P1-D file↔fs 轴 | 4 | ×2 双向 | en+cn | 16 |
+| P1-E 零用例工具兜底 | 8 | 单向 | en+cn | 16 |
+| P1-F fs 三兄弟 | 3 | ×2 双向 | en+cn | 12 |
+| P2 抗干扰对照 | ~10 | ×2 | en | 20 |
+| **合计** | | | | **≈142** |
+
+配比原则:
+- **en:cn 至少 1:1**,但注意 cn 侧 pair 帮不上忙(错误无结构)——cn 的量要靠**普通正例**
+  堆,不是靠对照对。
+- 每条 pair 两条 query 的**句式必须逐字相同**,只换名词/参数类型。改写句式 = 判别线索
+  被稀释,模型学到的是风格不是边界。
+- 每 5 条 pair 配 1 条**邻近负例**(不该调工具的闲聊 / 知识问答),防止为补 pair 训出过度触发。
+- 全部 query 里的实体用占位值(`user01` / `mtg001` / `192.0.2.10` / `/photos/a.jpg`),
+  与既有语料一致(§test-fixture-no-real-pii)。
+
+## 训练后怎么验
+
+复用现成套件,不另造:
+
+```bash
+python3 scripts/etscli-tools-test.py --url <新模型> --desc-lang match --distractors 3
+```
+
+- 看报告 `### 1.3 错误模式分类`:各类计数应逐项下降,**「动词对、service 错」和
+  「同 service 兜底」应先归零**(这两类就是 P0-A/P0-B 修的);
+- 「跨 service 无关误选」不降 = 训练分布里 P0-A 的量不够或句式没控住;
+- 验收门槛(§7.94.8 正式口径):en ≥ 60% / cn ≥ 40% / 干扰着陆率 ≤ 15% / cn HTTP ≥ 90% / 契约违规 = 0。
+
+## 已知坑
+
+1. **单向 pair = 教偏见**。只给 `detail→不是 list` 的样本,模型学不到"什么时候该 list"。
+2. **`alt` 双可接受标签不能进训练集**(语料里 `file-delete`/`fs-rm`/`fs-stat`/`fs-stats`/
+   `system-alarm` 都有)——那是测试宽容,训练必须唯一 gold。
+3. **别只补 en**。en 44% 有结构可救,cn 3% 是能力问题;如果端侧模型 cn 上不去,
+   要判断的是"要不要在架构层绕开"(§7.93 prefill / 翻译管线),不是继续加 pair。
+4. **pair 要成组补,不要单点**。`list` 家族有 8 个候选,补 2 个会让剩下 6 个变成新的磁吸。
