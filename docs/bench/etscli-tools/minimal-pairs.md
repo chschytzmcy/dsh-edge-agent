@@ -30,20 +30,20 @@ A / B / C 三张表由 `scripts/etscli-minimal-pairs.py --emit-md` 生成,是本
 
 | # | A | B | 判别线索 | en 模板 | cn 模板 | 证据 |
 |---|---|---|---|---|---|---|
-| 01 | `auth_list` | `user_list` | profile vs 用户 | list all saved login profiles / list all the users on the box | 列出所有已保存的 profile / 列出密盒上的所有用户 | auth_list→user_list |
-| 02 | `user_list` | `chat_list` | 用户 vs 群聊 | list all the users on the box / list my group chats | 列出密盒上的所有用户 / 列出我的群聊列表 | user_list 塌缩 |
-| 03 | `chat_list` | `meeting_list` | 群聊 vs 会议 | list my group chats / list all the meetings on the box | 列出我的群聊列表 / 列出密盒上所有的会议 | cn 幻觉集中区 |
-| 04 | `meeting_list` | `sharing_list` | 会议 vs 分享链接 | list all the meetings on the box / list all the sharing links I created | 列出密盒上所有的会议 / 列出我创建的所有分享链接 | sharing-list→乱选 |
-| 05 | `user_detail` | `meeting_detail` | 用户 id vs 会议 id | show the details of user user01 / show the details of the meeting with id mtg001 | 查看 user01 的详细信息 / 查看 id 为 mtg001 的会议详情 | detail 塌缩 |
-| 06 | `user_detail` | `file_detail` | uid vs file id | show the details of user user01 / show the details of the box file with id f_12345 | 查看 user01 的详细信息 / 查看 id 为 f_12345 的密盒文件详情 | detail 塌缩 |
-| 07 | `file_search` | `fs_search` | 关键字全局 vs 目录下按名 | search the box for files whose name contains report / search for a file named report under the folder /photos | 搜索密盒里名字包含报告的文件 / 在密盒的 /photos 目录下搜索名为 report 的文件 | **file↔fs 双向** |
-| 08 | `meeting_create` | `sharing_create` | 会议 vs 分享链接 | create a new meeting called weekly sync / create a sharing link for the box file with id f_12345 | 创建一个名为 weekly sync 的新会议 / 为 id 为 f_12345 的密盒文件创建分享链接 | sharing_delete→sharing_create |
-| 09 | `user_register` | `fs_mkdir` | 用户 vs 目录 | register a new user called bob on the box / create a new folder named backup on the box | 在密盒上注册一个名为 bob 的新用户 / 在密盒上新建一个名为 backup 的文件夹 | fs_mkdir 误选 5 次 |
-| 10 | `auth_rename` | `fs_rename` | profile vs 路径 | rename the office profile to company / rename the box file /photos/a.jpg to /photos/b.jpg | 把 office 这个 profile 重命名为 company / 把密盒上的文件 /photos/a.jpg 重命名为 /photos/b.jpg | auth_rename→fs_rename |
-| 11 | `auth_login` | `migrate_session_login` | 账号凭证 vs 迁移流程 | log in to the box at 192.0.2.10 as admin / establish a session for the migration | 登录到 192.0.2.10 的密盒,用户名 admin / 为迁移流程建立会话 | **12 次误选,头号磁吸** |
-| 12 | `migrate_transfer` | `migrate_verify` | 执行迁移 vs 校验结果 | migrate the data from the old box to the new one / verify the migration result | 把旧盒子的数据迁移到新盒子 / 验证迁移的结果 | transfer↔verify 互换 |
-| 13 | `file_delete` | `sharing_delete` | 密盒文件 vs 分享链接 | delete the box file with id f_12345 / delete the sharing link with id sh_67890 | 删除 id 为 f_12345 的密盒文件 / 删除 id 为 sh_67890 的分享链接 | cn 误选落点 |
-| 14 | `system_info` | `system_health` | 配置信息 vs 健康状态 | show the system information of the box / check the health of the box | 显示密盒的系统信息 / 检查密盒的健康状态 | health→幻觉 2 次 |
+| 01 | `auth_list` | `user_list` | profile vs 账户 | enumerate every saved login profile / enumerate every account on the device | 把已保存的登录配置都列一下 / 把设备上的账户都列一下 | auth_list→user_list |
+| 02 | `user_list` | `chat_list` | 账户 vs 群聊 | enumerate every account on the device / enumerate every group conversation I belong to | 把设备上的账户都列一下 / 把我参与的群聊都列一下 | user_list 塌缩 |
+| 03 | `chat_list` | `meeting_list` | 群聊 vs 会议 | enumerate every group conversation I belong to / enumerate every meeting scheduled on the device | 把我参与的群聊都列一下 / 把设备上排的会议都列一下 | cn 幻觉集中区 |
+| 04 | `meeting_list` | `sharing_list` | 会议 vs 分享链接 | enumerate every meeting scheduled on the device / enumerate every share link I generated | 把设备上排的会议都列一下 / 我生成的分享链接都列一下 | sharing-list→乱选 |
+| 05 | `user_detail` | `meeting_detail` | 用户 vs 会议 | pull up everything recorded about user01 / pull up everything recorded about meeting mtg001 | 把 user01 的情况都查出来 / 把会议 mtg001 的情况都查出来 | detail 塌缩 |
+| 06 | `user_detail` | `file_detail` | 用户 vs 密盒文件 | pull up everything recorded about user01 / pull up everything recorded about box file f_12345 | 把 user01 的情况都查出来 / 把密盒文件 f_12345 的情况都查出来 | detail 塌缩 |
+| 07 | `file_search` | `fs_search` | 全设备 vs 指定目录 | look for anything named report anywhere on the device / look for anything named report under the /photos directory | 在整台设备上找一下名字是 report 的东西 / 在 /photos 目录里找一下名字是 report 的东西 | **file↔fs 双向** |
+| 08 | `meeting_create` | `sharing_create` | 会议 vs 分享链接 | set up a new meeting called sprint review / set up a new share link for box file f_12345 | 帮我建一个叫 sprint review 的会议吧 / 帮我建一个 f_12345 的分享链接吧 | sharing_delete→sharing_create |
+| 09 | `user_register` | `fs_mkdir` | 账户 vs 目录 | set up a new account named bob on the device / set up a new directory named backup on the device | 在设备上帮我建一个叫 bob 的账户吧 / 在设备上帮我建一个叫 backup 的目录吧 | fs_mkdir 误选 5 次 |
+| 10 | `auth_rename` | `fs_rename` | 配置名 vs 路径 | profile office should be called company from now on / box file /photos/a.jpg should be called /photos/b.jpg from now on | office 这个配置以后就叫 company 了 / 密盒上的 /photos/a.jpg 以后就叫 /photos/b.jpg 了 | auth_rename→fs_rename |
+| 11 | `auth_login` | `migrate_session_login` | 账号凭证 vs 迁移会话 | sign in to the device at 192.0.2.10 using the account admin / open a session for the data migration workflow | 用 admin 这个账号登录到 192.0.2.10 这台设备 / 为数据迁移流程开一个会话 | **12 次误选,头号磁吸** |
+| 12 | `migrate_transfer` | `migrate_verify` | 执行迁移 vs 确认结果 | copy everything from the retired device onto the current one / confirm the migration really did succeed | 把退役设备上的东西都搬到当前这台 / 确认迁移是不是真的成功了 | transfer↔verify 互换 |
+| 13 | `file_delete` | `sharing_delete` | 密盒文件 vs 分享链接 | wipe box file f_12345 for good / wipe share link sh_67890 for good | 把 f_12345 这个密盒文件彻底删掉 / 把 sh_67890 这个分享链接彻底删掉 | cn 误选落点 |
+| 14 | `system_info` | `system_health` | 配置 vs 健康 | give me the config overview of this device / give me the health overview of this device | 把这台设备的配置概况给我 / 把这台设备的健康概况给我 | health→幻觉 2 次 |
 
 ### P0-B 同 service 近义动词 —— 3 对
 
@@ -51,9 +51,9 @@ A / B / C 三张表由 `scripts/etscli-minimal-pairs.py --emit-md` 生成,是本
 
 | # | A | B | 判别线索 | en 模板 | cn 模板 | 证据 |
 |---|---|---|---|---|---|---|
-| 15 | `chat_send` | `chat_send_file` | 文字(text)vs 文件(file) | send a text message to the group chat ch_001 saying hello / send the file report.pdf to the group chat ch_001 | 往群聊 ch_001 里发一条文字消息 hello / 把文件 report.pdf 发送到群聊 ch_001 | chat_send_file→chat_send |
-| 16 | `file_upload` | `file_upload_dir` | 单文件(file)vs 目录(dir) | upload the local file report.pdf to the box / upload the local directory /data/reports to the box | 把本地文件 report.pdf 上传到密盒 / 把本地目录 /data/reports 上传到密盒 | upload_dir→upload |
-| 17 | `meeting_finish` | `meeting_summary` | 结束 vs 取纪要 | end the meeting with id mtg001 that is currently running / get the summary of the meeting with id mtg001 | 结束 id 为 mtg001 的、当前正在进行的会议 / 获取 id 为 mtg001 的会议纪要 | cn finish→summary |
+| 15 | `chat_send` | `chat_send_file` | 文字 vs 文件 | post the text hello into group chat ch_001 / post the file report.pdf into group chat ch_001 | 把 hello 这条文字发到群聊 ch_001 里 / 把 report.pdf 这个文件发到群聊 ch_001 里 | chat_send_file→chat_send |
+| 16 | `file_upload` | `file_upload_dir` | 单文件 vs 目录 | push my local report.pdf onto the device / push my local /data/reports onto the device | 把我本地的 report.pdf 这个文件传到设备上 / 把我本地的 /data/reports 这个目录传到设备上 | upload_dir→upload |
+| 17 | `meeting_finish` | `meeting_summary` | 结束 vs 取纪要 | for meeting mtg001, close it down now / for meeting mtg001, pull up the minutes | 会议 mtg001 这个,现在把它结束掉 / 会议 mtg001 这个,把它纪要调出来 | cn finish→summary |
 
 ### P0-C 「必须有调用」反弃答 —— 5 条
 
@@ -61,11 +61,11 @@ en 侧 5 个 200 空产出,query 是明确祈使句:空产出永远不是合法�
 
 | 工具 | en query | cn query |
 |---|---|---|
-| `auth_login` | log in to the box at 192.0.2.10 as admin | 登录到 192.0.2.10 的密盒,用户名 admin |
-| `chat_send` | send a text message to the group chat ch_001 saying hello | 往群聊 ch_001 里发一条文字消息 hello |
-| `meeting_finish` | end the meeting with id mtg001 that is currently running | 结束 id 为 mtg001 的、当前正在进行的会议 |
-| `file_delete` | delete the box file with id f_12345 | 删除 id 为 f_12345 的密盒文件 |
-| `fs_add` | add the local file report.pdf into the folder /photos on the box | 把本地文件 report.pdf 添加到密盒的 /photos 目录 |
+| `auth_login` | sign in to the device at 192.0.2.10 using the account admin | 用 admin 这个账号登录到 192.0.2.10 这台设备 |
+| `chat_send` | post the text hello into group chat ch_001 | 把 hello 这条文字发到群聊 ch_001 里 |
+| `meeting_finish` | for meeting mtg001, close it down now | 会议 mtg001 这个,现在把它结束掉 |
+| `file_delete` | wipe box file f_12345 for good | 把 f_12345 这个密盒文件彻底删掉 |
+| `fs_add` | tuck my local report.pdf into /photos on the device | 把我本地的 report.pdf 塞到设备的 /photos 目录 |
 
 ### P0 已导出为训练样本
 
@@ -85,13 +85,23 @@ python3 scripts/etscli-minimal-pairs.py --out docs/bench/etscli-tools/train
 | 其中反弃答 | 10(P0-C,其中 2 条是新增 query) |
 | 去重合并 | 12 行 —— 链式对照对共享 query(`user_list` 是 01 的 b 侧也是 02 的 a 侧)与 a 侧复用 |
 | 覆盖工具 | 期望侧 31 / 47,`hard_negatives` 侧 30(未覆盖的主要是 P1-E 那 8 个零用例工具) |
+| 与验收语料撞题 | **0** 逐字 / **0** 近重复 / 62 条 100% 独立 |
 
 样本字段:`id` `groups[{id,role}]` `lang` `cue` `hard_negatives` `messages` `expected{tool,arguments}`
 `evidence`。`tools.json` 是 47 工具的 en/cn 两套 schema(match 口径:en query 配 en 描述);
 需要自包含行时加 `--with-tools`(体积 ×~40)。
 
-**校验是硬闸**(`--check` 退出码非 0 即停):工具必须在 47 集内、`arguments` 的键必须在该工具
-schema 里且 required 齐、每个对照对每个语言必须 a/b 双向齐全。
+**校验是硬闸**(`--check` 退出码非 0 即停),四件事:① 工具在 47 集内 ② `arguments` 的键在该
+工具 schema 里且 required 齐 ③ 每个对照对每个语言 a/b 双向齐全 ④ **与 42 例验收语料不撞题**。
+
+第 ④ 条是 §7.94.12 补的:42 例语料是**判卷卷子**,P0 训练样本若与它逐字相同或近重复,训完再考
+就是背答案,§7.94.8 的验收门槛会虚高。第一版 P0 照抄语料措辞,62 条里 30 条逐字相同(48%)、
+18 条近重复,独立只剩 14 条(23%) —— 已全部改写(改写原则:换动词框架、换实体名、换句式,
+链式对照对仍共用同一框架以保住「只换名词」的设计)。单独看明细:
+
+```bash
+python3 scripts/etscli-minimal-pairs.py --check-corpus   # 撞题报告,逐条列 Jaccard
+```
 
 ---
 
@@ -198,3 +208,5 @@ python3 scripts/etscli-tools-test.py --url <新模型> --desc-lang match --distr
 3. **别只补 en**。en 44% 有结构可救,cn 3% 是能力问题;如果端侧模型 cn 上不去,
    要判断的是"要不要在架构层绕开"(§7.93 prefill / 翻译管线),不是继续加 pair。
 4. **pair 要成组补,不要单点**。`list` 家族有 8 个候选,补 2 个会让剩下 6 个变成新的磁吸。
+5. **训练集绝不能照抄验收语料措辞**。P0 第一版就是这么写的(48% 逐字撞题),`--check` 现在
+   把这条并进默认闸;P1/P2 补数据时同样过这道闸。
