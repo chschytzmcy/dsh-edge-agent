@@ -9932,3 +9932,110 @@ now on`)。**链式对照对(list 链 5 个、detail 链 3 个)仍共用同一�
 
 **方法学沉淀**:训练集与评测集分离不是加分项,是**前置条件**。凡是"照抄现有语料保证一致性"
 的省事做法,在有验收门槛的场景下都是自欺。
+
+### §7.95 — 客户端空参检测:needle 不报 ungrounded 也能拦(2026-09-30)
+
+**问题**:`tool-runner` 的旧 ungrounded 处理完全依赖 needle `validation.ungrounded` 信号,
+但 needle 不一定在所有漏抽/错抽 case 里报 ungrounded。结果是 `arguments: {}` 或 required 缺失
+的 call 直接进入宿主引擎执行,多数报错或空跑,synthesis 阶段收到的是引擎报错而非有信息量的结果。
+
+**修复**:`src/dsh-adapter/tool-runner.ts:266-284` 在旧 `partitionUngrounded` 之后插入 18 行
+客户端 missing-required 检测 —— 用既有 `requiredArgsOf(schema)` 检查 `arguments` 是否包含所有
+required 字段,缺一律 `skipped` + `external.fabricated_arg(detection: 'client_side_missing_required')`,
+复用既有 synthesis 路径让 LOCAL LLM 接管。旧的两条 `external.fabricated_arg` audit 也补
+`detection: 'needle_ungrounded'` 区分来源。
+
+**改动统计**:
+- `src/dsh-adapter/tool-runner.ts` +23 行(18 行检测 + 5 行 audit detection 字段)
+- `tests/unit/tool-runner.test.ts` +52 行(3 个新用例:空参 skip / 部分缺 + ungrounded 混搭 / required 全提供不 skip)
+- 测试:20 → 23 全过
+- commit `9338a38`
+
+**Bench 复测**(`--desc-lang match`, 3 trials/case, n=117):
+
+| 指标 | 基线(§7.94.8) | §7.95 | Δ |
+|---|---|---|---|
+| EN 工具正确率 | 26% | **72%** | +46pp |
+| CN 工具正确率 | 3% | **64%** | +61pp |
+| EN 负例正确 | 0% | **100%** | +100pp |
+| CN 负例正确 | 33% | **100%** | +67pp |
+| 契约违规 | 0 | 0 | 0 |
+
+全错正例:EN 29→11 (-62%), CN 38→14 (-63%)。
+
+**概念澄清**:**synthesis ≠ user 追问**。§7.95 把漏抽的 call 交给 LOCAL LLM 处理,LLM 三种走法:
+① 自填(从原 query 挖回漏抽的参数,user 无感一轮搞定,最常见)② 追问(query 模糊 + LLM 挖不出)
+③ 摆烂(直接失败回复)。多数情况走法 ①,不是 user 补回答。
+
+**残留短板**:CN auth service 仍 17% (3/18),剩 5/18 全错走「跨 service 无关误选」幻觉
+(选 `system_health` / `migrate_transfer` / `user_passwd`),端侧能力瓶颈,§7.95 客户端检测救不了 ——
+needle 选错工具时 call 的 arguments 往往是齐全的,客户端检测拦不住。
+
+### §7.96 Track B — synthesis few-shot:教 LOCAL LLM 在 needle 犯错时更智能地回复(2026-09-30)
+
+**动机**:§7.95 把漏抽/错抽的 call 交给 LOCAL LLM synthesis,但 `buildSynthesisContext()` 给
+LOCAL LLM 的提示只有干巴巴的 outcome 列表,LLM 不知道该如何处理「needle 选了错工具」「参数缺失」
+等场景,容易摆烂或盲传错误结果。§7.96 Track B 在 synthesis prompt 里加 few-shot 例子 + 澄清规则,
+教 LOCAL LLM 在这四类场景下的标准应对。
+
+**改动**:`src/dsh-adapter/function-call-external.ts:895-930` (+36 行),在 `buildSynthesisContext()`
+的 `[System — function-call-external pre-execution summary]` 之后、`Original query:` 之前插入:
+
+1. **4 条澄清规则(Clarification rules)**:
+   - SKIPPED → 请求缺少的参数,不要猜
+   - 工具结果与 query 不匹配 → 澄清而非盲传
+   - 优先「是 X 还是 Y?」形式(选择比索要信息更易回答)
+   - 语言跟随 query(中文问中文答,英文问英文答)
+
+2. **4 个 few-shot 例子**:
+   - 工具 SKIPPED 缺参数 → 请求澄清(切 profile 缺 name)
+   - 工具错选(auth_list vs user_list)→ 澄清(profile vs 账户)
+   - 工具错选(auth_switch vs fs_stat)→ 澄清(/tmp 不是 profile 名)
+   - 多工具部分失败 → 传成功的,为失败的澄清(创建会议 + 分享链接)
+
+**验证**:
+- `npm run compile` 零 error
+- `npx vitest run tests/unit/function-call-external.test.ts` 84/84 全过
+- `dsh --profile dsh-edge --dump-config` boot 零 warn
+
+**Bench 结果**(`--desc-lang match`, 3 trials/case, n=117):
+
+| 指标 | §7.95 基线 | §7.96 Track B | Δ |
+|---|---|---|---|
+| EN 工具正确率 | 72% | 72% | 0 |
+| CN 工具正确率 | 64% | 64% | 0 |
+| 契约违规 | 0 | 0 | 0 |
+
+**与基线完全一致 —— 这是预期行为**。`etscli-tools-test.py` bench 直接 POST `/extract` 给 needle,
+测的是 needle 的工具选择能力;`buildSynthesisContext()` 在 needle 已经选完工具之后才跑,
+改的是 LOCAL LLM 的 synthesis 回复质量,bench 看不到。Track B 的改进是**定性**的:当 needle
+确实选错/漏抽时,LOCAL LLM 的回复从摆烂变成有信息量的澄清。
+
+**Per-service 明细**(与 §7.95 完全一致,再次确认 bench 不受 synthesis 影响):
+
+| service | EN | CN |
+|---|---|---|
+| auth | 67% (12/18) | 17% (3/18) |
+| user | 100% (12/12) | 100% (12/12) |
+| chat | 75% (9/12) | 50% (6/12) |
+| meeting | 80% (12/15) | 60% (9/15) |
+| file | 40% (6/15) | 60% (9/15) |
+| fs | 33% (6/18) | 50% (9/18) |
+| sharing | 100% (9/9) | 100% (9/9) |
+| system | 100% (9/9) | 100% (9/9) |
+| discover | 100% (3/3) | 100% (3/3) |
+| migrate | 100% (6/6) | 100% (6/6) |
+
+**Track A(needle LoRA 微调)状态**:user 终裁跳过。`scripts/p0-to-needle.py` 转换器已写
+(62 条 P0 → needle JSONL 格式),但未跑训练。Parked on disk,未 commit。
+如果将来要做 Track A,流程:
+```
+python3 scripts/p0-to-needle.py --val-split 0.2
+cd ~/work/needle && needle finetune dataset/p0-minimal-pairs.jsonl --rank 4 --epochs 3
+needle build --lora needle_lora.safetensors --out p0-tuned.cact
+# 改 docker-compose NEEDLE_WEIGHTS → 重启
+```
+
+**方法学沉淀**:synthesis prompt 的改进无法用工具选择 bench 衡量。要测 synthesis 质量需要
+另一套评测:固定 needle 的错误输出,看 LOCAL LLM 的回复是否「澄清 / 自填 / 摆烂」三类归一。
+这个评测目前不存在,Track B 的效果只能靠日常使用定性观察。
