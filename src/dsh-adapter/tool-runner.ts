@@ -253,6 +253,7 @@ export class ToolRunner {
       this.audit('warn', 'external.fabricated_arg', {
         action: 'skip', name, callId, sessionId: req.sessionId,
         fabricatedArgs: skip, ungroundedCount: (req.ungrounded ?? []).length,
+        detection: 'needle_ungrounded',
       })
       return this.finish({
         status: 'skipped', text: '', name, callId,
@@ -261,6 +262,27 @@ export class ToolRunner {
         durationMs: Date.now() - start,
       }, undefined, req)
     }
+
+    // ── 2.5 客户端空参检测(§7.95:needle 不一定在 ungrounded 里标,
+    //       arguments:{} 或 required 缺失应直接拦下,不进引擎) ─────────
+    const required = requiredArgsOf(schema)
+    if (required.length > 0) {
+      const missing = required.filter(k => !(k in argsIn))
+      if (missing.length > 0) {
+        this.audit('warn', 'external.fabricated_arg', {
+          action: 'skip', name, callId, sessionId: req.sessionId,
+          fabricatedArgs: missing, ungroundedCount: (req.ungrounded ?? []).length,
+          detection: 'client_side_missing_required',
+        })
+        return this.finish({
+          status: 'skipped', text: '', name, callId,
+          reason: `missing required argument(s): ${missing.join(', ')} — left for LLM synthesis`,
+          fabricatedArgs: missing,
+          durationMs: Date.now() - start,
+        }, undefined, req)
+      }
+    }
+
     let args = argsIn
     if (drop.length > 0) {
       args = { ...argsIn }
@@ -268,6 +290,7 @@ export class ToolRunner {
       this.audit('warn', 'external.fabricated_arg', {
         action: 'drop', name, callId, sessionId: req.sessionId,
         fabricatedArgs: drop, ungroundedCount: (req.ungrounded ?? []).length,
+        detection: 'needle_ungrounded',
       })
     }
 

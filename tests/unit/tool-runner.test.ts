@@ -335,6 +335,58 @@ describe('tool-runner: 执法链', () => {
     assert.equal(outcome.status, 'executed')
     assert.deepEqual(outcome.executedArguments, { city: 'Lagos' })
   })
+
+  it('§7.95 客户端空参检测:arguments:{} 但 required 非空 → skipped(detection=client_side_missing_required),宿主不进', async () => {
+    // 场景:needle 不一定在 validation.ungrounded 里标空参,
+    // 但 schema.required 实际缺失 → 客户端应拦下,不给引擎跑半残调用。
+    const h = makeHost()
+    const a = makeAudit()
+    const { runner } = makeRunner({ host: h.host, auditLog: a.auditLog })
+
+    const outcome = await runner.execute(baseReq({
+      call: { name: 'send_message', arguments: {} },
+    }))
+
+    assert.equal(outcome.status, 'skipped')
+    assert.deepEqual(outcome.fabricatedArgs?.sort(), ['contact', 'text'])
+    assert.match(outcome.reason!, /missing required argument/)
+    assert.equal(h.calls.length, 0, '空参 required call 绝不进宿主')
+    const fab = a.find('external.fabricated_arg')
+    assert.ok(fab)
+    assert.equal(fab!.payload?.action, 'skip')
+    assert.equal(fab!.payload?.detection, 'client_side_missing_required')
+    assert.equal(fab!.payload?.ungroundedCount, 0)
+  })
+
+  it('§7.95 客户端空参检测:arguments 部分缺 required → 仅 missing 的跳过(drop 与 ungrounded 分支互不干扰)', async () => {
+    // needle 给了 contact 但漏了 text;同时 ungrounded 标了非 required 字段
+    // (bash.command) 走 drop。required 空缺优先 skip。
+    const h = makeHost()
+    const a = makeAudit()
+    const { runner } = makeRunner({ host: h.host, auditLog: a.auditLog })
+
+    const outcome = await runner.execute(baseReq({
+      call: { name: 'send_message', arguments: { contact: '张三' } },
+      ungrounded: ['bash.command'],
+    }))
+
+    assert.equal(outcome.status, 'skipped')
+    assert.deepEqual(outcome.fabricatedArgs, ['text'])
+    assert.match(outcome.reason!, /missing required argument/)
+    assert.equal(h.calls.length, 0)
+    const fab = a.find('external.fabricated_arg')
+    assert.equal(fab?.payload?.detection, 'client_side_missing_required')
+  })
+
+  it('§7.95 客户端空参检测:required 全部提供 → 不跳过', async () => {
+    const h = makeHost()
+    const { runner } = makeRunner({ host: h.host })
+    const outcome = await runner.execute(baseReq({
+      call: { name: 'send_message', arguments: { contact: '张三', text: 'hi' } },
+    }))
+    assert.equal(outcome.status, 'executed')
+    assert.deepEqual(outcome.executedArguments, { contact: '张三', text: 'hi' })
+  })
 })
 
 // ── failure paths ───────────────────────────────────────────────────────────
