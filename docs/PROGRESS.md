@@ -10260,3 +10260,46 @@ tool-runner / synthesis / 最终回复全在链路里),客户端调优第一次�
 
 **记忆锚**:needle 的 74% 是「输入富环境」下的数字;把同一模型放进真实注册表,
 它的表现要重新测 —— 这正是端到端 bench 存在的意义。
+
+### §7.98.1 — 复测:云池切 Aliyun token-plan / qwen3.8-flash,L2 修复被 bench 量化证实(2026-09-30)
+
+**结论先行**:
+
+1. **L2(云路径空回复)修复成立** —— 用户改 `.env` CLOUD 池
+   (MiniMax-M2.7-highspeed → `token-plan.cn-beijing.maas.aliyuncs.com` /
+   `qwen3.8-flash` / `DASHSCOPE_API_KEY`)后全量复测:云路径空回复 **22/22 → 1/21**
+   (sharing-list t1 仍有一次间歇空,不能判"已根治",留观),
+   **回复正确率(硬判子集)0/20 → 6/20(30%)**,6 个 ✓ 全部来自云路径。
+   这是端到端 bench 建成后**第一次用它度量一个改动 → 第一次量化收益**,
+   「客户端调优可度量」的命题当场兑现。
+2. **L1/L3 纹丝不动(预期内)** —— 工具准确率仍 **0/26**;intent 分布
+   10 LOCAL / 18 SANITIZED(含 1 异常) / 4 CLOUD,与基线几乎一致。换云池
+   不碰意图门,也不碰 needle 真实注册表面 —— 剩余两层杠杆顺序不变(§7.98-7 的 2、3)。
+3. **新发现:prompt-guard 误判制造首个 400**(chat-list t1)。普通查询
+   "list my group chats" 被 guard 模型判 `unsafe / riskLevel:high`,
+   rationale 是 **`fallback-token-only`**(14.6s 后走了兜底 token 路径),
+   input-guard `blocked.attack reason=llm:unsafe` → http-api 400。
+   **同查询 t2 通过** → 非确定性。**候选修法:`fallback-token-only`
+   解析失败兜底不该产出 high 判定**(fail-safe 方向应是放行到 SANITIZED 保守档,
+   同 §7.54 fail-open 家族纪律)。`guard.model-detect.unsafe` +
+   `http.chat.blocked.edgeRejection` 埋点让这次定位是两步 grep —— 埋点原则(§7.46)兑现。
+4. **行为学补充**:SANITIZED 会话下 needle **也在跑 extract**(该 trial
+   `external.extract` 200 / conf 0.346 → `low_confidence_skip` 阈值 0.5)。
+   即 L1 的 16/26 并非"needle 完全没机会",而是**提议被意图门 + realm 双重拦在
+   执行门外** —— 修 L1 时 needle 侧无需任何改动,与「不碰 needle」定调自洽。
+
+**复测数字**(32 trial,`dist/bench-e2e-etscli-en-retest-20260930-182027/`,对比 §7.98-6):
+
+| 指标 | 首跑 | 复测 | 变化 |
+|---|---|---|---|
+| 系统工具准确率 | 0% (0/26) | 0% (0/26) | —(L1/L3 未动) |
+| 链路走通率 / synthesis 注入 | 23.1% (6/26) | 23.1% (6/26) | —(LOCAL 面 6 次执行仍全 mispick:`file-search`/`fs-stat`→`system_info` ×4,`fs-ls`/`fs-search` 弃答 ×2) |
+| 回复正确率(硬判子集) | **0% (0/20)** | **30% (6/20)** | **+6(L2 修复)** |
+| 云路径空回复 | 22/22 | 1/21 | L2 主症状消除 |
+| 安全闸(schemaCount=14 / 前缀 / unknown) | 全过 | 全过 | 负例过度触发 0,空真值幻觉 0 |
+| 延迟 | med 21s / p90 90s | med 31s / **p90 55s** | 尾部改善(空回复白烧减少) |
+
+**验证过程留痕**:`.env`→`.env.sh` 翻译→`cordis.patch.yml:45/48/384-388` 消费链逐段核
+(§7.83 教训点全在位);wire 直测 200/1.4s(`reasoning_content` 为非协议附加字段,adapter
+忽略);wrapper 重启后 boot 横幅确认新池、零 warn、`/v1/health` ok;
+L2 单点探活("What is 12*17?" → `"204"`,intent=CLOUD)后才挂全量。
