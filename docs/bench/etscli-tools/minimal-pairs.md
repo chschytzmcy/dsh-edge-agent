@@ -13,61 +13,85 @@
    模型不是"选错",是**没有一个正确答案可以选**。→ 补用例的优先级**高于**补对照对。
 3. **cn 的错误没有结构**(55% 无关幻觉 + 32% 弃答),minimal pair 救不了;中文侧的
    唯一有效动作是把训练集里 cn 的量拉起来,而不是设计更精巧的对。
-4. 总量:**P0 18 对 + P1 14 对 + 8 条兜底正例 = 约 150 条**样本(见文末配方)。
+4. 总量:P0 **已导出 62 条 JSONL**;P1/P2 再约 64 条,全量 ≈126(见文末配方)。
    这不是大工程,是**定向补盲**。
 
 ---
 
-## P0 —— 直接对应已观测错误(先补这 18 对)
+## P0 —— 直接对应已观测错误(17 对 + 5 条反弃答,**已导出为 JSONL**)
 
 每对**必须双向**呈现(`A→A'` 与 `B→B`),单向对会把模型教成"偏好 X"而不是"能分辨 X/Y"。
 en / cn 各一条,query 模板只改名词,其余措辞**逐字相同**(否则模型学的是句式不是判别)。
+A / B / C 三张表由 `scripts/etscli-minimal-pairs.py --emit-md` 生成,是本节唯一真源。
 
-### A 组 · 同动词跨 service(对应「动词对、service 错」+「list 塌缩」)
+### P0-A 同动词跨 service —— 14 对
 
-这是 en 侧 `auth_list→user_list`、`auth_rename→fs_rename`、`file_detail→file_search`
-三类错误的共同根因:**query 里的名词决定 service,动词不决定**。模型缺的是"名词→service"
-的绑定,不是动词理解。
-
-| # | A | B | 判别线索(query 里的名词) | en 模板 | cn 模板 | 证据 |
-|---|---|---|---|---|---|---|
-| 1 | `auth_list` | `user_list` | profile vs 用户 | list all saved login profiles / list all the users on the box | 列出所有已保存的 profile / 列出密盒上的所有用户 | auth_list→user_list |
-| 2 | `user_list` | `chat_list` | 用户 vs 群聊 | list all the users on the box / list my group chats | 列出密盒上的所有用户 / 列出我的群聊列表 | user_list 塌缩 |
-| 3 | `chat_list` | `meeting_list` | 群聊 vs 会议 | list my group chats / list all the meetings on the box | 列出我的群聊列表 / 列出密盒上所有的会议 | cn 幻觉集中区 |
-| 4 | `meeting_list` | `sharing_list` | 会议 vs 分享链接 | list all the meetings on the box / list all the sharing links I created | 列出密盒上所有的会议 / 列出我创建的所有分享链接 | sharing-list→乱选 |
-| 5 | `user_detail` | `meeting_detail` | 用户 id vs 会议 id | show the details of user user01 / show the details of the meeting with id mtg001 | 查看 user01 的详细信息 / 查看 id 为 mtg001 的会议详情 | meeting_detail 类 |
-| 6 | `user_detail` | `file_detail` | uid vs file id | show the details of user user01 / show the details of a box file given its file id | 查看 user01 的详细信息 / 查看指定 file id 的文件详情 | detail 塌缩 |
-| 7 | `file_search` | `fs_search` | 关键字全局 vs 目录下按名 | search the box for files whose name contains report / search for files by name under a folder on the box | 搜索密盒里名字包含报告的文件 / 在密盒上按文件名搜索文件 | **file↔fs 双向** |
-| 8 | `meeting_create` | `sharing_create` | 会议 vs 分享链接 | create a new meeting called weekly sync / create a sharing link for a box file | 创建一个名为 weekly sync 的新会议 / 为密盒里的某个文件创建分享链接 | sharing_delete→sharing_create |
-| 9 | `user_register` | `fs_mkdir` | 用户 vs 目录 | register a new user called bob / create a new folder named backup on the box | 注册一个名为 bob 的新用户 / 在密盒上新建一个名为 backup 的文件夹 | fs_mkdir 误选 5 次 |
-| 10 | `auth_rename` | `fs_rename` | profile vs 路径 | rename the office profile to company / rename a file on the box by its path | 把 office 这个 profile 重命名为 company / 按路径重命名密盒上的文件 | auth_rename→fs_rename |
-| 11 | `auth_login` | `migrate_session_login` | 账号凭证 vs 迁移流程 | log in to the box at 192.168.1.100 as admin / establish a session for the migration | 登录到 192.168.1.100 的密盒,用户名 admin / 为迁移流程建立会话 | **12 次误选,头号磁吸** |
-| 12 | `migrate_transfer` | `migrate_verify` | 执行迁移 vs 校验结果 | migrate the data from the old box to the new one / verify the migration result | 把旧盒子的数据迁移到新盒子 / 验证迁移的结果 | transfer↔verify 互换 |
-| 13 | `file_delete` | `sharing_delete` | 密盒文件 vs 分享链接 | delete a box file given its file id / delete a sharing link | 按 file id 删除密盒里的文件 / 删除一个分享链接 | cn 误选落点 |
-| 14 | `system_info` | `system_health` | 配置信息 vs 健康状态 | show the system information of the box / check the health of the box | 显示密盒的系统信息 / 检查密盒的健康状态 | health→幻觉 2 次 |
-
-### B 组 · 同 service 近义动词(对应「同 service 动词语义错」+「静默弃答」)
-
-同一 service 内动词语义相邻,模型塌缩到"高频那个"。
+根因:模型缺「query 里的名词 → service」绑定,不是不懂动词。
 
 | # | A | B | 判别线索 | en 模板 | cn 模板 | 证据 |
 |---|---|---|---|---|---|---|
-| 15 | `chat_send` | `chat_send_file` | 文字 vs 文件(参数 `text` / `file`) | send a text message to a group chat / send a file to a group chat | 往群聊里发一条文字消息 / 把文件发送到群聊里 | chat_send_file→chat_send |
-| 16 | `file_upload` | `file_upload_dir` | 单文件 vs 目录(参数 `file` / `dir`) | upload a local file to the box / upload a local directory to the box | 把本地文件上传到密盒 / 把本地目录上传到密盒 | upload_dir→upload |
-| 17 | `meeting_finish` | `meeting_summary` | 结束 vs 取纪要 | end the meeting that is currently running / get the summary of the latest meeting | 结束当前正在进行的会议 / 获取最近一次会议的纪要 | cn finish→summary |
+| 01 | `auth_list` | `user_list` | profile vs 用户 | list all saved login profiles / list all the users on the box | 列出所有已保存的 profile / 列出密盒上的所有用户 | auth_list→user_list |
+| 02 | `user_list` | `chat_list` | 用户 vs 群聊 | list all the users on the box / list my group chats | 列出密盒上的所有用户 / 列出我的群聊列表 | user_list 塌缩 |
+| 03 | `chat_list` | `meeting_list` | 群聊 vs 会议 | list my group chats / list all the meetings on the box | 列出我的群聊列表 / 列出密盒上所有的会议 | cn 幻觉集中区 |
+| 04 | `meeting_list` | `sharing_list` | 会议 vs 分享链接 | list all the meetings on the box / list all the sharing links I created | 列出密盒上所有的会议 / 列出我创建的所有分享链接 | sharing-list→乱选 |
+| 05 | `user_detail` | `meeting_detail` | 用户 id vs 会议 id | show the details of user user01 / show the details of the meeting with id mtg001 | 查看 user01 的详细信息 / 查看 id 为 mtg001 的会议详情 | detail 塌缩 |
+| 06 | `user_detail` | `file_detail` | uid vs file id | show the details of user user01 / show the details of the box file with id f_12345 | 查看 user01 的详细信息 / 查看 id 为 f_12345 的密盒文件详情 | detail 塌缩 |
+| 07 | `file_search` | `fs_search` | 关键字全局 vs 目录下按名 | search the box for files whose name contains report / search for a file named report under the folder /photos | 搜索密盒里名字包含报告的文件 / 在密盒的 /photos 目录下搜索名为 report 的文件 | **file↔fs 双向** |
+| 08 | `meeting_create` | `sharing_create` | 会议 vs 分享链接 | create a new meeting called weekly sync / create a sharing link for the box file with id f_12345 | 创建一个名为 weekly sync 的新会议 / 为 id 为 f_12345 的密盒文件创建分享链接 | sharing_delete→sharing_create |
+| 09 | `user_register` | `fs_mkdir` | 用户 vs 目录 | register a new user called bob on the box / create a new folder named backup on the box | 在密盒上注册一个名为 bob 的新用户 / 在密盒上新建一个名为 backup 的文件夹 | fs_mkdir 误选 5 次 |
+| 10 | `auth_rename` | `fs_rename` | profile vs 路径 | rename the office profile to company / rename the box file /photos/a.jpg to /photos/b.jpg | 把 office 这个 profile 重命名为 company / 把密盒上的文件 /photos/a.jpg 重命名为 /photos/b.jpg | auth_rename→fs_rename |
+| 11 | `auth_login` | `migrate_session_login` | 账号凭证 vs 迁移流程 | log in to the box at 192.0.2.10 as admin / establish a session for the migration | 登录到 192.0.2.10 的密盒,用户名 admin / 为迁移流程建立会话 | **12 次误选,头号磁吸** |
+| 12 | `migrate_transfer` | `migrate_verify` | 执行迁移 vs 校验结果 | migrate the data from the old box to the new one / verify the migration result | 把旧盒子的数据迁移到新盒子 / 验证迁移的结果 | transfer↔verify 互换 |
+| 13 | `file_delete` | `sharing_delete` | 密盒文件 vs 分享链接 | delete the box file with id f_12345 / delete the sharing link with id sh_67890 | 删除 id 为 f_12345 的密盒文件 / 删除 id 为 sh_67890 的分享链接 | cn 误选落点 |
+| 14 | `system_info` | `system_health` | 配置信息 vs 健康状态 | show the system information of the box / check the health of the box | 显示密盒的系统信息 / 检查密盒的健康状态 | health→幻觉 2 次 |
 
-### C 组 · 「必须有调用」正例补齐(对应 5 个 en 静默弃答)
+### P0-B 同 service 近义动词 —— 3 对
 
-这不是 pair,是**反弃答**样本:query 是明确祈使句,却返回 200 空产出。
-模型要学到的是"祈使句 ⇒ 必有调用",空产出永远不是合法答案。
+同一 service 内动词语义相邻,模型塌缩到高频那个。
+
+| # | A | B | 判别线索 | en 模板 | cn 模板 | 证据 |
+|---|---|---|---|---|---|---|
+| 15 | `chat_send` | `chat_send_file` | 文字(text)vs 文件(file) | send a text message to the group chat ch_001 saying hello / send the file report.pdf to the group chat ch_001 | 往群聊 ch_001 里发一条文字消息 hello / 把文件 report.pdf 发送到群聊 ch_001 | chat_send_file→chat_send |
+| 16 | `file_upload` | `file_upload_dir` | 单文件(file)vs 目录(dir) | upload the local file report.pdf to the box / upload the local directory /data/reports to the box | 把本地文件 report.pdf 上传到密盒 / 把本地目录 /data/reports 上传到密盒 | upload_dir→upload |
+| 17 | `meeting_finish` | `meeting_summary` | 结束 vs 取纪要 | end the meeting with id mtg001 that is currently running / get the summary of the meeting with id mtg001 | 结束 id 为 mtg001 的、当前正在进行的会议 / 获取 id 为 mtg001 的会议纪要 | cn finish→summary |
+
+### P0-C 「必须有调用」反弃答 —— 5 条
+
+en 侧 5 个 200 空产出,query 是明确祈使句:空产出永远不是合法答案。
 
 | 工具 | en query | cn query |
 |---|---|---|
-| `auth_login` | log in to the box at 192.168.1.100 as admin | 登录到 192.168.1.100 的密盒,用户名 admin |
-| `chat_send` | send a text message to a group chat | 往群聊里发一条文字消息 |
-| `meeting_finish` | end the meeting that is currently running | 结束当前正在进行的会议 |
-| `file_delete` | delete a box file given its file id | 按 file id 删除密盒里的文件 |
-| `fs_add` | add a local file into a folder on the box | 把本地文件添加到密盒的某个目录 |
+| `auth_login` | log in to the box at 192.0.2.10 as admin | 登录到 192.0.2.10 的密盒,用户名 admin |
+| `chat_send` | send a text message to the group chat ch_001 saying hello | 往群聊 ch_001 里发一条文字消息 hello |
+| `meeting_finish` | end the meeting with id mtg001 that is currently running | 结束 id 为 mtg001 的、当前正在进行的会议 |
+| `file_delete` | delete the box file with id f_12345 | 删除 id 为 f_12345 的密盒文件 |
+| `fs_add` | add the local file report.pdf into the folder /photos on the box | 把本地文件 report.pdf 添加到密盒的 /photos 目录 |
+
+### P0 已导出为训练样本
+
+`scripts/etscli-minimal-pairs.py` 是 P0 的**唯一真源**,上面三张表由 `--emit-md` 生成,勿手改。
+
+```bash
+python3 scripts/etscli-minimal-pairs.py --check   # 校验(工具存在/参数合法/双向齐全)
+python3 scripts/etscli-minimal-pairs.py --out docs/bench/etscli-tools/train
+```
+
+产出 [`train/p0.jsonl`](train/p0.jsonl) + [`train/tools.json`](train/tools.json):
+
+| 项 | 实测值 |
+|---|---|
+| 样本条数 | **62**(en 31 / cn 31) |
+| 其中对照对方向 | 52(P0-A 48 / P0-B 12) |
+| 其中反弃答 | 10(P0-C,其中 2 条是新增 query) |
+| 去重合并 | 12 行 —— 链式对照对共享 query(`user_list` 是 01 的 b 侧也是 02 的 a 侧)与 a 侧复用 |
+| 覆盖工具 | 期望侧 31 / 47,`hard_negatives` 侧 30(未覆盖的主要是 P1-E 那 8 个零用例工具) |
+
+样本字段:`id` `groups[{id,role}]` `lang` `cue` `hard_negatives` `messages` `expected{tool,arguments}`
+`evidence`。`tools.json` 是 47 工具的 en/cn 两套 schema(match 口径:en query 配 en 描述);
+需要自包含行时加 `--with-tools`(体积 ×~40)。
+
+**校验是硬闸**(`--check` 退出码非 0 即停):工具必须在 47 集内、`arguments` 的键必须在该工具
+schema 里且 required 齐、每个对照对每个语言必须 a/b 双向齐全。
 
 ---
 
@@ -135,14 +159,14 @@ en / cn 各一条,query 模板只改名词,其余措辞**逐字相同**(否则�
 
 | 组 | 对数 | 方向 | 语言 | 条数 |
 |---|---|---|---|---|
-| P0-A 同动词跨 service | 14 | ×2 双向 | en+cn | 56 |
-| P0-B 同 service 动词 | 3 | ×2 双向 | en+cn | 12 |
-| P0-C 反弃答正例 | 5 | 单向 | en+cn | 10 |
-| P1-D file↔fs 轴 | 4 | ×2 双向 | en+cn | 16 |
+| **P0-A 同动词跨 service** | 14 | ×2 双向 | en+cn | **48** ✅已导出 |
+| **P0-B 同 service 动词** | 3 | ×2 双向 | en+cn | **12** ✅已导出 |
+| **P0-C 反弃答正例** | 5 | 单向 | en+cn | **2 + 8 复用** ✅已导出 |
+| P1-D file↔fs 轴 | 4 | ×2 双向 | en+cn | 16(估) |
 | P1-E 零用例工具兜底 | 8 | 单向 | en+cn | 16 |
 | P1-F fs 三兄弟 | 3 | ×2 双向 | en+cn | 12 |
-| P2 抗干扰对照 | ~10 | ×2 | en | 20 |
-| **合计** | | | | **≈142** |
+| P2 抗干扰对照 | ~10 | ×2 | en | 20(估) |
+| **合计** | | | | **62 已导出 + P1/P2 约 64 = ≈126** |
 
 配比原则:
 - **en:cn 至少 1:1**,但注意 cn 侧 pair 帮不上忙(错误无结构)——cn 的量要靠**普通正例**

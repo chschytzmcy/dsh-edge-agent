@@ -9880,3 +9880,32 @@ user 要求把 §7.94.8 里一次性口头做的 en 失败拆解**写进报告**
 
 **训练后验证**:复用 `etscli-tools-test.py --desc-lang match --distractors 3`,看报告 1.3
 各类计数逐项下降,"动词对 service 错"与"同 service 兜底"应先归零。
+
+### §7.94.11 — P0 minimal pair 导出为 JSONL 训练样本(2026-09-30)
+
+`scripts/etscli-minimal-pairs.py` 把 §7.94.10 的 P0 三组导成机器可读训练集,
+产物 `docs/bench/etscli-tools/train/{p0.jsonl,tools.json}`。
+
+**脚本是 P0 的唯一真源**:md 里的 A/B/C 三张表由 `--emit-md` 生成(勿手改),
+`--check` 是硬闸,退出码非 0 即停 —— 校验三件事:① 工具在 47 集内 ② `arguments` 的键
+在该工具 schema 里且 required 齐 ③ 每个对照对每个语言 a/b 双向齐全。
+
+**实测产出 62 条**(en 31 / cn 31;期望侧覆盖 31 个工具,hard_negatives 侧 30):
+
+| 组 | 理论条数 | 实际 |
+|---|---|---|
+| P0-A 14 对 | 56 | **48** |
+| P0-B 3 对 | 12 | **12** |
+| P0-C 5 条 | 10 | 2 新增 + 8 与对照对 query 复用 |
+
+去重合并掉 12 行,原因有二:① **链式对照对共享 query** —— `user_list` 既是 01 的 b 侧
+也是 02 的 a 侧,所以样本按 (lang, query) 去重、`groups[]` 里并列各自的 `role`;
+② P0-C 的 5 条里有 4 条 query 与 P0-A/B 完全相同(那正是 en 侧 200 空产出的祈使句),
+同一 query 只出一行。样本 `groups` 因此是 `[{id, role}]` 列表而非单值 —— 这也是
+第一版校验报「方向不全」的根因:单值 `pair_role` 表达不了一个 query 身兼两对的情况。
+
+**样本 schema**:`id` `groups[{id,role}]` `lang` `cue` `hard_negatives` `messages`
+`expected{tool,arguments}` `evidence`;`tools.json` 是 47 工具 en/cn 两套描述(match 口径),
+`--with-tools` 可把整套 schema 内联进每行(体积 ×~40,自包含)。
+
+**待办**:P1 三组(D/E/F)与 P2 抗干扰对照还没导(约 64 条),脚本按同一结构加组即可。

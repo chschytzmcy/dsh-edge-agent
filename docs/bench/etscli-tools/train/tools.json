@@ -1,0 +1,1365 @@
+{
+  "note": "match 口径:en query 配 en 描述,cn query 配 cn 描述",
+  "en": [
+    {
+      "name": "etscli_auth_status",
+      "description": "show the authentication status of the current profile",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "etscli_auth_list",
+      "description": "list all saved login profiles",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "etscli_auth_switch",
+      "description": "switch to another profile",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "name of the target profile"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
+    },
+    {
+      "name": "etscli_auth_login",
+      "description": "log in with username and password",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "server": {
+            "type": "string"
+          },
+          "username": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string"
+          },
+          "profile": {
+            "type": "string"
+          },
+          "password_stdin": {
+            "type": "boolean"
+          },
+          "no_remember_password": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "server",
+          "username",
+          "password"
+        ]
+      }
+    },
+    {
+      "name": "etscli_auth_logout",
+      "description": "log out and clear stored credentials",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "profile": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "name": "etscli_auth_rename",
+      "description": "rename an existing profile",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "old": {
+            "type": "string"
+          },
+          "new": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "old",
+          "new"
+        ]
+      }
+    },
+    {
+      "name": "etscli_user_list",
+      "description": "list all users on the box",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "etscli_user_detail",
+      "description": "show details of a specific user",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "uid": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "uid"
+        ]
+      }
+    },
+    {
+      "name": "etscli_user_register",
+      "description": "register a new user",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "username": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "username",
+          "password"
+        ]
+      }
+    },
+    {
+      "name": "etscli_user_passwd",
+      "description": "change the password of a user",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "uid": {
+            "type": "string"
+          },
+          "new_password": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "uid",
+          "new_password"
+        ]
+      }
+    },
+    {
+      "name": "etscli_user_delete",
+      "description": "delete a user",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "uid": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "uid"
+        ]
+      }
+    },
+    {
+      "name": "etscli_chat_list",
+      "description": "list group chats",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "etscli_chat_messages",
+      "description": "show messages in a group chat",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "chat_id": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "chat_id"
+        ]
+      }
+    },
+    {
+      "name": "etscli_chat_files",
+      "description": "list files shared in a group chat",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "chat_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "chat_id"
+        ]
+      }
+    },
+    {
+      "name": "etscli_chat_send",
+      "description": "send a text message to a group chat",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "chat_id": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "chat_id",
+          "text"
+        ]
+      }
+    },
+    {
+      "name": "etscli_chat_send_file",
+      "description": "send a file to a group chat",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "chat_id": {
+            "type": "string"
+          },
+          "file": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "chat_id",
+          "file"
+        ]
+      }
+    },
+    {
+      "name": "etscli_meeting_list",
+      "description": "list all meetings",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "etscli_meeting_detail",
+      "description": "show details of a specific meeting",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "meeting_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "meeting_id"
+        ]
+      }
+    },
+    {
+      "name": "etscli_meeting_create",
+      "description": "create a new meeting",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
+    },
+    {
+      "name": "etscli_meeting_finish",
+      "description": "finish an ongoing meeting",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "meeting_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "meeting_id"
+        ]
+      }
+    },
+    {
+      "name": "etscli_meeting_summary",
+      "description": "get the summary of a meeting",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "meeting_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "meeting_id"
+        ]
+      }
+    },
+    {
+      "name": "etscli_file_search",
+      "description": "search box files by keyword",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "keyword": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "keyword"
+        ]
+      }
+    },
+    {
+      "name": "etscli_file_detail",
+      "description": "show details of a box file by its file id",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "file_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "file_id"
+        ]
+      }
+    },
+    {
+      "name": "etscli_file_upload",
+      "description": "upload a single local file to the box",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "file": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "file"
+        ]
+      }
+    },
+    {
+      "name": "etscli_file_upload_dir",
+      "description": "upload a local directory to the box",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "dir": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "dir"
+        ]
+      }
+    },
+    {
+      "name": "etscli_file_download",
+      "description": "download a box file by its file id",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "file_id": {
+            "type": "string"
+          },
+          "output": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "file_id",
+          "output"
+        ]
+      }
+    },
+    {
+      "name": "etscli_file_delete",
+      "description": "delete box files by their file ids",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "file_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "file_ids"
+        ]
+      }
+    },
+    {
+      "name": "etscli_fs_ls",
+      "description": "list files in a directory",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "name": "etscli_fs_mkdir",
+      "description": "create a directory",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ]
+      }
+    },
+    {
+      "name": "etscli_fs_stat",
+      "description": "show stat info of a file",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ]
+      }
+    },
+    {
+      "name": "etscli_fs_stats",
+      "description": "show statistics of a directory",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ]
+      }
+    },
+    {
+      "name": "etscli_fs_rm",
+      "description": "delete a file or directory by path",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ]
+      }
+    },
+    {
+      "name": "etscli_fs_mv",
+      "description": "move a file or directory by path",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "src": {
+            "type": "string"
+          },
+          "dst": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "src",
+          "dst"
+        ]
+      }
+    },
+    {
+      "name": "etscli_fs_rename",
+      "description": "rename a file or directory by path",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "src": {
+            "type": "string"
+          },
+          "dst": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "src",
+          "dst"
+        ]
+      }
+    },
+    {
+      "name": "etscli_fs_search",
+      "description": "search files by name under a directory",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "name": "etscli_fs_add",
+      "description": "add a local file into a box directory",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "local": {
+            "type": "string"
+          },
+          "remote": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "local",
+          "remote"
+        ]
+      }
+    },
+    {
+      "name": "etscli_sharing_list",
+      "description": "list all sharing links",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "etscli_sharing_create",
+      "description": "create a sharing link for a file",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "file_id": {
+            "type": "string"
+          },
+          "duration": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "file_id"
+        ]
+      }
+    },
+    {
+      "name": "etscli_sharing_delete",
+      "description": "delete a sharing link",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "share_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "share_id"
+        ]
+      }
+    },
+    {
+      "name": "etscli_system_info",
+      "description": "show system information of the box",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "etscli_system_health",
+      "description": "check the health of the box",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "etscli_system_alarm_list",
+      "description": "list alarms on the box",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer"
+          }
+        }
+      }
+    },
+    {
+      "name": "etscli_discover_scan",
+      "description": "scan the local network for boxes",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "timeout": {
+            "type": "integer"
+          }
+        }
+      }
+    },
+    {
+      "name": "etscli_migrate_session_login",
+      "description": "establish a session for migration",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "etscli_migrate_transfer",
+      "description": "migrate data from an old box to the current box",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "all": {
+            "type": "boolean"
+          },
+          "dry_run": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    {
+      "name": "etscli_migrate_verify",
+      "description": "verify the migration result",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "etscli_migrate_record",
+      "description": "show migration records",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  ],
+  "cn": [
+    {
+      "name": "etscli_auth_status",
+      "description": "查看当前 profile 认证状态(含自动重新登录开关)",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "etscli_auth_list",
+      "description": "列出所有已保存的 profile",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "etscli_auth_switch",
+      "description": "切换当前使用的 profile",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "目标 profile 名"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
+    },
+    {
+      "name": "etscli_auth_login",
+      "description": "账号登录并存储凭证",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "server": {
+            "type": "string"
+          },
+          "username": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string"
+          },
+          "profile": {
+            "type": "string"
+          },
+          "password_stdin": {
+            "type": "boolean"
+          },
+          "no_remember_password": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "server",
+          "username",
+          "password"
+        ]
+      }
+    },
+    {
+      "name": "etscli_auth_logout",
+      "description": "登出并清除凭证",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "profile": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "name": "etscli_auth_rename",
+      "description": "重命名一个已存在的 profile",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "old": {
+            "type": "string"
+          },
+          "new": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "old",
+          "new"
+        ]
+      }
+    },
+    {
+      "name": "etscli_user_list",
+      "description": "列出设备上的所有用户",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "etscli_user_detail",
+      "description": "查看指定用户的详细信息",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "uid": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "uid"
+        ]
+      }
+    },
+    {
+      "name": "etscli_user_register",
+      "description": "注册一个新用户",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "username": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "username",
+          "password"
+        ]
+      }
+    },
+    {
+      "name": "etscli_user_passwd",
+      "description": "修改指定用户的密码",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "uid": {
+            "type": "string"
+          },
+          "new_password": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "uid",
+          "new_password"
+        ]
+      }
+    },
+    {
+      "name": "etscli_user_delete",
+      "description": "删除指定用户",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "uid": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "uid"
+        ]
+      }
+    },
+    {
+      "name": "etscli_chat_list",
+      "description": "列出群聊",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "etscli_chat_messages",
+      "description": "查看群聊中的消息",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "chat_id": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "chat_id"
+        ]
+      }
+    },
+    {
+      "name": "etscli_chat_files",
+      "description": "查看群聊中的文件",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "chat_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "chat_id"
+        ]
+      }
+    },
+    {
+      "name": "etscli_chat_send",
+      "description": "向群聊发送一条文字消息",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "chat_id": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "chat_id",
+          "text"
+        ]
+      }
+    },
+    {
+      "name": "etscli_chat_send_file",
+      "description": "向群聊发送一个文件",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "chat_id": {
+            "type": "string"
+          },
+          "file": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "chat_id",
+          "file"
+        ]
+      }
+    },
+    {
+      "name": "etscli_meeting_list",
+      "description": "列出所有会议",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "etscli_meeting_detail",
+      "description": "查看指定会议的详细信息",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "meeting_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "meeting_id"
+        ]
+      }
+    },
+    {
+      "name": "etscli_meeting_create",
+      "description": "创建一个新会议",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
+    },
+    {
+      "name": "etscli_meeting_finish",
+      "description": "结束一个进行中的会议",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "meeting_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "meeting_id"
+        ]
+      }
+    },
+    {
+      "name": "etscli_meeting_summary",
+      "description": "获取会议纪要",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "meeting_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "meeting_id"
+        ]
+      }
+    },
+    {
+      "name": "etscli_file_search",
+      "description": "按关键字搜索密盒中的文件",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "keyword": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "keyword"
+        ]
+      }
+    },
+    {
+      "name": "etscli_file_detail",
+      "description": "按 file id 查看文件详情",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "file_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "file_id"
+        ]
+      }
+    },
+    {
+      "name": "etscli_file_upload",
+      "description": "上传一个本地文件到密盒",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "file": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "file"
+        ]
+      }
+    },
+    {
+      "name": "etscli_file_upload_dir",
+      "description": "上传一个本地目录到密盒",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "dir": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "dir"
+        ]
+      }
+    },
+    {
+      "name": "etscli_file_download",
+      "description": "按 file id 下载文件到本地",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "file_id": {
+            "type": "string"
+          },
+          "output": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "file_id",
+          "output"
+        ]
+      }
+    },
+    {
+      "name": "etscli_file_delete",
+      "description": "按 file id 删除文件",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "file_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "file_ids"
+        ]
+      }
+    },
+    {
+      "name": "etscli_fs_ls",
+      "description": "列出指定目录下的文件",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "name": "etscli_fs_mkdir",
+      "description": "创建一个目录",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ]
+      }
+    },
+    {
+      "name": "etscli_fs_stat",
+      "description": "查看文件的状态信息(stat)",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ]
+      }
+    },
+    {
+      "name": "etscli_fs_stats",
+      "description": "查看目录的统计信息",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ]
+      }
+    },
+    {
+      "name": "etscli_fs_rm",
+      "description": "按路径删除文件或目录",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ]
+      }
+    },
+    {
+      "name": "etscli_fs_mv",
+      "description": "按路径移动文件或目录",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "src": {
+            "type": "string"
+          },
+          "dst": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "src",
+          "dst"
+        ]
+      }
+    },
+    {
+      "name": "etscli_fs_rename",
+      "description": "按路径重命名文件或目录",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "src": {
+            "type": "string"
+          },
+          "dst": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "src",
+          "dst"
+        ]
+      }
+    },
+    {
+      "name": "etscli_fs_search",
+      "description": "按名称在目录下搜索文件",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "name": "etscli_fs_add",
+      "description": "把本地文件添加到密盒的指定目录",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "local": {
+            "type": "string"
+          },
+          "remote": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "local",
+          "remote"
+        ]
+      }
+    },
+    {
+      "name": "etscli_sharing_list",
+      "description": "列出所有分享链接",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "etscli_sharing_create",
+      "description": "为文件创建分享链接",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "file_id": {
+            "type": "string"
+          },
+          "duration": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "file_id"
+        ]
+      }
+    },
+    {
+      "name": "etscli_sharing_delete",
+      "description": "删除一个分享链接",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "share_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "share_id"
+        ]
+      }
+    },
+    {
+      "name": "etscli_system_info",
+      "description": "查看设备的系统信息",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "etscli_system_health",
+      "description": "查看设备的健康状态",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "etscli_system_alarm_list",
+      "description": "列出设备上的告警",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer"
+          }
+        }
+      }
+    },
+    {
+      "name": "etscli_discover_scan",
+      "description": "扫描局域网中的密盒设备",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "timeout": {
+            "type": "integer"
+          }
+        }
+      }
+    },
+    {
+      "name": "etscli_migrate_session_login",
+      "description": "为迁移流程建立会话",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "etscli_migrate_transfer",
+      "description": "把旧设备的数据迁移到当前设备",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "all": {
+            "type": "boolean"
+          },
+          "dry_run": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    {
+      "name": "etscli_migrate_verify",
+      "description": "验证迁移结果",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "etscli_migrate_record",
+      "description": "查看迁移记录",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  ]
+}
