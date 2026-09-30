@@ -57,6 +57,10 @@ for (const file of sources) {
   // two llm-adapters only; never inserted by cordis.patch.yml, not in exports.
   // (§7.61: battery red since a5784d5 2026-09-13 — verify:build hadn't run until then.)
   if (base === 'llm-max-turns') continue
+  // §7.93 Phase 3: pure class (no `inject`/`apply`), constructed by hand inside
+  // function-call-external's Phase 4 — see tool-runner.ts:36-39. Never inserted
+  // by cordis.patch.yml, not in package.json exports.
+  if (base === 'tool-runner') continue
   if (base === 'plugin' || base === 'index') continue
   const content = readFileSync(file, 'utf8')
 

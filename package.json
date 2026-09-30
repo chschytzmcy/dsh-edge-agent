@@ -40,6 +40,10 @@
       "types": "./lib/types/dsh-adapter/file-logger.d.ts",
       "import": "./lib/types/dsh-adapter/file-logger.js"
     },
+    "./etscli-tools": {
+      "types": "./lib/types/dsh-adapter/etscli-tools.d.ts",
+      "import": "./lib/types/dsh-adapter/etscli-tools.js"
+    },
     "./http-api": {
       "types": "./lib/types/dsh-adapter/http-api.d.ts",
       "import": "./lib/types/dsh-adapter/http-api.js"

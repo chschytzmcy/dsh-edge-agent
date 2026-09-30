@@ -10,12 +10,14 @@
     "model-router",
     "intent-router",
     "edge-tools-registry",
+    "etscli-tools",
     "local-storage",
     "audit-log",
     "prompt-guard",
     "privacy-policy",
     "sanitizer-pipeline",
     "web-search-tavily-bocha",
+    "function-call-external",
     "input-guard"
   ],
   "configOverrides": [

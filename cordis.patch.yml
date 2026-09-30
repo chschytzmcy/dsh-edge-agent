@@ -469,6 +469,23 @@
         enableToolIsolation: true
         presentationMode: native
 
+    # §7.98:14 个**只读** etscli 子命令注册进 ctx.tools。
+    #
+    # 注册即安全边界:不在注册表里的工具不会出现在
+    # realm-skill-bridge.getToolSchemasForExternal() 的产物里,needle 物理上选不中,
+    # ctx.tools.execute() 也没法执行它。写/删类工具(auth logout / fs rm /
+    # file delete / chat send / migrate verify …)一律**不注册**,排除依据见
+    # src/dsh-adapter/etscli-tools.ts 模块头。
+    #
+    # 依赖 tools + shell:前者是注册表本体;后者提供子进程执行,白拿超时/中止
+    # 判别、输出截断、凭据擦除 env、进程组 kill 升级 —— 不自己 spawn。
+    - id: etscli-tools
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/etscli-tools'
+      inject: [tools, shell]
+      config:
+        etscliBin: !!js process.env.DSH_EDGE_ETSCLI_BIN ?? ((process.env.USERPROFILE ?? process.env.HOME) + '/.local/bin/etscli')
+        timeoutMs: !!js parseInt(process.env.DSH_EDGE_ETSCLI_TIMEOUT_MS ?? '30000', 10)
+
     - id: local-storage
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/local-storage'
       config:
