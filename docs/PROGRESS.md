@@ -9951,17 +9951,25 @@ required 字段,缺一律 `skipped` + `external.fabricated_arg(detection: 'clien
 - 测试:20 → 23 全过
 - commit `9338a38`
 
-**Bench 复测**(`--desc-lang match`, 3 trials/case, n=117):
+**验证方式 —— 本节曾有一处错误结论,已更正**:`etscli-tools-test.py` 的 `one_attempt()` 直接
+POST `http://127.0.0.1:8081/extract` 并对 needle 返回的 `function_calls` 判分
+(`scripts/etscli-tools-test.py:655-687`)。全脚本对 `tool-runner` / `buildSynthesisContext` /
+`function-call-external` **零引用**(唯一命中是注释里的文档文件名)。**§7.95 改的是 needle 之后
+的客户端逻辑,bench 根本不执行这些代码,因此 §7.95 在构造上就不可能改变 bench 分数。**
 
-| 指标 | 基线(§7.94.8) | §7.95 | Δ |
-|---|---|---|---|
-| EN 工具正确率 | 26% | **72%** | +46pp |
-| CN 工具正确率 | 3% | **64%** | +61pp |
-| EN 负例正确 | 0% | **100%** | +100pp |
-| CN 负例正确 | 33% | **100%** | +67pp |
-| 契约违规 | 0 | 0 | 0 |
+初版此处记的「EN 26%→72% / CN 3%→64%」是**错的**,两个独立错误:
+1. **基线取错口径**:26% 是 §7.94.8 之前的 `desc=cn` 旧口径;`match` 口径正式基线是 **en 44% / cn 3%**
+2. **测试条件变了**:§7.94.8 正式基线跑的是 `--distractors 3`(168 req/次,47 基集 + 117 干扰项);
+   §7.95 那次复测**没加 `--distractors`**(仅 47 基集,117 req/次)。d0 比 d3 简单得多,而 §7.94.8
+   本身就论证过工具名是强词法线索、干扰项正是用来量化这层虚高的 —— 去掉干扰项,分数自然涨
 
-全错正例:EN 29→11 (-62%), CN 38→14 (-63%)。
+**真实结论**:needle 的工具选择能力**没有任何改善**。按正式口径(`match --distractors 3`)
+仍是 **en 44% / cn 3%**。§7.95 的价值由 **23/23 单测**背书(客户端不再把缺 required 的 call
+盲送进引擎),而不是 bench 分数。
+
+**给后续的硬约束**:项目方向已定为「只做客户端调优」,但只要 bench 打的是 needle 裸接口,
+**任何客户端改动都无法被现有 bench 验证**。要量化客户端优化,必须新增一条走完整 dsh-edge
+管线(含 `tool-runner` + synthesis)的端到端 bench,或至少把客户端兜底逻辑接进判分。
 
 **概念澄清**:**synthesis ≠ user 追问**。§7.95 把漏抽的 call 交给 LOCAL LLM 处理,LLM 三种走法:
 ① 自填(从原 query 挖回漏抽的参数,user 无感一轮搞定,最常见)② 追问(query 模糊 + LLM 挖不出)
@@ -9998,20 +10006,21 @@ LOCAL LLM 的提示只有干巴巴的 outcome 列表,LLM 不知道该如何处�
 - `npx vitest run tests/unit/function-call-external.test.ts` 84/84 全过
 - `dsh --profile dsh-edge --dump-config` boot 零 warn
 
-**Bench 结果**(`--desc-lang match`, 3 trials/case, n=117):
+**Bench 结果**(`--desc-lang match`, 无干扰项, 3 trials/case, n=117):
 
-| 指标 | §7.95 基线 | §7.96 Track B | Δ |
+| 指标 | §7.95 那次跑 | §7.96 Track B | Δ |
 |---|---|---|---|
 | EN 工具正确率 | 72% | 72% | 0 |
 | CN 工具正确率 | 64% | 64% | 0 |
 | 契约违规 | 0 | 0 | 0 |
 
-**与基线完全一致 —— 这是预期行为**。`etscli-tools-test.py` bench 直接 POST `/extract` 给 needle,
-测的是 needle 的工具选择能力;`buildSynthesisContext()` 在 needle 已经选完工具之后才跑,
-改的是 LOCAL LLM 的 synthesis 回复质量,bench 看不到。Track B 的改进是**定性**的:当 needle
-确实选错/漏抽时,LOCAL LLM 的回复从摆烂变成有信息量的澄清。
+**Δ=0 是必然的,不是"定性改进测不出来"**。跟 §7.95 同理:bench 打的是 needle 裸接口,
+`buildSynthesisContext()` 在 needle 选完工具之后才跑,bench 不执行这段代码。这两次跑的
+72% / 64% 是 **d0(无干扰项)口径下 needle 的水平**,不是相对正式基线 d3 的提升。
 
-**Per-service 明细**(与 §7.95 完全一致,再次确认 bench 不受 synthesis 影响):
+Track B 目前**只有编译通过 + 84/84 单测**两项证据,**没有任何量化收益证据**。
+
+**Per-service 明细**(d0 口径,仅供了解 needle 错法分布,**不可与 §7.94.8 的 d3 数字横比**):
 
 | service | EN | CN |
 |---|---|---|
@@ -10038,6 +10047,10 @@ LOCAL LLM 的提示只有干巴巴的 outcome 列表,LLM 不知道该如何处�
   不能进 needle 训练管线
 - CN auth 17% 这个短板在不做微调的前提下**没有解** —— 除非引入 needle 之外的独立选工具路径
 
-**方法学沉淀**:synthesis prompt 的改进无法用工具选择 bench 衡量。要测 synthesis 质量需要
-另一套评测:固定 needle 的错误输出,看 LOCAL LLM 的回复是否「澄清 / 自填 / 摆烂」三类归一。
-这个评测目前不存在,Track B 的效果只能靠日常使用定性观察。
+**方法学沉淀(本节最重要的一条)**:现有 `etscli-tools-test.py` **无法验证任何客户端优化** ——
+它 POST needle 裸 `/extract` 判分,与 `tool-runner` / `buildSynthesisContext` 零耦合(§7.95 已
+代码级确认)。所以 §7.95 + §7.96 两轮客户端改动跑出来的 72% / 64% 跟改动无关,是 d0 口径下
+needle 的裸水平。要让「只做客户端调优」这个方向可度量,必须先补一条**走完整管线的端到端
+bench**:needle 选工具 → `tool-runner` 执法(含 §7.95 空参 gate / realm 预检)→ synthesis →
+LOCAL LLM 出回复,判分看**最终回复是否正确完成任务**,而不是 needle 选了哪个工具。
+在这条 bench 建成之前,客户端调优只能靠单测 + 日常使用观察,不存在可信的量化收益。
