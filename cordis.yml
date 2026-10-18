@@ -239,7 +239,8 @@
   inject: [secureBridge, auditLog]
   config:
     providers: !!js (process.env.DSH_EDGE_CLOUD_MODELS ?? 'cloud-llm').split(',').filter(Boolean)
-    baseUrl: !!js process.env.DEEPSEEK_BASE_URL ?? 'https://api.deepseek.com'
+    # §7.100: 空 = DELEGATE 模式（继承宿主 profile 提供商）；显式配端点才直连
+    baseUrl: !!js process.env.DEEPSEEK_BASE_URL || ''
     apiKeyEnv: !!js process.env.DSH_EDGE_CLOUD_KEY_ENV ?? 'DEEPSEEK_API_KEY'
 
 # Forward / reverse PII sanitization (SANITIZED realm).

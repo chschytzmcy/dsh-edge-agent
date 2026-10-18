@@ -47,3 +47,6 @@ key
 *.tar.gz.sha256
 # §7.77: `make package` 产物目录 —— tarball + sha256 落 dist/ 而非顶层。
 dist/
+
+# pnpm 本地对象缓存 —— 绝不入库
+.pnpm-store/

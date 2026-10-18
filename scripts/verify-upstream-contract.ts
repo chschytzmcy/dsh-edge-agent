@@ -1,19 +1,48 @@
 /**
- * CI gate for the upstream compatibility contract: fails when any blessed
- * official package is installed at a version other than the validated
- * release line (0.1.2-rc.1), so a mismatched install breaks CI before
- * user machines.
+ * CI gate for the upstream compatibility contract.
+ *
+ * This is intentionally NOT a version lock: the project follows the newest
+ * published `@deepseek-ai/dsh-*` line. The gate fails only when:
+ *   - a blessed package is below `UPSTREAM_MIN_VERSION`, or
+ *   - blessed packages resolve to mixed version lines (partial upgrade).
+ *
+ * Installing a newer upstream than `UPSTREAM_TESTED_VERSION` prints a
+ * warning and passes; a scheduled `latest` job is expected to exercise it.
  *
  * Run via `node --import tsx/esm scripts/verify-upstream-contract.ts`.
  */
-const { upstreamDrift, UPSTREAM_VALIDATED_VERSION } = await import('../src/dsh-adapter/contract.js')
+const { upstreamReport } = await import('../src/dsh-adapter/contract.js')
 
-const drift = upstreamDrift()
-if (drift.length > 0) {
-  console.error(`Upstream contract violated (validated: ${UPSTREAM_VALIDATED_VERSION}):`)
-  for (const entry of drift) {
-    console.error(`  - ${entry.package}: installed=${entry.installed ?? 'missing'}`)
+const report = await upstreamReport()
+const installedSummary = report.versions.length > 0 ? report.versions.join(', ') : '(none found)'
+
+for (const pkg of report.missing) {
+  console.error(`upstream error: ${pkg} is not installed (run pnpm install)`)
+}
+for (const entry of report.newerThanTested) {
+  console.warn(
+    `upstream warning: ${entry.pkg}@${entry.installed} is newer than tested ` +
+    `${report.tested} — run a boot smoke before shipping`,
+  )
+}
+
+if (!report.ok) {
+  console.error(
+    `upstream contract violated (minimum: ${report.minimum}, installed: ${installedSummary}):`,
+  )
+  for (const entry of report.belowMinimum) {
+    console.error(`  - ${entry.pkg}@${entry.installed} is below minimum ${report.minimum}`)
+  }
+  for (const entry of report.mixed) {
+    console.error(
+      `  - ${entry.pkg}@${entry.installed} does not match the rest of the upstream line ` +
+      `(${installedSummary})`,
+    )
   }
   process.exit(1)
 }
-console.log(`upstream contract OK (validated: ${UPSTREAM_VALIDATED_VERSION})`)
+
+console.log(
+  `upstream contract OK (minimum: ${report.minimum}, tested: ${report.tested}, ` +
+  `installed: ${installedSummary})`,
+)

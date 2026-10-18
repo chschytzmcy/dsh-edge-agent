@@ -14,7 +14,8 @@
 # (单 profile dsh-edge + 21 节点全链路覆盖)。
 #
 # 任一阶段失败 → PR block。Gate 总数：
-#   - 单元测试：必须 629 PASS（含 1 跳过）、0 FAIL（实际 628 用例 + 1 跳过）
+#   - 单元测试：必须 0 FAIL；§7.100 后 48 文件（基线 956 + delegate/available/
+#     upstream-error 共 29 新用例）；低于 600 视为漏跑（CI 防漏跑阈值）
 #   - 隐私 E2E：必须 19/19 PASS（9 注入 → 400 + 5 业务 → 403 + 5 路由 → 200）
 #   - ops log 覆盖：必须 3/3 用例通过（mibao + news + local-ip）+ 21 节点全绿
 
@@ -22,7 +23,7 @@ name: ci
 
 on:
   push:
-    branches: [master]
+    branches: [main]
   pull_request:
 
 permissions:
@@ -67,7 +68,7 @@ jobs:
           retention-days: 7
 
   test:
-    name: unit tests (628/628)
+    name: unit tests (48 files, §7.100 delegate coverage)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs: build

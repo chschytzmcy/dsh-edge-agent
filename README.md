@@ -53,7 +53,7 @@
 | `local-storage` | JSONL 持久化 KV 存储 | ✅ 可用 |
 | `sessions` | 会话管理（CRUD + TTL + LRU） | ✅ 可用 |
 | `audit-log` | JSONL 审计日志 | ✅ 可用 |
-| `cloud-llm-adapter` | DeepSeek API 流式客户端 | ✅ 可用 |
+| `cloud-llm-adapter` | 云池双模式：直连客户端（配 `CLOUD_LLM_BASEURL`）/ §7.100 委托宿主 profile 提供商（默认） | ✅ 可用 |
 | `local-llm-adapter` | 本地 LLM（OpenAI 兼容端点直连） | ✅ 可用 |
 | `model-router` | 多模型路由分发 | ✅ 可用 |
 | `intent-router` | LLM 意图分类 → LOCAL/CLOUD 路由 | ✅ 可用 |
@@ -85,6 +85,10 @@
 | pnpm | `^10` 或 `^11` | `^11.7.0` |
 | 操作系统 | Linux / macOS / Windows | Linux |
 | 架构 | x64 / arm64 | arm64（for TEE） |
+
+> **上游版本策略**：不锁定 `@deepseek-ai/dsh-*` 具体版本，跟随最新已发布 RC
+> （当前最低兼容 `0.2.1-rc.2`，允许更新版本）。详见
+> [docs/version-policy.md](docs/version-policy.md)。Node/pnpm 工具链仍保留约束。
 
 ### 前置依赖
 
@@ -145,6 +149,8 @@ disown
 
 > bundle 是 profile-agnostic 的——`--profile=` 接受任何 DSH profile 名(dsh-tui / web / dsh-edge / 自定义)。HTTP 端口统一 :21017(http-api schema 默认,`http-api.ts:63`);切 profile 前 install.sh 必杀其他进程(避免 EADDRINUSE + audit TOCTOU race)。加新 profile 只在 install.sh `OTHER_PROFILES` 列表里添一行即可。
 
+> **当前桌面版（DeepSeek Harness App）**：CLI 不能管理 Electron 独占的 `desktop` profile，但桌面侧边栏 **Plugins → Add plugin** 支持 npm / Git / 本地目录三个通道。推荐 `bash scripts/build-desktop-bundle.sh --emit-dir` 后走「本地目录」装 `dist/installable/dsh-edge-agent-desktop-safe`；不要直接把全量 `cordis.patch.yml` 装进日常桌面 profile。详见 [docs/load-into-local-dsh.md](docs/load-into-local-dsh.md)。
+
 ### 方式三：Windows
 
 ```cmd
@@ -198,7 +204,7 @@ curl -s --max-time 3 http://127.0.0.1:21017/v1/health
 | web profile 启动后 `:3080` 不 listen | `tail -50 ~/.dsh/profiles/web/run.log` 看 `dsh web:` 行；可能是 webui 包未装，跑 `dsh plugin --profile web add @deepseek-ai/dsh-web @deepseek-ai/dsh-web-ui-all` |
 | 19 个 plugin 只挂载 dsh-base 的 30 个（bundle 没生效） | `dsh plugin --profile dsh-tui add @deepseek-harness-edge-agent/dsh-edge-agent` 重装；或者 `install.sh §2.6 + §2.7` 没跑，手动 cp `cordis.patch.yml` 到嵌套包根 |
 | `adapter boundary violated` | 把 `@deepseek-ai/*` 的 import 移到 `src/dsh-adapter/` 内（或经 `src/dsh-adapter/types.ts` 重新导出） |
-| `upstream contract violated` | DSH 依赖版本与 `UPSTREAM_VALIDATED_VERSION`（`0.1.2-rc.1`）不匹配；运行 `pnpm install` 或 `pnpm update @deepseek-ai/dsh-agent @deepseek-ai/dsh-llm ...` |
+| `upstream contract violated` | 上游 DSH 包低于最低兼容版本（当前 `0.2.1-rc.2`），或各 `@deepseek-ai/dsh-*` 包版本不一致；运行 `pnpm install` 或 `pnpm update @deepseek-ai/dsh-agent @deepseek-ai/dsh-llm ...` |
 
 ### 卸载
 
@@ -292,8 +298,15 @@ dsh-edge-agent 通过**意图路由**自动选择 LLM，无需手动指定 provi
 | **LOCAL** | 文件、读取、写入、计算、设备、本地 | `local-llm`（真实 OpenAI 兼容端点） | `"帮我读取文件"` → 真实 qwen3-4b 回答 |
 | **CLOUD** | 解释、什么是、知识问答 | `cloud-llm` | `"量子力学是什么"` → DeepSeek 真实回答 |
 
-> ⚠️ `DSH_EDGE_PROVIDER` 环境变量**仅**影响 system prompt 文本，不会改变实际路由。
-> 实际路由由 `http-api.handleChat()` 根据意图分类结果硬编码选择。
+> **§7.100 云池可选**：不配置 `CLOUD_LLM_BASEURL` 时，`cloud-llm` 路由进入
+> **DELEGATE 模式**——按「显式指定 → 宿主 profile 当前模型选择（桌面 GUI 实时）→
+> 活的宿主云路由探针」三级链转发，凭据解析归宿主，edge 侧不碰任何 secret；
+> 三条都没有则显式报错（502 / SSE error）。配置了 `CLOUD_LLM_BASEURL` 则维持
+> 自研直连（§7.83 语义不变）。**唯一必配的是 LOCAL 池**；意图分类与 prompt-guard
+> 模型检测只使用本地模型，未配置本地端点时自动降级关键词/正则规则档。
+
+> ⚠️ `DSH_EDGE_PROVIDER` 只作 agent-loop 兜底指针与 input-guard 取证镜像，
+> 不会改变实际路由。实际选择由意图分类结果决定。
 
 ### 本地 LLM 端点
 
@@ -392,13 +405,18 @@ dsh-edge-agent 通过**环境变量**和 `cordis.yml` 进行配置。所有环�
 | `DSH_EDGE_LOCAL_LLM_MODE` | `mock`（Schema）/`real`（部署） | `mock` / `real`（是否走真实端点） |
 | `DSH_EDGE_LOCAL_LLM_APIKEY_ENV` | `DASHSCOPE_API_KEY`（DashScope 模式）/ 空（本地 llama.cpp） | env 变量名，指向存放 bearer 的槽位。设为 `DASHSCOPE_API_KEY` 让 adapter 读 `.env` 里的 DashScope key。留空表示不发 `Authorization` header |
 
-**云端 LLM**
+**云端 LLM**（§7.100 起整体可选 —— 不配即 DELEGATE 到宿主 profile 提供商）
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `DSH_EDGE_CLOUD_KEY_ENV` | `DEEPSEEK_API_KEY` | API key 环境变量 |
-| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | API base URL |
-| `DEEPSEEK_API_KEY` | — | DeepSeek API Key（CLOUD 路由必需） |
+| `CLOUD_DELEGATE` | （开） | `false` 禁用委托：云不可用 → input-guard 降级 LOCAL（LOCAL-only 部署用） |
+| `CLOUD_DELEGATE_PROVIDER` | （自动） | 显式锁定委托目标路由 id（如 `qwen-token-plan-cn`） |
+| `CLOUD_DELEGATE_MODEL` | （跟随宿主选择） | 委托 wire model override |
+| `DSH_EDGE_CLOUD_KEY_ENV` | `DEEPSEEK_API_KEY` | API key 环境变量（仅直连模式） |
+| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | API base URL（inherited-env 兜底，仅直连模式） |
+| `DEEPSEEK_API_KEY` | — | DeepSeek API Key（仅直连模式） |
+
+显式配置 `CLOUD_LLM_BASEURL`（经 `.env`）即切回自研直连；解析链详见 PROGRESS §7.100。
 
 ### 🌐 出站配置
 
@@ -921,13 +939,13 @@ curl http://127.0.0.1:21017/v1/openapi.json | jq .
 
 ## 🧪 自动化测试
 
-### 单元测试（628 个测试用例 / 37 个测试文件）
+### 单元测试（48 个测试文件；§7.100 前 2026-10-18 实测 954 passed / 2 skipped；§7.100 新增 3 文件 29 用例，总数待 CI 实测刷新）
 
 ```bash
 pnpm test
 ```
 
-覆盖 16 个测试文件，包括：
+覆盖 45 个测试文件，包括：
 - 插件形状验证（name/inject/Config/apply）
 - SSE 解析、JSONL 持久化、HTTP 路由
 - 意图分类（LLM + 规则兜底）
@@ -941,7 +959,7 @@ pnpm run verify:build
 
 包含 4 个验证脚本：
 - `verify:boundary` — 适配器边界检查（`@deepseek-ai/*` 仅存在于 `src/dsh-adapter/`）
-- `verify:contract` — 上游版本契约（锁定 `0.1.2-rc.1`）
+- `verify:contract` — 上游兼容性（最低 `0.2.1-rc.2`，允许更新版本；不再精确锁定）
 - `verify:patch-surface` — 补丁面一致性
 - `verify:plugin-spec` — 插件规范（name+inject+Config+apply）
 

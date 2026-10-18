@@ -1678,22 +1678,27 @@ describe('§7.94:audit callerId 注入(全 16 callsite)', () => {
   })
 
   it('external.extract audit payload 含 callerId', async () => {
-    const { svc, ctx, entries } = makeService({
-      functionCallExternalEnabled: true,
-      functionCallExternalBreakerProbeMs: 60_000,
-      functionCallExternalBootProbeEnabled: false,
-    })
     const fetchMock = (url: string) => {
       if (url.includes('/health')) return Promise.resolve({ status: 200, ok: true, text: () => Promise.resolve('') } as Response)
       // /extract → 200 + type=respond(无 call,直接 fall through)
       return Promise.resolve({ status: 200, ok: true, text: () => Promise.resolve('{"type":"respond","confidence":1}') } as Response)
     }
-    ;(ctx as any).fetch = fetchMock
     const bridge = {
       getSessionRealm: () => 'LOCAL' as const,
       getToolSchemasForExternal: () => [{ name: 'bash', description: '', parameters: {} }],
     }
-    ;(ctx as any).realmSkillBridge = bridge
+    // Both overrides must be present BEFORE the service constructor runs:
+    // `tryFetchOverride()` snapshots ctx.fetch, and handlePreStep reads
+    // ctx.realmSkillBridge. Setting them after construction silently falls
+    // back to globalThis.fetch (real network) and produces no extract audit.
+    const { svc, entries } = makeService({
+      functionCallExternalEnabled: true,
+      functionCallExternalBreakerProbeMs: 60_000,
+      functionCallExternalBootProbeEnabled: false,
+    }, {
+      fetch: fetchMock,
+      realmSkillBridge: bridge,
+    })
     await svc.start()
     const seed = { kind: 'enter' as const, messages: [{ role: 'user', content: 'ls' }] as any }
     await svc.handlePreStep({ agent: { session: { id: 'audit-extract' } }, messages: [{ role: 'user', content: 'ls' }] }, async () => seed)

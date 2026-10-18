@@ -612,26 +612,24 @@ ${allSkillLines.join('\n')}
   describe('integration: real installed lark skills', () => {
     const skillsDir = join(homedir(), '.agents', 'skills')
     const hasSkills = existsSync(skillsDir)
+    // A machine may have ~/.agents/skills/ but no lark-* skills (CI, fresh
+    // developer box). Skip the lark-specific assertions in that case instead
+    // of failing with "expected 19, got 0".
+    const installedSkills = hasSkills
+      ? readdirSync(skillsDir, { withFileTypes: true })
+          .filter(d => d.isDirectory())
+          .map(d => d.name)
+      : []
+    const larkSkills = installedSkills.filter(n => n.startsWith('lark-'))
+    const hasLarkSkills = larkSkills.length > 0
 
-    it.skip(!hasSkills, 'requires ~/.agents/skills/ to exist')
+    it.skipIf(!hasSkills)('requires ~/.agents/skills/ to exist', () => {})
 
-    it('discovers all 19 lark-* skills from ~/.agents/skills/', () => {
-      if (!hasSkills) return
-      const installed = readdirSync(skillsDir, { withFileTypes: true })
-        .filter(d => d.isDirectory())
-        .map(d => d.name)
-      const larkSkills = installed.filter(n => n.startsWith('lark-'))
+    it.skipIf(!hasLarkSkills)('discovers all 19 lark-* skills from ~/.agents/skills/', () => {
       assert.equal(larkSkills.length, 19, `expected 19 lark skills, got ${larkSkills.length}: ${larkSkills.join(', ')}`)
     })
 
-    it('tags every installed lark-* skill as CLOUD via the real config template', async () => {
-      if (!hasSkills) return
-      // Discover real skill names
-      const installed = readdirSync(skillsDir, { withFileTypes: true })
-        .filter(d => d.isDirectory())
-        .map(d => d.name)
-      const larkSkills = installed.filter(n => n.startsWith('lark-'))
-      if (larkSkills.length === 0) return
+    it.skipIf(!hasLarkSkills)('tags every installed lark-* skill as CLOUD via the real config template', async () => {
 
       // Use the real default config template
       const configPath = writeConfig('skill-realms.json', {

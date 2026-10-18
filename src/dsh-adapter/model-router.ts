@@ -67,9 +67,9 @@ export interface ModelInfo {
   provider: string
   /** Realm the provider belongs to. */
   realm: Realm
-  /** Whether the provider is registered as available. Always `true` in
-   *  v1 — the router has no live ping yet. The field is exposed so the
-   *  schema doesn't churn when health probes land in v1.1. */
+  /** §7.100: config membership AND (when the llm registry is readable) a
+   *  live registered route. Falls back to config membership only when the
+   *  registry can't be queried. */
   available: boolean
 }
 
@@ -94,16 +94,42 @@ export class ModelRouterServiceImpl extends Service {
   listDetailed(): ModelInfo[] {
     const out: ModelInfo[] = []
     for (const m of this.localModels) {
-      out.push({ provider: m, realm: 'LOCAL', available: true })
+      out.push({ provider: m, realm: 'LOCAL', available: this.isAvailable(m) })
     }
     for (const m of this.cloudModels) {
-      out.push({ provider: m, realm: 'CLOUD', available: true })
+      out.push({ provider: m, realm: 'CLOUD', available: this.isAvailable(m) })
     }
     return out
   }
 
   isAvailable(provider: string): boolean {
-    return this.localModels.includes(provider) || this.cloudModels.includes(provider)
+    const inConfig = this.localModels.includes(provider) || this.cloudModels.includes(provider)
+    if (!inConfig) return false
+    // §7.100: registry truth when reachable — a configured-but-unregistered
+    // route (adapter skipped by DUPLICATE_ADAPTER, minimal graph, or a route
+    // the host never activated) must report available:false so /v1/models and
+    // future health surfaces stop lying. When the llm registry isn't
+    // reachable (old upstream, test fakes), fall back to §7.4 config
+    // membership so nothing regresses.
+    const live = this.liveProviders()
+    return live ? live.has(provider) : true
+  }
+
+  /** Live registered route ids, or undefined when the registry is unreadable. */
+  private liveProviders(): Set<string> | undefined {
+    try {
+      const anyCtx = this.ctx as unknown as {
+        llm?: { listProviders?(): Array<{ id: string }> }
+        get?: (name: string) => unknown
+      }
+      const llm = anyCtx.llm ?? (typeof anyCtx.get === 'function' ? anyCtx.get('llm') as any : undefined)
+      if (llm && typeof llm.listProviders === 'function') {
+        return new Set(llm.listProviders().map((p) => p.id))
+      }
+    } catch {
+      // ctx accessor without inject (Cordis throws) or partial fakes — config truth.
+    }
+    return undefined
   }
 }
 

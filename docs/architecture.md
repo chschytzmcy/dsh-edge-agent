@@ -1559,7 +1559,8 @@ DSH 上游 SPA 的 chat RPC（`sessions.prompt` / `sessions.list` / `sessions.ca
 1. **升级可控**：DSH rc 版本升级时只影响一处（`src/dsh-adapter/`）
 2. **边界可验证**：通过 `verify-adapter-boundary.ts` 在 CI 中强制检查
 3. **类型可追溯**：所有上游类型从 `src/dsh-adapter/types.ts` 单一来源导出
-4. **版本可锁定**：通过 `UPSTREAM_VALIDATED_VERSION` 锁定已验证的 DSH 版本线
+4. **版本可跟随**：通过 `UPSTREAM_MIN_VERSION` / `UPSTREAM_TESTED_VERSION`
+   区分“最低兼容”和“最后实测”，不锁死具体版本
 
 ## 📐 边界规则
 
@@ -1627,34 +1628,30 @@ declare module '@deepseek-ai/cordis' {
 - 类型合并让 `ctx.tcm` 在所有文件中可用
 - 不需要 `as any` 强制转换
 
-## 📦 已验证的版本线
+## 📦 上游版本策略：不锁版本，跟随最新
+
+本项目**不再精确锁定** `@deepseek-ai/*` 版本。`package.json` 使用开放下界（例如
+`>=0.2.1-rc.2`），`verify:contract` 只检查兼容性，不检查相等：
 
 ```typescript
 // src/dsh-adapter/contract.ts
-export const UPSTREAM_VALIDATED_VERSION = '0.1.2-rc.1'
+export const UPSTREAM_MIN_VERSION = '0.2.1-rc.2'
+export const UPSTREAM_TESTED_VERSION = '0.2.1-rc.2'
 
 export const UPSTREAM_FRAMEWORK_MAJORS = {
-  '@deepseek-ai/cordis': '^4.0.1',
-  '@deepseek-ai/schemastery': '^3.18.1',
+  '@deepseek-ai/cordis': '>=4.0.5',
+  '@deepseek-ai/schemastery': '>=3.18.5',
 } as const
-
-export const UPSTREAM_BLESSED_PACKAGES = [
-  '@deepseek-ai/dsh-agent',
-  '@deepseek-ai/dsh-llm',
-  '@deepseek-ai/dsh-tools',
-  '@deepseek-ai/dsh-session',
-  '@deepseek-ai/dsh-system-prompt',
-  '@deepseek-ai/dsh-events',
-  '@deepseek-ai/dsh-scope',
-  '@deepseek-ai/dsh-scope-disk',
-] as const
 ```
 
-**为什么是 `0.1.2-rc.1`？**
+**门禁语义**
 
-1. **DSH 团队已发布**：经过 DeepSeek Harness 团队验证的稳定预发布版本
-2. **与 dsh-TUI 对齐**：确保生态兼容性
-3. **schema 稳定**：所有必需的服务接口已稳定
+1. 任一核心包低于 `UPSTREAM_MIN_VERSION` → 失败（说明 API 可能不兼容）
+2. 核心包之间版本不一致（部分升级）→ 失败（最常见的“半升级”事故）
+3. 版本高于 `UPSTREAM_TESTED_VERSION` → **只警告**，不失败；由 latest/next
+   定时任务实际跑 compile + boot smoke 来发现 breaking change
+4. `UPSTREAM_MIN_VERSION` 只在**代码真的做了迁移**时上调；不能因为上游发了新
+   RC 就盲目上调
 
 ## 🔍 验证脚本
 
@@ -1687,63 +1684,49 @@ pnpm run verify:build
 
 串联所有验证脚本，CI 必须全部通过。
 
-## 📈 升级流程
+## 📈 升级流程（不锁版本）
 
-当 DSH 发布新版本（如 `0.1.0`）时：
+上游发新版时**不修改精确版本号**，而是验证“当前代码能否跟随”：
 
-### Step 1: 更新 `UPSTREAM_VALIDATED_VERSION`
+### Step 1: 更新依赖到最新 RC
 
-```typescript
-// src/dsh-adapter/contract.ts
--export const UPSTREAM_VALIDATED_VERSION = '0.1.2-rc.1'
-+export const UPSTREAM_VALIDATED_VERSION = '0.1.0'
+```sh
+pnpm update --latest
+# 或只更新 DSH 包
+pnpm add -D @deepseek-ai/dsh-agent@next @deepseek-ai/dsh-llm@next ...
 ```
 
-### Step 2: 更新 `package.json`
-
-```json
-{
-  "devDependencies": {
-    "@deepseek-ai/dsh-agent": "^0.1.0",
-    "@deepseek-ai/dsh-llm": "^0.1.0",
-    ...
-  }
-}
-```
-
-### Step 3: 运行 `pnpm install`
-
-### Step 4: 修复破坏性变更
+### Step 2: 编译，暴露 breaking change
 
 ```sh
 pnpm run compile
 ```
 
-根据 TypeScript 错误逐个修复（应该都在 `src/dsh-adapter/` 内）。
+### Step 3: 修复 `src/dsh-adapter/` 内的 API 迁移
 
-### Step 5: 运行所有验证
+例如 0.2.x 把实时 chunk 从 `session/event assistant/chunk` 改为
+`agent/assistant-stream`；这类迁移只应发生在 adapter 边界内。
+
+### Step 4: 跑兼容性门禁 + 真实 boot smoke
 
 ```sh
-pnpm run verify:build
+pnpm run verify:boundary
+pnpm run verify:contract   # 只检查最低线 / 混版，不要求相等
+pnpm run verify:patch-surface
+pnpm run verify:plugin-spec
 pnpm test
+# 启动一个 profile，验证 /v1/health + 一轮 /v1/chat
 ```
 
-### Step 6: 升级 patch-surface.snapshot
+### Step 5: 按需更新 contract 的“实测版本”
 
-```sh
-node --import tsx/esm scripts/verify-patch-surface.ts --snapshot
-```
+- 代码**仍兼容旧版本**：只把 `UPSTREAM_TESTED_VERSION` 设为新版本；
+- 代码**不再兼容旧版本**：才把 `UPSTREAM_MIN_VERSION` 一起上调。
 
-### Step 7: 更新测试和文档
+### Step 6: 记录
 
-确保所有测试通过，文档反映新版本。
-
-### Step 8: 提交
-
-```sh
-git commit -m "chore: upgrade DSH to 0.1.0"
-git tag v0.X.0
-```
+在 `docs/PROGRESS.md` 追加一节；不要改写历史章节。`patch-surface.snapshot.json`
+只在**本仓 patch 面真的变化**时更新，不是每次上游升级都更新。
 
 ## 🛡️ Invariant Companion
 

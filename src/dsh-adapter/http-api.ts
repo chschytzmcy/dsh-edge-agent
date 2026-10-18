@@ -553,12 +553,29 @@ export class HttpApiServiceImpl extends Service {
     // 当真正的 driver idle 信号。do-while 内部 await activityDone,即使 turn 中
     // 途 inbox 又 push 也能继续 wait。同时保留 session/event listener 翻译
     // blocked turn(2026-08-30 fix),互不干扰。
-    const turnEnd = new Promise<{ result: string; rejection?: { status: number; kind: string; reason: string; riskLevel?: string } }>((resolve) => {
+    const turnEnd = new Promise<{
+      result: string
+      rejection?: { status: number; kind: string; reason: string; riskLevel?: string }
+      // §7.100: adapter 层 LLM 失败（NO_CLOUD_TARGET / NO_ADAPTER / MISSING_
+      // CREDENTIAL / MAX_TURNS_EXCEEDED…）在上游被转成 kind:'error' 的 terminal
+      // finish，历史上客户端拿到的是 200 + 空 result（§7.98 L2 家族）。现在
+      // 捕获 failure 事实，空 result + error reason 同时出现时翻译成 502。
+      upstreamError?: { code: string; message: string; status?: number }
+    }>((resolve) => {
       let blockedFired = false
+      let lastError: { code: string; message: string; status?: number } | undefined
       const dispose = this.cordisCtx.on('session/event', (session: any, event: SessionEvent) => {
         if (event.type !== 'turn/end') return
 
         const blockedReason = (event as any).data?.reason
+        if (blockedReason?.kind === 'error') {
+          const f = blockedReason.error as { code?: string; message?: string; status?: number } | undefined
+          lastError = {
+            code: typeof f?.code === 'string' && f.code.length > 0 ? f.code : 'UNKNOWN',
+            message: typeof f?.message === 'string' ? f.message : 'model call failed',
+            status: typeof f?.status === 'number' ? f.status : undefined,
+          }
+        }
         if (blockedReason?.kind === 'blocked') {
           const edgeRej = (record.agent as any)._edgeRejection as
             | { kind: 'attack' | 'policy' | 'intent' | 'sanitizer'; reason: string; riskLevel?: string }
@@ -596,7 +613,9 @@ export class HttpApiServiceImpl extends Service {
           : ''
 
         if (text) this.pushRecentMessage(sessionId, 'assistant', text)
-        resolve({ result: text })
+        // §7.100: 空 result + 观测到 error turn-end → 显式 502，不再 200 空回复。
+        // 有文本时维持 200（多轮里前一 turn 报错、orphan 恢复后正常答完不算故障）。
+        resolve(text.length === 0 && lastError ? { result: '', upstreamError: lastError } : { result: text })
       }).catch((err) => {
         // Driver crashed mid-loop (rare). Fall back to best-effort snapshot.
         this.ctx?.logger?.warn?.(`[http-api] whenIdle rejected, falling back to snapshot sessionId=${sessionId} err=${String(err)}`)
@@ -654,6 +673,34 @@ export class HttpApiServiceImpl extends Service {
         result: '',
         error: 'Request rejected',
         rejection: r,
+        intent: {
+          category: intent.category,
+          targetRealm: intent.targetRealm,
+          confidence: intent.confidence,
+          rationale: intent.rationale,
+        },
+        duration,
+      }))
+      return
+    }
+
+    // §7.100: 上游模型调用失败（delegate 无目标 / 路由缺失 / 凭据缺失…）
+    // → 502 + machine-readable code。杜绝"HTTP 200 + 空 result"这类把
+    // 基础设施故障伪装成正常回复的响应（§7.98 L2 教训）。
+    if (turnResult.upstreamError) {
+      const u = turnResult.upstreamError
+      const duration = Date.now() - start
+      this.audit('warn', 'http.chat.upstream_error', {
+        reqId, sessionId, provider, model, code: u.code, error: u.message.slice(0, 300), upstreamStatus: u.status,
+      })
+      this.accessLog(reqId, 'POST', '/v1/chat', 502, duration, `upstream:${u.code}:${u.message.slice(0, 80)}`)
+      res.writeHead(502, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({
+        sessionId,
+        result: '',
+        error: 'upstream model call failed',
+        code: u.code,
+        reason: u.message,
         intent: {
           category: intent.category,
           targetRealm: intent.targetRealm,
@@ -812,15 +859,30 @@ export class HttpApiServiceImpl extends Service {
     }, keepaliveMs)
     if (typeof keepaliveTimer.unref === 'function') keepaliveTimer.unref()
 
+    // DSH 0.2.x moved live assistant chunks from the session event log to
+    // the process-local `agent/assistant-stream` event (`session/event`
+    // no longer carries `assistant/chunk`). Chunks are already desanitized
+    // by input-guard's `llm/stream` hook, so this listener only forwards
+    // text deltas to the SSE client. Filter by agent/session: the event is
+    // global and concurrent SSE clients must not see each other's tokens.
+    const disposeAgentStream = typeof this.cordisCtx.on === 'function'
+      ? this.cordisCtx.on('agent/assistant-stream', (payload: any) => {
+          const frame = payload?.frame
+          if (frame?.type !== 'chunk') return
+          const agentSessionId = payload?.agent?.session?.id
+          if (agentSessionId !== undefined && String(agentSessionId) !== sessionId) return
+          const chunk = frame.chunk
+          if (chunk?.type === 'text-delta' && typeof chunk.text === 'string') {
+            res.write(`data: ${JSON.stringify({ type: 'text', text: chunk.text })}\n\n`)
+          }
+        })
+      : () => {}
+
     const dispose = this.cordisCtx.on('session/event', (_session: any, event: SessionEvent) => {
-      if (event.type === 'assistant/chunk') {
-        const chunk = (event as any).data.chunk
-        if (chunk.type === 'text-delta') {
-          // 脱敏恢复已由 input-guard 在 llm/stream hook 中对 session 内 chunks 统一处理。
-          // http-api 只负责把 chunk 透传给 SSE 客户端。
-          res.write(`data: ${JSON.stringify({ type: 'text', text: chunk.text })}\n\n`)
-        }
-      } else if (event.type === 'turn/end') {
+      // Session events are also global; ignore another session's turn end.
+      const eventSessionId = (_session as { id?: unknown })?.id
+      if (eventSessionId !== undefined && String(eventSessionId) !== sessionId) return
+      if (event.type === 'turn/end') {
         // 2026-08-30 fix: blocked turn → SSE error 事件。headers 已经
         // 200/text-event-stream 写过了，不能再改 status code，但 SSE
         // 客户端能解析 error 事件 → client 收到 kind: 'attack' 自行报错。
@@ -840,7 +902,32 @@ export class HttpApiServiceImpl extends Service {
             error: 'Request rejected',
             rejection: edgeRej ?? { kind: 'unknown', reason: 'blocked' },
           })}\n\n`)
-          dispose()
+          try { dispose() } catch { /* listener already removed */ }
+          try { disposeAgentStream() } catch { /* listener already removed */ }
+          clearInterval(keepaliveTimer)
+          res.end()
+          return
+        }
+        // §7.100: kind:'error' turn（adapter 失败被上游转成 terminal finish）
+        // 过去会走到下面的 done 分支 → 客户端看到 "done + 零文本"。现在翻成
+        // SSE error 帧（headers 已发，同 blocked 先例，状态码只进 accessLog）。
+        if (blockedReason?.kind === 'error') {
+          const f = blockedReason.error as { code?: string; message?: string } | undefined
+          const code = typeof f?.code === 'string' && f.code.length > 0 ? f.code : 'UNKNOWN'
+          const message = typeof f?.message === 'string' ? f.message : 'model call failed'
+          this.audit('warn', 'http.chat.stream.upstream_error', {
+            reqId, sessionId, provider, model, code, error: message.slice(0, 300),
+          })
+          this.accessLog(reqId, 'POST', '/v1/chat/stream', 502, Date.now() - start, `upstream:${code}:${message.slice(0, 80)}`)
+          res.write(`data: ${JSON.stringify({
+            type: 'error',
+            status: 502,
+            error: 'upstream model call failed',
+            code,
+            reason: message,
+          })}\n\n`)
+          try { dispose() } catch { /* listener already removed */ }
+          try { disposeAgentStream() } catch { /* listener already removed */ }
           clearInterval(keepaliveTimer)
           res.end()
           return
@@ -863,7 +950,8 @@ export class HttpApiServiceImpl extends Service {
         res.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`)
         const duration = Date.now() - start
         this.audit('info', 'http.chat.stream.end', { reqId, sessionId, provider, model, durationMs: duration })
-        dispose()
+        try { dispose() } catch { /* listener already removed */ }
+        try { disposeAgentStream() } catch { /* listener already removed */ }
         clearInterval(keepaliveTimer)
         res.end()
       }
@@ -882,6 +970,7 @@ export class HttpApiServiceImpl extends Service {
       cleanedUp = true
       clearInterval(keepaliveTimer)
       try { dispose() } catch { /* listener already removed */ }
+      try { disposeAgentStream() } catch { /* listener already removed */ }
       this.audit('debug', 'http.chat.stream.client-closed', { reqId, sessionId })
     }
     req.on('close', onClose)
@@ -1171,7 +1260,17 @@ export class HttpApiServiceImpl extends Service {
    * exposes.
    */
   private async composeAgentPreset(): Promise<{ agentPreset?: string; setup?: (agentCtx: unknown) => Promise<void> }> {
-    const presets = (this.ctx as unknown as { get?: (k: string) => unknown }).get?.('agentPresets') as
+    // §7.100: soft-dep idiom (mirror of resolveRoute :1764 / handleListModels
+    // :1020) — Cordis ctx.get THROWS for a non-injected service, and 'presets'
+    // is not in this plugin's inject list. On graphs without dsh-agent-presets
+    // the bare get() took down every POST /v1/chat with a 500.
+    const presets = (() => {
+      try {
+        return (this.ctx as unknown as { get?: (k: string) => unknown }).get?.('agentPresets')
+      } catch {
+        return undefined
+      }
+    })() as
       | { resolve?: (id?: string) => Promise<{ id: string }>; mount?: (agentCtx: unknown, id: string) => Promise<unknown> }
       | undefined
     if (presets === undefined || typeof presets.resolve !== 'function' || typeof presets.mount !== 'function') {

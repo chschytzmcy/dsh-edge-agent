@@ -81,22 +81,40 @@ interface InputGuardLike {
 export interface Config {
   /** Provider route ids this adapter owns; defaults match DeepSeek. */
   providers: string[]
-  /** Wire endpoint base; `/chat/completions` is appended. */
+  /**
+   * Wire endpoint base; `/chat/completions` is appended.
+   * §7.100: EMPTY (default) = DELEGATE mode — the `cloud-llm` route becomes a
+   * pure forwarding shell onto the host profile's configured model provider.
+   * Non-empty = the classic direct-connect client below, byte-for-byte unchanged.
+   */
   baseUrl: string
-  /** Process-env slot carrying the bearer key (never read at config time). */
+  /** Process-env slot carrying the bearer key (never read at config time). Direct mode only. */
   apiKeyEnv: string
-  /** Default model id when the request omits one. */
+  /** Default model id when the request omits one. Direct mode only (delegate carries it for forensics). */
   defaultModel: string
   /** Per-request temperature. Omit when the model is fixed. */
   temperature?: number
+  /** Delegate step-1 explicit target route id (overrides selection/probe). */
+  delegateProvider?: string
+  /** Delegate wire model override; beats host selection / probe model. */
+  delegateModel?: string
+  /** Kill switch: false = never delegate. With an empty baseUrl, cloud turns
+   *  then fail loudly (input-guard restores §7.35 downgrade-to-LOCAL). */
+  delegateEnabled?: boolean
 }
 
 export const Config: Schema<Config> = Schema.object({
   providers: Schema.array(Schema.string()).default(['cloud-llm']),
-  baseUrl: Schema.string().default('https://api.deepseek.com'),
+  // §7.100: 默认空串 = delegate 模式哨兵。原默认 'https://api.deepseek.com'
+  // 会让"未配置云池"静默直连 DeepSeek（拿不到 key 才报错）；现在未配置
+  // 即继承宿主 profile 的提供商，显式配置 baseUrl 才走自研直连。
+  baseUrl: Schema.string().default('').description('OpenAI-compatible endpoint base; empty = delegate to the host profile provider (§7.100).'),
   apiKeyEnv: Schema.string().default('DEEPSEEK_API_KEY'),
   defaultModel: Schema.string().default('deepseek-chat'),
   temperature: Schema.number().description('Optional override for sample temperature.'),
+  delegateProvider: Schema.string().description('Delegate mode: explicit target provider route id.'),
+  delegateModel: Schema.string().description('Delegate mode: wire model override (beats host selection).'),
+  delegateEnabled: Schema.boolean().default(true).description('false = disable delegation; empty baseUrl then fails loudly.'),
 })
 
 export interface CloudLlmAdapter {
@@ -602,6 +620,355 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
   }
 }
 
+/* ════════════════════════════════════════════════════════════════════
+ * §7.100 DELEGATE MODE — "只需要配置 local-llm；宿主 profile 已配置的
+ * 模型提供商即 cloud-llm"。
+ *
+ * baseUrl 为空（Schema 默认）时注册的是这个纯转发适配器：`cloud-llm` 路由
+ * 保留（model-router / http-api / input-guard / patch 全按这个名字钉死，
+ * 不用改任何消费方），但 stream 时把请求转发给宿主已注册的 provider route
+ * —— key / OAuth / 凭据解析全归宿主 adapter（dsh-credentials 层），我们
+ * 不再碰任何 secret。直连模式（baseUrl 显式配置）行为完全不变。
+ *
+ * 解析链（每次 stream 调用求值，`llm/adapters-updated` 事件清缓存）：
+ *   1. delegateProvider（env 显式指定）→ 必须 live 且非自有路由，否则响亮失败
+ *   2. agentDefaultModel.currentSelection()（桌面 GUI 选的模型，volatile 实时）
+ *   3. live 拓扑探针：稳定云路由（deepseek-account / deepseek-official）优先，
+ *      其余按注册顺序（llm-pi-ai 用户路由等）
+ *   4. 都没有 → LlmError('NO_CLOUD_TARGET')。绝不返回零 chunk 的静默流
+ *      —— 那正是 §7.98 L2 "200 + 空回复" 的成因家族。
+ * 护栏：永不委托给 'cloud-llm'（自己，防递归）或 'local-llm'（LOCAL 池，
+ * 防 realm 语义反转）。委托流量只服务 SANITIZED/CLOUD 回答；意图分类与
+ * guard 检测按用户仲裁只吃本地模型，未配置即降级规则档。
+ * ════════════════════════════════════════════════════════════════════ */
+
+export interface CloudDelegateTarget {
+  /** Live host route to forward to. */
+  provider: string
+  /** Wire model; undefined = resolve at stream time (host first model id). */
+  model?: string
+  /** Which resolution step produced this — forensic provenance in audit. */
+  source: 'env' | 'selection' | 'probe'
+}
+
+/** Minimal live-topology surface the delegate needs from ctx.llm. */
+interface DelegateLlmLike {
+  listProviders(): Array<{ id: string; name: string }>
+  stream(options: GenerateOptions): AsyncIterable<StreamChunk> | Promise<AsyncIterable<StreamChunk>>
+  listModels(provider: string): Promise<readonly LlmModelInfo[]>
+  resolveModelInfo?(provider: string, model: string, signal?: AbortSignal): Promise<LlmResolvedModelInfo>
+}
+
+/** Structural view of `@deepseek-ai/dsh-agent-default-model`'s service. */
+interface AgentDefaultModelLike {
+  currentSelection(): { provider?: string; model?: string } | undefined
+}
+
+export interface DelegateAccessors {
+  llm: DelegateLlmLike
+  /** Soft dep: absent in minimal/headless graphs without dsh-base. */
+  getAgentDefaultModel(): AgentDefaultModelLike | undefined
+}
+
+interface DelegateConfigLike {
+  /** Own route ids (the cloud-llm set) — recursion guard. */
+  providers: string[]
+  delegateProvider?: string
+  delegateModel?: string
+  delegateEnabled?: boolean
+}
+
+/** Stable dsh-base cloud routes win over user-defined pi-ai keys (registry
+ *  order alone would make the pick depend on mount timing). */
+const DELEGATE_PRIORITY = ['deepseek-account', 'deepseek-official']
+
+/**
+ * Pure resolution probe — exported for input-guard's `cloudAvailable()`
+ * (same chain, sync only: no async model fetch). Returns null when no
+ * usable cloud target exists.
+ */
+export function probeCloudTarget(
+  accessors: DelegateAccessors,
+  cfg: DelegateConfigLike,
+): CloudDelegateTarget | null {
+  if (cfg.delegateEnabled === false) return null
+  const own = new Set<string>([...cfg.providers, 'local-llm'])
+  let live: string[]
+  try {
+    live = accessors.llm.listProviders().map((p) => p.id)
+  } catch {
+    return null
+  }
+  const usable = live.filter((id) => !own.has(id))
+  const modelOverride = (cfg.delegateModel ?? '').trim()
+
+  // Step 1: explicit operator intent — honored or loud failure, never silently skipped.
+  const dp = (cfg.delegateProvider ?? '').trim()
+  if (dp.length > 0) {
+    if (own.has(dp) || !usable.includes(dp)) return null
+    return { provider: dp, model: modelOverride.length > 0 ? modelOverride : undefined, source: 'env' }
+  }
+
+  // Step 2: the host profile's live selection (Desktop GUI model picker).
+  let selection: { provider?: string; model?: string } | undefined
+  try {
+    selection = accessors.getAgentDefaultModel()?.currentSelection()
+  } catch {
+    selection = undefined
+  }
+  if (
+    selection
+    && typeof selection.provider === 'string'
+    && selection.provider.length > 0
+    && usable.includes(selection.provider)
+  ) {
+    const selModel = typeof selection.model === 'string' && selection.model.length > 0 ? selection.model : undefined
+    return { provider: selection.provider, model: modelOverride.length > 0 ? modelOverride : selModel, source: 'selection' }
+  }
+
+  // Step 3: live-topology probe, stable ids first.
+  const ordered = [
+    ...DELEGATE_PRIORITY.filter((id) => usable.includes(id)),
+    ...usable.filter((id) => !DELEGATE_PRIORITY.includes(id)),
+  ]
+  if (ordered.length > 0) {
+    return { provider: ordered[0], model: modelOverride.length > 0 ? modelOverride : undefined, source: 'probe' }
+  }
+  return null
+}
+
+export class CloudLlmDelegateAdapterImpl extends LlmAdapter {
+  private readonly providersList: string[]
+  private readonly cfg: DelegateConfigLike
+  private readonly accessors: DelegateAccessors
+  private readonly auditLog: AuditLike | undefined
+  private readonly inputGuard: InputGuardLike | undefined
+  private readonly logger: LoggerLike | undefined
+
+  /** Cached probe result (undefined = not probed yet; null = probed, none). */
+  private targetCache: CloudDelegateTarget | null | undefined
+  /** provider → first advertised model id, so stream() never re-fetches lists. */
+  private readonly modelIdCache = new Map<string, string>()
+
+  constructor(
+    config: DelegateConfigLike,
+    accessors: DelegateAccessors,
+    auditLog?: AuditLike,
+    inputGuard?: InputGuardLike,
+    logger?: LoggerLike,
+  ) {
+    super()
+    this.providersList = [...config.providers]
+    this.cfg = config
+    this.accessors = accessors
+    this.auditLog = auditLog
+    this.inputGuard = inputGuard
+    this.logger = logger
+  }
+
+  private audit(level: 'debug' | 'info' | 'warn' | 'error' | 'security', kind: string, payload: Record<string, unknown>): void {
+    if (!this.auditLog) return
+    void this.auditLog.log({ level, kind, source: 'cloud-llm-adapter', payload }).catch(() => {})
+  }
+
+  /** `llm/adapters-updated` sink: drop cached target + model ids so the
+   *  next call re-probes the new topology (host route churn is normal —
+   *  llm-pi-ai itself re-registers via handle.replace on settings edits). */
+  invalidateTopology(): void {
+    this.targetCache = undefined
+    this.modelIdCache.clear()
+  }
+
+  private resolveTarget(): CloudDelegateTarget | null {
+    if (this.targetCache === undefined) {
+      this.targetCache = probeCloudTarget(this.accessors, this.cfg)
+    }
+    return this.targetCache
+  }
+
+  get providers(): string[] {
+    return [...this.providersList]
+  }
+
+  override providerInfo(provider: string): LlmProviderInfo {
+    return { id: provider, name: provider }
+  }
+
+  override async listModels(_provider: string): Promise<readonly LlmModelInfo[]> {
+    const target = this.resolveTarget()
+    if (!target) return []
+    try {
+      return await this.accessors.llm.listModels(target.provider)
+    } catch {
+      return []
+    }
+  }
+
+  override async resolveModel(
+    provider: string,
+    model: string,
+    signal?: AbortSignal,
+  ): Promise<LlmResolvedModelInfo> {
+    const target = this.resolveTarget()
+    if (target && this.accessors.llm.resolveModelInfo) {
+      try {
+        const info = await this.accessors.llm.resolveModelInfo(target.provider, target.model ?? model, signal)
+        // Re-label onto our route id; the caller selected 'cloud-llm'.
+        // contextWindow rides along — §7.43 compaction reads it off this return.
+        return { ...info, provider }
+      } catch {
+        /* fall through to static shape */
+      }
+    }
+    return { provider, id: model, name: model, context: { contextWindow: 65536 } }
+  }
+
+  private async firstModelId(target: CloudDelegateTarget): Promise<string | undefined> {
+    const cached = this.modelIdCache.get(target.provider)
+    if (cached) return cached
+    try {
+      const models = await this.accessors.llm.listModels(target.provider)
+      const first = models[0]?.id
+      if (first) this.modelIdCache.set(target.provider, first)
+      return first
+    } catch {
+      return undefined
+    }
+  }
+
+  override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+    const target = this.resolveTarget()
+    if (!target) {
+      this.logger?.error?.(
+        `[cloud-llm-adapter] NO_CLOUD_TARGET sessionId=${(options as { sessionId?: string }).sessionId ?? 'unknown'} provider=${options.provider} delegateEnabled=${this.cfg.delegateEnabled !== false}`,
+      )
+      this.audit('error', 'llm.cloud.delegate.unavailable', {
+        provider: options.provider,
+        model: options.model,
+        delegateProvider: this.cfg.delegateProvider ?? '',
+        hint: 'configure CLOUD_LLM_BASEURL (direct pool), select a model in the host profile, or set DSH_EDGE_CLOUD_DELEGATE=false',
+      })
+      throw new LlmError(
+        'cloud-llm-adapter: no cloud provider available (delegate mode). '
+        + 'Configure CLOUD_LLM_BASEURL for a direct pool, select a model in the host profile, '
+        + 'or set DSH_EDGE_CLOUD_DELEGATE=false to restore the §7.35 downgrade-to-LOCAL semantics.',
+        'NO_CLOUD_TARGET',
+      )
+    }
+
+    const wireModel = target.model ?? (await this.firstModelId(target)) ?? options.model
+    const sessionId = (options as { sessionId?: string }).sessionId ?? 'unknown'
+
+    // Orphan-tool-call wash (2026-08-31 fix, same rationale as direct mode):
+    // run it before forwarding so the host adapter sees clean history too.
+    let forwardMessages = options.messages
+    if (this.inputGuard) {
+      const result = this.inputGuard.sanitizeOrphanToolCalls(
+        options.messages as unknown as ReadonlyArray<Record<string, unknown>>,
+        (options as { sessionId?: string }).sessionId,
+      )
+      forwardMessages = result.messages as unknown as typeof options.messages
+    }
+
+    this.audit('info', 'llm.cloud.delegate.resolved', {
+      from: 'cloud-llm',
+      toProvider: target.provider,
+      toModel: wireModel,
+      source: target.source,
+      sessionId,
+      messageCount: options.messages.length,
+    })
+    try {
+      this.logger?.info?.(
+        `[cloud-llm-adapter] DELEGATE start sessionId=${sessionId} from=cloud-llm to=${target.provider}/${wireModel} source=${target.source} messageCount=${options.messages.length}`,
+      )
+    } catch { /* debug only */ }
+
+    const start = Date.now()
+    let assembledLen = 0
+    let sawText = false
+    let sawToolCall = false
+    let finishKind: 'stop' | 'length' | 'tool-calls' | 'error' | 'aborted' | string | undefined
+
+    try {
+      const streamRaw = this.accessors.llm.stream({
+        ...options,
+        messages: forwardMessages,
+        provider: target.provider,
+        model: wireModel,
+      })
+      // §7.37 compat: llm.stream() may be a thenable returning the iterable.
+      const stream = (streamRaw != null && typeof (streamRaw as { then?: unknown }).then === 'function')
+        ? await (streamRaw as Promise<AsyncIterable<StreamChunk>>)
+        : streamRaw as AsyncIterable<StreamChunk>
+
+      // Forward verbatim — the host adapter synthesizes its own terminal
+      // chunks; we must NOT append terminalChunks (would double the finish).
+      for await (const chunk of stream) {
+        if (chunk.type === 'text-delta') {
+          sawText = true
+          assembledLen += chunk.text.length
+        } else if (chunk.type === 'tool-call-delta') {
+          sawToolCall = true
+        } else if (chunk.type === 'finish') {
+          finishKind = (chunk.reason as { kind?: string } | undefined)?.kind
+        }
+        yield chunk
+      }
+    } finally {
+      const durationMs = Date.now() - start
+      this.audit('info', 'llm.cloud.delegate.end', {
+        from: 'cloud-llm',
+        toProvider: target.provider,
+        toModel: wireModel,
+        sessionId,
+        durationMs,
+        resultLen: assembledLen,
+        sawText,
+        sawToolCall,
+        finishKind,
+      })
+      try {
+        this.logger?.info?.(
+          `[cloud-llm-adapter] DELEGATE done sessionId=${sessionId} from=cloud-llm to=${target.provider}/${wireModel} source=${target.source} durationMs=${durationMs} resultLen=${assembledLen} finishKind=${finishKind ?? 'unknown'}`,
+        )
+      } catch { /* debug only */ }
+    }
+
+    // §7.47.5 runaway parity: delegated cloud models loop tool-calls the same
+    // way our direct client saw with DeepSeek — same per-session counter.
+    if (finishKind === 'tool-calls') {
+      if (!sawText) {
+        const consecutiveCount = bumpSessionToolCallCount(options.sessionId)
+        const sessionKeyForLog = typeof options.sessionId === 'string' && options.sessionId.length > 0
+          ? options.sessionId
+          : 'default'
+        if (consecutiveCount > MAX_CONSECUTIVE_TOOL_CALLS) {
+          this.audit('warn', 'llm.cloud.max_turns_exceeded', {
+            provider: 'cloud-llm',
+            toProvider: target.provider,
+            model: wireModel,
+            sessionId: sessionKeyForLog,
+            consecutiveCount,
+          })
+          this.logger?.error?.(
+            `[cloud-llm-adapter] per-session max-turns exceeded (session=${sessionKeyForLog}, count=${consecutiveCount}/${MAX_CONSECUTIVE_TOOL_CALLS})`,
+          )
+          resetSessionToolCallCount(options.sessionId)
+          throw new LlmError(
+            `cloud-llm-adapter: per-session max-turns exceeded (count=${consecutiveCount})`,
+            'MAX_TURNS_EXCEEDED',
+          )
+        }
+      } else {
+        resetSessionToolCallCount(options.sessionId)
+      }
+    } else if (finishKind === 'stop' || finishKind === 'length') {
+      resetSessionToolCallCount(options.sessionId)
+    }
+  }
+}
+
 /** Read an env-slot key, throwing on absence is left to the caller. */
 function readApiKey(slot: string): string | undefined {
   if (typeof process === 'undefined' || !process.env) return undefined
@@ -618,14 +985,76 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
   // 时 inputGuard.sanitizeOrphanToolCalls 自身也 pass-through。
   const inputGuard = (ctx as unknown as { inputGuard?: InputGuardLike }).inputGuard
   const logger = ctx.logger as LoggerLike | undefined
-  const adapter = new CloudLlmAdapterImpl(config, auditLog, inputGuard, logger)
+
+  // §7.100: baseUrl 空（Schema 默认）= delegate 模式；显式配置 = 直连不变。
+  const baseUrl = typeof config.baseUrl === 'string' ? config.baseUrl.trim() : ''
+  const delegateMode = baseUrl.length === 0
+
   const llm = (ctx as unknown as {
-    llm: { registerAdapter(providers: string[], adapter: LlmAdapter): { (): void } }
+    llm: {
+      registerAdapter(providers: string[], adapter: LlmAdapter): { (): void }
+      listProviders?(): Array<{ id: string; name: string }>
+      stream?(options: GenerateOptions): AsyncIterable<StreamChunk> | Promise<AsyncIterable<StreamChunk>>
+      listModels?(provider: string): Promise<readonly LlmModelInfo[]>
+      resolveModelInfo?(provider: string, model: string, signal?: AbortSignal): Promise<LlmResolvedModelInfo>
+    }
   }).llm
-  ctx.logger?.info?.(`[cloud-llm-adapter] Registering adapter for providers: ${config.providers?.join(', ')}`)
-  const registration = llm.registerAdapter(config.providers, adapter)
+
+  let delegate: CloudLlmDelegateAdapterImpl | undefined
+  const adapter: CloudLlmAdapterImpl | CloudLlmDelegateAdapterImpl = delegateMode
+    ? (() => {
+        const accessors: DelegateAccessors = {
+          llm: llm as unknown as DelegateLlmLike,
+          // soft dep: dsh-base absent (minimal graphs) → undefined, probe skips to step 3.
+          getAgentDefaultModel: () => {
+            try {
+              return (ctx as unknown as { get?: (n: string) => unknown }).get?.('agentDefaultModel') as
+                AgentDefaultModelLike | undefined
+            } catch {
+              return undefined
+            }
+          },
+        }
+        delegate = new CloudLlmDelegateAdapterImpl(config, accessors, auditLog, inputGuard, logger)
+        return delegate
+      })()
+    : new CloudLlmAdapterImpl(config, auditLog, inputGuard, logger)
+
+  // §7.100 热更新：路由拓扑变更（宿主 pi-ai replace / adapter 装卸）→ 清缓存，
+  // 下次 stream 重新探针。agentDefaultModel 是 volatile Config，GUI 换模型无需订阅。
+  const offAdaptersUpdated = delegateMode && typeof ctx.on === 'function'
+    ? ctx.on('llm/adapters-updated', () => { delegate?.invalidateTopology() })
+    : undefined
+
+  ctx.logger?.info?.(
+    `[cloud-llm-adapter] Registering ${delegateMode ? 'DELEGATE' : 'DIRECT'} adapter for providers: ${config.providers?.join(', ')}`,
+  )
+  let registration: { (): void }
+  try {
+    registration = llm.registerAdapter(config.providers, adapter)
+  } catch (err: any) {
+    // A user-defined pi-ai route literally named 'cloud-llm' (or a stale
+    // registration) wins the name; that live route legitimately IS the cloud
+    // pool then. Degrade loudly instead of crashing the whole bundle.
+    const isDuplicate = err?.code === 'DUPLICATE_ADAPTER'
+      || String(err?.message ?? err).includes('DUPLICATE_ADAPTER')
+      || String(err?.message ?? err).includes('already has an adapter')
+    if (isDuplicate) {
+      logger?.error?.(`[cloud-llm-adapter] DUPLICATE_ADAPTER on ${config.providers.join(',')}; host route owns it, edge adapter stands down`)
+      auditLog?.log({
+        level: 'security',
+        kind: 'llm.cloud.registration.duplicate',
+        source: 'cloud-llm-adapter',
+        payload: { providers: config.providers, mode: delegateMode ? 'delegate' : 'direct', error: String(err?.message ?? err) },
+      }).catch(() => {})
+      offAdaptersUpdated?.()
+      return async () => {}
+    }
+    throw err
+  }
   ctx.logger?.info?.(`[cloud-llm-adapter] Adapter registered successfully`)
   return async () => {
     registration()
+    offAdaptersUpdated?.()
   }
 }

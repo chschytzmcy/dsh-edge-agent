@@ -616,6 +616,9 @@ export class PromptGuardServiceImpl extends Service implements PromptGuardServic
     let responseText = ''
     let chunks = 0
     const MAX_ASSEMBLED = cfg.modelDetectionMaxInputLength * 4   // default 8000 chars
+    // §7.100: error/aborted finish chunk capture (provider 侧故障不 throw，
+    // 被上游转成 terminal finish)。声明在 try 外，检测在 try 后处理。
+    let providerFailure: { code?: string; message?: string } | undefined
 
     try {
       const streamRaw = this.llm.stream({
@@ -642,6 +645,11 @@ export class PromptGuardServiceImpl extends Service implements PromptGuardServic
         chunks++
         if (chunk.type === 'text-delta' && responseText.length < MAX_ASSEMBLED) {
           responseText += (chunk as { text: string }).text
+        } else if (chunk.type === 'finish') {
+          const reason = (chunk as { reason?: { kind?: string; failure?: { code?: string; message?: string } } }).reason
+          if (reason?.kind === 'error' || reason?.kind === 'aborted') {
+            providerFailure = reason.failure
+          }
         }
       }
     } catch (err: any) {
@@ -658,6 +666,21 @@ export class PromptGuardServiceImpl extends Service implements PromptGuardServic
       return null
     } finally {
       clearTimeout(timer)
+    }
+
+    // §7.100: provider 侧故障（error/aborted finish chunk，不 throw）显式记
+    // provider_error，保持 fail-open（返回 null = 放行），但 ops log 能区分
+    // "provider 挂了" vs "模型判定无风险" vs "模型话看不懂"。
+    if (providerFailure && responseText.length === 0) {
+      await this.audit('warn', 'guard.model-detect.provider_error', {
+        sessionId,
+        durationMs: Date.now() - t0,
+        provider: cfg.modelDetectionProvider,
+        code: providerFailure.code ?? 'UNKNOWN',
+        error: (providerFailure.message ?? '').slice(0, 200),
+        chunks,
+      })
+      return null
     }
 
     // 4) Parse the JSON. qwen3-4b usually returns clean JSON, but allow

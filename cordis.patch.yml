@@ -37,17 +37,11 @@
   config:
     persona: !!js process.env.DSH_EDGE_PERSONA ?? 'You are edge-agent, a privacy-first AI assistant running on the user\'s edge device. Answer in the user\'s language. Be concise and helpful. You have access to local tools for file operations and calculations when appropriate. For knowledge questions, current events, or complex reasoning, provide comprehensive answers. Use the tool registry (bash, read, write, edit, glob, grep, todo_write, web_search, web_fetch, skill, send_message, interrupt_agent, subagent_fork, local_file_read, local_file_write, local_calculate) when an action is required; call the matching tool with the correct parameter shape and never invent tool names. The `skill` tool loads detailed instructions for a named capability (e.g. lark-doc, lark-calendar); once you call skill({name}) and receive its content, use that content immediately to answer the user\'s question — do NOT call the same skill again. For local host queries (the user\'s own IP, hostname, disk, memory, kernel, running processes), call the `bash` tool directly with read-only commands — `ip addr`, `hostname -I`, `ifconfig`, `cat /proc/net/...`, `uname -a`, `df -h`, `free -h`, `uptime`, `ps aux`. Reserve the `skill` tool for explicit capability names the user invokes (e.g. `ets-discover` for scanning OTHER 密盒 devices on the LAN, `lark-doc` for Lark documents); do NOT use `ets-discover` to answer "my IP" or "本机局域网IP" — ets-discover broadcasts and returns other devices\' IPs, not the host\'s.'
 
-# Native DeepSeek adapter for the cloud realm. The edge agent always
-# prefers local-first; this row exists so cloud-llm-adapter can reach it.
-# The DSH setting (apiKeyEnv) is honored; no key is stored in this bundle.
-- id: llm-deepseek
-  config:
-    apiKeyEnv: !!js process.env.DSH_EDGE_CLOUD_KEY_ENV ?? 'DEEPSEEK_API_KEY'
-    # §7.75: 跟 local-llm-adapter 对称读 DSH_EDGE_CLOUD_LLM_BASEURL；
-    # 兜底 DEEPSEEK_BASE_URL（DSH 黑名单精确名，仅在 inherited env 出现）
-    baseURL: !!js process.env.DSH_EDGE_CLOUD_LLM_BASEURL ?? process.env.DEEPSEEK_BASE_URL
-    thinking: enabled
-    reasoningEffort: max
+# §7.100: 删除了 llm-deepseek 的 config override 行。宿主云路由
+# （deepseek-official / deepseek-account）现在作为 cloud-llm delegate 的
+# 转发目标，key / baseURL / reasoning 全归宿主自己的配置层（dsh-credentials
+# + profile patch），edge 侧不再双头管理。需要 edge 自有云池的部署请显式
+# 配置 CLOUD_LLM_*（走 cloud-llm-adapter 直连模式）。
 
 # The edge agent creates/resumes its agent at runtime; no declarative
 # agents are started at boot, and the configured agent list stays the
@@ -77,12 +71,11 @@
     mode: !!js "process.platform === 'win32' ? 'danger-full-access' : (process.env.DSH_EDGE_PERMISSION_MODE ?? 'workspace-write')"
     workspaceRoot: !!js process.cwd()
 
-# Force the agent loop to a provider that edge-agent registered. The
-# default in dsh-base is `deepseek-official`, which we just disabled.
-- id: agent-default-model
-  config:
-    provider: !!js process.env.DSH_EDGE_PROVIDER ?? 'cloud-llm'
-    model: !!js process.env.DSH_EDGE_MODEL ?? 'deepseek-chat'
+# §7.100: 删除了 agent-default-model override 行。宿主 profile 自己的选择
+# （桌面 GUI saveSelection / dsh-base shipped deepseek-official）现在直接生效；
+# http-api 路径不吃这个 row（intent resolveRoute → cloud-llm/local-llm，
+# cloud-llm 在 delegate 模式下转发到宿主选择）——"profile 已配置模型提供商
+# 就把它当 cloud-llm"的落点就在 delegate adapter，而不是改宿主全局默认。
 
 # Persona + agent-presets delegation
 #
@@ -112,10 +105,9 @@
 # to the default standalone profile directory, not a profile name; the
 # bundle itself lives at the repo root.
 
-- id: llm-deepseek
-  disabled: true
-  # edge-agent owns the CLOUD provider route; the future A4 (OHTTP)
-  # stage will swap the wire transport under cloud-llm-adapter.
+# §7.100: 撤销了 llm-deepseek 的 disable —— 宿主云路由现在是 cloud-llm
+# delegate 的转发目标，必须保持挂载。A4 (OHTTP) 届时替换的是 delegate
+# 之下的 wire transport，不再是"edge 独占云路由"。
 
 - id: dsh-edge-agent
   disabled: true
@@ -179,7 +171,7 @@
 - id: web-search-deepseek
   # 2026-09-04: RE-ENABLED. The 2026-09-03 comment claimed peer dep
   # `@deepseek-ai/dsh-environment` was missing. Wrong — actual peer deps are
-  # `dsh-launch-environment`, `dsh-web`, `dsh-agent`, all in dsh scope (0.1.2-rc.1).
+  # `dsh-launch-environment`, `dsh-web`, `dsh-agent`, all in dsh scope (0.2.x line).
   # Without this plugin, `deepseek-official` search provider is never registered,
   # so web_search tool calls fail with "provider not registered".
   # 2026-09-18 (§7.82): DISABLED —— web-search-tavily-bocha 接管 searchProvider
@@ -378,12 +370,22 @@
       inject: [llm, auditLog]
       config:
         providers: [cloud-llm]
-        # §7.75: 跟 local-llm-adapter 对称读 DSH_EDGE_CLOUD_LLM_BASEURL；
-        # 兜底链 = DSH_EDGE_CLOUD_LLM_BASEURL → DEEPSEEK_BASE_URL（inherited env）→
-        # plugin Schema default 'https://api.deepseek.com'
-        baseUrl: !!js process.env.DSH_EDGE_CLOUD_LLM_BASEURL ?? process.env.DEEPSEEK_BASE_URL ?? 'https://api.deepseek.com'
+        # §7.100: 兜底链改为 `||`（空串视为未配置，根治 .env.sh export "" +
+        # patch `??` 把空串当值的洞）。空 = DELEGATE 模式：cloud-llm 路由
+        # 转发到宿主 profile 已配置的模型提供商（GUI selection > live 宿主
+        # 路由），key/凭据归宿主 adapter。显式配置 CLOUD_LLM_BASEURL 才走
+        # 自研直连（行为与 §7.83 一致）。
+        baseUrl: !!js process.env.DSH_EDGE_CLOUD_LLM_BASEURL || process.env.DEEPSEEK_BASE_URL || ''
+        # §7.100 delegate 旋钮（全可选）：
+        #   DSH_EDGE_CLOUD_DELEGATE=false      → 禁用委托（LOCAL-only 部署；
+        #     恢复 §7.35 "云不可用→降级 LOCAL" 语义）
+        #   DSH_EDGE_CLOUD_DELEGATE_PROVIDER   → 显式指定目标路由 id
+        #   DSH_EDGE_CLOUD_DELEGATE_MODEL      → wire model override（压过 GUI selection.model）
+        delegateProvider: !!js process.env.DSH_EDGE_CLOUD_DELEGATE_PROVIDER || undefined
+        delegateModel: !!js process.env.DSH_EDGE_CLOUD_DELEGATE_MODEL || undefined
+        delegateEnabled: !!js process.env.DSH_EDGE_CLOUD_DELEGATE !== 'false'
         # §7.83: 改读 DSH_EDGE_CLOUD_KEY_ENV 跟 baseUrl 对称(原写死 DEEPSEEK_API_KEY,
-        # 导致切到 Aliyun token-plan 端点时仍用 DeepSeek key → 401)
+        # 导致切到 Aliyun token-plan 端点时仍用 DeepSeek key → 401)。仅直连模式消费。
         apiKeyEnv: !!js process.env.DSH_EDGE_CLOUD_KEY_ENV ?? 'DEEPSEEK_API_KEY'
         defaultModel: !!js process.env.DSH_EDGE_MODEL ?? 'deepseek-chat'
 

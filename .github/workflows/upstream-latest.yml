@@ -1,0 +1,72 @@
+# Track the newest upstream DSH release line without pinning it.
+#
+# This workflow is deliberately **not** a release gate. It runs on a schedule
+# (and manually) against `@latest`, updates the lockfile in the ephemeral
+# runner, then compiles + runs the compatibility gates. A failure here means
+# upstream changed something that needs an adapter migration — exactly the
+# signal the "follow latest, don't pin" policy needs.
+#
+# The normal CI (`ci.yml`) stays on the committed lockfile for reproducibility.
+
+name: upstream-latest
+
+on:
+  schedule:
+    # Mondays 03:17 UTC — off-peak, after most weekend releases.
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  latest:
+    name: compile + gates against @latest
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.20'
+          cache: 'pnpm'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+
+      - name: Install committed lockfile
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Move upstream packages to @latest
+        # Keep the rest of the toolchain stable; only DSH/framework packages
+        # are part of the "follow latest" policy.
+        run: |
+          pnpm update --latest \
+            '@deepseek-ai/dsh-*' \
+            '@deepseek-ai/cordis' \
+            '@deepseek-ai/schemastery'
+
+      - name: Show resolved versions
+        run: |
+          node -e "const p=require('./node_modules/@deepseek-ai/dsh-agent/package.json'); console.log('dsh-agent', p.version)"
+          node -e "const p=require('./node_modules/@deepseek-ai/cordis/package.json'); console.log('cordis', p.version)"
+          node -e "const p=require('./node_modules/@deepseek-ai/schemastery/package.json'); console.log('schemastery', p.version)"
+
+      - name: Compile
+        run: pnpm run compile
+
+      - name: Compatibility gates
+        run: |
+          pnpm run verify:boundary
+          pnpm run verify:contract
+          pnpm run verify:patch-surface
+          pnpm run verify:plugin-spec
+
+      - name: Unit tests
+        run: pnpm test -- --run

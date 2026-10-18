@@ -105,5 +105,9 @@ export * from './plugin-host.js'
 // http-api re-exports: skip `resolveRoute` — it collides with the canonical
 // `resolveRoute` from model-router.js (TS2308). http-api's local copy is only
 // exported for unit tests; consumers should use model-router's version.
-export { name as httpApiName, inject as httpApiInject, Config as HttpApiConfig, HttpApiService, HttpApiServiceImpl, apply as httpApiApply } from './http-api.js'
+export { name as httpApiName, inject as httpApiInject, Config as HttpApiConfig, HttpApiServiceImpl, apply as httpApiApply } from './http-api.js'
+// `HttpApiService` is an interface, not a runtime value. It must be a
+// type-only re-export; a value re-export makes `tsx`/esbuild throw
+// "does not provide an export named 'HttpApiService'" when importing src/.
+export type { HttpApiService } from './http-api.js'
 export * from './llm-adapters.js'

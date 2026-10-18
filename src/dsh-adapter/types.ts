@@ -38,6 +38,11 @@ export type {
   PreparedLlmCall,
   BlockAssembler,
   LlmError,
+  // §7.100: delegate-mode surface — provider registry + topology handles.
+  LlmProviderInfo,
+  LlmConfigurableProvider,
+  AdapterRegistrationHandle,
+  LlmFailure,
 } from '@deepseek-ai/dsh-llm'
 
 export type {

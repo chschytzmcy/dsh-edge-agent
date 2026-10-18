@@ -80,8 +80,10 @@ declare -i TOTAL_ISSUES=0
 declare -i TOTAL_WARNINGS=0
 declare -A PROFILE_ISSUES
 
-# 项目声明的 upstream 版本
-UPSTREAM_VALIDATED_VERSION=$(grep -oP "UPSTREAM_VALIDATED_VERSION\s*=\s*'\K[^']+" \
+# 项目声明的 upstream 兼容窗口（不锁版本：最低 / 最后实测）
+UPSTREAM_MIN_VERSION=$(grep -oP "UPSTREAM_MIN_VERSION\s*=\s*'\K[^']+" \
+  "$REPO_ROOT/src/dsh-adapter/contract.ts" 2>/dev/null || echo "unknown")
+UPSTREAM_TESTED_VERSION=$(grep -oP "UPSTREAM_TESTED_VERSION\s*=\s*'\K[^']+" \
   "$REPO_ROOT/src/dsh-adapter/contract.ts" 2>/dev/null || echo "unknown")
 
 # dsh 全局实际版本
@@ -96,22 +98,28 @@ fi
 echo "╚════════════════════════════════════════════════════════════╝"
 echo
 echo "dsh 全局版本:     $DSH_GLOBAL_VERSION"
-echo "项目验证版本:     $UPSTREAM_VALIDATED_VERSION"
+echo "项目最低版本:     $UPSTREAM_MIN_VERSION"
+echo "项目实测版本:     $UPSTREAM_TESTED_VERSION"
 echo "扫描 profiles:    ${PROFILES[*]}"
 echo "自动修复:         $([ $AUTOFIX -eq 1 ] && echo ✓ 开启 || echo ✗ 关闭)"
 echo
 
 # ── [G] 版本一致性 ──────────────────────────────────────────
 echo "═══ [G] Upstream 版本一致性 ═══"
-if [ "$UPSTREAM_VALIDATED_VERSION" != "unknown" ] && [ "$DSH_GLOBAL_VERSION" != "unknown" ]; then
-  if [ "$UPSTREAM_VALIDATED_VERSION" = "$DSH_GLOBAL_VERSION" ]; then
-    echo "  ✓ 项目 contract.ts ($UPSTREAM_VALIDATED_VERSION) = dsh 全局 ($DSH_GLOBAL_VERSION)"
-  else
-    echo "  ⚠ 版本不一致！"
-    echo "    contract.ts:     $UPSTREAM_VALIDATED_VERSION"
+if [ "$UPSTREAM_MIN_VERSION" != "unknown" ] && [ "$DSH_GLOBAL_VERSION" != "unknown" ]; then
+  LOWEST=$(printf '%s\n%s\n' "$UPSTREAM_MIN_VERSION" "$DSH_GLOBAL_VERSION" | sort -V | head -1)
+  if [ "$LOWEST" != "$UPSTREAM_MIN_VERSION" ]; then
+    echo "  ✗ dsh 全局版本低于最低兼容线！"
+    echo "    contract.ts min: $UPSTREAM_MIN_VERSION"
     echo "    dsh --version:   $DSH_GLOBAL_VERSION"
-    echo "    → 升级 dsh 或更新 contract.ts 对齐"
+    echo "    → 升级 dsh：npm install -g @deepseek-ai/dsh@next"
     TOTAL_ISSUES+=1
+  elif [ "$DSH_GLOBAL_VERSION" = "$UPSTREAM_TESTED_VERSION" ]; then
+    echo "  ✓ dsh 全局 ($DSH_GLOBAL_VERSION) = 项目实测版本"
+  else
+    echo "  ✓ dsh 全局 ($DSH_GLOBAL_VERSION) ≥ 最低线 ($UPSTREAM_MIN_VERSION)"
+    echo "    提示：高于实测版本 ($UPSTREAM_TESTED_VERSION)，按“跟随最新”策略允许；"
+    echo "    发布前请跑一次 boot smoke。"
   fi
 else
   echo "  ? 无法获取版本信息"
@@ -130,7 +138,7 @@ if [ "$SCENARIO" = "dsh-system" ]; then
     echo "  ✓ dsh 存在: $DSH_PATH"
   else
     echo "  ✗ dsh 未安装！"
-    echo "    → npm install -g @deepseek-ai/dsh@$UPSTREAM_VALIDATED_VERSION"
+    echo "    → npm install -g @deepseek-ai/dsh@next"
     TOTAL_ISSUES+=1
   fi
 
@@ -252,20 +260,21 @@ json.dump(d, open(p,'w'), indent=2); print('    → 已 strip（备份: ${PKG_JS
   # ── [B] 版本 skew ────────────────────────────────────────
   echo
   echo "  ── [B] 包版本 skew ──"
-  python3 - "$PKG_JSON" "$UPSTREAM_VALIDATED_VERSION" <<'PYEOF'
+  python3 - "$PKG_JSON" <<'PYEOF'
 import json, sys
-path, upstream = sys.argv[1], sys.argv[2]
+path = sys.argv[1]
 d = json.load(open(path))
-skew = []
+versions = {}
 for pkg, ver in d.get('dependencies', {}).items():
-    if pkg.startswith('@deepseek-ai/') and ver != upstream and not ver.startswith('file:'):
-        skew.append((pkg, ver, upstream))
-if not skew:
-    print("    ✓ 所有 @deepseek-ai/* 版本一致")
+    if pkg.startswith('@deepseek-ai/') and not ver.startswith('file:'):
+        versions[pkg] = ver
+uniq = sorted(set(versions.values()))
+if len(uniq) <= 1:
+    print(f"    ✓ 所有 @deepseek-ai/* 使用同一条版本线（{uniq[0] if uniq else 'none'}）")
 else:
-    print(f"    ⚠ {len(skew)} 个版本不一致：")
-    for pkg, ver, expected in skew:
-        print(f"      {pkg}: {ver}（应为 {expected}）")
+    print(f"    ⚠ {len(uniq)} 条不同版本线（允许不锁版本，但同一 profile 内应保持一条）：")
+    for pkg, ver in sorted(versions.items()):
+        print(f"      {pkg}: {ver}")
 PYEOF
   [ $? -eq 0 ] || true  # python exit code handled
 

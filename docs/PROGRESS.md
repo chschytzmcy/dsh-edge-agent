@@ -10303,3 +10303,158 @@ tool-runner / synthesis / 最终回复全在链路里),客户端调优第一次�
 (§7.83 教训点全在位);wire 直测 200/1.4s(`reasoning_content` 为非协议附加字段,adapter
 忽略);wrapper 重启后 boot 横幅确认新池、零 warn、`/v1/health` ok;
 L2 单点探活("What is 12*17?" → `"204"`,intent=CLOUD)后才挂全量。
+
+### §7.99 — 版本策略翻转:不锁上游版本,跟随最新 RC(2026-10-18)
+
+**用户决策**:本项目不锁定 DSH 版本,跟随最新版本走。原 `0.1.2-rc.1` 精确锁
+(peerDeps + `UPSTREAM_VALIDATED_VERSION`)全部作废。
+
+**代码改动**:
+
+1. `package.json` / `bundle-minimal/package.json`:
+   `@deepseek-ai/dsh-*` → `>=0.2.1-rc.2`;`cordis` → `>=4.0.5`;
+   `schemastery` → `>=3.18.5`。不再出现精确版本号。
+2. `contract.ts`:拆成 `UPSTREAM_MIN_VERSION`(最低兼容) +
+   `UPSTREAM_TESTED_VERSION`(最后实测)。`upstreamReport()` 只在
+   “低于最低线 / 多包版本不一致 / 缺包”时失败;高于实测版本仅 warning。
+   修掉原 `verify-upstream-contract.ts` 漏 `await` 导致门禁恒过的 bug。
+3. `http-api.ts`:DSH 0.2.x 移除了 `session/event assistant/chunk`,实时文本改由
+   `agent/assistant-stream` 的 `frame.type === 'chunk'` 提供;新增该监听,并按
+   `agent.session.id` 过滤,避免并发 SSE 串流。`session/event` 的 `turn/end`
+   也补了 session 过滤。
+4. `index.ts`:`HttpApiService` 改为 `export type`,修掉 tsx 下
+   “does not provide an export named 'HttpApiService'”。
+5. `scripts/reinstall-dsh.sh` 默认 `dsh@next` / `dsh-tui@latest`;
+   `scripts/dsh-systemic-health.sh` 改为最低/实测双版本语义。
+6. 新增 `docs/version-policy.md`,作为策略单一事实源。
+
+**验证(本机 macOS / Node 24.21.0 / DSH 0.2.1-rc.2)**:
+
+```text
+tsc -p tsconfig.json                         0
+verify-adapter-boundary                      OK (59 files)
+verify-upstream-contract                     OK (min/tested/installed = 0.2.1-rc.2)
+verify-patch-surface                         OK (19 inserts / 10 overrides / 31 disables)
+verify-plugin-spec                           OK (25 plugins / 31 exports)
+vitest run tests/unit                        45 files / 954 passed / 2 skipped
+```
+
+**已知遗留**:
+
+- `cordis.patch.yml` 不是版本无关的:0.2.1 headless 模板中仍有 8 个上游 row ID
+  不存在(`web-search`、`tool-str-replace-editor`、`tool-subagent-report`、
+  `tool-ralph`、`skill-badge`、`workflow-worker-thread`、
+  `tool-call-timeout-policy`、`dsh-tui-agent-presets`)。DSH loader 只打印
+  `entry not found` 并继续;这是“目标不存在就无操作”,但升级时需重新核对。
+- 下一步应加 `verify:surface`:用当前 `dsh --dump-default-config` 的 ID 集
+  对比 patch,把 row 改名/删除从静默警告变成可见报告。
+- 本机 vitest 需 ad-hoc 重签 Node + rollup native addon 才能启动(Team ID
+  签名问题),CI Linux 不受影响。
+
+### §7.100 — 配置面收敛:只配 local-llm,宿主 profile 提供商即 cloud-llm(2026-10-18)
+
+**用户决策**:① 部署只需配置 LOCAL_LLM_*,云池变可选;② 宿主 profile(桌面/web/tui)
+已配置模型提供商时,直接把它当 cloud-llm 用;③ 隐私仲裁:意图分类与 prompt-guard
+模型检测**只允许本地模型**,未配置本地端点即降级规则档,绝不借用宿主云模型。
+
+**设计:DELEGATE 适配器(路由名不变,消费方零改动)**
+
+`cloud-llm-adapter` 的 `Config.baseUrl` Schema 默认从 `https://api.deepseek.com`
+改为 `''`(委托哨兵)。空 → 注册 `CloudLlmDelegateAdapterImpl`:`cloud-llm` 路由
+保留(model-router / http-api resolveRoute / input-guard / patch 全按此名钉死),
+每次 stream 按四级链解析目标并 `ctx.llm.stream` 转发,**不碰任何 secret**(key/
+OAuth 归宿主 adapter 的 credentials seam 逐请求解析):
+
+1. `DSH_EDGE_CLOUD_DELEGATE_PROVIDER` 显式指定 → 必须 live 且非自有路由,否则响亮 null
+2. `ctx.get('agentDefaultModel').currentSelection()`(soft dep;桌面 GUI 模型选择器,
+   volatile Config 实时生效,GUI 换模型下一轮即跟,无需订阅)
+3. live 拓扑探针:`listProviders()` ∖ 自有 ∖ {local-llm},稳定 id
+   (deepseek-account / deepseek-official)优先,其余(llm-pi-ai 用户路由)按注册序
+4. 都没有 → `LlmError('NO_CLOUD_TARGET')`(显式,绝不零 chunk 静默流)
+
+护栏:永不委托给 `cloud-llm`(防自递归)/ `local-llm`(防 realm 语义反转)。
+`DSH_EDGE_CLOUD_DELEGATE=false` = LOCAL-only 部署禁用委托 → input-guard
+`cloudAvailable()` 判不可用 → 恢复 §7.35 降级 LOCAL 语义。
+`llm/adapters-updated` 事件清缓存(pi-ai 路由 churn 是常态,llm-pi-ai 自己就用
+`AdapterRegistrationHandle.replace` 重注册)。委托流转发前照样过
+`sanitizeOrphanToolCalls`;§7.47.5 runaway tool-call 计数对称保留。
+`registerAdapter` 撞名(用户路由恰叫 cloud-llm)→ DUPLICATE_ADAPTER 记
+security 事件 + 退让(活的宿主路由即云池),不再 crash bundle。
+
+**顺带根治的两个既有洞**
+
+1. **空串 `??` 洞(§7.98 部署假阴性同族根因)**:`.env.sh` 老写法
+   `export X="${UNSET}"` 产出空串,patch 消费端全用 `??`(只跳 undefined 不跳
+   空串),"未配置"被当成"配置成空"。现在 `.env.sh` 全量改 `_export_if`
+   (空值保持 unset),cloud adapter 行改 `||` 链。stage 指针(GUARD/INTENT)
+   从"必配 ∈ {cloud-llm,local-llm}"放宽为"空 = Schema 默认"。
+2. **NO_ADAPTER 静默空回复家族**:adapter 失败被 dsh-llm 转成 terminal error
+   finish chunk(不 throw),http-api 旧代码只认 `blocked` → 客户端拿到
+   200 + 空 result(§7.98 L2 的机器形态)。现在:`session/event turn/end` 的
+   `kind:'error'` 携带的 LlmFailure 被捕获 —— 非流式空 result+error → **502
+   JSON(code/reason)**;流式 → **SSE error 帧**(替代 done)。intent-router /
+   prompt-guard 的 chunk 循环同样识别 error finish → 归因
+   `intent.llm.provider_error` / `guard.model-detect.provider_error`,不再把
+   基础设施故障误记成 'unclear'/'json-parse-failed'。model-router
+   `isAvailable`/`listDetailed` 改吃 `listProviders()` registry truth
+   (注册表不可读时回退 §7.4 config-membership,旧 fake 不破)。
+
+**patch 面反转(§7.100 的方向与 §7.35 时代相反,均为有意)**
+
+- 删 `llm-deepseek` config override 行(原 :43-50)——宿主云路由是委托目标,
+  baseURL/key/reasoning 归宿主配置层
+- 撤 `llm-deepseek` disable(原 :115-117)——宿主路由必须活着
+- 删 `agent-default-model` override(原 :82-85)——宿主自己的选择生效;
+  http-api 路径不吃这个 row(intent resolveRoute → cloud-llm delegate)
+- patch-surface 快照再生成:19 inserts / 8 overrides / 30 disables(原 19/10/31)
+- desktop-safe patch 新 insert `cloud-llm-adapter`(无 baseUrl → 委托)+
+  `local-llm-adapter` + `model-router`;桌面装完即得完整隐私管线:云回答走
+  GUI 所选模型(脱敏后),分类/检测走本地端点。仍未 start http-api、未动全局
+- `.env.example` 重写 §1:CLOUD 段变注释形态(默认委托;直连示例改
+  aliyun token-plan,替换过时的 MiniMax 段),新增 CLOUD_DELEGATE* 三旋钮说明
+
+**桌面/独立两种部署形态**
+
+| 形态 | 云池 | 分类/guard | LOCAL-intent |
+|---|---|---|---|
+| 独立 profile 只配 LOCAL_LLM_* | delegate 宿主(有 base 默认 deepseek-official)| local-llm(LLM 档)| local-llm |
+| 独立 profile 配了 CLOUD_LLM_* | 直连(§7.83 语义不变)| local-llm | local-llm |
+| 桌面 desktop-safe | delegate GUI 选择 | 本地(没配→规则档,仲裁钉死)| 本地(没配→显式报错)|
+| LOCAL-only 且 `CLOUD_DELEGATE=false` | 无云:SANITIZED/CLOUD 降级 LOCAL(§7.35 语义)| 同上 | 同上 |
+
+**验证(本机 macOS / node 24.21 / DSH 0.2.1-rc.2)**:
+
+```text
+tsc -p tsconfig.json                         0
+verify-adapter-boundary                      OK (59 files)
+verify-upstream-contract                     OK
+verify-patch-surface                         OK (19/8/30,新快照)
+verify-plugin-spec                           OK (25 plugins / 31 exports)
+.env.sh bash -n + 三 case 实跑(LOCAL-only→云 unset / 直连 / 委托 override)
+纯 node smoke(compiled lib,绕开本机 vitest 签名洞):
+  probe 解析链 8/8 · 转发+model 覆写 · NO_CLOUD_TARGET · listModels 兜底 ·
+  invalidateTopology · runaway 对称(21 连击触发)· apply 分派×3 ·
+  cloudAvailable 6/6 · chat 502 · completed-200 fence · SSE error 帧 · blocked 优先
+新增 vitest 文件 3 个(cloud-llm-delegate 17 用例 / cloud-available 8 /
+http-api-upstream-error 4)——本机 vitest 受 §7.99 记录的同款 Team ID 签名
+阻塞(分类器合理拒绝去签名绕过),数值断言与 smoke 同源,CI Linux 首跑对账。
+```
+
+**顺带修的既有 bug**:`composeAgentPreset` 的 `ctx.get('agentPresets')` 无
+try/catch ——Cordis 对未 inject 服务是 **throw**,无 dsh-agent-presets 的图上
+每次 POST /v1/chat 直接 500(fake ctx 忠实复现真行为时才暴露)。已按 :1764
+soft-dep idiom 补 catch。
+
+**已知遗留**:
+
+- 委托目标的凭据就绪是异步的(account 登录中/pi-ai 改 key):现按
+  "路由活着即可用"判定,失败由宿主 adapter 显式 error finish → 502/SSE error,
+  可观测不静默;后续可加 `credentials.describe` 级预检。
+- llm-pi-ai 用户路由候选排序暂用"稳定 id 优先 + 注册序";loopback/RFC1918
+  defaultBaseURL 降权启发式未做(listConfigurableProviders 数据在手)。
+- 桌面 GUI 原生聊天路径的意图分类/guard 与 http-api 路径共用 input-guard
+  hook,分类档位一致;但 webui turn 不写 `_edgeRoute`,realm 取证仍走 §7.43
+  fallback 语义,未变。
+- 委托流量二次进入 `llm/stream` waterfall(desanitize 过两遍)——占位符第一遍
+  已还原,第二遍 no-op;若 sanitizer 将来变 non-idempotent,需加转发深度标记。
+- README/ci.yml 的用例数标称待 CI 首跑实测刷新(48 文件,985 预期)。

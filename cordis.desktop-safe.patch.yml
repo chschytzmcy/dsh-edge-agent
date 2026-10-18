@@ -1,0 +1,222 @@
+# dsh-edge-agent — desktop-safe overlay
+#
+# This patch is intended for loading the bundle into an existing DSH Desktop /
+# Web profile through the Plugins page. Unlike the production `cordis.patch.yml`,
+# it **only inserts** the edge privacy stack. It does not rewrite host defaults:
+#
+#   - no system-prompt/persona override
+#   - no agent-default-model override
+#   - no approval/sandbox override
+#   - no session-root override
+#   - no http-api listener
+#   - no upstream tool/subagent/workflow disables
+#
+# What it does mount:
+#   - durable ops log + audit log
+#   - TCM stub + threat bus
+#   - Realm-aware skill/tool bridge
+#   - privacy policy + PII sanitizer
+#   - prompt guard + intent router + input guard orchestrator
+#   - §7.100 LLM routes: cloud-llm as a DELEGATE adapter (forwards to the
+#     host profile's own configured model provider — the Desktop GUI's model
+#     picker — with host-side credential resolution; the bundle never reads
+#     any secret) + local-llm direct adapter (live only when the operator
+#     exports DSH_EDGE_LOCAL_LLM_BASEURL).
+#
+# Notes:
+#   - Only LOCAL_LLM_* is required for the full privacy experience. With no
+#     local endpoint, intent classification / guard model-detection stay on
+#     the keyword/regex tier by design (user ruling 2026-10-18: internal LLM
+#     calls must never borrow the host's cloud model).
+#   - SANITIZED/CLOUD answers egress through the host's own provider — the
+#     same destination plain Desktop use already picks — after PII
+#     placeholder sanitization.
+#   - LLM-based guard/intent detection is intentionally conservative here.
+#     Prompt-guard model detection is OFF by default (set
+#     DSH_EDGE_GUARD_MODEL=true to opt in once a local endpoint exists);
+#     intent-router falls back to keyword/policy rules when its classifier
+#     provider is unavailable.
+#   - The privacy pipeline still intercepts every agent step. That is expected:
+#     this is what makes it an edge-agent. If you want zero behavior change,
+#     set DSH_EDGE_INPUT_GUARD=false before starting/restarting the profile.
+
+- insert:
+    # Ops log exporter. Mount first so later plugin logs land on disk.
+    - id: file-logger
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/file-logger'
+      config:
+        root: !!js process.env.DSH_EDGE_LOG_ROOT ?? ((process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent/log')
+        filename: dsh-edge-agent-desktop.log
+        flushIntervalMs: 1000
+        queueCapacity: 10000
+        maxFileSizeBytes: 52428800
+        maxFileAgeDays: !!js parseInt(process.env.DSH_EDGE_LOG_MAX_AGE_DAYS ?? '1', 10)
+        maxRotatedFiles: !!js parseInt(process.env.DSH_EDGE_LOG_MAX_ROTATED ?? '7', 10)
+        level: !!js process.env.DSH_EDGE_LOG_LEVEL ?? 'info'
+
+    # Stub TCM. Real crypto remains future work; keep shape stable.
+    - id: tcm
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/tcm'
+      config:
+        teeType: !!js process.env.DSH_EDGE_TEE_TYPE ?? 'simulated'
+        keyStorePath: !!js (process.env.DSH_EDGE_STORAGE_ROOT ?? (process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent') + '/tcm-keys.json'
+
+    # Security ledger. Default root stays isolated under ~/.dsh-edge-agent.
+    - id: audit-log
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/audit-log'
+      config:
+        minLevel: !!js process.env.DSH_EDGE_AUDIT_MIN_LEVEL ?? 'info'
+        ringBufferSize: 512
+        flushIntervalMs: !!js parseInt(process.env.DSH_EDGE_AUDIT_FLUSH_MS ?? '1000', 10)
+        filename: audit.plain.jsonl
+        root: !!js (process.env.DSH_EDGE_AUDIT_ROOT ?? (process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent/audit')
+        enablePIIRedaction: true
+        maxFileSizeBytes: 10485760
+        maxFileAgeDays: 7
+        maxRotatedFiles: 5
+
+    # Privacy policy engine. Missing file falls back to built-in v1.6 policy.
+    - id: privacy-policy
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/privacy-policy'
+      inject: [auditLog]
+      config:
+        policyPath: !!js (process.env.DSH_EDGE_PRIVACY_POLICY_PATH ?? (process.env.DSH_EDGE_STORAGE_ROOT ?? (process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent') + '/privacy-policy.json')
+        hotReload: !!js process.env.DSH_EDGE_POLICY_HOT_RELOAD !== 'false'
+        watchIntervalMs: !!js parseInt(process.env.DSH_EDGE_POLICY_WATCH_MS ?? '5000', 10)
+
+    # Threat bus. Desktop-safe keeps the looser default threshold.
+    - id: td-bus
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/td-bus'
+      inject: [auditLog, privacyPolicy]
+      config:
+        windowSeconds: 60
+        thresholds:
+          cloudRequestsPerMinute: !!js parseInt(process.env.DSH_EDGE_TD_CLOUD_RATE ?? '20', 10)
+          failedSanitizationStreak: 3
+          permissionDeniedStreak: 5
+        blockLevel: !!js process.env.DSH_EDGE_TD_BLOCK_LEVEL ?? 'critical'
+
+    # Edge tool registry. Do not isolate tools by default in desktop mode.
+    - id: edge-tools-registry
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/tools'
+      inject: [auditLog, tools]
+      config:
+        defaultRateLimitPerMinute: 60
+        enableToolIsolation: false
+        presentationMode: native
+
+    # Realm-aware skill/tool filtering. Uses the shared realm config file.
+    - id: realm-skill-bridge
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/realm-skill-bridge'
+      inject: [auditLog, skills, edgeTools, tools]
+      config:
+        configPath: !!js process.env.DSH_EDGE_REALM_CONFIG ?? ((process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent/skill-realms.json')
+        hotReload: !!js process.env.DSH_EDGE_REALM_HOT_RELOAD !== 'false'
+        watchIntervalMs: !!js parseInt(process.env.DSH_EDGE_REALM_WATCH_MS ?? '5000', 10)
+
+    # Input guard. Model-assisted detection is OFF by default for desktop.
+    - id: prompt-guard
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/prompt-guard'
+      inject: [privacyPolicy, auditLog, llm]
+      config:
+        maxInputLength: 10000
+        maxRequestsPerMinute: 20
+        enablePIIRedaction: true
+        enableInjectionDetection: true
+        enableRateLimit: true
+        enableModelDetection: !!js process.env.DSH_EDGE_GUARD_MODEL === 'true'
+        modelDetectionProvider: !!js process.env.DSH_EDGE_GUARD_MODEL_PROVIDER ?? 'local-llm'
+        modelDetectionModel: !!js process.env.DSH_EDGE_GUARD_MODEL_MODEL ?? 'Qwen3-4B-Instruct-2507'
+        modelDetectionTimeoutMs: !!js parseInt(process.env.DSH_EDGE_GUARD_MODEL_TIMEOUT_MS ?? '4000', 10)
+        modelDetectionMaxInputLength: !!js parseInt(process.env.DSH_EDGE_GUARD_MODEL_MAX_INPUT ?? '2000', 10)
+
+    # Reversible PII sanitizer.
+    - id: sanitizer-pipeline
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/sanitizer-pipeline'
+      inject: [privacyPolicy, auditLog]
+      config:
+        enableAutoDetection: true
+        maxReplacementsPerSession: 1024
+        sessionTtlMs: !!js parseInt(process.env.DSH_EDGE_SAN_TTL_MS ?? '900000', 10)
+        maxSessions: !!js parseInt(process.env.DSH_EDGE_SAN_MAX_SESSIONS ?? '1000', 10)
+        sweepIntervalMs: !!js parseInt(process.env.DSH_EDGE_SAN_SWEEP_MS ?? '60000', 10)
+
+    # Intent router. Classifier provider may be absent; fail-open to keywords.
+    - id: intent-router
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/intent-router'
+      inject: [llm, auditLog, privacyPolicy]
+      config:
+        defaultCategory: !!js process.env.DSH_EDGE_INTENT_DEFAULT_CATEGORY ?? 'SANITIZED'
+        classificationProvider: !!js process.env.DSH_EDGE_INTENT_PROVIDER ?? 'local-llm'
+        classificationModel: !!js process.env.DSH_EDGE_INTENT_MODEL ?? 'Qwen3-4B-Instruct-2507'
+        confidenceThreshold: !!js parseFloat(process.env.DSH_EDGE_INTENT_CONFIDENCE_THRESHOLD ?? '0.6')
+        llmTimeoutMs: !!js parseInt(process.env.DSH_EDGE_INTENT_LLM_TIMEOUT_MS ?? '1500', 10)
+        recentMessagesLimit: !!js parseInt(process.env.DSH_EDGE_INTENT_RECENT_LIMIT ?? '3', 10)
+        maxInputLength: !!js parseInt(process.env.DSH_EDGE_INTENT_MAX_INPUT ?? '2000', 10)
+
+    # §7.100 cloud-llm = DELEGATE route. baseUrl deliberately absent →
+    # Schema default '' → every CLOUD/SANITIZED turn is forwarded to the
+    # host profile's own configured model provider (GUI picker wins; probe
+    # falls back to live host routes). Credential resolution stays entirely
+    # on the host side — this bundle reads no secrets.
+    # Knobs (all optional envs): DSH_EDGE_CLOUD_DELEGATE=false /
+    # DSH_EDGE_CLOUD_DELEGATE_PROVIDER / DSH_EDGE_CLOUD_DELEGATE_MODEL.
+    - id: cloud-llm-adapter
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/cloud-llm-adapter'
+      inject: [llm, auditLog]
+      config:
+        providers: [cloud-llm]
+        delegateProvider: !!js process.env.DSH_EDGE_CLOUD_DELEGATE_PROVIDER || undefined
+        delegateModel: !!js process.env.DSH_EDGE_CLOUD_DELEGATE_MODEL || undefined
+        delegateEnabled: !!js process.env.DSH_EDGE_CLOUD_DELEGATE !== 'false'
+
+    # §7.100 local-llm. Live when the operator exports
+    # DSH_EDGE_LOCAL_LLM_BASEURL (OpenAI-compatible endpoint: llama.cpp /
+    # vLLM / Ollama / DashScope). Without it the Schema default
+    # (127.0.0.1:8080) is used and LOCAL turns fail loudly — never silently.
+    # Internal LLM stages (intent classification / guard model-detect) point
+    # here EXCLUSIVELY per the 2026-10-18 privacy ruling; they never target
+    # cloud-llm.
+    - id: local-llm-adapter
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/local-llm-adapter'
+      inject: [llm, auditLog]
+      config:
+        providers: [local-llm]
+        baseUrl: !!js process.env.DSH_EDGE_LOCAL_LLM_BASEURL || undefined
+        defaultModel: !!js process.env.DSH_EDGE_LOCAL_LLM_MODEL || undefined
+        apiKeyEnv: !!js process.env.DSH_EDGE_LOCAL_LLM_KEY_ENV || undefined
+        stripTools: !!js process.env.DSH_EDGE_LOCAL_LLM_STRIP_TOOLS === 'true'
+        enableThinking: !!js process.env.DSH_EDGE_LOCAL_LLM_ENABLE_THINKING === 'true'
+
+    # Route catalog so /v1-style enumeration & intent-router soft-dep see
+    # both routes with registry truth (§7.100 isAvailable).
+    - id: model-router
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/model-router'
+      inject: [llm]
+      config:
+        localModels: [local-llm]
+        cloudModels: [cloud-llm]
+
+    # Optional external tool caller; disabled by default.
+    - id: function-call-external
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/function-call-external'
+      inject: [auditLog, realmSkillBridge, tools]
+      config:
+        functionCallExternalEnabled: !!js process.env.DSH_EDGE_FUNCTION_CALL_EXTERNAL_ENABLED === 'true'
+        functionCallExternalUrl: !!js process.env.DSH_EDGE_FUNCTION_CALL_EXTERNAL_URL ?? 'http://127.0.0.1:8081'
+        functionCallExternalTimeoutMs: !!js parseInt(process.env.DSH_EDGE_FUNCTION_CALL_EXTERNAL_TIMEOUT_MS ?? '10000', 10)
+        functionCallExternalConfidenceThreshold: !!js parseFloat(process.env.DSH_EDGE_FUNCTION_CALL_EXTERNAL_CONFIDENCE_THRESHOLD ?? '0.5')
+        functionCallExternalBootProbeEnabled: !!js process.env.DSH_EDGE_FUNCTION_CALL_EXTERNAL_BOOT_PROBE_ENABLED === 'true'
+
+    # Orchestrator. This is the actual global hook installer.
+    - id: input-guard
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/input-guard'
+      inject: [promptGuard, privacyPolicy, intentRouter, sanitizer, auditLog, realmSkillBridge]
+      config:
+        enableInputGuard: !!js process.env.DSH_EDGE_INPUT_GUARD !== 'false'
+        sanitizeLocalTraffic: false
+        rejectOnPolicyViolation: !!js process.env.DSH_EDGE_REJECT_POLICY !== 'false'
+        downgradeOnSanitizeFailure: !!js process.env.DSH_EDGE_SANITIZE_DOWNGRADE !== 'false'
+        # §7.100: 降级目标 model 跟随 LOCAL 池（DSH_EDGE_LOCAL_MODEL 是
+        # standalone .env.sh 的派生位；桌面下直接用 LOCAL_LLM_MODEL 保持一致）
+        localModel: !!js process.env.DSH_EDGE_LOCAL_MODEL ?? process.env.DSH_EDGE_LOCAL_LLM_MODEL ?? 'qwen3-4b-instruct-2507'

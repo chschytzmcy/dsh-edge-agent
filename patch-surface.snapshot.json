@@ -22,18 +22,15 @@
   ],
   "configOverrides": [
     "system-prompt",
-    "llm-deepseek",
     "agent-loop",
     "approval",
     "session-persistence-jsonl",
     "sandbox-policy",
-    "agent-default-model",
     "tool-web",
     "web",
     "dsh-tui-agent-presets"
   ],
   "disablesBeyondWebApp": [
-    "llm-deepseek",
     "dsh-edge-agent",
     "plugin-host",
     "ohttp-gateway",

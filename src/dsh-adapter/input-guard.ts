@@ -17,6 +17,11 @@ import type { Context } from '@deepseek-ai/cordis'
 import { Service } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
 
+// §7.100: 复用 cloud-llm-adapter 的委托探针（同一条解析链，保证
+// "input-guard 认为能不能上云" 与 "adapter stream 时实际找不找得到目标"
+// 永不打架。adapter 侧 fail → 这里也会提前降级，不会出现"放行后静默空回复"。
+import { probeCloudTarget } from './cloud-llm-adapter.js'
+
 export const name = 'input-guard'
 
 export const inject = [
@@ -267,21 +272,85 @@ export class InputGuardServiceImpl extends Service {
     if (this.ctx) {
       const dsKeys = Object.keys(process.env).filter((k) => k.includes('DEEPSEEK'))
       const v = typeof value === 'string' ? value : undefined
-      // Try reading via ctx.get('credentials') to compare env vs DSH creds store
-      const credsLen = (() => {
+      // Try reading via ctx.get('credentials') to compare env vs DSH creds store.
+      // §7.100 fix: CredentialProvider 没有 .get(name)——§7.35 那次调试因此恒
+      // 报 'no-get'。正确表面是 .describe(ref)（返回配置状态，secret 不出口）。
+      const credsState = (() => {
         try {
-          const creds = this.ctx.get?.('credentials') as { get?: (k: string) => unknown } | undefined
-          const got = creds?.get?.(slot)
-          return typeof got === 'string' ? got.length : 'no-get'
+          const creds = this.ctx.get?.('credentials') as { describe?: (k: string) => unknown } | undefined
+          const d = creds?.describe?.(slot)
+          return d && typeof d === 'object' ? 'described' : 'no-describe'
         } catch {
           return 'no-credentials-service'
         }
       })()
       this.ctx.logger?.info?.(
-        `[input-guard] hasCloudCredentials: slot=${slot} envValueLen=${typeof v === 'string' ? v.length : 'undefined'} dsEnvKeys=[${dsKeys.join(',')}] credentialsServiceValueLen=${credsLen}`,
+        `[input-guard] hasCloudCredentials: slot=${slot} envValueLen=${typeof v === 'string' ? v.length : 'undefined'} dsEnvKeys=[${dsKeys.join(',')}] credentialsService=${credsState}`,
       )
     }
     return typeof value === 'string' && value.length > 0
+  }
+
+  /**
+   * §7.100: "云池现在到底可用吗" —— 取代单一 hasCloudCredentials，覆盖两种模式。
+   *
+   * 模式判定镜像 cordis.patch.yml cloud-llm-adapter 行的 baseUrl 链
+   * (`DSH_EDGE_CLOUD_LLM_BASEURL || DEEPSEEK_BASE_URL || ''`)：
+   *   - 非空 → DIRECT：行为与 §7.35 完全一致（env slot 有 key 才可用）。
+   *   - 空   → DELEGATE：云池 = 宿主 profile 提供商，用 probeCloudTarget
+   *     同一条链探一次（env override > agentDefaultModel selection > live
+   *     route）。`DSH_EDGE_CLOUD_DELEGATE=false`（LOCAL-only 部署的显式开关）
+   *     → 直接判不可用，恢复 §7.35"降级 LOCAL"语义。
+   *   - 老上游（无 listProviders）→ 回退 DIRECT 的 key 检查，行为不回归。
+   * 任何一档都不看 secret 内容——delegate 模式的凭据归宿主 adapter。
+   */
+  private cloudAvailable(): { ok: boolean; mode: 'direct' | 'delegate'; reason: string } {
+    const directBaseUrl = (process.env.DSH_EDGE_CLOUD_LLM_BASEURL ?? '').trim().length > 0
+      || (process.env.DEEPSEEK_BASE_URL ?? '').trim().length > 0
+    if (directBaseUrl) {
+      return this.hasCloudCredentials()
+        ? { ok: true, mode: 'direct', reason: 'direct-key-present' }
+        : { ok: false, mode: 'direct', reason: `cloud-key-missing:${this.config.cloudApiKeyEnv}` }
+    }
+    // DELEGATE 模式
+    if ((process.env.DSH_EDGE_CLOUD_DELEGATE ?? '').trim() === 'false') {
+      return { ok: false, mode: 'delegate', reason: 'cloud-delegate-disabled' }
+    }
+    let llm: unknown
+    try {
+      llm = this.ctx?.get?.('llm')
+    } catch {
+      llm = undefined
+    }
+    const llmAny = llm as {
+      listProviders?(): Array<{ id: string }>
+      stream?: unknown
+      listModels?: unknown
+    } | undefined
+    if (!llmAny || typeof llmAny.listProviders !== 'function') {
+      // 老上游 / fake ctx 没有 listProviders：回退 §7.35 key 检查（不崩、语义旧）。
+      return this.hasCloudCredentials()
+        ? { ok: true, mode: 'delegate', reason: 'legacy-fallback-key-present' }
+        : { ok: false, mode: 'delegate', reason: 'cloud-unavailable:legacy-no-key-and-no-registry' }
+    }
+    let getAgentDefaultModel: () => any
+    try {
+      getAgentDefaultModel = () => (this.ctx?.get?.('agentDefaultModel') as any) ?? undefined
+    } catch {
+      getAgentDefaultModel = () => undefined
+    }
+    const target = probeCloudTarget(
+      { llm: llmAny as any, getAgentDefaultModel },
+      {
+        providers: ['cloud-llm'],
+        delegateProvider: process.env.DSH_EDGE_CLOUD_DELEGATE_PROVIDER ?? '',
+        delegateModel: process.env.DSH_EDGE_CLOUD_DELEGATE_MODEL ?? '',
+        delegateEnabled: true,
+      },
+    )
+    return target
+      ? { ok: true, mode: 'delegate', reason: `delegate-target:${target.provider}:${target.source}` }
+      : { ok: false, mode: 'delegate', reason: 'cloud-unavailable:no-host-route-selected-or-live' }
   }
 
   constructor(
@@ -988,12 +1057,18 @@ export class InputGuardServiceImpl extends Service {
     // 关键：早于 sanitize 执行——避免 sanitize 跑完一遍才发现根本送不出去，
     // 既浪费算力又让 user 看到延迟。降级后 messages 不动（LOCAL LLM 不上云，
     // 不需要脱敏），由 handleAgentRequest 改写 route。
-    if ((category === 'CLOUD' || category === 'SANITIZED') && !this.hasCloudCredentials()) {
+    const cloudAvail = (category === 'CLOUD' || category === 'SANITIZED')
+      ? this.cloudAvailable()
+      : null
+    if ((category === 'CLOUD' || category === 'SANITIZED') && cloudAvail && !cloudAvail.ok) {
       const hasRawEdgeRoute = typeof (payload.agent as { _edgeRoute?: unknown })?._edgeRoute !== 'undefined'
       const routeSource: 'http-api' | 'webui' = hasRawEdgeRoute ? 'http-api' : 'webui'
       const original = this.resolveOriginalRoute(edgeRoute) // §7.43: 用 fallback 让 TUI 也能写 originalProvider
-      this.audit('security', 'input-guard.cloud-key.missing', {
-        sessionId, category, envSlot: this.config.cloudApiKeyEnv,
+      // §7.100: direct 模式保留原 event kind（历史 dashboard/grep 不破）；
+      // delegate 模式用新 kind + mode/reason 字段，两步 grep 可定位。
+      this.audit('security', cloudAvail.mode === 'direct' ? 'input-guard.cloud-key.missing' : 'input-guard.cloud.unavailable', {
+        sessionId, category, mode: cloudAvail.mode, reason: cloudAvail.reason,
+        envSlot: this.config.cloudApiKeyEnv,
         originalProvider: original.provider,
         originalModel: original.model,
         originalRealm: original.realm,
@@ -1005,7 +1080,7 @@ export class InputGuardServiceImpl extends Service {
       this.stepState.set(sessionId, {
         sanitized: false, replacements: 0, sessionId, timestamp: Date.now(),
         downgraded: true,
-        downgradeReason: `cloud-key-missing:${this.config.cloudApiKeyEnv}`,
+        downgradeReason: cloudAvail.reason,
         originalProvider: original.provider,
         originalModel: original.model,
         originalRealm: original.realm,

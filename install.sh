@@ -296,8 +296,8 @@ for PROFILE in "${PROFILES[@]}"; do
   fi
 
   # ── 2.2-2.4 上游 @deepseek-ai 包（agent-loop / web-search / skill，仅不可解析时 add）─
-  # §7.57: 原实现无条件执行且不带版本参数 —— npm latest 可能低于验证版本，hoist
-  # 已提供 0.1.2-rc.1 时照样装出 profile-local 旧副本并遮蔽之：2026-09-15 实翻车，
+  # §7.57: 原实现无条件执行且不带版本参数 —— 曾装出低于最低兼容线的
+  # profile-local 旧副本并遮蔽 hoist 链：2026-09-15 实翻车，
   # 一次全量 install 把 dsh-agent-loop@0.1.0-rc.6 / dsh-web@0.0.1-rc.1 等 7 个旧包
   # 塞进 web profile，shadow 掉 hoist 验证链路（profile-node-modules-version-skew /
   # tui-unscoped-context-diagnosis 同族）。可解析（local 或 profiles/ hoist）即跳过；
@@ -385,7 +385,7 @@ PYEOF
 
   # ── 2.8 嵌套 package.json 同步（repo 根镜像）──────────────────
   # §7.57: 原实现是"缺才拷"（copy-once bootstrap）—— 之后 repo 根 package.json
-  # 演进（如 2026-09-11 peerDeps 0.1.2-alpha.2 → 0.1.2-rc.1），嵌套拷贝永远停在
+  # 演进（如 peerDeps 下界上调），嵌套拷贝永远停在
   # 首次 bootstrap 的快照。peerDeps 只是声明性提示（运行时解析走 profiles
   # hoist 链）所以至今没炸；但 exports 是真消费面 —— 哪天新增 subpath 导出，
   # §2.6 同步过去的新 patch 引用旧 package.json 里不存在的导出 →

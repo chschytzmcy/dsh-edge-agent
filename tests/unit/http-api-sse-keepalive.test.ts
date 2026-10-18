@@ -43,14 +43,22 @@ function mockRes() {
 
 describe('http-api SSE keepalive + client-close', () => {
   let audit: { entries: any[]; log: (e: any) => Promise<void> }
+  const handlers = new Map<string, (payload: any) => void>()
 
   beforeEach(() => {
     audit = { entries: [], log: async (e: any) => { audit.entries.push(e) } }
+    handlers.clear()
   })
 
   function buildService() {
     return new HttpApiServiceImpl(
-      { reflect: { provide: () => {} }, on: () => () => {} } as any,
+      {
+        reflect: { provide: () => {} },
+        on: (event: string, handler: (payload: any) => void) => {
+          handlers.set(event, handler)
+          return () => { handlers.delete(event) }
+        },
+      } as any,
       {
         host: '127.0.0.1', port: 0, bearerToken: 'test-token',
         sessionIdleTimeoutMs: 0, maxActiveSessions: 100, maxRequestBodyBytes: 1024 * 1024,
@@ -119,5 +127,30 @@ describe('http-api SSE keepalive + client-close', () => {
     await new Promise((r) => setImmediate(r))
     const closedAudits = audit.entries.filter((e: any) => e.kind === 'http.chat.stream.client-closed')
     assert.equal(closedAudits.length, 1, 'client-closed audit must fire exactly once even with multiple close events')
+  })
+
+  it('forwards 0.2.x agent/assistant-stream chunks and filters other sessions', async () => {
+    const svc = buildService()
+    const req = mockReqWithChunks([JSON.stringify({ message: 'hello', sessionId: 'sse-stream' })])
+    const { res, cap } = mockRes()
+    await (svc as any).handleRequest(req, res)
+    await new Promise((r) => setImmediate(r))
+
+    const emit = handlers.get('agent/assistant-stream')
+    assert.equal(typeof emit, 'function', 'http-api must subscribe to agent/assistant-stream')
+
+    emit!({
+      agent: { session: { id: 'sse-stream' } },
+      frame: { type: 'chunk', chunk: { type: 'text-delta', text: 'hello' } },
+    })
+    emit!({
+      agent: { session: { id: 'other-session' } },
+      frame: { type: 'chunk', chunk: { type: 'text-delta', text: 'LEAK' } },
+    })
+
+    const out = cap.chunks.map((c: any) => c.toString()).join('')
+    assert.ok(out.includes('"type":"text"'), 'text delta must be forwarded as SSE text event')
+    assert.ok(out.includes('hello'), 'own-session chunk must be forwarded')
+    assert.ok(!out.includes('LEAK'), 'chunks from another session must not leak')
   })
 })

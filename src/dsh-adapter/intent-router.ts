@@ -1402,6 +1402,9 @@ confidence 含义：
     // outer classify() falls through to the keyword/default path (fail-open).
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), this.llmTimeoutMs)
+    // §7.100: error-finish chunk capture (see loop below); declared outside
+    // the try so the post-loop throw isn't swallowed by our own catch.
+    let providerFailure: { code?: string; message?: string } | undefined
 
     try {
       const streamRaw = this.llm.stream({
@@ -1426,6 +1429,16 @@ confidence 含义：
         chunks++
         if (chunk.type === 'text-delta') {
           responseText += (chunk as any).text
+        } else if (chunk.type === 'finish') {
+          // §7.100: adapter 侧错误（NO_ADAPTER / NO_CLOUD_TARGET / key 缺失…）
+          // 被上游转成 terminal error finish chunk，不 throw。以前这里零
+          // text-delta → 落到 'unclear' 分支，dashboard 把基础设施故障记成
+          // "模型输出看不懂"。现在显式识别，归因 llm-error + provider_error。
+          // （检测放 try 外抛出，避免本函数 catch 二次计数/重包裹。）
+          const reason = (chunk as any).reason
+          if (reason?.kind === 'error' || reason?.kind === 'aborted') {
+            providerFailure = { code: reason.failure?.code, message: reason.failure?.message }
+          }
         }
       }
     } catch (err: any) {
@@ -1447,6 +1460,24 @@ confidence 含义：
     } finally {
       clearTimeout(timer)
     }
+
+    // §7.100: 基础设施故障（error/aborted finish chunk，非 throw）显式归因为
+    // llm-error + provider_error 事件，让 dashboard 能把"provider 挂了"和
+    // "模型话看不懂"分开；随后走既有 rules fallback（classify() 外层 catch）。
+    if (providerFailure && responseText.trim().length === 0) {
+      this.stats.llmError++
+      this.audit('warn', 'intent.llm.provider_error', {
+        provider,
+        model,
+        code: providerFailure.code ?? 'UNKNOWN',
+        error: (providerFailure.message ?? '').slice(0, 200),
+        chunks,
+      })
+      const e: any = new Error(`intent-router: provider error: ${providerFailure.code ?? 'UNKNOWN'}`)
+      e._intentRouterReason = 'llm-error'
+      throw e
+    }
+
     this.audit('debug', 'intent.llm.response', { durationMs: Date.now() - llmStart, chunks, responseLen: responseText.length, responsePreview: this.redactPreview(responseText.trim().slice(0, 40)) })
 
     const verdict = parseClassificationVerdict(responseText)

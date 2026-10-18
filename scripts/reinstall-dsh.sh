@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
-# 干净卸载 dsh + 重装到项目契约版本 0.1.2-rc.1
+# 干净卸载 dsh + 重装到最新上游版本（不锁定 0.1.2 线）
 #
-# 目标版本（来自 src/dsh-adapter/contract.ts:12 UPSTREAM_VALIDATED_VERSION）
-#   @deepseek-ai/dsh          = 0.1.2-rc.1
-#   @deepseek-harness-tui/dsh-tui = 0.10.0-beta.4（npm 上唯一 available tag）
+# 版本策略：跟随最新已发布 RC。默认使用 npm dist-tag `next`（0.2.x RC
+# 线）；可用环境变量覆盖，例如 DSH_VERSION=latest 或 DSH_VERSION=0.3.0-rc.1。
 #
 # 流程：
 #   1. 停所有 dsh 进程
 #   2. 备份 ~/.dsh / ~/.dsh-edge-agent 到带时间戳目录
 #   3. 卸载全局 @deepseek-ai/dsh 和 @deepseek-harness-tui/dsh-tui
-#   4. 重装 dsh@0.1.2-rc.1 + dsh-tui@0.10.0-beta.4
+#   4. 重装 dsh@next + dsh-tui@latest
 #   5. 跑项目 ./install.sh（§7.43 默认并存装 dsh-tui + web）
 #   6. 验证 dsh-tui（primary，mandatory）+ web（并存部署后默认也启）
 #
@@ -17,11 +16,13 @@
 #   bash scripts/reinstall-dsh.sh              # 跑全流程
 #   bash scripts/reinstall-dsh.sh --dry-run    # 只打印命令不执行
 #   bash scripts/reinstall-dsh.sh --with-web   # 已 deprecated，等价无 flag（install.sh 默认并存）
+#   DSH_VERSION=latest bash scripts/reinstall-dsh.sh
+#   DSH_TUI_VERSION=0.10.0-beta.5 bash scripts/reinstall-dsh.sh
 
 set -euo pipefail
 
-DSH_VERSION="0.1.2-rc.1"
-DSH_TUI_VERSION="0.10.0-beta.4"
+DSH_VERSION="${DSH_VERSION:-next}"
+DSH_TUI_VERSION="${DSH_TUI_VERSION:-latest}"
 BACKUP_TS="$(date +%Y%m%d-%H%M%S)"
 DSH_HOME="${DSH_HOME:-$HOME/.dsh}"
 DSH_EDGE_HOME="${HOME}/.dsh-edge-agent"
