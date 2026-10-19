@@ -10458,3 +10458,127 @@ soft-dep idiom 补 catch。
 - 委托流量二次进入 `llm/stream` waterfall(desanitize 过两遍)——占位符第一遍
   已还原,第二遍 no-op;若 sanitizer 将来变 non-idempotent,需加转发深度标记。
 - README/ci.yml 的用例数标称待 CI 首跑实测刷新(48 文件,985 预期)。
+
+### §7.101 — Edge tab:桌面右栏 4 panel + session summary 实时可视化(2026-10-20)
+
+**用户决策**:在 DSH 桌面右栏增加 `Edge` tab,呈现本仓 4 个核心隐私 flow +
+1 个 session summary 条的实时状态(范围与排除见 `docs/edge-context-tab-plan.md`
+v3;实现按 v4 落档)。**硬规则**:4 个 panel **不**展示原始 PII——只展示
+计数 + 类别 + 时间戳 + 级别。
+
+**架构裁决**(walkthrough 阶段 1 已 dump,见 `docs/notes/dsh-context-walkthrough.md`):
+
+1. **A — 数据源是 audit-log 记录**,不是可订阅 plugin 事件流。
+   `audit-log.ts` 增 `onEntry(listener): () => void` seam:
+   log() ring push 后 fire,逐 listener try/catch fail-open,返回 unsubscribe。
+   与 td-bus.on 同款纪律(listener 故障**永不**破隐私管线)。
+2. **B — 传输走 dsh-context 的 `connection.fetch.register` POST route pull**(框架标准件,
+   非自研 AsyncIterable seam)。host 端 `/api/dsh-edge/context`,
+   client 端 `api/dsh-edge/context` 浏览器相对路径(反向代理前缀纪律),
+   cursor 增量轮询。`snapshot()` 返回纯数据,不是 AsyncIterable
+   (浏览器订不到 cordis,流式 seam 是 dead API)。
+3. **C — session summary token 源 = `assistant/message.usage`**(adapter 报账才显示;
+   未报则"—",**不**假造 0)。turns 来自 `turn/start`。
+4. **D — inject 表从 v3 计划的 8 缩为 `['auditLog']` 硬 + `['connection','slots','locale']` 软延迟**。
+   其余 6 服务(intentRouter/modelRouter/inputGuard/promptGuard/sanitizer/tdBus)
+   经代码核验**无 listener API**,注入它们只增加加载顺序耦合
+   (walkthrough §6 已实证);数据由 source 字段在 auditLog.fold 内归类。
+5. **E — `sessionProjections` 物理上装不下边缘隐私事件**:SessionEventMap
+   词表封闭(无自定义 kind),所以不强求 push 模式;连接器协议选 pull。
+
+**代码改动**:
+
+- 新增 host plugin `src/dsh-adapter/edge-context-view.ts`(280 行):
+  - Config `{bufferSize: 64, sessionTtlMs: 1800000, piiRedact: true}`
+  - `panelForKind(kind)` 路由表 + `INTERNAL_KINDS` 黑名单
+    (`input-guard.hook.registered` / `dependency.missing` / `boot.probe` /
+    `session-realm.registered` 启动期噪音不进 panel)
+  - `safePayload()` 对每个 string 字段过 pii-utils 5 类(tokenize),
+    嵌套对象/数组扁平化(只展 scalar,detail channel 计划显式剔除)
+  - `record(entry)` / `recordSessionEvent(sid, type, data)` 折叠入口;
+    service-全局 rowSeq 序号支持跨桶 cursor 合并
+  - `snapshot(sid, cursor)` 合并 session bucket + global bucket,
+    排序后返回 next cursor
+  - `apply()` 注册 deferred `ctx.inject(['connection'], ...)` 装载 route
+    + `ctx.on('session/event', ...)` 进程内监听
+- 新增 client 半边 `src/client/*`(11 个文件,~280 行):
+  - `index.ts` —— 4 道 deferred inject 注册 tab 类型 +
+    `slots.register('sidebar.right.pane.tab', {key: tab-kind}, component)`
+    挂载主体;`CordisCtx` 局最小面声明绕开 verify:boundary
+  - `types.ts` —— wire 镜像 + `CONTEXT_ROUTE = 'api/dsh-edge/context'`
+  - `store.ts` —— 模块级单例(attach/detach + 2s 轮询 + cursor 增量 +
+    3 次失败软提示);数据跨 mount 留存(后台切换验收)
+  - `rows.tsx` —— 共享 RowList(time + shortKind + field 白名单按 panel + level tint)
+  - `{intent,route,interception,threat}Panel.tsx` + `sessionSummary.tsx`
+  - `theme.ts` —— `currentColor` + `color-mix` 主题跟随,运行时一次性注入
+    `<style>`,无外部 CSS 资源
+  - `i18n.ts` —— zh/en 字典 + `setTranslator()`(locale 缺失时 fallback)
+- 新增 `scripts/build-client.mjs`(40 行):esbuild 出 `lib/client.js`
+  (esm/browser/jsx automatic preact/bundle/minify/target es2020/production
+  define);build 前 `rm -rf lib/types/client` 防 tsc 旧产物残留
+- 新增 `tsconfig.client.json`(noEmit + jsx react-jsx + jsxImportSource
+  preact + DOM lib + `exclude: []` 避免继承主 tsconfig 的 exclude 把 include 抵消)
+- 新增 `tests/unit/edge-context-view.test.ts`(18 用例):
+  plugin shape / panel 路由(rate-limit 是 threat 不是 interception,
+  `input-guard.hook.registered` 等内部 kind 拒绝) / 跨桶 cursor 合并 /
+  bufferSize 截断 / PII 5 类 tokenize / safePayload 扁平化 / session
+  summary 折叠(token 未报账保持 undefined) / `auditLog.onEntry` 集成
+  (fire / unsubscribe / throw 不破管线)
+- 新增 `docs/notes/dsh-context-walkthrough.md`:阶段 1 walkthrough 落档
+  (host→client 数据通路真实形态、SessionEvent 封闭词表、面板 ← audit
+  kind 映射表)
+- 修改 `src/dsh-adapter/audit-log.ts`:`AuditEntryListener` type +
+  `AuditLogService.onEntry(listener): () => void` 接口 + impl(`onEntry` /
+  `notifyEntryListeners`);fire 点在 `log()` `dirty = true` 之后
+- 修改 `cordis.desktop-safe.patch.yml`:增 `edge-context-view` insert row
+  (`inject: [auditLog]` + `!!js` env 旋钮 `DSH_EDGE_VIEW_BUFFER_SIZE` /
+  `DSH_EDGE_VIEW_SESSION_TTL_MS` / `DSH_EDGE_VIEW_PII_REDACT`)
+- 修改 `package.json`:
+  - `exports["./edge-context-view"]` 新增
+  - `exports["./client"]` 由 `./lib/types/client/index.js` 改 `./lib/client.js`
+  - `dsh.client.entry` 由 `./lib/types/client/index.js` 改 `./lib/client.js`
+  - scripts `build:client` + `typecheck:client` 接进 `build`
+    (compile → typecheck:client → build:client → verify:build)
+  - devDeps `preact ^10` + `esbuild ^0.28`(本机 lockfile 已解 esbuild 0.28.2)
+- 修改 `pnpm-workspace.yaml`:`allowBuilds.esbuild: true` —— 解 pnpm 11
+  `ERR_PNPM_IGNORED_BUILDS` 阻塞 deps-status 检查
+- 修改 `tsconfig.json`:`exclude: ["src/client"]`(jsx 配置迁到
+  `tsconfig.client.json`,主 tsconfig 不再背 client 的 jsx 债)
+- 修改 `scripts/verify-plugin-spec.ts`:exports 校验跳过 `./client`
+  (bundle 走 `dsh.client.entry`,无对应 src/dsh-adapter/*.ts;同款纪律见
+  dsh-context 的 `apiRoutes.ts`)
+- 修改 `docs/edge-context-tab-plan.md`:v3 → v4(裁决 A-E 固化,§1-§9
+  按实际实现对齐,§10 v4 条目 + 本次文档修正说明)
+
+**验证**(本机 macOS / Node 24 / DSH 0.2.1-rc.2):
+
+```text
+tsc -p tsconfig.json                          0
+tsc -p tsconfig.client.json                   0
+esbuild lib/client.js                         20 KB  (远低于原 50 KB 风险项)
+verify:boundary                               OK (71 source files)
+verify:contract                               OK
+verify:patch-surface                          OK (19 inserts / 8 overrides / 30 disables)
+verify:plugin-spec                            OK (25→26 plugins, 31→33 exports)
+verify:bundle-mount                           installable/ 产物含 lib/client.js + 新 patch row
+vitest (新+audit-log)                         31 passed
+vitest (full)                                 999 passed / 2 skipped / 2 failed
+desktop installable bundle smoke               lib/client.js 落入 + cordis.patch 新 row 进入
+```
+
+**已知遗留**:
+
+- **桌面装机目视 3 项验收**(plan §5):Edge tab 出现 / bundle 加载 0
+  报错 / 深浅主题跟随 / zh/en 文案跟随 —— 本机无桌面 0.2.1-rc.2 GUI,
+  未实测;设计满足(store 跨 mount 留存、`currentColor`/`color-mix` 主题、
+  `locale.register/bind` i18n)
+- vitest full suite 2 failed (`tests/unit/input-guard.test.ts` 的
+  `cloud-key-missing:DEEPSEEK_API_KEY` 正则断言):§7.100 cloud delegate
+  重写后 rationale 文本变为 `cloud-unavailable:legacy-no-key-and-no-registry`,
+  不在本次改动范围,留 §7.x 主线修
+- `auditLog.onEntry` 监听点:理论上监听器故障被 try/catch 隔离,但
+  生产环境首次装机后建议监控 audit 路径(无新增 metric 暴露)
+- `lib/types/audit-log.js` + `lib/types/dsh-adapter/edge-context-view.js`
+  在 desktop installable bundle 里和 `lib/client.js` 共存,但桌面装配
+  只读 `lib/client.js`,无运行时冲突
+- README/ci.yml 的用例数标称待 CI 首跑实测刷新(48 文件,985 预期)。

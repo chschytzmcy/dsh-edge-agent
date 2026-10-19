@@ -13,7 +13,7 @@
 - **🛡️ 隐私保护**：PII 自动脱敏 + 隐私策略热重载（[AES-256-GCM 加密存储](./docs/PROGRESS.md#planned)）
 - **🌐 零信任通信**：RFC 9458 OHTTP 协议，云端无法关联用户身份与请求
 - **🚨 威胁检测**：实时监控异常行为，自动隔离可疑流量
-- **🔌 插件化**：22 核心 + 1 可选 HTTP API，全部 subpath 导出
+- **🔌 插件化**：19 核心 plugin + 1 桌面 webview bundle + 1 可选 HTTP API，全部 subpath 导出
 
 ## 🏗️ 架构
 
@@ -68,10 +68,11 @@
 | `td-bus` | 威胁检测总线（速率/脱敏/权限阈值告警） | ✅ 可用 |
 | `voice-input` | 语音输入 | 🔲 桩 |
 | `plugin-host` | 第三方插件宿主 | 🔲 桩 |
+| `edge-context-view` | 桌面右栏 `Edge` tab host 半体：折叠 audit 流到 4 panel + session summary，经 `/api/dsh-edge/context` 供 client 拉取（§7.101） | ✅ 可用（桌面 only）|
 
 > **工具复用**: dsh-edge-agent 使用 DSH 原生工具（bash、read/write/edit、web_search/web_fetch），而非自行实现。详见 [docs/architecture.md](docs/architecture.md)。
 >
-> M 段（M0–M5）已全部完成，意图识别（LOCAL/CLOUD）路由已端到端打通；A1（input-guard 编排器）与 A2（rejection → HTTP 400/403/503 翻译）已完成。A3+ 安全加固未开始。详见 [docs/PROGRESS.md](docs/PROGRESS.md)。
+> M 段（M0–M5）已全部完成，意图识别（LOCAL/CLOUD）路由已端到端打通；A1（input-guard 编排器）与 A2（rejection → HTTP 400/403/503 翻译）已完成。**§7.101 桌面右栏 `Edge` tab** 已落档 + 本环境代码验证通过（8/11 验收项），剩 3 项装机目视待验。详见 [docs/PROGRESS.md](docs/PROGRESS.md) 与 [docs/edge-context-tab-plan.md](docs/edge-context-tab-plan.md)。
 
 ---
 

@@ -235,6 +235,25 @@ ctx.reflect.provide('auditLog', this)    // → ctx.auditLog
 ctx.auditLog.log({ level, kind, source, payload })  // level=info/warn/error/security
 // 注意 minLevel 默认 'info', debug 静默 drop (audit-log.ts:163)
 // root: ~/.dsh-edge-agent/audit/audit.plain.jsonl
+// §7.101: 新增 onEntry(listener) 活体 seam —— log() ring push 后 fire,
+// listener 故障 try/catch fail-open,返回 unsubscribe
+ctx.auditLog.onEntry((entry) => edgeContextView.record(entry))
+```
+
+### edge-context-view — §7.101 桌面右栏 Edge tab host 半体(只桌面)
+
+```ts
+// 注册(inject: [auditLog] 硬依赖,connection 软延迟)
+ctx.reflect.provide('edgeContextView', this)    // → ctx.edgeContextView
+// 提供的方法
+ctx.edgeContextView.snapshot(sessionId, cursor)  // 纯数据 fold,非 AsyncIterable
+ctx.edgeContextView.record(entry)                // 单条 audit 入 row ring
+ctx.edgeContextView.recordSessionEvent(sid, type, data)  // session/event 折叠
+// 提供给 client 的传输层: deferred inject(['connection'], ...) 后注册
+// POST /api/dsh-edge/context route —— 框架 connection.fetch.register 标准件
+// 客户端相对路径 'api/dsh-edge/context'(反向代理前缀纪律)
+// session summary tokens = assistant/message.usage,adapter 不报账时 undefined
+// payload 字段经 safePayload 过 pii-utils 5 类 tokenize + 嵌套对象扁平化
 ```
 
 ### tcm — TEE 密钥管理(被 prompt-guard 注入)

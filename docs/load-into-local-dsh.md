@@ -222,4 +222,28 @@ Plugins → Add plugin → Install a third-party plugin
 | `desktop-safe` | [cordis.desktop-safe.patch.yml](../cordis.desktop-safe.patch.yml) | 插入隐私/Realm/审计插件 + §7.100 LLM 路由：`cloud-llm` 为**委托模式**（云回答转发到桌面 GUI 所选的宿主提供商，脱敏后出网，凭据归宿主）；`local-llm` 只有配了 `DSH_EDGE_LOCAL_LLM_*` 才可用，意图分类/guard 检测没本地端点就走规则档。不改默认模型、persona、approval、sandbox、session root；不启动 http-api |
 | `full` | [cordis.patch.yml](../cordis.patch.yml) | 和独立 edge profile 一致；会改写宿主全局配置（persona、工具禁用、session root 等），适合专用 profile，不适合直接放进日常桌面。云池同样可选：不配 CLOUD_LLM_* 即 delegate |
 
+### 8.4 desktop-safe 自带 §7.101 Edge tab（桌面右栏 4 panel）
+
+desktop-safe 产物多挂一个 host 插件 `edge-context-view`（仅 auditLog 硬依赖 + `connection` 软延迟）+ 客户端 `lib/client.js` bundle；启用后桌面右栏出现 **Edge** tab，呈现：
+
+| Panel | 数据源 |
+|---|---|
+| Intent | 意图分类（`intent.classify.start/.end` 等） |
+| Route | 路由决策（`http.chat.route`、`llm.cloud.*`、`llm.local.*`） |
+| Interception | 拦截/脱敏（`input-guard.*`、`guard.*`、`sanitizer.*`、`input.*`） |
+| Threat | 威胁总线（`td-bus.escalated`、`http.chat.threat-blocked`） |
+| Session summary 条 | turn 数 + token 用量（adapter 报账才显示） |
+
+传输是 dsh-context 的 POST route pull：client 轮询 `api/dsh-edge/context`（host `/api/dsh-edge/context`），**不**自建 AsyncIterable seam；payload 字段经 pii-utils 5 类 tokenize + 嵌套对象扁平化，**不**展示原始 PII。
+
+装配后建议开机看一眼：
+
+1. 右栏出现 **Edge** tab（位置与 dsh-context 的 Context tab 同高度）
+2. 切到 Edge tab，控制台 0 报错
+3. 发一条本地 query → Intent panel 出现一行
+4. 切桌面主题深/浅 → 配色跟随（`currentColor` + `color-mix` 实现）
+5. 切桌面语言 zh/en → 文案跟随（`locale.register/bind` 实现）
+
+详细规则、配置旋钮、PII 纪律见 [docs/edge-context-tab-plan.md](edge-context-tab-plan.md) 与 [docs/PROGRESS.md §7.101](PROGRESS.md)；客户端数据通路分析见 [docs/notes/dsh-context-walkthrough.md](notes/dsh-context-walkthrough.md)。
+
 建议顺序：先用 `desktop-safe` 验证插件能挂载；确认后再决定是否需要 full 或自定义 patch。
