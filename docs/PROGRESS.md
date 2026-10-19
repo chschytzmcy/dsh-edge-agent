@@ -10488,7 +10488,7 @@ v3;实现按 v4 落档)。**硬规则**:4 个 panel **不**展示原始 PII—�
 
 **代码改动**:
 
-- 新增 host plugin `src/dsh-adapter/edge-context-view.ts`(280 行):
+- 新增 host plugin `src/dsh-adapter/edge-context-view.ts`(387 行):
   - Config `{bufferSize: 64, sessionTtlMs: 1800000, piiRedact: true}`
   - `panelForKind(kind)` 路由表 + `INTERNAL_KINDS` 黑名单
     (`input-guard.hook.registered` / `dependency.missing` / `boot.probe` /
@@ -10501,7 +10501,7 @@ v3;实现按 v4 落档)。**硬规则**:4 个 panel **不**展示原始 PII—�
     排序后返回 next cursor
   - `apply()` 注册 deferred `ctx.inject(['connection'], ...)` 装载 route
     + `ctx.on('session/event', ...)` 进程内监听
-- 新增 client 半边 `src/client/*`(11 个文件,~280 行):
+- 新增 client 半边 `src/client/*`(11 个文件,552 行):
   - `index.ts` —— 4 道 deferred inject 注册 tab 类型 +
     `slots.register('sidebar.right.pane.tab', {key: tab-kind}, component)`
     挂载主体;`CordisCtx` 局最小面声明绕开 verify:boundary
@@ -10513,7 +10513,7 @@ v3;实现按 v4 落档)。**硬规则**:4 个 panel **不**展示原始 PII—�
   - `theme.ts` —— `currentColor` + `color-mix` 主题跟随,运行时一次性注入
     `<style>`,无外部 CSS 资源
   - `i18n.ts` —— zh/en 字典 + `setTranslator()`(locale 缺失时 fallback)
-- 新增 `scripts/build-client.mjs`(40 行):esbuild 出 `lib/client.js`
+- 新增 `scripts/build-client.mjs`(42 行):esbuild 出 `lib/client.js`
   (esm/browser/jsx automatic preact/bundle/minify/target es2020/production
   define);build 前 `rm -rf lib/types/client` 防 tsc 旧产物残留
 - 新增 `tsconfig.client.json`(noEmit + jsx react-jsx + jsxImportSource
@@ -10568,10 +10568,7 @@ desktop installable bundle smoke               lib/client.js 落入 + cordis.pat
 
 **已知遗留**:
 
-- **桌面装机目视 3 项验收**(plan §5):Edge tab 出现 / bundle 加载 0
-  报错 / 深浅主题跟随 / zh/en 文案跟随 —— 本机无桌面 0.2.1-rc.2 GUI,
-  未实测;设计满足(store 跨 mount 留存、`currentColor`/`color-mix` 主题、
-  `locale.register/bind` i18n)
+- **桌面装机目视 3 组验收**(plan §5 3 ⏳):①右栏 Edge tab 出现 + bundle 加载 0 报错；②切后台再切回数据保留；③主题深/浅跟随 + 语言 zh/en 文案跟随 —— 本机无桌面 0.2.1-rc.2 GUI,未实测;设计满足(store 跨 mount 留存、`currentColor`/`color-mix` 主题、`locale.register/bind` i18n)
 - vitest full suite 2 failed (`tests/unit/input-guard.test.ts` 的
   `cloud-key-missing:DEEPSEEK_API_KEY` 正则断言):§7.100 cloud delegate
   重写后 rationale 文本变为 `cloud-unavailable:legacy-no-key-and-no-registry`,

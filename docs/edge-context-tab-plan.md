@@ -124,32 +124,36 @@
 | bundle 超 50KB | 低 | **实测 20 KB**（远低于阈值）|
 | **v4 增量**：新增 `auditLog.onEntry` 服务接口，担心影响隐私管线 | 中 | listener 故障 try/catch fail-open（与 td-bus 同款纪律）；新增 1 个 audit-log 单测覆盖 fire/unsubscribe/throw 路径；无既有路径变更 |
 
-## 5. 接受标准（11 项）
+## 5. 接受标准（11 项 = 8 ✅ + 3 ⏳）
 
-阶段 3 出口，**11 项**全部满足才算 done：
+阶段 3 出口，**11 项**全部满足才算 done；本环境能验 8 项 ✅，3 项 ⏳ 装机目视。
 
-| □ | 项 | 状态 |
+### 本环境能验（8 ✅）
+
+| # | 项 | 验证 |
 |---|---|---|
-| ☑ | tsc compile（`-p tsconfig.json`）0 错误 | ✅ |
-| ☑ | tsc client typecheck（`-p tsconfig.client.json`）0 错误 | ✅ |
-| ☑ | esbuild 出 `lib/client.js` | ✅ 20 KB |
-| ☑ | `npm run verify:build`（5 道门：boundary / contract / patch-surface / plugin-spec / bundle-mount）全绿 | ✅ |
-| ☑ | vitest 新增 18 个 + audit-log 13 个 = 31 全过 | ✅ |
-| ☐ | 装机后桌面右栏出现 "Edge" tab，位置与 dsh-context 的 "Context" tab 同高度 | ⏳ 待桌面 0.2.1-rc.2 实跑 |
-| ☐ | 切到 Edge tab，bundle 加载控制台 0 报错 | ⏳ 待桌面 0.2.1-rc.2 实跑 |
-| ☐ | 切到后台再切回 → 数据保留（不重 mount 清空；客户端 store 留存）| 设计满足（store 单例），待装机目视 |
-| ☐ | 切换桌面主题深/浅 → 配色跟随，无白底穿帮（`currentColor` + `color-mix`）| 设计满足，待装机目视 |
-| ☐ | 切换桌面语言 zh/en → 文案跟随（locale.register/bind）| 设计满足，待装机目视 |
-| ☑ | **4 个 panel 都不展示原始 PII**（host safePayload 5 类 tokenize + 嵌套对象扁平化；unit test 已覆盖）| ✅ |
+| 1 | tsc compile（`-p tsconfig.json`）0 错误 | ✅ |
+| 2 | tsc client typecheck（`-p tsconfig.client.json`）0 错误 | ✅ |
+| 3 | esbuild 出 `lib/client.js` | ✅ 20 KB |
+| 4 | `npm run verify:build` 5 道门（boundary / contract / patch-surface / plugin-spec / bundle-mount）全绿 | ✅ |
+| 5 | vitest 新增 18 个 + audit-log 13 个 = 31 全过 | ✅ |
+| 6 | **4 个 panel 都不展示原始 PII**（host safePayload 5 类 tokenize + 嵌套对象扁平化；unit test 已覆盖）| ✅ |
+| 7 | 桌面 installable bundle smoke（`bash scripts/build-desktop-bundle.sh --emit-dir --no-build`）| ✅ `lib/client.js` 落入 + 新 patch row 进入 `cordis.desktop-safe.patch.yml` |
+| 8 | tab 类型在 deferred 注入下 mount 失败也保持插件健康（client 4 道 deferred ctudei + host softInject） | ✅ |
 
-桌面 installable bundle smoke（`bash scripts/build-desktop-bundle.sh --emit-dir --no-build`）已过：`lib/client.js` 落入 `dist/installable/dsh-edge-agent-desktop-safe/lib/`，新 patch row 进入 `cordis.desktop-safe.patch.yml`。
+### 待装机目视（3 ⏳）
+
+| # | 项 | 设计满足依据 |
+|---|---|---|
+| 9 | 装机后桌面右栏出现 "Edge" tab（位置与 dsh-context 的 "Context" tab 同高度）+ 切到 Edge tab bundle 加载 0 报错 | `sidebarRightTabs.register({id: 'dsh-edge-agent', kind: 'dsh-edge-agent', …})` 已就位；`lib/client.js` 20 KB 已构建 |
+| 10 | 切到后台再切回 → 数据保留（不重 mount 清空）| client `store.ts` 模块级单例；attach/detach 配对 |
+| 11 | 桌面主题深/浅 + 语言 zh/en 跟随（无白底穿帮 + 文案跟随） | theme `currentColor` + `color-mix`；i18n `locale.register/bind` + zh/en 字典 |
 
 ## 6. 文件清单
 
-**新增（13 个）：**
+**新增（15 个）：**
 
 - `src/dsh-adapter/edge-context-view.ts` —— host 端 plugin（4 panel + session summary，inject `['auditLog']` 硬 + connection 软延迟）
-- `src/client/index.ts` —— client plugin（4 道 deferred inject 注册 tab 类型 + slots 主体；CordisCtx 局最小面声明）
 - `src/client/types.ts` —— wire 类型镜像 + `CONTEXT_ROUTE = 'api/dsh-edge/context'`
 - `src/client/store.ts` —— 模块级单例（attach/detach + 2s 轮询 + cursor 增量 + 失败软提示）
 - `src/client/rows.tsx` —— 共享 RowList（time / shortKind / field 白名单 / level tint）
@@ -162,8 +166,9 @@
 - `tests/unit/edge-context-view.test.ts` —— 18 个 seam fold 单测
 - `docs/notes/dsh-context-walkthrough.md` —— 阶段 1 walkthrough 落档
 
-**修改（9 个）：**
+**修改（13 个）：**
 
+- `src/client/index.ts` —— 71 行 skeleton → 168 行 mount 4 panel + summary（4 道 deferred inject：locale / sidebarRightTabs / slots / 主体；CordisCtx 局最小面声明绕开 verify:boundary）
 - `src/dsh-adapter/audit-log.ts` —— 追加-only `onEntry(listener): () => void` seam + listener 故障 try/catch fail-open
 - `cordis.desktop-safe.patch.yml` —— 增 `edge-context-view` insert row（**实际 inject 是 `['auditLog']`，不是 v3 计划的 8 个**）
 - `package.json` —— exports `./edge-context-view` 新增 + `./client` 改 `./lib/client.js` + `dsh.client.entry` 改 `./lib/client.js` + scripts `build:client` / `typecheck:client` 接进 `build` + devDeps `preact ^10` / `esbuild ^0.28`
@@ -171,7 +176,11 @@
 - `pnpm-workspace.yaml` —— `allowBuilds.esbuild: true`（解 pnpm 11 IGNORED_BUILDS 阻塞）
 - `tsconfig.json` —— `exclude: ["src/client"]`（jsx 配置移到 tsconfig.client.json）
 - `scripts/verify-plugin-spec.ts` —— exports 校验跳过 `./client`（bundle 走 `dsh.client.entry`，无对应 src/dsh-adapter/*.ts）
-- `docs/edge-context-tab-plan.md` —— 本文件（v3 → v4 修正）
+- `README.md` —— 插件计数 + 新行 + §7.101 交叉引用
+- `docs/PROGRESS.md` —— 新增 §7.101 条目
+- `docs/load-into-local-dsh.md` —— §8.4 desktop-safe Edge tab 装配说明
+- `docs/plugin-mount-points.md` —— §7 audit-log / edge-context-view 子条目
+- `docs/edge-context-tab-plan.md` —— 本文件（v3 → v4 修正 + 计数修正）
 - （隐式）`src/client/`：之前只 71 行 skeleton index.ts，现扩到 11 个文件
 
 **不引入：**
@@ -225,5 +234,5 @@
   - **build**：tsc 排除 `src/client`（emit），独立 `tsconfig.client.json`（noEmit + jsx preact + DOM lib + `exclude: []`）做类型门；`scripts/build-client.mjs` esbuild 出 `lib/client.js`（20 KB，远低于 50 KB 风险项）。
   - **新增文件（13）**：`src/dsh-adapter/edge-context-view.ts`、`src/client/{index,types,store,rows,i18n,theme,intentPanel,routePanel,interceptionPanel,threatPanel,sessionSummary}`（11 个）、`scripts/build-client.mjs`、`tsconfig.client.json`、`tests/unit/edge-context-view.test.ts`、`docs/notes/dsh-context-walkthrough.md`。
   - **修改文件（9）**：`audit-log.ts`、`cordis.desktop-safe.patch.yml`（`edge-context-view` insert row，`inject: [auditLog]`）、`package.json`（exports `./edge-context-view` 新增、`./client` → `./lib/client.js`、`dsh.client.entry` 改 `./lib/client.js`、devDeps preact + esbuild、`build:client`/`typecheck:client` 接进 `build`）、`pnpm-lock.yaml`、`pnpm-workspace.yaml`（`allowBuilds.esbuild: true`）、`tsconfig.json`（exclude）、`scripts/verify-plugin-spec.ts`（`./client` 跳过源文件存在性检查——bundle 走 `dsh.client.entry`）、`docs/edge-context-tab-plan.md`（本文件 v3→v4 修正）。
-  - **11 项验收**（计划 §5）：本环境能验的 8 项全部通过（tsc compile、tsc-client typecheck、esbuild bundle 20 KB、verify:build 5 道门、31 个新单测全过、桌面 installable bundle smoke 含 `lib/client.js` 与新 patch row、PII 5 类在 host 折叠时已 tokenize + 嵌套对象扁平化、tab 类型在 deferred 注入下 mount 失败也保持插件健康）。装机目视验证（11 项中剩 3 项：右栏 Edge tab 出现、bundle 加载 0 报错、深浅主题跟随、zh/en 文案跟随）需在桌面 0.2.1-rc.2 实跑。
-  - **本次文档修正**：v3 原始 §3 阶段 2/3 与实现差异较大（inject 表从 8 缩到 1、传输从 AsyncIterable 改 POST route、build 从"jsx 放主 tsconfig"改为"独立 tsconfig.client.json"、文件清单从 5 新增 4 修改改为 13 新增 9 修改），原 §1 状态表/§4 风险/§5 验收/§6 文件清单同步按 v4 实际对齐。
+  - **11 项验收**（计划 §5）：本环境能验的 8 项全部通过（tsc compile、tsc-client typecheck、esbuild bundle 20 KB、verify:build 5 道门、31 个新单测全过、桌面 installable bundle smoke 含 `lib/client.js` 与新 patch row、PII 5 类在 host 折叠时已 tokenize + 嵌套对象扁平化、tab 类型在 deferred 注入下 mount 失败也保持插件健康）。装机目视验证（11 项中剩 3 组：①右栏 Edge tab 出现 + bundle 加载 0 报错；②切后台再切回数据保留；③主题深/浅跟随 + 语言 zh/en 文案跟随）需在桌面 0.2.1-rc.2 实跑。
+  - **本次文档修正**：v3 原始 §3 阶段 2/3 与实现差异较大（inject 表从 8 缩到 1、传输从 AsyncIterable 改 POST route、build 从"jsx 放主 tsconfig"改为"独立 tsconfig.client.json"、文件清单从 5 新增 4 修改改为 15 新增 13 修改——feat commit 11 新增 / 9 修改 + 文档同步 commit 4 修改），原 §1 状态表/§4 风险/§5 验收/§6 文件清单同步按 v4 实际对齐。

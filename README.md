@@ -13,7 +13,7 @@
 - **🛡️ 隐私保护**：PII 自动脱敏 + 隐私策略热重载（[AES-256-GCM 加密存储](./docs/PROGRESS.md#planned)）
 - **🌐 零信任通信**：RFC 9458 OHTTP 协议，云端无法关联用户身份与请求
 - **🚨 威胁检测**：实时监控异常行为，自动隔离可疑流量
-- **🔌 插件化**：19 核心 plugin + 1 桌面 webview bundle + 1 可选 HTTP API，全部 subpath 导出
+- **🔌 插件化**：19 个 plugin（含 1 桌面 webview bundle），全部 subpath 导出
 
 ## 🏗️ 架构
 
