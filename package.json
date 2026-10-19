@@ -35,6 +35,10 @@
       "types": "./lib/types/dsh-adapter/cloud-llm-adapter.d.ts",
       "import": "./lib/types/dsh-adapter/cloud-llm-adapter.js"
     },
+    "./client": {
+      "types": "./lib/types/client/index.d.ts",
+      "import": "./lib/types/client/index.js"
+    },
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./file-logger": {
       "types": "./lib/types/dsh-adapter/file-logger.d.ts",
@@ -198,6 +202,15 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-sidebar-right"
+      ],
+      "platform": "web",
+      "entry": "./lib/types/client/index.js"
     }
   }
 }

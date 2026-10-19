@@ -22,6 +22,8 @@ docs/bench/snapshots/*.env
 coverage/
 *.tsbuildinfo
 .claude/
+# 2026-10-19: local IDE config — JetBrains / IntelliJ 落盘的工作区元数据
+.idea/
 
 # Stray artifacts (added 2026-08-31) — phone.txt once held real PII
 # (13800138000) from a test fixture and must NEVER enter git history.
