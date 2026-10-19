@@ -1,20 +1,45 @@
 /**
- * dsh-edge-agent — client half.
+ * dsh-edge-agent — client half (§7.101).
  *
- * Renders inside the DSH webui (Electron) when the desktop host loads this
- * bundle. Follows the dsh-context pattern: a Cordis plugin module that
- * registers a sidebar tab via the framework's `sidebarRightTabs` face.
+ * Mounts the desktop right-sidebar "Edge" tab: 4 live panels (intent /
+ * route / interception / threat) + a session summary bar, fed by the host
+ * `edge-context-view` fold over the `/api/dsh-edge/context` pull route
+ * (docs/notes/dsh-context-walkthrough.md).
  *
- * The face types are declared locally because `@deepseek-ai/dsh-client-ui-sidebar-right`
- * ships inside the desktop app.asar and is not on npm. The dsh-context
- * package does the same (see `src/client/services.ts`).
+ * Wiring follows dsh-context v0.73.3 exactly:
+ *   - `sidebarRightTabs.register` seats the tab TYPE (deferred: CLI/TUI
+ *     profiles never compose the face and must mount cleanly).
+ *   - `slots.register('sidebar.right.pane.tab', {key: <tab kind>})` seats
+ *     the body component, receiving the framework session-scoped kit
+ *     (`sessionId`, and the projection seat we do not use — edge privacy
+ *     events cannot ride session projections, walkthrough §1).
+ *   - `locale.register/bind` paints zh/en labels; without the face the
+ *     built-in English table keeps the tab readable.
  *
- * Deferred `ctx.inject(['sidebarRightTabs'], cb)` — on profiles where the
- * face is not provided (CLI/TUI), the callback never runs, the plugin
- * mounts cleanly, and no tab is shown.
+ * Face types are declared locally because the client UI packages ship
+ * inside the desktop app.asar and are not on npm (dsh-context does the
+ * same). Every face is re-proved at its call site; a hostile or absent
+ * face costs the feature, never the bundle.
  */
 
-import type { Context } from '@deepseek-ai/cordis'
+import { h, render } from 'preact'
+import { useEffect, useState } from 'preact/hooks'
+import { edgeStore } from './store'
+import { ensureStyles } from './theme'
+import { EDGE_DICTIONARIES, EDGE_LOCALE_NS, setTranslator, tr } from './i18n'
+import { IntentPanel } from './intentPanel'
+import { RoutePanel } from './routePanel'
+import { InterceptionPanel } from './interceptionPanel'
+import { ThreatPanel } from './threatPanel'
+import { SessionSummaryBar } from './sessionSummary'
+import type { EdgeRow, EdgeSummary } from './types'
+
+/* ── Identity ──────────────────────────────────────────────────────────── */
+
+export const name = 'dsh-edge-agent-client'
+export const inject: readonly string[] = []
+
+const TAB_ID = 'dsh-edge-agent'
 
 /* ── Face types (mirror dsh-context's services.ts) ─────────────────────── */
 
@@ -30,41 +55,113 @@ interface SidebarTabDef {
   kind: string
   title: () => string
   guide?: readonly SidebarGuideEntry[]
-  /** Per-session view component. dsh-context passes a React element here;
-   *  we pass a plain string (placeholder) until real components ship. */
-  render?: (props: { sessionId?: string }) => unknown
 }
 
 interface SidebarTabsFace {
   register(def: SidebarTabDef): () => void
 }
 
-/* ── Plugin shape ──────────────────────────────────────────────────────── */
+interface SlotRegistration {
+  name: string
+  key?: string
+  id?: string
+  order?: number
+  locale?: string
+  label?: () => string
+}
 
-export const name = 'dsh-edge-agent-client'
+interface SlotsFace {
+  inject(name: string, callback: () => unknown): unknown
+  register(reg: SlotRegistration, component: (props: { sessionId?: string } & Record<string, unknown>) => unknown): unknown
+}
 
-export const inject: readonly string[] = []
+interface LocaleFace {
+  register(ns: string, dicts: Record<string, Record<string, string>>): () => void
+  bind(ns: string): (key: string, params?: Record<string, string | number>) => string
+}
 
-export function apply(ctx: Context): void {
-  // Deferred inject: the face may be absent on non-web profiles.
+interface SessionProps {
+  sessionId?: string
+}
+
+/** Minimal Cordis context shape consumed by the client. Local declaration
+ *  — the verify:boundary gate blocks `@deepseek-ai/*` imports outside
+ *  src/dsh-adapter/ (this module is shipped as the webview bundle and has
+ *  no compile-time view of the host types). */
+interface CordisCtx {
+  inject(deps: readonly string[], cb: (raw: unknown) => void): void
+  on?(event: string, cb: (session: unknown, event: unknown) => void): () => void
+}
+
+/* ── The view ──────────────────────────────────────────────────────────── */
+
+function EdgeView(props: SessionProps) {
+  const sessionId = props.sessionId ?? '_global'
+  const [, setTick] = useState(0)
+  useEffect(() => {
+    ensureStyles()
+    return edgeStore.attach(sessionId, () => setTick(t => t + 1))
+  }, [sessionId])
+
+  const rows = (panel: EdgeRow['panel']) => edgeStore.rowsFor(sessionId, panel)
+  const summary: EdgeSummary = edgeStore.summaryFor(sessionId)
+  return h('div', { class: 'dsh-edge-view' },
+    h(SessionSummaryBar, { summary }),
+    h(IntentPanel, { rows: rows('intent') }),
+    h(RoutePanel, { rows: rows('route') }),
+    h(InterceptionPanel, { rows: rows('interception') }),
+    h(ThreatPanel, { rows: rows('threat') }),
+    edgeStore.failing(sessionId) ? h('div', { class: 'dsh-edge-stale' }, tr('row.stale')) : null,
+  )
+}
+
+/* ── Plugin apply ──────────────────────────────────────────────────────── */
+
+export function apply(ctx: CordisCtx): void {
+  // Locale first: the tab title/guide are painted at registration time.
+  ctx.inject(['locale'], (raw) => {
+    const c = raw as unknown as CordisCtx & { locale?: LocaleFace }
+    const locale = c.locale
+    if (locale === undefined || typeof locale.register !== 'function' || typeof locale.bind !== 'function') return
+    try {
+      locale.register(EDGE_LOCALE_NS, EDGE_DICTIONARIES)
+      setTranslator(locale.bind(EDGE_LOCALE_NS))
+    } catch { /* built-in EN table stays active */ }
+  })
+
+  // Tab type seat — deferred; absent on CLI/TUI hosts.
   ctx.inject(['sidebarRightTabs'], (raw) => {
-    const c = raw as unknown as Context & { sidebarRightTabs?: SidebarTabsFace }
+    const c = raw as unknown as CordisCtx & { sidebarRightTabs?: SidebarTabsFace }
     const tabs = c.sidebarRightTabs
     if (tabs === undefined || typeof tabs.register !== 'function') return
-    tabs.register({
-      id: 'dsh-edge-agent',
-      kind: 'dsh-edge-agent',
-      title: () => 'Edge',
-      guide: [
-        {
+    try {
+      tabs.register({
+        id: TAB_ID,
+        kind: TAB_ID,
+        title: () => tr('tab.title'),
+        guide: [{
           order: 30,
-          title: () => 'Edge',
-          description: () =>
-            'Intent classification · model routing · prompt-guard / sanitizer events',
-        },
-      ],
-      // Placeholder body — real components land in subsequent commits.
-      render: () => 'dsh-edge-agent view (skeleton)',
-    })
+          title: () => tr('tab.title'),
+          description: () => tr('guide.description'),
+        }],
+      })
+    } catch { /* a rejecting registry costs only the tab */ }
+  })
+
+  // Body seat — keyed by the tab kind, painted with the Preact tree.
+  ctx.inject(['slots'], (raw) => {
+    const c = raw as unknown as CordisCtx & { slots?: SlotsFace }
+    const slots = c.slots
+    if (slots === undefined || typeof slots.register !== 'function' || typeof slots.inject !== 'function') return
+    try {
+      slots.inject('sidebar.right.pane.tab', () => slots.register(
+        { name: 'sidebar.right.pane.tab', key: TAB_ID, locale: EDGE_LOCALE_NS },
+        (props: SessionProps) => h(EdgeView, { ...props }),
+      ))
+    } catch { /* body unseated: the tab falls back to the host empty state */ }
   })
 }
+
+/* Keep the framework's tree in charge of mounting: `render` is exported for
+ * the standalone smoke harness only (tests/browser debug). */
+export { render, h }

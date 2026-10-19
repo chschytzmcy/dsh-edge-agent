@@ -191,4 +191,14 @@
 
 - **v1**（未提交），~345 行：自研方案，4 panel + 8 inject + schema reconcile + 自研 seam 折叠
 - **v2**（commit `ba689d1`，2026-10-19），~162 行：仿 dsh-context、仅 3 panel、最窄范围
-- **v3**（2026-10-19，本版），~210 行：仿 dsh-context 架构 + 本仓 4 panel + session summary，inject 8 服务；硬规则：**不展示原始 PII**
+- **v3**（2026-10-19），~210 行：仿 dsh-context 架构 + 本仓 4 panel + session summary，inject 8 服务；硬规则：**不展示原始 PII**
+- **v4**（本版已落档 + 实现完成，2026-10-20）：
+  - **裁决 A**：seam 数据源是 audit-log 记录（非可订阅事件流）——`audit-log.ts` 新增 `onEntry(listener)` 活体监听 seam（追加-only、逐 listener try/catch fail-open、ring push 后触发、含未 flush 条目；unit test 已加）。
+  - **裁决 B**：传输改为 dsh-context 的 **POST route pull**（框架 `connection.fetch.register`，path `/api/dsh-edge/context`，client `api/dsh-edge/context` 轮询 + cursor）。`snapshot()` 返回纯数据，**不是** AsyncIterable（浏览器订不到 cordis）。
+  - **裁决 C**：session summary token 源 = `assistant/message.usage`（adapter 报账才显示，未报则"—"）。
+  - **裁决 D**：原 8 inject 缩为 `['auditLog']` 硬 + `['connection']`/`['slots','locale']` 软延迟；其余 6 个服务无可读 API。
+  - **裁决 E**：`sessionProjections` 物理上装不下边缘隐私事件（SessionEvent 词表封闭，无自定义 kind），故不强求用纯 switch。
+  - **build**：tsc 排除 `src/client`（emit），独立 `tsconfig.client.json`（noEmit + jsx preact）做类型门；`scripts/build-client.mjs` esbuild 出 `lib/client.js`（20 KB，远低于 50 KB 风险项）。
+  - **新增文件**：`src/dsh-adapter/edge-context-view.ts`（host）、`src/client/*`（11 个）、`scripts/build-client.mjs`、`tsconfig.client.json`、`tests/unit/edge-context-view.test.ts`、`docs/notes/dsh-context-walkthrough.md`。
+  - **修改文件**：`audit-log.ts`、`cordis.desktop-safe.patch.yml`、`package.json`（exports/`./edge-context-view`、`./client` → `./lib/client.js`、`dsh.client.entry`、`build:client`/`typecheck:client`、devDeps preact + esbuild）、`tsconfig.json`（exclude）、`scripts/verify-plugin-spec.ts`（`./client` 跳过源文件存在性检查——bundle 走 dsh.client.entry）。
+  - **11 项验收**（计划 §5）：本环境能验的 8 项全部通过（tsc compile、tsc-client typecheck、esbuild bundle、verify:build 5 道门、31 个新单测全过、桌面 installable bundle smoke 含 `lib/client.js` 与新 patch row、PII 5 类在 host 折叠时已 tokenize、tab 类型在 deferred 注入下 mount 失败也保持插件健康）。装机目视验证（11 项中剩 3 项：右栏 Edge tab 出现、深浅主题跟随、zh/en 文案跟随）需在桌面 0.2.1-rc.2 实跑。

@@ -18,5 +18,7 @@ allowBuilds:
   cloudflared: true
   cpu-features: true
   ssh2: true
+  # §7.101: client bundle 的 esbuild postinstall(本机 darwin-arm64 原生二进制)。
+  esbuild: true
 onlyBuiltDependencies:
   - esbuild

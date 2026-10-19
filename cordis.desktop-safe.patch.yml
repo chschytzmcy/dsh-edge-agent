@@ -220,3 +220,16 @@
         # §7.100: 降级目标 model 跟随 LOCAL 池（DSH_EDGE_LOCAL_MODEL 是
         # standalone .env.sh 的派生位；桌面下直接用 LOCAL_LLM_MODEL 保持一致）
         localModel: !!js process.env.DSH_EDGE_LOCAL_MODEL ?? process.env.DSH_EDGE_LOCAL_LLM_MODEL ?? 'qwen3-4b-instruct-2507'
+
+    # §7.101 Edge tab host half: folds the audit stream into the four panel
+    # row-lists + session summary and serves them on /api/dsh-edge/context.
+    # Hard dep is auditLog only (the sole live data source — see
+    # docs/notes/dsh-context-walkthrough.md ruling E); `connection` arms
+    # deferred, so headless profiles mount the plugin without the route.
+    - id: edge-context-view
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/edge-context-view'
+      inject: [auditLog]
+      config:
+        bufferSize: !!js parseInt(process.env.DSH_EDGE_VIEW_BUFFER_SIZE ?? '64', 10)
+        sessionTtlMs: !!js parseInt(process.env.DSH_EDGE_VIEW_SESSION_TTL_MS ?? '1800000', 10)
+        piiRedact: !!js process.env.DSH_EDGE_VIEW_PII_REDACT !== 'false'

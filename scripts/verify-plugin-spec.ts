@@ -120,7 +120,12 @@ const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
 const exports = pkg.exports ?? {}
 const exportViolations: string[] = []
 for (const [key, value] of Object.entries(exports)) {
-  if (key === './package.json' || key === './cordis.patch.yml' || key === './cordis.yml') continue
+  if (key === './package.json' || key === './cordis.patch.yml' || key === './cordis.yml' || key === './client') continue
+  // §7.101: './client' is the webview bundle produced by esbuild
+  // (scripts/build-client.mjs) and lives at lib/client.js — it has no
+  // matching src/dsh-adapter/*.ts because the half is shipped as a single
+  // ESM file, not a Cordis plugin (its entry is configured by package.json
+  // dsh.client.entry instead). See docs/edge-context-tab-plan.md.
   const v = value as Record<string, string> | string
   const importPath = typeof v === 'string' ? v : v.import
   if (!importPath) continue

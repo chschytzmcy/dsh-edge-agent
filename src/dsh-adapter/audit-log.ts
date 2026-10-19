@@ -104,12 +104,21 @@ export interface SecurityReport {
   recent: AuditEntry[]
 }
 
+/** Live listener over freshly recorded entries. Fired synchronously after
+ *  the ring-buffer push (so unflushed entries are visible), before the
+ *  disk write — the §7.101 seam that lets `edge-context-view` fold panel
+ *  state without polling `query()` (which re-reads the whole file). */
+export type AuditEntryListener = (entry: AuditEntry) => void
+
 export interface AuditLogService {
   log(entry: Omit<AuditEntry, 'ts'> & { ts?: number }): Promise<void>
   query(filter: AuditQuery): Promise<AuditEntry[]>
   getSecurityReport(): Promise<SecurityReport>
   /** Manually trigger a disk flush; mostly for tests. */
   flush(): Promise<void>
+  /** Subscribe to live entries; returns an unsubscribe function.
+   *  Listener faults are caught — they can never break the audit path. */
+  onEntry(listener: AuditEntryListener): () => void
 }
 
 declare module '@deepseek-ai/cordis' {
@@ -133,6 +142,7 @@ export class AuditLogServiceImpl extends Service {
   private flushTimer: ReturnType<typeof setInterval> | undefined
   private dirty = false
   private flushPromise: Promise<void> = Promise.resolve()
+  private readonly entryListeners = new Set<AuditEntryListener>()
 
   constructor(ctx: Context, config: Config) {
     super(ctx, 'auditLog')
@@ -149,6 +159,23 @@ export class AuditLogServiceImpl extends Service {
   /** Test/apply helper that returns the audit log's current file path. */
   filePathForTests(): string {
     return this.filePath
+  }
+
+  /** §7.101 live seam: subscribe to freshly recorded entries. The returned
+   *  function unsubscribes. Delivery is synchronous after the ring push;
+   *  a throwing listener is isolated (the audit path is privacy-critical,
+   *  a viewer fault must never affect it — same fail-open discipline as
+   *  TdBusServiceImpl.on). */
+  onEntry(listener: AuditEntryListener): () => void {
+    this.entryListeners.add(listener)
+    return () => { this.entryListeners.delete(listener) }
+  }
+
+  private notifyEntryListeners(record: AuditEntry): void {
+    if (this.entryListeners.size === 0) return
+    for (const listener of [...this.entryListeners]) {
+      try { listener(record) } catch { /* viewer faults never break the audit path */ }
+    }
   }
 
   /** Start the periodic flush; idempotent. Call once from `apply()`. */
@@ -201,6 +228,7 @@ export class AuditLogServiceImpl extends Service {
       this.flushIndex = Math.max(0, this.flushIndex - 1)
     }
     this.dirty = true
+    this.notifyEntryListeners(record)
   }
 
   async query(filter: AuditQuery): Promise<AuditEntry[]> {

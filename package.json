@@ -35,9 +35,10 @@
       "types": "./lib/types/dsh-adapter/cloud-llm-adapter.d.ts",
       "import": "./lib/types/dsh-adapter/cloud-llm-adapter.js"
     },
-    "./client": {
-      "types": "./lib/types/client/index.d.ts",
-      "import": "./lib/types/client/index.js"
+    "./client": "./lib/client.js",
+    "./edge-context-view": {
+      "types": "./lib/types/dsh-adapter/edge-context-view.d.ts",
+      "import": "./lib/types/dsh-adapter/edge-context-view.js"
     },
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./file-logger": {
@@ -156,7 +157,9 @@
     "clean": "node scripts/clean-lib.mjs",
     "compile": "npm run clean && tsc -p tsconfig.json",
     "prepare": "npm run compile",
-    "build": "npm run compile && npm run verify:build",
+    "build:client": "node scripts/build-client.mjs",
+    "typecheck:client": "tsc -p tsconfig.client.json",
+    "build": "npm run compile && npm run typecheck:client && npm run build:client && npm run verify:build",
     "test": "vitest run tests/unit",
     "e2e:coverage": "bash scripts/e2e-ops-log-coverage.sh",
     "e2e:benchmark": "bash scripts/e2e-model-quality-bench.sh",
@@ -194,6 +197,8 @@
     "@deepseek-ai/dsh-web-search-deepseek": ">=0.2.1-rc.2",
     "@deepseek-ai/schemastery": ">=3.18.5",
     "@types/node": "^22.10.0",
+    "esbuild": "^0.28.0",
+    "preact": "^10.0.0",
     "tsx": "^4.0.0",
     "typescript": "^5.6.0",
     "vitest": "^2.0.0",
@@ -210,7 +215,7 @@
         "@deepseek-ai/dsh-client-ui-sidebar-right"
       ],
       "platform": "web",
-      "entry": "./lib/types/client/index.js"
+      "entry": "./lib/client.js"
     }
   }
 }
