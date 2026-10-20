@@ -227,9 +227,10 @@
     # docs/notes/dsh-context-walkthrough.md ruling E); `connection` arms
     # deferred, so headless profiles mount the plugin without the route.
     - id: edge-context-view
-      name: '@deepseek-harness-edge-agent/dsh-edge-agent/edge-context-view'
-      inject: [auditLog]
-      config:
-        bufferSize: !!js parseInt(process.env.DSH_EDGE_VIEW_BUFFER_SIZE ?? '64', 10)
-        sessionTtlMs: !!js parseInt(process.env.DSH_EDGE_VIEW_SESSION_TTL_MS ?? '1800000', 10)
-        piiRedact: !!js process.env.DSH_EDGE_VIEW_PII_REDACT !== 'false'
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/lib/types/dsh-adapter/edge-context-view.js'
+      # v5: name points at the absolute compiled file path inside the nested
+      # pack (`require('@scope/pkg/.../edge-context-view.js')`). cordis 0.2.1-rc.2
+      # doesn't reliably follow package.json#exports ./* subpaths, so we bypass
+      # that mechanism by quoting the resolved path directly. The plugin's own
+      # apply() handles all injections via ctx.inject() deferred — no top-level
+      # inject/config fields, matching dsh-context's minimal patch shape.

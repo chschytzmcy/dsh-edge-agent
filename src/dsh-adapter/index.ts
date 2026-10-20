@@ -111,3 +111,9 @@ export { name as httpApiName, inject as httpApiInject, Config as HttpApiConfig, 
 // "does not provide an export named 'HttpApiService'" when importing src/.
 export type { HttpApiService } from './http-api.js'
 export * from './llm-adapters.js'
+// §7.101 v5: re-export edge-context-view so it is reachable from the package
+// root (`@deepseek-harness-edge-agent/dsh-edge-agent`). The cordis patch row
+// in cordis.desktop-safe.patch.yml points at this name (bare package name,
+// matching dsh-context's pattern); without this re-export the package root
+// has no apply() for the host plugin and Edge tab remains invisible.
+export * from './edge-context-view.js'

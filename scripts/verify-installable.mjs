@@ -95,13 +95,11 @@ function verifyBundle(dir) {
     )
   }
 
-  // 3. dsh.client (optional, v4+). When present, entry must resolve.
+  // 3. dsh.client (optional). When entry is present, entry file must exist.
+  //    dsh-context ships with just an `entry` field (no inject/platform);
+  //    we mirror that minimal shape, so inject/platform are optional.
   const dshClientEntry = unquote(pkg?.dsh?.client?.entry)
   if (dshClientEntry) {
-    if (!pkg?.dsh?.client?.inject || !Array.isArray(pkg.dsh.client.inject) ||
-        pkg.dsh.client.inject.length === 0) {
-      throw new Error(`${relative(ROOT, dir)}: dsh.client.entry present but dsh.client.inject array missing`)
-    }
     const clientAbs = join(dir, dshClientEntry)
     if (!existsSync(clientAbs)) {
       throw new Error(
