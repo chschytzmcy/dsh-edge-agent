@@ -163,12 +163,13 @@
     "test": "vitest run tests/unit",
     "e2e:coverage": "bash scripts/e2e-ops-log-coverage.sh",
     "e2e:benchmark": "bash scripts/e2e-model-quality-bench.sh",
-    "verify:build": "npm run verify:boundary && npm run verify:contract && npm run verify:patch-surface && npm run verify:plugin-spec && npm run verify:bundle-mount",
+    "verify:build": "npm run verify:boundary && npm run verify:contract && npm run verify:patch-surface && npm run verify:plugin-spec && npm run verify:bundle-mount && npm run verify:installable",
     "verify:boundary": "node --import tsx/esm scripts/verify-adapter-boundary.ts",
     "verify:contract": "node --import tsx/esm scripts/verify-upstream-contract.ts",
     "verify:patch-surface": "node --import tsx/esm scripts/verify-patch-surface.ts",
     "verify:plugin-spec": "node --import tsx/esm scripts/verify-plugin-spec.ts",
     "verify:bundle-mount": "bash scripts/verify-bundle-mounted.sh",
+    "verify:installable": "node scripts/verify-installable.mjs",
     "verify:package": "npm pack --dry-run --json --ignore-scripts | node scripts/verify-package.mjs"
   },
   "peerDependencies": {
@@ -198,7 +199,7 @@
     "@deepseek-ai/schemastery": ">=3.18.5",
     "@types/node": "^22.10.0",
     "esbuild": "^0.28.0",
-    "preact": "^10.0.0",
+    "preact": "^10.29.8",
     "tsx": "^4.0.0",
     "typescript": "^5.6.0",
     "vitest": "^2.0.0",
