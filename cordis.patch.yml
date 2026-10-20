@@ -108,6 +108,12 @@
 # §7.100: 撤销了 llm-deepseek 的 disable —— 宿主云路由现在是 cloud-llm
 # delegate 的转发目标，必须保持挂载。A4 (OHTTP) 届时替换的是 delegate
 # 之下的 wire transport，不再是"edge 独占云路由"。
+#
+# §7.101.x (2026-10-20, fix #5): this `disabled: true` override is a NO-OP
+# for the bare host-half row inserted below in the same file — cordis
+# applies top-level overrides to already-existing entries only, and the
+# insert creates the entry with that name. Kept as documentation of the
+# standalone-profile intent (individual rows mount there).
 
 - id: dsh-edge-agent
   disabled: true
@@ -296,6 +302,22 @@
 # See `src/dsh-adapter/file-logger.ts` for the two-channel discipline
 # (ops log: metadata only; audit JSONL: redacted call content).
 - insert:
+    # §7.101.x (2026-10-20, fix #5): BARE-package host-half row — REQUIRED
+    # for the webview client bundle to be discovered at all. The webview
+    # module system (@deepseek-ai/dsh-client-modules) scans loader entry
+    # NAMES and its package locator only accepts bare package-root
+    # specifiers (`exactPackageSpecifier`), so subpath rows can never
+    # surface `dsh.client`. Same shape as dsh-context's single bare row.
+    # inject: [] on lib/index.js means zero service deps; the apply() body
+    # (file-logger install, upstream drift, plugin.ts boot event) is fully
+    # best-effort/guarded. This row mounts the host half in profiles that
+    # use this patch's insert list directly (desktop/web). The top-level
+    # `- id: dsh-edge-agent / disabled: true` override above does NOT
+    # disable it: the insert creates a new entry with the same name, and
+    # cordis applies overrides to already-existing entries only.
+    - id: dsh-edge-agent
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent'
+
     - id: file-logger
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/file-logger'
       config:

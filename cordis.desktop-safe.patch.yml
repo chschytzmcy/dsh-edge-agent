@@ -41,6 +41,21 @@
 #     set DSH_EDGE_INPUT_GUARD=false before starting/restarting the profile.
 
 - insert:
+    # §7.101.x (2026-10-20, fix #5): the BARE-package host-half row. The
+    # webview client-module system (@deepseek-ai/dsh-client-modules) scans
+    # LOADER ENTRY NAMES for a `dsh.client` declaration — and its package
+    # locator only accepts bare package-root specifiers (`exactPackageSpecifier`),
+    # so subpath rows like '@scope/pkg/audit-log' can never surface the
+    # bundle's browser half. dsh-context shows the working shape: one bare
+    # row (`name: dsh-context`) whose main entry IS the plugin AND whose
+    # manifest carries `dsh.client.platform: "web"`. This row mounts the
+    # host half from lib/index.js (inject: [] — no service deps at apply()
+    # time; file-logger below owns the ops exporter, plugin.ts's boot-event
+    # emit is best-effort-wrapped). Without this row the Edge tab can never
+    # register in the webview, no matter how correct exports["./client"] is.
+    - id: dsh-edge-agent
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent'
+
     # Ops log exporter. Mount first so later plugin logs land on disk.
     - id: file-logger
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/file-logger'
