@@ -72,13 +72,25 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
   // Track disposers for ordered teardown.
   const disposers: Array<() => Promise<void> | void> = []
 
-  // Hook shutdown to flush audit logs.
-  const { auditLogShutdown } = await import('./audit-log.js')
-  disposers.push(await auditLogShutdown(ctx))
-
-  // Hook shutdown to close encrypted storage.
-  const { storageShutdown } = await import('./local-storage.js')
-  disposers.push(await storageShutdown(ctx))
+  // Hook shutdown to flush audit logs. Best-effort: `cordis 0.2.1-rc.2`
+  // throws `cannot get property "x" without inject` when a service was not
+  // declared. The aggregator declares `auditLog` but NOT `localStorage`
+  // (the desktop-safe patch never inserts a `local-storage` row, and
+  // declaring it would make the loader wait forever with
+  // `pending (waiting for service: localStorage)`). Wrap both shutdown
+  // captures so the host-half mounts cleanly under any patch composition.
+  try {
+    const { auditLogShutdown } = await import('./audit-log.js')
+    disposers.push(await auditLogShutdown(ctx))
+  } catch {
+    // ctx.auditLog unavailable or threw on access; no-op disposer.
+  }
+  try {
+    const { storageShutdown } = await import('./local-storage.js')
+    disposers.push(await storageShutdown(ctx))
+  } catch {
+    // ctx.localStorage unavailable or threw on access; no-op disposer.
+  }
 
   return async () => {
     for (const dispose of disposers.reverse()) {
