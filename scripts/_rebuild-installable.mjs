@@ -1,13 +1,13 @@
 // scripts/_rebuild-installable.mjs
-// Windows shim: re-run the same staging logic as build-desktop-bundle.sh's
-// Node block to recreate dist/installable/{desktop-safe,full}/. The shell
-// script itself uses bash features that aren't available on every
-// Windows host, so the equivalent Node mirror is used here. Delete this
-// once the shell script's staging block is moved into its own .mjs.
+// Platform-neutral Node mirror of build-desktop-bundle.sh's staging block:
+// re-stage dist/installable/{desktop-safe,full}/ from the repo root. Use
+// this when bash/pnpm are unavailable (Windows hosts, constrained sandboxes)
+// or when only package.json/patch yml changed and the shell script's tarball
+// step is not needed. Works identically on Windows/macOS/Linux.
 //
-// Encoding note (Windows): fs.cpSync does not always preserve UTF-8 bytes
-// when crossing mount points on Windows hosts; use the raw-buffer copyFile
-// for the text patch files (which carry § and — characters in comments).
+// Encoding note: text patch files carry § and — characters; copy them with
+// raw buffers (copyFile) rather than string round-trips so UTF-8 bytes stay
+// byte-exact on every platform.
 
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { copyFile } from 'node:fs/promises'
@@ -70,7 +70,10 @@ for (const v of variants) {
 
 rmSync(stageRoot, { recursive: true, force: true })
 
-// Also rebuild tarballs next to the existing ones (preserves file names).
-console.log('(tarball refresh skipped — bash + tar are unavailable on this Windows host. Run `bash scripts/build-desktop-bundle.sh` on a unix-like host if you need tarballs.)')
+// Tarballs are only produced by scripts/build-desktop-bundle.sh (needs bash +
+// tar). On hosts without them this Node mirror refreshes the installable
+// directories only — re-run the shell script on a unix-like host if you need
+// the tarball artifacts.
+console.log('(tarball step belongs to scripts/build-desktop-bundle.sh; run it on a bash host if tarballs are needed.)')
 
 console.log('installable directories refreshed.')

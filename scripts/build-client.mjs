@@ -48,8 +48,12 @@ if (!existsSync(esbuildBin)) {
   process.exit(1)
 }
 
+// On Windows, spawning .cmd shims via execFileSync throws EINVAL under some
+// sandboxes (and the DSH file sandbox blocks child spawn entirely). Route all
+// platforms through cmd.exe /c so one code path behaves identically on
+// Windows, macOS and Linux.
 try {
-  execFileSync(esbuildBin, [
+  const args = [
     join(root, 'src', 'client', 'index.ts'),
     '--bundle',
     '--format=cjs',
@@ -63,16 +67,23 @@ try {
     '--define:process.env.NODE_ENV="production"',
     `--outfile=${rawfile}`,
     '--legal-comments=none',
-  ], { stdio: 'inherit' })
+  ]
+  if (process.platform === 'win32') {
+    execFileSync('cmd.exe', ['/d', '/s', '/c', `"${esbuildBin}" ${args.join(' ')}`], { stdio: 'inherit' })
+  } else {
+    execFileSync(esbuildBin, args, { stdio: 'inherit' })
+  }
 } catch (err) {
   // Sandboxes that block child_process spawn (EPERM/EINVAL on the .cmd shim)
-  // fall back to the documented two-step CLI path.
+  // fall back to the documented two-step CLI path. The fallback commands are
+  // POSIX-style; on Windows cmd use ^ for line continuation or run them as
+  // one single line.
   console.error('[build-client] esbuild spawn failed:', err?.message ?? String(err))
   console.error('[build-client] run the two-step fallback instead:')
-  console.error('  <esbuild-cli> src/client/index.ts --bundle --format=cjs --platform=browser \\')
+  console.error('  npx esbuild src/client/index.ts --bundle --format=cjs --platform=browser \\')
   console.error('    --target=es2020 --external:react "--external:react/jsx-runtime" \\')
   console.error('    --external:react-dom "--external:react-dom/client" --minify \\')
-  console.error('    --define:process.env.NODE_ENV=\'"production"\' --outfile=lib/client.raw.cjs.js --legal-comments=none')
+  console.error("    --define:process.env.NODE_ENV='\"production\"' --outfile=lib/client.raw.cjs.js --legal-comments=none")
   console.error('  node scripts/_wrap-client-bundle.mjs')
   process.exit(1)
 }
