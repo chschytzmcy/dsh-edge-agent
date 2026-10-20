@@ -52,3 +52,8 @@ dist/
 
 # pnpm 本地对象缓存 —— 绝不入库
 .pnpm-store/
+
+# sandbox npm cache (local install fallback)
+.npm-cache/
+# ad-hoc screenshot drops at repo root
+/*.png

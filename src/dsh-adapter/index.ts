@@ -4,10 +4,17 @@
  *
  * Plugin surface (consumer of `@deepseek-ai/*`):
  *   - name: 'dsh-edge-agent'
- *   - inject: soft dependencies on core DSH services
+ *   - inject: NONE — this entry is only the bundle's host half bootstrap.
+ *     apply() does NOT depend on `agents`/`llm`/`tools`/`sessions`/`invariants`
+ *     at the bundle top level. Each subordinate plugin declares its own
+ *     inject in its own file (e.g. `audit-log`, `intent-router`, ...).
+ *     Declaring deps here used to force cordis 0.2.1-rc.2 to hang pending
+ *     `invariants` (which the desktop webui profile does not provide) —
+ *     documented in docs/dev-notes/cordis-rc021-patch-loader.md.
  *   - Config: full schemastery schema (matches cordis.yml row)
- *   - apply: orchestrates the ordering of subordinate plugins (tcm,
- *     privacy-policy, intent-router, prompt-guard, td-bus, etc.)
+ *   - apply: bootstraps the privacy stack and exposes sub-plugin
+ *     re-exports so the package root can be loaded as a single Cordis
+ *     plugin that mounts every sub-plugin via its own cordis.yml row.
  */
 
 import type { Context } from '@deepseek-ai/cordis'
@@ -15,13 +22,12 @@ import Schema from '@deepseek-ai/schemastery'
 
 export const name = 'dsh-edge-agent'
 
-export const inject = [
-  'agents',
-  'llm',
-  'tools',
-  'sessions',
-  'invariants',
-] as const
+// Empty inject — see above. Subordinate plugins each declare their own
+// deps in their own .ts files; the bundle's host-half bootstrap does
+// not need any service to start. Mirrors dsh-context's pattern (its
+// inject is `['sessionProjections']` because it does need a projection
+// store; ours does not because we install our own ring buffer).
+export const inject = [] as const
 
 export interface Config {
   /** TEE backend preference. Platform-dependent; auto-detected when omitted. */

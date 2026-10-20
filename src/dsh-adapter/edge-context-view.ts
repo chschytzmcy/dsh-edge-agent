@@ -335,8 +335,14 @@ interface ConnectionFace {
 }
 
 export async function apply(ctx: Context, config: Config): Promise<() => void> {
+  // Boot evidence for the desktop ops log (file-logger picks this up via
+  // the ctx.logger exporter chain). Proves the patch row activated.
+  ctx.logger?.info?.('[edge-context-view] apply() called — Edge tab host half mounting')
   const service = new EdgeContextViewServiceImpl(ctx, config)
-  ;(ctx as unknown as { edgeContextView: EdgeContextViewServiceImpl }).edgeContextView = service
+  // No `ctx.edgeContextView = ...` assignment: cordis 0.2.1-rc.2 plugin
+  // proxy ctx can't accept arbitrary property writes (would throw
+  // `cannot set property "x" without provide`). Service is captured by
+  // closure in the route handler below.
   const disposeFold = service.start()
 
   // Deferred arms: `connection` only exists on GUI hosts. Headless profiles
@@ -370,15 +376,28 @@ export async function apply(ctx: Context, config: Config): Promise<() => void> {
     } catch { /* a rejecting registry only costs the route, not the plugin */ }
   })
 
-  // In-process session/event fold (turns + tokens), same idiom as http-api.
-  const disposeSession = (ctx as unknown as {
-    on?(event: 'session/event', cb: (session: { id?: string }, event: { type: string; data?: unknown }) => void): () => void
-  }).on?.('session/event', (session, event) => {
-    const sid = typeof session?.id === 'string' && session.id.length > 0 ? session.id : undefined
-    if (sid === undefined) return
-    if (event?.type !== 'turn/start' && event?.type !== 'assistant/message') return
-    service.recordSessionEvent(sid, event.type, event.data)
-  })
+  // In-process session/event fold (turns + tokens). Cordis 0.2.1-rc.2's
+  // plugin-level proxy ctx does NOT expose `.on` directly (would throw
+  // `cannot get property "on" without inject`); only Service-internal ctx
+  // has it. Wrap in a try/catch so a missing fiber-root `.on` only costs
+  // the session summary counter, not the whole plugin mount.
+  let disposeSession: (() => void) | undefined
+  try {
+    const ctxOn = (ctx as unknown as {
+      on?: (event: string, cb: (session: { id?: string }, event: { type: string; data?: unknown }) => void) => () => void
+    }).on
+    if (typeof ctxOn === 'function') {
+      disposeSession = ctxOn.call(ctx, 'session/event', (session, event) => {
+        const sid = typeof session?.id === 'string' && session.id.length > 0 ? session.id : undefined
+        if (sid === undefined) return
+        if (event?.type !== 'turn/start' && event?.type !== 'assistant/message') return
+        service.recordSessionEvent(sid, event.type, event.data)
+      })
+    }
+  } catch {
+    // Plugin-level proxy ctx can't subscribe events. Session summary
+    // will fall back to audit-log derived data only.
+  }
 
   return () => {
     disposeFold()

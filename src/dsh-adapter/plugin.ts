@@ -55,8 +55,19 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
   // exists only to give the package a single named surface that
   // `cordis.yml` can mount.
 
-  const ctxWithEvent = ctx as Context & { event: { emit(name: string, payload: unknown): Promise<void> } }
-  await ctxWithEvent.event.emit('edge-agent/boot', { config })
+  // 2026-10-20 desktop fix: the host-half plugin declares `inject: []`,
+  // so the cordis proxy throws `cannot get property "event" without
+  // inject` when we touch ctx.event. The event has no subscribers (it
+  // was scaffold-era signalling for cross-plugin setup that ended up
+  // living in each plugin's own apply). Best-effort only: if the host
+  // ever grows an `event` accessor the emit still fires; otherwise we
+  // log and move on instead of killing the plugin mount.
+  const ctxWithEvent = ctx as Context & { event?: { emit(name: string, payload: unknown): Promise<void> } }
+  try {
+    await ctxWithEvent.event?.emit('edge-agent/boot', { config })
+  } catch {
+    // expected on cordis 0.2.1-rc.2 (undeclared `event` service)
+  }
 
   // Track disposers for ordered teardown.
   const disposers: Array<() => Promise<void> | void> = []

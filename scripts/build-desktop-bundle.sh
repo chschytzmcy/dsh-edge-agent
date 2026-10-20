@@ -69,7 +69,7 @@ echo "==> node:  $NODE_BIN ($("$NODE_BIN" -v))"
 echo "==> pnpm:  ${PNPM:-<none>}"
 
 # ── 1. 确保编译产物存在 ───────────────────────────────────────────
-if [ "$DO_BUILD" = 1 ] || [ ! -f "$REPO/lib/types/index.js" ]; then
+if [ "$DO_BUILD" = 1 ] || [ ! -f "$REPO/lib/index.js" ]; then
   if [ -z "$PNPM" ]; then
     echo "error: 需要编译但没有可用的 pnpm。设置 PNPM 或先手工 compile 后用 --no-build" >&2
     exit 1
@@ -77,9 +77,9 @@ if [ "$DO_BUILD" = 1 ] || [ ! -f "$REPO/lib/types/index.js" ]; then
   echo "==> compile (pnpm run compile)"
   ( cd "$REPO" && PATH="$(dirname "$NODE_BIN"):$PATH" $PNPM run compile )
 else
-  echo "==> 复用现有 lib/（--no-build 且 lib/types/index.js 存在）"
+  echo "==> 复用现有 lib/（--no-build 且 lib/index.js 存在）"
 fi
-[ -f "$REPO/lib/types/index.js" ] || { echo "error: lib/types/index.js 不存在" >&2; exit 1; }
+[ -f "$REPO/lib/index.js" ] || { echo "error: lib/index.js 不存在" >&2; exit 1; }
 
 # ── 2. 打包两个变体 ───────────────────────────────────────────────
 mkdir -p "$DIST"

@@ -1,4 +1,4 @@
-import { h } from 'preact'
+import { createElement as h } from 'react'
 import type { EdgeSummary } from './types'
 import { tr } from './i18n'
 

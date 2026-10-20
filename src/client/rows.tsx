@@ -1,5 +1,5 @@
 /** Shared row painting for the four Edge panels. */
-import { h } from 'preact'
+import { createElement as h } from 'react'
 import type { EdgeRow } from './types'
 
 /** HH:MM:SS local time. */

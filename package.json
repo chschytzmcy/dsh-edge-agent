@@ -16,131 +16,189 @@
   },
   "type": "module",
   "packageManager": "pnpm@11.7.0",
-  "main": "lib/types/index.js",
-  "types": "lib/types/index.d.ts",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
   "exports": {
     ".": {
-      "types": "./lib/types/index.d.ts",
-      "import": "./lib/types/index.js"
+      "types": "./lib/index.d.ts",
+      "import": "./lib/index.js",
+      "require": "./lib/index.js",
+      "default": "./lib/index.js"
     },
     "./attestation": {
-      "types": "./lib/types/dsh-adapter/attestation.d.ts",
-      "import": "./lib/types/dsh-adapter/attestation.js"
+      "types": "./lib/dsh-adapter/attestation.d.ts",
+      "import": "./lib/dsh-adapter/attestation.js",
+      "require": "./lib/dsh-adapter/attestation.js",
+      "default": "./lib/dsh-adapter/attestation.js"
     },
     "./audit-log": {
-      "types": "./lib/types/dsh-adapter/audit-log.d.ts",
-      "import": "./lib/types/dsh-adapter/audit-log.js"
+      "types": "./lib/dsh-adapter/audit-log.d.ts",
+      "import": "./lib/dsh-adapter/audit-log.js",
+      "require": "./lib/dsh-adapter/audit-log.js",
+      "default": "./lib/dsh-adapter/audit-log.js"
     },
     "./cloud-llm-adapter": {
-      "types": "./lib/types/dsh-adapter/cloud-llm-adapter.d.ts",
-      "import": "./lib/types/dsh-adapter/cloud-llm-adapter.js"
+      "types": "./lib/dsh-adapter/cloud-llm-adapter.d.ts",
+      "import": "./lib/dsh-adapter/cloud-llm-adapter.js",
+      "require": "./lib/dsh-adapter/cloud-llm-adapter.js",
+      "default": "./lib/dsh-adapter/cloud-llm-adapter.js"
     },
     "./client": "./lib/client.js",
     "./edge-context-view": {
-      "types": "./lib/types/dsh-adapter/edge-context-view.d.ts",
-      "import": "./lib/types/dsh-adapter/edge-context-view.js"
+      "types": "./lib/dsh-adapter/edge-context-view.d.ts",
+      "import": "./lib/dsh-adapter/edge-context-view.js",
+      "require": "./lib/dsh-adapter/edge-context-view.js",
+      "default": "./lib/dsh-adapter/edge-context-view.js"
     },
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./file-logger": {
-      "types": "./lib/types/dsh-adapter/file-logger.d.ts",
-      "import": "./lib/types/dsh-adapter/file-logger.js"
+      "types": "./lib/dsh-adapter/file-logger.d.ts",
+      "import": "./lib/dsh-adapter/file-logger.js",
+      "require": "./lib/dsh-adapter/file-logger.js",
+      "default": "./lib/dsh-adapter/file-logger.js"
     },
     "./etscli-tools": {
-      "types": "./lib/types/dsh-adapter/etscli-tools.d.ts",
-      "import": "./lib/types/dsh-adapter/etscli-tools.js"
+      "types": "./lib/dsh-adapter/etscli-tools.d.ts",
+      "import": "./lib/dsh-adapter/etscli-tools.js",
+      "require": "./lib/dsh-adapter/etscli-tools.js",
+      "default": "./lib/dsh-adapter/etscli-tools.js"
     },
     "./http-api": {
-      "types": "./lib/types/dsh-adapter/http-api.d.ts",
-      "import": "./lib/types/dsh-adapter/http-api.js"
+      "types": "./lib/dsh-adapter/http-api.d.ts",
+      "import": "./lib/dsh-adapter/http-api.js",
+      "require": "./lib/dsh-adapter/http-api.js",
+      "default": "./lib/dsh-adapter/http-api.js"
     },
     "./intent-router": {
-      "types": "./lib/types/dsh-adapter/intent-router.d.ts",
-      "import": "./lib/types/dsh-adapter/intent-router.js"
+      "types": "./lib/dsh-adapter/intent-router.d.ts",
+      "import": "./lib/dsh-adapter/intent-router.js",
+      "require": "./lib/dsh-adapter/intent-router.js",
+      "default": "./lib/dsh-adapter/intent-router.js"
     },
     "./invariant": {
-      "types": "./lib/types/dsh-adapter/invariant.d.ts",
-      "default": "./lib/types/dsh-adapter/invariant.js"
+      "types": "./lib/dsh-adapter/invariant.d.ts",
+      "default": "./lib/dsh-adapter/invariant.js"
     },
     "./input-guard": {
-      "types": "./lib/types/dsh-adapter/input-guard.d.ts",
-      "import": "./lib/types/dsh-adapter/input-guard.js"
+      "types": "./lib/dsh-adapter/input-guard.d.ts",
+      "import": "./lib/dsh-adapter/input-guard.js",
+      "require": "./lib/dsh-adapter/input-guard.js",
+      "default": "./lib/dsh-adapter/input-guard.js"
     },
     "./llm-adapters": {
-      "types": "./lib/types/dsh-adapter/llm-adapters.d.ts",
-      "import": "./lib/types/dsh-adapter/llm-adapters.js"
+      "types": "./lib/dsh-adapter/llm-adapters.d.ts",
+      "import": "./lib/dsh-adapter/llm-adapters.js",
+      "require": "./lib/dsh-adapter/llm-adapters.js",
+      "default": "./lib/dsh-adapter/llm-adapters.js"
     },
     "./local-llm-adapter": {
-      "types": "./lib/types/dsh-adapter/local-llm-adapter.d.ts",
-      "import": "./lib/types/dsh-adapter/local-llm-adapter.js"
+      "types": "./lib/dsh-adapter/local-llm-adapter.d.ts",
+      "import": "./lib/dsh-adapter/local-llm-adapter.js",
+      "require": "./lib/dsh-adapter/local-llm-adapter.js",
+      "default": "./lib/dsh-adapter/local-llm-adapter.js"
     },
     "./local-storage": {
-      "types": "./lib/types/dsh-adapter/local-storage.d.ts",
-      "import": "./lib/types/dsh-adapter/local-storage.js"
+      "types": "./lib/dsh-adapter/local-storage.d.ts",
+      "import": "./lib/dsh-adapter/local-storage.js",
+      "require": "./lib/dsh-adapter/local-storage.js",
+      "default": "./lib/dsh-adapter/local-storage.js"
     },
     "./model-router": {
-      "types": "./lib/types/dsh-adapter/model-router.d.ts",
-      "import": "./lib/types/dsh-adapter/model-router.js"
+      "types": "./lib/dsh-adapter/model-router.d.ts",
+      "import": "./lib/dsh-adapter/model-router.js",
+      "require": "./lib/dsh-adapter/model-router.js",
+      "default": "./lib/dsh-adapter/model-router.js"
     },
     "./function-call-external": {
-      "types": "./lib/types/dsh-adapter/function-call-external.d.ts",
-      "import": "./lib/types/dsh-adapter/function-call-external.js"
+      "types": "./lib/dsh-adapter/function-call-external.d.ts",
+      "import": "./lib/dsh-adapter/function-call-external.js",
+      "require": "./lib/dsh-adapter/function-call-external.js",
+      "default": "./lib/dsh-adapter/function-call-external.js"
     },
     "./ohttp-gateway": {
-      "types": "./lib/types/dsh-adapter/ohttp-gateway.d.ts",
-      "import": "./lib/types/dsh-adapter/ohttp-gateway.js"
+      "types": "./lib/dsh-adapter/ohttp-gateway.d.ts",
+      "import": "./lib/dsh-adapter/ohttp-gateway.js",
+      "require": "./lib/dsh-adapter/ohttp-gateway.js",
+      "default": "./lib/dsh-adapter/ohttp-gateway.js"
     },
     "./package.json": "./package.json",
     "./plugin-host": {
-      "types": "./lib/types/dsh-adapter/plugin-host.d.ts",
-      "import": "./lib/types/dsh-adapter/plugin-host.js"
+      "types": "./lib/dsh-adapter/plugin-host.d.ts",
+      "import": "./lib/dsh-adapter/plugin-host.js",
+      "require": "./lib/dsh-adapter/plugin-host.js",
+      "default": "./lib/dsh-adapter/plugin-host.js"
     },
     "./privacy-policy": {
-      "types": "./lib/types/dsh-adapter/privacy-policy.d.ts",
-      "import": "./lib/types/dsh-adapter/privacy-policy.js"
+      "types": "./lib/dsh-adapter/privacy-policy.d.ts",
+      "import": "./lib/dsh-adapter/privacy-policy.js",
+      "require": "./lib/dsh-adapter/privacy-policy.js",
+      "default": "./lib/dsh-adapter/privacy-policy.js"
     },
     "./prompt-guard": {
-      "types": "./lib/types/dsh-adapter/prompt-guard.d.ts",
-      "import": "./lib/types/dsh-adapter/prompt-guard.js"
+      "types": "./lib/dsh-adapter/prompt-guard.d.ts",
+      "import": "./lib/dsh-adapter/prompt-guard.js",
+      "require": "./lib/dsh-adapter/prompt-guard.js",
+      "default": "./lib/dsh-adapter/prompt-guard.js"
     },
     "./realm-skill-bridge": {
-      "types": "./lib/types/dsh-adapter/realm-skill-bridge.d.ts",
-      "import": "./lib/types/dsh-adapter/realm-skill-bridge.js"
+      "types": "./lib/dsh-adapter/realm-skill-bridge.d.ts",
+      "import": "./lib/dsh-adapter/realm-skill-bridge.js",
+      "require": "./lib/dsh-adapter/realm-skill-bridge.js",
+      "default": "./lib/dsh-adapter/realm-skill-bridge.js"
     },
     "./sanitizer-pipeline": {
-      "types": "./lib/types/dsh-adapter/sanitizer-pipeline.d.ts",
-      "import": "./lib/types/dsh-adapter/sanitizer-pipeline.js"
+      "types": "./lib/dsh-adapter/sanitizer-pipeline.d.ts",
+      "import": "./lib/dsh-adapter/sanitizer-pipeline.js",
+      "require": "./lib/dsh-adapter/sanitizer-pipeline.js",
+      "default": "./lib/dsh-adapter/sanitizer-pipeline.js"
     },
     "./secure-bridge": {
-      "types": "./lib/types/dsh-adapter/secure-bridge.d.ts",
-      "import": "./lib/types/dsh-adapter/secure-bridge.js"
+      "types": "./lib/dsh-adapter/secure-bridge.d.ts",
+      "import": "./lib/dsh-adapter/secure-bridge.js",
+      "require": "./lib/dsh-adapter/secure-bridge.js",
+      "default": "./lib/dsh-adapter/secure-bridge.js"
     },
     "./sessions": {
-      "types": "./lib/types/dsh-adapter/sessions.d.ts",
-      "import": "./lib/types/dsh-adapter/sessions.js"
+      "types": "./lib/dsh-adapter/sessions.d.ts",
+      "import": "./lib/dsh-adapter/sessions.js",
+      "require": "./lib/dsh-adapter/sessions.js",
+      "default": "./lib/dsh-adapter/sessions.js"
     },
     "./tcm": {
-      "types": "./lib/types/dsh-adapter/tcm.d.ts",
-      "import": "./lib/types/dsh-adapter/tcm.js"
+      "types": "./lib/dsh-adapter/tcm.d.ts",
+      "import": "./lib/dsh-adapter/tcm.js",
+      "require": "./lib/dsh-adapter/tcm.js",
+      "default": "./lib/dsh-adapter/tcm.js"
     },
     "./td-bus": {
-      "types": "./lib/types/dsh-adapter/td-bus.d.ts",
-      "import": "./lib/types/dsh-adapter/td-bus.js"
+      "types": "./lib/dsh-adapter/td-bus.d.ts",
+      "import": "./lib/dsh-adapter/td-bus.js",
+      "require": "./lib/dsh-adapter/td-bus.js",
+      "default": "./lib/dsh-adapter/td-bus.js"
     },
     "./tools": {
-      "types": "./lib/types/dsh-adapter/tools.d.ts",
-      "import": "./lib/types/dsh-adapter/tools.js"
+      "types": "./lib/dsh-adapter/tools.d.ts",
+      "import": "./lib/dsh-adapter/tools.js",
+      "require": "./lib/dsh-adapter/tools.js",
+      "default": "./lib/dsh-adapter/tools.js"
     },
     "./types": {
-      "types": "./lib/types/dsh-adapter/types.d.ts",
-      "import": "./lib/types/dsh-adapter/types.js"
+      "types": "./lib/dsh-adapter/types.d.ts",
+      "import": "./lib/dsh-adapter/types.js",
+      "require": "./lib/dsh-adapter/types.js",
+      "default": "./lib/dsh-adapter/types.js"
     },
     "./voice-input": {
-      "types": "./lib/types/dsh-adapter/voice-input.d.ts",
-      "import": "./lib/types/dsh-adapter/voice-input.js"
+      "types": "./lib/dsh-adapter/voice-input.d.ts",
+      "import": "./lib/dsh-adapter/voice-input.js",
+      "require": "./lib/dsh-adapter/voice-input.js",
+      "default": "./lib/dsh-adapter/voice-input.js"
     },
     "./web-search-tavily-bocha": {
-      "types": "./lib/types/dsh-adapter/web-search-tavily-bocha.d.ts",
-      "import": "./lib/types/dsh-adapter/web-search-tavily-bocha.js"
+      "types": "./lib/dsh-adapter/web-search-tavily-bocha.d.ts",
+      "import": "./lib/dsh-adapter/web-search-tavily-bocha.js",
+      "require": "./lib/dsh-adapter/web-search-tavily-bocha.js",
+      "default": "./lib/dsh-adapter/web-search-tavily-bocha.js"
     }
   },
   "files": [
@@ -163,13 +221,15 @@
     "test": "vitest run tests/unit",
     "e2e:coverage": "bash scripts/e2e-ops-log-coverage.sh",
     "e2e:benchmark": "bash scripts/e2e-model-quality-bench.sh",
-    "verify:build": "npm run verify:boundary && npm run verify:contract && npm run verify:patch-surface && npm run verify:plugin-spec && npm run verify:bundle-mount && npm run verify:installable",
+    "verify:build": "npm run verify:boundary && npm run verify:contract && npm run verify:patch-surface && npm run verify:patch-row-shape && npm run verify:plugin-spec && npm run verify:bundle-mount && npm run verify:installable && npm run verify:installable-edge",
     "verify:boundary": "node --import tsx/esm scripts/verify-adapter-boundary.ts",
     "verify:contract": "node --import tsx/esm scripts/verify-upstream-contract.ts",
     "verify:patch-surface": "node --import tsx/esm scripts/verify-patch-surface.ts",
+    "verify:patch-row-shape": "node scripts/verify-patch-row-shape.mjs",
     "verify:plugin-spec": "node --import tsx/esm scripts/verify-plugin-spec.ts",
     "verify:bundle-mount": "bash scripts/verify-bundle-mounted.sh",
     "verify:installable": "node scripts/verify-installable.mjs",
+    "verify:installable-edge": "node scripts/_verify-installable-edge.mjs",
     "verify:package": "npm pack --dry-run --json --ignore-scripts | node scripts/verify-package.mjs"
   },
   "peerDependencies": {
@@ -198,8 +258,12 @@
     "@deepseek-ai/dsh-web-search-deepseek": ">=0.2.1-rc.2",
     "@deepseek-ai/schemastery": ">=3.18.5",
     "@types/node": "^22.10.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
     "esbuild": "^0.28.0",
     "preact": "^10.29.8",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
     "tsx": "^4.0.0",
     "typescript": "^5.6.0",
     "vitest": "^2.0.0",
@@ -210,7 +274,11 @@
       "patch": "./cordis.patch.yml"
     },
     "client": {
-      "entry": "./lib/client.js"
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar-right",
+        "@deepseek-ai/dsh-client-locale"
+      ]
     }
   }
 }

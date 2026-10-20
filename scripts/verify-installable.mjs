@@ -8,9 +8,10 @@
 // every file the manifest references. This script closes that gap pre-make.
 //
 // For each directory under dist/installable, every file path that the bundle
-// package.json claims must exist on disk; the host entry point (lib/types/
-// index.js), the presets directory, and the cordis patch must all exist
-// independently of the manifest.
+// package.json claims must exist on disk; the host entry point (lib/index.js
+// since the 2026-10-20 flat-layout move; it used to be lib/types/index.js),
+// the presets directory, and the cordis patch must all exist independently
+// of the manifest.
 //
 // Note: keep backticks out of comments. Node 24 ESM lexer walks block-comment
 // regions for template-string opening backticks; a stray backtick inside an
@@ -28,7 +29,7 @@ const INSTALLABLE = process.env.INSTALLABLE_DIR
   ? resolve(process.env.INSTALLABLE_DIR)
   : join(ROOT, 'dist', 'installable')
 
-const REQUIRED_HOST_ENTRY = 'lib/types/index.js'
+const REQUIRED_HOST_ENTRY = 'lib/index.js'
 
 /** Recursive directory walker. */
 function walk(dir) {
@@ -64,7 +65,7 @@ function verifyBundle(dir) {
     throw new Error(`${relative(ROOT, dir)}: package.json is not valid JSON (${e.message})`)
   }
 
-  // 1. host half entry must exist (lib/types/index.js).
+  // 1. host half entry must exist (lib/index.js).
   const hostEntry = join(dir, REQUIRED_HOST_ENTRY)
   if (!existsSync(hostEntry)) {
     throw new Error(`${relative(ROOT, dir)}: missing host entry ${REQUIRED_HOST_ENTRY}`)
@@ -95,18 +96,43 @@ function verifyBundle(dir) {
     )
   }
 
-  // 3. dsh.client (optional). When entry is present, entry file must exist.
-  //    dsh-context ships with just an `entry` field (no inject/platform);
-  //    we mirror that minimal shape, so inject/platform are optional.
-  const dshClientEntry = unquote(pkg?.dsh?.client?.entry)
-  if (dshClientEntry) {
-    const clientAbs = join(dir, dshClientEntry)
-    if (!existsSync(clientAbs)) {
+  // 3. dsh.client (optional). The webview module system requires the
+  //    declaration shape { platform: 'web', inject?: [...], external?,
+  //    immediately? } — `entry` is NOT a member and is ignored by the host
+  //    (the bundle path comes from exports['./client']). A malformed or
+  //    non-web declaration makes @deepseek-ai/dsh-client-modules skip the
+  //    package entirely, so the client half never registers in the webview.
+  const dshClient = pkg?.dsh?.client
+  let clientNote = null
+  if (dshClient !== void 0) {
+    if (typeof dshClient !== 'object' || dshClient === null) {
+      throw new Error(`${relative(ROOT, dir)}: dsh.client must be an object`)
+    }
+    if (dshClient.platform !== 'web') {
       throw new Error(
-        `${relative(ROOT, dir)}: dsh.client.entry points at ` +
-          `${dshClientEntry} but the file is missing on disk`,
+        `${relative(ROOT, dir)}: dsh.client.platform must be "web" (got ${JSON.stringify(dshClient.platform)})`,
       )
     }
+    for (const key of ['inject', 'external']) {
+      const value = dshClient[key]
+      if (value !== void 0 && (!Array.isArray(value) || value.some((s) => typeof s !== 'string'))) {
+        throw new Error(`${relative(ROOT, dir)}: dsh.client.${key} must be an array of strings`)
+      }
+    }
+    if (dshClient.immediately !== void 0 && typeof dshClient.immediately !== 'boolean') {
+      throw new Error(`${relative(ROOT, dir)}: dsh.client.immediately must be a boolean`)
+    }
+    const clientRel = typeof pkg.exports?.['./client'] === 'string' ? pkg.exports['./client'] : void 0
+    if (clientRel === void 0) {
+      throw new Error(`${relative(ROOT, dir)}: declares dsh.client but exports has no "./client" string entry`)
+    }
+    const clientAbs = join(dir, clientRel.replace(/^\.\//u, ''))
+    if (!existsSync(clientAbs)) {
+      throw new Error(
+        `${relative(ROOT, dir)}: exports["./client"] points at ${clientRel} but the file is missing on disk`,
+      )
+    }
+    clientNote = clientRel
   }
 
   // 4. presets/ must exist with at least one .json.
@@ -123,8 +149,37 @@ function verifyBundle(dir) {
     bundle: pkg.name,
     version: pkg.version,
     variant: dshBundlePatch,
-    client: dshClientEntry ?? null,
+    client: clientNote,
     presets: presetFiles.length,
+  }
+}
+
+// §7.101 v6.1: every conditional exports entry must list a 'require' or
+// 'default' condition. Node's CJS resolver will skip an entry that only
+// declares 'import', producing ERR_PACKAGE_PATH_NOT_EXPORTED on
+// require('@scope/pkg'). The desktop GUI loader uses CJS for many host
+// paths, so missing require/default silently breaks mount.
+function verifyExportsConditions(pkg, dirRel) {
+  if (!pkg.exports || typeof pkg.exports !== 'object') return
+  const missing = []
+  for (const [key, value] of Object.entries(pkg.exports)) {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      continue
+    }
+    const conds = Object.keys(value)
+    if (conds.length === 0) continue
+    const hasFallback = conds.includes('require') || conds.includes('default')
+    const hasImportish = conds.includes('import') || conds.includes('types')
+    if (hasImportish && !hasFallback) {
+      missing.push(key)
+    }
+  }
+  if (missing.length > 0) {
+    throw new Error(
+      `${dirRel}: exports entries missing 'require'/'default' fallback: ` +
+        missing.join(', ') +
+        ' (will ERR_PACKAGE_PATH_NOT_EXPORTED on require())',
+    )
   }
 }
 
@@ -147,7 +202,11 @@ if (dirs.length === 0) {
 const reports = []
 for (const dir of dirs) {
   try {
-    reports.push(verifyBundle(dir))
+    const r = verifyBundle(dir)
+    // Cross-check exports condition keys against the package.json we just read.
+    const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'))
+    verifyExportsConditions(pkg, relative(ROOT, dir))
+    reports.push(r)
   } catch (e) {
     console.error(`verify-installable: ${e.message}`)
     process.exit(1)

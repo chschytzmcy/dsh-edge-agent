@@ -105,8 +105,8 @@ describe('bundle-minimal:花名册 ↔ 派工单互指', () => {
       assert.ok(ROSTER.includes(sub), `name 末段越界: ${sub}`)
       const exp = minPkg.exports[`./${sub}`]
       assert.ok(exp, `极简 package.json 缺 exports['./${sub}']`)
-      assert.equal(exp.import, `./lib/types/dsh-adapter/${sub}.js`)
-      assert.equal(exp.types, `./lib/types/dsh-adapter/${sub}.d.ts`)
+      assert.equal(exp.import, `./lib/dsh-adapter/${sub}.js`)
+      assert.equal(exp.types, `./lib/dsh-adapter/${sub}.d.ts`)
       assert.ok(existsSync(join(REPO, 'src/dsh-adapter', `${sub}.ts`)), `源文件缺失: src/dsh-adapter/${sub}.ts(sanitizer 的源是 sanitizer-pipeline.ts,不是 pipeline.ts)`)
     }
   })

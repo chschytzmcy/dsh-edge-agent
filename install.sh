@@ -248,7 +248,7 @@ if [ "$REPO_MODE" = 1 ]; then
   else
     _PHASE1_RC=$?
     echo "  ⚠ make package 失败 (exit $_PHASE1_RC), §7.81 fallback 用现有 lib/" >&2
-    if [ ! -d "$REPO_ROOT/lib" ] || [ ! -f "$REPO_ROOT/lib/types/index.js" ]; then
+    if [ ! -d "$REPO_ROOT/lib" ] || [ ! -f "$REPO_ROOT/lib/index.js" ]; then
       echo "  ✗ lib/ 不存在或残缺, 无法 fallback; 建议手动 'make package' 排查" >&2
       exit 1
     fi

@@ -22,8 +22,9 @@
  * face costs the feature, never the bundle.
  */
 
-import { h, render } from 'preact'
-import { useEffect, useState } from 'preact/hooks'
+import { createElement as h, useEffect, useState } from 'react'
+import type { ReactElement } from 'react'
+import { createRoot } from 'react-dom/client'
 import { edgeStore } from './store'
 import { ensureStyles } from './theme'
 import { EDGE_DICTIONARIES, EDGE_LOCALE_NS, setTranslator, tr } from './i18n'
@@ -163,5 +164,11 @@ export function apply(ctx: CordisCtx): void {
 }
 
 /* Keep the framework's tree in charge of mounting: `render` is exported for
- * the standalone smoke harness only (tests/browser debug). */
-export { render, h }
+ * the standalone smoke harness only (tests/browser debug). React 19 dropped
+ * legacy render(); the harness uses createRoot against a host element. */
+export function render(element: ReactElement, container: Element): () => void {
+  const root = createRoot(container)
+  root.render(element)
+  return () => root.unmount()
+}
+export { h }

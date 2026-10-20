@@ -226,20 +226,31 @@
     # Hard dep is auditLog only (the sole live data source — see
     # docs/notes/dsh-context-walkthrough.md ruling E); `connection` arms
     # deferred, so headless profiles mount the plugin without the route.
+    #
+    # §7.101.x (2026-10-20, fix #2, SUPERSEDED by fix #4 below): BARE
+    # package name was tried after v7's ERR_PACKAGE_PATH_NOT_EXPORTED,
+    # but the bare name makes the loader mount the MAIN entry plugin
+    # (`dsh-edge-agent` host half) under this `edge-context-view` entry
+    # id — and the host half's apply() (via plugin.ts) touched the
+    # undeclared `ctx.event` service, so cordis reported:
+    #   "1 entry did not activate edge-context-view:
+    #    Error: cannot get property 'event' without inject"
+    # (live evidence: desktop plugin-manager reload, 2026-10-20).
+    #
+    # §7.101.x (2026-10-20, fix #4): the REAL v7 bug was exports pointing
+    # at the removed dotted layout (lib/types/dsh-adapter/*). With the
+    # flat-layout move (tsconfig outDir -> lib, exports -> lib/dsh-adapter/*,
+    # package.json#main -> lib/index.js matching dsh-context), the subpath
+    # name resolves cleanly through exports['./edge-context-view'] to
+    # lib/dsh-adapter/edge-context-view.js (import-proven on this host).
+    # This row now mounts the ACTUAL view plugin (src declares
+    # inject = ['auditLog'] + deferred `connection` inside apply());
+    # plugin.ts's ctx.event emit is also best-effort-wrapped so the host
+    # half can never again poison this entry.
+    #
+    # §7.101.x (2026-10-20, fix #1, still active): no `inject:` / `config:`
+    # fields — cordis 0.2.1-rc.2 patch loader SILENTLY SKIPS both (Bug 1,
+    # docs/dev-notes/cordis-rc021-patch-loader.md). The plugin declares
+    # its deps in src; runtime knobs come from process.env inside apply().
     - id: edge-context-view
-      name: '@deepseek-harness-edge-agent/dsh-edge-agent'
-      # v6: revert to bare package name (mirror dsh-context exactly). The
-      # package's main entry (`lib/types/index.js`) re-exports the edge-context-
-      # view plugin as a named export, so cordis sees apply() on the main
-      # module exactly as it would for any other Cordis plugin.
-      #
-      # Why we back off from v5's file-path form: the v5 stringified form
-      # `'@scope/pkg/.../file.js'` may have crashed the desktop loader
-      # (`0x7F082FCF` start-up failure correlation id). The 0.2.1-rc.2 loader
-      # expects a node_modules-resolvable name with standard exports
-      # semantics, not an arbitrary sub-path tail.
-      #
-      # DSH host-plugin shape (dsh-context reference): id + name only.
-      # Injections come from ctx.inject() in apply(), deferred — NOT from
-      # a top-level `inject:` field, which the 0.2.1-rc.2 loader silently
-      # ignores. So we omit both `inject:` and `config:` entirely.
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/edge-context-view'

@@ -111,7 +111,7 @@ deploy(){
   # §7.59.5 单源:仓库只有一张 cordis.patch.yml(9 插件实装图)。
   # TP(TUI 形状)拿逐字拷贝;CP(headless 孪生)拿运行时派生 8 插件图。
   local file=cordis.patch.yml
-  [ -f "$REPO/lib/types/dsh-adapter/prompt-guard.js" ] || die "lib/ 未编译,先跑: make build"
+  [ -f "$REPO/lib/dsh-adapter/prompt-guard.js" ] || die "lib/ 未编译,先跑: make build"
   ensure_cp; ensure_tp
   for p in "$CP" "$TP"; do
     local n; n="$(nested_dir "$p")"
@@ -242,12 +242,12 @@ probes(){
   rb "$n/package.json"
 
   # P4 删包内 pii-utils.js(exports 齐全)→ ③主张:lib 不能挑文件
-  bk "$n/lib/types/dsh-adapter/pii-utils.js"
-  rm "$n/lib/types/dsh-adapter/pii-utils.js"
+  bk "$n/lib/dsh-adapter/pii-utils.js"
+  rm "$n/lib/dsh-adapter/pii-utils.js"
   run_dsh "$CP" "$EVID/probe-P4.log" 60 "hi"; rc=$?
   grep -q "pii-utils" "$EVID/probe-P4.log" \
     && ok "P4 抽文件 → 包内私有模块断链" || no "P4 未产生断链签名(见 $EVID/probe-P4.log)"
-  rb "$n/lib/types/dsh-adapter/pii-utils.js"
+  rb "$n/lib/dsh-adapter/pii-utils.js"
 
   # P5 bundles[] 摘除注册 → ④主张:唯一入口开关
   before=$(audit_lines); bk "$PROFILES/$CP/package.json"
@@ -310,7 +310,7 @@ case "${1:-all}" in
     ;;
   dump)     guard_profiles "${2:?profile}"; env DSH_EDGE_STORAGE_ROOT="$MIN_ROOT" dsh --profile "$2" --dump-config 2>&1 | grep -i "minimal\|error" | head -30 ;;
   all)
-    [ -f "$REPO/lib/types/dsh-adapter/prompt-guard.js" ] || die "lib/ 未编译,先跑: scripts/minimal-bundle-rig.sh build"
+    [ -f "$REPO/lib/dsh-adapter/prompt-guard.js" ] || die "lib/ 未编译,先跑: scripts/minimal-bundle-rig.sh build"
     deploy;  assert2
     probes
     summary

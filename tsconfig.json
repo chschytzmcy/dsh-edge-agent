@@ -11,7 +11,7 @@
     "strict": true,
     "types": ["node"],
     "rootDir": "src",
-    "outDir": "lib/types",
+    "outDir": "lib",
     "noUnusedLocals": false,
     "noUnusedParameters": false,
     "noImplicitAny": false,

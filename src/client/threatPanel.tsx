@@ -1,4 +1,4 @@
-import { h } from 'preact'
+import { createElement as h } from 'react'
 import type { EdgeRow } from './types'
 import { RowList } from './rows'
 import { tr } from './i18n'
