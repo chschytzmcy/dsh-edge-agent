@@ -178,3 +178,33 @@ npm run verify:installable
 - 不发新 cordis event type；不增新 audit kind；不增 SessionEvent kind
 
 更详细的论证见 `docs/decisions/0008-edge-context-view.md` 5 条裁决 A-E。
+
+---
+
+## ⚠️ 勘误（2026-10-20 晚，asar 源码核验后）
+
+上面"裸包名是唯一稳态形态"的结论**只对了一半**，且"配套要求"里的
+`lib/types/index.js` 已过时（tsconfig outDir 已改 `lib`）。经解析桌面 App
+`app.asar` 内 `@deepseek-ai/dsh-client-modules` 权威源码，修正如下：
+
+1. **子路径 row 是合法形态**——v7 的 `ERR_PACKAGE_PATH_NOT_EXPORTED` 真因
+   是 exports 指向不存在的旧布局文件，不是子路径本身。exports 与产物路径
+   一致时，`name: '@scope/pkg/<sub>'` 正常 mount（本仓库 desktop-safe 的
+   16 行子路径 row 全部激活成功，插件管理页可证）。
+2. **裸包名 row 有独立且必要的用途**：webview client bundle 的发现挂在
+   loader entry NAME 上（`locatePkgJson` → `exactPackageSpecifier` 只接受
+   bare package-root specifier）。想要浏览器半生效，patch 里必须有一条
+   `- name: '<package-name>'` 裸名 row；子路径 row 再多也不会触发 client
+   扫描。dsh-context 的"单条裸名 row"正是这个原因。
+3. **client 三重契约**（缺一即静默失败，宿主仅在 composition throw 时报警）：
+   - manifest `dsh.client.platform === "web"`（缺失→ resolveMeta return null）
+   - `exports["./client"]` 字符串指向落盘存在的 bundle
+   - bundle 自注册 `window.__ModuleLoader__.load({ id: <pkgName>, factory })`
+     （纯 ESM 导出 name/apply 无效——webview 按 classic script 执行）
+4. webview seed 词表无 preact，slot 组件必须返回 React element
+   （require('react') / 'react/jsx-runtime' / 'react-dom/client'）。
+5. cordis Proxy ctx：undeclared service 的属性读/写一律 throw
+   （`cannot get property "x" without inject` / `...without provide`），
+   apply() 内可选服务访问必须 defer(ctx.inject)/typeof-guard/try-catch。
+
+完整五层根因链 + 当前未闭环状态见 `docs/PROGRESS.md` §7.101.x。

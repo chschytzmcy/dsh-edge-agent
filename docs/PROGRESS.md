@@ -10579,3 +10579,32 @@ desktop installable bundle smoke               lib/client.js 落入 + cordis.pat
   在 desktop installable bundle 里和 `lib/client.js` 共存,但桌面装配
   只读 `lib/client.js`,无运行时冲突
 - README/ci.yml 的用例数标称待 CI 首跑实测刷新(48 文件,985 预期)。
+
+### §7.101.x — Edge tab 桌面装机排障全记录:五层根因链(2026-10-20,进行中)
+
+**现象**:bundle 加入 DSH Desktop profile 后,右栏始终不出现 Edge tab;插件管理页一度报 `1 entry did not activate edge-context-view: cannot get property "event" without inject`。
+
+**排障方法**:直接解析桌面 App 的 Electron asar(`resources/app.asar`,182MB)拿到宿主侧权威源码(`@deepseek-ai/dsh-client-modules` node/web 两半、`dsh-web-frontend` shell),逐行对照加载器行为——工具脚本 `scripts/__asar-{read,ls,find}.mjs`(已入库,跨平台纯 Node)。
+
+**五层根因链**(每层都有 asar 源码行号或 ops log 报错作证据):
+
+| # | 根因 | 证据 | 修复 commit |
+|---|------|------|------------|
+| 1 | exports/产物路径错位:`lib/types/*` 旧布局与 flat 化后的实际文件不符 → `ERR_PACKAGE_PATH_NOT_EXPORTED` | ops log 14:06:18 | `1d6b9a7`(tsconfig outDir→lib,30 个 subpath×4 condition 重写) |
+| 2 | host half apply() 里 `ctx.event.emit`:cordis 0.2.1-rc.2 Proxy ctx 访问未声明服务即抛 `cannot get property "event" without inject` | ops log 16:21/17:04 + UI warning 截图 | `1d6b9a7`(plugin.ts try/catch 降级;该事件本就无订阅者) |
+| 3 | `ctx.edgeContextView = service` 裸赋值 + `ctx.on('session/event')` 同样触发 Proxy 拦截 | cordis reflect.ts handler.set/get | `1d6b9a7`(移除赋值;on 包 try/catch) |
+| 4 | **webview client bundle 格式根本错误**:`dsh.client` 缺 `platform:'web'` → dsh-client-modules resolveMeta 直接跳过;且 client.js 是纯 ESM,而 webview 按 classic script 要求自注册 `window.__ModuleLoader__.load({id,factory})` | dsh-client-modules/lib/index.js:733 `if (decl.platform !== "web") return null`;runtime:758 `loaded without registering` | `1d6b9a7`(build-client.mjs 改 CJS+wrapper;preact→react 迁移 10 文件,seed 词表核验只有 react 系无 preact;bundle 20KB→9KB) |
+| 5 | **client 发现机制依赖 loader entry NAME**:dsh-client-modules 扫描每个 loader entry 的 name 找包,其定位器 `exactPackageSpecifier` 只接受 bare package-root specifier——desktop-safe patch 的 16 行全是子路径名,永远扫不到 `dsh.client` | index.js:100 stripClientSuffix / locatePkgJson pathLike 分支;dsh-context 的可工作形态=单条裸名 row | `54e775c`(两份 patch 的 insert 段首各加 `- id/name: '@deepseek-harness-edge-agent/dsh-edge-agent'` 裸包名 host-half row) |
+
+**配套工程**:
+- 验证门禁升级(`1d6b9a7`):`verify-installable.mjs` 校验 `dsh.client.platform==='web'` + inject/external/immediately 形状 + `exports['./client']` 落盘存在;`_verify-installable-edge.mjs` 校验 bundle 含 `__ModuleLoader__.load` 注册 + id===pkg.name。
+- 工具链跨平台化(`4e81325`):`_sync-to-nested.mjs` home 解析 USERPROFILE→HOME→os.homedir()+symlink 守卫(macOS/Linux pnpm link: 安装下 rmSync 会误删 link 目标);`build-client.mjs` Windows 走 cmd.exe /c 包装绕 .cmd EINVAL、POSIX 直接 execFileSync;`_rebuild-installable.mjs` 去 Windows-only 措辞。核心修复(manifest/bundle/源码)本身与 OS 无关。
+
+**当前状态(2026-10-20 ~18:40)**:五层修复全部部署进嵌套包并三道门禁绿,但**桌面重启后 Edge tab 仍未出现**。已确认后端组件全部运行中、ops log 恢复写入。**下一步诊断方向**(尚未执行):
+1. 确认裸名 row 真的进了运行中的 profile:`~/.dsh/profiles/desktop/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/cordis.desktop-safe.patch.yml` 第 56-57 行已核验存在;插件管理页组件计数是否变 17 待用户目视。
+2. DevTools Console(Ctrl+Shift+I)取 `client-modules` / `edge` / `slot` 现场报错——现在每条宿主文案都能对照 asar 源码定位。
+3. 检查 `/plugins/??@deepseek-harness-edge-agent.../client.js&rev=` combo URL 是否出现在 webview Network(dsh-client-modules serveBundle 路由 line 564 register)。
+4. 若 bundle 已注册但 tab 不显示:查 `sidebarRightTabs.register` 在 webview ctx 上的真实服务名(可能非 'sidebarRightTabs';对照 dsh-context client.js 尾部 `inject:['slots','locale']` + slots.inject('sidebar.right.pane.tab') 的确切用法)。
+5. 若 client-modules 静默 skip:查 pkgMeta 负缓存语义("negative verdict cached until restart"——restart 应已清,需再核)。
+
+**教训固化**:① 插件的 client 半有**三重契约**——manifest `dsh.client{platform:'web'}` + `exports['./client']` + bundle 内 `__ModuleLoader__.load` 自注册,缺一即静默失败(宿主只在 composition throw 时报警);② client 发现挂在 **loader entry name** 上,bare-name row 是唯一入口,子路径 row 再多也不触发;③ webview seed 词表(staticModules)决定 bundle 可用依赖:**react/react-dom/client/jsx-runtime/cordis/zod/react-virtual/client-store/ui-slots/ui-primitives/ui-dockkit**,无 preact;④ cordis Proxy ctx 对 undeclared service 的属性读写一律 throw,apply() 内一切可选服务访问必须 defer(inject)/guard(typeof)/try-catch。
