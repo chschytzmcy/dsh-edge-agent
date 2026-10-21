@@ -587,4 +587,82 @@ describe('local-llm-adapter (M4, real-only)', () => {
       restoreFetch()
     })
   })
+
+  // 2026-10-21: the local-LLM route is opt-in. The Schema used to default
+  // `baseUrl` to `http://127.0.0.1:8080/v1`, so the route was live even
+  // when the operator never configured one — and on a machine where an
+  // unrelated authenticated daemon owns 8080, every turn failed with
+  // HTTP 401 "Missing bearer token".
+  describe('opt-in endpoint (2026-10-21)', () => {
+    it('registers no provider route when baseUrl is unset', async () => {
+      const registered: string[][] = []
+      const ctx = {
+        logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+        llm: {
+          registerAdapter(providers: string[], _adapter: unknown) {
+            registered.push(providers)
+            return () => {}
+          },
+        },
+      }
+
+      const dispose = await localMod.apply(ctx as never, {
+        providers: ['local-llm'],
+        defaultModel: 'qwen3-4b',
+      } as never)
+
+      assert.deepEqual(registered, [], 'no route may be registered without an endpoint')
+      await dispose()
+    })
+
+    it('registers the provider route when baseUrl is set', async () => {
+      const registered: string[][] = []
+      const ctx = {
+        logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+        llm: {
+          registerAdapter(providers: string[], _adapter: unknown) {
+            registered.push(providers)
+            return () => {}
+          },
+        },
+      }
+
+      const dispose = await localMod.apply(ctx as never, {
+        providers: ['local-llm'],
+        baseUrl: 'http://127.0.0.1:11000/v1',
+        defaultModel: 'qwen3-4b',
+      } as never)
+
+      assert.deepEqual(registered, [['local-llm']])
+      await dispose()
+    })
+
+    it('names the apiKeyEnv knob in the 401 message', async () => {
+      installFetchMock(() => new Response(
+        '{"ok":false,"error":{"code":"UNAUTHORIZED","message":"Missing bearer token"}}',
+        { status: 401, headers: { 'content-type': 'application/json' } },
+      ))
+
+      const adapter = new LocalLlmAdapterImpl({
+        providers: ['local-llm'],
+        baseUrl: 'http://127.0.0.1:8080/v1',
+        defaultModel: 'qwen3-4b',
+        apiKeyEnv: 'DSH_EDGE_LOCAL_LLM_KEY',
+      })
+
+      await assert.rejects(
+        (async () => {
+          for await (const _ of adapter.stream({
+            provider: 'local-llm',
+            model: 'qwen3-4b',
+            messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+          })) {
+            // drain
+          }
+        })(),
+        /HTTP 401[\s\S]*apiKeyEnv[\s\S]*DSH_EDGE_LOCAL_LLM_KEY/,
+      )
+      restoreFetch()
+    })
+  })
 })

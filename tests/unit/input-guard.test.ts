@@ -1580,13 +1580,22 @@ describe('handlePreStep — §7.26 bug B regression: routed audit is info level'
 // key，缺失就标 downgraded=true 让 handleAgentRequest 改写到 LOCAL。
 describe('handlePreStep — §7.35: cloud API key missing → downgrade LOCAL', () => {
   const ORIGINAL_KEY = process.env.DEEPSEEK_API_KEY
+  // §7.100 (2026-10-18): cloudAvailable() gained a DIRECT / DELEGATE split.
+  // DIRECT is selected by a non-empty cloud baseUrl; without it the router
+  // falls into DELEGATE (credentials live on the host side) and the
+  // "cloud-key-missing:<slot>" reason never fires. These cases exercise the
+  // DIRECT path, so the baseUrl must be present.
+  const ORIGINAL_BASE_URL = process.env.DSH_EDGE_CLOUD_LLM_BASEURL
 
   function clearKey() {
     delete process.env.DEEPSEEK_API_KEY
+    process.env.DSH_EDGE_CLOUD_LLM_BASEURL = 'https://api.deepseek.com'
   }
   function restoreKey() {
     if (ORIGINAL_KEY === undefined) delete process.env.DEEPSEEK_API_KEY
     else process.env.DEEPSEEK_API_KEY = ORIGINAL_KEY
+    if (ORIGINAL_BASE_URL === undefined) delete process.env.DSH_EDGE_CLOUD_LLM_BASEURL
+    else process.env.DSH_EDGE_CLOUD_LLM_BASEURL = ORIGINAL_BASE_URL
   }
 
   it('CLOUD intent + missing DEEPSEEK_API_KEY → downgraded=true, envSlot recorded', async () => {

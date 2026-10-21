@@ -21,6 +21,7 @@ import Schema from '@deepseek-ai/schemastery'
 // "input-guard 认为能不能上云" 与 "adapter stream 时实际找不找得到目标"
 // 永不打架。adapter 侧 fail → 这里也会提前降级，不会出现"放行后静默空回复"。
 import { probeCloudTarget } from './cloud-llm-adapter.js'
+import { loadEdgeConfig, localPool } from './edge-config.js'
 
 export const name = 'input-guard'
 
@@ -35,6 +36,21 @@ export const inject = [
   // 就被 if 跳过。Boot 顺序无死锁:realm-skill-bridge 在 cordis.patch.yml
   // 排在 http-api 之前(已确认 line 317),input-guard 同样靠后启动。
   'realmSkillBridge',
+  // §7.101 (2026-10-21): 确认 local-llm 路由真的存在（local-llm 是 opt-in
+  // 的：未配置端点时 adapter 不注册任何路由）。
+  //
+  // 刻意**不**把 modelRouter 放进 inject：
+  //   - localAvailable() 已经用 try { ctx.get(...) } catch {} 做
+  //     optional 访问 —— 拿不到就保持旧行为（legacy-no-router），不回归。
+  //   - inject 是 cordis 的**硬依赖**：声明它 = cordis 必须等 model-router
+  //     装载完才起 input-guard，还会把 model-router 拉进 bundle-minimal 的
+  //     依赖闭包（那里根本没有 local-llm / cloud-llm，model-router 只是空
+  //     catalog，查它没有意义）。
+  //   - 同样刻意不 inject llm：那会让 cloudAvailable() 的 delegate 探针
+  //     首次真正生效，改变云侧判定语义——不在本次修复范围内。
+  //
+  // NB: 不要在本注释里用单引号包 service 名 —— bundle-minimal 的 inject
+  // 闭包检查用正则扫 inject 数组的原文，注释里的引号名会被误当成依赖。
 ] as const
 
 export interface Config {
@@ -81,6 +97,9 @@ export const Config: Schema<Config> = Schema.object({
   rejectOnPolicyViolation: Schema.boolean().default(true),
   downgradeOnSanitizeFailure: Schema.boolean().default(true),
   localProvider: Schema.string().default('local-llm'),
+  // §7.102: the downgrade target model follows the LOCAL pool in
+  // config/edge.json (llm.local.model). The Schema default stays only as a
+  // last-resort fallback when no config file is present at all.
   localModel: Schema.string().default('qwen3-4b-instruct-2507'),
   cloudApiKeyEnv: Schema.string().default(
     // mirror cordis.patch.yml:41 的 !!js 表达式；apply() 里再尊重 DSH_EDGE_CLOUD_KEY_ENV 覆盖
@@ -262,6 +281,17 @@ export class InputGuardServiceImpl extends Service {
   private hasCloudCredentials(): boolean {
     const slot = this.config.cloudApiKeyEnv
     if (typeof slot !== 'string' || slot.length === 0) return false
+    // §7.102: the credential may live in config/edge.json (secrets.*) rather
+    // than in process.env — the desktop GUI has no .env chain. The slot name
+    // is matched against the secrets map first, then the env slot.
+    const fromConfig = (() => {
+      try {
+        const secrets = loadEdgeConfig(true).secrets as Record<string, unknown> | undefined
+        const v = secrets?.[slot]
+        return typeof v === 'string' ? v : undefined
+      } catch { return undefined }
+    })()
+    if (fromConfig !== undefined && fromConfig.length > 0) return true
     if (typeof process === 'undefined' || !process.env) return false
     const value = process.env[slot]
     // ── §7.35 DEBUG (2026-09-03) ─────────────────────────────────────────
@@ -351,6 +381,36 @@ export class InputGuardServiceImpl extends Service {
     return target
       ? { ok: true, mode: 'delegate', reason: `delegate-target:${target.provider}:${target.source}` }
       : { ok: false, mode: 'delegate', reason: 'cloud-unavailable:no-host-route-selected-or-live' }
+  }
+
+  /**
+   * §7.101 (2026-10-21): "本地路由现在到底可用吗" —— local-llm 是 opt-in 的：
+   * 未设置 DSH_EDGE_LOCAL_LLM_BASEURL 时 local-llm-adapter 不注册任何路由
+   * （见 local-llm-adapter.apply）。intent=LOCAL 按隐私裁决必须走本地模型，
+   * 所以在改写 provider 之前必须确认目标路由真的存在。
+   *
+   * 旧上游 / fake ctx 没有 listProviders 时无法证伪 → 保持旧行为（照常改写），
+   * 不让老环境因这次收紧而回归。
+   */
+  private localAvailable(): { ok: boolean; reason: string } {
+    const provider = this.config.localProvider
+    let router: { isAvailable?: (p: string) => boolean } | undefined
+    try {
+      router = this.ctx?.get?.('modelRouter') as { isAvailable?: (p: string) => boolean } | undefined
+    } catch {
+      router = undefined
+    }
+    if (!router || typeof router.isAvailable !== 'function') {
+      // 老上游 / fake ctx：无法证伪 → 保持旧行为（照常改写），不回归。
+      return { ok: true, reason: 'legacy-no-router' }
+    }
+    try {
+      return router.isAvailable(provider)
+        ? { ok: true, reason: `local-route-live:${provider}` }
+        : { ok: false, reason: `local-route-missing:${provider}` }
+    } catch {
+      return { ok: true, reason: 'legacy-router-unreadable' }
+    }
   }
 
   constructor(
@@ -1266,6 +1326,40 @@ export class InputGuardServiceImpl extends Service {
 
     const state = this.stepState.get(sessionId)
     if (state?.downgraded) {
+      // §7.101 (2026-10-21): 改写前先确认本地路由存在。
+      //
+      // 背景：local-llm 是 opt-in 的（未设 DSH_EDGE_LOCAL_LLM_BASEURL 时
+      // adapter 不注册路由）。intent=LOCAL 必须走本地模型（隐私裁决），
+      // 但目标路由不存在时，把 provider 改写成 local-llm 只会得到一条
+      // 必然失败的请求——实测是打到本机 8080 上一个无关的鉴权 daemon，
+      // 报 HTTP 401 "Missing bearer token"，完全无法指导用户。
+      //
+      // 这里 fail-closed：本地路由缺失 → 明确报错并阻止上云。绝不放行到
+      // 云端（那会把本地数据/PII 送出设备），也不伪造一条会 401 的路由。
+      const local = this.localAvailable()
+      if (!local.ok) {
+        this.audit('security', 'input-guard.local.route-missing', {
+          sessionId,
+          reason: local.reason,
+          targetProvider: this.config.localProvider,
+          targetModel: this.config.localModel,
+          downgradeReason: state.downgradeReason,
+          originalProvider: state.originalProvider,
+          originalModel: state.originalModel,
+        })
+        try {
+          this.ctx?.logger?.error?.(
+            `[input-guard] local route unavailable sessionId=${sessionId} provider=${this.config.localProvider} reason=${local.reason} — refusing to fall back to the cloud route`,
+          )
+        } catch { /* debug only */ }
+        throw new Error(
+          `input-guard: 本轮 intent 判定为 LOCAL，按隐私裁决必须使用本地模型，`
+          + `但本地路由 "${this.config.localProvider}" 不可用（${local.reason}）。`
+          + `为避免本地数据/PII 出境，已阻止本轮上云。`
+          + `请配置本地 LLM 端点（设置 DSH_EDGE_LOCAL_LLM_BASEURL；若端点需要鉴权，`
+          + `再用 DSH_EDGE_LOCAL_LLM_KEY_ENV 指定存放密钥的环境变量名）后重试。`,
+        )
+      }
       // 改写 route 到 LOCAL。保留 reasoningEffort / maxTokens 等其他字段。
       const downgraded: AgentRequestConfig = {
         ...seedConfig,
@@ -1612,6 +1706,29 @@ async function flushBuffer(
 }
 
 export async function apply(ctx: Context, config: Config): Promise<() => Promise<void>> {
+  // §7.102: the guard switches come from config/edge.json (privacy.*).
+  // The cordis patch row no longer reads process.env — the desktop GUI
+  // never had those variables.
+  const privacy = loadEdgeConfig().privacy
+  if (privacy) {
+    if (privacy.inputGuardEnabled !== undefined) {
+      ;(config as { enableInputGuard: boolean }).enableInputGuard = privacy.inputGuardEnabled
+    }
+    if (privacy.rejectPolicyEnabled !== undefined) {
+      ;(config as { rejectOnPolicyViolation: boolean }).rejectOnPolicyViolation = privacy.rejectPolicyEnabled
+    }
+    if (privacy.sanitizeDowngradeEnabled !== undefined) {
+      ;(config as { downgradeOnSanitizeFailure: boolean }).downgradeOnSanitizeFailure = privacy.sanitizeDowngradeEnabled
+    }
+  }
+  // §7.102: the downgrade target model follows the LOCAL pool declared in
+  // config/edge.json (llm.local.model). The file is the single source of
+  // truth — the cordis patch row no longer carries local-LLM config.
+  const localModel = localPool().model
+  if (localModel && config.localModel !== localModel) {
+    ctx.logger?.info?.(`[input-guard] localModel from config/edge.json: ${config.localModel} → ${localModel}`)
+    ;(config as { localModel: string }).localModel = localModel
+  }
   // §7.35 (2026-09-03): 运行时尊重 DSH_EDGE_CLOUD_KEY_ENV 覆盖。
   // Schema default 在模块加载时求值；如果用户在 apply() 之后才 export env，
   // 这里补一刀。跟 cordis.patch.yml:41 的 !!js 表达式保持一致。

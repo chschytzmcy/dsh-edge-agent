@@ -25,6 +25,7 @@ import { Service } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
 import type { PrivacyPolicyServiceImpl } from './privacy-policy.js'
 import { normalizeForPII, sliceOriginal } from './pii-utils.js'
+import { loadEdgeConfig } from './edge-config.js'
 
 export const name = 'sanitizer-pipeline'
 
@@ -445,6 +446,21 @@ export class SanitizerServiceImpl extends Service implements SanitizerService {
 }
 
 export async function apply(ctx: any, config: Config): Promise<() => Promise<void>> {
+  // §7.102: the session limits come from config/edge.json (privacy.*).
+  // The cordis patch row no longer reads process.env — the desktop GUI
+  // never had those variables.
+  const privacy = loadEdgeConfig().privacy
+  if (privacy) {
+    if (privacy.sanTtlMs !== undefined) {
+      ;(config as { sessionTtlMs?: number }).sessionTtlMs = privacy.sanTtlMs
+    }
+    if (privacy.sanMaxSessions !== undefined) {
+      ;(config as { maxSessions?: number }).maxSessions = privacy.sanMaxSessions
+    }
+    if (privacy.sanSweepMs !== undefined) {
+      ;(config as { sweepIntervalMs?: number }).sweepIntervalMs = privacy.sanSweepMs
+    }
+  }
   const privacyPolicy = ctx.get('privacyPolicy')
   if (!privacyPolicy || typeof privacyPolicy.getSanitizationRules !== 'function') {
     // 启动期 fail-fast：缺了它 sanitize() 会在每次请求时抛错，表现为

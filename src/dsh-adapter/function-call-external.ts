@@ -74,6 +74,7 @@ import { Service } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { ToolRunner } from './tool-runner.js'
+import { loadEdgeConfig } from './edge-config.js'
 
 export const name = 'function-call-external'
 
@@ -287,21 +288,33 @@ export interface Config {
   functionCallExternalProbeTimeoutMs?: number
 }
 
+// §7.102: every field is **optional without a Schema default** on purpose.
+//
+// Schemastery fills Schema defaults into the config object before apply()
+// runs, so a defaulted field can no longer be told apart from "the operator
+// did not configure it". The new precedence is
+//
+//   explicit cordis value  →  config/edge.json  →  the literal below
+//
+// and the literal below only applies when neither of the first two provided
+// a value. Keeping the defaults out of the Schema is what makes the middle
+// tier reachable: a cordis patch row that sets nothing leaves the field
+// undefined, and the plugin then consults config/edge.json.
 export const Config: Schema<Config> = Schema.object({
-  functionCallExternalEnabled: Schema.boolean().default(false),
-  functionCallExternalUrl: Schema.string().default('http://127.0.0.1:8081'),
+  functionCallExternalEnabled: Schema.boolean(),
+  functionCallExternalUrl: Schema.string(),
   // 实测 cactus-needle /extract LAN 当前引擎下需 4-7s(dry-run #1 标
   // 376-548ms 是 spec 理想值,实际 25-30x degradation);10s 给单请求 1x 余量。
   // 后续引擎恢复 < 1s 时再调低。
-  functionCallExternalTimeoutMs: Schema.natural().default(10000),
+  functionCallExternalTimeoutMs: Schema.natural(),
   // 0.7 太严(实测 needle 报 confidence 0.5-0.7 区间) → 0.5 让多数有
   // tool match 的提取通过 adopt gate;后续模型升级再调高。
-  functionCallExternalConfidenceThreshold: Schema.number().min(0).max(1).default(0.5),
-  functionCallExternalBreakerTtlMs: Schema.natural().default(30000),
-  functionCallExternalBootProbeEnabled: Schema.boolean().default(true),
-  functionCallExternalBootProbeTimeoutMs: Schema.natural().default(2000),
-  functionCallExternalBreakerProbeMs: Schema.natural().default(5000),
-  functionCallExternalProbeTimeoutMs: Schema.natural().default(2000),
+  functionCallExternalConfidenceThreshold: Schema.number().min(0).max(1),
+  functionCallExternalBreakerTtlMs: Schema.natural(),
+  functionCallExternalBootProbeEnabled: Schema.boolean(),
+  functionCallExternalBootProbeTimeoutMs: Schema.natural(),
+  functionCallExternalBreakerProbeMs: Schema.natural(),
+  functionCallExternalProbeTimeoutMs: Schema.natural(),
 })
 
 /** In-memory counters exposed via getStats(). Pure observability; the audit
@@ -1137,6 +1150,26 @@ declare module '@deepseek-ai/cordis' {
 }
 
 export async function apply(ctx: Context, config: Config): Promise<() => Promise<void>> {
+  // §7.102: the external-caller knobs come from config/edge.json
+  // (functionCallExternal.*). The cordis patch row no longer reads
+  // process.env — the desktop GUI never had those variables.
+  //
+  // Precedence: explicit cordis value > config/edge.json > the literal
+  // fallback in FunctionCallExternalServiceImpl. The Config schema carries
+  // no defaults on purpose (see the Config schema comment), so a field left
+  // unset by the patch row stays `undefined` here and the file can fill it.
+  const fce = loadEdgeConfig().functionCallExternal
+  if (fce) {
+    const c = config as Record<string, unknown>
+    const fill = (key: string, value: unknown): void => {
+      if (value !== undefined && c[key] === undefined) c[key] = value
+    }
+    fill('functionCallExternalEnabled', fce.enabled)
+    fill('functionCallExternalUrl', fce.url)
+    fill('functionCallExternalTimeoutMs', fce.timeoutMs)
+    fill('functionCallExternalConfidenceThreshold', fce.confidenceThreshold)
+    fill('functionCallExternalBootProbeEnabled', fce.bootProbeEnabled)
+  }
   const auditLog = (ctx as unknown as { auditLog?: AuditLike }).auditLog
   const service = new FunctionCallExternalServiceImpl(ctx, config, auditLog)
   // §7.46 ops-log-coverage-principle:boot 关键节点一行(metadata only,

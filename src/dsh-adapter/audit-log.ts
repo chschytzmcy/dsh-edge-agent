@@ -17,10 +17,11 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { Service } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
-import { mkdir, readFile, writeFile, rename, stat } from 'node:fs/promises'
+import { mkdir, readFile, writeFile, stat } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { redactObject } from './pii-utils.js'
+import { renameWithRetry } from './local-storage.js'
 
 export const name = 'audit-log'
 
@@ -294,7 +295,7 @@ export class AuditLogServiceImpl extends Service {
         const next = prev + lines
         const tmp = `${this.filePath}.tmp-${process.pid}`
         await writeFile(tmp, next, 'utf-8')
-        await rename(tmp, this.filePath)
+        await renameWithRetry(tmp, this.filePath)
         this.flushIndex = end
         this.dirty = false
       } catch (err) {
@@ -337,7 +338,7 @@ export class AuditLogServiceImpl extends Service {
         const from = i === 1 ? this.filePath : `${this.filePath}.${i - 1}`
         const to = `${this.filePath}.${i}`
         if (existsSync(from)) {
-          await rename(from, to)
+          await renameWithRetry(from, to)
         }
       }
 

@@ -203,6 +203,7 @@
   },
   "files": [
     "lib",
+    "config",
     "cordis.patch.yml",
     "cordis.desktop-safe.patch.yml",
     "cordis.yml",
@@ -217,7 +218,8 @@
     "prepare": "npm run compile",
     "build:client": "node scripts/build-client.mjs",
     "typecheck:client": "tsc -p tsconfig.client.json",
-    "build": "npm run compile && npm run typecheck:client && npm run build:client && npm run verify:build",
+    "build:installable": "node scripts/rebuild-installable.mjs",
+    "build": "npm run compile && npm run typecheck:client && npm run build:client && npm run build:installable && npm run verify:build",
     "test": "vitest run tests/unit",
     "e2e:coverage": "bash scripts/e2e-ops-log-coverage.sh",
     "e2e:benchmark": "bash scripts/e2e-model-quality-bench.sh",

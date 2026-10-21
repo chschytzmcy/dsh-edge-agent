@@ -22,6 +22,7 @@
 
 import { Service } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
+import { loadEdgeConfig } from './edge-config.js'
 
 export const name = 'td-bus'
 
@@ -172,6 +173,20 @@ declare module '@deepseek-ai/cordis' {
 }
 
 export async function apply(ctx: any, config: Config): Promise<() => Promise<void>> {
+  // §7.102: the thresholds come from config/edge.json (threat.*). The
+  // cordis patch row no longer reads process.env — the desktop GUI never
+  // had those variables.
+  const threat = loadEdgeConfig().threat
+  if (threat) {
+    if (threat.cloudRate !== undefined && threat.cloudRate > 0) {
+      ;(config as { thresholds: { cloudRequestsPerMinute: number } }).thresholds.cloudRequestsPerMinute =
+        threat.cloudRate
+    }
+    if (threat.blockLevel !== undefined) {
+      ;(config as { blockLevel: 'elevated' | 'high' | 'critical' }).blockLevel =
+        threat.blockLevel as 'elevated' | 'high' | 'critical'
+    }
+  }
   const service = new TdBusServiceImpl(ctx, config)
   // Register the instance on ctx so other plugins can resolve it via
   // ctx.get('tdBus') (Cordis convention for subpath services).

@@ -18,6 +18,7 @@ import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import { redactString } from './pii-utils.js'
 import { findRoute, type RouteDef, type RouteContext } from './http-api-routes.js'
 import { HttpApiSessionsImpl, type HttpApiSessions } from './http-api-sessions.js'
+import { cloudPool, loadEdgeConfig, localPool } from './edge-config.js'
 
 /**
  * Snapshot a live Session's event log, papering over the upstream API
@@ -1766,11 +1767,15 @@ export function resolveRoute(
   isLocal: boolean,
 ): { provider: string; model: string; resolved: boolean } {
   const preferred = isLocal ? 'local-llm' : 'cloud-llm'
-  // §7.75 (2026-09-17): fallback model 镜像 .env 池 → 改 CLOUD_LLM_MODEL /
-  // LOCAL_LLM_MODEL 自动跟随，跟 cordis.patch.yml:376/384 的 !!js 表达式语义一致
+  // §7.102: the fallback model mirrors the pools declared in
+  // config/edge.json (llm.local.model / llm.cloud.model). The env override
+  // layer in edge-config.ts keeps DSH_EDGE_LOCAL_LLM_MODEL / DSH_EDGE_MODEL
+  // working, so the desktop GUI and the CLI profiles end up on the same
+  // model.
+  const pools = loadEdgeConfig(true)
   const fallbackModel = isLocal
-    ? (process.env.DSH_EDGE_LOCAL_LLM_MODEL ?? 'qwen3-4b-instruct-2507')
-    : (process.env.DSH_EDGE_MODEL ?? 'deepseek-chat')
+    ? (localPool(pools).model ?? 'qwen3-4b-instruct-2507')
+    : (cloudPool(pools).model ?? 'deepseek-chat')
   const mr = typeof ctx?.get === 'function' ? (() => { try { return ctx.get('modelRouter') } catch { return undefined } })() : ctx?.modelRouter
   if (mr && typeof mr.resolve === 'function') {
     try {

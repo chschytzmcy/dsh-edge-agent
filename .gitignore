@@ -11,6 +11,10 @@ AGENTS.md
 .env.local
 .env.swp
 .env.swo
+# §7.102 (2026-10-21): config/edge.json 是唯一运行时配置，含明文
+# API key —— 与 .env 同样规则，绝不入 git history。模板见
+# config/edge.example.json（tracked）。
+config/edge.json
 *.swp
 # §7.76 Phase 1.7 backup: .env.uninstall-backup.<ts>/ 可能含 live API key,
 # 跟 .env 同样规则——绝不入 git history。

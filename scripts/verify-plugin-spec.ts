@@ -61,6 +61,10 @@ for (const file of sources) {
   // function-call-external's Phase 4 — see tool-runner.ts:36-39. Never inserted
   // by cordis.patch.yml, not in package.json exports.
   if (base === 'tool-runner') continue
+  // §7.102: pure config loader (single read point for config/edge.json),
+  // imported by the plugins' apply(); never inserted by a cordis patch row,
+  // not in package.json exports.
+  if (base === 'edge-config') continue
   if (base === 'plugin' || base === 'index') continue
   const content = readFileSync(file, 'utf8')
 

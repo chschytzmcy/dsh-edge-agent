@@ -39,6 +39,7 @@ import {
   sseFinishReason,
   terminalChunks,
 } from './openai-sse.js'
+import { cloudPool } from './edge-config.js'
 import {
   bumpSessionToolCallCount,
   MAX_CONSECUTIVE_TOOL_CALLS,
@@ -90,6 +91,9 @@ export interface Config {
   baseUrl: string
   /** Process-env slot carrying the bearer key (never read at config time). Direct mode only. */
   apiKeyEnv: string
+  /** §7.102: literal bearer key from config/edge.json (secrets.*).
+   *  Preferred over apiKeyEnv when both are present. */
+  apiKey?: string
   /** Default model id when the request omits one. Direct mode only (delegate carries it for forensics). */
   defaultModel: string
   /** Per-request temperature. Omit when the model is fixed. */
@@ -130,6 +134,7 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
   private readonly providersList: string[]
   private readonly baseUrl: string
   private readonly apiKeyEnv: string
+  private readonly apiKey: string | undefined
   private readonly defaultModel: string
   private readonly temperature: number | undefined
   private readonly auditLog: AuditLike | undefined
@@ -141,6 +146,7 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
     this.providersList = [...config.providers]
     this.baseUrl = config.baseUrl.replace(/\/+$/u, '')
     this.apiKeyEnv = config.apiKeyEnv
+    this.apiKey = config.apiKey
     this.defaultModel = config.defaultModel
     this.temperature = config.temperature
     this.auditLog = auditLog
@@ -213,12 +219,15 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
     // `DSH_EDGE_LOG_LEVEL=debug`. The lines below still gate on
     // Cordis's per-exporter level filter — see file-logger.ts.
     this.logger?.debug?.(`[cloud-llm-adapter] LLM_REQUEST provider=${options.provider} model=${options.model} messageCount=${options.messages.length} promptLen=${options.messages.reduce((n, m) => n + extractText(m.content).length, 0)}`)
-    const apiKey = readApiKey(this.apiKeyEnv)
+    // §7.102: prefer the literal key from config/edge.json; fall back to the
+    // deprecated env-slot lookup so an in-flight migration still authenticates.
+    const apiKey = this.apiKey ?? readApiKey(this.apiKeyEnv)
     if (!apiKey) {
-      this.logger?.error?.(`[cloud-llm-adapter] missing API key in env slot: ${this.apiKeyEnv}`)
+      this.logger?.error?.(`[cloud-llm-adapter] missing API key (secrets.* / env slot ${this.apiKeyEnv})`)
       this.audit('error', 'llm.cloud.missing_key', { provider: options.provider, model: options.model, envSlot: this.apiKeyEnv })
       throw new LlmError(
-        `cloud-llm-adapter: missing API key in env slot "${this.apiKeyEnv}"`,
+        `cloud-llm-adapter: missing API key — set secrets.* in config/edge.json`
+        + `${this.apiKeyEnv === '' ? '' : ` (or the env slot "${this.apiKeyEnv}")`}`,
         'MISSING_CREDENTIAL',
       )
     }
@@ -979,6 +988,24 @@ function readApiKey(slot: string): string | undefined {
 
 export async function apply(ctx: Context, config: Config): Promise<() => Promise<void>> {
   ctx.logger?.info?.(`[cloud-llm-adapter] apply() called with providers: ${config.providers?.join(', ')}`)
+  // §7.102: the cloud pool and the delegate knobs come from
+  // config/edge.json (llm.cloud.*). The cordis patch row no longer reads
+  // process.env — the desktop GUI never had those variables.
+  const cloud = cloudPool()
+  if (cloud.baseUrl !== undefined && cloud.baseUrl !== config.baseUrl) {
+    ctx.logger?.info?.(`[cloud-llm-adapter] baseUrl from config/edge.json: ${config.baseUrl} → ${cloud.baseUrl}`)
+    ;(config as { baseUrl: string }).baseUrl = cloud.baseUrl
+  }
+  if (cloud.delegateProvider !== undefined) {
+    ;(config as { delegateProvider?: string }).delegateProvider = cloud.delegateProvider
+  }
+  if (cloud.delegateModel !== undefined) {
+    ;(config as { delegateModel?: string }).delegateModel = cloud.delegateModel
+  }
+  ;(config as { delegateEnabled?: boolean }).delegateEnabled = cloud.delegate
+  if (cloud.apiKey !== undefined) {
+    ;(config as { apiKey?: string }).apiKey = cloud.apiKey
+  }
   const auditLog = (ctx as unknown as { auditLog?: AuditLike }).auditLog
   // input-guard 是可选注入 —— plugin 启动顺序里 cloud-llm-adapter 在
   // input-guard 之后才能拿到；否则降级为不洗（保持旧行为）。enableInputGuard=false

@@ -45,6 +45,13 @@ const TAB_ID = 'dsh-edge-agent'
 /* ── Face types (mirror dsh-context's services.ts) ─────────────────────── */
 
 interface SidebarGuideEntry {
+  /** Unique id of the guide entry.
+   *
+   *  The sidebar-right registry rejects a definition whose guide entries
+   *  share an id (`new Set(entries.map(e => e.id)).size !== entries.length`),
+   *  and the guide body forwards `entry.id` as the slot's `entryId`, so an
+   *  entry without one renders with `entryId: undefined`. */
+  id: string
   order: number
   title: () => string
   description?: () => string

@@ -83,7 +83,8 @@
 
 import type { Context, Message } from '@deepseek-ai/cordis'
 import { Service } from '@deepseek-ai/cordis'
-import { mkdir, open, rename, stat } from 'node:fs/promises'
+import { mkdir, open, stat } from 'node:fs/promises'
+import { renameWithRetry } from './local-storage.js'
 import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import Schema from '@deepseek-ai/schemastery'
@@ -319,7 +320,7 @@ export class FileLoggerServiceImpl extends Service {
         const from = i === 1 ? this.filePath : `${this.filePath}.${i - 1}`
         const to = `${this.filePath}.${i}`
         if (existsSync(from)) {
-          await rename(from, to)
+          await renameWithRetry(from, to)
         }
       }
       // Delete files beyond the keep window.

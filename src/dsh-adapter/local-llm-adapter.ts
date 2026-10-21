@@ -36,6 +36,7 @@ import {
   sseFinishReason,
   terminalChunks,
 } from './openai-sse.js'
+import { localPool } from './edge-config.js'
 import {
   bumpSessionToolCallCount,
   MAX_CONSECUTIVE_TOOL_CALLS,
@@ -93,11 +94,28 @@ type LoggerLike = Pick<LoggerService, 'info' | 'warn' | 'error' | 'debug'>
 export interface Config {
   /** Provider route ids this adapter owns. */
   providers: string[]
-  /** OpenAI-compatible endpoint. `/chat/completions` is appended. */
-  baseUrl: string
+  /** OpenAI-compatible endpoint. `/chat/completions` is appended.
+   *
+   *  Undefined means "no local-LLM endpoint configured": the adapter then
+   *  registers NO provider route at all (see `apply`). It must not fall back
+   *  to a hard-coded port — a default like `127.0.0.1:8080` collides with
+   *  unrelated daemons that listen there (observed 2026-10-21: TeleAgent's
+   *  scheduler daemon owns 8080 and answers 401 "Missing bearer token"),
+   *  which turned every turn into a failed local-LLM call even though the
+   *  operator never asked for a local model. */
+  baseUrl?: string
   /** Default model id when the request omits one. */
   defaultModel: string
-  /** Optional bearer header for an authenticated llama.cpp server. */
+  /** Optional bearer header for an authenticated endpoint.
+   *
+   *  §7.102: the value is now the literal key, not an env-slot name. The
+   *  key lives in config/edge.json (gitignored) and reaches the adapter
+   *  through this field. `apiKeyEnv` is kept as a deprecated alias for
+   *  callers that still pass an env-slot name — it is read from
+   *  process.env when present, but new deployments should use `apiKey`. */
+  apiKey?: string
+  /** @deprecated Use `apiKey` (literal). Kept so an env-slot name still
+   *  works for a transition period. */
   apiKeyEnv?: string
   /** §7.4? (2026-09-17) LAN minicpm5-2b Jinja2 tojson(ensure_ascii) bug
    *  workaround: when true, omit `body.tools` from wire request so the
@@ -115,9 +133,13 @@ export interface Config {
 
 export const Config: Schema<Config> = Schema.object({
   providers: Schema.array(Schema.string()).default(['local-llm']),
-  baseUrl: Schema.string().default('http://127.0.0.1:8080/v1'),
+  // No default on purpose: an unset endpoint means the local-LLM route stays
+  // off (see `Config.baseUrl` and `apply`). The operator opts in with
+  // llm.local.baseUrl in config/edge.json (§7.102).
+  baseUrl: Schema.string().description('OpenAI-compatible endpoint base; unset = the local-LLM route is not registered.'),
   defaultModel: Schema.string().default('qwen3-4b'),
-  apiKeyEnv: Schema.string().description('Optional env-slot name carrying an auth bearer.'),
+  apiKey: Schema.string().description('Optional bearer token for an authenticated endpoint (literal value from config/edge.json).'),
+  apiKeyEnv: Schema.string().description('Deprecated: env-slot name carrying an auth bearer. Prefer apiKey.'),
   stripTools: Schema.boolean().default(false),
   // §7.87.5 (2026-09-19): default false — production wants fast answers.
   // qwen3.5 / QwQ / DeepSeek-R1 will burn max_tokens on reasoning by default.
@@ -143,8 +165,13 @@ export class LocalLlmAdapterImpl extends LlmAdapter {
     super()
     this.providersList = [...config.providers]
     this.innerByProvider = new Map()
+    // An unset endpoint leaves every route without a backend. `apply` keeps
+    // the adapter unregistered in that case; the guard here keeps the
+    // facade honest for direct construction (tests, embedding).
+    const baseUrl = (config.baseUrl ?? '').trim()
+    if (baseUrl.length === 0) return
     for (const provider of this.providersList) {
-      this.innerByProvider.set(provider, new RealLocalAdapter(provider, config, auditLog, inputGuard, logger))
+      this.innerByProvider.set(provider, new RealLocalAdapter(provider, config, baseUrl, auditLog, inputGuard, logger))
     }
   }
 
@@ -195,6 +222,7 @@ class RealLocalAdapter extends LlmAdapter {
   private readonly providerName: string
   private readonly baseUrl: string
   private readonly defaultModel: string
+  private readonly apiKey: string | undefined
   private readonly apiKeyEnv: string | undefined
   private readonly auditLog: AuditLike | undefined
   private readonly inputGuard: InputGuardLike | undefined
@@ -202,11 +230,14 @@ class RealLocalAdapter extends LlmAdapter {
   private readonly stripTools: boolean
   private readonly enableThinking: boolean
 
-  constructor(provider: string, config: Config, auditLog?: AuditLike, inputGuard?: InputGuardLike, logger?: LoggerLike) {
+  constructor(provider: string, config: Config, baseUrl: string, auditLog?: AuditLike, inputGuard?: InputGuardLike, logger?: LoggerLike) {
     super()
     this.providerName = provider
-    this.baseUrl = config.baseUrl.replace(/\/+$/u, '')
+    this.baseUrl = baseUrl.replace(/\/+$/u, '')
     this.defaultModel = config.defaultModel
+    // §7.102: prefer the literal key from config/edge.json; fall back to the
+    // deprecated env-slot lookup so an in-flight migration still authenticates.
+    this.apiKey = config.apiKey
     this.apiKeyEnv = config.apiKeyEnv
     this.auditLog = auditLog
     this.inputGuard = inputGuard
@@ -214,6 +245,12 @@ class RealLocalAdapter extends LlmAdapter {
     this.stripTools = config.stripTools ?? false
     // §7.87.5 (2026-09-19): opt-in flag for thinking-capable models.
     this.enableThinking = config.enableThinking ?? false
+  }
+
+  /** Resolve the bearer token: literal key first, env slot second. */
+  private resolveApiKey(): string | undefined {
+    if (this.apiKey !== undefined && this.apiKey.length > 0) return this.apiKey
+    return this.apiKeyEnv !== undefined ? readApiKey(this.apiKeyEnv) : undefined
   }
 
   get providers(): string[] {
@@ -294,7 +331,7 @@ class RealLocalAdapter extends LlmAdapter {
       'accept': 'text/event-stream',
       ...attributionHeaders(),
     }
-    const apiKey = this.apiKeyEnv !== undefined ? readApiKey(this.apiKeyEnv) : undefined
+    const apiKey = this.resolveApiKey()
     if (apiKey !== undefined) headers.authorization = `Bearer ${apiKey}`
 
     const promptText = sanitizedMessages.map((m) => `${m.role}:${extractText(m.content)}`).join('\n')
@@ -351,7 +388,16 @@ class RealLocalAdapter extends LlmAdapter {
       let respBody = ''
       try { respBody = await response.text() } catch { /* ignore */ }
       audit(this.auditLog, 'error', 'llm.local.http_error', { provider: options.provider, model: this.defaultModel, route: options.model, status: response.status, durationMs, respBody: respBody.slice(0, 500) })
-      throw new LlmError(`local-llm-adapter (${this.providerName}): HTTP ${response.status}: ${respBody.slice(0, 200)}`, 'PROVIDER_ERROR')
+      // 2026-10-21: 401/403 almost always means "this endpoint wants a
+      // bearer" (or "the port belongs to something else entirely"). Name the
+      // knob so the operator does not have to reverse-engineer the envelope.
+      const authHint = response.status === 401 || response.status === 403
+        ? ` — the endpoint requires an Authorization: Bearer token; set llm.local.keyRef`
+          + ` in config/edge.json to the name of a key under "secrets"`
+          + `${this.apiKeyEnv === undefined ? '' : `, or point apiKeyEnv at the env slot <${this.apiKeyEnv}>`}`
+          + `, and confirm ${this.baseUrl} is really your local LLM server.`
+        : ''
+      throw new LlmError(`local-llm-adapter (${this.providerName}): HTTP ${response.status}: ${respBody.slice(0, 200)}${authHint}`, 'PROVIDER_ERROR')
     }
 
     // 2026-09-03 §7.34.2 fix: defer `block-start` until the first text-delta.
@@ -547,12 +593,53 @@ function readApiKey(slot: string): string | undefined {
 
 export async function apply(ctx: Context, config: Config): Promise<() => Promise<void>> {
   ctx.logger?.info?.(`[local-llm-adapter] apply() called with providers: ${config.providers?.join(', ')}`)
+  // §7.102: the effective pool comes from config/edge.json. The cordis
+  // patch row no longer carries any local-LLM config (it used to read
+  // process.env.DSH_EDGE_LOCAL_LLM_*, which the desktop GUI never had).
+  const pool = localPool()
+  // The cordis config, when present, wins over the file (a profile that
+  // still passes an explicit baseUrl keeps working).
+  const baseUrl = (
+    typeof config.baseUrl === 'string' && config.baseUrl.trim().length > 0
+      ? config.baseUrl
+      : pool.baseUrl ?? ''
+  ).trim()
+  // 2026-10-21: the local-LLM route is opt-in. Without an endpoint the
+  // adapter registers NOTHING, so the model registry never offers
+  // `local-llm`, the model router cannot select it, and the internal
+  // intent/guard stages stay on their keyword/regex tier instead of
+  // burning a request against whatever happens to own the default port.
+  // Previously the Schema default (`127.0.0.1:8080`) made the route live
+  // unconditionally: on a machine where 8080 is an unrelated authenticated
+  // daemon, every turn failed with HTTP 401 "Missing bearer token".
+  if (baseUrl.length === 0) {
+    ctx.logger?.info?.(
+      '[local-llm-adapter] no endpoint configured — the local-LLM route stays off. '
+      + 'Set llm.local.baseUrl in config/edge.json to enable it.',
+    )
+    return async () => {}
+  }
+  // Fold the file-derived pool into the config the adapter actually uses.
+  //
+  // Precedence: an explicit cordis config value wins, then the file, then the
+  // Schema default. The Schema default is already applied to `config` by the
+  // loader, so we cannot use it to detect "the operator did not configure a
+  // model" — that is why the file is consulted before falling back to the
+  // plugin's own default string.
+  const effective: Config = {
+    ...config,
+    baseUrl,
+    defaultModel: pool.model ?? config.defaultModel,
+    apiKey: config.apiKey ?? pool.apiKey,
+    stripTools: config.stripTools ?? pool.stripTools,
+    enableThinking: config.enableThinking ?? pool.enableThinking,
+  }
   const auditLog = (ctx as unknown as { auditLog?: AuditLike }).auditLog
   // 2026-08-31: input-guard 可选注入；DSH_EDGE_INPUT_GUARD=false 或 plugin
   // 启动顺序导致 inputGuard 未就绪时降级为不洗（保持旧行为）。
   const inputGuard = (ctx as unknown as { inputGuard?: InputGuardLike }).inputGuard
   const logger = ctx.logger as LoggerLike | undefined
-  const adapter = new LocalLlmAdapterImpl(config, auditLog, inputGuard, logger)
+  const adapter = new LocalLlmAdapterImpl(effective, auditLog, inputGuard, logger)
   const llm = (ctx as unknown as {
     llm: { registerAdapter(providers: string[], adapter: LlmAdapter): { (): void } }
   }).llm

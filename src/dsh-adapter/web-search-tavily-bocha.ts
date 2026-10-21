@@ -16,16 +16,18 @@
  *   - DEEPSEEK_API_KEY  (Tier 3 fallback, already required for cloud-llm)
  *   - DEEPSEEK_BASE_URL (optional, default https://api.deepseek.com/anthropic/v1)
  *
+ * Where the keys come from (§7.102, 2026-10-21): config/edge.json
+ * `secrets.tavilyApiKey` / `secrets.bochaApiKey` / `secrets.deepseekApiKey`.
+ * The old flow was: repo .env → install.sh `source .env.sh` → process.env
+ * → this read. That chain is gone — the desktop GUI never sourced it, so
+ * the desktop build had no search keys at all. The env names below stay
+ * honoured as a per-process override.
+ *
  * Why bare names (NOT DSH_EDGE_* prefix)?  DSH dsh-app-boot 0.1.2-rc.1's
  * BOOTSTRAP_PREFIXES = ["DSH_", "XDG_", "DYLD_", "BASH_FUNC_"] rejects any
  * DSH_-prefixed KEY in .env files when dsh itself parses them
- * (dsh-app-boot/lib/index.js:933-1015). Our install.sh source chain
- * (`source .env.sh` → `set -a; . .env; set +a`) exports bare names BEFORE
- * dsh launches — they reach the plugin via process.env. Naming them with
- * the `DSH_EDGE_` prefix would either be silently ignored or rejected by
- * the launcher if anyone ever copied them into a dsh-loaded file. Bare
- * names align with §7.75 (`EDGE_API_KEY`, `DEEPSEEK_API_KEY`, etc.) so all
- * secrets sit in one .env.
+ * (dsh-app-boot/lib/index.js:933-1015). Bare names stay compatible with
+ * that launcher behaviour for the env override path.
  *
  * Cordis integration: registers as a single search provider with id
  * `tavily-bocha-fallback` in `ctx.web`. `available()` returns true iff at
@@ -44,6 +46,7 @@ import { WebError, type WebSearchProvider, type WebSearchRequest, type WebSearch
 import { DeepSeekSearchProvider } from '@deepseek-ai/dsh-web-search-deepseek'
 import type { Context } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
+import { loadEdgeConfig } from './edge-config.js'
 
 // ── Endpoints (fixed; these are the only authoritative hosts for each provider) ─────
 const TAVILY_ENDPOINT = 'https://api.tavily.com/search'
@@ -285,16 +288,16 @@ export class TavilyBochaFallbackProvider implements WebSearchProvider {
  * @param ctx - Cordis context with `ctx.web` available per `inject`.
  */
 export async function apply(ctx: Context, _config: Config): Promise<void> {
-  // Read from bare env names — flow path:
-  //   repo .env (TAVILY_API_KEY=...)  →  install.sh `source .env.sh`
-  //                                    →  .env.sh `set -a; . .env; set +a`
-  //                                    →  process.env.TAVILY_API_KEY
-  //                                    →  this read in plugin.apply()
-  // §7.75 design: all secrets sit in one .env, no DSH_/XDG_/DYLD_/BASH_FUNC_
-  // prefix (would trip dsh-app-boot's bootstrap-only whitelist).
-  const tavilyKey = process.env.TAVILY_API_KEY?.trim() || undefined
-  const bochaKey = process.env.BOCHA_API_KEY?.trim() || undefined
-  const dsKey = process.env.DEEPSEEK_API_KEY?.trim() || undefined
+  // §7.102 (2026-10-21): the search keys come from config/edge.json
+  // (secrets.tavilyApiKey / secrets.bochaApiKey / secrets.deepseekApiKey).
+  // The old flow was: repo .env → install.sh `source .env.sh` → process.env
+  // → this read. That chain is gone — the desktop GUI never sourced it.
+  // Env names stay honoured as a per-process override.
+  const cfg = loadEdgeConfig(true)
+  const secrets = cfg.secrets ?? {}
+  const tavilyKey = (secrets.tavilyApiKey ?? process.env.TAVILY_API_KEY)?.trim() || undefined
+  const bochaKey = (secrets.bochaApiKey ?? process.env.BOCHA_API_KEY)?.trim() || undefined
+  const dsKey = (secrets.deepseekApiKey ?? process.env.DEEPSEEK_API_KEY)?.trim() || undefined
   const dsBaseURL = process.env.DEEPSEEK_BASE_URL?.trim() || DEEPSEEK_DEFAULT_BASE_URL
 
   // Construct upstream DeepSeek provider for Tier-3 fallback. We bypass its

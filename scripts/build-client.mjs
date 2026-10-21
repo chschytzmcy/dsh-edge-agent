@@ -19,14 +19,18 @@
  * inlined (theme.ts injects <style> tags inside the factory — the loader
  * claims them per package id).
  *
- * Build path: this script shells out to the esbuild CLI (same binary the
- * npm scripts use) because the esbuild JS API spawns a child service that
- * some sandboxes block; then it wraps the CJS output via
- * scripts/_wrap-client-bundle.mjs's exported function.
+ * Build path: this script calls the esbuild JS API. It is the one code
+ * path that behaves identically on Windows, macOS and Linux — no `.cmd`
+ * shim to exec (EINVAL under some sandboxes), no `cmd.exe /c` quoting to
+ * get wrong (the shell receives the literal `\"` Node inserted and reports
+ * "not recognized as an internal or external command"), and no POSIX-only
+ * fallback commands. The API resolves the platform-native esbuild binary
+ * itself. If the API is unavailable (a sandbox that blocks the child
+ * process esbuild spawns), the script prints the exact two-step CLI
+ * fallback so the build is never silently skipped.
  */
 
-import { execFileSync } from 'node:child_process'
-import { existsSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -40,57 +44,39 @@ const packageName = pkg.name
 // generations of the client never coexist (walkthrough risk #2 mitigation).
 rmSync(join(root, 'lib', 'types', 'client'), { recursive: true, force: true })
 
-const esbuildBin = process.platform === 'win32'
-  ? join(root, 'node_modules', '.bin', 'esbuild.cmd')
-  : join(root, 'node_modules', '.bin', 'esbuild')
-if (!existsSync(esbuildBin)) {
-  console.error('[build-client] esbuild not found in node_modules/.bin — run pnpm install first')
-  process.exit(1)
+const esbuildArgs = {
+  entryPoints: [join(root, 'src', 'client', 'index.ts')],
+  bundle: true,
+  format: 'cjs',
+  platform: 'browser',
+  target: 'es2020',
+  external: ['react', 'react/jsx-runtime', 'react-dom', 'react-dom/client'],
+  minify: true,
+  define: { 'process.env.NODE_ENV': '"production"' },
+  outfile: rawfile,
+  legalComments: 'none',
+  logLevel: 'warning',
 }
 
-// On Windows, spawning .cmd shims via execFileSync throws EINVAL under some
-// sandboxes (and the DSH file sandbox blocks child spawn entirely). Route all
-// platforms through cmd.exe /c so one code path behaves identically on
-// Windows, macOS and Linux.
+let raw = ''
 try {
-  const args = [
-    join(root, 'src', 'client', 'index.ts'),
-    '--bundle',
-    '--format=cjs',
-    '--platform=browser',
-    '--target=es2020',
-    '--external:react',
-    '--external:react/jsx-runtime',
-    '--external:react-dom',
-    '--external:react-dom/client',
-    '--minify',
-    '--define:process.env.NODE_ENV="production"',
-    `--outfile=${rawfile}`,
-    '--legal-comments=none',
-  ]
-  if (process.platform === 'win32') {
-    execFileSync('cmd.exe', ['/d', '/s', '/c', `"${esbuildBin}" ${args.join(' ')}`], { stdio: 'inherit' })
-  } else {
-    execFileSync(esbuildBin, args, { stdio: 'inherit' })
-  }
+  const { build } = await import('esbuild')
+  const result = await build({ ...esbuildArgs, write: false })
+  raw = result.outputFiles[0].text
+  writeFileSync(rawfile, raw)
 } catch (err) {
-  // Sandboxes that block child_process spawn (EPERM/EINVAL on the .cmd shim)
-  // fall back to the documented two-step CLI path. The fallback commands are
-  // POSIX-style; on Windows cmd use ^ for line continuation or run them as
-  // one single line.
-  console.error('[build-client] esbuild spawn failed:', err?.message ?? String(err))
+  // A sandbox that blocks the child process esbuild spawns lands here. The
+  // fallback commands are the documented manual path — one line, no
+  // shell-specific line continuations.
+  console.error('[build-client] esbuild JS API failed:', err?.message ?? String(err))
   console.error('[build-client] run the two-step fallback instead:')
-  console.error('  npx esbuild src/client/index.ts --bundle --format=cjs --platform=browser \\')
-  console.error('    --target=es2020 --external:react "--external:react/jsx-runtime" \\')
-  console.error('    --external:react-dom "--external:react-dom/client" --minify \\')
-  console.error("    --define:process.env.NODE_ENV='\"production\"' --outfile=lib/client.raw.cjs.js --legal-comments=none")
+  console.error('  npx esbuild src/client/index.ts --bundle --format=cjs --platform=browser --target=es2020 --external:react --external:react/jsx-runtime --external:react-dom --external:react-dom/client --minify --define:process.env.NODE_ENV=\'"production"\' --outfile=lib/client.raw.cjs.js --legal-comments=none')
   console.error('  node scripts/_wrap-client-bundle.mjs')
   process.exit(1)
 }
 
 // Wrap into __ModuleLoader__.load({id, factory}) — shared logic lives in
 // _wrap-client-bundle.mjs; inline here to keep one process invocation.
-const raw = readFileSync(rawfile, 'utf8')
 const wrapped = `/* dsh-edge-agent client bundle — generated by scripts/build-client.mjs.
    Format: DSH webview module-system registration (classic script). */
 window.__ModuleLoader__.load({
@@ -105,7 +91,6 @@ ${raw.replace(/\n+$/u, '')}
   },
 });
 `
-import { writeFileSync } from 'node:fs'
 writeFileSync(outfile, wrapped)
 rmSync(rawfile, { force: true })
 

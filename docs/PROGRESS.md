@@ -10608,3 +10608,74 @@ desktop installable bundle smoke               lib/client.js 落入 + cordis.pat
 5. 若 client-modules 静默 skip:查 pkgMeta 负缓存语义("negative verdict cached until restart"——restart 应已清,需再核)。
 
 **教训固化**:① 插件的 client 半有**三重契约**——manifest `dsh.client{platform:'web'}` + `exports['./client']` + bundle 内 `__ModuleLoader__.load` 自注册,缺一即静默失败(宿主只在 composition throw 时报警);② client 发现挂在 **loader entry name** 上,bare-name row 是唯一入口,子路径 row 再多也不触发;③ webview seed 词表(staticModules)决定 bundle 可用依赖:**react/react-dom/client/jsx-runtime/cordis/zod/react-virtual/client-store/ui-slots/ui-primitives/ui-dockkit**,无 preact;④ cordis Proxy ctx 对 undeclared service 的属性读写一律 throw,apply() 内一切可选服务访问必须 defer(inject)/guard(typeof)/try-catch。
+
+### §7.102 — 配置归一:单一文件 `config/edge.json`,废掉 `.env` / `.env.sh` 两条链(2026-10-21)
+
+**动机**:查"localLLM 配置在哪个文件"时发现的架构裂缝。旧配置链是
+
+```
+.env (裸名 LOCAL_LLM_* / CLOUD_LLM_* / GUARD_* / INTENT_*)
+  → .env.sh (反查展开 + _export_if 空值不导出)
+    → process.env DSH_EDGE_LOCAL_LLM_* 等
+      → cordis.patch.yml 的 `!!js process.env.X`
+        → plugin Config
+```
+
+**裂缝**:这条链**只在 CLI 启动路径成立**。
+
+| profile | 启动方式 | env 供给 |
+|---|---|---|
+| `dsh-edge` / `dsh-tui` / `dsh-web` | `install.sh` → `source ~/.dsh/profiles/<p>/.env.sh` | ✅ 有 |
+| **`desktop`(DeepSeek Harness.exe,Electron)** | GUI 直接起进程,**不经过 install.sh** | ❌ **一个都没有** |
+
+于是桌面侧的 `!!js process.env.DSH_EDGE_LOCAL_LLM_BASEURL || undefined` 全部解析成 `undefined`,local-llm-adapter 落回 Schema 默认 `http://127.0.0.1:8080/v1`——该端口被无关守护进程占用,每轮请求 401。同时 `.env` 里真实配的 `LOCAL_LLM_BASEURL`(阿里 DashScope)从未被读到:**变量名口径两处不一致**(.env 用裸名,patch 读 `DSH_EDGE_` 前缀)。
+
+**新链**(与 profile 无关):
+
+```
+config/edge.json  (唯一真源,含明文 key,gitignored)
+  → src/dsh-adapter/edge-config.ts  (唯一读点)
+    → plugin apply() 合并进各自 Config
+      → Schema.default()  (最后兜底)
+```
+
+**查找顺序**(loader 内):`<bundle>/config/edge.json` → `~/.dsh-edge-agent/edge.json` → `<bundle>/config/edge.example.json`(shipped 模板,空 secret + 默认值)。
+
+**env 覆盖层保留**:`edge-config.ts` 内置 `ENV_OVERRIDES` 表(38 条 `DSH_EDGE_*` → 配置文件字段映射)。文件是主源,但 env 变量**只在实际设置时**覆盖文件值。三点理由:① CI / 一次性调试仍可用 env;② 现有单测(cloud-available / intent-router / http-api)大量用 env 造 fixture,不必全改;③ 迁移**双向兼容**——不设 env 的部署走文件,设了的走 env。env 覆盖是"可选 override",不是"配置面"。
+
+
+**关键设计**:
+- **key 存配置文件,不用环境变量**——`secrets` 段存明文,池通过 `keyRef` 指向键名(`llm.local.keyRef: "dashscopeApiKey"`)。`config/edge.json` 已 gitignore;模板 `config/edge.example.json` tracked。
+- **bundle 自带 `config/`**——`package.json#files` 加 `"config"`,desktop GUI Add Plugin 时随包拷进 nested pack,`edge-config.ts` 用 `import.meta.url` 相对定位到 bundle 根。
+- **patch 层不再带任何 local-LLM / stage / privacy 配置**——`!!js process.env.*` 全部删除。cordis patch 只声明 plugin 身份(`id` + `name` + `inject`),值由 plugin 自己从文件取。桌面与 CLI 行为因此完全一致。
+
+**改动清单**:
+- 新增 `config/edge.json`(gitignored)+ `config/edge.example.json`(tracked)
+- 新增 `src/dsh-adapter/edge-config.ts`(唯一读点,含 `localPool()` / `cloudPool()` / `stageModel()` / `mergeEdgeConfig()`)
+- `local-llm-adapter.ts`:`apiKeyEnv`(env 槽名)→ `apiKey`(字面值);baseUrl/model/stripTools/enableThinking 从 loader 兜底
+- `cloud-llm-adapter.ts`:同上 + delegate 旋钮从 `llm.cloud.*` 取
+- `input-guard.ts`:`localModel` 跟随 LOCAL 池;3 个开关从 `privacy.*` 取
+- `intent-router.ts`:`classificationModel` 跟随 LOCAL 池;stage 参数从 `stages.intent.*` 取
+- `prompt-guard.ts`:`modelDetectionModel` 跟随 LOCAL 池;stage 参数从 `stages.guard.*` 取
+- `sanitizer-pipeline.ts`:session 限制从 `privacy.*` 取
+- `function-call-external.ts`:全部旋钮从 `functionCallExternal.*` 取
+- `http-api.ts`:`resolveRoute` 的 fallback model 从 loader 取(不再读 `DSH_EDGE_LOCAL_LLM_MODEL`)
+- `cordis.desktop-safe.patch.yml`:删除 6 段 `process.env` 读取
+- `install.sh`:不再 source `.env.sh`;改为部署 `config/edge.json` → `~/.dsh-edge-agent/edge.json`(与 privacy-policy 同款)
+- 删除 `.env` / `.env.sh` / `.env.example`
+- `scripts/verify-installable.mjs`:新增 config/ 目录 + edge.json/edge.example.json 存在性 + 必填 section 校验
+- README:配置参考章节 + 部署方式一/二 + 模型配置表全部改写
+
+**保留的 env 读**(有意):`file-logger` / `tcm` / `audit-log` / `privacy-policy` / `realm-skill-bridge` / `td-bus` 仍读 `process.env.USERPROFILE` / `HOME` 拼路径——那是 **HOME 定位**,不是 `.env` 语义,任何启动方式都有。
+
+**与 §7.101.x 的关系**:本次不是修 Edge tab 的五层根因,而是**修配置供给**——即使 Edge tab 装好,桌面侧的 local-LLM 路由此前也是坏的(连到 127.0.0.1:8080 而非 `.env` 里配的端点)。两条线合流后,桌面与 CLI 才真正跑同一套配置。
+
+**验收闭环(2026-10-21 下午,Windows 桌面宿主上首次全链跑通)**:`npm run build` 十道门禁 + `npm test` 1005 passed / 0 failed。过程中另修掉 5 件事:
+
+1. **vitest.config.ts(新增)**:`DSH_EDGE_CONFIG_FILE=off` —— 单测关掉配置文件,loader 只看 env 覆盖 + 代码 DEFAULT。否则开发机 `config/edge.json` 的真端点/真 key 会漏进断言,"无端点不注册路由"这类测试换台机器就翻绿翻红随人。
+2. **function-call-external Config Schema 去掉 default(§7.102 正解)**:Schemastery 在 apply() 前把 default 填进 config,导致"没配"与"配了默认值"不可区分、文件层永远够不着。9 字段改 optional + apply() 只做 `undefined → file` 填充 + 字面兜底留在构造期 `??`。旧契约测试两条改写为新契约(schema resolve 空 config → 9 字段全缺席;显式传 9 字段 → 恰多恰少),并**新增 drift-lock**:`DEFAULT_EDGE_CONFIG.functionCallExternal` 必须逐字等于 9 字段契约——它立刻抓到我把 `probeTimeoutMs` 从 .env 的 1000 搬成了代码兜底(应为历史默认 2000,部署值走文件)。
+3. **DEFAULT_EDGE_CONFIG.llm.local.model 留空**:model 的权威默认在各 plugin 自己的 Schema(local-llm-adapter 'qwen3-4b' vs http-api 路由兜底 'qwen3-4b-instruct-2507'),loader 层放一个统一默认会悄悄覆盖另一个;同时修了 local-llm-adapter `defaultModel: config.defaultModel || pool.model` 的优先级倒置(Schema default 恒真 → 文件值永远失效)。
+4. **Windows EPERM rename 重试(`renameWithRetry`,local-storage.ts 导出)**:Windows 上 writeFile 关闭句柄后 Defender/索引器会短暂锁文件,atomic rename 瞬态 EPERM——单测(sessions)实炸、生产(local-storage put / audit-log flush+rotate / file-logger rotate)同暴露;5 次退避,POSIX 路径零开销。
+5. **工程闭环**:`scripts/rebuild-installable.mjs`(新增,幂等跨平台,今天 installable/config/ 手工漂移 2 次的根治)+ `build:installable` 接入 `npm run build` 链 + `bundle-minimal/package.json` exports 镜像补 require/default 条件 + `verify-plugin-spec` skip 内部模块 edge-config + input-guard inject 的 modelRouter **撤销**(localAvailable() 本就 try/catch optional 访问,硬 inject 会把 model-router 拉进 minimal bundle 依赖闭包;注释里带引号的 service 名会被 bundle-minimal 的正则误扫——已注释告诫)。
+
+

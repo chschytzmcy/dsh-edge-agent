@@ -8,45 +8,65 @@
   "exports": {
     ".": {
       "types": "./lib/index.d.ts",
-      "import": "./lib/index.js"
+      "import": "./lib/index.js",
+      "require": "./lib/index.js",
+      "default": "./lib/index.js"
     },
     "./package.json": "./package.json",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./audit-log": {
       "types": "./lib/dsh-adapter/audit-log.d.ts",
-      "import": "./lib/dsh-adapter/audit-log.js"
+      "import": "./lib/dsh-adapter/audit-log.js",
+      "require": "./lib/dsh-adapter/audit-log.js",
+      "default": "./lib/dsh-adapter/audit-log.js"
     },
     "./privacy-policy": {
       "types": "./lib/dsh-adapter/privacy-policy.d.ts",
-      "import": "./lib/dsh-adapter/privacy-policy.js"
+      "import": "./lib/dsh-adapter/privacy-policy.js",
+      "require": "./lib/dsh-adapter/privacy-policy.js",
+      "default": "./lib/dsh-adapter/privacy-policy.js"
     },
     "./prompt-guard": {
       "types": "./lib/dsh-adapter/prompt-guard.d.ts",
-      "import": "./lib/dsh-adapter/prompt-guard.js"
+      "import": "./lib/dsh-adapter/prompt-guard.js",
+      "require": "./lib/dsh-adapter/prompt-guard.js",
+      "default": "./lib/dsh-adapter/prompt-guard.js"
     },
     "./intent-router": {
       "types": "./lib/dsh-adapter/intent-router.d.ts",
-      "import": "./lib/dsh-adapter/intent-router.js"
+      "import": "./lib/dsh-adapter/intent-router.js",
+      "require": "./lib/dsh-adapter/intent-router.js",
+      "default": "./lib/dsh-adapter/intent-router.js"
     },
     "./sanitizer-pipeline": {
       "types": "./lib/dsh-adapter/sanitizer-pipeline.d.ts",
-      "import": "./lib/dsh-adapter/sanitizer-pipeline.js"
+      "import": "./lib/dsh-adapter/sanitizer-pipeline.js",
+      "require": "./lib/dsh-adapter/sanitizer-pipeline.js",
+      "default": "./lib/dsh-adapter/sanitizer-pipeline.js"
     },
     "./realm-skill-bridge": {
       "types": "./lib/dsh-adapter/realm-skill-bridge.d.ts",
-      "import": "./lib/dsh-adapter/realm-skill-bridge.js"
+      "import": "./lib/dsh-adapter/realm-skill-bridge.js",
+      "require": "./lib/dsh-adapter/realm-skill-bridge.js",
+      "default": "./lib/dsh-adapter/realm-skill-bridge.js"
     },
     "./input-guard": {
       "types": "./lib/dsh-adapter/input-guard.d.ts",
-      "import": "./lib/dsh-adapter/input-guard.js"
+      "import": "./lib/dsh-adapter/input-guard.js",
+      "require": "./lib/dsh-adapter/input-guard.js",
+      "default": "./lib/dsh-adapter/input-guard.js"
     },
     "./tools": {
       "types": "./lib/dsh-adapter/tools.d.ts",
-      "import": "./lib/dsh-adapter/tools.js"
+      "import": "./lib/dsh-adapter/tools.js",
+      "require": "./lib/dsh-adapter/tools.js",
+      "default": "./lib/dsh-adapter/tools.js"
     },
     "./file-logger": {
       "types": "./lib/dsh-adapter/file-logger.d.ts",
-      "import": "./lib/dsh-adapter/file-logger.js"
+      "import": "./lib/dsh-adapter/file-logger.js",
+      "require": "./lib/dsh-adapter/file-logger.js",
+      "default": "./lib/dsh-adapter/file-logger.js"
     }
   },
   "peerDependencies": {

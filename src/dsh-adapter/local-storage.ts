@@ -162,9 +162,38 @@ export class LocalStorageServiceImpl extends Service {
       // Atomic-ish write: write to a temp file and rename.
       const tmp = `${this.filePath}.tmp-${process.pid}`
       await writeFile(tmp, next, 'utf-8')
-      await rename(tmp, this.filePath)
+      await renameWithRetry(tmp, this.filePath)
     })
     return this.writeQueue
+  }
+}
+
+/**
+ * rename() with a short backoff for EPERM.
+ *
+ * Windows quirk (observed 2026-10-21 running the suite on the desktop host):
+ * right after writeFile closes the handle, the Defender/indexer scan can
+ * hold the file open for a few milliseconds — rename() then fails with
+ * EPERM even though nothing is logically wrong. The lock clears on its own;
+ * POSIX platforms never hit this path (rename is atomic and unblocked).
+ * Shared with audit-log / file-logger, whose atomic writes have the same
+ * exposure on the Windows desktop deployment.
+ */
+export async function renameWithRetry(
+  from: string,
+  to: string,
+  attempts = 5,
+  baseDelayMs = 20,
+): Promise<void> {
+  for (let i = 0; ; i++) {
+    try {
+      await rename(from, to)
+      return
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException)?.code
+      if (i >= attempts - 1 || code !== 'EPERM' && code !== 'EBUSY' && code !== 'ENOTEMPTY') throw e
+      await new Promise((resolve) => setTimeout(resolve, baseDelayMs * (i + 1)))
+    }
   }
 }
 

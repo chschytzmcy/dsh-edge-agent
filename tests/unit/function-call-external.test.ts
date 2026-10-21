@@ -32,6 +32,7 @@ import {
   name as pluginName,
 } from '../../src/dsh-adapter/function-call-external.js'
 import { ToolRunner } from '../../src/dsh-adapter/tool-runner.js'
+import { DEFAULT_EDGE_CONFIG } from '../../src/dsh-adapter/edge-config.js'
 
 // ── fixtures ────────────────────────────────────────────────────────────────
 
@@ -71,11 +72,10 @@ function makeService(config: Record<string, unknown> = {}, ctxExtra: Record<stri
   return { svc, ctx, logs, entries }
 }
 
-/** §7.93.1 memory 契约:9 个字段的权威默认值(.env 翻译层未生效时的兜底)。
- *  (Phase 5 末 user 终裁:不管什么语种 external caller 自带 cn_grounding,直接用,
- *  不再过 client 翻译;原 12 字段裁掉 needleTranslateTimeoutMs /
- *  needleTranslateEnabled / needleTranslateProvider,§7.93.1 进一步把
- *  needleTranslateProvider 删掉,9 字段。) */
+/** §7.93.1 memory 契约:9 个字段的权威默认值。
+ *  §7.102 (2026-10-21): 默认值从 cordis Schema 迁到了两层——
+ *  config/edge.json(部署值)+ service 构造期 ?? 回退(代码兜底,
+ *  与本表逐字一致,由下方「构造期 ?? 回退」测试锁死)。 */
 const EXPECTED_DEFAULTS = {
   functionCallExternalEnabled: false,
   functionCallExternalUrl: 'http://127.0.0.1:8081',
@@ -109,17 +109,46 @@ describe('function-call-external:plugin 面', () => {
 // ── 2. config schema 默认值 ─────────────────────────────────────────────────
 
 describe('function-call-external:config 默认值', () => {
-  it('schema resolve 空 config → 9 字段与 .env/memory 契约逐字一致', () => {
-    // schemastery schema 可调用:ConfigSchema({}) 即 cordis 挂载时的 resolve 路径。
+  it('schema resolve 空 config → 9 字段全部缺席(§7.102:默认值已迁出 Schema)', () => {
+    // §7.102:cordis Schema 刻意不带 default —— 空 config resolve 后字段保持
+    // undefined,apply() 才能区分"patch 行没配"与"配了默认值",
+    // config/edge.json 才有机会填充。默认值的权威表由下方两条测试锁死:
+    //   - service 构造期 ?? 回退(代码兜底)
+    //   - edge-config DEFAULT_EDGE_CONFIG(file 缺席时的 loader 兜底)
     const resolved = ConfigSchema({} as never) as Record<string, unknown>
-    for (const [k, v] of Object.entries(EXPECTED_DEFAULTS)) {
-      assert.equal(resolved[k], v, `schema 默认漂移: ${k}`)
+    for (const k of Object.keys(EXPECTED_DEFAULTS)) {
+      assert.equal(resolved[k], undefined, `schema 不应再带 default: ${k}`)
     }
   })
 
-  it('schema 无多余字段(新增 config 必须同步 .env 翻译层 + 本测试)', () => {
-    const resolved = ConfigSchema({} as never) as Record<string, unknown>
+  it('schema 恰好声明 9 字段(新增 config 必须同步 config/edge.json + 本测试)', () => {
+    // 9 个字段名是 cordis patch 行与 config/edge.json functionCallExternal
+    // 段的共同契约:显式传全 9 个 → resolve 后恰好多不少(字段声明漂移 = 本测试炸)。
+    const resolved = ConfigSchema({ ...EXPECTED_DEFAULTS } as never) as Record<string, unknown>
     assert.deepEqual(Object.keys(resolved).sort(), Object.keys(EXPECTED_DEFAULTS).sort())
+    for (const [k, v] of Object.entries(EXPECTED_DEFAULTS)) {
+      assert.deepEqual(resolved[k], v, `resolve 不应改写显式值: ${k}`)
+    }
+  })
+
+  it('§7.102 loader DEFAULT 与 memory 契约逐字一致(edge-config 兜底漂移锁)', () => {
+    // DEFAULT_EDGE_CONFIG.functionCallExternal 是"文件不存在 / 测试关掉文件"
+    // 时 apply() 的填充源 —— 必须与 9 字段契约逐字一致(部署值走 edge.json)。
+    const fce = DEFAULT_EDGE_CONFIG.functionCallExternal as Record<string, unknown>
+    const expect: Record<string, unknown> = {
+      enabled: EXPECTED_DEFAULTS.functionCallExternalEnabled,
+      url: EXPECTED_DEFAULTS.functionCallExternalUrl,
+      timeoutMs: EXPECTED_DEFAULTS.functionCallExternalTimeoutMs,
+      confidenceThreshold: EXPECTED_DEFAULTS.functionCallExternalConfidenceThreshold,
+      breakerTtlMs: EXPECTED_DEFAULTS.functionCallExternalBreakerTtlMs,
+      bootProbeEnabled: EXPECTED_DEFAULTS.functionCallExternalBootProbeEnabled,
+      bootProbeTimeoutMs: EXPECTED_DEFAULTS.functionCallExternalBootProbeTimeoutMs,
+      breakerProbeMs: EXPECTED_DEFAULTS.functionCallExternalBreakerProbeMs,
+      probeTimeoutMs: EXPECTED_DEFAULTS.functionCallExternalProbeTimeoutMs,
+    }
+    for (const [k, v] of Object.entries(expect)) {
+      assert.deepEqual(fce[k], v, `DEFAULT_EDGE_CONFIG.functionCallExternal.${k} 漂移`)
+    }
   })
 
   it('service 构造期 ?? 回退与 schema 默认镜像一致(手工构造路径)', () => {

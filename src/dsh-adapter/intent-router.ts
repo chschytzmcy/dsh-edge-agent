@@ -13,6 +13,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { Service } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { loadEdgeConfig, localPool } from './edge-config.js'
 
 export const name = 'intent-router'
 
@@ -138,6 +139,9 @@ export const Config: Schema<Config> = Schema.object({
     // failure triggers input-guard.sanitize.downgraded → LOCAL (fail-closed).
     .default('SANITIZED'),
   classificationProvider: Schema.string().default('local-llm'),
+  // §7.102: the classification model follows the LOCAL pool in
+  // config/edge.json (llm.local.model). The Schema default is only a
+  // last-resort fallback when no config file is present at all.
   classificationModel: Schema.string().default('qwen3-4b'),
   // confidenceThreshold is a 0..1 probability, NOT an integer. Pre-fix used
   // Schema.natural() which validates as "integer multiple of 1" — runtime
@@ -2070,6 +2074,49 @@ declare module '@deepseek-ai/cordis' {
 }
 
 export async function apply(ctx: Context, config: Config): Promise<() => Promise<void>> {
+  // §7.102: the intent stage config comes from config/edge.json
+  // (stages.intent.*). The cordis patch row no longer reads process.env —
+  // the desktop GUI never had those variables.
+  const intentStage = loadEdgeConfig().stages?.intent
+  if (intentStage) {
+    if (intentStage.provider !== undefined) {
+      ;(config as { classificationProvider: string }).classificationProvider = intentStage.provider
+    }
+    if (intentStage.defaultCategory !== undefined) {
+      ;(config as { defaultCategory: 'LOCAL' | 'CLOUD' | 'SANITIZED' }).defaultCategory =
+        intentStage.defaultCategory as 'LOCAL' | 'CLOUD' | 'SANITIZED'
+    }
+    if (intentStage.timeoutMs !== undefined) {
+      ;(config as { llmTimeoutMs: number }).llmTimeoutMs = intentStage.timeoutMs
+    }
+    if (intentStage.confidenceThreshold !== undefined) {
+      ;(config as { confidenceThreshold: number }).confidenceThreshold = intentStage.confidenceThreshold
+    }
+    if (intentStage.recentLimit !== undefined) {
+      ;(config as { recentMessagesLimit: number }).recentMessagesLimit = intentStage.recentLimit
+    }
+    if (intentStage.maxInput !== undefined) {
+      ;(config as { maxInputLength: number }).maxInputLength = intentStage.maxInput
+    }
+    if (intentStage.cloudKeywords !== undefined) {
+      ;(config as { cloudKeywords: string[] }).cloudKeywords = intentStage.cloudKeywords
+    }
+    if (intentStage.localEntities !== undefined) {
+      ;(config as { localEntities: string[] }).localEntities = intentStage.localEntities
+    }
+    if (intentStage.fallbackKeywords !== undefined) {
+      ;(config as { fallbackKeywords: string[] }).fallbackKeywords = intentStage.fallbackKeywords
+    }
+  }
+  // §7.102: the classification model follows the LOCAL pool in
+  // config/edge.json (llm.local.model) — the file is the single source of
+  // truth. §7.100 privacy invariant: the classifier may only target the
+  // local pool; a cloud provider here would ship the raw user text out.
+  const pool = localPool()
+  if (pool.model && config.classificationModel !== pool.model) {
+    ctx.logger?.info?.(`[intent-router] classificationModel from config/edge.json: ${config.classificationModel} → ${pool.model}`)
+    ;(config as { classificationModel: string }).classificationModel = pool.model
+  }
   const auditLog = (ctx as unknown as { auditLog?: AuditLike }).auditLog
   const service = new IntentRouterServiceImpl(ctx, config, auditLog)
   // §7.92.7 (2026-09-24): fire boot probe (fire-and-forget). The

@@ -99,17 +99,16 @@
         hotReload: !!js process.env.DSH_EDGE_POLICY_HOT_RELOAD !== 'false'
         watchIntervalMs: !!js parseInt(process.env.DSH_EDGE_POLICY_WATCH_MS ?? '5000', 10)
 
-    # Threat bus. Desktop-safe keeps the looser default threshold.
+    # Threat bus. Thresholds come from config/edge.json (threat.*) — §7.102.
+    # Desktop-safe keeps the looser default threshold.
     - id: td-bus
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/td-bus'
       inject: [auditLog, privacyPolicy]
       config:
         windowSeconds: 60
         thresholds:
-          cloudRequestsPerMinute: !!js parseInt(process.env.DSH_EDGE_TD_CLOUD_RATE ?? '20', 10)
           failedSanitizationStreak: 3
           permissionDeniedStreak: 5
-        blockLevel: !!js process.env.DSH_EDGE_TD_BLOCK_LEVEL ?? 'critical'
 
     # Edge tool registry. Do not isolate tools by default in desktop mode.
     - id: edge-tools-registry
@@ -129,7 +128,8 @@
         hotReload: !!js process.env.DSH_EDGE_REALM_HOT_RELOAD !== 'false'
         watchIntervalMs: !!js parseInt(process.env.DSH_EDGE_REALM_WATCH_MS ?? '5000', 10)
 
-    # Input guard. Model-assisted detection is OFF by default for desktop.
+    # Input guard. Model-assisted detection config comes from
+    # config/edge.json (stages.guard.*) — §7.102.
     - id: prompt-guard
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/prompt-guard'
       inject: [privacyPolicy, auditLog, llm]
@@ -139,69 +139,55 @@
         enablePIIRedaction: true
         enableInjectionDetection: true
         enableRateLimit: true
-        enableModelDetection: !!js process.env.DSH_EDGE_GUARD_MODEL === 'true'
-        modelDetectionProvider: !!js process.env.DSH_EDGE_GUARD_MODEL_PROVIDER ?? 'local-llm'
-        modelDetectionModel: !!js process.env.DSH_EDGE_GUARD_MODEL_MODEL ?? 'Qwen3-4B-Instruct-2507'
-        modelDetectionTimeoutMs: !!js parseInt(process.env.DSH_EDGE_GUARD_MODEL_TIMEOUT_MS ?? '4000', 10)
-        modelDetectionMaxInputLength: !!js parseInt(process.env.DSH_EDGE_GUARD_MODEL_MAX_INPUT ?? '2000', 10)
 
-    # Reversible PII sanitizer.
+    # Reversible PII sanitizer. Session limits come from
+    # config/edge.json (privacy.*) — §7.102.
     - id: sanitizer-pipeline
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/sanitizer-pipeline'
       inject: [privacyPolicy, auditLog]
       config:
         enableAutoDetection: true
         maxReplacementsPerSession: 1024
-        sessionTtlMs: !!js parseInt(process.env.DSH_EDGE_SAN_TTL_MS ?? '900000', 10)
-        maxSessions: !!js parseInt(process.env.DSH_EDGE_SAN_MAX_SESSIONS ?? '1000', 10)
-        sweepIntervalMs: !!js parseInt(process.env.DSH_EDGE_SAN_SWEEP_MS ?? '60000', 10)
 
-    # Intent router. Classifier provider may be absent; fail-open to keywords.
+    # Intent router. Classifier config comes from config/edge.json
+    # (stages.intent.*) — §7.102. Classifier provider may be absent;
+    # fail-open to keywords.
     - id: intent-router
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/intent-router'
       inject: [llm, auditLog, privacyPolicy]
-      config:
-        defaultCategory: !!js process.env.DSH_EDGE_INTENT_DEFAULT_CATEGORY ?? 'SANITIZED'
-        classificationProvider: !!js process.env.DSH_EDGE_INTENT_PROVIDER ?? 'local-llm'
-        classificationModel: !!js process.env.DSH_EDGE_INTENT_MODEL ?? 'Qwen3-4B-Instruct-2507'
-        confidenceThreshold: !!js parseFloat(process.env.DSH_EDGE_INTENT_CONFIDENCE_THRESHOLD ?? '0.6')
-        llmTimeoutMs: !!js parseInt(process.env.DSH_EDGE_INTENT_LLM_TIMEOUT_MS ?? '1500', 10)
-        recentMessagesLimit: !!js parseInt(process.env.DSH_EDGE_INTENT_RECENT_LIMIT ?? '3', 10)
-        maxInputLength: !!js parseInt(process.env.DSH_EDGE_INTENT_MAX_INPUT ?? '2000', 10)
 
     # §7.100 cloud-llm = DELEGATE route. baseUrl deliberately absent →
     # Schema default '' → every CLOUD/SANITIZED turn is forwarded to the
     # host profile's own configured model provider (GUI picker wins; probe
     # falls back to live host routes). Credential resolution stays entirely
     # on the host side — this bundle reads no secrets.
-    # Knobs (all optional envs): DSH_EDGE_CLOUD_DELEGATE=false /
-    # DSH_EDGE_CLOUD_DELEGATE_PROVIDER / DSH_EDGE_CLOUD_DELEGATE_MODEL.
+    # §7.102: the pool + delegate knobs come from config/edge.json
+    # (llm.cloud.*) — the patch row no longer reads process.env.
     - id: cloud-llm-adapter
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/cloud-llm-adapter'
       inject: [llm, auditLog]
       config:
         providers: [cloud-llm]
-        delegateProvider: !!js process.env.DSH_EDGE_CLOUD_DELEGATE_PROVIDER || undefined
-        delegateModel: !!js process.env.DSH_EDGE_CLOUD_DELEGATE_MODEL || undefined
-        delegateEnabled: !!js process.env.DSH_EDGE_CLOUD_DELEGATE !== 'false'
 
-    # §7.100 local-llm. Live when the operator exports
-    # DSH_EDGE_LOCAL_LLM_BASEURL (OpenAI-compatible endpoint: llama.cpp /
-    # vLLM / Ollama / DashScope). Without it the Schema default
-    # (127.0.0.1:8080) is used and LOCAL turns fail loudly — never silently.
-    # Internal LLM stages (intent classification / guard model-detect) point
-    # here EXCLUSIVELY per the 2026-10-18 privacy ruling; they never target
-    # cloud-llm.
+    # §7.102 (2026-10-21): local-LLM configuration moved OUT of the cordis
+    # patch and into config/edge.json (llm.local.*). The patch row no
+    # longer reads process.env — the desktop GUI starts the bundle without
+    # sourcing any .env.sh, so every `process.env.DSH_EDGE_LOCAL_LLM_*`
+    # lookup here resolved to undefined and the adapter fell back to a
+    # hard-coded 127.0.0.1:8080 that collided with unrelated daemons.
+    #
+    # The adapter now reads the pool from config/edge.json itself:
+    #   - baseUrl unset  → the local-LLM route is not registered at all, the
+    #     model registry never offers `local-llm`, and the internal
+    #     intent/guard stages stay on their keyword/regex tier.
+    #   - Internal LLM stages (intent classification / guard model-detect)
+    #     point here EXCLUSIVELY per the 2026-10-18 privacy ruling; they
+    #     never target cloud-llm.
     - id: local-llm-adapter
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/local-llm-adapter'
       inject: [llm, auditLog]
       config:
         providers: [local-llm]
-        baseUrl: !!js process.env.DSH_EDGE_LOCAL_LLM_BASEURL || undefined
-        defaultModel: !!js process.env.DSH_EDGE_LOCAL_LLM_MODEL || undefined
-        apiKeyEnv: !!js process.env.DSH_EDGE_LOCAL_LLM_KEY_ENV || undefined
-        stripTools: !!js process.env.DSH_EDGE_LOCAL_LLM_STRIP_TOOLS === 'true'
-        enableThinking: !!js process.env.DSH_EDGE_LOCAL_LLM_ENABLE_THINKING === 'true'
 
     # Route catalog so /v1-style enumeration & intent-router soft-dep see
     # both routes with registry truth (§7.100 isAvailable).
@@ -212,29 +198,18 @@
         localModels: [local-llm]
         cloudModels: [cloud-llm]
 
-    # Optional external tool caller; disabled by default.
+    # Optional external tool caller; disabled by default. Knobs come from
+    # config/edge.json (functionCallExternal.*) — §7.102.
     - id: function-call-external
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/function-call-external'
       inject: [auditLog, realmSkillBridge, tools]
-      config:
-        functionCallExternalEnabled: !!js process.env.DSH_EDGE_FUNCTION_CALL_EXTERNAL_ENABLED === 'true'
-        functionCallExternalUrl: !!js process.env.DSH_EDGE_FUNCTION_CALL_EXTERNAL_URL ?? 'http://127.0.0.1:8081'
-        functionCallExternalTimeoutMs: !!js parseInt(process.env.DSH_EDGE_FUNCTION_CALL_EXTERNAL_TIMEOUT_MS ?? '10000', 10)
-        functionCallExternalConfidenceThreshold: !!js parseFloat(process.env.DSH_EDGE_FUNCTION_CALL_EXTERNAL_CONFIDENCE_THRESHOLD ?? '0.5')
-        functionCallExternalBootProbeEnabled: !!js process.env.DSH_EDGE_FUNCTION_CALL_EXTERNAL_BOOT_PROBE_ENABLED === 'true'
 
     # Orchestrator. This is the actual global hook installer.
     - id: input-guard
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/input-guard'
       inject: [promptGuard, privacyPolicy, intentRouter, sanitizer, auditLog, realmSkillBridge]
       config:
-        enableInputGuard: !!js process.env.DSH_EDGE_INPUT_GUARD !== 'false'
         sanitizeLocalTraffic: false
-        rejectOnPolicyViolation: !!js process.env.DSH_EDGE_REJECT_POLICY !== 'false'
-        downgradeOnSanitizeFailure: !!js process.env.DSH_EDGE_SANITIZE_DOWNGRADE !== 'false'
-        # §7.100: 降级目标 model 跟随 LOCAL 池（DSH_EDGE_LOCAL_MODEL 是
-        # standalone .env.sh 的派生位；桌面下直接用 LOCAL_LLM_MODEL 保持一致）
-        localModel: !!js process.env.DSH_EDGE_LOCAL_MODEL ?? process.env.DSH_EDGE_LOCAL_LLM_MODEL ?? 'qwen3-4b-instruct-2507'
 
     # §7.101 Edge tab host half: folds the audit stream into the four panel
     # row-lists + session summary and serves them on /api/dsh-edge/context.

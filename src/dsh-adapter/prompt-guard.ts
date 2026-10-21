@@ -19,6 +19,7 @@ import Schema from '@deepseek-ai/schemastery'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { PrivacyPolicyServiceImpl } from './privacy-policy.js'
 import { PII_RULES, redactString } from './pii-utils.js'
+import { loadEdgeConfig, localPool } from './edge-config.js'
 
 export const name = 'prompt-guard'
 
@@ -861,6 +862,33 @@ function coerceSafetyObject(obj: unknown): SafetyVerdict | null {
 }
 
 export async function apply(ctx: any, config: Config): Promise<() => Promise<void>> {
+  // §7.102: the guard stage config comes from config/edge.json
+  // (stages.guard.*). The cordis patch row no longer reads process.env —
+  // the desktop GUI never had those variables.
+  const guardStage = loadEdgeConfig().stages?.guard
+  if (guardStage) {
+    if (guardStage.enabled !== undefined) {
+      ;(config as { enableModelDetection: boolean }).enableModelDetection = guardStage.enabled
+    }
+    if (guardStage.provider !== undefined) {
+      ;(config as { modelDetectionProvider: string }).modelDetectionProvider = guardStage.provider
+    }
+    if (guardStage.timeoutMs !== undefined) {
+      ;(config as { modelDetectionTimeoutMs: number }).modelDetectionTimeoutMs = guardStage.timeoutMs
+    }
+    if (guardStage.maxInput !== undefined) {
+      ;(config as { modelDetectionMaxInputLength: number }).modelDetectionMaxInputLength = guardStage.maxInput
+    }
+  }
+  // §7.102: the model-detection model follows the LOCAL pool in
+  // config/edge.json (llm.local.model) — the file is the single source of
+  // truth. §7.100 privacy invariant: guard detection never targets a cloud
+  // model; the raw user text would leave the device.
+  const pool = localPool()
+  if (pool.model && config.modelDetectionModel !== pool.model) {
+    ctx.logger?.info?.(`[prompt-guard] modelDetectionModel from config/edge.json: ${config.modelDetectionModel} → ${pool.model}`)
+    ;(config as { modelDetectionModel: string }).modelDetectionModel = pool.model
+  }
   const auditLog = ctx.get?.('auditLog') ?? (ctx as any).auditLog
   const privacyPolicy = ctx.get?.('privacyPolicy')
   const llm = (ctx as any).llm

@@ -4,10 +4,12 @@ tests/
 scripts/
 docs/
 examples/
-presets/
 profiles/
 .github/
 .editorconfig
 .gitignore
 .gitattributes
 AGENTS.md
+# §7.102: config/ ships with the bundle — the runtime config lives there
+# (config/edge.json is gitignored but still published; config/privacy-policy.json
+# is tracked). Do NOT add config/ to this list.

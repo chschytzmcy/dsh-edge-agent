@@ -71,6 +71,42 @@ function verifyBundle(dir) {
     throw new Error(`${relative(ROOT, dir)}: missing host entry ${REQUIRED_HOST_ENTRY}`)
   }
 
+  // 1b. §7.102: the runtime config must ship with the bundle. The plugin
+  //     reads <bundle>/config/edge.json first, then ~/.dsh-edge-agent/.
+  //     Without a config/ dir the bundle falls back to the example
+  //     template, which has blank secrets — the local-LLM route then never
+  //     registers and every LOCAL turn 502s.
+  const configDir = join(dir, 'config')
+  if (!existsSync(configDir)) {
+    throw new Error(`${relative(ROOT, dir)}: missing config/ directory (edge.json lives there)`)
+  }
+  const edgeConfig = join(configDir, 'edge.json')
+  const edgeExample = join(configDir, 'edge.example.json')
+  if (!existsSync(edgeConfig) && !existsSync(edgeExample)) {
+    throw new Error(
+      `${relative(ROOT, dir)}: config/ has neither edge.json nor edge.example.json`,
+    )
+  }
+  // The template must always ship (it is the last-resort fallback).
+  if (!existsSync(edgeExample)) {
+    throw new Error(`${relative(ROOT, dir)}: missing config/edge.example.json (template)`)
+  }
+  // Whichever config is present must be valid JSON with the expected shape.
+  for (const candidate of [edgeConfig, edgeExample]) {
+    if (!existsSync(candidate)) continue
+    let parsed
+    try {
+      parsed = JSON.parse(readFileSync(candidate, 'utf-8'))
+    } catch (e) {
+      throw new Error(`${relative(ROOT, candidate)}: invalid JSON (${e.message})`)
+    }
+    for (const section of ['llm', 'stages', 'privacy', 'resources']) {
+      if (parsed[section] === undefined) {
+        throw new Error(`${relative(ROOT, candidate)}: missing "${section}" section`)
+      }
+    }
+  }
+
   // 2. bundle.patch path must exist on disk.
   //    This is the failure mode that triggered §7.101.x.
   const dshBundlePatch = unquote(pkg?.dsh?.bundle?.patch)

@@ -2,6 +2,9 @@
  * pii-utils tests — PII detection and redaction utility
  */
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { describe, it } from 'vitest'
 import {
   redactString,
@@ -188,7 +191,11 @@ describe('pii-utils 单一事实源', () => {
     // rename; even earlier was profiles/dsh-edge-agent/ overlay before
     // the §7.31 bundle-refactor).
     const fixturePath = resolve(dirname(fileURLToPath(import.meta.url)), '../../config/privacy-policy.json')
-    const url = new URL(fixturePath, import.meta.url)
+    // pathToFileURL: on Windows an absolute path is `C:\...`, which is not a
+    // valid URL — `new URL(path, base)` throws "The URL must be of scheme
+    // file". This test only ever ran on POSIX; §7.102 surfaced it on
+    // Windows.
+    const url = pathToFileURL(fixturePath)
     const policy = JSON.parse(readFileSync(url, 'utf-8'))
     for (const rule of policy.sanitizationRules) {
       assert.equal(

@@ -234,59 +234,56 @@ npm uninstall -g @deepseek-harness-edge-agent/dsh-edge-agent
 
 ## 🚀 部署
 
-### 方式一：使用 `.env.sh` 加载器（推荐）
+### 方式一：配置文件（推荐，§7.102）
 
-⚠️ **DSH 限制**：`.env` 不能直接放进 `node --env-file=.env`，DSH 会拒绝加载「进程启动敏感」变量（如 `DSH_EDGE_HTTP_PORT`、`DSH_EDGE_LOCAL_LLM_BASEURL`）。因此使用 `.env.sh` 加载器，它只把安全变量放入 `.env`，其他变量由加载器 export。
+配置只有**一个文件**：`config/edge.json`。所有 profile（desktop GUI / dsh-tui /
+dsh-web / dsh-edge）读同一份，不依赖环境变量。
 
 ```bash
 # 1. 把 dsh CLI 加入 PATH（如果用 npm-global 安装）
 export PATH="$HOME/.npm-global/bin:$PATH"
 
-# 2. 复制环境变量模板并填写
-cp .env.example .env
-$EDITOR .env   # 填入 DEEPSEEK_API_KEY、EDGE_API_KEY 等
+# 2. 复制配置模板并填写
+cp config/edge.example.json config/edge.json
+$EDITOR config/edge.json   # 填入 secrets.* 的真实 key、llm.local.baseUrl 等
 
-# 3. cordis patch 已由 ./install.sh §3.5 自动同步到 dsh-tui profile 嵌套包；手动开发期改完 bundle 也可重跑：
+# 3. 部署（会把 config/edge.json 同步到 ~/.dsh-edge-agent/edge.json）
 ./install.sh --skip-pnpm
 
-# 4. 启动（§7.43 默认 = dsh-tui；dsh-tui profile 自己 source 自己的 .env.sh）
+# 4. 启动（§7.43 默认 = dsh-tui）
 cd ~/.dsh/profiles/dsh-tui
 setsid nohup dsh --profile dsh-tui > run.log 2>&1 < /dev/null &
 disown
 
 # 或前台（debug 用）
-source .env.sh && dsh --profile dsh-tui
+dsh --profile dsh-tui
 ```
 
-`.env.sh` 会打印加载的变量（脱敏）便于调试。
+> **桌面 GUI 用户**：`config/edge.json` 随 bundle 一起装进
+> `~/.dsh/profiles/<profile>/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/config/`，
+> GUI Add Plugin 后立即生效 —— **不需要 source 任何 env**。
 
-### 方式二：手动 export（CI / 临时调试）
+### 方式二：改用系统环境变量（CI / 临时调试）
+
+CI 里没有文件时，可以只写 `~/.dsh-edge-agent/edge.json`（loader 的第 2 顺位）：
 
 ```bash
 export PATH="$HOME/.npm-global/bin:$PATH"
 
-# 业务变量（可以放在 .env 里用 set -a 加载）
-export EDGE_API_KEY=test-secret-key
-export DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx
+# 最小可用配置
+cat > ~/.dsh-edge-agent/edge.json <<'JSON'
+{
+  "secrets": { "dashscopeApiKey": "sk-..." },
+  "llm": {
+    "local": {
+      "baseUrl": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+      "model": "qwen3.6-flash",
+      "keyRef": "dashscopeApiKey"
+    }
+  }
+}
+JSON
 
-# DSH_EDGE_* 必须是 export（不能放进 .env）
-export DSH_EDGE_HTTP_PORT=21017
-export DSH_EDGE_PROVIDER=cloud-llm
-export DSH_EDGE_MODEL=deepseek-chat
-export DSH_EDGE_LOCAL_LLM_MODE=real
-export DSH_EDGE_LOCAL_LLM_BASEURL=http://192.168.66.195:8701/v1
-export DSH_EDGE_LOCAL_LLM_MODEL=qwen3-4b-instruct-2507
-
-# DSH_EDGE_HTTP_PORT 仅在重新启用 http-api（cordis.patch.yml:313 disabled: false）时有效
-export DSH_EDGE_HTTP_PORT=21017  # §7.33 后默认 disabled，本变量无副作用
-export DSH_EDGE_PROVIDER=cloud-llm
-export DSH_EDGE_MODEL=deepseek-chat
-export DSH_EDGE_LOCAL_LLM_MODE=real
-export DSH_EDGE_LOCAL_LLM_BASEURL=http://192.168.66.195:8701/v1
-export DSH_EDGE_LOCAL_LLM_MODEL=qwen3-4b-instruct-2507
-
-# §7.43: bundle 自带完整 cordis.patch.yml，无需 cp profile overlay
-cd ~/.dsh/profiles/dsh-tui
 dsh --profile dsh-tui
 ```
 
@@ -311,22 +308,65 @@ dsh-edge-agent 通过**意图路由**自动选择 LLM，无需手动指定 provi
 
 ### 本地 LLM 端点
 
-`local-llm-adapter` 始终走真实 OpenAI 兼容端点（Schema 默认 `http://127.0.0.1:8080/v1`；部署默认 `http://192.168.1.121:11017/v1`）。
-通过环境变量指向任一 llama.cpp / vLLM / Ollama 实例：
+`local-llm-adapter` 始终走真实 OpenAI 兼容端点。端点指向任一 llama.cpp /
+vLLM / Ollama / DashScope 实例 —— 在 `config/edge.json` 的 `llm.local` 段：
 
-```bash
-# .env.sh 中：
-export DSH_EDGE_LOCAL_LLM_BASEURL=http://192.168.66.195:8701/v1
-export DSH_EDGE_LOCAL_LLM_MODEL=qwen3-4b-instruct-2507
+```jsonc
+{
+  "llm": {
+    "local": {
+      "baseUrl": "http://192.168.66.195:8701/v1",
+      "model": "qwen3-4b-instruct-2507",
+      "keyRef": "dashscopeApiKey"   // 指向 secrets 段里的键名；无鉴权则留空
+    }
+  }
+}
 ```
+
+> `llm.local.baseUrl` **留空 = 不注册本地 LLM 路由**（模型列表里不出现
+> `local-llm`，意图分类 / prompt-guard 自动降级到关键词 / 正则规则档）。
+> 早期版本用 `http://127.0.0.1:8080/v1` 作默认值，撞上无关守护进程导致
+> 每次请求 401 —— 现在没有硬编码默认端点。
 
 ---
 
 ## ⚙️ 配置参考
 
-dsh-edge-agent 通过**环境变量**和 `cordis.yml` 进行配置。所有环境变量都以 `DSH_EDGE_` 前缀开头（除业务变量 `EDGE_API_KEY` 和 `DEEPSEEK_API_KEY`）。完整模板见 [.env.example](.env.example)，`.env` 文件已加入 `.gitignore`，**切勿提交含真实 Key 的 `.env`**。
+> **§7.102（2026-10-21）配置归一**：dsh-edge-agent 现在只通过**一个文件**配置 ——
+> `config/edge.json`。旧的 `.env` / `.env.sh` 两条链（裸名 env → `.env.sh` 派生
+> `DSH_EDGE_*` → cordis patch 读 `process.env`）已删除。
+>
+> **为什么删**：`process.env` 依赖启动链。`dsh-tui` / `dsh-web` / `dsh-edge` 由
+> `install.sh` 启动时会 source `.env.sh`，所以变量在；**桌面 GUI
+> （`DeepSeek Harness.exe`）不经过 `install.sh`**，进程里一个 `DSH_EDGE_*` 都
+> 没有，patch 里的 `!!js process.env.DSH_EDGE_LOCAL_LLM_BASEURL` 全部解析成
+> `undefined`，本地 LLM 落回硬编码 `127.0.0.1:8080`（撞上无关守护进程）。
+>
+> **新的查找顺序**（与 profile 无关，desktop / tui / web / edge 一致）：
+>
+> ```
+> 1. <bundle>/config/edge.json     ← 仓库 checkout 或 bundle 自带副本
+> 2. ~/.dsh-edge-agent/edge.json   ← install.sh 部署的用户副本（可改）
+> 3. <bundle>/config/edge.example.json  ← shipped 模板（空 secret + 默认值）
+> ```
+>
+> 模板见 [config/edge.example.json](config/edge.example.json)（tracked）。
+> **切勿提交 `config/edge.json`** —— 它含明文 API key，已在 `.gitignore` 里。
 
-> **Secret 警告**：`DEEPSEEK_API_KEY`、`EDGE_API_KEY` 是 secret，**绝不能提交到 git**。
+配置读取的唯一入口是 `src/dsh-adapter/edge-config.ts`。
+
+### 🔑 Secret
+
+`secrets` 段存明文 key，池通过 `keyRef` 指向它：
+
+```jsonc
+{
+  "secrets": { "dashscopeApiKey": "sk-..." },
+  "llm": { "local": { "baseUrl": "https://...", "model": "qwen3.6-flash", "keyRef": "dashscopeApiKey" } }
+}
+```
+
+> **Secret 警告**：`config/edge.json` 含明文 API key，**绝不能提交到 git**。
 
 ### 🌐 通用配置
 
@@ -394,30 +434,28 @@ dsh-edge-agent 通过**环境变量**和 `cordis.yml` 进行配置。所有环�
 | `DSH_EDGE_LOCAL_MODELS` | `local-llm,local-llm-llama3` | 本地模型列表（逗号分隔） |
 | `DSH_EDGE_CLOUD_MODELS` | `cloud-llm,cloud-llm-v3` | 云端模型列表（逗号分隔） |
 
-**本地 LLM**
+**本地 LLM**（`config/edge.json` → `llm.local`）
 
-| 变量 | 默认值 | 说明 |
+| 字段 | 默认值 | 说明 |
 |---|---|---|
-| `DSH_EDGE_LOCAL_MODEL_PATH` | `~/.dsh-edge-agent/models/qwen3-4b.gguf` | GGUF 模型文件路径 |
-| `DSH_EDGE_LOCAL_CTX` | `8192` | 上下文窗口大小 |
-| `DSH_EDGE_LOCAL_THREADS` | `4` | 推理线程数 |
-| `DSH_EDGE_LOCAL_LLM_BASEURL` | `https://coding.dashscope.aliyuncs.com/v1`（2026-09-11 起） / `http://192.168.1.121:11017/v1`（旧部署） | OpenAI 兼容端点 URL（实际使用） |
-| `DSH_EDGE_LOCAL_LLM_MODEL` | `qwen3.7-plus`（2026-09-11 起） / `qwen3-4b-instruct-2507`（旧部署） | 端点 model id |
-| `DSH_EDGE_LOCAL_LLM_MODE` | `mock`（Schema）/`real`（部署） | `mock` / `real`（是否走真实端点） |
-| `DSH_EDGE_LOCAL_LLM_APIKEY_ENV` | `DASHSCOPE_API_KEY`（DashScope 模式）/ 空（本地 llama.cpp） | env 变量名，指向存放 bearer 的槽位。设为 `DASHSCOPE_API_KEY` 让 adapter 读 `.env` 里的 DashScope key。留空表示不发 `Authorization` header |
+| `llm.local.baseUrl` | （空 = 不注册） | OpenAI 兼容端点 URL |
+| `llm.local.model` | `qwen3-4b` | 端点 model id |
+| `llm.local.keyRef` | （空 = 不发 auth 头） | 指向 `secrets` 段里的键名 |
+| `llm.local.stripTools` | `false` | 省略 `body.tools`（minicpm Jinja2 bug 规避） |
+| `llm.local.enableThinking` | `false` | 关掉 thinking-model 的 chain-of-thought |
 
 **云端 LLM**（§7.100 起整体可选 —— 不配即 DELEGATE 到宿主 profile 提供商）
 
-| 变量 | 默认值 | 说明 |
+| 字段 | 默认值 | 说明 |
 |---|---|---|
-| `CLOUD_DELEGATE` | （开） | `false` 禁用委托：云不可用 → input-guard 降级 LOCAL（LOCAL-only 部署用） |
-| `CLOUD_DELEGATE_PROVIDER` | （自动） | 显式锁定委托目标路由 id（如 `qwen-token-plan-cn`） |
-| `CLOUD_DELEGATE_MODEL` | （跟随宿主选择） | 委托 wire model override |
-| `DSH_EDGE_CLOUD_KEY_ENV` | `DEEPSEEK_API_KEY` | API key 环境变量（仅直连模式） |
-| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | API base URL（inherited-env 兜底，仅直连模式） |
-| `DEEPSEEK_API_KEY` | — | DeepSeek API Key（仅直连模式） |
+| `llm.cloud.baseUrl` | （空 = DELEGATE） | 自研直连的 OpenAI 兼容端点 |
+| `llm.cloud.model` | （空） | 直连模式 model id |
+| `llm.cloud.keyRef` | （空） | 指向 `secrets` 段里的键名 |
+| `llm.cloud.delegate` | `true` | `false` 禁用委托：云不可用 → input-guard 降级 LOCAL（LOCAL-only 部署用） |
+| `llm.cloud.delegateProvider` | （自动） | 显式锁定委托目标路由 id（如 `qwen-token-plan-cn`） |
+| `llm.cloud.delegateModel` | （跟随宿主选择） | 委托 wire model override |
 
-显式配置 `CLOUD_LLM_BASEURL`（经 `.env`）即切回自研直连；解析链详见 PROGRESS §7.100。
+配置 `llm.cloud.baseUrl` 即切回自研直连；解析链详见 PROGRESS §7.100。
 
 ### 🌐 出站配置
 
@@ -731,12 +769,11 @@ tail -10 ~/.dsh-edge-agent-dsh-tui/audit/audit.plain.jsonl \
 # 方式 1: 使用启动脚本（推荐；§7.43 默认 dsh-tui）
 ./scripts/launch-dev.sh
 
-# 方式 2: 手动启动
-source .env.sh
+# 方式 2: 手动启动（配置读 config/edge.json，§7.102）
 dsh --profile dsh-tui
 
 # 方式 3: 后台运行
-setsid bash -c 'source .env.sh && dsh --profile dsh-tui' > /tmp/dsh.log 2>&1 < /dev/null &
+setsid bash -c 'dsh --profile dsh-tui' > /tmp/dsh.log 2>&1 < /dev/null &
 ```
 
 ### Health Check

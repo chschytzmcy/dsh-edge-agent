@@ -3,7 +3,8 @@
 #
 # 单 profile 架构（§7.69, 2026-09-17）：一次只跑一个 profile —— 部署
 # 目标前 install.sh 先停掉其他 profile 进程（避免端口冲突 + audit
-# TOCTOU race）。HTTP 端口统一为 21017（http-api 默认；.env.sh 兜底）。
+# TOCTOU race）。HTTP 端口统一为 21017（http-api 默认；config/edge.json
+# 可覆盖，见 §7.102 —— 取代旧的 .env.sh 兜底）。
 #   - dsh-edge : 项目自有 headless  (HTTP API :21017, 无 UI, §7.61)
 #   - web      : 浏览器宿主          (UI :3080 + http-api :21017)
 #   - dsh-tui  : 终端宿主            (http-api :21017)
@@ -459,6 +460,24 @@ else
   echo "  warning: $SHIPPED_POLICY_SRC not found — bundle root policy not synced" >&2
 fi
 
+# §7.102 (2026-10-21) — shipped 运行时配置 to ~/.dsh-edge-agent/edge.json.
+# config/edge.json 是全 profile 共用的唯一配置源（取代 .env / .env.sh）。
+# 部署到 ~/.dsh-edge-agent/ 是为了让用户改配置不必动仓库；bundle 自带的
+# 那份是 fallback（desktop GUI Add Plugin 时会拷进 nested pack）。
+#
+# 注意：本文件含明文 API key —— 它在 .gitignore 里，绝不入库。
+EDGE_CONFIG_SRC="$REPO_ROOT/config/edge.json"
+EDGE_CONFIG_DST="$HOME/.dsh-edge-agent/edge.json"
+if [ -f "$EDGE_CONFIG_SRC" ]; then
+  mkdir -p "$(dirname "$EDGE_CONFIG_DST")"
+  if ! diff -q "$EDGE_CONFIG_SRC" "$EDGE_CONFIG_DST" >/dev/null 2>&1; then
+    echo "        sync config/edge.json → $EDGE_CONFIG_DST"
+    cp "$EDGE_CONFIG_SRC" "$EDGE_CONFIG_DST"
+  fi
+else
+  echo "  warning: $EDGE_CONFIG_SRC not found — runtime config not synced" >&2
+fi
+
 # ── Phase 3: 启动 target profile（单 profile 架构 §7.69）───────────
 # §7.69: 一次只跑一个 profile —— 部署前先杀掉其他 profile 的 dsh 进程,
 # 避免端口冲突(都吃 :21017)+ audit TOCTOU race。target profile 本身
@@ -468,7 +487,7 @@ fi
 if [ "$DO_RESTART" = 0 ]; then
   echo "==> [3/4] 不启动(--no-restart opt-out;去掉 --no-restart 重跑即启)"
   echo "    已同步 profile: $PROFILE"
-  echo "    手动启动: cd \$DSH_HOME/profiles/$PROFILE && source .env.sh && dsh --profile $PROFILE"
+  echo "    手动启动: cd \$DSH_HOME/profiles/$PROFILE && dsh --profile $PROFILE"
   exit 0
 fi
 
@@ -569,15 +588,20 @@ done
 
 mkdir -p "$(dirname "$LOG")"
 
-# §7.69 — 端口统一 :21017,不再 inline force。source chain 自兜底:
-#   profile-local .env.sh(若有) → repo .env.sh → bundle patch 默认(21017)。
-PROFILE_ENV_SH="$PROFILE_DIR/.env.sh"
-if [ -f "$PROFILE_ENV_SH" ]; then
-  _LAUNCH_ENV="source '$PROFILE_ENV_SH' 2>/dev/null || true"
-else
-  _LAUNCH_ENV="source '$REPO_ROOT/.env.sh' 2>/dev/null || true"
-fi
-echo "      DSH_EDGE_HTTP_PORT=\${DSH_EDGE_HTTP_PORT:-21017} (profile=$PROFILE, source chain 兜底)"
+# §7.102 (2026-10-21) — 配置统一到 config/edge.json，不再 source .env.sh。
+#
+# 旧链：.env(裸名) → .env.sh(export DSH_EDGE_*) → cordis.patch.yml 读 env。
+#   问题：桌面 GUI（DeepSeek Harness.exe）不经过 install.sh，进程里没有
+#   任何 DSH_EDGE_* 变量，patch 里的 `!!js process.env.X` 全部解析成
+#   undefined，本地 LLM 落回硬编码 127.0.0.1:8080（撞无关守护进程）。
+#
+# 新链：config/edge.json → plugin 内部 loader（src/dsh-adapter/edge-config.ts）。
+#   与 profile 无关，desktop / tui / web / edge 读同一份文件。
+#   安装位置：~/.dsh-edge-agent/edge.json（用户可覆盖）+ bundle 自带副本。
+#
+# 端口兜底移到插件自身（http-api 默认 21017）。
+_LAUNCH_ENV=""
+echo "      配置来源: config/edge.json (→ ~/.dsh-edge-agent/edge.json)"
 
 # 启动（后台,detach）。nohup + disown 双保险,让进程不被 shell 退出
 # 时的 SIGHUP 杀掉。
