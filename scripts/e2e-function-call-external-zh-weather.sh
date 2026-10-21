@@ -30,12 +30,12 @@ HTTP_API_URL="http://127.0.0.1:${HTTP_API_PORT}/v1/chat"
 SID="e2e-function-call-external-zh-weather"
 QUERY="查 /home/etsme/work 下的所有 .md 文件,列出文件名"
 
-# ── .env 加载(同 §7.47.2 ops-log-coverage 的策略) ─────────────────────
+# ── config/edge.json 加载(§7.102:取代 .env) ─────────────────────────
 if [ -z "${EDGE_API_KEY:-}" ]; then
-  if [ -f "$REPO_ROOT/.env" ]; then
-    set -a; . "$REPO_ROOT/.env"; set +a
-  else
-    echo "[WARN] .env not found — falling back to fake keys, ops log coverage may FAIL."
+  # shellcheck disable=SC1091
+  source "$REPO_ROOT/scripts/edge-config-env.sh"
+  if [ -z "${EDGE_API_KEY:-}" ]; then
+    echo "[WARN] config/edge.json not found — falling back to fake keys, ops log coverage may FAIL."
   fi
 fi
 AUTH_TOKEN="${DSH_EDGE_HTTP_TOKEN:-${EDGE_API_KEY:-test-secret-key}}"

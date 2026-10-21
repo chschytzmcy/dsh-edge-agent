@@ -42,13 +42,9 @@ if [[ ! -f "$REPO_ROOT/cordis.patch.yml" || ! -f "$REPO_ROOT/package.json" ]]; t
     exit 2
 fi
 
-# ── Source .env if present (for LOCAL_LLM_BASEURL / LOCAL_LLM_MODEL / EDGE_API_KEY) ──
-if [[ -f "$REPO_ROOT/.env" ]]; then
-    set -a
-    # shellcheck disable=SC1091
-    source "$REPO_ROOT/.env"
-    set +a
-fi
+# ── Source config/edge.json if present (§7.102: replaces .env) ──────────
+# shellcheck disable=SC1091
+source "$REPO_ROOT/scripts/edge-config-env.sh"
 
 # ── Defaults (overridable via CLI / env) ─────────────────────────────
 LABEL="${BENCH_LABEL:-bench}"

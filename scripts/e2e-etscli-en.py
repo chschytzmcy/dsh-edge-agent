@@ -47,7 +47,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import sys
 import time
 import urllib.request
@@ -175,17 +174,22 @@ class DshEdgeClient:
 
 
 def load_token() -> str:
+    """§7.102: the token lives in config/edge.json (secrets.edgeApiKey); the
+    .env file no longer exists. Read it straight from the JSON."""
     tok = os.environ.get("DSH_EDGE_HTTP_TOKEN") or os.environ.get("EDGE_API_KEY")
     if tok:
         return tok
-    envf = REPO_ROOT / ".env"
-    if envf.exists():
-        for line in envf.read_text(encoding="utf-8").splitlines():
-            m = re.match(r"^(?:export\s+)?(?:DSH_EDGE_HTTP_TOKEN|EDGE_API_KEY)=(.+)$",
-                         line.strip())
-            if m:
-                return m.group(1).strip().strip('"').strip("'")
-    sys.exit("no API token: set DSH_EDGE_HTTP_TOKEN/EDGE_API_KEY or keep EDGE_API_KEY in .env")
+    cfg_path = REPO_ROOT / "config" / "edge.json"
+    if cfg_path.exists():
+        try:
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            sys.exit(f"cannot parse {cfg_path}: {exc}")
+        tok = (cfg.get("secrets") or {}).get("edgeApiKey")
+        if tok:
+            return str(tok)
+    sys.exit("no API token: set DSH_EDGE_HTTP_TOKEN/EDGE_API_KEY or fill "
+             "secrets.edgeApiKey in config/edge.json")
 
 
 # ── audit 切片(按 sessionId + 字节偏移,串行跑所以不会跨 case 混)──────

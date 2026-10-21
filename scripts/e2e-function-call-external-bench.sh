@@ -33,11 +33,10 @@ HTTP_API_PORT="${DSH_EDGE_HTTP_PORT:-21017}"
 HTTP_API_URL="http://127.0.0.1:${HTTP_API_PORT}/v1/chat"
 TIMEOUT="${E2E_TIMEOUT:-60}"
 
-# ── .env 加载 ───────────────────────────────────────────────────────
+# ── config/edge.json 加载(§7.102:取代 .env) ─────────────────────────
 if [ -z "${EDGE_API_KEY:-}" ]; then
-  if [ -f "$REPO_ROOT/.env" ]; then
-    set -a; . "$REPO_ROOT/.env"; set +a
-  fi
+  # shellcheck disable=SC1091
+  source "$REPO_ROOT/scripts/edge-config-env.sh"
 fi
 AUTH_TOKEN="${DSH_EDGE_HTTP_TOKEN:-${EDGE_API_KEY:-test-secret-key}}"
 

@@ -456,13 +456,13 @@ if [ $TOTAL_ISSUES -gt 0 ]; then
         echo
         echo "  快速修复 TUI:"
         echo "    bash scripts/fix-profile-duplicates.sh --profile=dsh-tui"
-        echo "    source .env.sh && dsh --profile dsh-tui"
+        echo "    dsh --profile dsh-tui   # 配置读 config/edge.json (§7.102)"
         ;;
       web-deploy)
         echo
         echo "  快速修复 Web:"
         echo "    ./install.sh --skip-pnpm"
-        echo "    source .env.sh && dsh --profile web"
+        echo "    dsh --profile web        # 配置读 config/edge.json (§7.102)"
         ;;
     esac
   else

@@ -124,8 +124,10 @@ package: build
 	@cp package.json $(PACKAGE_DIR)/dsh-edge-agent-v$(VERSION)/
 	@cp pnpm-lock.yaml $(PACKAGE_DIR)/dsh-edge-agent-v$(VERSION)/
 	@cp cordis.patch.yml $(PACKAGE_DIR)/dsh-edge-agent-v$(VERSION)/
-	@cp .env.sh $(PACKAGE_DIR)/dsh-edge-agent-v$(VERSION)/
-	@cp .env.example $(PACKAGE_DIR)/dsh-edge-agent-v$(VERSION)/
+	@# §7.102 (2026-10-21): .env.sh / .env.example 已退役(配置统一到
+	@# config/edge.json)。tarball 改带 config/ —— 模板 tracked,真配置由
+	@# 使用者填 config/edge.json(不进包,gitignored)。
+	@cp -r config $(PACKAGE_DIR)/dsh-edge-agent-v$(VERSION)/
 
 	@# §7.73 (2026-09-17): profile 骨架 —— tarball 模式 install.sh §2.5 /
 	@# §2.7 读 $REPO_ROOT/profiles/$PROFILE/。只打 dsh-edge/(项目自有 profile
