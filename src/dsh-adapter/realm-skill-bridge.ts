@@ -37,6 +37,7 @@ import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
 import { Service } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
+import { edgeHome, loadEdgeConfig } from './edge-config.js'
 
 export const name = 'realm-skill-bridge'
 // §7.92.2 (2026-09-22): 必须声明全部 soft deps — `edgeTools` + `tools` 是
@@ -83,12 +84,14 @@ export interface Config {
 }
 
 export const Config: Schema<Config> = Schema.object({
-  configPath: Schema.string().default(
-    // Default: ~/.dsh-edge-agent/skill-realms.json
-    (process.env.USERPROFILE ?? process.env.HOME ?? '') + '/.dsh-edge-agent/skill-realms.json',
-  ),
-  hotReload: Schema.boolean().default(true),
-  watchIntervalMs: Schema.natural().default(5000),
+  // §7.102 "one config file": no defaults here — apply() fills configPath
+  // from config/edge.json (privacy.realmConfigPath) or the
+  // ~/.dsh-edge-agent/skill-realms.json default, and the hot-reload knobs
+  // from privacy.realmHotReload / realmWatchMs. (The old computed default
+  // froze the HOME lookup at module-load time.)
+  configPath: Schema.string(),
+  hotReload: Schema.boolean(),
+  watchIntervalMs: Schema.natural(),
 })
 
 /**
@@ -935,6 +938,16 @@ function isCatalogMessage(msg: MessageLike): boolean {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function apply(ctx: Context, config: Config): Promise<() => Promise<void>> {
+  // §7.102: fill unset fields from config/edge.json (privacy.*).
+  const p = loadEdgeConfig().privacy
+  const c = config as Partial<Config>
+  if (c.configPath === undefined) {
+    c.configPath = p?.realmConfigPath && p.realmConfigPath.length > 0
+      ? p.realmConfigPath
+      : edgeHome('skill-realms.json')
+  }
+  if (c.hotReload === undefined && p?.realmHotReload !== undefined) c.hotReload = p.realmHotReload
+  if (c.watchIntervalMs === undefined && p?.realmWatchMs !== undefined) c.watchIntervalMs = p.realmWatchMs
   const auditLog = (ctx as unknown as { auditLog?: AuditLogLike }).auditLog
   const service = new RealmSkillBridgeService(ctx, config, auditLog)
 

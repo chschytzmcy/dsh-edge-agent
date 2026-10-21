@@ -51,6 +51,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
+import { loadEdgeConfig } from './edge-config.js'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Structural types (loose coupling — see module header)
@@ -339,13 +340,22 @@ export interface Config {
 }
 
 export const Config: Schema<Config> = Schema.object({
-  etscliBin: Schema.string().default(
-    `${(process.env.USERPROFILE ?? process.env.HOME) ?? ''}/.local/bin/etscli`,
-  ),
-  timeoutMs: Schema.natural().default(30_000),
+  // §7.102 "one config file": no computed default — apply() fills from
+  // config/edge.json (etscli.*) or the ~/.local/bin/etscli default.
+  etscliBin: Schema.string(),
+  timeoutMs: Schema.natural(),
 })
 
 export async function apply(ctx: Context, config: Config): Promise<void> {
+  // §7.102: fill unset knobs from config/edge.json (etscli.*).
+  const e = loadEdgeConfig().etscli
+  const ec = config as Partial<Config>
+  if (ec.etscliBin === undefined) {
+    ec.etscliBin = e?.bin && e.bin.length > 0
+      ? e.bin
+      : `${(process.env.USERPROFILE ?? process.env.HOME) ?? ''}/.local/bin/etscli`
+  }
+  if (ec.timeoutMs === undefined && e?.timeoutMs !== undefined) ec.timeoutMs = e.timeoutMs
   // 代理 trap 防护同 `tools.ts:275-291`:cordis 未 inject 的 service 访问会静默
   // throw "cannot get property X without inject"(§7.92.2),包 try/catch 后给出
   // 可读的失败原因而不是半个插件静默装死。

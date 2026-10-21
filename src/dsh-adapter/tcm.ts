@@ -13,6 +13,8 @@
 
 import { Service } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
+import { join } from 'node:path'
+import { edgeHome, loadEdgeConfig } from './edge-config.js'
 
 export const name = 'tcm'
 
@@ -26,8 +28,11 @@ export interface Config {
 }
 
 export const Config: Schema<Config> = Schema.object({
-  teeType: Schema.union(['simulated', 'trustzone', 'keystone', 'sgx'] as const).required(),
-  keyStorePath: Schema.string().required(),
+  // §7.102 "one config file": no required/default — apply() fills teeType /
+  // keyStorePath from config/edge.json (tee.*), deriving the keystore path
+  // from the storage root when not given.
+  teeType: Schema.union(['simulated', 'trustzone', 'keystone', 'sgx'] as const),
+  keyStorePath: Schema.string(),
   teeInference: Schema.boolean().default(false),
   secureMemoryLimit: Schema.natural().default(64 * 1024 * 1024),
 })
@@ -111,6 +116,19 @@ declare module '@deepseek-ai/cordis' {
 }
 
 export async function apply(ctx: any, config: Config): Promise<() => Promise<void>> {
+  // §7.102: fill unset fields from config/edge.json (tee.*) so the stub
+  // service and A3 future work read the same single source.
+  const tee = loadEdgeConfig().tee
+  const c = config as Partial<Config>
+  if (c.teeType === undefined) {
+    c.teeType = (tee?.type && tee.type.length > 0 ? tee.type : 'simulated') as Config['teeType']
+  }
+  if (c.keyStorePath === undefined) {
+    const storageRoot = tee?.storageRoot && tee.storageRoot.length > 0 ? tee.storageRoot : edgeHome()
+    c.keyStorePath = tee?.keyStorePath && tee.keyStorePath.length > 0
+      ? tee.keyStorePath
+      : join(storageRoot, 'tcm-keys.json')
+  }
   ctx.plugin(TcmService)
   // MVP: real TEE wiring (KeyStore, secure-memory limiter) lives in plugin.ts
   return async () => {

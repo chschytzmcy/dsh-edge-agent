@@ -60,31 +60,28 @@
     - id: file-logger
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/file-logger'
       config:
-        root: !!js process.env.DSH_EDGE_LOG_ROOT ?? ((process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent/log')
+        # §7.102 "one config file": only profile-specific statics live here.
+        # root / level / rotation come from config/edge.json (audit.*);
+        # no process.env reads — the desktop GUI never had them.
         filename: dsh-edge-agent-desktop.log
         flushIntervalMs: 1000
         queueCapacity: 10000
         maxFileSizeBytes: 52428800
-        maxFileAgeDays: !!js parseInt(process.env.DSH_EDGE_LOG_MAX_AGE_DAYS ?? '1', 10)
-        maxRotatedFiles: !!js parseInt(process.env.DSH_EDGE_LOG_MAX_ROTATED ?? '7', 10)
-        level: !!js process.env.DSH_EDGE_LOG_LEVEL ?? 'info'
 
     # Stub TCM. Real crypto remains future work; keep shape stable.
     - id: tcm
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/tcm'
-      config:
-        teeType: !!js process.env.DSH_EDGE_TEE_TYPE ?? 'simulated'
-        keyStorePath: !!js (process.env.DSH_EDGE_STORAGE_ROOT ?? (process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent') + '/tcm-keys.json'
+      # §7.102 "one config file": teeType / keyStorePath come from
+      # config/edge.json (tee.*) inside the plugin — no row config.
 
     # Security ledger. Default root stays isolated under ~/.dsh-edge-agent.
     - id: audit-log
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/audit-log'
       config:
-        minLevel: !!js process.env.DSH_EDGE_AUDIT_MIN_LEVEL ?? 'info'
+        # §7.102 "one config file": minLevel / flush / root come from
+        # config/edge.json (audit.*). Only static wiring stays here.
         ringBufferSize: 512
-        flushIntervalMs: !!js parseInt(process.env.DSH_EDGE_AUDIT_FLUSH_MS ?? '1000', 10)
         filename: audit.plain.jsonl
-        root: !!js (process.env.DSH_EDGE_AUDIT_ROOT ?? (process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent/audit')
         enablePIIRedaction: true
         maxFileSizeBytes: 10485760
         maxFileAgeDays: 7
@@ -94,10 +91,8 @@
     - id: privacy-policy
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/privacy-policy'
       inject: [auditLog]
-      config:
-        policyPath: !!js (process.env.DSH_EDGE_PRIVACY_POLICY_PATH ?? (process.env.DSH_EDGE_STORAGE_ROOT ?? (process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent') + '/privacy-policy.json')
-        hotReload: !!js process.env.DSH_EDGE_POLICY_HOT_RELOAD !== 'false'
-        watchIntervalMs: !!js parseInt(process.env.DSH_EDGE_POLICY_WATCH_MS ?? '5000', 10)
+      # §7.102 "one config file": policyPath / hot-reload knobs come from
+      # config/edge.json (privacy.*).
 
     # Threat bus. Thresholds come from config/edge.json (threat.*) — §7.102.
     # Desktop-safe keeps the looser default threshold.
@@ -123,10 +118,8 @@
     - id: realm-skill-bridge
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/realm-skill-bridge'
       inject: [auditLog, skills, edgeTools, tools]
-      config:
-        configPath: !!js process.env.DSH_EDGE_REALM_CONFIG ?? ((process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent/skill-realms.json')
-        hotReload: !!js process.env.DSH_EDGE_REALM_HOT_RELOAD !== 'false'
-        watchIntervalMs: !!js parseInt(process.env.DSH_EDGE_REALM_WATCH_MS ?? '5000', 10)
+      # §7.102 "one config file": configPath / hot-reload knobs come from
+      # config/edge.json (privacy.realm*).
 
     # Input guard. Model-assisted detection config comes from
     # config/edge.json (stages.guard.*) — §7.102.

@@ -59,13 +59,17 @@ export interface Config {
   maxRequestBodyBytes: number
 }
 
+// §7.102 "one config file": the bind/limit knobs carry NO Schema default —
+// apply() fills them from config/edge.json (http.* / resources.*) so an
+// operator editing edge.json actually changes the listener instead of
+// silently hitting a default baked into the Schema.
 export const Config: Schema<Config> = Schema.object({
-  host: Schema.string().default('127.0.0.1'),
-  port: Schema.natural().default(21017),
+  host: Schema.string(),
+  port: Schema.natural(),
   bearerToken: Schema.string(),
-  sessionIdleTimeoutMs: Schema.natural().default(30 * 60 * 1000), // 30 min
-  maxActiveSessions: Schema.natural().default(100),
-  maxRequestBodyBytes: Schema.natural().default(1024 * 1024), // 1 MiB
+  sessionIdleTimeoutMs: Schema.natural(),
+  maxActiveSessions: Schema.natural(),
+  maxRequestBodyBytes: Schema.natural(),
 })
 
 export interface HttpApiService {
@@ -1806,6 +1810,16 @@ export async function apply(ctx: any, config: Config): Promise<() => Promise<voi
   // unset token, so when BOTH are empty we say so loudly in the log instead
   // of silently serving an unauthenticated API.
   const cfg = loadEdgeConfig(true)
+  // §7.102: bind / session / body knobs likewise come from config/edge.json
+  // (http.* / resources.*), explicit row values first, literals last.
+  const c = config as Partial<Config>
+  const httpSection = cfg.http
+  const resources = cfg.resources
+  if (c.host === undefined) c.host = httpSection?.host && httpSection.host.length > 0 ? httpSection.host : '127.0.0.1'
+  if (c.port === undefined) c.port = httpSection?.port ?? 21017
+  if (c.sessionIdleTimeoutMs === undefined) c.sessionIdleTimeoutMs = resources?.sessionIdleMs ?? 30 * 60 * 1000
+  if (c.maxActiveSessions === undefined) c.maxActiveSessions = resources?.maxSessions ?? 100
+  if (c.maxRequestBodyBytes === undefined) c.maxRequestBodyBytes = resources?.maxBodyBytes ?? 1024 * 1024
   if (config.bearerToken === undefined) {
     const fromFile = cfg.secrets?.edgeApiKey
     if (fromFile !== undefined && fromFile.length > 0) {

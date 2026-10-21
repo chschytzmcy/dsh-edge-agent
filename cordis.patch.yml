@@ -321,33 +321,20 @@
     - id: file-logger
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/file-logger'
       config:
-        root: !!js process.env.DSH_EDGE_LOG_ROOT ?? ((process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent/log')
+        # §7.102 "one config file": root / level / rotation come from
+        # config/edge.json (audit.*) inside the plugin. Only static wiring
+        # stays in the row. (Rotation semantics unchanged — see PROGRESS
+        # §7.56; the effective values logMaxAgeDays=1 / logMaxRotated=7 /
+        # logLevel=info are in edge.json.)
         filename: dsh-edge-agent.log
         flushIntervalMs: 1000
         queueCapacity: 10000
         maxFileSizeBytes: 52428800  # 50MB
-        # §7.56 (2026-09-15): 按天轮转。1 = 跨日历天后第一次 flush 把旧文件
-        # 移到 .1（旧实现用 mtime 年龄判断，对持续追加的 log 永不触发，
-        # 已改为 day-boundary 判断，见 file-logger.ts checkAndRotate）。
-        # 0 = 关闭年龄轮转（回到纯 50MB size 轮转）。
-        maxFileAgeDays: !!js parseInt(process.env.DSH_EDGE_LOG_MAX_AGE_DAYS ?? '1', 10)
-        # §7.56: 5 → 7 —— 按天轮转下保留一整周历史（size 轮转仍兜底）。
-        maxRotatedFiles: !!js parseInt(process.env.DSH_EDGE_LOG_MAX_ROTATED ?? '7', 10)
-        # 2026-09-11: default flipped debug → info per user feedback
-        # "log 太冗余" — ops log was drowning in 4 body lines per LLM
-        # call (LLM_REQUEST / LLM_MESSAGES / LLM_RESPONSE /
-        # LLM_RESPONSE_TEXT in cloud-llm-adapter.ts and
-        # local-llm-adapter.ts). Re-enable body capture with
-        # `DSH_EDGE_LOG_LEVEL=debug`. Originally flipped 2026-09-02
-        # info→debug (PROGRESS §7.23); this is the second flip.
-        level: !!js process.env.DSH_EDGE_LOG_LEVEL ?? 'info'
 
     # tcm: prompt-guard injects this; must mount first
     - id: tcm
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/tcm'
-      config:
-        teeType: !!js process.env.DSH_EDGE_TEE_TYPE ?? 'simulated'
-        keyStorePath: !!js (process.env.DSH_EDGE_STORAGE_ROOT ?? (process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent') + '/tcm-keys.json'
+      # §7.102: teeType / keyStorePath come from config/edge.json (tee.*).
 
     # td-bus: http-api injects this; must mount before http-api.
     # Config schema (`td-bus.ts`):
@@ -368,24 +355,20 @@
 
     # realm-skill-bridge: realm-aware skill catalog filtering + tool gating.
     # Must mount before http-api (which injects realmSkillBridge).
+    # §7.102: configPath / hot-reload knobs come from config/edge.json
+    # (privacy.realm*). Row carries no config.
     - id: realm-skill-bridge
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/realm-skill-bridge'
       inject: [auditLog, skills, edgeTools, tools]
-      config:
-        configPath: !!js process.env.DSH_EDGE_REALM_CONFIG ?? ((process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent/skill-realms.json')
-        hotReload: !!js process.env.DSH_EDGE_REALM_HOT_RELOAD !== 'false'
-        watchIntervalMs: !!js parseInt(process.env.DSH_EDGE_REALM_WATCH_MS ?? '5000', 10)
 
+    # §7.102: host/port from config/edge.json http.*, session/body caps
+    # from resources.*, bearer token from secrets.edgeApiKey — all filled
+    # fill-if-unset in http-api.ts apply(). The bare EDGE_API_KEY env stays
+    # a per-process override via edge-config's ENV_OVERRIDES. Row carries
+    # no config.
     - id: http-api
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/http-api'
       inject: [agents, intentRouter, auditLog, tdBus, realmSkillBridge, edgeTools]
-      config:
-        host: !!js process.env.DSH_EDGE_HTTP_HOST ?? '127.0.0.1'
-        port: !!js parseInt(process.env.DSH_EDGE_HTTP_PORT ?? '21017', 10)
-        bearerToken: !!js process.env.EDGE_API_KEY ?? undefined
-        sessionIdleTimeoutMs: !!js parseInt(process.env.DSH_EDGE_SESSION_IDLE_MS ?? '1800000', 10)
-        maxActiveSessions: !!js parseInt(process.env.DSH_EDGE_MAX_SESSIONS ?? '100', 10)
-        maxRequestBodyBytes: !!js parseInt(process.env.DSH_EDGE_MAX_BODY_BYTES ?? '1048576', 10)
 
     - id: cloud-llm-adapter
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/cloud-llm-adapter'
@@ -455,18 +438,16 @@
     #
     # 依赖 tools + shell:前者是注册表本体;后者提供子进程执行,白拿超时/中止
     # 判别、输出截断、凭据擦除 env、进程组 kill 升级 —— 不自己 spawn。
+    # §7.102: etscliBin / timeoutMs come from config/edge.json (etscli.*).
     - id: etscli-tools
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/etscli-tools'
       inject: [tools, shell]
-      config:
-        etscliBin: !!js process.env.DSH_EDGE_ETSCLI_BIN ?? ((process.env.USERPROFILE ?? process.env.HOME) + '/.local/bin/etscli')
-        timeoutMs: !!js parseInt(process.env.DSH_EDGE_ETSCLI_TIMEOUT_MS ?? '30000', 10)
 
     - id: local-storage
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/local-storage'
       config:
-        # 2026-08-29: 去掉 -m1 后缀，与 DSH_HOME (sessions + skill-realms) 统一在 ~/.dsh-edge-agent/ 下
-        root: !!js (process.env.DSH_EDGE_STORAGE_ROOT ?? (process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent/storage')
+        # §7.102: root comes from config/edge.json (storage.root), default
+        # ~/.dsh-edge-agent/storage (2026-08-29 unified bundle root).
         filename: storage.plain.jsonl
         enablePIIRedaction: true
 
@@ -485,12 +466,10 @@
     - id: audit-log
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/audit-log'
       config:
-        minLevel: !!js process.env.DSH_EDGE_AUDIT_MIN_LEVEL ?? 'info'
+        # §7.102: minLevel / flush / root come from config/edge.json
+        # (audit.*; root default = ~/.dsh-edge-agent/audit, 2026-08-29 统一).
         ringBufferSize: 512
-        flushIntervalMs: !!js parseInt(process.env.DSH_EDGE_AUDIT_FLUSH_MS ?? '1000', 10)
         filename: audit.plain.jsonl
-        # 2026-08-29: 去掉 -m1 后缀，与 DSH_HOME 统一在 ~/.dsh-edge-agent/audit 下
-        root: !!js (process.env.DSH_EDGE_AUDIT_ROOT ?? (process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent/audit')
         enablePIIRedaction: true
         maxFileSizeBytes: 10485760  # 10MB
         maxFileAgeDays: 7
@@ -513,17 +492,16 @@
     - id: privacy-policy
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/privacy-policy'
       inject: [auditLog]
-      config:
+      # §7.102: row carries no config — policyPath / hot-reload 由
+      # config/edge.json (privacy.*) 提供。
         # 2026-09-03 (§7.36): 默认 policy path 改为单 bundle root `~/.dsh-edge-agent/`。
         # §7.33 之前：fallback 到 `~/.dsh-edge-agent-web/`（web profile isolated root）。
         # §7.36：user 决定合并 web + tui → 单 root。DSH CLI 一次只跑一个 profile，
         # 所有 profile 共用同一份 policy 文件——跟 6 个 channel 数据合并一致。
-        # 优先用 DSH_EDGE_PRIVACY_POLICY_PATH（profile .env.sh 显式设），
-        # 其次 $DSH_EDGE_STORAGE_ROOT/privacy-policy.json（per-profile 重定向），
-        # 最后回落到 `~/.dsh-edge-agent/privacy-policy.json`（bundle 单 root 默认）。
-        policyPath: !!js (process.env.DSH_EDGE_PRIVACY_POLICY_PATH ?? (process.env.DSH_EDGE_STORAGE_ROOT ?? (process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent') + '/privacy-policy.json')
-        hotReload: true
-        watchIntervalMs: 5000
+        # §7.102: policyPath 默认 ~/.dsh-edge-agent/privacy-policy.json ——
+        # 现由 config/edge.json (privacy.policyPath / policyHotReload /
+        # policyWatchMs) 提供，行内不再保留。
+        # 2026-09-03 (§7.36): 默认 policy path 单 bundle root（见 PROGRESS）。
 
     - id: sanitizer-pipeline
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/sanitizer-pipeline'
@@ -574,8 +552,8 @@
     - id: function-call-external
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/function-call-external'
       inject: [auditLog, realmSkillBridge, tools]
-      config:
-        # 默认关(user 终裁):schema default false;生产需 env 设 true。
+      # §7.102: row carries no config — 全部旋钮由 config/edge.json
+      # (functionCallExternal.*) 提供。默认关(user 终裁)。
         # §7.102 (2026-10-21): 全部旋钮迁到 config/edge.json
         # (functionCallExternal.*)。patch 不再读 process.env。
         # 当前实现 = cactus-needle 3.0.1:GET /health + POST /extract(stateless 无 /reset;

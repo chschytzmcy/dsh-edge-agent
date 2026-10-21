@@ -22,6 +22,7 @@ import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { redactObject } from './pii-utils.js'
 import { renameWithRetry } from './local-storage.js'
+import { edgeHome, loadEdgeConfig } from './edge-config.js'
 
 export const name = 'audit-log'
 
@@ -68,12 +69,17 @@ export interface Config {
   maxRotatedFiles: number
 }
 
+// §7.102 "one config file": minLevel / flushIntervalMs / root carry NO Schema
+// default — apply() fills them from config/edge.json (audit.*) and the
+// literals below (also mirrored in the constructor `??` fallbacks) are the
+// last resort. A Schema default here would shadow the file, exactly like the
+// old `env ?? default` patch rows shadowed everything on the desktop GUI.
 export const Config: Schema<Config> = Schema.object({
-  minLevel: Schema.union(['debug', 'info', 'warn', 'error', 'security'] as const).default('info'),
+  minLevel: Schema.union(['debug', 'info', 'warn', 'error', 'security'] as const),
   ringBufferSize: Schema.natural().default(512),
-  flushIntervalMs: Schema.natural().default(1000),
+  flushIntervalMs: Schema.natural(),
   filename: Schema.string().default('audit.plain.jsonl'),
-  root: Schema.string().required(),
+  root: Schema.string(),
   enablePIIRedaction: Schema.boolean().default(true),
   maxFileSizeBytes: Schema.natural().default(10 * 1024 * 1024), // 10MB
   maxFileAgeDays: Schema.number().default(7),
@@ -147,10 +153,12 @@ export class AuditLogServiceImpl extends Service {
 
   constructor(ctx: Context, config: Config) {
     super(ctx, 'auditLog')
-    this.filePath = join(config.root, config.filename)
-    this.minLevel = config.minLevel
+    // apply() fills every unset field from config/edge.json; these `??`
+    // literals only fire for hand-constructed instances (tests, rig).
+    this.filePath = join(config.root ?? edgeHome('audit'), config.filename)
+    this.minLevel = config.minLevel ?? 'info'
     this.ringBufferSize = config.ringBufferSize
-    this.flushIntervalMs = config.flushIntervalMs
+    this.flushIntervalMs = config.flushIntervalMs ?? 1000
     this.enablePIIRedaction = config.enablePIIRedaction
     this.maxFileSizeBytes = config.maxFileSizeBytes
     this.maxFileAgeDays = config.maxFileAgeDays
@@ -391,6 +399,19 @@ export class AuditLogServiceImpl extends Service {
 }
 
 export async function apply(ctx: Context, config: Config): Promise<() => Promise<void>> {
+  // §7.102: fill unset fields from config/edge.json (audit.*). The cordis
+  // patch rows no longer pass minLevel/flush/root — the file is the source.
+  const audit = loadEdgeConfig().audit
+  const c = config as Partial<Config>
+  if (c.minLevel === undefined && audit?.minLevel) {
+    c.minLevel = audit.minLevel as Config['minLevel']
+  }
+  if (c.flushIntervalMs === undefined && audit?.flushMs !== undefined) {
+    c.flushIntervalMs = audit.flushMs
+  }
+  if (c.root === undefined) {
+    c.root = audit?.root && audit.root.length > 0 ? audit.root : edgeHome('audit')
+  }
   // AuditLogServiceImpl extends `Service`, so its constructor calls
   // `ctx.reflect.provide('auditLog', this)` for us. Do not call
   // `ctx.provide` again — that would throw "service already registered".

@@ -10668,6 +10668,21 @@ config/edge.json  (唯一真源,含明文 key,gitignored)
 
 **保留的 env 读**(有意):`file-logger` / `tcm` / `audit-log` / `privacy-policy` / `realm-skill-bridge` / `td-bus` 仍读 `process.env.USERPROFILE` / `HOME` 拼路径——那是 **HOME 定位**,不是 `.env` 语义,任何启动方式都有。
 
+## → 已被同日后续推翻为"零 env 读"(2026-10-21 晚, user 终裁"只有一个配置文件")
+
+上面"保留 HOME 定位类 env"的边界被用户终裁收紧:**bundle 两份 patch(cordis.patch.yml / cordis.desktop-safe.patch.yml)里本仓 17 个插件行不再有任何 `!!js process.env.*`** ——路径类(policyPath/realm configPath/audit root/log root/storage root/tcm keystore/etscli bin)全部迁入 edge.json 新键(`privacy.policyPath·realmConfigPath` / `audit.root·logRoot` / `storage.root` / `tee.keyStorePath` / `etscli.bin·timeoutMs`)并在各插件 apply() 用 `edgeHome()`(os.homedir)派生默认。唯一例外:**DSH 宿主插件行**(persona / permission-policy×2 / session-root / workspaceRoot)——那是 @deepseek-ai/* 的配置面,只吃 cordis row,留在行内。
+
+配套改造(同批提交):
+- 消费端 8 插件接 fill-if-unset:audit-log / file-logger / tcm / local-storage / privacy-policy / realm-skill-bridge / etscli-tools / http-api(host·port·session·bearer)。
+- file-logger `resolveLoggerConfig(env)` 改三层:fake-env 参 > edge.json(audit.*) > 字面 —— 保住既有 fake-env 单测。
+- 被文件接管的字段全部**去 Schema default**(default 会在 apply() 前填进 config,"没配"与"配了默认"不可区分):http-api host/port/sessionLimits、tcm teeType/keyStorePath、local-storage root、privacy-policy policyPath(原 required)、realm configPath(原 module-load 计算 default)、etscli bin/timeout(原 module-load 计算 default)、td-bus cloudRate/blockLevel、audit-log minLevel/flush/root、file-logger level/age/rotated/root、intent-router jev 10 字段。字面兜底统一沉到构造期 `??`(与既有模式一致)。
+- td-bus fill 改 **fill-if-unset**:full patch 行故意 pin `cloudRequestsPerMinute: 8`(比文件默认 20 严)——profile 级 tuning 不能被共享文件覆盖。
+- `ENV_OVERRIDES` 扩到 69 条(新增 LOG_ROOT/AUDIT_ROOT/STORAGE_ROOT/PRIVACY_POLICY_PATH/REALM_CONFIG/ETSCLI_*/EDGE_API_KEY/HTTP_*/PERSONA?无…… 以代码为准)。
+- bundle-minimal 行不动:显式值仍优先(fill-if-unset 语义天然兼容)。
+- 悬空 `config:` 键检查脚本化(本轮两处 privacy-policy/function-call-external 被 yaml 判 null,已清)。
+
+验收:`npm run build` exit 0(十道门禁含 host/client mount 模拟)+ `npm test` 1005 passed / 0 failed。
+
 **与 §7.101.x 的关系**:本次不是修 Edge tab 的五层根因,而是**修配置供给**——即使 Edge tab 装好,桌面侧的 local-LLM 路由此前也是坏的(连到 127.0.0.1:8080 而非 `.env` 里配的端点)。两条线合流后,桌面与 CLI 才真正跑同一套配置。
 
 **验收闭环(2026-10-21 下午,Windows 桌面宿主上首次全链跑通)**:`npm run build` 十道门禁 + `npm test` 1005 passed / 0 failed。过程中另修掉 5 件事:

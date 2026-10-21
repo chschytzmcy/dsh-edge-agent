@@ -21,6 +21,7 @@ import { existsSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { createHmac, timingSafeEqual } from 'node:crypto'
 import { PII_PATTERNS, PII_ORDER, PII_DATA_CLASS } from './pii-utils.js'
+import { edgeHome, loadEdgeConfig } from './edge-config.js'
 
 export const name = 'privacy-policy'
 
@@ -33,9 +34,12 @@ export interface Config {
 }
 
 export const Config: Schema<Config> = Schema.object({
-  policyPath: Schema.string().required(),
-  hotReload: Schema.boolean().default(true),
-  watchIntervalMs: Schema.natural().default(5000),
+  // §7.102 "one config file": no defaults / no required — apply() fills
+  // policyPath from config/edge.json (privacy.policyPath) or the
+  // ~/.dsh-edge-agent default, and hotReload/watch from privacy.*.
+  policyPath: Schema.string(),
+  hotReload: Schema.boolean(),
+  watchIntervalMs: Schema.natural(),
 })
 
 export interface RoutingRule {
@@ -472,6 +476,14 @@ export class PrivacyPolicyServiceImpl extends Service implements PrivacyPolicySe
 }
 
 export async function apply(ctx: any, config: Config): Promise<() => Promise<void>> {
+  // §7.102: fill unset fields from config/edge.json (privacy.*).
+  const p = loadEdgeConfig().privacy
+  const c = config as Partial<Config>
+  if (c.policyPath === undefined) {
+    c.policyPath = p?.policyPath && p.policyPath.length > 0 ? p.policyPath : edgeHome('privacy-policy.json')
+  }
+  if (c.hotReload === undefined && p?.policyHotReload !== undefined) c.hotReload = p.policyHotReload
+  if (c.watchIntervalMs === undefined && p?.policyWatchMs !== undefined) c.watchIntervalMs = p.policyWatchMs
   const auditLog = ctx.get('auditLog')
   const service = new PrivacyPolicyServiceImpl(ctx, config, auditLog)
   await service.start()

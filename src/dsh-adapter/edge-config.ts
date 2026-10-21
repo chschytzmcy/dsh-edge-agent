@@ -113,9 +113,12 @@ export interface EdgePrivacyConfig {
   sanitizeDowngradeEnabled?: boolean
   realmHotReload?: boolean
   realmWatchMs?: number
+  /** privacy-policy.json path; derived from ~/.dsh-edge-agent when unset. */
   policyPath?: string
   policyHotReload?: boolean
   policyWatchMs?: number
+  /** skill-realms.json path; derived from ~/.dsh-edge-agent when unset. */
+  realmConfigPath?: string
   /** Sanitizer session-mapping lifetime (ms). */
   sanTtlMs?: number
   /** Max concurrent sanitizer session mappings before LRU eviction. */
@@ -139,12 +142,18 @@ export interface EdgeAuditConfig {
   logLevel?: string
   logMaxAgeDays?: number
   logMaxRotated?: number
+  /** audit-log plugin storage dir (defaults to ~/.dsh-edge-agent/audit). */
+  root?: string
+  /** file-logger plugin storage dir (defaults to ~/.dsh-edge-agent/log). */
   logRoot?: string
 }
 
 export interface EdgeTeeConfig {
   type?: string
+  /** tcm keystore directory (defaults to ~/.dsh-edge-agent). */
   storageRoot?: string
+  /** Full keystore file path; derived from storageRoot when unset. */
+  keyStorePath?: string
 }
 
 export interface EdgeThreatConfig {
@@ -164,6 +173,17 @@ export interface EdgeAgentConfig {
   permissionMode?: string
 }
 
+/** local-storage plugin (plaintext JSONL KV root). */
+export interface EdgeStorageConfig {
+  root?: string
+}
+
+/** etscli read-only tool wrapper (§7.98). */
+export interface EdgeEtscliConfig {
+  bin?: string
+  timeoutMs?: number
+}
+
 export interface EdgeConfig {
   secrets?: EdgeSecrets
   http?: { host?: string; port?: number }
@@ -178,6 +198,8 @@ export interface EdgeConfig {
   threat?: EdgeThreatConfig
   webSearch?: EdgeWebSearchConfig
   agent?: EdgeAgentConfig
+  storage?: EdgeStorageConfig
+  etscli?: EdgeEtscliConfig
 }
 
 /* ── Defaults (last-resort fallbacks; no local endpoints) ─────────────── */
@@ -244,6 +266,7 @@ export const DEFAULT_EDGE_CONFIG: EdgeConfig = {
     realmWatchMs: 5000,
     policyHotReload: true,
     policyWatchMs: 5000,
+    // policyPath / realmConfigPath stay unset → plugins derive via edgeHome().
   },
   resources: {
     maxSessions: 100,
@@ -259,8 +282,11 @@ export const DEFAULT_EDGE_CONFIG: EdgeConfig = {
     logLevel: 'info',
     logMaxAgeDays: 1,
     logMaxRotated: 7,
+    // root / logRoot stay unset → plugins derive them via edgeHome().
   },
   tee: { type: 'simulated' },
+  storage: {},
+  etscli: { timeoutMs: 30000 },
   threat: { cloudRate: 20, blockLevel: 'critical' },
   webSearch: { tavilyEnabled: true, bochaEnabled: true },
   agent: {
@@ -302,6 +328,16 @@ export function edgeConfigCandidates(): string[] {
  *  are in use. Exposed for diagnostics / audit. */
 export function edgeConfigPath(): string | undefined {
   return cachedPath
+}
+
+/**
+ * Default data location under the user home (`~/.dsh-edge-agent/...`).
+ * Plugins use this when the corresponding edge.json path field is unset —
+ * the old patch rows derived the same expression via `!!js HOME`, which is
+ * what §7.102's "one config file" rule moves into code.
+ */
+export function edgeHome(...segments: string[]): string {
+  return join(homedir(), '.dsh-edge-agent', ...segments)
 }
 
 /**
@@ -565,6 +601,13 @@ const ENV_OVERRIDES: Array<{
     env: 'DSH_EDGE_LOCAL_LLM_ENABLE_THINKING',
     apply: (cfg, v) => { cfg.llm!.local!.enableThinking = v === 'true' },
   },
+  { env: 'DSH_EDGE_LOG_ROOT', apply: (cfg, v) => { cfg.audit!.logRoot = v } },
+  { env: 'DSH_EDGE_AUDIT_ROOT', apply: (cfg, v) => { cfg.audit!.root = v } },
+  { env: 'DSH_EDGE_STORAGE_ROOT', apply: (cfg, v) => { cfg.storage!.root = v } },
+  { env: 'DSH_EDGE_PRIVACY_POLICY_PATH', apply: (cfg, v) => { cfg.privacy!.policyPath = v } },
+  { env: 'DSH_EDGE_REALM_CONFIG', apply: (cfg, v) => { cfg.privacy!.realmConfigPath = v } },
+  { env: 'DSH_EDGE_ETSCLI_BIN', apply: (cfg, v) => { cfg.etscli!.bin = v } },
+  { env: 'DSH_EDGE_ETSCLI_TIMEOUT_MS', apply: (cfg, v) => { cfg.etscli!.timeoutMs = Number(v) } },
 ]
 
 /** A fresh deep copy of the built-in defaults. */
@@ -643,6 +686,8 @@ export function loadEdgeConfig(force = false): EdgeConfig {
         threat: { ...DEFAULT_EDGE_CONFIG.threat, ...parsed.threat },
         webSearch: { ...DEFAULT_EDGE_CONFIG.webSearch, ...parsed.webSearch },
         agent: { ...DEFAULT_EDGE_CONFIG.agent, ...parsed.agent },
+        storage: { ...DEFAULT_EDGE_CONFIG.storage, ...parsed.storage },
+        etscli: { ...DEFAULT_EDGE_CONFIG.etscli, ...parsed.etscli },
       }
       cached = applyEnvOverrides(merged)
       cachedPath = candidate

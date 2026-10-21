@@ -85,6 +85,7 @@ import type { Context, Message } from '@deepseek-ai/cordis'
 import { Service } from '@deepseek-ai/cordis'
 import { mkdir, open, stat } from 'node:fs/promises'
 import { renameWithRetry } from './local-storage.js'
+import { loadEdgeConfig } from './edge-config.js'
 import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import Schema from '@deepseek-ai/schemastery'
@@ -153,15 +154,20 @@ export interface Config {
   level: LogLevel
 }
 
+// §7.102 "one config file": root/level/maxFileAgeDays/maxRotatedFiles carry
+// NO Schema default — resolveLoggerConfig()/apply() fill them from
+// config/edge.json (audit.*) with the env params as per-process overrides.
+// (The old Schema default maxRotatedFiles=5 also silently disagreed with
+// the shipped value 7 — defaults living in two places always drift.)
 export const Config: Schema<Config> = Schema.object({
-  root: Schema.string().required(),
+  root: Schema.string(),
   filename: Schema.string().default('dsh-edge-agent.log'),
   flushIntervalMs: Schema.natural().default(1000),
   queueCapacity: Schema.natural().default(10_000),
   maxFileSizeBytes: Schema.natural().default(50 * 1024 * 1024), // 50MB
-  maxFileAgeDays: Schema.number().default(1), // §7.56: daily rotation by default
-  maxRotatedFiles: Schema.natural().default(5),
-  level: Schema.union(['debug', 'info', 'warn', 'error'] as const).default('info'),
+  maxFileAgeDays: Schema.number(), // §7.56: daily rotation by default
+  maxRotatedFiles: Schema.natural(),
+  level: Schema.union(['debug', 'info', 'warn', 'error'] as const),
 })
 
 declare module '@deepseek-ai/cordis' {
@@ -433,10 +439,15 @@ export interface ResolvedLoggerConfig {
  * `DSH_EDGE_LOG_LEVEL=debug` to re-enable.
  */
 export function resolveLoggerConfig(env: NodeJS.ProcessEnv = process.env): ResolvedLoggerConfig {
+  // §7.102 layering (per field): explicit env param entry > config/edge.json
+  // `audit.*` (loadEdgeConfig also folds live DSH_EDGE_* env into the file
+  // view) > the literal below. The env-param layer keeps the unit tests'
+  // fake-env surface working; the file layer is what the desktop GUI finally
+  // gets when no env is exported.
+  const a = loadEdgeConfig(true).audit ?? {}
   const homeBase = (env.USERPROFILE ?? env.HOME ?? '').toString()
-  const root = env.DSH_EDGE_LOG_ROOT && env.DSH_EDGE_LOG_ROOT.length > 0
-    ? env.DSH_EDGE_LOG_ROOT
-    : join(homeBase, '.dsh-edge-agent', 'log')
+  const root = firstNonEmpty(env.DSH_EDGE_LOG_ROOT, a.logRoot)
+    ?? join(homeBase, '.dsh-edge-agent', 'log')
   // §7.56: daily rotation is the default (maxFileAgeDays=1). Override with
   // DSH_EDGE_LOG_MAX_AGE_DAYS (0 disables age rotation, keeping size-only).
   const ageDaysEnv = parseInt(env.DSH_EDGE_LOG_MAX_AGE_DAYS ?? '', 10)
@@ -447,10 +458,22 @@ export function resolveLoggerConfig(env: NodeJS.ProcessEnv = process.env): Resol
     flushIntervalMs: 1000,
     queueCapacity: 10_000,
     maxFileSizeBytes: 50 * 1024 * 1024,
-    maxFileAgeDays: Number.isFinite(ageDaysEnv) && ageDaysEnv >= 0 ? ageDaysEnv : 1,
-    maxRotatedFiles: Number.isFinite(rotatedEnv) && rotatedEnv > 0 ? rotatedEnv : 7,
-    level: parseLogLevel(env.DSH_EDGE_LOG_LEVEL, 'info'),
+    maxFileAgeDays: Number.isFinite(ageDaysEnv) && ageDaysEnv >= 0
+      ? ageDaysEnv
+      : a.logMaxAgeDays ?? 1,
+    maxRotatedFiles: Number.isFinite(rotatedEnv) && rotatedEnv > 0
+      ? rotatedEnv
+      : a.logMaxRotated ?? 7,
+    level: parseLogLevel(env.DSH_EDGE_LOG_LEVEL ?? a.logLevel, 'info'),
   }
+}
+
+/** First non-empty string among the candidates, else undefined. */
+function firstNonEmpty(...values: Array<string | undefined>): string | undefined {
+  for (const v of values) {
+    if (typeof v === 'string' && v.length > 0) return v
+  }
+  return undefined
 }
 
 /**
@@ -541,7 +564,23 @@ export async function shutdownFileLogger(service: FileLoggerServiceImpl | undefi
  * `ctx.logger.exporters.size > 1`. Calling it twice is a no-op.
  */
 export async function apply(ctx: Context, config: Config): Promise<() => Promise<void>> {
-  const service = installFileLogger(ctx, config)
+  // §7.102: the cordis row may omit root/level/rotation fields (the patches
+  // no longer pass env expressions). Layer: explicit row value >
+  // resolveLoggerConfig() (= config/edge.json audit.* > env > literal).
+  const base = resolveLoggerConfig() as unknown as Config
+  const row = config as Partial<Config>
+  const pick = <K extends keyof Config>(k: K): Config[K] => (row[k] === undefined ? base[k] : row[k] as Config[K])
+  const effective: Config = {
+    root: pick('root'),
+    filename: pick('filename'),
+    flushIntervalMs: pick('flushIntervalMs'),
+    queueCapacity: pick('queueCapacity'),
+    maxFileSizeBytes: pick('maxFileSizeBytes'),
+    maxFileAgeDays: pick('maxFileAgeDays'),
+    maxRotatedFiles: pick('maxRotatedFiles'),
+    level: pick('level'),
+  }
+  const service = installFileLogger(ctx, effective)
   return async () => {
     await shutdownFileLogger(service)
   }

@@ -31,24 +31,30 @@ export const inject = ['auditLog', 'privacyPolicy'] as const
 export interface Config {
   windowSeconds: number
   thresholds: {
-    cloudRequestsPerMinute: number
+    /** §7.102: unset → filled from config/edge.json (threat.cloudRate),
+     *  else the constructor literal 20. */
+    cloudRequestsPerMinute?: number
     failedSanitizationStreak: number
     permissionDeniedStreak: number
   }
   /** Phase D: threat level at which the bus asks upstream plugins to
-   *  block (e.g. http-api returns 503). Default 'critical'. */
-  blockLevel: 'elevated' | 'high' | 'critical'
+   *  block (e.g. http-api returns 503). §7.102: unset → edge.json
+   *  (threat.blockLevel), else the constructor literal 'critical'. */
+  blockLevel?: 'elevated' | 'high' | 'critical'
 }
 
 export const Config: Schema<Config> = Schema.object({
   windowSeconds: Schema.natural().default(60),
+  // §7.102: cloudRequestsPerMinute / blockLevel carry no Schema default so
+  // apply()'s config/edge.json (threat.*) fill can tell "row omitted it"
+  // from "row pinned it" (the full patch pins 8 deliberately). The
+  // constructor keeps the ?? 20 / ?? 'critical' literals as last resort.
   thresholds: Schema.object({
-    cloudRequestsPerMinute: Schema.natural().default(20),
+    cloudRequestsPerMinute: Schema.natural(),
     failedSanitizationStreak: Schema.natural().default(3),
     permissionDeniedStreak: Schema.natural().default(5),
   }),
-  blockLevel: Schema.union(['elevated', 'high', 'critical'] as const)
-    .default('critical'),
+  blockLevel: Schema.union(['elevated', 'high', 'critical'] as const),
 })
 
 export type ThreatLevel = 'normal' | 'elevated' | 'high' | 'critical'
@@ -66,7 +72,9 @@ export interface TdBusService {
 export class TdBusServiceImpl extends Service {
   private readonly windowMs: number
   private readonly cloudThreshold: number
-  private readonly blockLevel: Config['blockLevel']
+  // Concrete union: the constructor's `?? 'critical'` guarantees a value
+  // even though the Config field is optional (§7.102 fill chain).
+  private readonly blockLevel: 'elevated' | 'high' | 'critical'
   private currentLevel: ThreatLevel = 'normal'
   /** When set, recomputeLevel() will not drop below this floor. Set by
    *  escalate(); cleared only when the sliding window fully decays. */
@@ -176,14 +184,17 @@ export async function apply(ctx: any, config: Config): Promise<() => Promise<voi
   // §7.102: the thresholds come from config/edge.json (threat.*). The
   // cordis patch row no longer reads process.env — the desktop GUI never
   // had those variables.
+  // Fill-only-if-absent: a profile row may pin a deliberate value (the
+  // full patch runs cloudRequestsPerMinute=8, tighter than the shared
+  // file default) and that explicit wiring must win over edge.json.
   const threat = loadEdgeConfig().threat
   if (threat) {
-    if (threat.cloudRate !== undefined && threat.cloudRate > 0) {
-      ;(config as { thresholds: { cloudRequestsPerMinute: number } }).thresholds.cloudRequestsPerMinute =
-        threat.cloudRate
+    const thresholds = (config as { thresholds?: { cloudRequestsPerMinute?: number } }).thresholds
+    if (thresholds && thresholds.cloudRequestsPerMinute === undefined && threat.cloudRate !== undefined) {
+      thresholds.cloudRequestsPerMinute = threat.cloudRate
     }
-    if (threat.blockLevel !== undefined) {
-      ;(config as { blockLevel: 'elevated' | 'high' | 'critical' }).blockLevel =
+    if ((config as { blockLevel?: string }).blockLevel === undefined && threat.blockLevel !== undefined) {
+      (config as { blockLevel: 'elevated' | 'high' | 'critical' }).blockLevel =
         threat.blockLevel as 'elevated' | 'high' | 'critical'
     }
   }

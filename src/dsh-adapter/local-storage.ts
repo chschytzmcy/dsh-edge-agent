@@ -20,6 +20,7 @@ import { mkdir, readFile, writeFile, rename } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { redactObject } from './pii-utils.js'
+import { edgeHome, loadEdgeConfig } from './edge-config.js'
 
 export const name = 'local-storage'
 
@@ -35,7 +36,9 @@ export interface Config {
 }
 
 export const Config: Schema<Config> = Schema.object({
-  root: Schema.string().required(),
+  // §7.102 "one config file": root has no required/default — apply() fills
+  // it from config/edge.json (storage.root) or ~/.dsh-edge-agent/storage.
+  root: Schema.string(),
   filename: Schema.string().default('storage.plain.jsonl'),
   enablePIIRedaction: Schema.boolean().default(true),
 })
@@ -198,6 +201,13 @@ export async function renameWithRetry(
 }
 
 export async function apply(ctx: Context, config: Config): Promise<() => Promise<void>> {
+  // §7.102: root comes from config/edge.json (storage.root) when the row
+  // omits it — the patch no longer carries `!!js HOME` path expressions.
+  const c = config as Partial<Config>
+  if (c.root === undefined) {
+    const fileRoot = loadEdgeConfig().storage?.root
+    c.root = fileRoot && fileRoot.length > 0 ? fileRoot : edgeHome('storage')
+  }
   // LocalStorageServiceImpl extends `Service`, so its constructor calls
   // `ctx.reflect.provide('localStorage', this)` for us. Do not call
   // `ctx.provide` again — that would throw "service already registered".

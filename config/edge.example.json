@@ -1,25 +1,21 @@
 {
   "_comment": "dsh-edge-agent 统一配置模板（tracked）。复制为 config/edge.json 后填入真实值：cp config/edge.example.json config/edge.json。config/edge.json 含明文 API key，已在 .gitignore 里。查找顺序：bundle 内 config/edge.json → ~/.dsh-edge-agent/edge.json → 插件内置默认值。",
-
   "secrets": {
-    "_comment": "HTTP API 鉴权 + 各 LLM 池的直连凭据。直连模式下写入 Authorization 头。池通过 keyRef 指向这里的键名。",
+    "_comment": "HTTP API 鉴权 + 各 LLM 池的直连凭据。直连模式下写入 Authorization 头。",
     "edgeApiKey": "",
     "deepseekApiKey": "",
     "dashscopeApiKey": "",
     "tavilyApiKey": "",
     "bochaApiKey": ""
   },
-
   "http": {
     "_comment": "http-api 监听入口。",
     "host": "127.0.0.1",
     "port": 21017
   },
-
   "llm": {
     "_comment": "§7.100：LOCAL 池必配；CLOUD 池可选 —— 不配时 cloud-llm 路由 DELEGATE 到宿主 profile 已配置的模型提供商（桌面 GUI 选的模型 / dsh-base 默认 deepseek-official），凭据全归宿主 adapter，edge 侧不碰任何 secret。",
     "local": {
-      "_comment": "baseUrl 留空 = 不注册本地 LLM 路由（模型列表里不出现 local-llm，意图分类 / prompt-guard 自动降级到关键词 / 正则规则档）。不要填 127.0.0.1:8080 —— 该端口常被无关守护进程占用，会导致每轮请求 401。",
       "baseUrl": "",
       "model": "qwen3-4b",
       "keyRef": "",
@@ -27,7 +23,7 @@
       "enableThinking": false
     },
     "cloud": {
-      "_comment": "baseUrl 留空 = DELEGATE 模式（转发宿主提供商）。要 edge 自有直连云池时填 baseUrl + model + keyRef。",
+      "_comment": "留空 = DELEGATE 模式（转发宿主提供商）。要 edge 自有直连云池时填 baseUrl + model + keyRef。",
       "baseUrl": "",
       "model": "",
       "keyRef": "",
@@ -36,9 +32,8 @@
       "delegateModel": ""
     }
   },
-
   "stages": {
-    "_comment": "★ 隐私不变式（用户仲裁 2026-10-18）：分类 / guard 检测只吃本地模型 —— 送进云池等于把「待检测的用户原文」上行，违背端侧私密定位。留空 = 用插件默认 local-llm；本地端点不可达时 intent-router / prompt-guard 自动降级到关键词 / 正则规则档，绝不借用宿主云模型。",
+    "_comment": "★ 隐私不变式（用户仲裁 2026-10-18）：分类 / guard 检测只吃本地模型 —— 送进云池等于把「待检测的用户原文」上行，违背端侧私密定位。留空 = 用 plugin Schema 默认 local-llm；本地端点不可达时 intent-router / prompt-guard 自动降级到关键词 / 正则规则档，绝不借用宿主云模型。",
     "guard": {
       "provider": "local-llm",
       "model": "",
@@ -59,7 +54,6 @@
       "fallbackKeywords": []
     }
   },
-
   "jev": {
     "_comment": "§7.92.3 jev 意图识别（toggle，默认 ON；开 → 在 LLM classifier 之前先跑）。Toggle=false 时 classify() 完全跳过 jev 路径（无 network call）。高置信 (>=confidenceThreshold) + 低风险 (<riskThreshold) → 直接采纳；否则 fall through 到 LLM。",
     "enabled": true,
@@ -73,7 +67,6 @@
     "breakerProbeMs": 5000,
     "probeTimeoutMs": 1000
   },
-
   "functionCallExternal": {
     "_comment": "§7.93.1 ExternalToolCaller（纯 client，外部维护）。契约 GET /health + POST /extract {query,tools,system?,max_new_tokens?}。CLOUD intent 不走 caller；caller 不可达 / 低置信 fall through 到 LLM 自提取。",
     "enabled": false,
@@ -86,57 +79,65 @@
     "breakerProbeMs": 5000,
     "probeTimeoutMs": 1000
   },
-
   "privacy": {
-    "_comment": "Input-Guard / Privacy-Policy / Realm-Bridge 开关 + sanitizer 会话限制。",
+    "_comment": "Input-Guard / Privacy-Policy / Realm-Bridge 开关。policyPath/realmConfigPath 留空 = ~/.dsh-edge-agent/ 下同名文件。",
     "inputGuardEnabled": true,
     "rejectPolicyEnabled": true,
     "sanitizeDowngradeEnabled": true,
     "realmHotReload": true,
     "realmWatchMs": 5000,
     "policyPath": "",
+    "realmConfigPath": "",
     "policyHotReload": true,
     "policyWatchMs": 5000,
     "sanTtlMs": 900000,
     "sanMaxSessions": 1000,
     "sanSweepMs": 60000
   },
-
   "resources": {
-    "_comment": "Session / body 限制。",
+    "_comment": "Session / Sanitizer / body 限制。",
     "maxSessions": 100,
     "maxBodyBytes": 1048576,
-    "sessionIdleMs": 1800000
+    "sessionIdleMs": 1800000,
+    "sanMaxSessions": 1000,
+    "sanSweepMs": 60000,
+    "sanTtlMs": 900000
   },
-
   "audit": {
-    "_comment": "Audit / Ops Log 落盘。",
+    "_comment": "Audit / Ops Log 落盘。root/logRoot 留空 = ~/.dsh-edge-agent/audit 与 ~/.dsh-edge-agent/log。",
     "minLevel": "info",
     "flushMs": 1000,
     "logLevel": "info",
     "logMaxAgeDays": 1,
     "logMaxRotated": 7,
+    "root": "",
     "logRoot": ""
   },
-
   "tee": {
-    "_comment": "TEE 后端选择（simulated / trustzone / keystone / sgx）；平台自动探测时可留空。",
+    "_comment": "TEE 后端选择（simulated / trustzone / keystone / sgx）；平台自动探测时可留空。storageRoot 留空 = ~/.dsh-edge-agent。",
     "type": "simulated",
-    "storageRoot": ""
+    "storageRoot": "",
+    "keyStorePath": ""
   },
-
+  "storage": {
+    "_comment": "local-storage 明文 JSONL KV 根目录；留空 = ~/.dsh-edge-agent/storage。",
+    "root": ""
+  },
+  "etscli": {
+    "_comment": "etscli 只读工具 wrapper（§7.98）。bin 留空 = ~/.local/bin/etscli。",
+    "bin": "",
+    "timeoutMs": 30000
+  },
   "threat": {
     "_comment": "td-bus 阈值。cloudRate = 每分钟云请求数上限（0 = 不限）。",
     "cloudRate": 20,
     "blockLevel": "critical"
   },
-
   "webSearch": {
     "_comment": "Phase 5 web-search providers（§7.82）三级链：Tavily → 博查 AI → DeepSeek。任一可用即可，任一失败自动 fallback；不写 key 就跳过该 tier。",
     "tavilyEnabled": true,
     "bochaEnabled": true
   },
-
   "agent": {
     "_comment": "agent persona + 工具权限。",
     "persona": "You are edge-agent, a privacy-first AI assistant running on the user's device.",
