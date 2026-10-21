@@ -141,6 +141,11 @@ export function apply(ctx: CordisCtx): void {
         kind: TAB_ID,
         title: () => tr('tab.title'),
         guide: [{
+          // The registry validates guide entries by `id` uniqueness
+          // (`new Set(entries.map(e => e.id)).size === entries.length`) and
+          // the guide body keys capsules by it — an undefined id would make
+          // one entry look duplicated to a second contributor.
+          id: `${TAB_ID}-guide`,
           order: 30,
           title: () => tr('tab.title'),
           description: () => tr('guide.description'),
