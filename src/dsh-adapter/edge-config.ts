@@ -394,6 +394,37 @@ const ENV_OVERRIDES: Array<{
     apply: (cfg, v) => { cfg.secrets!.edgeApiKey = v },
   },
   {
+    // Alias of EDGE_API_KEY. scripts/edge-config-env.mjs exports both
+    // spellings (the bare one for the legacy e2e/curl callers, the
+    // prefixed one for the plugin side); without a consumer here the
+    // prefixed spelling was a dead export.
+    env: 'DSH_EDGE_HTTP_TOKEN',
+    apply: (cfg, v) => { cfg.secrets!.edgeApiKey = v },
+  },
+  {
+    // The bare secret names are the spellings the retired .env used
+    // (`.env.sh` did `set -a` and exported them verbatim). The pools
+    // resolve their key through `keyRef` → `secrets[keyRef]`, so without
+    // these four mappings an env-only deployment (no config/edge.json)
+    // would silently lose the credential and every authenticated call
+    // would fail with 401. §7.102 keeps the file as the source of truth;
+    // these keep the legacy env chain working on top of it.
+    env: 'DEEPSEEK_API_KEY',
+    apply: (cfg, v) => { cfg.secrets!.deepseekApiKey = v },
+  },
+  {
+    env: 'DASHSCOPE_API_KEY',
+    apply: (cfg, v) => { cfg.secrets!.dashscopeApiKey = v },
+  },
+  {
+    env: 'TAVILY_API_KEY',
+    apply: (cfg, v) => { cfg.secrets!.tavilyApiKey = v },
+  },
+  {
+    env: 'BOCHA_API_KEY',
+    apply: (cfg, v) => { cfg.secrets!.bochaApiKey = v },
+  },
+  {
     env: 'DSH_EDGE_HTTP_HOST',
     apply: (cfg, v) => { cfg.http!.host = v },
   },
@@ -496,6 +527,18 @@ const ENV_OVERRIDES: Array<{
   {
     env: 'DSH_EDGE_GUARD_MODEL_MODEL',
     apply: (cfg, v) => { cfg.stages!.guard!.model = v },
+  },
+  {
+    // §7.102 follow-up (2026-10-21): these two were emitted by
+    // scripts/edge-config-env.mjs but had no consumer here, so an operator
+    // who exported them saw them silently do nothing. The guard stage has
+    // had `timeoutMs` / `maxInput` in the file schema all along.
+    env: 'DSH_EDGE_GUARD_MODEL_TIMEOUT_MS',
+    apply: (cfg, v) => { cfg.stages!.guard!.timeoutMs = Number(v) },
+  },
+  {
+    env: 'DSH_EDGE_GUARD_MODEL_MAX_INPUT',
+    apply: (cfg, v) => { cfg.stages!.guard!.maxInput = Number(v) },
   },
   {
     env: 'DSH_EDGE_INTENT_PROVIDER',

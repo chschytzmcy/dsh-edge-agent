@@ -52,8 +52,17 @@ function readJson(path) {
 }
 
 // The `files` array in package.json is the source of truth for what ships.
+//
+// Entries may carry a `!` prefix (npm's negation, e.g. "!config/edge.json"):
+// those describe what must NOT reach the **npm tarball**. The installable
+// bundle built here is a LOCAL artifact — the desktop profile mounts it
+// through a junction and the runtime config (config/edge.json, with the
+// operator's real endpoints) has to travel with it — so the whole config
+// directory is copied and the negation is deliberately not applied here.
+// The distributable tarballs (npm pack, `make package`) exclude it.
 function shippedEntries(pkg) {
-  return Array.isArray(pkg.files) && pkg.files.length > 0 ? pkg.files : ['lib']
+  const list = Array.isArray(pkg.files) && pkg.files.length > 0 ? pkg.files : ['lib']
+  return list.filter((entry) => !entry.startsWith('!'))
 }
 
 let pkg

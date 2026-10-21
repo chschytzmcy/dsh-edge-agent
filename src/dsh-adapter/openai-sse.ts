@@ -27,6 +27,37 @@ import type {
 } from '@deepseek-ai/dsh-llm'
 import { attributionHeaders, LlmError, ToolCallId as brandCallId } from '@deepseek-ai/dsh-llm'
 
+/**
+ * §7.105 (2026-10-21): an empty tool-call id is FATAL, not cosmetic.
+ *
+ * OpenAI-compatible endpoints may omit the tool-call `id` entirely (some
+ * llama.cpp / vLLM builds send `tool_calls` deltas with no `id` field) or
+ * send `id: ""`. The host persists that id verbatim into the v4 session log,
+ * and the log validator rejects the WHOLE FILE on the next load
+ * ("tool call id requires a nonempty string") — so ONE bad tool call makes
+ * the entire session history unloadable, not just the affected turn.
+ *
+ * Never let an empty id escape this module. The synthesized id is stored in
+ * the per-stream `toolCalls` map, which keeps it stable across every delta
+ * of one call and identical to the final `block-end` block, so the host's
+ * assistant message advertises exactly one id for the call.
+ */
+function synthesizeToolCallId(wireIndex: number): string {
+  return `call_local_${wireIndex}_${Math.random().toString(36).slice(2, 10)}`
+}
+
+/**
+ * Pick the first candidate that is a NONEMPTY string, else `fallback`.
+ * `??` is not enough: an empty string survives `??` but is an invalid
+ * OpenAI `id` / `tool_call_id`.
+ */
+function firstNonEmptyId(candidates: unknown[], fallback: string): string {
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate !== '') return candidate
+  }
+  return fallback
+}
+
 /** Adapter contract surface shared by every OpenAI-compatible endpoint. */
 export interface OpenAiCompatibleAdapter {
   readonly providers: readonly string[]
@@ -57,6 +88,45 @@ export function buildChatCompletionsBody(
   if (options.system !== undefined && options.system.length > 0) {
     wireMessages.push({ role: 'system', content: options.system })
   }
+
+  // §7.105 (2026-10-21): resolve tool-call ids UP FRONT so an assistant
+  // tool-call and its tool-result always carry the SAME id on the wire.
+  //
+  // `??` lets an EMPTY id through (it is not nullish), and a tool-call id
+  // that is empty on the wire is rejected upstream. It is also the id the
+  // host persists into the session log — the v4 log validator rejects the
+  // WHOLE file on an empty tool-call id ("tool call id requires a nonempty
+  // string"), so one empty id makes an entire session fail to load.
+  //
+  // The blocks are deep-frozen at runtime, so the resolved id is carried in a
+  // side map instead of being written back. Results always follow their call
+  // in conversation order, so a FIFO queue pairs an id-less result with the
+  // id-less call it answers.
+  const resolvedIds = new Map<object, string>()
+  const pendingEmptyCallIds: string[] = []
+  for (const message of options.messages) {
+    const blocks = (Array.isArray(message.content) ? message.content : []) as unknown as Array<Record<string, unknown>>
+    for (const block of blocks) {
+      if (block.type === 'tool-call') {
+        const existing = firstNonEmptyId([block.toolCallId, block.callId, block.id], '')
+        if (existing !== '') {
+          resolvedIds.set(block, existing)
+        } else {
+          const synthesized = `call_${Math.random().toString(36).slice(2)}`
+          resolvedIds.set(block, synthesized)
+          pendingEmptyCallIds.push(synthesized)
+        }
+      } else if (block.type === 'tool-result') {
+        const existing = firstNonEmptyId([block.toolCallId, block.callId, block.id], '')
+        if (existing !== '') {
+          resolvedIds.set(block, existing)
+        } else {
+          resolvedIds.set(block, pendingEmptyCallIds.shift() ?? `call_${Math.random().toString(36).slice(2)}`)
+        }
+      }
+    }
+  }
+
   for (const message of options.messages) {
     // Cordis messages use content-block arrays. We need to translate:
     //   - text blocks → concatenated text content
@@ -71,7 +141,7 @@ export function buildChatCompletionsBody(
         textParts.push(block.text)
       } else if (block.type === 'tool-call') {
         toolCalls.push({
-          id: String(block.toolCallId ?? block.callId ?? block.id ?? `call_${Math.random().toString(36).slice(2)}`),
+          id: resolvedIds.get(block) ?? firstNonEmptyId([block.toolCallId, block.callId, block.id], `call_${Math.random().toString(36).slice(2)}`),
           type: 'function',
           function: {
             name: String(block.name ?? ''),
@@ -80,7 +150,7 @@ export function buildChatCompletionsBody(
         })
       } else if (block.type === 'tool-result') {
         toolResults.push({
-          id: String(block.toolCallId ?? block.callId ?? block.id ?? ''),
+          id: resolvedIds.get(block) ?? firstNonEmptyId([block.toolCallId, block.callId, block.id], ''),
           content: typeof block.content === 'string' ? block.content : extractText(block.content as Array<{ type: string; text?: string }>),
         })
       }
@@ -196,11 +266,19 @@ export function sseEventToChunk(
   }
   if (event.kind === 'tool-call-delta') {
     const current = toolCalls.get(event.index) ?? { id: '', name: '', arguments: '' }
-    if (event.id !== undefined) current.id = event.id
+    // §7.105 (2026-10-21): the upstream `id` may be absent or empty. A
+    // tool-call id must be a NONEMPTY string — the host's v4 session-log
+    // validator rejects the entire log on an empty id ("tool call id requires
+    // a nonempty string"), which is how one local-llm tool call made a whole
+    // session fail to load. Prefer the upstream id when it has one; otherwise
+    // synthesize a stable id for this wire index and remember it, so every
+    // later delta of the same call and the final `block-end` agree.
+    if (event.id !== undefined && event.id !== '') current.id = event.id
+    else if (current.id === '') current.id = synthesizeToolCallId(event.index)
     if (event.name !== undefined) current.name = event.name
     current.arguments += event.argumentsDelta
     toolCalls.set(event.index, current)
-    const idForChunk = event.id ?? current.id
+    const idForChunk = current.id
     // CRITICAL: dsh-session's `snapshotJsonValue` rejects chunks with `undefined`
     // fields (throws "carries non-JSON-serializable data"). When DeepSeek splits
     // a tool call across multiple deltas, intermediate chunks omit `name` (and
@@ -263,7 +341,13 @@ export function* terminalChunks(
       index: wireIndex + 1,
       block: {
         type: 'tool-call',
-        id: brandCallId(call.id as ToolCallId | string) as ToolCallId,
+        // §7.105 (2026-10-21): the block-end id is the one the host persists
+        // into `assistant/message`, so it must never be empty. `sseEventToChunk`
+        // already synthesized one when the upstream omitted it; this guard
+        // covers a map populated by any other path.
+        id: brandCallId(
+          (call.id !== '' ? call.id : synthesizeToolCallId(wireIndex)) as ToolCallId | string,
+        ) as ToolCallId,
         name: call.name,
         arguments: call.arguments,
       },

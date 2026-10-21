@@ -10693,4 +10693,116 @@ config/edge.json  (唯一真源,含明文 key,gitignored)
 4. **Windows EPERM rename 重试(`renameWithRetry`,local-storage.ts 导出)**:Windows 上 writeFile 关闭句柄后 Defender/索引器会短暂锁文件,atomic rename 瞬态 EPERM——单测(sessions)实炸、生产(local-storage put / audit-log flush+rotate / file-logger rotate)同暴露;5 次退避,POSIX 路径零开销。
 5. **工程闭环**:`scripts/rebuild-installable.mjs`(新增,幂等跨平台,今天 installable/config/ 手工漂移 2 次的根治)+ `build:installable` 接入 `npm run build` 链 + `bundle-minimal/package.json` exports 镜像补 require/default 条件 + `verify-plugin-spec` skip 内部模块 edge-config + input-guard inject 的 modelRouter **撤销**(localAvailable() 本就 try/catch optional 访问,硬 inject 会把 model-router 拉进 minimal bundle 依赖闭包;注释里带引号的 service 名会被 bundle-minimal 的正则误扫——已注释告诫)。
 
+## §7.103 —— 跨平台收尾：门禁不再依赖 bash，env 桥接契约用门禁锁住（2026-10-21 晚）
+
+**背景**：§7.102 把配置面归一为 `config/edge.json` 唯一事实源后，配套脚本 `scripts/edge-config-env.mjs/.sh` 负责把文件内容还原成 shell 变量供 e2e / bench 使用。审计这条链时发现两类问题。
+
+### 1. `npm run build` 在 Windows 上根本跑不完（门禁依赖 bash）
+
+- `verify:bundle-mount` 写的是 `bash scripts/verify-bundle-mounted.sh`。默认的 Windows + Git for Windows 安装里 bash.exe **不在 PATH**（`C:\Program Files\Git\bin` 不由安装器加入），于是第 6 道门禁直接 `bash is not recognized`，整条 `npm run build` 中断。
+- 即使把 bash 加进 PATH，该脚本仍然**误报**：它用 `$HOME` 拼路径，而 PowerShell / cmd 交给 bash 的 `HOME` 是 Windows 形式（`C:\Users\cheng`）；GNU find 把反斜杠当转义符，profile 扫描扑空，报告说 "bundle is not mounted in any profile"，而 desktop profile 明明挂着该 bundle。
+- **修**：移植为 `scripts/verify-bundle-mounted.mjs`（node:fs 解析 profile 目录，Windows/macOS/Linux 结果一致），删除 `verify-bundle-mounted.sh`——两份实现本身就是这次 env 桥接漂移的同款病根。报告语义不变（永远 exit 0，informational）。
+
+### 2. env 桥接两半的名字漂移了 18 处
+
+`scripts/edge-config-env.mjs` 导出 65 个名字，`edge-config.ts` 的 `ENV_OVERRIDES` 消费 69 个，交集只有 58。危害最大的是**导出了但无人消费**的一侧：
+
+- `DSH_EDGE_GUARD_MODEL_TIMEOUT_MS` / `DSH_EDGE_GUARD_MODEL_MAX_INPUT` —— 操作者 export 了、shell 也导出成功了，插件**完全无视**（静默 no-op，比缺旋钮更坏，因为操作者以为自己配过了）。补进 `ENV_OVERRIDES`（→ `stages.guard.timeoutMs/maxInput`）。
+- `DSH_EDGE_HTTP_TOKEN` —— `EDGE_API_KEY` 的别名，补为 `secrets.edgeApiKey` 的第二个入口。
+- `DEEPSEEK_API_KEY` / `DASHSCOPE_API_KEY` / `TAVILY_API_KEY` / `BOCHA_API_KEY` —— 裸名 secret **完全没有消费端**：池的 key 经 `keyRef → secrets[keyRef]` 解析，只认文件里的 `secrets.*`。于是**纯 env 部署**（无 `config/edge.json`，CI / 一次性调试）会静默丢掉凭据，每次调用 401。四条裸名 env 补进 `ENV_OVERRIDES` → `secrets.*`，旧 `.env` 链在文件之上继续可用。
+- 反向（消费但未导出）11 项：补齐 `DSH_EDGE_MODEL`（cloud.model）、`DSH_EDGE_PRIVACY_POLICY_PATH`、`DSH_EDGE_REALM_CONFIG`、5 个 `DSH_EDGE_INTENT_JEV_*`（breaker / boot-probe）、3 个 intent 关键词列表（新增 `pushCsv` 助手，按 `split(
+)` 契约拼 CSV）。
+
+- **新增门禁 `scripts/verify-env-bridge.mjs`**（接进 `npm run verify:build`）：自动比对两半的名字集合，任何一边多出/缺失即 fail 并打印补法。裸名 secret 走显式 allowlist（它们同时被 e2e 的 curl / python 直接消费）。当前：76 ↔ 76 全对齐。
+
+**验收**：`npm run build` **11 道门禁全绿（Windows 首次跑通）** + `npm test` 1005 passed / 2 skipped / 0 failed。
+
+**遗留**：`e2e:coverage` / `e2e:benchmark` 仍是 `bash scripts/*.sh`（e2e 面，不在 build 链里）——若要彻底三平台一致，同样需要 Node 化。
+
+## §7.104 —— 打包泄漏:`config/edge.json` 的明文密钥曾进 tarball（2026-10-21 晚）
+
+**触发**:核对"桌面版 local-LLM 到底读哪个文件"时，顺手 `npm pack` 看了一眼产物。
+
+**事实**：`npm pack` 产出的 tarball 里含 `package/config/edge.json`，而该文件带全部明文密钥（deepseek / dashscope / tavily / bocha / edge api key）。`make package` 同样把仓库 `config/` 整目录拷进发布 tarball。
+
+**机制（关键，别再踩）**：**npm pack 在存在 `.npmignore` 时完全忽略 `.gitignore`**。本仓两者都存在 → `.gitignore` 里的 `config/edge.json` 规则对打包**零约束力**。而 `.npmignore` 里当时写着一句：
+
+> §7.102: config/ ships with the bundle — the runtime config lives there (config/edge.json is gitignored but still published; ...). Do NOT add config/ to this list.
+
+——即"gitignore 了但照样发布"被当成设计写进了注释。实际是误解：gitignore 管不到 npm pack。
+
+**修**：
+
+1. `package.json#files` 增加取反项 `"!config/edge.json"`（npm 支持 `files` 里的 `!`；仅靠 `.npmignore` 无效，因为 `files` 里的目录白名单会盖掉忽略规则）。`config/edge.example.json` + `config/privacy-policy.json` 照常随包。
+2. `.npmignore` 补 `config/edge.json`（双保险，并写明 .npmignore 覆盖 .gitignore 的机制）。
+3. `Makefile` 的 `make package`：`cp -r config` 之后 `rm -f .../config/edge.json`（整目录拷再删，避免以后新增文件被漏）。
+4. `scripts/verify-package.mjs` 新增断言：tarball 文件表里出现 `config/edge.json` / `.env` / `.env.sh` / `.env.example` 即 fail，并提示 .npmignore 机制。
+5. `scripts/rebuild-installable.mjs`：`files` 里带 `!` 的项在**本地 bundle** 侧被忽略——bundle 是本地产物（桌面 profile 用 junction 挂它，运行时真配置必须随行），只有**分发包**（npm pack / make package）才排除真配置。
+
+**边界（刻意为之）**：
+
+- `dist/installable/*/config/edge.json` **保留**——桌面版正是靠它拿到 local-LLM 端点；`dist/` 已被 `.gitignore` 忽略，密钥不会进仓库。
+- 纯 npm 安装的用户没有真配置：loader 落到候选 #3 `config/edge.example.json`（模板，baseUrl 空 → local-LLM 路由不注册），或由 install.sh 部署到 `~/.dsh-edge-agent/edge.json`（候选 #2）。
+
+**验收**：`npm pack --dry-run` 通过新断言（196 files / 63 entry targets，config 只剩 example + privacy-policy）；`npm run build` 11 道门禁全绿；`npm test` 1005 passed / 2 skipped / 0 failed。
+
+**桌面版 local-LLM 的实际配置来源（实测）**：
+
+```
+候选 1  ✅ HIT  <repo>/dist/installable/dsh-edge-agent-desktop-safe/config/edge.json   ← 生效
+候选 2  ❌ miss ~/.dsh-edge-agent/edge.json
+候选 3  ✅ HIT  <repo>/dist/installable/dsh-edge-agent-desktop-safe/config/edge.example.json（兜底，未用）
+```
+
+嵌套安装 `~/.dsh/profiles/desktop/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent` 是**指向 dist 的 Junction**，而 loader 用 `import.meta.url` 相对解析路径（`resolve(here, "..", "..")`）→ Node 解析 junction 到真实路径 → 落点就是仓库的 `dist/installable/dsh-edge-agent-desktop-safe/`。**与 cwd 无关**（探针在仓库根运行，解析结果不变）。
+
+生效值：`llm.local.baseUrl=https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1`、`model=qwen3.8-flash`、`keyRef=dashscopeApiKey` → `secrets.dashscopeApiKey`。
+
+**因此**：改配置要改**仓库根的 `config/edge.json`**，然后 `npm run build`（`rebuild-installable.mjs` 复制到 dist，桌面随即生效）。改 `~/.dsh-edge-agent/edge.json` 目前**无效**——候选 1 已命中，候选 2 不会被读。
+
+## §7.105 —— 空 tool-call id 毒化整份会话日志，`local-llm` 整个会话加载不了（2026-10-21 晚）
+
+**触发**：桌面端报
+
+```
+历史加载失败：stored session "session-f1b44612-…" is corrupt:
+session "session-f1b44612-…": stored log is corrupt:
+SessionFormatError: tool call id requires a nonempty string
+(raw log: C:\Users\cheng\.dsh\sessions\--C-Users-cheng-GolandProjects-gitlab-dsh-edge-agent--\session-f1b44612-…\session.v4.jsonl.zstd)
+```
+
+**结论：不是"最后一轮坏了"，是整份日志作废。** 宿主加载 v4 日志时跑 `assertReleasedV4Relationships`（`@deepseek-ai/dsh-session-format-v3-to-v4`），其中 `tool()` 要求 assistant/message 的 tool-call 块 id 必须是非空串（`text(value, subject)` 抛 `${subject} requires a nonempty string`）。这条校验作用于**整个 artifact**，所以**一个**空 id 就让这次会话的全部历史都读不出来。同目录另外两个会话（`session-34521511…`、`session-38a9aded…`）干净，0 个空 callId。
+
+**定位到的坏记录**（该日志 3655 个 zstd frame / 6501 条事件，尾部 3 条）：
+
+| seq | 事件 | 空 id 位置 |
+| --- | --- | --- |
+| 6498 | `assistant/message`（turn 31 / step 1） | content block `{"type":"tool-call","id":"","name":"pwsh"}` |
+| 6499 | `tool/call` | `data.callId = ""` |
+| 6500 | `job/registered` | `data.toolCall.callId = ""` |
+
+全会话 977 次工具调用里**只有这 1 个** id 为空，且是唯一一次 `local-llm/qwen3.8-flash` 的工具调用（其余 976 次来自 minimax-cn/MiniMax-M3、aliyun/qwen3.8-max、aliyun/qwen3.8-flash、deepseek-account/deepseek-flash、qwen-token-plan-cn/qwen3.8-flash、minimax-cn/MiniMax M3.1-Flash，id 齐整）。turn 31 处于未闭合状态（无 `turn/end`）。
+
+**根因（本仓库 `src/dsh-adapter/openai-sse.ts`）**：inbound SSE 路径在 `tool_calls[]` **不带 `id`** 时，仍然把空串当作 id 往下传：
+
+- `parseSseEvent` :330 —— `id: typeof first.id === 'string' ? first.id : undefined`，上游不传即 `undefined`；
+- `sseEventToChunk` —— `current` 初值 `{ id: '', … }`，`event.id === undefined` 时 `current.id` 保持 `''`；`idForChunk = event.id ?? current.id`（`??` 放行空串，因为空串非 nullish）→ chunk id = `''`；
+- `terminalChunks` —— `id: brandCallId(call.id)` → block id = `''`；
+- `brandString` / `brandCallId` 是**恒等转换**，无运行时校验 → 空串静默进入宿主，宿主把它原样写进 `assistant/message` 的 tool-call 块。
+
+宿主侧 `BlockAssembler` 的 `partial.toolCallId ?? brandString(\`call-${index}\`)` 也救不了：空串非 nullish，`??` 不生效。
+
+**修复**（`src/dsh-adapter/openai-sse.ts`，§7.105）：
+
+1. **inbound（根因）**——`sseEventToChunk` 里上游没给可用 id（`undefined` 或 `''`）时合成一个非空 id（`call_local_<wireIndex>_<rand>`）并**存回 per-stream 的 `toolCalls` map**。存回 map 是关键：同一次调用的所有 delta 与最终 `block-end` 由此共用同一个 id，`terminalChunks` 复用的也是它 → 落盘的 `assistant/message` 块 id 与 `tool/call` 的 `callId` 天然一致。上游后来补发真 id 时，真 id 覆盖合成 id。
+2. **`terminalChunks` 兜底**——block-end 的 id 是真正落盘的那个，再加一道 `call.id !== ''` 守卫。
+3. **outbound**——`buildChatCompletionsBody` 原先用 `??` 取 id，空串会一路带上 wire（`id: ""` / `tool_call_id: ""` 被上游拒）。改为 `firstNonEmptyId()`，并在**发消息前统一预扫一遍** blocks：空 id 的 tool-call 现场合成一个，空 id 的 tool-result 按 FIFO 取对应那次调用的 id（结果在对话顺序上总是跟在自己的调用之后），保证 assistant 的 `tool_calls[].id` 与 `role: "tool"` 的 `tool_call_id` 仍然是同一个。blocks 在运行期是 deep-frozen 的，所以解析结果放在旁挂的 `Map` 里，不回写。
+
+**验收**：
+
+- 新增 `tests/unit/openai-sse-empty-tool-call-id.test.ts`（7 例：上游省略 id / 上游发 `id:""` / 真 id 原样保留 / id 后续才到时真 id 获胜 / 同一次调用的 delta 与 block-end 同 id / 并行调用 id 互不相同 / outbound wire 不带空 `tool_call_id`）。**回滚修复后其中 5 例失败，加上修复后全绿**——即测试确实咬住了这个缺陷。
+- 端到端：把真实损坏日志（`orig.jsonl`，6501 事件）里那 3 处空 id 换成修复后适配器真实产出的 id 形状（`call_local_0_mkr4zc6w`），再喂给**真实安装版**的 `restoreReleasedV4Artifact` 校验器 → **VALID**。即修复后的 id 形状被证明能过宿主校验。
+- `tsc --noEmit` 干净；单元测试基线 727 passed / 234 failed（失败项全部是网络 / API key / 沙箱 spawn 依赖，与本改动无关），加上新测试后 734 / 234，**逐条比对基线无回归**。
+
+**遗留（需用户确认后再动）**：`session-f1b44612-…` 那份**已落盘**的坏日志仍然坏着——源码修复只阻止新的空 id，不会自动修好历史文件。修法已验证可行：把那 3 处空 id 换成同一个非空 id，再补宿主风格的闭合事件（`tool/result` + `step/end` + `turn/end`，`turn/end` reason `{kind:'interrupted'}`），得到 6504 条事件的事件流，通过真实校验器。重新编码时要用 `zstdCompress` 并带 `{ params: { [zlib.constants.ZSTD_c_checksumFlag]: 1 } }`，且**每个 frame 必须落在记录边界上**（该 `.zstd` 是 3655 个独立 frame 拼接的，不是单一 zstd 流）。该文件在工作区外、且属于用户数据，**未擅自改动**。
 

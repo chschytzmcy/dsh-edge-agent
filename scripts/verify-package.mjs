@@ -58,6 +58,31 @@ if (packed.has('lib/invariant.js')) {
   throw new Error('npm package contains the obsolete hand-built invariant entry')
 }
 
+// §7.102 security: the runtime config holds the plaintext provider keys
+// (deepseek / dashscope / tavily / bocha / edge). It must never reach a
+// distributable tarball.
+//
+// The subtlety this guard exists for: npm pack honours .npmignore INSTEAD
+// of .gitignore whenever .npmignore exists — so the `config/edge.json`
+// rule in .gitignore does NOT keep the file out of the package. The
+// .npmignore rule does; this gate proves it still holds.
+//
+// config/edge.example.json (the template) and config/privacy-policy.json
+// are expected to ship.
+const FORBIDDEN_IN_PACKAGE = [
+  'config/edge.json',
+  '.env',
+  '.env.sh',
+  '.env.example',
+]
+const leaked = FORBIDDEN_IN_PACKAGE.filter((path) => packed.has(path))
+if (leaked.length > 0) {
+  throw new Error(
+    `package would ship plaintext credentials: ${leaked.join(', ')}. `
+    + 'Add them to .npmignore (npm pack ignores .gitignore when .npmignore exists).',
+  )
+}
+
 await import(new URL(`../${manifest.main}`, import.meta.url))
 const invariant = await import(new URL('../lib/dsh-adapter/invariant.js', import.meta.url))
 if (invariant.name !== 'dsh-edge-agent-invariant' || typeof invariant.apply !== 'function') {

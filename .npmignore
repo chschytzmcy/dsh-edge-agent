@@ -10,6 +10,20 @@ profiles/
 .gitignore
 .gitattributes
 AGENTS.md
-# §7.102: config/ ships with the bundle — the runtime config lives there
-# (config/edge.json is gitignored but still published; config/privacy-policy.json
-# is tracked). Do NOT add config/ to this list.
+# §7.102: config/ ships with the bundle — the runtime config lives there.
+#
+# BUT the real config must NOT ship: config/edge.json holds the plaintext
+# secrets (deepseek / dashscope / tavily / bocha / edge api keys).
+#
+# Note the mechanism, because it is easy to get wrong: npm pack honours
+# .npmignore INSTEAD of .gitignore whenever .npmignore exists. The
+# `config/edge.json` rule in .gitignore therefore has NO effect on the
+# published tarball — before this rule was added, `npm pack` shipped the
+# real key file and the Makefile's `make package` copied it into the
+# release tarball as well.
+#
+# What ships instead: config/edge.example.json (the tracked template) and
+# config/privacy-policy.json. A deployment that needs real values creates
+# config/edge.json from the template, or lets install.sh place one at
+# ~/.dsh-edge-agent/edge.json (edge-config.ts lookup candidate #2).
+config/edge.json

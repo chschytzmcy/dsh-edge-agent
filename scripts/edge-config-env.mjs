@@ -47,6 +47,14 @@ const push = (name, value) => {
   out.push(`export ${name}=${JSON.stringify(String(value))}`)
 }
 
+// Array-valued knobs (keyword / entity lists). edge-config.ts's
+// ENV_OVERRIDES layer parses them back with `v.split(',').filter(Boolean)`,
+// so the CSV spelling is the contract — the same one the old .env used.
+const pushCsv = (name, value) => {
+  if (!Array.isArray(value) || value.length === 0) return
+  out.push(`export ${name}=${JSON.stringify(value.join(','))}`)
+}
+
 const s = cfg.secrets ?? {}
 push('EDGE_API_KEY', s.edgeApiKey)
 push('DSH_EDGE_HTTP_TOKEN', s.edgeApiKey)
@@ -72,6 +80,10 @@ push('DSH_EDGE_CLOUD_KEY_ENV', cloud.keyRef)
 push('DSH_EDGE_CLOUD_DELEGATE', cloud.delegate)
 push('DSH_EDGE_CLOUD_DELEGATE_PROVIDER', cloud.delegateProvider)
 push('DSH_EDGE_CLOUD_DELEGATE_MODEL', cloud.delegateModel)
+// The cloud pool's model id. The plugin side reads this name
+// (edge-config.ts: DSH_EDGE_MODEL → llm.cloud.model); without it here the
+// shell side could not reach that knob at all.
+push('DSH_EDGE_MODEL', cloud.model)
 
 const guard = cfg.stages?.guard ?? {}
 push('DSH_EDGE_GUARD_MODEL', guard.enabled)
@@ -87,6 +99,9 @@ push('DSH_EDGE_INTENT_CONFIDENCE_THRESHOLD', intent.confidenceThreshold)
 push('DSH_EDGE_INTENT_LLM_TIMEOUT_MS', intent.timeoutMs)
 push('DSH_EDGE_INTENT_RECENT_LIMIT', intent.recentLimit)
 push('DSH_EDGE_INTENT_MAX_INPUT', intent.maxInput)
+pushCsv('DSH_EDGE_INTENT_CLOUD_KEYWORDS', intent.cloudKeywords)
+pushCsv('DSH_EDGE_INTENT_LOCAL_ENTITIES', intent.localEntities)
+pushCsv('DSH_EDGE_INTENT_FALLBACK_KEYWORDS', intent.fallbackKeywords)
 
 const jev = cfg.jev ?? {}
 push('DSH_EDGE_INTENT_JEV_ENABLED', jev.enabled)
@@ -94,6 +109,13 @@ push('DSH_EDGE_INTENT_JEV_URL', jev.url)
 push('DSH_EDGE_INTENT_JEV_TIMEOUT_MS', jev.timeoutMs)
 push('DSH_EDGE_INTENT_JEV_CONFIDENCE_THRESHOLD', jev.confidenceThreshold)
 push('DSH_EDGE_INTENT_JEV_RISK_THRESHOLD', jev.riskThreshold)
+// Breaker / boot-probe knobs — the plugin side consumes these names
+// (edge-config.ts), so the shell side has to be able to reach them too.
+push('DSH_EDGE_INTENT_JEV_BREAKER_TTL_MS', jev.breakerTtlMs)
+push('DSH_EDGE_INTENT_JEV_BOOT_PROBE_ENABLED', jev.bootProbeEnabled)
+push('DSH_EDGE_INTENT_JEV_BOOT_PROBE_TIMEOUT_MS', jev.bootProbeTimeoutMs)
+push('DSH_EDGE_INTENT_JEV_BREAKER_PROBE_MS', jev.breakerProbeMs)
+push('DSH_EDGE_INTENT_JEV_PROBE_TIMEOUT_MS', jev.probeTimeoutMs)
 
 const fce = cfg.functionCallExternal ?? {}
 push('DSH_EDGE_FUNCTION_CALL_EXTERNAL_ENABLED', fce.enabled)
@@ -107,8 +129,10 @@ push('DSH_EDGE_REJECT_POLICY', privacy.rejectPolicyEnabled)
 push('DSH_EDGE_SANITIZE_DOWNGRADE', privacy.sanitizeDowngradeEnabled)
 push('DSH_EDGE_REALM_HOT_RELOAD', privacy.realmHotReload)
 push('DSH_EDGE_REALM_WATCH_MS', privacy.realmWatchMs)
+push('DSH_EDGE_REALM_CONFIG', privacy.realmConfigPath)
 push('DSH_EDGE_POLICY_HOT_RELOAD', privacy.policyHotReload)
 push('DSH_EDGE_POLICY_WATCH_MS', privacy.policyWatchMs)
+push('DSH_EDGE_PRIVACY_POLICY_PATH', privacy.policyPath)
 push('DSH_EDGE_SAN_TTL_MS', privacy.sanTtlMs)
 push('DSH_EDGE_SAN_MAX_SESSIONS', privacy.sanMaxSessions)
 push('DSH_EDGE_SAN_SWEEP_MS', privacy.sanSweepMs)
