@@ -2,7 +2,8 @@
 # uninstall.sh —— dsh-edge-agent 反向部署脚本 (§7.76)
 #
 # 默认行为 (无 flag) = FULL uninstall (用户拍板: 不用加任何参数,默认请全部)
-#   - **Phase 1.7 backup .env / .env.sh** → $REPO_ROOT/.env.uninstall-backup.<ts>/
+#   - **Phase 1.7 backup .env / .env.sh / config/edge.json** → $REPO_ROOT/.env.uninstall-backup.<ts>/
+#     (§7.102: live key 文件 = config/edge.json;.env 分支保留给老部署)
 #     (chmod 600 防 live key 落盘;--no-backup opt-out,**与 --keep-env 独立**)
 #   - kill + clean 所有含本 bundle fingerprint 的 profile
 #   - shred REPO_ROOT/.env (含 live API key) + rm .env.sh
@@ -184,12 +185,12 @@ if [ "$EXPLICIT_PROFILE" = 0 ]; then
   echo "  uninstall 将执行以下操作 (full mode)"
   echo "═══════════════════════════════════════════════════"
   echo ""
-  echo "  [1] backup .env / .env.sh (默认 ON):"
+  echo "  [1] backup .env / .env.sh / config/edge.json (默认 ON):"
   if [ "$DO_BACKUP" = 1 ]; then
-    if [ -f "$REPO_ROOT/.env" ] || [ -f "$REPO_ROOT/.env.sh" ]; then
-      echo "      - cp → $BACKUP_DIR/ (chmod 700;含 .env 会 chmod 600)"
+    if [ -f "$REPO_ROOT/.env" ] || [ -f "$REPO_ROOT/.env.sh" ] || [ -f "$REPO_ROOT/config/edge.json" ]; then
+      echo "      - cp → $BACKUP_DIR/ (chmod 700;含 key 的文件会 chmod 600)"
     else
-      echo "      - skip (.env / .env.sh 都不存在)"
+      echo "      - skip (.env / .env.sh / config/edge.json 都不存在)"
     fi
   else
     echo "      - skip (--no-backup)"
@@ -205,8 +206,9 @@ if [ "$EXPLICIT_PROFILE" = 0 ]; then
   echo "  [3] REPO_ROOT 环境文件:"
   if [ "$DO_KEEP_ENV" = 0 ]; then
     [ -f "$REPO_ROOT/.env" ]   && echo "      - shred $REPO_ROOT/.env (含 live API key)"
+    [ -f "$REPO_ROOT/config/edge.json" ] && echo "      - shred $REPO_ROOT/config/edge.json (含 live API key,§7.102)"
     [ -f "$REPO_ROOT/.env.sh" ] && echo "      - rm $REPO_ROOT/.env.sh"
-    if [ ! -f "$REPO_ROOT/.env" ] && [ ! -f "$REPO_ROOT/.env.sh" ]; then
+    if [ ! -f "$REPO_ROOT/.env" ] && [ ! -f "$REPO_ROOT/.env.sh" ] && [ ! -f "$REPO_ROOT/config/edge.json" ]; then
       echo "      - skip (都不存在)"
     fi
   else
@@ -243,13 +245,16 @@ if [ "$EXPLICIT_PROFILE" = 0 ]; then
   echo ""
 fi
 
-# ── Phase 1.7: backup .env / .env.sh → $BACKUP_DIR (默认 ON) ──
+# ── Phase 1.7: backup .env / .env.sh / config/edge.json → $BACKUP_DIR (默认 ON) ──
 # 必须在 Phase 2 kill 之前完成(防数据丢失:即使后续 rm -rf / shred 出错,
 # backup 已留副本)。--no-backup opt-out;--keep-env 不影响 backup(独立
 # safety net,即便不 shred 也留一份)。
+# §7.102 (2026-10-21): 含 live key 的文件从 .env 换成 config/edge.json;
+# .env/.env.sh 分支保留 —— 老部署升级卸载时它们可能还在。
 backup_env_files() {
-  if [ ! -f "$REPO_ROOT/.env" ] && [ ! -f "$REPO_ROOT/.env.sh" ]; then
-    log_info "Phase 1.7: backup skip (.env / .env.sh 都不存在)"
+  if [ ! -f "$REPO_ROOT/.env" ] && [ ! -f "$REPO_ROOT/.env.sh" ] \
+     && [ ! -f "$REPO_ROOT/config/edge.json" ]; then
+    log_info "Phase 1.7: backup skip (.env / .env.sh / config/edge.json 都不存在)"
     return 0
   fi
 
@@ -270,6 +275,16 @@ backup_env_files() {
     fi
   fi
 
+  if [ -f "$REPO_ROOT/config/edge.json" ]; then
+    if cp -p "$REPO_ROOT/config/edge.json" "$BACKUP_DIR/edge.json" 2>/dev/null; then
+      chmod 600 "$BACKUP_DIR/edge.json" 2>/dev/null || true
+      log_pass "  ✓ backup config/edge.json → $BACKUP_DIR/edge.json (chmod 600)"
+      backed=1
+    else
+      log_warn "  ✗ cp config/edge.json 失败,跳过(继续 uninstall)"
+    fi
+  fi
+
   if [ -f "$REPO_ROOT/.env.sh" ]; then
     if cp -p "$REPO_ROOT/.env.sh" "$BACKUP_DIR/.env.sh" 2>/dev/null; then
       log_pass "  ✓ backup .env.sh → $BACKUP_DIR/.env.sh"
@@ -283,8 +298,8 @@ backup_env_files() {
     echo ""
     log_warn "备份位置: $BACKUP_DIR"
     echo "  卸载后如需恢复 live API key:"
-    echo "    cp $BACKUP_DIR/.env $REPO_ROOT/.env"
-    echo "    chmod 600 $REPO_ROOT/.env"
+    echo "    cp $BACKUP_DIR/.env $REPO_ROOT/.env 2>/dev/null; cp $BACKUP_DIR/edge.json $REPO_ROOT/config/edge.json 2>/dev/null"
+    echo "    chmod 600 $REPO_ROOT/config/edge.json"
     echo ""
   fi
 }
@@ -461,7 +476,8 @@ else
   log_info "--keep-presets: skip ~/.dsh/.agent-presets/"
 fi
 
-# ── Phase 6: REPO_ROOT .env/.env.sh 清理 (默认 ON,除非 --keep-env) ──
+# ── Phase 6: REPO_ROOT .env/.env.sh/config/edge.json 清理 (默认 ON,除非 --keep-env) ──
+# §7.102: config/edge.json 含 live key,与旧 .env 同等待遇 —— shred。
 if [ "$DO_KEEP_ENV" = 0 ]; then
   if [ -f "$REPO_ROOT/.env" ]; then
     if command -v shred >/dev/null 2>&1; then
@@ -470,11 +486,18 @@ if [ "$DO_KEEP_ENV" = 0 ]; then
       rm -f "$REPO_ROOT/.env" && log_warn "shred 不可用,rm $REPO_ROOT/.env (key 可能仍可恢复)"
     fi
   fi
+  if [ -f "$REPO_ROOT/config/edge.json" ]; then
+    if command -v shred >/dev/null 2>&1; then
+      shred -u "$REPO_ROOT/config/edge.json" 2>/dev/null && log_pass "✓ shredded $REPO_ROOT/config/edge.json (live key)"
+    else
+      rm -f "$REPO_ROOT/config/edge.json" && log_warn "shred 不可用,rm $REPO_ROOT/config/edge.json (key 可能仍可恢复)"
+    fi
+  fi
   if [ -f "$REPO_ROOT/.env.sh" ]; then
     rm -f "$REPO_ROOT/.env.sh" && log_pass "✓ rm $REPO_ROOT/.env.sh"
   fi
 else
-  log_info "--keep-env: skip .env/.env.sh cleanup"
+  log_info "--keep-env: skip .env/.env.sh/config-edge.json cleanup"
 fi
 
 # ── Phase 7: summary + rollback hint ─────────────────────────
@@ -489,7 +512,7 @@ for prof in "${PROFILE_LIST[@]}"; do
 done
 [ "$DO_KEEP_PRESETS" = 0 ] && [ -d "$DSH_HOME/.agent-presets" ] && echo "  - ~/.dsh/.agent-presets/ (空时 rmdir)"
 [ "$DO_KEEP_DATA" = 0 ]   && echo "  - ~/.dsh-edge-agent/ (6 渠道数据)"
-[ "$DO_KEEP_ENV" = 0 ]    && echo "  - $REPO_ROOT/.env (shred) + .env.sh"
+[ "$DO_KEEP_ENV" = 0 ]    && echo "  - $REPO_ROOT/.env + config/edge.json (shred) + .env.sh"
 echo ""
 if [ "$DO_BACKUP" = 1 ] && [ -d "$BACKUP_DIR" ]; then
   echo "备份保留: $BACKUP_DIR"

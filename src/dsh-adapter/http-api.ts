@@ -1799,6 +1799,26 @@ export function resolveRoute(
 }
 
 export async function apply(ctx: any, config: Config): Promise<() => Promise<void>> {
+  // §7.102: the bearer token's historic source was the bare EDGE_API_KEY env
+  // exported by .env.sh (`set -a; . .env`) — with the file-based config that
+  // chain is gone, so an unset config.bearerToken must fall back to
+  // secrets.edgeApiKey in config/edge.json. checkAuth() is fail-open on an
+  // unset token, so when BOTH are empty we say so loudly in the log instead
+  // of silently serving an unauthenticated API.
+  const cfg = loadEdgeConfig(true)
+  if (config.bearerToken === undefined) {
+    const fromFile = cfg.secrets?.edgeApiKey
+    if (fromFile !== undefined && fromFile.length > 0) {
+      (config as { bearerToken?: string }).bearerToken = fromFile
+    }
+  }
+  if (config.bearerToken === undefined) {
+    ctx.logger?.warn?.(
+      '[http-api] no bearerToken configured (config/edge.json secrets.edgeApiKey is empty) '
+      + '— the HTTP API will accept requests WITHOUT authentication. '
+      + 'Set secrets.edgeApiKey or keep the API disabled.',
+    )
+  }
   const agents = ctx.get('agents')
   const auditLog = ctx.get('auditLog')
   const tdBus = ctx.get?.('tdBus')

@@ -1168,7 +1168,11 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
     fill('functionCallExternalUrl', fce.url)
     fill('functionCallExternalTimeoutMs', fce.timeoutMs)
     fill('functionCallExternalConfidenceThreshold', fce.confidenceThreshold)
+    fill('functionCallExternalBreakerTtlMs', fce.breakerTtlMs)
     fill('functionCallExternalBootProbeEnabled', fce.bootProbeEnabled)
+    fill('functionCallExternalBootProbeTimeoutMs', fce.bootProbeTimeoutMs)
+    fill('functionCallExternalBreakerProbeMs', fce.breakerProbeMs)
+    fill('functionCallExternalProbeTimeoutMs', fce.probeTimeoutMs)
   }
   const auditLog = (ctx as unknown as { auditLog?: AuditLike }).auditLog
   const service = new FunctionCallExternalServiceImpl(ctx, config, auditLog)

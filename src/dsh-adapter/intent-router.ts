@@ -157,33 +157,35 @@ export const Config: Schema<Config> = Schema.object({
   localEntities: Schema.array(Schema.string()).default([] as string[]),
   // §7.92.3 (2026-09-23): jev HTTP intent recognizer. Schema default
   // is `false` so a bare unit-test construction (no env) skips jev
-  // entirely. The PRODUCTION default is `true` — `cordis.patch.yml`
-  // reads `process.env.DSH_EDGE_INTENT_JEV_ENABLED !== 'false'`, so
-  // when the env var is unset (operator's .env doesn't write it)
-  // the toggle defaults to ON. §7.92.7 boot probe + breaker keep the
+  // entirely. §7.102: the toggle's value now comes from config/edge.json
+  // (jev.enabled, production default true) via apply()'s file-fill; the
+  // Schema carries no default so "patch row did not configure it" stays
+  // distinguishable from an explicit value. The literal fallbacks live in
+  // the constructor (this.jevXxx = config.jevXxx ?? …) and match the old
+  // schema defaults verbatim. §7.92.7 boot probe + breaker keep the
   // no-jev-running path fast-fail.
-  jevEnabled: Schema.boolean().default(false),
-  jevUrl: Schema.string().default('http://127.0.0.1:8001'),
+  jevEnabled: Schema.boolean(),
+  jevUrl: Schema.string(),
   // 2.5s = comfortably above jev's documented P95 (< 300ms) with headroom
   // for cold-start model load + inter-container network jitter. Smaller
   // than `llmTimeoutMs` (default 4-30s) so jev-as-prefilter still saves
   // the operator's overall chat budget on jev-failure paths.
-  jevTimeoutMs: Schema.natural().default(2500),
+  jevTimeoutMs: Schema.natural(),
   // Mirrors jev's built-in `execute` gate (>= 0.85). Operators tune lower
   // (e.g. 0.70) to trade more jev-adopts for higher mis-route risk.
-  jevConfidenceThreshold: Schema.number().min(0).max(1).default(0.85),
+  jevConfidenceThreshold: Schema.number().min(0).max(1),
   // Mirrors jev's built-in risk-score gate (>= 0.7 → clarify → REJECT).
-  jevRiskThreshold: Schema.number().min(0).max(1).default(0.7),
+  jevRiskThreshold: Schema.number().min(0).max(1),
   // §7.92.6 (2026-09-24): circuit-breaker TTL. 30s gives jev a chance to
   // recover (e.g. operator restarts the container) without hammering it.
   // Operators tune down (e.g. 5s) for fast-fail rigs, or up (e.g. 5min) for
   // known-flaky services where jev outage is expected to last longer.
-  jevBreakerTtlMs: Schema.natural().default(30000),
+  jevBreakerTtlMs: Schema.natural(),
   // §7.92.7 (2026-09-24): boot probe + periodic recovery probe.
-  jevBootProbeEnabled: Schema.boolean().default(true),
-  jevBootProbeTimeoutMs: Schema.natural().default(2000),
-  jevBreakerProbeMs: Schema.natural().default(5000),
-  jevProbeTimeoutMs: Schema.natural().default(1000),
+  jevBootProbeEnabled: Schema.boolean(),
+  jevBootProbeTimeoutMs: Schema.natural(),
+  jevBreakerProbeMs: Schema.natural(),
+  jevProbeTimeoutMs: Schema.natural(),
   // §7.92.3 (2026-09-23): intent category specs (descriptions + jev
   // intent lists). When privacy-policy is mounted, this is the runtime
   // override surface — tests pass categories directly. Default null:
@@ -2108,14 +2110,36 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
       ;(config as { fallbackKeywords: string[] }).fallbackKeywords = intentStage.fallbackKeywords
     }
   }
-  // §7.102: the classification model follows the LOCAL pool in
-  // config/edge.json (llm.local.model) — the file is the single source of
-  // truth. §7.100 privacy invariant: the classifier may only target the
+  // §7.102: the jev pre-filter knobs come from config/edge.json (jev.*).
+  // The Schema carries no defaults for them (constructor `??` literals are
+  // the last resort), so an unset patch row leaves the field undefined
+  // here and the file can fill it.
+  const jev = loadEdgeConfig().jev
+  if (jev) {
+    const c = config as unknown as Record<string, unknown>
+    const fill = (key: string, value: unknown): void => {
+      if (value !== undefined && c[key] === undefined) c[key] = value
+    }
+    fill('jevEnabled', jev.enabled)
+    fill('jevUrl', jev.url)
+    fill('jevTimeoutMs', jev.timeoutMs)
+    fill('jevConfidenceThreshold', jev.confidenceThreshold)
+    fill('jevRiskThreshold', jev.riskThreshold)
+    fill('jevBreakerTtlMs', jev.breakerTtlMs)
+    fill('jevBootProbeEnabled', jev.bootProbeEnabled)
+    fill('jevBootProbeTimeoutMs', jev.bootProbeTimeoutMs)
+    fill('jevBreakerProbeMs', jev.breakerProbeMs)
+    fill('jevProbeTimeoutMs', jev.probeTimeoutMs)
+  }
+  // §7.102: the classification model follows stages.intent.model when set,
+  // else the LOCAL pool (llm.local.model) — the file is the single source
+  // of truth. §7.100 privacy invariant: the classifier may only target the
   // local pool; a cloud provider here would ship the raw user text out.
-  const pool = localPool()
-  if (pool.model && config.classificationModel !== pool.model) {
-    ctx.logger?.info?.(`[intent-router] classificationModel from config/edge.json: ${config.classificationModel} → ${pool.model}`)
-    ;(config as { classificationModel: string }).classificationModel = pool.model
+  const stageModel = intentStage?.model?.trim()
+  const poolModel = stageModel && stageModel.length > 0 ? stageModel : localPool().model
+  if (poolModel && config.classificationModel !== poolModel) {
+    ctx.logger?.info?.(`[intent-router] classificationModel from config/edge.json: ${config.classificationModel} → ${poolModel}`)
+    ;(config as { classificationModel: string }).classificationModel = poolModel
   }
   const auditLog = (ctx as unknown as { auditLog?: AuditLike }).auditLog
   const service = new IntentRouterServiceImpl(ctx, config, auditLog)

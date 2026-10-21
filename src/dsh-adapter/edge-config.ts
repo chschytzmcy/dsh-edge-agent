@@ -354,6 +354,102 @@ const ENV_OVERRIDES: Array<{
     apply: (cfg, v) => { cfg.llm!.cloud!.model = v },
   },
   {
+    env: 'EDGE_API_KEY',
+    apply: (cfg, v) => { cfg.secrets!.edgeApiKey = v },
+  },
+  {
+    env: 'DSH_EDGE_HTTP_HOST',
+    apply: (cfg, v) => { cfg.http!.host = v },
+  },
+  {
+    env: 'DSH_EDGE_HTTP_PORT',
+    apply: (cfg, v) => { cfg.http!.port = Number(v) },
+  },
+  {
+    env: 'DSH_EDGE_AUDIT_MIN_LEVEL',
+    apply: (cfg, v) => { cfg.audit!.minLevel = v },
+  },
+  {
+    env: 'DSH_EDGE_AUDIT_FLUSH_MS',
+    apply: (cfg, v) => { cfg.audit!.flushMs = Number(v) },
+  },
+  {
+    env: 'DSH_EDGE_LOG_LEVEL',
+    apply: (cfg, v) => { cfg.audit!.logLevel = v },
+  },
+  {
+    env: 'DSH_EDGE_LOG_MAX_AGE_DAYS',
+    apply: (cfg, v) => { cfg.audit!.logMaxAgeDays = Number(v) },
+  },
+  {
+    env: 'DSH_EDGE_LOG_MAX_ROTATED',
+    apply: (cfg, v) => { cfg.audit!.logMaxRotated = Number(v) },
+  },
+  {
+    env: 'DSH_EDGE_MAX_SESSIONS',
+    apply: (cfg, v) => { cfg.resources!.maxSessions = Number(v) },
+  },
+  {
+    env: 'DSH_EDGE_MAX_BODY_BYTES',
+    apply: (cfg, v) => { cfg.resources!.maxBodyBytes = Number(v) },
+  },
+  {
+    env: 'DSH_EDGE_SESSION_IDLE_MS',
+    apply: (cfg, v) => { cfg.resources!.sessionIdleMs = Number(v) },
+  },
+  {
+    env: 'DSH_EDGE_TEE_TYPE',
+    apply: (cfg, v) => { cfg.tee!.type = v },
+  },
+  {
+    env: 'DSH_EDGE_PERMISSION_MODE',
+    apply: (cfg, v) => { cfg.agent!.permissionMode = v },
+  },
+  {
+    env: 'DSH_EDGE_REALM_HOT_RELOAD',
+    apply: (cfg, v) => { cfg.privacy!.realmHotReload = v !== 'false' },
+  },
+  {
+    env: 'DSH_EDGE_REALM_WATCH_MS',
+    apply: (cfg, v) => { cfg.privacy!.realmWatchMs = Number(v) },
+  },
+  {
+    env: 'DSH_EDGE_POLICY_HOT_RELOAD',
+    apply: (cfg, v) => { cfg.privacy!.policyHotReload = v !== 'false' },
+  },
+  {
+    env: 'DSH_EDGE_POLICY_WATCH_MS',
+    apply: (cfg, v) => { cfg.privacy!.policyWatchMs = Number(v) },
+  },
+  {
+    env: 'DSH_EDGE_INTENT_JEV_CONFIDENCE_THRESHOLD',
+    apply: (cfg, v) => { cfg.jev!.confidenceThreshold = Number(v) },
+  },
+  {
+    env: 'DSH_EDGE_INTENT_JEV_RISK_THRESHOLD',
+    apply: (cfg, v) => { cfg.jev!.riskThreshold = Number(v) },
+  },
+  {
+    env: 'DSH_EDGE_INTENT_JEV_BREAKER_TTL_MS',
+    apply: (cfg, v) => { cfg.jev!.breakerTtlMs = Number(v) },
+  },
+  {
+    env: 'DSH_EDGE_INTENT_JEV_BOOT_PROBE_ENABLED',
+    apply: (cfg, v) => { cfg.jev!.bootProbeEnabled = v !== 'false' },
+  },
+  {
+    env: 'DSH_EDGE_INTENT_JEV_BOOT_PROBE_TIMEOUT_MS',
+    apply: (cfg, v) => { cfg.jev!.bootProbeTimeoutMs = Number(v) },
+  },
+  {
+    env: 'DSH_EDGE_INTENT_JEV_BREAKER_PROBE_MS',
+    apply: (cfg, v) => { cfg.jev!.breakerProbeMs = Number(v) },
+  },
+  {
+    env: 'DSH_EDGE_INTENT_JEV_PROBE_TIMEOUT_MS',
+    apply: (cfg, v) => { cfg.jev!.probeTimeoutMs = Number(v) },
+  },
+  {
     env: 'DSH_EDGE_GUARD_MODEL',
     apply: (cfg, v) => { cfg.stages!.guard!.enabled = v !== 'false' },
   },
