@@ -73,13 +73,20 @@ export interface EdgeRow {
    *  the session bucket and the global bucket, which is what a pull
    *  merges. (A per-bucket counter would let either side rewind it.) */
   seq: number
+  /** §7.106: committed-turn count at record time; -1 = global-bucket row
+   *  (session-independent: boot probes, rate-limit signals — always
+   *  rendered). The client keeps session rows whose turn equals the
+   *  session's current turn — each new turn wipes the panel back to fresh
+   *  records (user ruling 2026-10-22: 新的对话旧记录删除). */
+  turn: number
 }
 
 export interface EdgeSessionSummary {
   sessionId: string
   startedAt?: number
   lastSeenAt?: number
-  /** Committed turn count (from `turn/start` session events). */
+  /** Committed turn count (from `turn/start` session events). Doubles as the
+   *  current-turn tag the client filters rows by (see {@link EdgeRow.turn}). */
   turns: number
   /** Token accounting from `assistant/message.usage`; undefined until an
    *  adapter reported usage (never faked as 0). */
@@ -119,7 +126,12 @@ const PANEL_BY_KIND: Array<{ match: (kind: string) => boolean; panel: EdgePanel 
       k === 'http.chat.route'
       || k === 'http.chat.stream.route'
       || k.startsWith('llm.cloud.')
-      || k.startsWith('llm.local.'),
+      || k.startsWith('llm.local.')
+      // §7.106: host answer routes folded from the session event stream —
+      // the desktop GUI answers through the host's own model (never an
+      // edge adapter), so without these the Route panel cannot show where
+      // the reply actually came from.
+      || k.startsWith('llm.host.'),
     panel: 'route',
   },
   {
@@ -238,14 +250,25 @@ export class EdgeContextViewServiceImpl extends Service implements EdgeContextVi
       level: entry.level,
       seq: this.rowSeq,
       payload: safePayload(entry.payload, this.cfg.piiRedact),
+      // Read-only turn tag: rows fold during a turn (pre-step runs after
+      // turn/start commits), so the count already reflects this turn.
+      // Global-bucket rows (no session — boot probes, rate-limit signals)
+      // carry the -1 sentinel: they are session-independent and always
+      // render (filtering them would silence the Threat panel forever).
+      turn: sessionId === GLOBAL_BUCKET ? -1 : (this.summaries.get(sessionId)?.turns ?? 0),
     }
     bucket.rows.push(row)
     if (bucket.rows.length > this.cfg.bufferSize) bucket.rows.splice(0, bucket.rows.length - this.cfg.bufferSize)
     bucket.lastTouched = Date.now()
   }
 
-  /** session/event fold (turn count + usage). `usage` is read defensively:
-   *  adapters report it only when the upstream answered with accounting. */
+  /** session/event fold (turn count + host answer rows + usage). `usage` is
+   *  read defensively: adapters report it only when the upstream answered
+   *  with accounting. §7.106: field names follow dsh-llm's `TokenUsage`
+   *  (`inputTokens/outputTokens/cacheReadTokens`); the earlier code read
+   *  `input/output`, which made every real host usage map to nothing while
+   *  an empty `tokens` object still painted "0 in / 0 out" — tokens is now
+   *  only created when at least one authoritative number arrived. */
   recordSessionEvent(sessionId: string, type: string, data: unknown): void {
     const summary = this.summaryFor(sessionId)
     const now = Date.now()
@@ -254,14 +277,51 @@ export class EdgeContextViewServiceImpl extends Service implements EdgeContextVi
     if (type === 'turn/start') {
       summary.turns += 1
     } else if (type === 'assistant/message') {
-      const usage = (data as { usage?: { input?: number; output?: number; cacheRead?: number } } | undefined)?.usage
+      const usage = (data as { usage?: Record<string, unknown> } | undefined)?.usage
       if (usage !== null && typeof usage === 'object') {
-        summary.tokens = summary.tokens ?? {}
-        if (typeof usage.input === 'number') summary.tokens.input = (summary.tokens.input ?? 0) + usage.input
-        if (typeof usage.output === 'number') summary.tokens.output = (summary.tokens.output ?? 0) + usage.output
-        if (typeof usage.cacheRead === 'number') summary.tokens.cacheRead = (summary.tokens.cacheRead ?? 0) + usage.cacheRead
+        const acc = (key: string, legacyKey: string): number | undefined => {
+          const v = usage[key] ?? usage[legacyKey]
+          return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : undefined
+        }
+        const input = acc('inputTokens', 'input')
+        const output = acc('outputTokens', 'output')
+        const cacheRead = acc('cacheReadTokens', 'cacheRead')
+        if (input !== undefined || output !== undefined || cacheRead !== undefined) {
+          summary.tokens = summary.tokens ?? {}
+          if (input !== undefined) summary.tokens.input = (summary.tokens.input ?? 0) + input
+          if (output !== undefined) summary.tokens.output = (summary.tokens.output ?? 0) + output
+          if (cacheRead !== undefined) summary.tokens.cacheRead = (summary.tokens.cacheRead ?? 0) + cacheRead
+        }
+      }
+    } else if (type === 'request/context') {
+      // The host resolved its answer route (dsh records this event when the
+      // provider/model changes — one row per distinct route, not per turn).
+      const ctxData = (data ?? {}) as { provider?: unknown; model?: unknown }
+      if (typeof ctxData.provider === 'string' || typeof ctxData.model === 'string') {
+        this.hostRow(sessionId, 'llm.host.route', {
+          provider: typeof ctxData.provider === 'string' ? ctxData.provider : '',
+          model: typeof ctxData.model === 'string' ? ctxData.model : '',
+        })
       }
     }
+  }
+
+  /** Synthesize a Route-panel row from a session-event observation. Same ring
+   *  and cursor as audit-fed rows; level `info`, PII-free scalars only. */
+  private hostRow(sessionId: string, kind: string, fields: Record<string, unknown>): void {
+    this.rowSeq += 1
+    const bucket = this.bucketFor(sessionId)
+    bucket.rows.push({
+      ts: Date.now(),
+      kind,
+      panel: 'route',
+      level: 'info',
+      seq: this.rowSeq,
+      payload: { ...fields },
+      turn: this.summaries.get(sessionId)?.turns ?? 0,
+    })
+    if (bucket.rows.length > this.cfg.bufferSize) bucket.rows.splice(0, bucket.rows.length - this.cfg.bufferSize)
+    bucket.lastTouched = Date.now()
   }
 
   snapshot(sessionId: string, cursor = 0): EdgeContextSnapshot {
@@ -390,7 +450,7 @@ export async function apply(ctx: Context, config: Config): Promise<() => void> {
       disposeSession = ctxOn.call(ctx, 'session/event', (session, event) => {
         const sid = typeof session?.id === 'string' && session.id.length > 0 ? session.id : undefined
         if (sid === undefined) return
-        if (event?.type !== 'turn/start' && event?.type !== 'assistant/message') return
+        if (event?.type !== 'turn/start' && event?.type !== 'assistant/message' && event?.type !== 'request/context') return
         service.recordSessionEvent(sid, event.type, event.data)
       })
     }

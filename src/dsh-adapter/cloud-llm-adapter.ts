@@ -168,28 +168,17 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
     return { id: provider, name: provider }
   }
 
+  /**
+   * §7.106 Option A: catalog deliberately empty — the cloud-llm route is
+   * pipeline plumbing (http-api delegate egress, internal routing), not a
+   * picker choice; advertising it let users accidentally select
+   * `cloud-llm/deepseek-chat` and exposed INVALID_CATALOG failures.
+   * Routing is unaffected ("catalog membership does not constrain core
+   * routing", dsh-llm lib/index.js:2080) and compaction gets its 65536 from
+   * resolveModel's context (§7.43), which stays.
+   */
   override listModels(_provider: string): Promise<readonly LlmModelInfo[]> {
-    // M1 advertises a single default model per provider route.
-    return Promise.resolve([
-      {
-        provider: this.providersList[0] ?? 'cloud',
-        id: this.defaultModel,
-        name: this.defaultModel,
-        // §7.43 (2026-09-07): mirror the local-llm-adapter §7.40 fix — declare
-        // contextWindow so basic-compaction-engine can compact long sessions.
-        // Without it, compaction logs
-        //   "compaction-basic: no context capacity for cloud-llm/deepseek-chat"
-        // and refuses to compact, leaving promptLen to grow across turns
-        // (observed: 4910 chars on the second cloud call in session
-        // 5360189d-..., 5 tool-result blocks attached after web_search chain).
-        // 65536 (64K) is the documented context window for deepseek-chat
-        // (DeepSeek-V3/V4 variants); can be lifted if a future model ships
-        // with a larger window. No OOM concern on cloud (unlike local-llm
-        // §7.40 / §7.40.1 where we kept 16384 to avoid local inference OOM).
-        contextWindow: 65536,
-        inputModalities: ['text'],
-      },
-    ])
+    return Promise.resolve([])
   }
 
   override resolveModel(
@@ -375,7 +364,7 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
         const errMsg = err?.message ?? String(err)
         lastAttemptError = `fetch: ${errMsg}`
         const durationMs = Date.now() - start
-        this.audit('error', 'llm.cloud.network_error', {
+        this.audit('error', 'llm.cloud.network_error', { sessionId: options.sessionId,
           provider: options.provider,
           model: options.model,
           durationMs,
@@ -390,7 +379,7 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
             `[cloud-llm-adapter] LLM call done sessionId=${sessionId} provider=${options.provider} model=${options.model} attempt=${attemptIndex} retried=false durationMs=${durationMs} resultLen=0 toolCallCount=0 finishKind=unknown fetchError=${errMsg}`,
           )
         } catch { /* debug only */ }
-        this.audit('info', 'llm.cloud.end', {
+        this.audit('info', 'llm.cloud.end', { sessionId: options.sessionId,
           provider: options.provider,
           model: options.model,
           durationMs,
@@ -430,7 +419,7 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
         try { respBody = await response.text() } catch { /* ignore */ }
         // HTTP 4xx/5xx — don't retry; the upstream rejected the request,
         // and retrying identical body won't help (would only amplify 429s).
-        this.audit('error', 'llm.cloud.http_error', {
+        this.audit('error', 'llm.cloud.http_error', { sessionId: options.sessionId,
           provider: options.provider,
           model: options.model,
           status: response.status,
@@ -448,7 +437,7 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
             `[cloud-llm-adapter] LLM call done sessionId=${sessionId} provider=${options.provider} model=${options.model} attempt=${attemptIndex} retried=false durationMs=${durationMs} resultLen=0 toolCallCount=0 finishKind=unknown httpError=${response.status}`,
           )
         } catch { /* debug only */ }
-        this.audit('info', 'llm.cloud.end', {
+        this.audit('info', 'llm.cloud.end', { sessionId: options.sessionId,
           provider: options.provider,
           model: options.model,
           durationMs,
@@ -520,7 +509,7 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
         wireError = err?.message ?? String(err)
         lastAttemptError = `sse: ${wireError}`
         const durationMs = Date.now() - start
-        this.audit('error', 'llm.cloud.sse_interrupted', {
+        this.audit('error', 'llm.cloud.sse_interrupted', { sessionId: options.sessionId,
           provider: options.provider,
           model: options.model,
           durationMs,
@@ -555,7 +544,7 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
       } finally {
         const durationMs = Date.now() - start
         const retried = attemptIndex > 1
-        this.audit('info', 'llm.cloud.end', {
+        this.audit('info', 'llm.cloud.end', { sessionId: options.sessionId,
           provider: options.provider,
           model: options.model,
           durationMs,
@@ -803,14 +792,13 @@ export class CloudLlmDelegateAdapterImpl extends LlmAdapter {
     return { id: provider, name: provider }
   }
 
-  override async listModels(_provider: string): Promise<readonly LlmModelInfo[]> {
-    const target = this.resolveTarget()
-    if (!target) return []
-    try {
-      return await this.accessors.llm.listModels(target.provider)
-    } catch {
-      return []
-    }
+  /** §7.106 Option A: see the base adapter's listModels — the delegate route
+   *  is deliberately invisible in the catalog (a proxy of the host's own
+   *  selection has nothing to advertise of its own). `stream()`/`resolveModel`
+   *  keep working; `firstModelId` reads the TARGET provider's catalog via the
+   *  registry, which is unaffected by what this route advertises. */
+  override listModels(_provider: string): Promise<readonly LlmModelInfo[]> {
+    return Promise.resolve([])
   }
 
   override async resolveModel(
@@ -822,9 +810,22 @@ export class CloudLlmDelegateAdapterImpl extends LlmAdapter {
     if (target && this.accessors.llm.resolveModelInfo) {
       try {
         const info = await this.accessors.llm.resolveModelInfo(target.provider, target.model ?? model, signal)
-        // Re-label onto our route id; the caller selected 'cloud-llm'.
-        // contextWindow rides along — §7.43 compaction reads it off this return.
-        return { ...info, provider }
+        // Borrow the delegate target's CAPABILITY (contextWindow, modalities,
+        // cost — §7.43 compaction reads them) but never its IDENTITY: the
+        // dsh-llm contract (INVALID_MODEL_INFO, dsh-llm lib/index.js:2121)
+        // rejects a resolve whose provider/id do not equal the caller's
+        // request — and a caller selecting 'cloud-llm/deepseek-chat' must get
+        // exactly that back, not the host route's real model ('deepseek-v4-
+        // flash-0731'). The earlier `{ ...info, provider }` kept the target's
+        // id and failed validation, killing every turn on this route.
+        const sameIdentity = info.id === model
+        return {
+          ...info,
+          provider,
+          id: model,
+          name: sameIdentity ? info.name : model,
+          ...(sameIdentity && typeof info.description === 'string' ? { description: info.description } : {}),
+        }
       } catch {
         /* fall through to static shape */
       }
@@ -851,7 +852,7 @@ export class CloudLlmDelegateAdapterImpl extends LlmAdapter {
       this.logger?.error?.(
         `[cloud-llm-adapter] NO_CLOUD_TARGET sessionId=${(options as { sessionId?: string }).sessionId ?? 'unknown'} provider=${options.provider} delegateEnabled=${this.cfg.delegateEnabled !== false}`,
       )
-      this.audit('error', 'llm.cloud.delegate.unavailable', {
+      this.audit('error', 'llm.cloud.delegate.unavailable', { sessionId: options.sessionId,
         provider: options.provider,
         model: options.model,
         delegateProvider: this.cfg.delegateProvider ?? '',

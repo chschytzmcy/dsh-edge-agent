@@ -106,11 +106,20 @@ export const edgeStore = {
       stopPollingIfIdle()
     }
   },
-  rowsFor(sessionId: string, panel: EdgePanel): EdgeRow[] {
+  /** Panel rows for the CURRENT turn only (§7.106, user ruling 2026-10-22:
+   *  新的对话旧记录删除). Rows tagged with an older turn drop out of the
+   *  view as soon as `turn/start` bumps the summary count — the panel
+   *  wipes itself each turn. Global rows (turn -1) and rows from a host
+   *  that predates the tag (turn undefined) always render. */
+  rowsFor(sessionId: string, panel: EdgePanel, currentTurn: number): EdgeRow[] {
     const s = sessions.get(sessionId)
     if (!s) return []
     const out: EdgeRow[] = []
-    for (const row of s.rows) if (row.panel === panel) out.push(row)
+    for (const row of s.rows) {
+      if (row.panel !== panel) continue
+      if (row.turn !== undefined && row.turn >= 0 && row.turn !== currentTurn) continue
+      out.push(row)
+    }
     return out.slice(-CLIENT_CAP)
   },
   summaryFor(sessionId: string): EdgeSummary {

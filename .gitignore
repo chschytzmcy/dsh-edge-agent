@@ -61,3 +61,4 @@ dist/
 .npm-cache/
 # ad-hoc screenshot drops at repo root
 /*.png
+/png/

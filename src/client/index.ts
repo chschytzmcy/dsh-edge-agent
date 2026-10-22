@@ -38,7 +38,23 @@ import type { EdgeRow, EdgeSummary } from './types'
 /* ── Identity ──────────────────────────────────────────────────────────── */
 
 export const name = 'dsh-edge-agent-client'
-export const inject: readonly string[] = []
+
+/**
+ * Hard service dependencies — exactly the pair dsh-context declares.
+ *
+ * `sidebarRightTabs` stays OUT of this list on purpose. The right Sidebar
+ * publishes that registry through `ctx.reflect.provide()` from its own fiber
+ * scope (dsh-client-ui-sidebar-right/src/client/index.ts:150), and dsh-context
+ * — the reference implementation whose Context tab demonstrably appears on
+ * this desktop — keeps it on a deferred `ctx.inject` for the same reason:
+ * the face is optional by contract, so this fiber must never pend on it.
+ *
+ * The cost of pend matters: the web boot audits every entry
+ * (dsh-client-web/src/boot-client.ts:66-88) and THROWS when one is still
+ * pending, which fails the whole application, not just this tab. A missing
+ * tab is a small loss; a boot failure is the app.
+ */
+export const inject: readonly string[] = ['slots', 'locale']
 
 const TAB_ID = 'dsh-edge-agent'
 
@@ -103,6 +119,23 @@ interface CordisCtx {
 
 /* ── The view ──────────────────────────────────────────────────────────── */
 
+/**
+ * One-glance verdict for the current turn (§7.106 clarity request): the
+ * panel rows are evidence, but the takeaway — did this turn leave the
+ * device, and was PII scrubbed first — must read as a single line.
+ */
+function verdictLine(rows: EdgeRow[]): { text: string; tone: 'local' | 'cloud' | 'wait' } {
+  const newest = <T extends EdgeRow>(list: T[]): T | undefined => list.at(-1)
+  const classify = newest(rows.filter(r => r.kind === 'intent.classify.end'))
+  const host = newest(rows.filter(r => r.kind === 'llm.host.route'))
+  const scrubbed = rows.some(r => r.kind === 'sanitizer.sanitized' || r.kind === 'guard.rule.sanitized')
+  if (classify === undefined && host === undefined) return { text: tr('verdict.waiting'), tone: 'wait' }
+  const local = classify !== undefined && classify.payload.category === 'LOCAL'
+    || host !== undefined && String(host.payload.provider ?? '').startsWith('local-llm')
+  if (local) return { text: tr('verdict.local'), tone: 'local' }
+  return { text: tr('verdict.cloud') + (scrubbed ? tr('verdict.sanitized') : ''), tone: 'cloud' }
+}
+
 function EdgeView(props: SessionProps) {
   const sessionId = props.sessionId ?? '_global'
   const [, setTick] = useState(0)
@@ -111,10 +144,13 @@ function EdgeView(props: SessionProps) {
     return edgeStore.attach(sessionId, () => setTick(t => t + 1))
   }, [sessionId])
 
-  const rows = (panel: EdgeRow['panel']) => edgeStore.rowsFor(sessionId, panel)
   const summary: EdgeSummary = edgeStore.summaryFor(sessionId)
+  const rows = (panel: EdgeRow['panel']) => edgeStore.rowsFor(sessionId, panel, summary.turns)
+  const allRows: EdgeRow[] = (['intent', 'route', 'interception', 'threat'] as const).flatMap(rows)
+  const verdict = verdictLine(allRows)
   return h('div', { class: 'dsh-edge-view' },
     h(SessionSummaryBar, { summary }),
+    h('div', { class: `dsh-edge-verdict dsh-edge-verdict--${verdict.tone}` }, verdict.text),
     h(IntentPanel, { rows: rows('intent') }),
     h(RoutePanel, { rows: rows('route') }),
     h(InterceptionPanel, { rows: rows('interception') }),
@@ -125,6 +161,27 @@ function EdgeView(props: SessionProps) {
 
 /* ── Plugin apply ──────────────────────────────────────────────────────── */
 
+/**
+ * Report a registration failure to the webview console.
+ *
+ * A failed registration and a missing plugin produce the SAME symptom — no
+ * Edge tab — and this bundle's whole failure mode used to be invisible: the
+ * catch blocks were empty, so a registry that rejected the definition (a
+ * taken id, a colliding kind, a duplicate guide-entry id) left no trace.
+ * The tab registry throws exactly on those conditions
+ * (dsh-client-ui-sidebar-right/src/client/tab-registry.ts:256-261), and the
+ * slot runtime rethrows a delayed setup failure asynchronously
+ * (ui-renderer/src/client/registry.ts:257) — so a silent catch here can even
+ * swallow an error the host meant to surface.
+ *
+ * The failure still costs only the tab: the plugin stays healthy and the
+ * other panels keep working. It is just no longer silent.
+ */
+function reportFailure(what: string, error: unknown): void {
+  const message = error instanceof Error ? error.message : String(error)
+  console.error(`[dsh-edge-agent] ${what} failed: ${message}`)
+}
+
 export function apply(ctx: CordisCtx): void {
   // Locale first: the tab title/guide are painted at registration time.
   ctx.inject(['locale'], (raw) => {
@@ -134,7 +191,10 @@ export function apply(ctx: CordisCtx): void {
     try {
       locale.register(EDGE_LOCALE_NS, EDGE_DICTIONARIES)
       setTranslator(locale.bind(EDGE_LOCALE_NS))
-    } catch { /* built-in EN table stays active */ }
+    } catch (error) {
+      // The built-in EN table stays active — the tab stays readable.
+      reportFailure('locale registration', error)
+    }
   })
 
   // Tab type seat — deferred; absent on CLI/TUI hosts.
@@ -158,10 +218,12 @@ export function apply(ctx: CordisCtx): void {
           description: () => tr('guide.description'),
         }],
       })
-    } catch { /* a rejecting registry costs only the tab */ }
+    } catch (error) {
+      reportFailure('sidebar tab type registration', error)
+    }
   })
 
-  // Body seat — keyed by the tab kind, painted with the Preact tree.
+  // Body seat — keyed by the tab kind, painted with the React tree.
   ctx.inject(['slots'], (raw) => {
     const c = raw as unknown as CordisCtx & { slots?: SlotsFace }
     const slots = c.slots
@@ -171,7 +233,17 @@ export function apply(ctx: CordisCtx): void {
         { name: 'sidebar.right.pane.tab', key: TAB_ID, locale: EDGE_LOCALE_NS },
         (props: SessionProps) => h(EdgeView, { ...props }),
       ))
-    } catch { /* body unseated: the tab falls back to the host empty state */ }
+      // The chip's title seat. The harness dispatches the title under the
+      // TYPE's id (SidebarRight.tsx:211 → `entryKey = definition?.id ?? tab.kind`),
+      // so the key here must be the registry id, not the kind — they are equal
+      // for this plugin, and the pair stays in one place so they cannot drift.
+      slots.inject('sidebar.right.pane.tab.title', () => slots.register(
+        { name: 'sidebar.right.pane.tab.title', key: TAB_ID },
+        () => h('span', { className: 'dsh-edge-tab-title' }, tr('tab.title')),
+      ))
+    } catch (error) {
+      reportFailure('sidebar tab body registration', error)
+    }
   })
 }
 

@@ -210,17 +210,24 @@ describe('§7.100 CloudLlmDelegateAdapterImpl.stream', () => {
     assert.ok(tripped)
   })
 
-  it('listModels proxies the target provider; resolveModel re-labels provider but keeps contextWindow', async () => {
+  it('§7.106 Option A: route is invisible in the catalog; resolveModel echoes the CALLER identity', async () => {
     const llm = mkLlm(['deepseek-official'], { modelsByProvider: { 'deepseek-official': [{ provider: 'deepseek-official', id: 'dm', name: 'dm' }] } })
     const d = new CloudLlmDelegateAdapterImpl(
       cfg(),
       { llm, getAgentDefaultModel: () => ({ currentSelection: () => ({ provider: 'deepseek-official', model: 'dm' }) }) } as any,
     )
-    const models = await d.listModels('cloud-llm')
-    assert.equal(models[0]!.id, 'dm')
+    // Nothing advertised: the picker never offers edge plumbing routes.
+    assert.deepEqual([...await d.listModels('cloud-llm')], [])
+    // But resolution still serves a stuck session seed (catalog does not gate
+    // routing) — provider/id must equal the caller, capability is borrowed.
     const info = await d.resolveModel('cloud-llm', 'whatever')
     assert.equal(info.provider, 'cloud-llm')   // re-labeled onto the route the caller picked
-    assert.equal(info.context?.contextWindow, 32768) // §7.43 compaction reads this off our return
+    // §7.106 production bug: dsh-llm's INVALID_MODEL_INFO gate (lib/index.js:2121)
+    // requires provider/id to equal the CALLER's request — the delegate target
+    // resolving to 'dm' must never leak its identity into the response.
+    assert.equal(info.id, 'whatever')
+    assert.equal(info.name, 'whatever')
+    assert.equal(info.context?.contextWindow, 32768) // §7.43 compaction still reads capability off the target
   })
 })
 

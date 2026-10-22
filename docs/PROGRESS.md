@@ -10806,3 +10806,82 @@ SessionFormatError: tool call id requires a nonempty string
 
 **遗留（需用户确认后再动）**：`session-f1b44612-…` 那份**已落盘**的坏日志仍然坏着——源码修复只阻止新的空 id，不会自动修好历史文件。修法已验证可行：把那 3 处空 id 换成同一个非空 id，再补宿主风格的闭合事件（`tool/result` + `step/end` + `turn/end`，`turn/end` reason `{kind:'interrupted'}`），得到 6504 条事件的事件流，通过真实校验器。重新编码时要用 `zstdCompress` 并带 `{ params: { [zlib.constants.ZSTD_c_checksumFlag]: 1 } }`，且**每个 frame 必须落在记录边界上**（该 `.zstd` 是 3655 个独立 frame 拼接的，不是单一 zstd 流）。该文件在工作区外、且属于用户数据，**未擅自改动**。
 
+## §7.106 —— Edge tab 不显示：装机的真根因（包被 pnpm 搁置在 `.ignored/`）+ client 半体契约硬化（2026-10-22）
+
+**现象**：bundle 加入 DSH Desktop profile 后，右栏始终不出现 Edge tab；dsh-context 的 Context tab 正常。
+
+**根因（装机层，已实证）**：`~/.dsh/profiles/desktop/package.json` 声明
+`"@deepseek-harness-edge-agent/dsh-edge-agent": "link:C:/.../dist/installable/dsh-edge-agent-desktop-safe"`，
+但磁盘上该包**不在 `node_modules/` 里**，而在 `node_modules/.ignored/@deepseek-harness-edge-agent/dsh-edge-agent{,_1,_2,_3}/`
+——四份被搁置的副本。`dsh.profile.bundles` 仍列着这个 bundle，所以桌面启动一切正常、
+Context tab 正常显示，**唯独 Edge tab 永不出现**：host 侧 `dsh-client-modules` 扫 loader entry
+（`resolveMeta` → `locatePkgJson` → `exactPackageSpecifier`）时找不到这个包，client 半体根本没被加载。
+
+**触发链**：`dist/installable/<variant>` 是 pnpm `link:` 的目标。历史上的 `rebuild-installable.mjs`
+用 `rm -rf` 直接删这个目录再重建 → 链接目标短暂消失 → pnpm watcher 判定「链接断了」→
+把包移进 `.ignored/`。§7.103 已改成 staging + rename 防这个，但**当时已搁置的 4 份副本没被恢复**。
+
+**修复**：`node scripts/_sync-to-nested.mjs` —— 把 `dist/installable/dsh-edge-agent-desktop-safe/`
+物理拷回 `~/.dsh/profiles/desktop/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/`
+（脚本对 symlink 情况有守卫，macOS/Linux 的 `link:` 安装下会自动跳过拷贝）。已执行并核验：
+`lib/client.js` / `lib/index.js` / `lib/dsh-adapter/edge-context-view.js` / `cordis.desktop-safe.patch.yml` /
+`config/edge.json` 全部就位，patch 的裸包名 row（`- id: dsh-edge-agent` + `name: '@deepseek-harness-edge-agent/dsh-edge-agent'`）
+在第 56-57 行。
+
+**代码层硬化**（`src/client/index.ts`、`src/client/theme.ts`）：
+
+1. **`inject` 从 `[]` 改为 `['slots','locale']`** —— 与 dsh-context 完全一致。`sidebarRightTabs`
+   **故意留在 deferred `ctx.inject` 里**：右栏通过 `ctx.reflect.provide()` 从自己的 fiber 作用域发布它，
+   而它是「契约上可选」的面。改成硬 inject 会让本 fiber 在缺该面的宿主上永久 PENDING，
+   而 web boot 的审计（`dsh-client-web/src/boot-client.ts:66-88`）对 PENDING entry 是 **throw**——
+   那会让整个应用启动失败，而不是少一个 tab。**少一个 tab 是小损失，启动失败是整个 app。**
+2. **空 `catch {}` 改为 `reportFailure()`**（`console.error` 带 `[dsh-edge-agent]` 前缀）。注册失败与
+   「插件没装」症状完全相同（都没有 tab），而旧代码把它变成了静默：注册表在 id 被占用 / kind 冲突 /
+   guide entry id 重复时都会 throw（`ui-sidebar-right/src/client/tab-registry.ts:256-261`），
+   slot runtime 还会把延迟 setup 失败异步重抛（`ui-renderer/src/client/registry.ts:257`）——
+   空 catch 连宿主本来想让你看见的错误都吞了。失败仍然只代价是这个 tab，但现在**不再静默**。
+3. **补 `sidebar.right.pane.tab.title` 座位**（此前完全缺失）。宿主按 **type 的 id** 派发 chip 标题
+   （`SidebarRight.tsx:211` → `entryKey = definition?.id ?? tab.kind`），key 取 `TAB_ID`，
+   与 dsh-context / `ui-sidebar-documentpreview` 同款。标题文案走 `tr('tab.title')`，随 locale 跟随。
+
+**一条被推翻的假设（留档）**：曾怀疑 bundle 的 export 形状（esbuild 的 `module.exports=q(ce)` 垫片）
+会被 cordis 的 `unwrapExports` 取错分支。**实测证伪**：esbuild 的 `q()` 垫片只产出
+`{__esModule:true, default:{…}, apply, inject, name, render}`，`ce` 上**没有 `default` 属性**，
+所以 `unwrapExports` 的 `exports.default ?? exports` 落到 `exports` 本身，
+`isApplicable`（`typeof plugin.apply === 'function'`）成立，cordis 正常拿到 `apply`。
+**dsh-context 的手写 banner/intro/footer 与 esbuild 垫片在 cordis 眼里等价，不必对齐。**
+
+**验收**：装机修复已落盘并逐文件核验；client 半体三处改动已落地。**待办**：`npm run build`
+（compile → typecheck:client → build:client → build:installable → 十道门禁）+ 重启 DSH Desktop
+目视确认右栏出现 "Edge" tab。本轮 Bash 工具被沙箱限流，build 与门禁未能在本环境执行。
+
+**验收闭环（2026-10-22 12:47，桌面截图为证）**：Bash 恢复后补跑全部 build——`typecheck:client` 干净、
+`build:client` 9KB、`rebuild-installable` 两 variant 重建、十道 verify 门禁全绿。过程中 mount 模拟
+门禁**当场抓住一次编辑事故**（改 `inject` 时误删 `const TAB_ID` 定义 → `TAB_ID is not defined`），
+补回后 PASSED（1 tab + body/title 双座位）。桌面重启后：`__DSH_BOOT__.entries` 含
+`@deepseek-harness-edge-agent/dsh-edge-agent`；右栏 **Edge tab 打开、四面板渲染、意图面板收到活体行
+`jev.boot_probe`（warn 着色）**——audit-log onEntry → edge-context-view fold →
+`/api/dsh-edge/context` pull → client 轮询 → 渲染，全链路实证打通。
+**遗留观察（非阻塞）**：① file-logger 的 ops 文本日志在新 boot 未追加（audit 正常），待查 exporter 挂载时序；
+② 用户若要 Edge 出现在主对话区顶部 tab 排（与 Context 并排），需另注册 `conversation.view` 座位（dsh-context 模式）。
+
+
+**§7.106 验收追加（2026-10-22 14:55，桌面实测）**：jev 关闭后意图面板零噪音；`request/context` 折叠的
+`host.route` 行实测出现（provider=qwen-token-plan-cn model=deepseek-v4-flash-0731），宿主答案路由首次
+可视化；token 累计 1250in/322out 真实入账（dsh-llm `TokenUsage` 字段名修复生效）；`routed` 行补齐
+category/edgeRouteUsed/routeSource 白名单。中途一次「发消息无响应、无报错、无审计事件」经重启恢复
+——瞬态宿主卡死，非会话毒化。**遗留**：file-logger ops 日志 14:32/14:55 两次 boot 未写（09:17 有写，
+audit 流正常），疑点=裸 row apply() 的 installFileLogger 与独立 row 双装冲突，待单独排查。
+
+**§7.106 追加（2026-10-22 傍晚，同日连环修复）**：Edge tab 上线后连带修掉一条 delegate 病灶链——
+① `resolveModel` 泄漏委托目标身份 → dsh-llm INVALID_MODEL_INFO 整轮失败（回显调用方 id/name，能力照借）；
+② `listModels` 透传宿主路由品牌 → INVALID_CATALOG 红条（方案 A：local-llm/cloud-llm 双双从目录隐身
+  ——"目录成员不约束核心路由"是 dsh-llm 明文契约；/v1/models 走 modelRouter 自己的目录，http-api 消费端不受影响）；
+③ input-guard 降级携带云端 reasoningEffort → 本地模型拒收 "does not support reasoning effort high"（降级剥离 effort）；
+④ 宿主持久化"最近执行路由=当前模型"（session-controller `current` 回退 requestHeader）→ 降级轮把选择器
+  污染成 local-llm/空白（方案 A 后）→ 新增 turn/end 监听 `selectionRestoreTarget` 纯函数 + selectModel 回写
+  真实原选择（17:07 实测回写占位符 cloud-llm/deepseek-chat 失败 → 改为降级瞬间从 seed 抓
+  deepseek-account/deepseek-flash 覆盖，17:26 实测 `selection.restored` 成功、选择器轮末自动归位）。
+新增测试：selectionRestoreTarget 4 例、resolveModel/listModels 契约 2 处、降级剥离 effort 1 断言（118/118 绿）。
+待验证：跨轮清屏（同会话第二轮瞬间清掉第一轮行）。已知残留：guard 检测在 67.0.0.5 的 27b 上稳定 15-19s
+且多次 json-parse-failed（fail-open 在岗），建议 stages.guard.model 换 4b 档，待用户拍板。

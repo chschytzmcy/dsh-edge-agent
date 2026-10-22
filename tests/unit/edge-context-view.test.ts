@@ -181,6 +181,38 @@ describe('session summary fold', () => {
     assert.equal(snap.rows.length, 0)
     assert.equal(snap.summary.turns, 0)
   })
+
+  it('§7.106 host TokenUsage names (inputTokens/...) accumulate; empty usage never fakes 0', () => {
+    const svc = makeService()
+    svc.recordSessionEvent('s1', 'assistant/message', { usage: { inputTokens: 120, outputTokens: 30, cacheReadTokens: 5 } })
+    assert.deepEqual(svc.snapshot('s1').summary.tokens, { input: 120, output: 30, cacheRead: 5 })
+    const svc2 = makeService()
+    svc2.recordSessionEvent('s2', 'assistant/message', { usage: {} })
+    assert.equal(svc2.snapshot('s2').summary.tokens, undefined)
+  })
+
+  it('§7.106 rows carry the turn tag current at fold time; globals get -1', () => {
+    const svc = makeService()
+    // pre-turn audit row → turn 0
+    svc.record({ ts: Date.now(), level: 'info', kind: 'intent.classify.start', source: 'intent-router', payload: { sessionId: 's9', textLen: 2 } })
+    assert.equal(svc.snapshot('s9').rows[0].turn, 0)
+    svc.recordSessionEvent('s9', 'turn/start', {})
+    svc.record({ ts: Date.now(), level: 'info', kind: 'intent.classify.end', source: 'intent-router', payload: { sessionId: 's9', category: 'LOCAL' } })
+    assert.equal(svc.snapshot('s9').rows.at(-1)?.turn, 1)
+    // no session → global bucket → sentinel -1 (client always renders it)
+    svc.record({ ts: Date.now(), level: 'warn', kind: 'input.global-rate-limit', source: 'td-bus', payload: { count: 42 } })
+    assert.equal(svc.snapshot('s9').rows.find(r => r.kind === 'input.global-rate-limit')?.turn, -1)
+  })
+
+  it('§7.106 request/context folds the host answer route into the Route panel', () => {
+    const svc = makeService()
+    svc.recordSessionEvent('s3', 'request/context', { provider: 'deepseek-official', model: 'deepseek-v4-flash' })
+    const row = svc.snapshot('s3').rows.find(r => r.kind === 'llm.host.route')
+    assert.ok(row, 'host route row folded')
+    assert.equal(row.panel, 'route')
+    assert.equal(row.payload.provider, 'deepseek-official')
+    assert.equal(row.payload.model, 'deepseek-v4-flash')
+  })
 })
 
 describe('auditLog.onEntry wiring', () => {

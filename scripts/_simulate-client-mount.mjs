@@ -176,6 +176,18 @@ if (!bodySeat) {
     console.error(`FAIL: slot key "${bodySeat.entry?.key}" !== registry id "${expectedKey}" — sidebar-right dispatches with entryKey = definition.id`)
     failed = true
   }
+  // The chip title seat. The harness dispatches the title under the TYPE's
+  // id (SidebarRight.tsx:211 → entryKey = definition?.id ?? tab.kind); a
+  // missing title registration still renders the chip (the captured title
+  // is the fallback), but the plugin is expected to seat it explicitly.
+  const titleSeat = slotEntries.find((s) => s.seat === 'sidebar.right.pane.tab.title')
+  if (!titleSeat) {
+    console.error('FAIL: no title seated at sidebar.right.pane.tab.title')
+    failed = true
+  } else if (titleSeat.entry?.key !== expectedKey) {
+    console.error(`FAIL: title slot key "${titleSeat.entry?.key}" !== registry id "${expectedKey}"`)
+    failed = true
+  }
   // The body must render a React element (the host renderer is React).
   const el = bodySeat.entry?.render?.({ sessionId: 's1' })
   if (!el || typeof el !== 'object' || !('type' in el)) {

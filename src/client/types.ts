@@ -13,6 +13,10 @@ export interface EdgeRow {
   level: string
   seq: number
   payload: Record<string, unknown>
+  /** §7.106: committed-turn count at host record time; -1 = global-bucket
+   *  row (always rendered). Rows of older turns are dropped from the panel
+   *  by the store — each new turn wipes back to fresh records. */
+  turn?: number
 }
 
 export interface EdgeSummary {

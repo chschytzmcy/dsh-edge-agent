@@ -190,7 +190,7 @@ declare module '@deepseek-ai/cordis' {
 }
 
 /** Per-session 的"这一步做了脱敏"状态。WeakMap 让 session 被 dispose 后自动回收。*/
-interface StepSanitizationState {
+export interface StepSanitizationState {
   /** 当前 turn/step 是否做了脱敏。每次 agent/pre-step 入口重置。*/
   sanitized: boolean
   /** 替换次数（0 = 没替换，无需 desanitize）。*/
@@ -443,6 +443,11 @@ export class InputGuardServiceImpl extends Service {
   /** 当前 session 是否有活跃的脱敏状态（desanitize 用）。*/
   getStepState(sessionId: string): StepSanitizationState | undefined {
     return this.stepState.get(sessionId)
+  }
+
+  /** Exposed for tests: the step-state map the turn/end restore listener reads. */
+  setStepState(sessionId: string, state: StepSanitizationState): void {
+    this.stepState.set(sessionId, state)
   }
 
   /**
@@ -1360,9 +1365,15 @@ export class InputGuardServiceImpl extends Service {
           + `再用 DSH_EDGE_LOCAL_LLM_KEY_ENV 指定存放密钥的环境变量名）后重试。`,
         )
       }
-      // 改写 route 到 LOCAL。保留 reasoningEffort / maxTokens 等其他字段。
+      // 改写 route 到 LOCAL。maxTokens 等其他字段保留，但 §7.106 (2026-10-22)
+      // 起剥离 reasoningEffort：ollama / OpenAI-compatible 本地模型不声明支持
+      // 思考档位，把云端选择携带的 `high` 原样带进 local-llm，prepareCall 会
+      // 直接抛 `provider "local-llm" model "qwen3.8:27b" does not support
+      // reasoning effort "high"`，整轮失败（桌面实测）。LOCAL 语义本就是
+      // "用本地能力答"，档位随本地服务端默认，无需继承云端意图。
+      const { reasoningEffort: _droppedEffort, ...seedRest } = seedConfig
       const downgraded: AgentRequestConfig = {
-        ...seedConfig,
+        ...seedRest,
         provider: this.config.localProvider,
         model: this.config.localModel,
       }
@@ -1382,6 +1393,22 @@ export class InputGuardServiceImpl extends Service {
         to: { provider: downgraded.provider, model: downgraded.model },
         reason: state.downgradeReason,
       })
+      // §7.106 (2026-10-22): pre-step 写的 originalProvider 可能是回退占位
+      // （'cloud-llm/deepseek-chat'，originalProviderSource=default-cloud-fallback）
+      // ——webui 路径 pre-step 读不到 seed 的真实路由。seedConfig 才是用户此刻
+      // 真实的选择，turn-end 的 selection-restore 只允许回写这个值：占位符在
+      // 方案 A 后指向隐藏路由，restore 必失败（实测 restore-failed
+      // "Select an available model"）。seed 本来就是 local 时不覆盖（无 restore 意义）。
+      if (
+        typeof seedConfig.provider === 'string'
+        && seedConfig.provider.length > 0
+        && seedConfig.provider !== this.config.localProvider
+      ) {
+        state.originalProvider = seedConfig.provider
+        if (typeof seedConfig.model === 'string' && seedConfig.model.length > 0) {
+          state.originalModel = seedConfig.model
+        }
+      }
       return downgraded
     }
 
@@ -1705,6 +1732,29 @@ async function flushBuffer(
   return await sanitizer.desanitize(safePrefix, sessionId)
 }
 
+/**
+ * §7.106: decide what (if anything) to restore as the session's model
+ * selection when a turn ends after an input-guard downgrade. The host
+ * persists the effective request header as the user's "current model"
+ * (session-controller/src/agent.ts: `picked` first, else `requestHeader()`),
+ * so a rewrite to local-llm leaves the GUI stale — shown as `local-llm`
+ * while the route was visible, blank after Option A hid it. A restore fires
+ * only for a genuinely downgraded turn whose original route was a foreign
+ * (non-local) provider/model pair; missing pieces or an already-local
+ * original must not touch the selection.
+ */
+export function selectionRestoreTarget(
+  state: StepSanitizationState | undefined,
+  localProvider: string,
+): { provider: string; model: string } | undefined {
+  if (state?.downgraded !== true) return undefined
+  const provider = state.originalProvider
+  const model = state.originalModel
+  if (typeof provider !== 'string' || provider.length === 0 || provider === localProvider) return undefined
+  if (typeof model !== 'string' || model.length === 0) return undefined
+  return { provider, model }
+}
+
 export async function apply(ctx: Context, config: Config): Promise<() => Promise<void>> {
   // §7.102: the guard switches come from config/edge.json (privacy.*).
   // The cordis patch row no longer reads process.env — the desktop GUI
@@ -1837,6 +1887,63 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
       payload: { event: 'agent/request', global: true, disposerReturned: typeof d3 === 'function' },
     })
     if (d3) disposers.push(d3)
+
+    // §7.106 (2026-10-22): after a downgrade turn, restore the SESSION's model
+    // selection. The host treats the last committed request header as the
+    // user's current model (session-controller/src/agent.ts: `current` reads
+    // `picked` first, else `session.requestHeader()`), so every rewrite to
+    // local-llm leaves the GUI stale — it used to display `local-llm` (a
+    // visible pollution) and, since Option A hid the edge plumbing routes,
+    // the same stale seed renders as an empty "请选择模型". On turn/end of a
+    // downgraded turn we call sessionController.selectModel with the original
+    // user selection recorded in the step state: that installs an explicit
+    // `picked` (which outranks the header fallback) and appends the durable
+    // `model/selection` event. Execution routing is unaffected — the next
+    // turn's pre-step re-decides from scratch.
+    //
+    // Deferred inject: headless profiles never compose the controller —
+    // then the restore simply never fires (no GUI to pollute) and the §7.43
+    // request-level restore keeps covering route stickiness.
+    let sessionController: { selectModel?: (request: Record<string, unknown>) => Promise<unknown> } | undefined
+    ctx.inject(['sessionController'], (raw: any) => {
+      sessionController = raw?.sessionController
+    })
+    const d4 = on('session/event', (session: any, event: any) => {
+      try {
+        if (event?.type !== 'turn/end') return
+        const sid = typeof session?.id === 'string' ? session.id : undefined
+        if (sid === undefined) return
+        const target = selectionRestoreTarget(service.getStepState(sid), config.localProvider)
+        if (target === undefined) return
+        const { provider, model } = target
+        const select = sessionController?.selectModel
+        if (typeof select !== 'function') return
+        void Promise.resolve(select.call(sessionController, { sessionId: sid, provider, model }))
+          .then(() => {
+            void auditLog?.log?.({
+              level: 'info',
+              kind: 'input-guard.selection.restored',
+              source: 'input-guard',
+              payload: { sessionId: sid, provider, model },
+            })
+          })
+          .catch((error: unknown) => {
+            void auditLog?.log?.({
+              level: 'warn',
+              kind: 'input-guard.selection.restore-failed',
+              source: 'input-guard',
+              payload: { sessionId: sid, provider, model, error: String(error) },
+            })
+          })
+      } catch { /* a failing restore must never touch event dispatch */ }
+    })
+    void auditLog?.log?.({
+      level: 'info',
+      kind: 'input-guard.hook.registered',
+      source: 'input-guard',
+      payload: { event: 'session/event(turn/end)', global: false, disposerReturned: typeof d4 === 'function' },
+    })
+    if (d4) disposers.push(d4)
   }
 
   return async () => {

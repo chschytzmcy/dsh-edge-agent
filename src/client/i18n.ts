@@ -20,6 +20,10 @@ const EN: Dict = {
   'row.empty': 'no events yet',
   'row.stale': 'edge host unreachable',
   'guide.description': 'Intent classification · model routing · guard / sanitizer events · threat levels',
+  'verdict.local': 'This turn: answered locally — data never left the device',
+  'verdict.cloud': 'This turn: answered by the cloud route',
+  'verdict.sanitized': ' (PII sanitized first)',
+  'verdict.waiting': 'This turn: awaiting classification',
 }
 
 const ZH: Dict = {
@@ -35,6 +39,10 @@ const ZH: Dict = {
   'row.empty': '暂无事件',
   'row.stale': 'edge 服务不可达',
   'guide.description': '意图分类 · 模型路由 · 防护/脱敏事件 · 威胁档位',
+  'verdict.local': '本轮：本地模型作答 —— 数据未离开设备',
+  'verdict.cloud': '本轮：云端作答',
+  'verdict.sanitized': '（已先脱敏）',
+  'verdict.waiting': '本轮：等待意图判定',
 }
 
 let t: (key: string) => string = (key) => EN[key] ?? key

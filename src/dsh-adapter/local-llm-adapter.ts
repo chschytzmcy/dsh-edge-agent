@@ -261,31 +261,17 @@ class RealLocalAdapter extends LlmAdapter {
     return { id: this.providerName, name: this.providerName }
   }
 
+  /**
+   * §7.106 Option A: the catalog (the desktop's model picker) is deliberately
+   * EMPTY — local-llm is privacy-pipeline plumbing (guard/intent internal
+   * stages + input-guard's per-turn downgrade route), not a user choice.
+   * dsh-llm documents the decoupling ("catalog membership does not constrain
+   * core routing", lib/index.js:2080): stream/resolve keep serving the route,
+   * and compaction reads its 16384 window off resolveModel's context (the
+   * §7.40 capacity lives there now — a hidden catalog can no longer carry it).
+   */
   override listModels(_provider: string): Promise<readonly LlmModelInfo[]> {
-    return Promise.resolve([
-      {
-        provider: this.providerName,
-        id: this.defaultModel,
-        name: this.defaultModel,
-        // §7.40 (2026-09-04): advertise contextWindow so basic-compaction-engine
-        // can compact long conversations. Without this, compaction logs
-        //   "compaction-basic: no context capacity for local-llm/qwen3-4b-instruct-2507"
-        // and refuses to compact, leaving messageCount/promptLen to grow
-        // across turns. The local model then degrades to empty/garbled
-        // completions after the second or third call (observed in session
-        // 7eb91d59-...: call 1=19s/61 chars/tool-calls, call 2=1s/12 chars/
-        // malformed `</tool_call>`, call 3=218ms/0 chars/finishKind=unknown).
-        // 16384 is the user-reported hard cap for this local qwen3-4b
-        // server (16K OOMs observed at higher settings; this machine is
-        // shared with other workloads, so a conservative ceiling is the
-        // only safe choice). Can be lifted once we measure the local
-        // server's actual capacity. §7.40.1 (2026-09-07): lowered from
-        // 32768 → 16384 after operator confirmed the local server's
-        // effective context window is 16K, not 32K.
-        contextWindow: 16384,
-        inputModalities: ['text'],
-      },
-    ])
+    return Promise.resolve([])
   }
 
   override resolveModel(
@@ -464,7 +450,7 @@ class RealLocalAdapter extends LlmAdapter {
           `[local-llm-adapter] LLM call done sessionId=${sessionId} provider=${options.provider} model=${this.defaultModel} route=${options.model} durationMs=${durationMs} resultLen=${assembledText.length} toolCallCount=${toolCalls.size} finishKind=${finishKind ?? 'unknown'}${wireError !== undefined ? ` wireError=${wireError}` : ''}`,
         )
       } catch { /* debug only */ }
-      audit(this.auditLog, 'info', 'llm.local.end', {
+      audit(this.auditLog, 'info', 'llm.local.end', { sessionId: options.sessionId,
         provider: options.provider,
         model: this.defaultModel,
         route: options.model,
@@ -507,7 +493,7 @@ class RealLocalAdapter extends LlmAdapter {
       MALFORMED_TOOL_CALL_TEXT_RE.test(assembledText)
     ) {
       const hasRealToolCalls = toolCalls.size > 0
-      audit(this.auditLog, 'warn', 'llm.local.malformed_tool_call', {
+      audit(this.auditLog, 'warn', 'llm.local.malformed_tool_call', { sessionId: options.sessionId,
         provider: options.provider,
         model: options.model,
         resultLen: assembledText.length,

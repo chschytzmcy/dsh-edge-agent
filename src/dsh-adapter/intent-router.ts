@@ -565,6 +565,11 @@ export class IntentRouterServiceImpl extends Service {
   async classify(text: string, context?: { recentMessages?: unknown[]; sessionId?: string }): Promise<Intent> {
     const start = Date.now()
     this.stats.total++
+    // §7.106 (2026-10-22): thread the session id into every panel-visible classify
+    // audit. Without it the fold drops these rows into the _global bucket
+    // (turn sentinel -1) and per-turn wiping never hides them — observed:
+    // turn-1 classify rows still on screen during turn 2 (17:47 desktop).
+    const sid = typeof context?.sessionId === 'string' ? context.sessionId : ''
 
     // Input edge: empty / whitespace-only text → short-circuit to default.
     // Wasted LLM call is still bounded by llmTimeoutMs, but on the hot path
@@ -586,7 +591,7 @@ export class IntentRouterServiceImpl extends Service {
     let effectiveText = text
     if (text.length > this.maxInputLength) {
       this.stats.truncated++
-      this.audit('warn', 'intent.classify.truncated', {
+      this.audit('warn', 'intent.classify.truncated', { sessionId: sid,
         originalLen: text.length,
         truncatedLen: this.maxInputLength,
         maxInputLength: this.maxInputLength,
@@ -610,7 +615,7 @@ export class IntentRouterServiceImpl extends Service {
         const pre = policy.matchRouting(effectiveText)
         if (pre && pre.realm === 'REJECT') {
           this.stats.rejected++
-          this.audit('security', 'intent.rules.rejected', {
+          this.audit('security', 'intent.rules.rejected', { sessionId: sid,
             source: 'privacy-policy-precheck',
             pattern: pre.pattern,
             confidence: pre.confidence,
@@ -625,13 +630,13 @@ export class IntentRouterServiceImpl extends Service {
           }
         }
       } catch (err: any) {
-        this.audit('warn', 'intent.policy.precheck-error', { error: err?.message ?? String(err) })
+        this.audit('warn', 'intent.policy.precheck-error', { sessionId: sid, error: err?.message ?? String(err) })
         // Pre-check failure is non-fatal; fall through to LLM+rules path.
       }
     }
 
     const textPreview = this.redactPreview(effectiveText) ?? `[len=${effectiveText.length}]`
-    this.audit('info', 'intent.classify.start', { textLen: effectiveText.length, textPreview, classifier: this.classificationProvider, model: this.classificationModel })
+    this.audit('info', 'intent.classify.start', { sessionId: sid, textLen: effectiveText.length, textPreview, classifier: this.classificationProvider, model: this.classificationModel })
 
     // §7.92.3 (2026-09-23): jev prefilter. When enabled, runs BEFORE the
     // LLM classifier so confident jev verdicts (action=execute, conf >=
@@ -646,7 +651,7 @@ export class IntentRouterServiceImpl extends Service {
         // (and `jevReject` for jev-specific observability).
         this.stats.rejected++
         this.stats.jevReject++
-        this.audit('info', 'intent.classify.end', {
+        this.audit('info', 'intent.classify.end', { sessionId: sid,
           textLen: effectiveText.length,
           path: 'jev-reject',
           category: 'REJECT',
@@ -681,7 +686,7 @@ export class IntentRouterServiceImpl extends Service {
               targetRealm: 'local',
               rationale: `override-local-entity:${entityHit}`,
             }
-            this.audit('warn', 'intent.classify.entity_override', {
+            this.audit('warn', 'intent.classify.entity_override', { sessionId: sid,
               from: adopted.category,
               to: 'LOCAL',
               entity: entityHit,
@@ -692,7 +697,7 @@ export class IntentRouterServiceImpl extends Service {
             })
           }
         }
-        this.audit('info', 'intent.classify.end', {
+        this.audit('info', 'intent.classify.end', { sessionId: sid,
           textLen: effectiveText.length,
           path: finalIntent === adopted ? 'jev-adopt' : 'jev-adopt-entity-override',
           category: finalIntent.category,
@@ -735,7 +740,7 @@ export class IntentRouterServiceImpl extends Service {
             targetRealm: 'local',
             rationale: `override-local-entity:${entityHit}`,
           }
-          this.audit('warn', 'intent.classify.entity_override', {
+          this.audit('warn', 'intent.classify.entity_override', { sessionId: sid,
             from: intent.category,
             to: 'LOCAL',
             entity: entityHit,
@@ -745,7 +750,7 @@ export class IntentRouterServiceImpl extends Service {
           })
         }
       }
-      this.audit('info', 'intent.classify.end', {
+      this.audit('info', 'intent.classify.end', { sessionId: sid,
         textLen: effectiveText.length,
         path: finalIntent === intent ? 'llm' : 'llm-entity-override',
         category: finalIntent.category,
@@ -757,13 +762,13 @@ export class IntentRouterServiceImpl extends Service {
     } catch (err: any) {
       // classifyWithLlm already audited the specific kind (timeout vs error
       // vs low-confidence vs unclear). Here we just attribute the fallback.
-      this.audit('warn', 'intent.classify.llm_error', { textLen: effectiveText.length, error: err?.message ?? String(err) })
+      this.audit('warn', 'intent.classify.llm_error', { sessionId: sid, textLen: effectiveText.length, error: err?.message ?? String(err) })
       // Fall back to keyword rules
       const intent = this.classifyWithRules(effectiveText)
       if (intent.category === 'REJECT') this.stats.rejected++
       else if (intent.rationale.startsWith('default:')) this.stats.defaultHit++
       else this.stats.ruleHit++
-      this.audit('info', 'intent.classify.end', {
+      this.audit('info', 'intent.classify.end', { sessionId: sid,
         textLen: effectiveText.length,
         path: 'rules-after-llm-error',
         category: intent.category,
@@ -1285,7 +1290,7 @@ export class IntentRouterServiceImpl extends Service {
           this.stats.sanitizeError++
           // SECURITY-level: PII failed to be stripped from text that the
           // router would have forwarded to a CLOUD LLM. SIEM must surface.
-          this.audit('security', 'intent.llm.sanitize-error', {
+          this.audit('security', 'intent.llm.sanitize-error', { sessionId: sessionId ?? '',
             error: err?.message ?? String(err),
             originalLen: text.length,
           })
@@ -1296,7 +1301,7 @@ export class IntentRouterServiceImpl extends Service {
         }
       } else {
         this.stats.sanitizeSkipped++
-        this.audit('security', 'intent.llm.sanitize-unavailable', { reason: 'no-sanitizer-handle' })
+        this.audit('security', 'intent.llm.sanitize-unavailable', { sessionId: sessionId ?? '', reason: 'no-sanitizer-handle' })
         // Fail-closed: throw so classifyWithLlm catches → classifyWithRules
         const e: any = new Error('intent-router: cloud sanitization unavailable')
         e._intentRouterReason = 'sanitize-unavailable'
@@ -1334,7 +1339,7 @@ export class IntentRouterServiceImpl extends Service {
             // Fail-closed for this history entry: omit rather than leak raw PII.
             // The current message has already been sanitized (or we would have
             // thrown above), so only this particular history entry is skipped.
-            this.audit('warn', 'intent.llm.history-sanitize-error', {
+            this.audit('warn', 'intent.llm.history-sanitize-error', { sessionId: sessionId ?? '',
               error: err?.message ?? String(err),
               role,
             })
@@ -1472,7 +1477,7 @@ confidence 含义：
     // "模型话看不懂"分开；随后走既有 rules fallback（classify() 外层 catch）。
     if (providerFailure && responseText.trim().length === 0) {
       this.stats.llmError++
-      this.audit('warn', 'intent.llm.provider_error', {
+      this.audit('warn', 'intent.llm.provider_error', { sessionId: sessionId ?? '',
         provider,
         model,
         code: providerFailure.code ?? 'UNKNOWN',
