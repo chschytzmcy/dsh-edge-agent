@@ -22,7 +22,7 @@ import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { redactObject } from './pii-utils.js'
 import { renameWithRetry } from './local-storage.js'
-import { edgeHome, loadEdgeConfig } from './edge-config.js'
+import { edgeConfigCandidates, edgeConfigPath, edgeHome, loadEdgeConfig } from './edge-config.js'
 
 export const name = 'audit-log'
 
@@ -418,6 +418,20 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
   const service = new AuditLogServiceImpl(ctx, config)
   await mkdir(dirname(service.filePathForTests()), { recursive: true }).catch(() => {})
   service.start()
+  // §7.107 (2026-10-23): the loaded config file is the single most
+  // operationally important fact about a running bundle — three candidate
+  // paths exist (bundle config/edge.json → ~/.dsh-edge-agent/edge.json →
+  // bundle config/edge.example.json) and the operator had no way to see
+  // which one won. One boot row settles it.
+  await service.log({
+    level: 'info',
+    kind: 'config.loaded',
+    source: 'audit-log',
+    payload: {
+      path: edgeConfigPath() ?? '(defaults — no config file found)',
+      candidates: edgeConfigCandidates(),
+    },
+  }).catch(() => { /* a boot note must never break the boot */ })
   return async () => {
     service.stopForTests()
     await service.flush()

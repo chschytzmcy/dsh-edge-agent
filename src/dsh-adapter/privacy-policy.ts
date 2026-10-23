@@ -18,10 +18,10 @@ import { Service } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
 import { readFile, stat } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { dirname, join } from 'node:path'
 import { createHmac, timingSafeEqual } from 'node:crypto'
 import { PII_PATTERNS, PII_ORDER, PII_DATA_CLASS } from './pii-utils.js'
-import { edgeHome, loadEdgeConfig } from './edge-config.js'
+import { edgeBundleRoot, edgeHome, loadEdgeConfig } from './edge-config.js'
 
 export const name = 'privacy-policy'
 
@@ -498,7 +498,18 @@ export async function apply(ctx: any, config: Config): Promise<() => Promise<voi
   const p = loadEdgeConfig().privacy
   const c = config as Partial<Config>
   if (c.policyPath === undefined) {
-    c.policyPath = p?.policyPath && p.policyPath.length > 0 ? p.policyPath : edgeHome('privacy-policy.json')
+    // §7.107 (2026-10-23): the operator's copy under ~/.dsh-edge-agent/
+    // wins, but a released bundle also ships its own config/privacy-policy
+    // .json — without this fallback an npm/desktop install ran on the
+    // 3-rule in-code DEFAULT_POLICY (no credential / PII-stays-local
+    // routing rules) because nothing ever copied the shipped policy
+    // there. The bundle's own copy is the shipped truth; the operator's
+    // copy is the override.
+    const operatorCopy = edgeHome('privacy-policy.json')
+    const shippedCopy = join(edgeBundleRoot(), 'config', 'privacy-policy.json')
+    c.policyPath = p?.policyPath && p.policyPath.length > 0
+      ? p.policyPath
+      : existsSync(operatorCopy) ? operatorCopy : shippedCopy
   }
   if (c.hotReload === undefined && p?.policyHotReload !== undefined) c.hotReload = p.policyHotReload
   if (c.watchIntervalMs === undefined && p?.policyWatchMs !== undefined) c.watchIntervalMs = p.policyWatchMs

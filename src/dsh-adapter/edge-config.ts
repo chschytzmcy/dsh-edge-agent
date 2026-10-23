@@ -309,6 +309,17 @@ export const DEFAULT_EDGE_CONFIG: EdgeConfig = {
 let cached: EdgeConfig | undefined
 let cachedPath: string | undefined
 
+/**
+ * Root of the installed bundle (the directory holding `lib/` and
+ * `config/`), or the repo root when running from source.
+ *
+ * src/dsh-adapter/ → repo root (dev) or bundle root (installed).
+ */
+export function edgeBundleRoot(): string {
+  const here = dirname(fileURLToPath(import.meta.url))
+  return resolve(here, '..', '..')
+}
+
 /** Candidate paths, in priority order. */
 export function edgeConfigCandidates(): string[] {
   // §7.102: DSH_EDGE_CONFIG_FILE=off disables file-based configuration
@@ -318,9 +329,7 @@ export function edgeConfigCandidates(): string[] {
   if (typeof process !== 'undefined' && process.env?.DSH_EDGE_CONFIG_FILE === 'off') {
     return []
   }
-  const here = dirname(fileURLToPath(import.meta.url))
-  // src/dsh-adapter/ → repo root (dev) or bundle root (installed)
-  const bundleRoot = resolve(here, '..', '..')
+  const bundleRoot = edgeBundleRoot()
   const home = homedir()
   return [
     join(bundleRoot, 'config', 'edge.json'),
