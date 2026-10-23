@@ -247,3 +247,98 @@ desktop-safe 产物多挂一个 host 插件 `edge-context-view`（仅 auditLog �
 详细规则、配置旋钮、PII 纪律见 [docs/edge-context-tab-plan.md](edge-context-tab-plan.md) 与 [docs/PROGRESS.md §7.101](PROGRESS.md)；客户端数据通路分析见 [docs/notes/dsh-context-walkthrough.md](notes/dsh-context-walkthrough.md)。
 
 建议顺序：先用 `desktop-safe` 验证插件能挂载；确认后再决定是否需要 full 或自定义 patch。
+
+### 8.5 §7.107：输入框收「目录」还是「压缩包」——都行
+
+桌面插件管理器的 spec 解析器在 app.asar 里
+（`@deepseek-ai/dsh-plugin-manager/lib/types/install-spec.js`）：
+
+```js
+const TARBALL_SPEC = /\.(?:tgz|tar\.gz)(?:#.*)?$/i;
+const path = spec.replace(/^(?:file|link):/, '');
+if (path !== spec || isAbsolute(path)) {
+    if (!isAbsolute(path)) throw invalid(spec, 'a local path must be absolute');
+    return TARBALL_SPEC.test(path) ? { kind: 'tarball', spec, path } : { kind: 'path', spec, path };
+}
+```
+
+| 填入 | 桌面认成 | profile 里记成 | 备注 |
+|---|---|---|---|
+| 绝对路径 `…/xxx.tar.gz` / `.tgz` | `tarball` | `file:<path>` | **当前线上用的就是这条** |
+| 绝对路径 `…/dsh-edge-agent-desktop-safe/` | `path` | `link:<path>` | 目录里要有可读 package.json + `dsh.bundle`；name 不能已装 |
+| 相对路径 `./x` | 拒绝 | — | "a local path must be absolute" |
+| `file:` / `link:` 前缀 | 剥掉前缀再判 | — | |
+
+### 8.6 §7.107：迭代一次桌面 bundle 的完整步骤（两个坑）
+
+**坑 1 —— pnpm 不会因为 tarball 内容变了就重新解包。**
+`file:` tarball 依赖的 integrity 变了，lockfile 会更新，但 `pnpm install`
+仍然报 "Already up to date"，`node_modules/` 里躺的还是旧代码。必须先把
+已装目录挪走再装：
+
+```bash
+export DSH_BIN="/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh"
+PKG=~/.dsh/profiles/desktop/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent
+osascript -e 'tell application "DeepSeek Harness" to quit'      # 先退干净
+mv "$PKG" "$PKG.old"
+"$DSH_BIN" plugin --profile desktop install                    # 装新的
+rm -rf ~/.dsh/profiles/desktop/node_modules/.ignored           # pnpm 会把旧目录挪进 .ignored
+```
+
+装完核对哈希，确认装的是新产物：
+
+```bash
+shasum -a 256 "$PKG/lib/client.js" dist/installable/dsh-edge-agent-desktop-safe/lib/client.js
+```
+
+**坑 2 —— 配置不在 tarball 里，要单独同步。**
+tarball 故意不带 `config/edge.json`（明文密钥）。桌面版真正在用的配置按
+`edge-config.ts` 的 `edgeConfigCandidates()` 顺序找：
+
+1. `<bundle>/config/edge.json` —— 即
+   `~/.dsh/profiles/desktop/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/config/edge.json`
+2. `~/.dsh-edge-agent/edge.json`
+3. `<bundle>/config/edge.example.json`（模板兜底）
+
+所以放一份进去：
+
+```bash
+cp config/edge.json ~/.dsh-edge-agent/edge.json
+cp config/edge.json "<bundle>/config/edge.json"
+```
+
+**验证哪一份生效**（§7.107 新增的启动审计行）：
+
+```bash
+grep -o '"kind":"config.loaded".\{0,240\}' ~/.dsh-edge-agent/audit/audit.plain.jsonl | tail -1
+```
+
+### 8.7 §7.107：桌面版真正在用的目录一览
+
+```
+~/.dsh/profiles/desktop/                                  ← 桌面 profile 根
+├── package.json                    依赖 + dsh.profile.bundles
+├── cordis.yml / cordis.patch.yml   profile 自己的 patch 层（桌面侧手改的 model/persona/providers）
+└── node_modules/
+    ├── @deepseek-harness-edge-agent/dsh-edge-agent/     ← 【插件代码真正所在】
+    │   ├── lib/                    编译产物（host 半 + client.js）
+    │   ├── cordis.desktop-safe.patch.yml
+    │   └── config/                 edge.json / edge.example.json / privacy-policy.json
+    └── dsh-context/
+```
+
+数据根：`~/.dsh-edge-agent/{audit,log,storage}`；隐私策略：
+`~/.dsh-edge-agent/privacy-policy.json`（缺省回落到 bundle 自带的
+`config/privacy-policy.json`，§7.107 修的）。
+
+**发布时用哪个目录**：三份产物，各有各的落点 ——
+
+| 产物 | 由谁产出 | 内容 | 落到哪 |
+|---|---|---|---|
+| npm 包 | `publish.yml`（推 `v*` tag）→ `pnpm publish` | `package.json#files` = `lib/` + `config/`（去 edge.json）+ 3 个 yml + `presets/` | 用户 profile 的 `node_modules/` |
+| release tarball | `make package` → `dist/dsh-edge-agent-v<ver>.tar.gz` | 上面这些 + `scripts/` + `profiles/dsh-edge/` + `install.sh`/`uninstall.sh`/`README`/`LICENSE` | 外部用户解压后跑 `install.sh` |
+| 桌面 bundle | `scripts/build-desktop-bundle.sh --emit-dir` | `dist/dsh-edge-agent-{desktop-safe,full}.tar.gz` + `dist/installable/<variant>/` | `~/.dsh/profiles/desktop/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/` |
+
+npm 包与桌面 bundle 都带 `config/`（去掉 `config/edge.json`），所以装完
+就能找到 shipped 模板；`config/edge.json` 只留在 operator 自己的机器上。
+
