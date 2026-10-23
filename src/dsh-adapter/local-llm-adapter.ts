@@ -311,7 +311,11 @@ class RealLocalAdapter extends LlmAdapter {
     const wireOptions = this.stripTools
       ? { ...options, tools: undefined, messages: sanitizedMessages }
       : { ...options, messages: sanitizedMessages }
-    const body = buildChatCompletionsBody(wireOptions, this.defaultModel, undefined, this.enableThinking)
+    // §7.106: the local pool is ollama-class in practice — send the
+    // reasoning_effort dialect too so think-off actually lands (probe: the
+    // server drops chat_template_kwargs and keeps billing reasoning into
+    // max_tokens, emptying content for the 256-token model-detect call).
+    const body = buildChatCompletionsBody(wireOptions, this.defaultModel, undefined, this.enableThinking, true)
     const headers: Record<string, string> = {
       'content-type': 'application/json',
       'accept': 'text/event-stream',

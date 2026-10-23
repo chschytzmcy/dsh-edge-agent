@@ -83,6 +83,16 @@ export function buildChatCompletionsBody(
   // for thinking models (qwen3.5 / QwQ / DeepSeek-R1). Default OFF — production
   // wants fast non-reasoning answers; users can opt-in via env var.
   enableThinking: boolean = false,
+  // §7.106 (2026-10-23): also send the standard `reasoning_effort:"none"` —
+  // the dialect OLLAMA's /v1 layer actually honors (probe-verified on the
+  // user's 67.0.0.5:11434: chat_template_kwargs AND top-level `think:false`
+  // are both silently dropped there; reasoning_effort:none removed
+  // message.reasoning and took completion 46→6 tokens). Without it the
+  // 256-token model-detect call has its budget eaten by reasoning and
+  // returns empty content (finish=length → json-parse-failed → fail-open).
+  // Only the local pool sets this — unknown-field-strict servers stay on
+  // the old dialect alone.
+  alsoReasoningEffort: boolean = false,
 ): Record<string, unknown> {
   const wireMessages: Array<Record<string, unknown>> = []
   if (options.system !== undefined && options.system.length > 0) {
@@ -200,6 +210,7 @@ export function buildChatCompletionsBody(
   // is a no-op for non-thinking servers — they ignore unknown kwargs.
   if (!enableThinking) {
     body.chat_template_kwargs = { enable_thinking: false }
+    if (alsoReasoningEffort) body.reasoning_effort = 'none'
   }
   return body
 }
