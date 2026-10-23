@@ -301,14 +301,20 @@ http-api 不再需要包含脱敏逻辑 — 它变薄，只做协议适配。**�
 >
 > 1. **隐私策略的 CLOUD 规则**（`config/privacy-policy.json`，操作者自己写的那条）——
 >    已收窄为「联网/上网/搜索引擎/web search/weather forecast/实时行情/股价/汇率…」。
+>    **直通，不受下面的闸约束**——这是操作者自己写的"这个操作需要公网"声明。
 > 2. **CLOUD 关键词**（intent-router 的内置表 + `stages.intent.cloudKeywords`）——
->    这张表现在是"需要搜索公网上的信息"的**唯一定义**，也是 input-guard 的 web-need 闸
->    （`input-guard.cloud.blocked-no-web-need`）用的信号源。
-> 3. **调用方显式路由**（`agent._edgeRoute`）——调用方自己声明的意图，原样尊重。
+>    这张表现在是"需要搜索公网上的信息"的**唯一定义**，也是 web-need 闸的信号源。
+>    规则档只可能通过命中关键词走到 CLOUD，所以它天生就是公网需求。
+> 3. **调用方显式路由**（`agent._edgeRoute`）——显式意图，原样尊重。
 >
-> 分类器（本地模型）判 CLOUD **不再自动放行**：没有公网信号就降级回 LOCAL
-> （审计 `input-guard.cloud.blocked-no-web-need`）。所以"帮我写封邮件""为什么天是蓝的"
+> **分类器（本地模型）/ jev 判 CLOUD 不再自动放行**：没有公网信号就降级回 LOCAL
+> （审计 `intent.cloud.blocked-no-web-need`）。所以"帮我写封邮件""为什么天是蓝的"
 > 这类普通请求不会被一个弱模型的决定送出设备。
+>
+> 闸放在 **intent-router 的 `classify()` 里**（裁决的源头），不放在消费方：
+> 裁决有两个消费方 —— input-guard 的 pre-step，和 http-api（它把裁决写进
+> `agent._edgeRoute` 当作**显式路由**交出去）。闸放在消费方只能关掉前者；
+> 放在源头，两个消费方读到的是同一份已经过闸的裁决。
 >
 > 副作用（有意为之）：没有本地端点的安装将**无法作答**——LOCAL 兑现不了时 fail-closed
 > 并给出可操作的报错（`input-guard.local.route-missing`），而不是悄悄退回云端。
