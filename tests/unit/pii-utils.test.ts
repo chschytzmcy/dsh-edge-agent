@@ -17,13 +17,30 @@ import {
 
 describe('pii-utils', () => {
   describe('PII_RULES', () => {
-    it('defines 9 rules (5 core + 4 extended, aligned with privacy-policy.json)', () => {
-      assert.equal(PII_RULES.length, 9)
+    it('defines 10 rules (aligned with privacy-policy.json sanitizationRules)', () => {
+      assert.equal(PII_RULES.length, 10)
       const names = PII_RULES.map((r) => r.name).sort()
       assert.deepEqual(names, [
-        'api-key', 'bank-card', 'email', 'id-card',
+        'api-key', 'bank-card', 'credential', 'email', 'id-card',
         'ip-address', 'license-plate', 'mac-address', 'passport', 'phone',
       ])
+    })
+
+    // §7.106 (2026-10-23) credential：LOCAL 轮凭据操作放行的安全网——口令会
+    // 沉淀进会话历史，后续 CLOUD 轮整段回显出网前必须被可逆脱敏兜住。
+    it('redacts labeled credentials', () => {
+      const a = redactString('用户名:admin，密码：147258')
+      assert.ok(!a.redacted.includes('147258'), `leaked: ${a.redacted}`)
+      assert.ok(a.matches.some(m => m.type === 'credential'))
+      const b = redactString('the password is hunter2hunter2')
+      assert.ok(!b.redacted.includes('hunter2'), `leaked: ${b.redacted}`)
+      const c = redactString('token = abcdef123456')
+      assert.ok(!c.redacted.includes('abcdef123456'), `leaked: ${c.redacted}`)
+    })
+
+    it('leaves the bare word 密码 without a value untouched', () => {
+      const { redacted } = redactString('请输入密码后继续')
+      assert.ok(redacted.includes('请输入密码后继续'))
     })
   })
 

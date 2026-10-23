@@ -5,26 +5,86 @@
     {
       "id": "LOCAL",
       "description": "本地文件操作、设备控制、数学计算、系统管理",
-      "examples": ["帮我读一下文件", "看一下磁盘空间", "计算 1+1"],
-      "jevIntents": ["设备控制", "文件操作", "device_control", "file_ops"]
+      "examples": [
+        "帮我读一下文件",
+        "看一下磁盘空间",
+        "计算 1+1"
+      ],
+      "jevIntents": [
+        "设备控制",
+        "文件操作",
+        "device_control",
+        "file_ops"
+      ]
     },
     {
       "id": "CLOUD",
       "description": "知识问答、聊天、创意写作、需要联网的任务",
-      "examples": ["今天北京天气", "翻译这段英文", "写一首诗"],
-      "jevIntents": ["知识问答", "通用咨询", "天气", "翻译", "新闻", "搜索", "knowledge", "weather", "translation", "news", "search"]
+      "examples": [
+        "今天北京天气",
+        "翻译这段英文",
+        "写一首诗"
+      ],
+      "jevIntents": [
+        "知识问答",
+        "通用咨询",
+        "天气",
+        "翻译",
+        "新闻",
+        "搜索",
+        "knowledge",
+        "weather",
+        "translation",
+        "news",
+        "search"
+      ]
     },
     {
       "id": "SANITIZED",
       "description": "包含 PII 需先脱敏后路由（订单查询、账户管理、客服等含个人信息）",
-      "examples": ["查我的订单状态", "我的账户余额", "我要退款"],
-      "jevIntents": ["订单查询", "订单状态", "物流跟踪", "物流查询", "快递查询", "退款申请", "退款查询", "账户管理", "账户余额", "账户信息", "客服", "售后服务", "order_inquiry", "refund", "refund_request", "logistics", "account", "customer_service"]
+      "examples": [
+        "查我的订单状态",
+        "我的账户余额",
+        "我要退款"
+      ],
+      "jevIntents": [
+        "订单查询",
+        "订单状态",
+        "物流跟踪",
+        "物流查询",
+        "快递查询",
+        "退款申请",
+        "退款查询",
+        "账户管理",
+        "账户余额",
+        "账户信息",
+        "客服",
+        "售后服务",
+        "order_inquiry",
+        "refund",
+        "refund_request",
+        "logistics",
+        "account",
+        "customer_service"
+      ]
     },
     {
       "id": "REJECT",
       "description": "高危 / 违法 / 违规请求（危险系统操作、投诉、法务）",
-      "examples": ["rm -rf /", "我要投诉", "怎么告别人"],
-      "jevIntents": ["投诉", "法务咨询", "法律咨询", "举报", "complaint", "legal", "legal_advice"]
+      "examples": [
+        "rm -rf /",
+        "我要投诉",
+        "怎么告别人"
+      ],
+      "jevIntents": [
+        "投诉",
+        "法务咨询",
+        "法律咨询",
+        "举报",
+        "complaint",
+        "legal",
+        "legal_advice"
+      ]
     }
   ],
   "routingRules": [
@@ -114,6 +174,12 @@
       "pattern": "(?:sk-(?:proj-|ant-|live-|test-|org-)?[a-zA-Z0-9]{20,}|key-[a-zA-Z0-9]{16,}|api[_-]?key[_-]?[a-zA-Z0-9]{16,})",
       "dataClass": "secret",
       "piiType": "api-key"
+    },
+    {
+      "pattern": "(?:密码|口令|passwd|password|pwd|secret|access[ _-]?token|token|api[ _-]?key)[\"' 　]{0,2}(?:[:：=]|是|为|\\s+is\\s+)[\"' 　]?[^\\s\"'，,;；<>（）()]{3,64}",
+      "dataClass": "secret",
+      "piiType": "credential",
+      "replacement": "<PII_CREDENTIAL_n>"
     },
     {
       "pattern": "(?<![vV\\d.])(?:(?:25[0-5]|2[0-4]\\d|1\\d{2}|[1-9]?\\d)\\.){3}(?:25[0-5]|2[0-4]\\d|1\\d{2}|[1-9]?\\d)(?!\\.?\\d)",

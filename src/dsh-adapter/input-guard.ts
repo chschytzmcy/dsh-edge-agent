@@ -272,6 +272,17 @@ export class InputGuardServiceImpl extends Service {
    *  对应的不是同一个对象（pre-step 拿到的是 agent 实例的 session，
    *  llm/stream 拿到的是 LLM request envelope 上的 sessionId 字符串）。*/
   private readonly stepState = new Map<string, StepSanitizationState>()
+  /**
+   * §7.106 (2026-10-23): last routed category per session. The attack-block
+   * gate consults it: a LOCAL turn cannot egress anything, so credential-flavored
+   * "leak" detections are the user operating their own device (密盒登录类),
+   * which the operator ruled must pass — warn instead of block. Injection-class
+   * reasons stay blocked even under LOCAL (injection can drive local tools).
+   * The egress risk of the same credentials later riding session history into a
+   * CLOUD turn is closed by the sanitizer's new `credential` PII class, not by
+   * this exemption.
+   */
+  private readonly turnCategory = new Map<string, string>()
 
   /** §7.35 (2026-09-03): 检查 cloud LLM adapter 的 API key 是否就位。
    *  缺失时不抛异常，而是让 handlePreStep 把 category=CLOUD|SANITIZED
@@ -448,6 +459,13 @@ export class InputGuardServiceImpl extends Service {
   /** Exposed for tests: the step-state map the turn/end restore listener reads. */
   setStepState(sessionId: string, state: StepSanitizationState): void {
     this.stepState.set(sessionId, state)
+  }
+
+  /** Seed/override the session's last routed category. Tests drive the
+   *  LOCAL-credential exemption with it; http-api could pre-seed a known
+   *  route the same way. */
+  setTurnCategory(sessionId: string, category: string): void {
+    this.turnCategory.set(sessionId, category)
   }
 
   /**
@@ -890,6 +908,18 @@ export class InputGuardServiceImpl extends Service {
           )
         } catch { /* debug only */ }
         if (!attackCheck.safe) {
+          // §7.106 operator ruling: LOCAL turn + credential-class detection
+          // → warn and pass (nothing egresses; device-login credentials are
+          // the user's own operation). Anything else keeps the block path.
+          const localTurn = this.turnCategory.get(sessionId) === 'LOCAL'
+          const credentialish = /credential|secret|password|passphrase|凭据|密码/iu.test(attackCheck.reason ?? '')
+          if (localTurn && credentialish) {
+            this.audit('warn', 'input-guard.attack.warned-local', {
+              sessionId,
+              reason: attackCheck.reason,
+              riskLevel: attackCheck.riskLevel,
+            })
+          } else {
           this.audit('security', 'input-guard.blocked.attack', {
             sessionId,
             reason: attackCheck.reason,
@@ -908,6 +938,7 @@ export class InputGuardServiceImpl extends Service {
           this.audit('warn', 'input-guard.attack.fail-open', {
             sessionId, reason: attackCheck.reason,
           })
+          }
         }
       } catch (err: any) {
         // prompt-guard 失败不阻断（fail-open）— 它是检测层，不是执行层
@@ -1076,6 +1107,8 @@ export class InputGuardServiceImpl extends Service {
     this.audit('info', 'input-guard.routed', {
       sessionId, category, edgeRouteUsed, routeSource,
     })
+    // §7.106: remember the verdict for the next step's attack-block gate.
+    this.turnCategory.set(sessionId, category)
 
     // §7.36 (2026-09-04): 注册 session realm 给 realm-skill-bridge,
     // 让 webui / tui / dsh-tui chat 入口也能被 Layer 3 tool-realm gating 守卫。

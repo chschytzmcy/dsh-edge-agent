@@ -18,7 +18,7 @@
 
 export type PIIName =
   | 'id-card' | 'bank-card' | 'phone' | 'email' | 'api-key'
-  | 'ip-address' | 'mac-address' | 'passport' | 'license-plate'
+  | 'ip-address' | 'mac-address' | 'passport' | 'license-plate' | 'credential'
 
 /**
  * PII 正则字面量（唯一事实源）。
@@ -39,6 +39,12 @@ export const PII_PATTERNS: Record<PIIName, string> = {
   email: '[\\w.-]+@[\\w.-]+\\.\\w+',
   'api-key':
     '(?:sk-(?:proj-|ant-|live-|test-|org-)?[a-zA-Z0-9]{20,}|key-[a-zA-Z0-9]{16,}|api[_-]?key[_-]?[a-zA-Z0-9]{16,})',
+  // §7.106 (2026-10-23) credential：标签式凭据（密码/口令/password/token/secret
+  // + 分隔符 + 值）。LOCAL 轮放行明文口令操作（设备登录，操作者裁决）后，这些
+  // 值会沉淀进会话历史——后续 CLOUD 轮整段历史回显出网，必须由可逆脱敏兜住。
+  // 值段排除空白与常见收尾符，长度 3-64；宁可多掩不可漏放。
+  'credential':
+    '(?:密码|口令|passwd|password|pwd|secret|access[ _-]?token|token|api[ _-]?key)["\' 　]{0,2}(?:[:：=]|是|为|\\s+is\\s+)["\' 　]?[^\\s"\'，,;；<>（）()]{3,64}',
   // 合法八位组（0-255）+ 上下文排除：
   //   `(?<![vV\d.])` 前面不是 v/V 或数字/点 → 排除 `v1.2.3.4` 版本号，
   //                  以及 `1.2.3.4.5` 这类更长点分串的中段
@@ -66,6 +72,7 @@ export const PII_ORDER: PIIName[] = [
   'phone',
   'email',
   'api-key',
+  'credential',
   'ip-address',
   'mac-address',
   'passport',
@@ -77,6 +84,7 @@ export const PII_DATA_CLASS: Record<PIIName, 'confidential' | 'secret'> = {
   'id-card': 'secret',
   'bank-card': 'secret',
   'api-key': 'secret',
+  'credential': 'secret',
   passport: 'secret',
   phone: 'confidential',
   email: 'confidential',
@@ -95,6 +103,11 @@ export const PII_MASKS: Record<PIIName, (match: string) => string> = {
     return `${local[0]}***@${domain}`
   },
   'api-key': () => 'sk-***',
+  // 掩码保留标签只糊值段：日志能看出"这里有个凭据"，看不出凭据本身。
+  'credential': (m) => {
+    const i = m.search(/[:：=是为]/u)
+    return i > 0 ? `${m.slice(0, i)}***` : '***'
+  },
   'ip-address': (m) => {
     const parts = m.split('.')
     return `${parts[0]}.${parts[1]}.***.***`
@@ -114,7 +127,7 @@ export interface PIIRule {
 }
 
 /**
- * 9 种 PII 规则，由 `PII_PATTERNS` + `PII_MASKS` 按 `PII_ORDER` 组装。
+ * 10 种 PII 规则，由 `PII_PATTERNS` + `PII_MASKS` 按 `PII_ORDER` 组装。
  * 与 privacy-policy 的 sanitizationRules 共用同一批 pattern 字面量。
  */
 export const PII_RULES: PIIRule[] = PII_ORDER.map((name) => ({
