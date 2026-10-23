@@ -88,6 +88,11 @@ export interface EdgeSessionSummary {
   /** Committed turn count (from `turn/start` session events). Doubles as the
    *  current-turn tag the client filters rows by (see {@link EdgeRow.turn}). */
   turns: number
+  /** §7.106: wall clock of the newest `turn/start`. Global-bucket rows (turn
+   *  -1 — host answer steps carry no sessionId into adapter audits) have no
+   *  turn attribution, so the client renders them only when ts >= this:
+   *  last-turn rows age out with the window. */
+  turnStartTs?: number
   /** Token accounting from `assistant/message.usage`; undefined until an
    *  adapter reported usage (never faked as 0). */
   tokens?: { input?: number; output?: number; cacheRead?: number }
@@ -276,6 +281,7 @@ export class EdgeContextViewServiceImpl extends Service implements EdgeContextVi
     if (summary.startedAt === undefined) summary.startedAt = now
     if (type === 'turn/start') {
       summary.turns += 1
+      summary.turnStartTs = now
     } else if (type === 'assistant/message') {
       const usage = (data as { usage?: Record<string, unknown> } | undefined)?.usage
       if (usage !== null && typeof usage === 'object') {

@@ -1751,6 +1751,12 @@ export function selectionRestoreTarget(
   const provider = state.originalProvider
   const model = state.originalModel
   if (typeof provider !== 'string' || provider.length === 0 || provider === localProvider) return undefined
+  // §7.106 (2026-10-23): 'cloud-llm' is EDGE's own (now catalog-hidden) pool
+  // route — both the pre-step default-cloud-fallback placeholder and a
+  // policy route-applied rewrite can land there. Restoring it always fails
+  // the catalog check ("Select an available model" — observed 09:49) and it
+  // is never a genuine user selection, so skip instead of writing garbage.
+  if (provider === 'cloud-llm') return undefined
   if (typeof model !== 'string' || model.length === 0) return undefined
   return { provider, model }
 }

@@ -29,7 +29,9 @@ const latest = (rows: EdgeRow[], match: (r: EdgeRow) => boolean): EdgeRow | unde
 
 const field = (r: EdgeRow | undefined, key: string): unknown => r?.payload[key]
 const ms = (v: unknown): string => typeof v === 'number' ? `${(v / 1000).toFixed(1)}s` : '?'
-const str = (v: unknown): string => typeof v === 'string' ? v : '?'
+/** Present any scalar for the evidence line; numbers included (textLen
+   landed as '?' when this only accepted strings — 2026-10-23 flow shot). */
+const str = (v: unknown): string => typeof v === 'string' ? v : typeof v === 'number' || typeof v === 'boolean' ? String(v) : '?'
 
 function guardNode(rows: EdgeRow[]): FlowNode {
   const end = latest(rows, r => r.kind === 'guard.model-detect.end')
@@ -87,7 +89,10 @@ function intentNode(rows: EdgeRow[]): FlowNode {
       const lc = typeof override.payload.llmConfidence === 'number' ? `${(override.payload.llmConfidence * 100).toFixed(0)}%` : '?'
       sub.push(`${tr('flow.lbl.llmSay')} ${str(field(override, 'llmRationale'))} · ${lc} ${tr('flow.lbl.overridden')}`)
     }
-    sub.push(`${tr('flow.lbl.classifier')} ${str(field(end, 'classifier'))} · ${ms(field(end, 'durationMs'))} · ${tr('flow.lbl.input')} ${str(field(end, 'textLen'))}`)
+    // classifier/textLen live on the classify.start row; duration/category on end.
+    const startRow = latest(rows, r => r.kind === 'intent.classify.start')
+    const textLen = field(end, 'textLen') ?? field(startRow, 'textLen')
+    sub.push(`${tr('flow.lbl.classifier')} ${str(field(startRow, 'classifier'))} · ${ms(field(end, 'durationMs'))} · ${tr('flow.lbl.input')} ${str(textLen)}`)
     return {
       label: tr('flow.intent'), tone: 'ok',
       detail: `${cat} ${conf} · ${override !== undefined && override.ts <= end.ts ? tr('flow.intent.viaEntity') : tr('flow.intent.viaLlm')}`,
@@ -150,6 +155,23 @@ function routeNode(rows: EdgeRow[]): FlowNode {
 
 const intentStarted = (rows: EdgeRow[]): boolean => rows.some(r => r.kind.startsWith('intent.classify.'))
 
+function threatNode(rows: EdgeRow[]): FlowNode {
+  const escalated = latest(rows, r => r.kind === 'td-bus.escalated')
+  const rate = latest(rows, r => r.kind === 'input.rate-limit' || r.kind === 'input.global-rate-limit')
+  const blocked = latest(rows, r => r.kind === 'http.chat.threat-blocked')
+  if (blocked !== undefined) {
+    return { label: tr('flow.threat'), tone: 'stop', detail: tr('flow.threat.blocked'), sub: [`${tr('flow.lbl.cause')} ${str(field(blocked, 'reason')) ?? '-'}`] }
+  }
+  if (escalated !== undefined) {
+    return {
+      label: tr('flow.threat'), tone: 'warn', detail: tr('flow.threat.escalated'),
+      sub: [`${str(field(escalated, 'from'))} → ${str(field(escalated, 'to'))} · ${str(field(escalated, 'count'))}/${str(field(escalated, 'threshold'))}`],
+    }
+  }
+  if (rate !== undefined) return { label: tr('flow.threat'), tone: 'warn', detail: tr('flow.threat.rate'), sub: [] }
+  return { label: tr('flow.threat'), tone: 'ok', detail: tr('flow.threat.calm'), sub: [] }
+}
+
 function answerNode(rows: EdgeRow[], summary: EdgeSummary): FlowNode {
   const host = latest(rows, r => r.kind === 'llm.host.route')
   if (host === undefined) {
@@ -191,6 +213,7 @@ export function FlowPanel(props: { rows: EdgeRow[]; summary: EdgeSummary }): Rea
     sanitizeNode(rows, category),
     routeNode(rows),
     answerNode(rows, summary),
+    threatNode(rows),
   ]
   const children = nodes.flatMap((n, i) => [
     h('div', { key: `n${i}`, class: `dsh-edge-flow-node dsh-edge-flow-node--${n.tone}` },

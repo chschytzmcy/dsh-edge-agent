@@ -106,18 +106,28 @@ export const edgeStore = {
       stopPollingIfIdle()
     }
   },
-  /** Panel rows for the CURRENT turn only (§7.106, user ruling 2026-10-22:
-   *  新的对话旧记录删除). Rows tagged with an older turn drop out of the
-   *  view as soon as `turn/start` bumps the summary count — the panel
-   *  wipes itself each turn. Global rows (turn -1) and rows from a host
-   *  that predates the tag (turn undefined) always render. */
-  rowsFor(sessionId: string, panel: EdgePanel, currentTurn: number): EdgeRow[] {
+  /** Rows of the CURRENT turn only (§7.106; user ruling 2026-10-22 新一轮
+   *  清旧行, extended 2026-10-23): session-tagged rows must carry the live
+   *  turn number; global-bucket rows (turn -1 — host answer steps never get
+   *  a sessionId into adapter audits, so attribution cannot be threaded at
+   *  the source) fall back to the turn time window: only rows at or after
+   *  `turnStartTs` render. Without a window yet (first turn not started)
+   *  globals pass, matching the pre-wipe behavior. */
+  rowsFor(sessionId: string, panel: EdgePanel, currentTurn: number, turnStartTs?: number): EdgeRow[] {
+    return this.currentRows(sessionId, currentTurn, turnStartTs).filter(r => r.panel === panel)
+  },
+
+  /** Every current-turn row across panels (flow view input). */
+  currentRows(sessionId: string, currentTurn: number, turnStartTs?: number): EdgeRow[] {
     const s = sessions.get(sessionId)
     if (!s) return []
     const out: EdgeRow[] = []
     for (const row of s.rows) {
-      if (row.panel !== panel) continue
-      if (row.turn !== undefined && row.turn >= 0 && row.turn !== currentTurn) continue
+      if (row.turn !== undefined && row.turn >= 0) {
+        if (row.turn !== currentTurn) continue
+      } else if (turnStartTs !== undefined) {
+        if (row.ts < turnStartTs) continue
+      }
       out.push(row)
     }
     return out.slice(-CLIENT_CAP)

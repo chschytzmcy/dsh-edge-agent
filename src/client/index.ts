@@ -28,10 +28,6 @@ import { createRoot } from 'react-dom/client'
 import { edgeStore } from './store'
 import { ensureStyles } from './theme'
 import { EDGE_DICTIONARIES, EDGE_LOCALE_NS, setTranslator, tr } from './i18n'
-import { IntentPanel } from './intentPanel'
-import { RoutePanel } from './routePanel'
-import { InterceptionPanel } from './interceptionPanel'
-import { ThreatPanel } from './threatPanel'
 import { SessionSummaryBar } from './sessionSummary'
 import { FlowPanel } from './flowPanel'
 import type { EdgeRow, EdgeSummary } from './types'
@@ -146,17 +142,15 @@ function EdgeView(props: SessionProps) {
   }, [sessionId])
 
   const summary: EdgeSummary = edgeStore.summaryFor(sessionId)
-  const rows = (panel: EdgeRow['panel']) => edgeStore.rowsFor(sessionId, panel, summary.turns)
-  const allRows: EdgeRow[] = (['intent', 'route', 'interception', 'threat'] as const).flatMap(rows)
+  // Raw event panels dropped 2026-10-23 (operator: 「下面那段不关心」) —
+  // the flow view carries the evidence lines; rows stay in the store for
+  // anything that later wants them back.
+  const allRows: EdgeRow[] = edgeStore.currentRows(sessionId, summary.turns, summary.turnStartTs)
   const verdict = verdictLine(allRows)
   return h('div', { class: 'dsh-edge-view' },
     h(SessionSummaryBar, { summary }),
     h('div', { class: `dsh-edge-verdict dsh-edge-verdict--${verdict.tone}` }, verdict.text),
     h(FlowPanel, { rows: allRows, summary }),
-    h(IntentPanel, { rows: rows('intent') }),
-    h(RoutePanel, { rows: rows('route') }),
-    h(InterceptionPanel, { rows: rows('interception') }),
-    h(ThreatPanel, { rows: rows('threat') }),
     edgeStore.failing(sessionId) ? h('div', { class: 'dsh-edge-stale' }, tr('row.stale')) : null,
   )
 }

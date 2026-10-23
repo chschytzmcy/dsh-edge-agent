@@ -35,6 +35,9 @@ describe('§7.106 selectionRestoreTarget', () => {
   it('original already local → skip (never re-pollute the picker)', () => {
     assert.equal(selectionRestoreTarget(state({ originalProvider: LOCAL }), LOCAL), undefined)
   })
+  it('original is edge own cloud-llm route → skip (catalog-hidden placeholder/policy rewrite)', () => {
+    assert.equal(selectionRestoreTarget(state({ originalProvider: 'cloud-llm', originalModel: 'deepseek-chat' }), LOCAL), undefined)
+  })
   it('missing/empty provider or model → skip', () => {
     assert.equal(selectionRestoreTarget(state({ originalProvider: '' }), LOCAL), undefined)
     assert.equal(selectionRestoreTarget(state({ originalModel: undefined }), LOCAL), undefined)

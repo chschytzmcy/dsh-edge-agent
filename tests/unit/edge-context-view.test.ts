@@ -163,6 +163,7 @@ describe('session summary fold', () => {
     svc.recordSessionEvent('s1', 'assistant/message', { usage: { input: 50, output: 10, cacheRead: 7 } })
     const { summary } = svc.snapshot('s1')
     assert.equal(summary.turns, 2)
+    assert.equal(typeof summary.turnStartTs, 'number') // global-row time window (§7.106)
     assert.deepEqual(summary.tokens, { input: 150, output: 30, cacheRead: 7 })
   })
 

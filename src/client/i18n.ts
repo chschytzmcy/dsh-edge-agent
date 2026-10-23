@@ -82,6 +82,11 @@ const EN: Dict = {
   'flow.s.desanitized': 'placeholders restored in the answer',
   'flow.a.localKeep': 'question, context and answer all stayed on this machine',
   'flow.a.cloudSend': 'outbound text was checked / scrubbed first',
+  'flow.threat': 'threat watch',
+  'flow.threat.calm': 'quiet in this window',
+  'flow.threat.escalated': 'threat escalated',
+  'flow.threat.rate': 'rate limit hit',
+  'flow.threat.blocked': 'blocked as threat',
 }
 
 const ZH: Dict = {
@@ -159,9 +164,17 @@ const ZH: Dict = {
   'flow.s.desanitized': '答案中的占位符已还原',
   'flow.a.localKeep': '问题、上下文、答案全部留在本机',
   'flow.a.cloudSend': '出网文本已先行检查/脱敏',
+  'flow.threat': '威胁监控',
+  'flow.threat.calm': '本轮窗口无异常',
+  'flow.threat.escalated': '威胁等级升级',
+  'flow.threat.rate': '频率限制触发',
+  'flow.threat.blocked': '威胁请求已阻断',
 }
 
-let t: (key: string) => string = (key) => EN[key] ?? key
+// Built-in fallback is the Chinese table (operator ruling 2026-10-23
+// 「最好是中文」): the desktop lives in zh; the host locale binding still
+// overrides this when it delivers a dictionary.
+let t: (key: string) => string = (key) => ZH[key] ?? EN[key] ?? key
 
 /** Bind the host locale when available. */
 export function setTranslator(bind: ((key: string, params?: Record<string, string | number>) => string) | undefined): void {
@@ -169,10 +182,10 @@ export function setTranslator(bind: ((key: string, params?: Record<string, strin
   t = (key) => {
     try {
       const out = bind(key)
-      // The host returns the key itself for unknown entries; fall back to EN.
-      return out === key ? (EN[key] ?? key) : out
+      // The host returns the key itself for unknown entries; fall back to the built-ins.
+      return out === key ? (ZH[key] ?? EN[key] ?? key) : out
     } catch {
-      return EN[key] ?? key
+      return ZH[key] ?? EN[key] ?? key
     }
   }
 }

@@ -24,6 +24,8 @@ export interface EdgeSummary {
   startedAt?: number
   lastSeenAt?: number
   turns: number
+  /** §7.106: wall clock of the newest turn/start — window for global-bucket rows. */
+  turnStartTs?: number
   tokens?: { input?: number; output?: number; cacheRead?: number }
 }
 
