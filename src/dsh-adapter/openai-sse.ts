@@ -183,6 +183,38 @@ export function buildChatCompletionsBody(
     }
     wireMessages.push(wireMsg)
   }
+  // §7.106 (2026-10-23) pairing guard: every `role:'tool'` message must
+  // reference an assistant tool_call that EXISTS IN THIS BODY. Strict
+  // gateways (minimax 2013 "tool result's tool id() not found") enforce the
+  // referential integrity DeepSeek silently tolerates. Broken histories come
+  // from the ollama-era models' empty-id tool calls (§7.105 class): a result
+  // whose call was pruned out of the window, or whose FIFO-synthesized id
+  // was never claimed by an assistant message, is an orphan no upstream will
+  // accept. Demote orphans to plain user text — the tool OUTPUT survives for
+  // the model to read, only the dangling reference goes away.
+  {
+    const claimedCallIds = new Set<string>()
+    for (const m of wireMessages) {
+      const tcs = m.tool_calls as Array<{ id?: unknown }> | undefined
+      if (Array.isArray(tcs)) {
+        for (const tc of tcs) {
+          if (typeof tc.id === 'string' && tc.id.length > 0) claimedCallIds.add(tc.id)
+        }
+      }
+    }
+    for (let i = 0; i < wireMessages.length; i++) {
+      const m = wireMessages[i]
+      if (m.role !== 'tool') continue
+      const id = typeof m.tool_call_id === 'string' ? m.tool_call_id : ''
+      if (id.length > 0 && claimedCallIds.has(id)) continue
+      const text = typeof m.content === 'string' ? m.content : ''
+      wireMessages[i] = {
+        role: 'user',
+        content: `[tool-result ${id.length > 0 ? id : '(unreferenced)'} lost its matching call; output:]\n${text}`,
+      }
+    }
+  }
+
   const body: Record<string, unknown> = {
     // CRITICAL: use the adapter's configured `defaultModel` (the real upstream
     // model name, e.g. "deepseek-chat"), NOT `options.model` which is the Cordis

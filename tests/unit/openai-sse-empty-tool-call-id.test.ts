@@ -172,3 +172,60 @@ describe('openai-sse empty tool-call id (§7.105)', () => {
     }
   })
 })
+
+// §7.106 (2026-10-23) pairing guard — minimax 2013: "tool result's tool id()
+// not found". A role:'tool' message may only reference an assistant
+// tool_call that survives IN THIS BODY; orphans get demoted to plain user
+// text (output preserved, dangling reference dropped).
+describe('§7.106 wire pairing guard', () => {
+  it('orphans a tool result whose call is absent from the body', () => {
+    const body = buildChatCompletionsBody(
+      {
+        model: 'local-llm',
+        messages: [
+          { role: 'user', content: [{ type: 'text', text: '查询密盒' }] },
+          { role: 'tool', content: [{ type: 'tool-result', toolCallId: 'ghost-id', content: 'mebox:2台' }] },
+        ],
+      } as any,
+      'm', undefined, false, false,
+    )
+    const msgs = body.messages as Array<Record<string, unknown>>
+    const demoted = msgs.find((m) => m.role === 'user' && String(m.content).includes('mebox:2台'))
+    assert.ok(demoted, '孤儿 result 必须降级为 user 且内容保留')
+    assert.ok(!msgs.some((m) => m.role === 'tool'), '不得残留指向不存在调用的 tool 消息')
+  })
+
+  it('keeps a properly paired call/result round trip', () => {
+    const body = buildChatCompletionsBody(
+      {
+        model: 'local-llm',
+        messages: [
+          { role: 'assistant', content: [{ type: 'tool-call', id: 'call_ok', name: 'bash', arguments: '{}' }] },
+          { role: 'tool', content: [{ type: 'tool-result', toolCallId: 'call_ok', content: 'done' }] },
+        ],
+      } as any,
+      'm', undefined, false, false,
+    )
+    const msgs = body.messages as Array<Record<string, unknown>>
+    assert.equal(msgs[1]?.role, 'tool')
+    assert.equal(msgs[1]?.tool_call_id, 'call_ok')
+  })
+
+  it('FIFO-synthesized ids are claimed by the assistant call and survive', () => {
+    const body = buildChatCompletionsBody(
+      {
+        model: 'local-llm',
+        messages: [
+          { role: 'assistant', content: [{ type: 'tool-call', id: '', name: 'bash', arguments: '{}' }] },
+          { role: 'tool', content: [{ type: 'tool-result', toolCallId: '', content: 'done' }] },
+        ],
+      } as any,
+      'm', undefined, false, false,
+    )
+    const msgs = body.messages as Array<Record<string, unknown>>
+    const calls = (msgs[0]?.tool_calls ?? []) as Array<{ id: string }>
+    assert.equal(msgs[1]?.role, 'tool', '配对成功不应降级')
+    assert.equal(String(msgs[1]?.tool_call_id), calls[0]?.id, 'result 引用必须与合成的调用 id 一致')
+    assert.ok(calls[0]?.id.length > 0)
+  })
+})
