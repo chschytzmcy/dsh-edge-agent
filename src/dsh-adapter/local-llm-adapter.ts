@@ -359,18 +359,35 @@ class RealLocalAdapter extends LlmAdapter {
     this.logger?.debug?.(`[local-llm-adapter] LLM_MESSAGES ${JSON.stringify({ messages: sanitizedMessages })}`)
     audit(this.auditLog, 'info', 'llm.local.start', { provider: options.provider, model: this.defaultModel, route: options.model, messageCount: sanitizedMessages.length, promptLen, baseUrl: this.baseUrl })
 
+    // §7.106 (2026-10-23): ONE retry on transport-level failure with a short
+    // backoff. The LAN ollama blips (observed 11:35:09: `fetch failed` mid
+    // agent-turn while the same server answered fine minutes before/after —
+    // a single 2.6s connection drop killed the whole turn). HTTP error
+    // responses are NOT retried here (non-ok path untouched), and a caller
+    // abort never retries — the signal check keeps AbortError semantics.
+    const attempt = (): Promise<Response> => fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal: options.signal,
+    })
     let response: Response
     try {
-      response = await fetch(url, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(body),
-        signal: options.signal,
-      })
+      response = await attempt()
     } catch (err: any) {
-      const durationMs = Date.now() - start
-      audit(this.auditLog, 'error', 'llm.local.network_error', { provider: options.provider, model: this.defaultModel, route: options.model, durationMs, error: err?.message ?? String(err) })
-      throw err
+      const aborted = options.signal?.aborted === true || err?.name === 'AbortError'
+      if (aborted) {
+        audit(this.auditLog, 'error', 'llm.local.network_error', { provider: options.provider, model: this.defaultModel, route: options.model, durationMs: Date.now() - start, error: err?.message ?? String(err) })
+        throw err
+      }
+      audit(this.auditLog, 'warn', 'llm.local.network_retry', { provider: options.provider, model: this.defaultModel, route: options.model, error: String(err?.message ?? err), afterMs: Date.now() - start })
+      await new Promise<void>(resolve => setTimeout(resolve, 800))
+      try {
+        response = await attempt()
+      } catch (err2: any) {
+        audit(this.auditLog, 'error', 'llm.local.network_error', { provider: options.provider, model: this.defaultModel, route: options.model, durationMs: Date.now() - start, error: err2?.message ?? String(err2), afterRetry: true })
+        throw err2
+      }
     }
 
     if (!response.ok) {

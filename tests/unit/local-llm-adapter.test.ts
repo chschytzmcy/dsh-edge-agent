@@ -112,6 +112,59 @@ describe('local-llm-adapter (M4, real-only)', () => {
     restoreFetch()
   })
 
+  // §7.106 (2026-10-23): a single LAN blip killed a whole agent turn at
+  // 11:35:09 (`fetch failed` while the same server was healthy minutes
+  // before/after) — transport errors now get ONE retry after a short
+  // backoff. HTTP-error and abort paths deliberately do not retry.
+  it('retries a transient network failure once and completes', async () => {
+    let calls = 0
+    globalThis.fetch = (async () => {
+      calls += 1
+      if (calls === 1) throw new TypeError('fetch failed')
+      return sseResponse([
+        { choices: [{ delta: { content: 'pong' }, finish_reason: 'stop' }] },
+      ])
+    }) as typeof fetch
+    const adapter = new LocalLlmAdapterImpl({
+      providers: ['local-llm'],
+      baseUrl: 'http://127.0.0.1:8080/v1',
+      defaultModel: 'qwen3-4b',
+    })
+    const chunks: unknown[] = []
+    for await (const chunk of adapter.stream({
+      provider: 'local-llm',
+      model: '',
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
+    })) {
+      chunks.push(chunk)
+    }
+    assert.equal(calls, 2, 'one retry after the transient failure')
+    assert.ok(chunks.some(c => (c as { type: string }).type === 'text-delta'), 'stream completes')
+    restoreFetch()
+  })
+
+  it('gives up after the single retry and rethrows', async () => {
+    let calls = 0
+    globalThis.fetch = (async () => {
+      calls += 1
+      throw new TypeError('fetch failed')
+    }) as typeof fetch
+    const adapter = new LocalLlmAdapterImpl({
+      providers: ['local-llm'],
+      baseUrl: 'http://127.0.0.1:8080/v1',
+      defaultModel: 'qwen3-4b',
+    })
+    await assert.rejects(async () => {
+      for await (const _ of adapter.stream({
+        provider: 'local-llm',
+        model: '',
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'x' }] }],
+      })) { /* drain */ }
+    })
+    assert.equal(calls, 2, 'exactly one retry, no more')
+    restoreFetch()
+  })
+
   it('omits the bearer header when no apiKeyEnv is configured', async () => {
     installFetchMock(() => sseResponse([
       { choices: [{ delta: { content: 'ok' }, finish_reason: 'stop' }] },
