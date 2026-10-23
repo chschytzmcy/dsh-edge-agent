@@ -22,6 +22,7 @@ import Schema from '@deepseek-ai/schemastery'
 // 永不打架。adapter 侧 fail → 这里也会提前降级，不会出现"放行后静默空回复"。
 import { probeCloudTarget } from './cloud-llm-adapter.js'
 import { loadEdgeConfig, localPool } from './edge-config.js'
+import { containsCredential } from './pii-utils.js'
 
 export const name = 'input-guard'
 
@@ -1071,6 +1072,27 @@ export class InputGuardServiceImpl extends Service {
         }
       }
     }
+    // §7.106 (2026-10-23) 凭据粘性规则（操作者裁决：凭据交付不应走云端）：
+    // 「用户名：X；密码：Y」这类消息是设备操作链（登录）的一环。上一轮被
+    // 实体规则强制 LOCAL 时，交密码的后续轮必须留在 LOCAL——云端拿到的是
+    // [CREDENTIAL_1] 占位符，编排出的登录命令必然失败（功能死路），而
+    // 本地模型能拿真凭据完成 etscli auth login。方向与棘轮一致：只允许
+    // 拧向更保守（LOCAL），绝不放宽。桌面实测驱动：13:03 minimax 轮把密码
+    // 掩成占位符后询问「登录怎么做」，链路卡死。
+    if (
+      (category === 'CLOUD' || category === 'SANITIZED')
+      && this.turnCategory.get(sessionId) === 'LOCAL'
+      && containsCredential(originalLastUser.text)
+    ) {
+      this.audit('warn', 'input-guard.intent.sticky-local', {
+        sessionId, from: category, to: 'LOCAL',
+        rationale: 'credential-handoff-follows-local-context',
+      })
+      category = 'LOCAL'
+      intentRationale = 'sticky-credential-local-context'
+      intentConfidence = Math.max(intentConfidence, 0.9)
+    }
+
     // §7.46 (2026-09-11): ops log 让"为什么路由到 SANITIZED/LOCAL/CLOUD"
     // 在每个 chat 都可见；TUI 路径之前只能靠 audit log 翻 JSONL，operator
     // 调 ops log 完全看不到 routing 决策。

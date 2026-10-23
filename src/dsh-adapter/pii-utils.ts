@@ -361,3 +361,15 @@ export function sliceOriginal(
   const toIdx = charMap[end - 1] + 1
   return text.slice(fromIdx, toIdx)
 }
+
+/**
+ * §7.106 (2026-10-23): does the text carry a labeled credential
+ * (`密码：X`, `token = X`, …)? input-guard's sticky-LOCAL rule uses it: a
+ * credential handoff continues a device-operation context locally — the
+ * cloud route is a functional dead end there (the model could only ever
+ * echo the placeholder back). Non-global RegExp ⇒ stateless `.test`.
+ */
+const CREDENTIAL_PROBE = new RegExp(PII_PATTERNS.credential, 'iu')
+export function containsCredential(text: string): boolean {
+  return CREDENTIAL_PROBE.test(text)
+}

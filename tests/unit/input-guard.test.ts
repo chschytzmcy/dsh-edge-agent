@@ -2106,3 +2106,58 @@ describe('sanitizeOrphanToolCalls', () => {
     assert.equal(JSON.stringify(original), before, '不应修改入参数组')
   })
 })
+
+// §7.106 (2026-10-23) 凭据粘性规则：上一轮 LOCAL（设备操作语境）时，
+// 凭据交付轮即使被分类成 SANITIZED/CLOUD 也必须留在 LOCAL——云端只拿得到
+// 占位符，登录必失败；本地模型才能完成凭据链。方向只向更保守拧。
+describe('§7.106 sticky-credential-local', () => {
+  it('credential message after a LOCAL turn is forced LOCAL', async () => {
+    const ir = fakeIntentRouter({ category: 'SANITIZED' })
+    const audit = fakeAuditLog()
+    const svc = new InputGuardServiceImpl(
+      fakeCtx() as any, defaultConfig(),
+      undefined, undefined, ir.api as any, undefined, audit.api as any,
+    )
+    svc.setTurnCategory('sess-1', 'LOCAL')
+    const payload = makePreStepPayload('用户名:admin；密码：147258')
+    await svc.handlePreStep(payload as any, makeNext(payload.messages))
+    assert.ok(
+      audit.entries.some(e => e.kind === 'input-guard.intent.sticky-local'),
+      'sticky-local audit expected',
+    )
+    const routed = audit.entries.find(e => e.kind === 'input-guard.routed')
+    assert.equal((routed?.payload as { category?: string }).category, 'LOCAL')
+  })
+
+  it('no sticky when the previous turn was not LOCAL', async () => {
+    const ir = fakeIntentRouter({ category: 'SANITIZED' })
+    const audit = fakeAuditLog()
+    const svc = new InputGuardServiceImpl(
+      fakeCtx() as any, defaultConfig(),
+      undefined, undefined, ir.api as any, undefined, audit.api as any,
+    )
+    svc.setTurnCategory('sess-1', 'SANITIZED')
+    const payload = makePreStepPayload('用户名:admin；密码：147258')
+    await svc.handlePreStep(payload as any, makeNext(payload.messages))
+    assert.ok(
+      !audit.entries.some(e => e.kind === 'input-guard.intent.sticky-local'),
+      'sticky must not fire outside a LOCAL context',
+    )
+  })
+
+  it('no sticky without a credential pattern in the text', async () => {
+    const ir = fakeIntentRouter({ category: 'SANITIZED' })
+    const audit = fakeAuditLog()
+    const svc = new InputGuardServiceImpl(
+      fakeCtx() as any, defaultConfig(),
+      undefined, undefined, ir.api as any, undefined, audit.api as any,
+    )
+    svc.setTurnCategory('sess-1', 'LOCAL')
+    const payload = makePreStepPayload('帮我查一下天气')
+    await svc.handlePreStep(payload as any, makeNext(payload.messages))
+    assert.ok(
+      !audit.entries.some(e => e.kind === 'input-guard.intent.sticky-local'),
+      'plain text must not trigger the credential sticky',
+    )
+  })
+})
