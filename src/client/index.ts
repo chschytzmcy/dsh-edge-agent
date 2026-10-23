@@ -120,14 +120,24 @@ interface CordisCtx {
  * One-glance verdict for the current turn (§7.106 clarity request): the
  * panel rows are evidence, but the takeaway — did this turn leave the
  * device, and was PII scrubbed first — must read as a single line.
+ *
+ * §7.107: the verdict read only the LLM classifier. A turn the privacy
+ * policy decided (the classifier is then skipped entirely) had no
+ * `intent.classify.end` row, so the banner could fall back to "等待"
+ * while the flow below had already rendered the verdict. The realm the
+ * turn actually ran under is now taken from whichever tier decided it —
+ * classifier, policy rule, or the guard's own routing.
  */
 function verdictLine(rows: EdgeRow[]): { text: string; tone: 'local' | 'cloud' | 'wait' } {
   const newest = <T extends EdgeRow>(list: T[]): T | undefined => list.at(-1)
   const classify = newest(rows.filter(r => r.kind === 'intent.classify.end'))
+  const policy = newest(rows.filter(r => r.kind === 'input-guard.policy.route-applied'))
+  const routed = newest(rows.filter(r => r.kind === 'input-guard.routed'))
   const host = newest(rows.filter(r => r.kind === 'llm.host.route'))
   const scrubbed = rows.some(r => r.kind === 'sanitizer.sanitized' || r.kind === 'guard.rule.sanitized')
-  if (classify === undefined && host === undefined) return { text: tr('verdict.waiting'), tone: 'wait' }
-  const local = classify !== undefined && classify.payload.category === 'LOCAL'
+  const category = classify?.payload.category ?? policy?.payload.policyRealm ?? routed?.payload.category
+  if (category === undefined && host === undefined) return { text: tr('verdict.waiting'), tone: 'wait' }
+  const local = category === 'LOCAL'
     || host !== undefined && String(host.payload.provider ?? '').startsWith('local-llm')
   if (local) return { text: tr('verdict.local'), tone: 'local' }
   return { text: tr('verdict.cloud') + (scrubbed ? tr('verdict.sanitized') : ''), tone: 'cloud' }

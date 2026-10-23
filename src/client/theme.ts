@@ -19,12 +19,17 @@ const CSS = `
 .dsh-edge-view > * { flex: none; }
 .dsh-edge-tab-title { font-weight: 500; }
 .dsh-edge-flow { display: flex; flex-direction: column; padding: 6px 8px; border-radius: 6px; background: color-mix(in srgb, currentColor 4%, transparent); }
-.dsh-edge-flow-node { display: flex; align-items: baseline; gap: 6px; font-size: 12px; line-height: 1.6; }
+/* §7.107: every node renders with the same three levels — label line,
+   verdict line, evidence lines. The label used to share a baseline with
+   the verdict, so a long verdict wrapped under the label and the column
+   lost its grid. */
+.dsh-edge-flow-node { display: flex; flex-direction: column; font-size: 12px; line-height: 1.5; }
+.dsh-edge-flow-head { display: flex; align-items: center; gap: 6px; }
 .dsh-edge-flow-arrow { width: 8px; text-align: center; opacity: 0.35; font-size: 10px; line-height: 1.1; margin-left: 3px; }
 .dsh-edge-flow-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; align-self: center; background: color-mix(in srgb, currentColor 25%, transparent); }
 .dsh-edge-flow-label { flex: none; font-weight: 600; }
-.dsh-edge-flow-detail { opacity: 0.8; overflow-wrap: anywhere; }
-.dsh-edge-flow-sub { font-size: 11px; line-height: 1.5; opacity: 0.55; margin: 1px 0 2px 14px; overflow-wrap: anywhere; }
+.dsh-edge-flow-detail { padding-left: 14px; opacity: 0.85; overflow-wrap: anywhere; }
+.dsh-edge-flow-sub { font-size: 11px; line-height: 1.5; opacity: 0.55; padding-left: 26px; overflow-wrap: anywhere; }
 .dsh-edge-flow-node--ok .dsh-edge-flow-dot { background: #16a34a; }
 .dsh-edge-flow-node--warn .dsh-edge-flow-dot { background: #d97706; }
 .dsh-edge-flow-node--stop .dsh-edge-flow-dot { background: #dc2626; }
