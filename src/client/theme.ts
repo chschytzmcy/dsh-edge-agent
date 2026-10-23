@@ -10,7 +10,13 @@
 const STYLE_ID = 'dsh-edge-agent-styles'
 
 const CSS = `
-.dsh-edge-view { font-size: 12px; line-height: 1.5; padding: 8px 10px; display: flex; flex-direction: column; gap: 10px; }
+/* The host's tab body is overflow:hidden (SidebarRight.module.css .tabBody) and
+   hands scrolling to the occupant — without an explicit scroll container here
+   the flow + panels below the fold were simply clipped (observed desktop
+   10-23: threat panel unreachable). flex:none keeps sections at natural height
+   inside the scroller instead of shrinking. */
+.dsh-edge-view { font-size: 12px; line-height: 1.5; padding: 8px 10px; display: flex; flex-direction: column; gap: 10px; height: 100%; overflow-y: auto; box-sizing: border-box; }
+.dsh-edge-view > * { flex: none; }
 .dsh-edge-tab-title { font-weight: 500; }
 .dsh-edge-flow { display: flex; flex-direction: column; padding: 6px 8px; border-radius: 6px; background: color-mix(in srgb, currentColor 4%, transparent); }
 .dsh-edge-flow-node { display: flex; align-items: baseline; gap: 6px; font-size: 12px; line-height: 1.6; }
