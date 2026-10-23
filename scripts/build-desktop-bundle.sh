@@ -3,7 +3,7 @@
 # 用于在 DSH 桌面版 / 任意 profile 里通过 Plugins 页或 `dsh plugin add` 加载。
 #
 # 为什么用打包产物而不是直接指源码目录：
-#   源码 package.json 带 `prepare: npm run compile`。桌面 App 的执行环境里
+#   源码 package.json 带 `prepare`（编译 TypeScript）。桌面 App 的执行环境里
 #   不一定有 npm（只有 app 自带的 node/pnpm），直接装源码目录会让安装卡在
 #   prepare 脚本。产物（tarball / --emit-dir 目录）预置 lib/ 且删掉
 #   scripts/devDependencies，安装即用。
@@ -123,7 +123,11 @@ for (const v of variants) {
   // 安装时不跑 prepare/compile：产物已经在包里
   delete pkg.scripts
   delete pkg.devDependencies
-  pkg.files = ['lib', 'cordis.patch.yml', 'cordis.desktop-safe.patch.yml', 'cordis.yml', 'presets']
+  // `config` ships with the bundle (minus the operator's secret
+  // config/edge.json — see below), so the runtime finds the shipped
+  // config/edge.example.json as its last-resort configuration source
+  // instead of falling back to the in-code defaults.
+  pkg.files = ['lib', 'config', 'cordis.patch.yml', 'cordis.desktop-safe.patch.yml', 'cordis.yml', 'presets']
   pkg.dsh = { ...(pkg.dsh || {}), bundle: { ...(pkg.dsh.bundle || {}), patch: v.patch } }
 
   fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify(pkg, null, 2) + '\n')
@@ -131,6 +135,18 @@ for (const v of variants) {
   copyTree(path.join(repo, 'presets'), path.join(dir, 'presets'))
   for (const f of ['cordis.yml', 'cordis.patch.yml', 'cordis.desktop-safe.patch.yml']) {
     fs.copyFileSync(path.join(repo, f), path.join(dir, f))
+  }
+  // config/ ships WITHOUT config/edge.json — that file holds the
+  // operator's real endpoints and API keys in plaintext and must never
+  // reach a distributable artifact. (The local installable directory does
+  // keep it; see scripts/rebuild-installable.mjs.)
+  const configSrc = path.join(repo, 'config')
+  if (fs.existsSync(configSrc)) {
+    fs.mkdirSync(path.join(dir, 'config'), { recursive: true })
+    for (const f of fs.readdirSync(configSrc)) {
+      if (f === 'edge.json') continue
+      fs.cpSync(path.join(configSrc, f), path.join(dir, 'config', f), { recursive: true })
+    }
   }
   console.log(`staged ${v.name} -> ${v.patch}`)
 }
@@ -147,14 +163,24 @@ for v in dsh-edge-agent-desktop-safe dsh-edge-agent-full; do
   echo "==> $OUT ($(du -h "$OUT" | cut -f1 | tr -d ' '))"
 done
 
-# ── 3. --emit-dir：staging 落成「可安装目录」（桌面 Plugins 本地目录通道）──
+# ── 3. --emit-dir：落成「可安装目录」（桌面 Plugins 本地目录通道）──────────
+#
+# §7.107 (2026-10-23): this used to copy the tarball staging over
+# dist/installable/<variant>/. The two artifacts are NOT the same thing —
+# the installable directory also carries config/ (the operator's
+# config/edge.json and the shipped templates), and the tarball deliberately
+# does not. Copying the staging over the installable directory silently
+# deleted config/ (and flipped the version to the tarball's), so a
+# `pnpm run build` followed by `build-desktop-bundle.sh --emit-dir` undid
+# the work of the previous step.
+#
+# scripts/rebuild-installable.mjs is the single source of truth for the
+# installable directories — it stages, swaps and keeps the `link:` target
+# continuously valid (§7.103). Call it instead of copying.
 if [ "$EMIT_DIR" = 1 ]; then
-  mkdir -p "$DIST/installable"
+  "$NODE_BIN" "$REPO/scripts/rebuild-installable.mjs"
   for v in dsh-edge-agent-desktop-safe dsh-edge-agent-full; do
-    DEST="$DIST/installable/$v"
-    rm -rf "$DEST"
-    cp -R "$STAGE_ROOT/$v" "$DEST"
-    echo "==> $DEST"
+    echo "==> $DIST/installable/$v"
   done
 fi
 

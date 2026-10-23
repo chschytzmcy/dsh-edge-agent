@@ -38,13 +38,16 @@ const VARIANTS = [
     // variant — the full patch ships host rewrites the desktop profile
     // must not apply.
     patchField: 'cordis.desktop-safe.patch.yml',
-    version: '0.1.1',
+    // Version suffix matches build-desktop-bundle.sh's tarballs, so the
+    // same bundle reports the same version whether the desktop installed
+    // it from the tarball or from this directory.
+    versionSuffix: '-desktop-safe',
   },
   {
     dir: 'dsh-edge-agent-full',
     patch: 'cordis.patch.yml',
     patchField: 'cordis.patch.yml',
-    version: '0.1.1-full',
+    versionSuffix: '-full',
   },
 ]
 
@@ -116,10 +119,18 @@ for (const variant of VARIANTS) {
 
   // 3. package.json — variant-specific name/version + patch field rewrite.
   const variantPkg = readJson(join(ROOT, 'package.json'))
-  variantPkg.version = variant.version
+  variantPkg.version = `${pkg.version}${variant.versionSuffix}`
   if (!variantPkg.dsh) variantPkg.dsh = {}
   if (!variantPkg.dsh.bundle) variantPkg.dsh.bundle = {}
   variantPkg.dsh.bundle.patch = `./${variant.patchField}`
+  // The installable directory is installed as a `file:` DIRECTORY dependency.
+  // npm/pnpm run a directory dependency's `prepare` script after install —
+  // and this repo's `prepare` compiles TypeScript, which needs the dev
+  // dependencies and a package manager. The desktop runtime has neither, so
+  // a `prepare` left in place stalls the install (or fails it outright).
+  // The artifact already carries a compiled lib/; drop the build chain.
+  delete variantPkg.scripts
+  delete variantPkg.devDependencies
   writeFileSync(
     join(staging, 'package.json'),
     JSON.stringify(variantPkg, null, 2) + '\n',
@@ -136,7 +147,7 @@ for (const variant of VARIANTS) {
   renameSync(staging, target)
   rmSync(retired, { recursive: true, force: true })
 
-  console.log(`  built ${variant.dir} (patch=${variant.patchField}, version=${variant.version})`)
+  console.log(`  built ${variant.dir} (patch=${variant.patchField}, version=${variantPkg.version})`)
 }
 
 console.log('rebuild-installable: done')
