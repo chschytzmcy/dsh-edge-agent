@@ -156,6 +156,21 @@ describe('intent-router', () => {
 
   // ─── §7.58 (2026-09-16): bare-verb removal + LOCAL-entity priority ─────
 
+  // §7.106 (2026-10-23): 归属地查询的任务载荷就是号码——云端只拿得到
+  // [PHONE_1] 占位符，任务语义死亡且"重发号码"永远进不来（桌面 14:59 实测）。
+  it('§7.106: phone attribution query routes LOCAL (payload-is-PII regression)', async () => {
+    const mockCtx = { reflect: { provide: () => {} }, llm: null } as any
+    const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'SANITIZED',
+      classificationProvider: 'local-llm',
+      confidenceThreshold: 0.6,
+    }, audit as any)
+    const intent = await service.classify('查询下17300969670的归属地')
+    assert.equal(intent.category, 'LOCAL')
+    assert.equal(intent.rationale, 'rule-local-entity:归属地')
+  })
+
   it('§7.58: 密盒 query with cloud verb routes LOCAL (incident regression)', async () => {
     // 2026-09-15 incident: "查询共登陆了几个密盒" went CLOUD (turn 1 via the
     // LLM classifier, turn 2 via rule-cloud-keyword:查询) and drove

@@ -176,7 +176,7 @@
       "piiType": "api-key"
     },
     {
-      "pattern": "(?:密码|口令|passwd|password|pwd|secret|access[ _-]?token|token|api[ _-]?key)[\"' 　]{0,2}(?:[:：=]|是|为|\\s+is\\s+)[\"' 　]?[^\\s\"'，,;；<>（）()]{3,64}",
+      "pattern": "(?:密码|口令|用户名|账号|账户|passwd|password|pwd|username|account|secret|access[ _-]?token|token|api[ _-]?key)[\"' 　]{0,2}(?:[:：=]|是|为|\\s+is\\s+)[\"' 　]?[^\\s\"'，,;；<>（）()]{3,64}",
       "dataClass": "secret",
       "piiType": "credential",
       "replacement": "<PII_CREDENTIAL_n>"

@@ -265,6 +265,11 @@ const CLOUD_KEYWORDS_DEFAULT: readonly string[] = [
  *  built-in, same semantics as cloudKeywords. */
 const LOCAL_ENTITY_KEYWORDS_DEFAULT: readonly string[] = [
   '密盒', 'ets', 'etscli',
+  // §7.106 (2026-10-23): 号码归属地查询是号段知识检索——本地答得动；走云端
+  // 时任务载荷本身就是 PII，SANITIZED 会把号码掩成 [PHONE_1]，云端只能回
+  // "这是占位符"，任务语义性死亡，且用户按提示重发号码会永远进不去（实测
+  // 14:59 死循环）。强制 LOCAL 同时修复功能与隐私。
+  '归属地',
 ]
 
 /** §7.92.5 (2026-09-23): jev v0.3.0 hard cap on the `intents[]` payload
