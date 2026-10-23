@@ -117,17 +117,25 @@ export const edgeStore = {
     return this.currentRows(sessionId, currentTurn, turnStartTs).filter(r => r.panel === panel)
   },
 
-  /** Every current-turn row across panels (flow view input). */
-  currentRows(sessionId: string, currentTurn: number, turnStartTs?: number): EdgeRow[] {
+
+  /** Every current-turn row across panels (flow view input).
+   *
+   *  Window-first semantics (§7.106, 2026-10-23 race fix): the authoritative
+   *  discriminator is row time vs `turnStartTs`. The row's `turn` number
+   *  cannot be trusted for early-turn rows — `turn/start` session events
+   *  reach the fold AFTER the pre-step audit rows land (host log commits
+   *  asynchronously), so the first rows of a turn were tagged with the
+   *  previous count and got wrongly wiped (observed: intent/sanitize nodes
+   *  stuck on 等待 while guard/route/answer showed data). Audit `ts` is
+   *  production-time and race-free; the turn tag stays informational only.
+   *  Before the first turn there is no window, so everything renders
+   *  (boot probes included). */
+  currentRows(sessionId: string, _currentTurn: number, turnStartTs?: number): EdgeRow[] {
     const s = sessions.get(sessionId)
     if (!s) return []
     const out: EdgeRow[] = []
     for (const row of s.rows) {
-      if (row.turn !== undefined && row.turn >= 0) {
-        if (row.turn !== currentTurn) continue
-      } else if (turnStartTs !== undefined) {
-        if (row.ts < turnStartTs) continue
-      }
+      if (turnStartTs !== undefined && row.ts < turnStartTs) continue
       out.push(row)
     }
     return out.slice(-CLIENT_CAP)

@@ -137,9 +137,7 @@ function routeNode(rows: EdgeRow[]): FlowNode {
     const forced = overridden !== undefined && overridden.ts >= routed.ts - 2000
     const sub: string[] = []
     if (forced && overridden !== undefined) {
-      const from = overridden.payload.from as { provider?: string; model?: string } | undefined
-      const to = overridden.payload.to as { provider?: string; model?: string } | undefined
-      sub.push(`${tr('flow.lbl.rewrite')} ${from?.provider ?? '?'}/${from?.model ?? '?'} → ${to?.provider ?? '?'}/${to?.model ?? '?'}`)
+      sub.push(`${tr('flow.lbl.rewrite')} ${str(field(overridden, 'from.provider'))}/${str(field(overridden, 'from.model'))} → ${str(field(overridden, 'to.provider'))}/${str(field(overridden, 'to.model'))}`)
       sub.push(`${tr('flow.lbl.reason')} ${str(field(overridden, 'reason'))}`)
     }
     sub.push(`${tr('flow.lbl.entry')} ${str(field(routed, 'routeSource'))} · ${tr('flow.lbl.edgePool')} ${routed.payload.edgeRouteUsed === true ? tr('flow.lbl.used') : tr('flow.lbl.hostOwn')}`)

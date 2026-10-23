@@ -148,9 +148,9 @@ describe('PII defense', () => {
     assert.equal(row.payload.sample, '13812345678')
   })
 
-  it('safePayload flattens nested objects/arrays', () => {
-    const out = safePayload({ keep: 1, flag: true, gone: { deep: 'x' }, list: ['a'], s: 'plain' }, true)
-    assert.deepEqual(Object.keys(out).sort(), ['flag', 'keep', 's'])
+  it('safePayload flattens ONE level of scalar objects; deeper values and arrays drop', () => {
+    const out = safePayload({ keep: 1, flag: true, one: { a: 'x', b: 2, deep: { c: 3 } }, list: ['a'], s: 'plain' }, true)
+    assert.deepEqual(Object.keys(out).sort(), ['flag', 'keep', 'one.a', 'one.b', 's'])
   })
 })
 

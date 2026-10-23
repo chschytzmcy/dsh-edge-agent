@@ -198,10 +198,19 @@ export function safePayload(payload: Record<string, unknown>, piiRedact: boolean
       out[key] = value
     } else if (value === null) {
       out[key] = null
+    } else if (typeof value === 'object' && !Array.isArray(value)) {
+      // §7.106 (2026-10-23): ONE level of scalar-only nested objects is
+      // flattened (`from`/`to` of route.overridden carry exactly the rewrite
+      // evidence the flow view shows — dropping them rendered "?/? → ?/?").
+      // Deeper objects and arrays stay dropped: panels render scalar rows;
+      // deep shapes are the detail channel the plan explicitly cut.
+      for (const [k, v] of Object.entries(value)) {
+        if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
+          out[`${key}.${k}`] = v
+        }
+      }
     }
-    // objects/arrays (e.g. entity lists, edgeRejection) are dropped:
-    // panels render rows of scalars; deep shapes are the detail channel
-    // the plan explicitly cut.
+    // arrays are dropped entirely.
   }
   return out
 }
