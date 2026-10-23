@@ -602,7 +602,63 @@ export class IntentRouterServiceImpl extends Service {
     return null
   }
 
+  /**
+   * §7.107 (2026-10-23, operator ruling「只有需要搜索公网上的信息才需要用到
+   * cloudllm」): the public-web gate lives HERE — at the source of the
+   * verdict — not in the consumer.
+   *
+   * The verdict is read by TWO consumers: input-guard (agent/pre-step) and
+   * http-api (which writes `agent._edgeRoute` from it and hands that over
+   * as an EXPLICIT route). Gating in the consumer only closed the
+   * input-guard path — http-api's route arrived as an explicit route and
+   * was honoured as-is, so a classifier CLOUD verdict could still reach
+   * the cloud through the API entry. One gate, at the source, closes both.
+   */
   async classify(text: string, context?: { recentMessages?: unknown[]; sessionId?: string }): Promise<Intent> {
+    const intent = await this.classifyInner(text, context)
+    return this.gateCloudVerdict(intent, text, context?.sessionId ?? '')
+  }
+
+  /**
+   * A CLOUD verdict needs a public-web need.
+   *
+   * The signal is this router's own cloud keyword list (built-in
+   * information-acquisition words + `stages.intent.cloudKeywords`) — the
+   * same list the rules tier matches, so the gate and the rules tier can
+   * never disagree about what counts as a web need.
+   *
+   * Only the LLM / jev verdicts need the gate: the rules tier reaches
+   * CLOUD ONLY through a cloud keyword, which IS the signal.
+   */
+  private gateCloudVerdict(intent: Intent, text: string, sid: string): Intent {
+    if (intent.category !== 'CLOUD') return intent
+    // Same truncation the classifier saw — a signal beyond maxInputLength
+    // was never part of the classified text and must not unlock the cloud.
+    const scanned = text.length > this.maxInputLength ? text.slice(0, this.maxInputLength) : text
+    const signal = this.cloudSignal(scanned)
+    if (signal !== undefined) return intent
+    this.audit('warn', 'intent.cloud.blocked-no-web-need', {
+      sessionId: sid,
+      category: intent.category,
+      confidence: intent.confidence,
+      rationale: intent.rationale,
+      note: 'cloud verdict without a public-web signal — kept on device',
+    })
+    // The final verdict gets its own classify.end row: the panel reads the
+    // LATEST one, and the pre-gate row still says CLOUD — the panel would
+    // announce a cloud verdict that never happened.
+    this.audit('info', 'intent.classify.end', {
+      sessionId: sid,
+      textLen: scanned.length,
+      path: 'llm-no-web-need',
+      category: 'LOCAL',
+      confidence: intent.confidence,
+      rationale: 'no-web-need',
+    })
+    return { category: 'LOCAL', confidence: intent.confidence, targetRealm: 'local', rationale: 'no-web-need' }
+  }
+
+  private async classifyInner(text: string, context?: { recentMessages?: unknown[]; sessionId?: string }): Promise<Intent> {
     const start = Date.now()
     this.stats.total++
     // §7.106 (2026-10-22): thread the session id into every panel-visible classify

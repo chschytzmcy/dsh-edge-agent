@@ -98,11 +98,11 @@ function fakePrivacyPolicy(overrides: { realm?: string; rationale?: string; thro
 
 /** 默认 CLOUD 的 intent-router。
  *
- *  §7.107 (2026-10-23): the router also answers the public-web question.
- *  The double reports a web signal by default, so the CLOUD path (and its
- *  sanitizer branch) stays exercised exactly as before; `noWebSignal: true`
- *  turns the signal off for the tests that cover the gate. */
-function fakeIntentRouter(overrides: { category?: string; rationale?: string; throwErr?: boolean; noWebSignal?: boolean; confidence?: number } = {}) {
+ *  §7.107 (2026-10-23): the public-web gate now lives in the ROUTER
+ *  (`classify()` → `gateCloudVerdict`), so this double needs no extra
+ *  surface — it returns the verdict as given, and the router's own gate
+ *  is covered in tests/unit/intent-router.test.ts. */
+function fakeIntentRouter(overrides: { category?: string; rationale?: string; throwErr?: boolean; confidence?: number } = {}) {
   const calls: string[] = []
   return {
     calls,
@@ -111,9 +111,6 @@ function fakeIntentRouter(overrides: { category?: string; rationale?: string; th
         calls.push(text)
         if (overrides.throwErr) throw new Error('intent crashed')
         return { category: overrides.category ?? 'CLOUD', confidence: overrides.confidence ?? 0.85, rationale: overrides.rationale }
-      },
-      cloudSignal(_text: string) {
-        return overrides.noWebSignal === true ? undefined : 'news'
       },
     },
   }
@@ -454,46 +451,6 @@ describe('handlePreStep — intent classification', () => {
     assert.equal(result.kind, 'enter')
     // intent crashed → default LOCAL → nothing egresses → no sanitize
     assert.equal(san.sanitizeCalls.length, 0)
-  })
-
-  it('§7.107: classifier CLOUD without a public-web signal → kept LOCAL', async () => {
-    // 「只有需要搜索公网上的信息才需要用到 cloudllm」—— a local classifier
-    // that answers CLOUD for an ordinary request may not send it off the
-    // device. No web signal → the verdict is downgraded to LOCAL.
-    const ir = fakeIntentRouter({ category: 'CLOUD', noWebSignal: true })
-    const san = fakeSanitizer({ replacements: 0 })
-    const { ctx, infoLines } = fakeCtxWithLogger()
-    const svc = new InputGuardServiceImpl(
-      ctx as any, defaultConfig(),
-      undefined, undefined, ir.api as any, san.api as any,
-    )
-    const payload = makePreStepPayload('帮我写封邮件')
-    await svc.handlePreStep(payload as any, makeNext(payload.messages))
-
-    const preflight = infoLines.find((l) => l.includes('preflight intent'))
-    assert.ok(preflight, 'preflight should fire')
-    assert.ok(preflight!.includes('category=LOCAL'),
-      `CLOUD without a web need must stay LOCAL, got: ${preflight}`)
-    // nothing egresses → the sanitizer never runs
-    assert.equal(san.sanitizeCalls.length, 0)
-  })
-
-  it('§7.107: classifier CLOUD WITH a public-web signal → CLOUD', async () => {
-    const ir = fakeIntentRouter({ category: 'CLOUD' })
-    const san = fakeSanitizer({ replacements: 0 })
-    const { ctx, infoLines } = fakeCtxWithLogger()
-    const svc = new InputGuardServiceImpl(
-      ctx as any, defaultConfig(),
-      undefined, undefined, ir.api as any, san.api as any,
-    )
-    const payload = makePreStepPayload('查一下最新的AI新闻')
-    await svc.handlePreStep(payload as any, makeNext(payload.messages))
-
-    const preflight = infoLines.find((l) => l.includes('preflight intent'))
-    assert.ok(preflight, 'preflight should fire')
-    assert.ok(preflight!.includes('category=CLOUD'),
-      `a public-web need may still reach the cloud, got: ${preflight}`)
-    assert.equal(san.sanitizeCalls.length, 1)
   })
 })
 

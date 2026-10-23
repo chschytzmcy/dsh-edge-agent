@@ -142,14 +142,21 @@ function intentNode(rows: EdgeRow[]): FlowNode {
     // (error/timeout upstream — e.g. the model answered non-JSON). Surface
     // WHY from the error rows instead of pretending an LLM decided.
     const isDefault = rationaleStr(end).startsWith('default:')
+    // §7.107: the router's public-web gate — the classifier said CLOUD, the
+    // gate kept the turn on the device because nothing asked for the public
+    // web. The row's own rationale says so; name it in the headline too.
+    const noWebNeed = rationaleStr(end) === 'no-web-need'
     if (isDefault) {
       const causeRow = latest(rows, r => /^intent\.(classify\.llm_error|llm\.(timeout|error|provider_error))$/u.test(r.kind))
       if (causeRow !== undefined) sub.push(`${tr('flow.lbl.cause')} ${str(field(causeRow, 'error') ?? field(causeRow, 'reason'))} → ${str(causeRow.kind)}`)
       else sub.push(tr('flow.intent.defaultNoCause'))
     }
+    if (noWebNeed) sub.push(tr('flow.intent.noWebNeedWhy'))
     return {
       label: tr('flow.intent'), tone: isDefault ? 'warn' : 'ok',
-      detail: `${cat} ${conf} · ${isDefault ? tr('flow.intent.viaDefault') : override !== undefined && override.ts <= end.ts ? tr('flow.intent.viaEntity') : tr('flow.intent.viaLlm')}`,
+      detail: noWebNeed
+        ? `${cat} ${conf} · ${tr('flow.intent.noWebNeed')}`
+        : `${cat} ${conf} · ${isDefault ? tr('flow.intent.viaDefault') : override !== undefined && override.ts <= end.ts ? tr('flow.intent.viaEntity') : tr('flow.intent.viaLlm')}`,
       sub,
     }
   }

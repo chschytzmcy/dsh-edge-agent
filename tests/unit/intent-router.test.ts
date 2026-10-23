@@ -253,6 +253,67 @@ describe('intent-router', () => {
     assert.equal(custom.rationale, 'rule-local-entity:nas')
   })
 
+  // ─── §7.107 (2026-10-23): the public-web gate lives in the router ──────
+
+  it('§7.107: an LLM CLOUD verdict without a public-web signal → LOCAL', async () => {
+    // 「只有需要搜索公网上的信息才需要用到 cloudllm」—— the gate is at the
+    // SOURCE of the verdict, because two consumers read it (input-guard and
+    // http-api's `_edgeRoute`). A gate in the consumer would have closed
+    // only one of them.
+    const verdict = JSON.stringify({ category: 'CLOUD', confidence: 0.95 })
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: fakeLlm(chunksFromText(verdict)),
+    } as any
+    const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'LOCAL',
+      classificationProvider: 'local-llm',
+      confidenceThreshold: 0.6,
+    }, audit as any)
+
+    const intent = await service.classify('帮我写封邮件')
+    assert.equal(intent.category, 'LOCAL')
+    assert.equal(intent.rationale, 'no-web-need')
+    const blocked = audit.entries.find((e: any) => e.kind === 'intent.cloud.blocked-no-web-need')
+    assert.ok(blocked, 'the downgrade must be audited')
+    assert.equal(blocked.level, 'warn')
+  })
+
+  it('§7.107: an LLM CLOUD verdict WITH a public-web signal → CLOUD', async () => {
+    const verdict = JSON.stringify({ category: 'CLOUD', confidence: 0.95 })
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: fakeLlm(chunksFromText(verdict)),
+    } as any
+    const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'LOCAL',
+      classificationProvider: 'local-llm',
+      confidenceThreshold: 0.6,
+    }, audit as any)
+
+    const intent = await service.classify('查一下最新的AI新闻')
+    assert.equal(intent.category, 'CLOUD')
+    assert.match(intent.rationale, /^llm-classified/u)
+    assert.ok(!audit.entries.some((e: any) => e.kind === 'intent.cloud.blocked-no-web-need'))
+  })
+
+  it('§7.107: the rules tier needs no gate — a cloud keyword IS the signal', async () => {
+    // The rules tier reaches CLOUD only through a cloud keyword, so it is
+    // already web-gated by construction.
+    const mockCtx = { reflect: { provide: () => {} }, llm: null } as any
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'LOCAL',
+      classificationProvider: 'local-llm',
+      confidenceThreshold: 0.6,
+    })
+
+    const intent = await service.classify('查一下最新的AI新闻')
+    assert.equal(intent.category, 'CLOUD')
+    assert.match(intent.rationale, /^rule-cloud-keyword:/u)
+  })
+
   it('§7.58: entity guardrail overrides a non-LOCAL LLM verdict (turn-1 shape)', async () => {
     // Turn 1 of the incident: the classifier LLM itself answered
     // {category:CLOUD, confidence:1} — the rules layer never ran. The

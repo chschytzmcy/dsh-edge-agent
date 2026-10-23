@@ -144,12 +144,6 @@ interface IntentRouterLike {
     confidence: number
     rationale?: string
   }>
-  /**
-   * §7.107: the public-web signal. Optional so an intent-router that
-   * predates the gate (or a test double) simply reports "unknown" — the
-   * gate then leaves the verdict alone rather than inventing a rule.
-   */
-  cloudSignal?(text: string): string | undefined
 }
 
 /** Minimal sanitizer 接口。*/
@@ -1084,38 +1078,13 @@ export class InputGuardServiceImpl extends Service {
           })
           // 分类失败 → 保持默认 LOCAL（§7.107；此前是 CLOUD fail-open）
         }
-        // §7.107 (2026-10-23, operator ruling「只有需要搜索公网上的信息才需要
-        // 用到 cloudllm」): the cloud is not a free choice — it needs a
-        // PUBLIC-WEB NEED. A local classifier that answers CLOUD for "写封邮件"
-        // or "为什么天是蓝的" must not be able to send that text off the
-        // device; only a genuine "search the public web" request may.
-        //
-        // The signal is the intent-router's own cloud keyword list (built-in
-        // information-acquisition words + stages.intent.cloudKeywords) — the
-        // same list the rules tier matches, so the gate and the rules tier
-        // cannot disagree about what counts as a web need.
-        //
-        // This gate covers the CLASSIFIER only. A caller-supplied route
-        // (`agent._edgeRoute`) and the privacy-policy tier are explicit
-        // statements of intent and are honoured as they are.
-        if (category === 'CLOUD' && typeof this.intentRouter.cloudSignal === 'function') {
-          const signal = this.intentRouter.cloudSignal(originalLastUser.text)
-          if (signal === undefined) {
-            this.audit('info', 'input-guard.cloud.blocked-no-web-need', {
-              sessionId,
-              classifierRationale: intentRationale,
-              classifierConfidence: intentConfidence,
-              note: 'cloud verdict without a public-web signal — kept on device',
-            })
-            category = 'LOCAL'
-            intentConfidence = 0
-            intentRationale = 'no-web-need'
-          } else {
-            this.audit('info', 'input-guard.cloud.web-need-confirmed', {
-              sessionId, signal, rationale: intentRationale,
-            })
-          }
-        }
+        // §7.107: the public-web gate is NOT here — it is in the intent
+        // router (`classify()` → `gateCloudVerdict`). The router's verdict
+        // is read by two consumers (this hook and http-api's `_edgeRoute`),
+        // and http-api hands it over as an EXPLICIT route that this hook
+        // honours as-is — a gate here would have closed only this path.
+        // A caller-supplied route stays honoured: it IS an explicit
+        // statement of intent.
       }
     }
     // §7.106 (2026-10-23) 凭据粘性规则（操作者裁决：凭据交付不应走云端）：
