@@ -130,7 +130,23 @@ function routeNode(rows: EdgeRow[]): FlowNode {
   const overridden = latest(rows, r => r.kind === 'input-guard.route.overridden')
   const blocked = latest(rows, r => /^input-guard\.blocked\./.test(r.kind))
   const missing = latest(rows, r => /route-missing|cloud-key\.missing|cloud\.unavailable/.test(r.kind))
-  if (blocked !== undefined) return { label: tr('flow.route'), tone: 'stop', detail: tr('flow.route.blocked'), sub: [] }
+  if (blocked !== undefined) {
+    // Evidence = classification metadata ONLY (reason/riskLevel/rationale).
+    // The payload's `preview` can carry raw user text (audit stays local);
+    // the panel's hard rule is no original content — never surface it here.
+    const what = blocked.kind.replace('input-guard.blocked.', '')
+    const reason = str(field(blocked, 'reason'))
+    const rationale = str(field(blocked, 'rationale'))
+    const risk = str(field(blocked, 'riskLevel'))
+    const cause = reason !== '?' ? reason : rationale !== '?' ? rationale : '?'
+    const sub = [`${tr('flow.lbl.cause')} ${cause}`]
+    const extras = [
+      risk !== '?' ? `${tr('flow.lbl.risk')} ${risk}` : null,
+      typeof blocked.payload.confidence === 'number' ? `confidence ${(blocked.payload.confidence * 100).toFixed(0)}%` : null,
+    ].filter((v): v is string => v !== null)
+    if (extras.length > 0) sub.push(extras.join(' · '))
+    return { label: tr('flow.route'), tone: 'stop', detail: `${tr('flow.route.blocked')} · ${what}`, sub }
+  }
   if (missing !== undefined) return { label: tr('flow.route'), tone: 'warn', detail: tr('flow.route.fallback'), sub: [`${tr('flow.lbl.cause')} ${str(field(missing, 'reason'))}`] }
   if (routed !== undefined) {
     const cat = str(field(routed, 'category'))
