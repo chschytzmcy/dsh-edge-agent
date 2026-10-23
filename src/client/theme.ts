@@ -12,6 +12,18 @@ const STYLE_ID = 'dsh-edge-agent-styles'
 const CSS = `
 .dsh-edge-view { font-size: 12px; line-height: 1.5; padding: 8px 10px; display: flex; flex-direction: column; gap: 10px; }
 .dsh-edge-tab-title { font-weight: 500; }
+.dsh-edge-flow { display: flex; flex-direction: column; padding: 6px 8px; border-radius: 6px; background: color-mix(in srgb, currentColor 4%, transparent); }
+.dsh-edge-flow-node { display: flex; align-items: baseline; gap: 6px; font-size: 12px; line-height: 1.6; }
+.dsh-edge-flow-arrow { width: 8px; text-align: center; opacity: 0.35; font-size: 10px; line-height: 1.1; margin-left: 3px; }
+.dsh-edge-flow-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; align-self: center; background: color-mix(in srgb, currentColor 25%, transparent); }
+.dsh-edge-flow-label { flex: none; font-weight: 600; }
+.dsh-edge-flow-detail { opacity: 0.8; overflow-wrap: anywhere; }
+.dsh-edge-flow-node--ok .dsh-edge-flow-dot { background: #16a34a; }
+.dsh-edge-flow-node--warn .dsh-edge-flow-dot { background: #d97706; }
+.dsh-edge-flow-node--stop .dsh-edge-flow-dot { background: #dc2626; }
+.dsh-edge-flow-node--run .dsh-edge-flow-dot { background: #2563eb; }
+.dsh-edge-flow-node--info .dsh-edge-flow-dot { background: #64748b; }
+.dsh-edge-flow-node--wait { opacity: 0.5; }
 .dsh-edge-verdict { font-size: 12px; font-weight: 600; padding: 5px 8px; border-radius: 6px; border-left: 2px solid currentColor; background: color-mix(in srgb, currentColor 5%, transparent); }
 .dsh-edge-verdict--local { color: #16a34a; }
 .dsh-edge-verdict--cloud { color: inherit; }

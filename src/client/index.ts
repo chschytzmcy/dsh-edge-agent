@@ -33,6 +33,7 @@ import { RoutePanel } from './routePanel'
 import { InterceptionPanel } from './interceptionPanel'
 import { ThreatPanel } from './threatPanel'
 import { SessionSummaryBar } from './sessionSummary'
+import { FlowPanel } from './flowPanel'
 import type { EdgeRow, EdgeSummary } from './types'
 
 /* ── Identity ──────────────────────────────────────────────────────────── */
@@ -151,6 +152,7 @@ function EdgeView(props: SessionProps) {
   return h('div', { class: 'dsh-edge-view' },
     h(SessionSummaryBar, { summary }),
     h('div', { class: `dsh-edge-verdict dsh-edge-verdict--${verdict.tone}` }, verdict.text),
+    h(FlowPanel, { rows: allRows }),
     h(IntentPanel, { rows: rows('intent') }),
     h(RoutePanel, { rows: rows('route') }),
     h(InterceptionPanel, { rows: rows('interception') }),
