@@ -152,7 +152,7 @@ function EdgeView(props: SessionProps) {
   return h('div', { class: 'dsh-edge-view' },
     h(SessionSummaryBar, { summary }),
     h('div', { class: `dsh-edge-verdict dsh-edge-verdict--${verdict.tone}` }, verdict.text),
-    h(FlowPanel, { rows: allRows }),
+    h(FlowPanel, { rows: allRows, summary }),
     h(IntentPanel, { rows: rows('intent') }),
     h(RoutePanel, { rows: rows('route') }),
     h(InterceptionPanel, { rows: rows('interception') }),

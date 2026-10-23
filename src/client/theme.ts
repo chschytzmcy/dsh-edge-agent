@@ -24,6 +24,7 @@ const CSS = `
 .dsh-edge-flow-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; align-self: center; background: color-mix(in srgb, currentColor 25%, transparent); }
 .dsh-edge-flow-label { flex: none; font-weight: 600; }
 .dsh-edge-flow-detail { opacity: 0.8; overflow-wrap: anywhere; }
+.dsh-edge-flow-sub { font-size: 11px; line-height: 1.5; opacity: 0.55; margin: 1px 0 2px 14px; overflow-wrap: anywhere; }
 .dsh-edge-flow-node--ok .dsh-edge-flow-dot { background: #16a34a; }
 .dsh-edge-flow-node--warn .dsh-edge-flow-dot { background: #d97706; }
 .dsh-edge-flow-node--stop .dsh-edge-flow-dot { background: #dc2626; }
