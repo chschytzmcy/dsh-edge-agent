@@ -92,61 +92,61 @@
       "pattern": "(导出|删除|清空|格式化).*(数据库|系统|磁盘|全部数据)",
       "realm": "REJECT",
       "confidence": 0.9,
-      "rationale": "Dangerous system operation"
+      "rationale": "危险系统操作"
     },
     {
       "pattern": "(drop\\s+table|rm\\s+-rf|format\\s+[a-z]:|del\\s+/[fs])",
       "realm": "REJECT",
       "confidence": 0.95,
-      "rationale": "Destructive command pattern"
+      "rationale": "破坏性命令特征"
     },
     {
       "pattern": "(本地|local|文件|file|计算|calculate|读取|写入)",
       "realm": "LOCAL",
       "confidence": 0.8,
-      "rationale": "Local operations stay on device"
+      "rationale": "本地操作不出设备"
     },
     {
       "pattern": "(密码|password|secret|密钥|private.?key|token)",
       "realm": "LOCAL",
       "confidence": 0.9,
-      "rationale": "Sensitive credentials must not leave device"
+      "rationale": "敏感凭据不得离开设备"
     },
     {
       "pattern": "(身份证号|id.?card|银行卡|bank.?card|信用卡|credit.?card)",
       "realm": "LOCAL",
       "confidence": 0.95,
-      "rationale": "Financial/identity PII must stay local"
+      "rationale": "金融/身份类 PII 必须留在本地"
     },
     {
       "pattern": "(手机号|电话号码|手机.{0,5}号|phone.?number|mobile.?number)",
       "realm": "LOCAL",
       "confidence": 0.95,
-      "rationale": "Phone PII must stay local"
+      "rationale": "手机号 PII 必须留在本地"
     },
     {
       "pattern": "(邮箱|电邮|email.?address|e-?mail)",
       "realm": "LOCAL",
       "confidence": 0.95,
-      "rationale": "Email PII must stay local"
+      "rationale": "邮箱 PII 必须留在本地"
     },
     {
       "pattern": "(IP\\s*地址|服务器.{0,8}(IP|地址)|server\\s+IP|局域网.{0,8}(IP|地址))",
       "realm": "LOCAL",
       "confidence": 0.9,
-      "rationale": "IP address PII must stay local"
+      "rationale": "IP 地址 PII 必须留在本地"
     },
     {
       "pattern": "(家庭住址|住址|home\\s+address|通信地址)",
       "realm": "LOCAL",
       "confidence": 0.85,
-      "rationale": "Home address PII must stay local"
+      "rationale": "家庭住址 PII 必须留在本地"
     },
     {
       "pattern": "(翻译|translate|summarize|summary|explain|为什么|what is|how to)",
       "realm": "CLOUD",
       "confidence": 0.7,
-      "rationale": "Knowledge/translation tasks can use cloud LLM"
+      "rationale": "知识问答/翻译类任务可走云端 LLM"
     }
   ],
   "sanitizationRules": [
