@@ -78,6 +78,9 @@ export interface Replacement {
   placeholder: string
   piiType: string
   dataClass: string
+  /** §7.106: the prefix left literal in the outbound text (partial masking);
+   *  absent when the whole value was replaced by the placeholder. */
+  keptPrefix?: string
 }
 
 export interface SanitizationResult {
@@ -245,6 +248,29 @@ export class SanitizerServiceImpl extends Service implements SanitizerService {
         const originalSubstr = sliceOriginal(text, charMap, normStart, normEnd)
 
         let placeholder = mapping.byOriginal.get(originalSubstr)
+        // §7.106 (2026-10-23): partial masking. The rule may ask to KEEP the
+        // first N characters of the match in the outbound text (phone: the
+        // 7-digit band is the attribution signal; id-card: the 6-digit
+        // region). The kept prefix stays literal; only the tail becomes the
+        // placeholder's value, so desanitize restores the whole PII for the
+        // user's own view while the cloud only ever saw the coarse part.
+        const keepCount = typeof rule.keepPrefix === 'number' && rule.keepPrefix > 0 ? rule.keepPrefix : 0
+        // The kept prefix counts DIGITS, not characters: the original text may
+        // carry spaces or Chinese numerals ("1 3 8 0 0 1 3 8 0 0 0"), and
+        // slicing by character would keep only 3-4 digits of the band.
+        const keepNorm = keepCount > 0 && matchStr.length > keepCount ? matchStr.slice(0, keepCount) : ''
+        let keepOrig = ''
+        if (keepCount > 0) {
+          let digits = 0
+          for (const ch of originalSubstr) {
+            keepOrig += ch
+            if (ch >= '0' && ch <= '9') {
+              digits += 1
+              if (digits >= keepCount) break
+            }
+          }
+        }
+        const tailOrig = keepOrig.length > 0 ? originalSubstr.slice(keepOrig.length) : originalSubstr
         if (!placeholder) {
           // 先判上限再铸造：`>=` 后置检查会允许越界一个，且原先的 break
           // 只跳出内层循环，外层规则照常继续铸造（限流形同虚设）。
@@ -263,21 +289,23 @@ export class SanitizerServiceImpl extends Service implements SanitizerService {
           placeholder = `[${piiType.toUpperCase()}_${mapping.counter}]`
           // byOriginal / placeholders 都以"用户原输入字符串"为 value,保证
           // desanitize 后还原为字面形态(带空格/中文数字),而非 normalized 形态。
-          mapping.placeholders.set(placeholder, originalSubstr)
+          // 部分脱敏时 value 只存尾段（保留的号段留在正文里，无需还原）。
+          mapping.placeholders.set(placeholder, keepOrig.length > 0 ? tailOrig : originalSubstr)
           mapping.byOriginal.set(originalSubstr, placeholder)
         }
-        // 在 normalized 上按 normStart 处精确替换 matchStr → placeholder
+        // 在 normalized 上按 normStart 处精确替换 matchStr → (keep + placeholder)
+        const normReplacement = keepNorm + placeholder
         normalized =
-          normalized.slice(0, normStart) + placeholder + normalized.slice(normEnd)
+          normalized.slice(0, normStart) + normReplacement + normalized.slice(normEnd)
         // 同步更新 charMap:删 L 插 P,P 个全指向 charMap[normStart](被替换段起点)
         charMap.splice(
           normStart,
           matchStr.length,
-          ...Array(placeholder.length).fill(charMap[normStart]),
+          ...Array(normReplacement.length).fill(charMap[normStart]),
         )
         // 在 sanitizedText(原文)上按原字串替换 → 保留用户原输入字面,
         // split/join 全量替换处理"同一 PII 多次出现"的场景
-        sanitizedText = sanitizedText.split(originalSubstr).join(placeholder)
+        sanitizedText = sanitizedText.split(originalSubstr).join(keepOrig + placeholder)
         // replacements 只记一次(对应原"counts a repeated value once"测试)
         if (!seenOriginals.has(originalSubstr)) {
           seenOriginals.add(originalSubstr)
@@ -286,6 +314,7 @@ export class SanitizerServiceImpl extends Service implements SanitizerService {
             placeholder,
             piiType: rule.piiType,
             dataClass: rule.dataClass,
+            ...(keepOrig.length > 0 ? { keptPrefix: keepOrig } : {}),
           })
         }
       }

@@ -10885,3 +10885,10 @@ audit 流正常），疑点=裸 row apply() 的 installFileLogger 与独立 row 
 新增测试：selectionRestoreTarget 4 例、resolveModel/listModels 契约 2 处、降级剥离 effort 1 断言（118/118 绿）。
 待验证：跨轮清屏（同会话第二轮瞬间清掉第一轮行）。已知残留：guard 检测在 67.0.0.5 的 27b 上稳定 15-19s
 且多次 json-parse-failed（fail-open 在岗），建议 stages.guard.model 换 4b 档，待用户拍板。
+
+**§7.106 裁决翻转（2026-10-23 下午）**：「查询 17300969670 归属地」曾被加实体强制 LOCAL，
+操作者纠正：**归属地走云端是对的**，问题在掩码粒度——实现 sanitizer `keepPrefix` 部分脱敏：
+phone 保留 7 位号段（归属信号）、尾 4 位进占位符（`1730096[PHONE_1]`），id-card 保留 6 位地区码；
+desanitize 只还尾段、拼回完整号码。「归属地」撤出实体表（实体=只有本地技能能兑现，号段知识不算）。
+默认策略与两份 shipped privacy-policy.json 同步 keepPrefix；测试 217/217（号段保留/尾号不出网/
+回程还原/归属地不强制本地 4 例新钉）。

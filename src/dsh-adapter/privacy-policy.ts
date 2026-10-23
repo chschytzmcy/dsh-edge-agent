@@ -69,6 +69,18 @@ export interface SanitizationRule {
   dataClass: string
   /** PII type name (phone, email, etc.). */
   piiType: string
+  /**
+   * §7.106 (2026-10-23): keep the first N characters of the match in the
+   * OUTBOUND text and mask only the tail. Rationale: when the PII *is* the
+   * task payload, full masking cancels the task (measured 14:59: "query the
+   * attribution of 17300969670" → cloud received `[PHONE_1]`, the model
+   * replied "that is a placeholder", and re-sending the number re-masked it
+   * forever). A phone's first 7 digits ARE the number band — they carry the
+   * functional signal (province/city + carrier) while the last 4 are the
+   * identity. Desanitize restores the tail exactly, so the user's own view
+   * still shows the whole number.
+   */
+  keepPrefix?: number
 }
 
 export interface DataClassification {
@@ -216,6 +228,12 @@ const DEFAULT_POLICY: PrivacyPolicy = {
     pattern: PII_PATTERNS[piiType],
     dataClass: PII_DATA_CLASS[piiType],
     piiType,
+    // §7.106: band-style PII keeps its coarse prefix in the outbound text
+    // (phone: 7-digit number band = attribution signal; id-card: 6-digit
+    // region code), only the identifying tail becomes a placeholder.
+    // Everything else stays fully masked — a partial prefix is only
+    // meaningful for band-structured PII.
+    ...(piiType === 'phone' ? { keepPrefix: 7 } : piiType === 'id-card' ? { keepPrefix: 6 } : {}),
   })),
   dataClassifications: [
     { class: 'public', defaultRealm: 'CLOUD', ttlSeconds: 3600 },

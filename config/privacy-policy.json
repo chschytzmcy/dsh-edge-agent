@@ -153,7 +153,8 @@
     {
       "pattern": "\\b[1-9]\\d{5}(?:19|20)\\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\\d|3[01])\\d{3}[\\dXx]\\b",
       "dataClass": "secret",
-      "piiType": "id-card"
+      "piiType": "id-card",
+      "keepPrefix": 6
     },
     {
       "pattern": "\\b\\d{16,19}\\b",
@@ -163,7 +164,8 @@
     {
       "pattern": "\\b1[3-9]\\d{9}\\b",
       "dataClass": "confidential",
-      "piiType": "phone"
+      "piiType": "phone",
+      "keepPrefix": 7
     },
     {
       "pattern": "[\\w.-]+@[\\w.-]+\\.\\w+",

@@ -156,9 +156,9 @@ describe('intent-router', () => {
 
   // ─── §7.58 (2026-09-16): bare-verb removal + LOCAL-entity priority ─────
 
-  // §7.106 (2026-10-23): 归属地查询的任务载荷就是号码——云端只拿得到
-  // [PHONE_1] 占位符，任务语义死亡且"重发号码"永远进不来（桌面 14:59 实测）。
-  it('§7.106: phone attribution query routes LOCAL (payload-is-PII regression)', async () => {
+  // §7.106 (2026-10-23): 归属地查询**走云端是对的**（操作者裁决）——掩码粒度
+  // 由 sanitizer 的 keepPrefix 解决（号段保留）。此处钉住「不被强制本地」。
+  it('§7.106: phone attribution query is NOT forced LOCAL (ruling: cloud is correct)', async () => {
     const mockCtx = { reflect: { provide: () => {} }, llm: null } as any
     const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
     const service = new IntentRouterServiceImpl(mockCtx, {
@@ -167,8 +167,8 @@ describe('intent-router', () => {
       confidenceThreshold: 0.6,
     }, audit as any)
     const intent = await service.classify('查询下17300969670的归属地')
-    assert.equal(intent.category, 'LOCAL')
-    assert.equal(intent.rationale, 'rule-local-entity:归属地')
+    assert.notEqual(intent.category, 'LOCAL')
+    assert.equal(intent.rationale, 'default:sanitized')
   })
 
   it('§7.58: 密盒 query with cloud verb routes LOCAL (incident regression)', async () => {

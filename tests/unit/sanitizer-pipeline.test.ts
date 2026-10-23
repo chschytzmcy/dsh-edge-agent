@@ -54,9 +54,14 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true })
 })
 
-function createPolicyService(): PrivacyPolicyServiceImpl {
+function createPolicyService(phoneExtra: Record<string, unknown> = {}): PrivacyPolicyServiceImpl {
   const policyPath = join(root, 'policy.json')
-  writeFileSync(policyPath, JSON.stringify(TEST_POLICY, null, 2), 'utf-8')
+  const policy = {
+    ...TEST_POLICY,
+    sanitizationRules: TEST_POLICY.sanitizationRules.map(rule =>
+      rule.piiType === 'phone' ? { ...rule, ...phoneExtra } : rule),
+  }
+  writeFileSync(policyPath, JSON.stringify(policy, null, 2), 'utf-8')
   const svc = new PrivacyPolicyServiceImpl(fakeCtx() as never, {
     policyPath, hotReload: false, watchIntervalMs: 5000,
   }, fakeAuditLog())
@@ -93,6 +98,40 @@ describe('sanitizer-pipeline forward sanitization', () => {
     assert.equal(result.replacements.length, 1)
     assert.equal(result.replacements[0].piiType, 'phone')
     assert.equal(result.replacements[0].original, '13812345678')
+  })
+
+  // §7.106 (2026-10-23) partial masking: when the PII *is* the task payload,
+  // full masking cancels the task (measured 14:59: attribution query got
+  // `[PHONE_1]` and the model answered "that's a placeholder"). Band-style
+  // PII keeps its coarse prefix (phone: 7-digit band = attribution signal;
+  // id-card: 6-digit region code) and masks only the identifying tail.
+  it('keeps the phone number band and masks only the tail', async () => {
+    const policy = createPolicyService({ keepPrefix: 7 })
+    await policy.reload()
+    const svc = new SanitizerServiceImpl(fakeCtx() as never, {
+      enableAutoDetection: true,
+      maxReplacementsPerSession: 1024,
+    }, policy, fakeAuditLog())
+
+    const result = await svc.sanitize('查询下17300969670的归属地', { sessionId: 's1' })
+    assert.ok(result.sanitizedText.includes('1730096'), '号段必须明文出网')
+    assert.ok(result.sanitizedText.includes('[PHONE_1]'), '尾号进占位符')
+    assert.ok(!result.sanitizedText.includes('9670'), '尾号不得出网')
+    assert.equal(result.replacements[0].piiType, 'phone')
+    assert.equal(result.replacements[0].keptPrefix, '1730096')
+  })
+
+  it('desanitize restores the full number from a partially masked outbound text', async () => {
+    const policy = createPolicyService({ keepPrefix: 7 })
+    await policy.reload()
+    const svc = new SanitizerServiceImpl(fakeCtx() as never, {
+      enableAutoDetection: true,
+      maxReplacementsPerSession: 1024,
+    }, policy, fakeAuditLog())
+
+    const out = await svc.sanitize('查询下17300969670的归属地', { sessionId: 's1' })
+    const back = await svc.desanitize(out.sanitizedText, 's1')
+    assert.ok(back.includes('17300969670'), `回程未还原: ${back}`)
   })
 
   it('replaces email addresses with placeholders', async () => {
