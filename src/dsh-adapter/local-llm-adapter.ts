@@ -129,6 +129,10 @@ export interface Config {
    *  returns final answer directly instead of burning max_tokens on reasoning.
    *  Pass-through no-op for non-thinking servers. */
   enableThinking?: boolean
+  /** §7.106 (2026-10-23): also send `reasoning_effort:"none"` with think-off.
+   *  ollama /v1 honors that dialect; strict gateways 400 unknown params
+   *  (minimax measured). Opt-in per pool via `llm.local.reasoningEffortNone`. */
+  reasoningEffortNone?: boolean
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -144,6 +148,7 @@ export const Config: Schema<Config> = Schema.object({
   // §7.87.5 (2026-09-19): default false — production wants fast answers.
   // qwen3.5 / QwQ / DeepSeek-R1 will burn max_tokens on reasoning by default.
   enableThinking: Schema.boolean().default(false),
+  reasoningEffortNone: Schema.boolean().default(false).description('Send reasoning_effort:"none" alongside think-off (ollama dialect; strict gateways 400 it).'),
 })
 
 export interface LocalLlmAdapter {
@@ -229,6 +234,8 @@ class RealLocalAdapter extends LlmAdapter {
   private readonly logger: LoggerLike | undefined
   private readonly stripTools: boolean
   private readonly enableThinking: boolean
+  /** §7.106: pool-level opt-in for the reasoning_effort:"none" dialect. */
+  private readonly reasoningEffortNone: boolean
 
   constructor(provider: string, config: Config, baseUrl: string, auditLog?: AuditLike, inputGuard?: InputGuardLike, logger?: LoggerLike) {
     super()
@@ -245,6 +252,7 @@ class RealLocalAdapter extends LlmAdapter {
     this.stripTools = config.stripTools ?? false
     // §7.87.5 (2026-09-19): opt-in flag for thinking-capable models.
     this.enableThinking = config.enableThinking ?? false
+    this.reasoningEffortNone = config.reasoningEffortNone ?? false
   }
 
   /** Resolve the bearer token: literal key first, env slot second. */
@@ -311,11 +319,12 @@ class RealLocalAdapter extends LlmAdapter {
     const wireOptions = this.stripTools
       ? { ...options, tools: undefined, messages: sanitizedMessages }
       : { ...options, messages: sanitizedMessages }
-    // §7.106: the local pool is ollama-class in practice — send the
-    // reasoning_effort dialect too so think-off actually lands (probe: the
-    // server drops chat_template_kwargs and keeps billing reasoning into
-    // max_tokens, emptying content for the 256-token model-detect call).
-    const body = buildChatCompletionsBody(wireOptions, this.defaultModel, undefined, this.enableThinking, true)
+    // §7.106 (2026-10-23): the reasoning_effort dialect is POOL-CONFIGURED,
+    // not always-on. ollama drops chat_template_kwargs and bills reasoning
+    // into max_tokens (content-starved model-detect → json-parse-fail), so
+    // ollama pools set llm.local.reasoningEffortNone=true; strict gateways
+    // 400 the unknown param (minimax measured) and must leave it false.
+    const body = buildChatCompletionsBody(wireOptions, this.defaultModel, undefined, this.enableThinking, this.reasoningEffortNone)
     const headers: Record<string, string> = {
       'content-type': 'application/json',
       'accept': 'text/event-stream',
@@ -640,6 +649,11 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
     apiKey: config.apiKey ?? pool.apiKey,
     stripTools: config.stripTools ?? pool.stripTools,
     enableThinking: config.enableThinking ?? pool.enableThinking,
+    // OR-fold: the Schema default (false) is already applied to `config` by
+    // the loader, so `??` would never let the file win — either source may
+    // opt in to the ollama dialect (§7.102 "file is the source of truth"
+    // doctrine, applied where a boolean default hides "unset").
+    reasoningEffortNone: config.reasoningEffortNone === true || pool.reasoningEffortNone === true,
   }
   const auditLog = (ctx as unknown as { auditLog?: AuditLike }).auditLog
   // 2026-08-31: input-guard 可选注入；DSH_EDGE_INPUT_GUARD=false 或 plugin

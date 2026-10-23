@@ -59,6 +59,14 @@ export interface EdgeLlmPool {
   keyRef?: string
   stripTools?: boolean
   enableThinking?: boolean
+  /**
+   * §7.106 (2026-10-23): send `reasoning_effort:"none"` when thinking is off.
+   * ollama's /v1 layer HONORS this dialect (its probe fix); strict gateways
+   * reject unknown params outright (minimax 400 "invalid params" — measured).
+   * Opt-in per pool: true for ollama, omit/false for OpenAI-official-style
+   * providers. Defaults to false — never surprise a gateway that 400s extras.
+   */
+  reasoningEffortNone?: boolean
 }
 
 export interface EdgeCloudPool extends EdgeLlmPool {
@@ -812,6 +820,7 @@ export function localPool(cfg: EdgeConfig = loadEdgeConfig()): {
   apiKey?: string
   stripTools: boolean
   enableThinking: boolean
+  reasoningEffortNone: boolean
 } {
   const pool = cfg.llm?.local ?? {}
   return {
@@ -820,6 +829,7 @@ export function localPool(cfg: EdgeConfig = loadEdgeConfig()): {
     apiKey: resolveSecret(cfg, pool.keyRef),
     stripTools: pool.stripTools ?? false,
     enableThinking: pool.enableThinking ?? false,
+    reasoningEffortNone: pool.reasoningEffortNone ?? false,
   }
 }
 
