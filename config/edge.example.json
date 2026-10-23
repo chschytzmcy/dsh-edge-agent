@@ -44,7 +44,7 @@
     "intent": {
       "provider": "local-llm",
       "model": "",
-      "defaultCategory": "SANITIZED",
+      "defaultCategory": "LOCAL",
       "timeoutMs": 30000,
       "confidenceThreshold": 0.6,
       "maxInput": 2000,

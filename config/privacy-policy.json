@@ -143,10 +143,10 @@
       "rationale": "家庭住址 PII 必须留在本地"
     },
     {
-      "pattern": "(翻译|translate|summarize|summary|explain|为什么|what is|how to)",
+      "pattern": "(联网|上网|网上查|搜索引擎|搜索一下网上|web search|search the web|look up online|weather forecast|天气预报|实时行情|股价|汇率|current price)",
       "realm": "CLOUD",
-      "confidence": 0.7,
-      "rationale": "知识问答/翻译类任务可走云端 LLM"
+      "confidence": 0.8,
+      "rationale": "需要检索公网上的信息 → 才允许走云端 LLM"
     }
   ],
   "sanitizationRules": [

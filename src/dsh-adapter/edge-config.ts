@@ -235,6 +235,10 @@ export const DEFAULT_EDGE_CONFIG: EdgeConfig = {
       confidenceThreshold: 0.6,
       maxInput: 2000,
       recentLimit: 3,
+      // §7.107 (2026-10-23): an undecided turn stays on the device. The
+      // cloud needs an explicit public-web signal — see the intent-router's
+      // CLOUD keyword list and the privacy policy's CLOUD rule.
+      defaultCategory: 'LOCAL',
       cloudKeywords: [],
       localEntities: [],
       fallbackKeywords: [],

@@ -133,11 +133,19 @@ export interface Config {
 
 export const Config: Schema<Config> = Schema.object({
   defaultCategory: Schema.union(['LOCAL', 'CLOUD', 'SANITIZED'] as const)
-    // 2026-09-02: changed from 'CLOUD' to 'SANITIZED'. Old default failed open
-    // — ambiguous requests went straight to CLOUD LLM (raw data egress). With
-    // SANITIZED, the input-guard sanitizer-pipeline runs first; sanitize
-    // failure triggers input-guard.sanitize.downgraded → LOCAL (fail-closed).
-    .default('SANITIZED'),
+    // §7.107 (2026-10-23, operator ruling「默认应该是本地，而不是云端」):
+    // the ladder so far was 'CLOUD' (2026-08) → 'SANITIZED' (2026-09-02 —
+    // the classifier was silent, so scrub the text and egress anyway).
+    // Neither rung is "local": both eventually leave the device. The ruling
+    // is one step further — an UNDECIDED turn stays on the device.
+    //
+    // The cloud is now reached only through an explicit signal: the
+    // privacy-policy's public-web rule, a CLOUD keyword, a confident
+    // classifier verdict that names a web need, or a caller-supplied route.
+    // Consequence: an install with no local endpoint can no longer answer
+    // at all — fail-closed with an actionable error (input-guard's
+    // `local.route-missing`), by design.
+    .default('LOCAL'),
   classificationProvider: Schema.string().default('local-llm'),
   // §7.102: the classification model follows the LOCAL pool in
   // config/edge.json (llm.local.model). The Schema default is only a
@@ -211,6 +219,20 @@ export interface Intent {
 
 export interface IntentRouterService {
   classify(text: string, context?: { recentMessages?: unknown[]; sessionId?: string }): Promise<Intent>
+  /**
+   * §7.107: does this text ask for PUBLIC-WEB information?
+   *
+   * The operator's ruling: the cloud LLM is only for "需要搜索公网上的信息".
+   * This is the signal that unlocks the cloud — a CLOUD verdict from any
+   * other tier (a confident local classifier, a caller route) is honoured
+   * only when this returns a keyword.
+   *
+   * The keyword list is the same one the rules tier uses (built-in
+   * information-acquisition words + `stages.intent.cloudKeywords`), so the
+   * gate and the rules tier can never disagree about what counts as a
+   * web need.
+   */
+  cloudSignal(text: string): string | undefined
   resolve(intent: Intent): { realm: string; config: Record<string, unknown> }
   /** Snapshot of in-memory counters. O(1) read for ops dashboards. */
   getStats(): IntentRouterStats
@@ -241,16 +263,30 @@ const LOCAL_KEYWORDS_DEFAULT: readonly string[] = [
  *  was mis-routed CLOUD by `rule-cloud-keyword:查询`, 2026-09-15 incident;
  *  any "检查一下设备" trips the single-char "查"). Verb-only queries now fall
  *  through to the LOCAL keyword list → defaultCategory (fail-closed,
- *  SANITIZED), with the LLM classifier (when alive) doing the nuanced
- *  work. Online OBJECT nouns (新闻/最新/热搜/news/latest/…) stay as-is. */
+ *  LOCAL as of §7.107), with the LLM classifier (when alive) doing the
+ *  nuanced work. Online OBJECT nouns (新闻/最新/热搜/news/latest/…) stay
+ *  as-is — they are the public-web signal that unlocks the cloud. */
 const CLOUD_KEYWORDS_DEFAULT: readonly string[] = [
   // 中文: 信息获取类信号词（§7.58: 只留对象/时间名词，不留裸动词）
-  '新闻', '最新', '今天', '今日', '实时', '热搜', '趋势', '排行榜',
-  '资讯', '动态', '进展', '消息',
-  '网上', '互联网', '在线',
+  //
+  // §7.107 (2026-10-23): this list is now the DEFINITION of "需要搜索公网上的
+  // 信息" — the operator's ruling「只有需要搜索公网上的信息才需要用到
+  // cloudllm」. It gates the classifier's CLOUD verdict (input-guard's
+  // `cloud.blocked-no-web-need`), so a word in this list means "this may
+  // leave the device" and a word NOT in it means "it may not".
+  //
+  // That made the ambiguous single words a liability: 「今天」("今天开会吗")
+  // 「消息」("发个消息给张三") 「进展」「动态」("项目动态") are ordinary
+  // device-side wording that used to cost a cloud round-trip. The specific
+  // web readings survive through their companions — 最新消息 → 最新,
+  // 今日新闻 → 新闻, 股市动态 → 行情.
+  '新闻', '最新', '实时', '热搜', '趋势', '排行榜', '资讯',
+  '网上', '互联网', '在线', '联网',
+  '天气', '股价',
   // English: information-acquisition signals
-  'news', 'latest', 'today', 'live', 'trending', 'ranking',
+  'news', 'latest', 'live', 'trending', 'ranking',
   'online', 'internet', 'web search', 'web',
+  'weather', 'forecast', 'price',
 ]
 
 /** §7.58 (2026-09-16): product/device entities that physically live behind
@@ -1569,6 +1605,18 @@ confidence 含义：
     return undefined
   }
 
+  /**
+   * §7.107: the public-web signal — the keyword that unlocks the cloud.
+   *
+   * Same list the rules tier matches (built-in information-acquisition words
+   * + `stages.intent.cloudKeywords`); `classifyWithRules` calls this so the
+   * gate and the rules tier cannot drift apart.
+   */
+  cloudSignal(text: string): string | undefined {
+    const lower = text.toLowerCase()
+    return this.cloudKeywords.find((kw) => lower.includes(kw.toLowerCase()))
+  }
+
   private classifyWithRules(text: string): Intent {
     // Phase: try privacy-policy routing rules first (hot-reloadable, richer
     // semantics: LOCAL/CLOUD/SANITIZED/REJECT with per-rule confidence +
@@ -1645,13 +1693,13 @@ confidence 含义：
     }
     // §7.47 (2026-09-12): CLOUD keywords matched BEFORE LOCAL fallback.
     // This catches queries that obviously need web/search/latest-news and
-    // would otherwise hit defaultCategory (SANITIZED, fail-closed) without
+    // would otherwise hit defaultCategory (LOCAL, fail-closed) without
     // any LLM call. Inspection order is ENTITY → CLOUD → LOCAL → default —
     // if a query contains both CLOUD and LOCAL signals (e.g. "把本地文件整理
     // 成新闻稿发到网上"), the CLOUD path wins because user explicitly asked
     // for online content; a LOCAL *entity* name still beats both (above).
     // Privacy-policy rules (before all of this) can still REJECT.
-    const cloudMatched = this.cloudKeywords.find((kw) => lower.includes(kw.toLowerCase()))
+    const cloudMatched = this.cloudSignal(text)
     if (cloudMatched !== undefined) {
       this.audit('debug', 'intent.rules.hit', { source: 'cloud-keyword', matchedKeyword: cloudMatched })
       return {

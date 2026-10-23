@@ -284,8 +284,34 @@ http-api 不再需要包含脱敏逻辑 — 它变薄，只做协议适配。**�
   │   └── 支持 LOCAL / CLOUD / SANITIZED / REJECT 全类别
   ├── Level 2: 硬编码关键词匹配（中英文混合，可通过 fallbackKeywords 配置替换）
   │   └── 默认：文件/读/写/删除/计算/本地/设备/file/read/write/delete...
-  └── Level 3: 无匹配 → 返回 defaultCategory（默认 CLOUD，置信度 0.5）
+  └── Level 3: 无匹配 → 返回 defaultCategory（§7.107 起默认 LOCAL，置信度 0.5）
 ```
+
+> **§7.107（2026-10-23，操作者裁决）——默认本地，云端只留给"需要搜索公网上的信息"**
+>
+> | 层 | 旧默认 | 新默认 |
+> |---|---|---|
+> | input-guard 兜底 category（分类器抛错/不存在） | `CLOUD`（fail-open） | **`LOCAL`** |
+> | intent-router `defaultCategory`（规则档全不命中） | `SANITIZED` | **`LOCAL`** |
+> | http-api 无分类器兜底 | `CLOUD` | **`LOCAL`** |
+>
+> 三层旧默认都不算"本地"——SANITIZED 也会脱敏后出网。现在**未决的轮次一律留在设备上**。
+>
+> 出网需要**明确的公网检索信号**，来源三选一：
+>
+> 1. **隐私策略的 CLOUD 规则**（`config/privacy-policy.json`，操作者自己写的那条）——
+>    已收窄为「联网/上网/搜索引擎/web search/weather forecast/实时行情/股价/汇率…」。
+> 2. **CLOUD 关键词**（intent-router 的内置表 + `stages.intent.cloudKeywords`）——
+>    这张表现在是"需要搜索公网上的信息"的**唯一定义**，也是 input-guard 的 web-need 闸
+>    （`input-guard.cloud.blocked-no-web-need`）用的信号源。
+> 3. **调用方显式路由**（`agent._edgeRoute`）——调用方自己声明的意图，原样尊重。
+>
+> 分类器（本地模型）判 CLOUD **不再自动放行**：没有公网信号就降级回 LOCAL
+> （审计 `input-guard.cloud.blocked-no-web-need`）。所以"帮我写封邮件""为什么天是蓝的"
+> 这类普通请求不会被一个弱模型的决定送出设备。
+>
+> 副作用（有意为之）：没有本地端点的安装将**无法作答**——LOCAL 兑现不了时 fail-closed
+> 并给出可操作的报错（`input-guard.local.route-missing`），而不是悄悄退回云端。
 
 ## 层间流转规则
 

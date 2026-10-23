@@ -491,7 +491,9 @@ export class HttpApiServiceImpl extends Service {
     this.pushRecentMessage(sessionId, 'user', message)
 
     // Classify intent using intent-router
-    let intent: any = { category: 'CLOUD', confidence: 0, targetRealm: 'cloud', rationale: 'no-classifier' }
+    // §7.107 (2026-10-23): no classifier → LOCAL, not CLOUD. An undecided
+    // turn stays on the device; the cloud needs an explicit public-web signal.
+    let intent: any = { category: 'LOCAL', confidence: 0, targetRealm: 'local', rationale: 'no-classifier' }
     if (this.intentRouter) {
       try {
         intent = await this.intentRouter.classify(message, {
@@ -786,7 +788,9 @@ export class HttpApiServiceImpl extends Service {
     this.pushRecentMessage(sessionId, 'user', message)
 
     // Classify intent (same as handleChat) so SSE routes to the correct LLM
-    let intent: any = { category: 'CLOUD', confidence: 0, targetRealm: 'cloud', rationale: 'no-classifier' }
+    // §7.107 (2026-10-23): no classifier → LOCAL, not CLOUD. An undecided
+    // turn stays on the device; the cloud needs an explicit public-web signal.
+    let intent: any = { category: 'LOCAL', confidence: 0, targetRealm: 'local', rationale: 'no-classifier' }
     if (this.intentRouter) {
       try {
         intent = await this.intentRouter.classify(message, {
