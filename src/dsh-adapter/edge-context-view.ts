@@ -96,6 +96,15 @@ export interface EdgeSessionSummary {
   /** Token accounting from `assistant/message.usage`; undefined until an
    *  adapter reported usage (never faked as 0). */
   tokens?: { input?: number; output?: number; cacheRead?: number }
+  /**
+   * §7.106 (2026-10-23): the last answer route observed for this session.
+   * `request/context` only fires when the route CHANGES (host contract),
+   * so a window filtered to the current turn would show "route undecided"
+   * for every turn that kept the same model — even after 3.6k tokens had
+   * already streamed back. The route outlives the window; the answer node
+   * reads this when no in-window row exists.
+   */
+  lastRoute?: { provider: string; model: string; ts: number }
 }
 
 export interface EdgeContextSnapshot {
@@ -313,10 +322,12 @@ export class EdgeContextViewServiceImpl extends Service implements EdgeContextVi
       // provider/model changes — one row per distinct route, not per turn).
       const ctxData = (data ?? {}) as { provider?: unknown; model?: unknown }
       if (typeof ctxData.provider === 'string' || typeof ctxData.model === 'string') {
-        this.hostRow(sessionId, 'llm.host.route', {
-          provider: typeof ctxData.provider === 'string' ? ctxData.provider : '',
-          model: typeof ctxData.model === 'string' ? ctxData.model : '',
-        })
+        const provider = typeof ctxData.provider === 'string' ? ctxData.provider : ''
+        const model = typeof ctxData.model === 'string' ? ctxData.model : ''
+        this.hostRow(sessionId, 'llm.host.route', { provider, model })
+        // Route outlives the turn window — the client answer node reads it
+        // when the current turn produced no new request/context event.
+        if (provider.length > 0) summary.lastRoute = { provider, model, ts: now }
       }
     }
   }

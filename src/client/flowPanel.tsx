@@ -28,6 +28,7 @@ const latest = (rows: EdgeRow[], match: (r: EdgeRow) => boolean): EdgeRow | unde
   [...rows].reverse().find(match)
 
 const field = (r: EdgeRow | undefined, key: string): unknown => r?.payload[key]
+const rationaleStr = (r: EdgeRow): string => typeof r.payload.rationale === 'string' ? r.payload.rationale : ''
 const ms = (v: unknown): string => typeof v === 'number' ? `${(v / 1000).toFixed(1)}s` : '?'
 /** Present any scalar for the evidence line; numbers included (textLen
    landed as '?' when this only accepted strings — 2026-10-23 flow shot). */
@@ -93,9 +94,18 @@ function intentNode(rows: EdgeRow[]): FlowNode {
     const startRow = latest(rows, r => r.kind === 'intent.classify.start')
     const textLen = field(end, 'textLen') ?? field(startRow, 'textLen')
     sub.push(`${tr('flow.lbl.classifier')} ${str(field(startRow, 'classifier'))} · ${ms(field(end, 'durationMs'))} · ${tr('flow.lbl.input')} ${str(textLen)}`)
+    // `default:sanitized` rationale = the classifier never returned a verdict
+    // (error/timeout upstream — e.g. the model answered non-JSON). Surface
+    // WHY from the error rows instead of pretending an LLM decided.
+    const isDefault = rationaleStr(end).startsWith('default:')
+    if (isDefault) {
+      const causeRow = latest(rows, r => /^intent\.(classify\.llm_error|llm\.(timeout|error|provider_error))$/u.test(r.kind))
+      if (causeRow !== undefined) sub.push(`${tr('flow.lbl.cause')} ${str(field(causeRow, 'error') ?? field(causeRow, 'reason'))} → ${str(causeRow.kind)}`)
+      else sub.push(tr('flow.intent.defaultNoCause'))
+    }
     return {
-      label: tr('flow.intent'), tone: 'ok',
-      detail: `${cat} ${conf} · ${override !== undefined && override.ts <= end.ts ? tr('flow.intent.viaEntity') : tr('flow.intent.viaLlm')}`,
+      label: tr('flow.intent'), tone: isDefault ? 'warn' : 'ok',
+      detail: `${cat} ${conf} · ${isDefault ? tr('flow.intent.viaDefault') : override !== undefined && override.ts <= end.ts ? tr('flow.intent.viaEntity') : tr('flow.intent.viaLlm')}`,
       sub,
     }
   }
@@ -187,16 +197,24 @@ function threatNode(rows: EdgeRow[]): FlowNode {
 }
 
 function answerNode(rows: EdgeRow[], summary: EdgeSummary): FlowNode {
+  // No in-window host.route ≠ no route: `request/context` fires only on
+  // CHANGES, so a same-model turn carries the session's last observed route
+  // forward (flagged with a 沿用 note — the distinction from a fresh
+  // announcement stays honest). Nothing ever seen → honest pending.
   const host = latest(rows, r => r.kind === 'llm.host.route')
-  if (host === undefined) {
+  const effective = host !== undefined
+    ? { provider: str(field(host, 'provider')), model: str(field(host, 'model')), carried: false }
+    : summary.lastRoute !== undefined
+      ? { provider: summary.lastRoute.provider, model: summary.lastRoute.model, carried: true }
+      : undefined
+  if (effective === undefined) {
     return { label: tr('flow.answer'), tone: 'wait', detail: tr('flow.answer.pending'), sub: [] }
   }
-  const provider = str(field(host, 'provider'))
-  const model = str(field(host, 'model'))
+  const { provider, model, carried } = effective
   const local = provider.startsWith('local-llm')
   const answerSteps = rows.filter(r => r.kind === 'llm.local.end' && typeof r.payload.promptLen === 'number' && (r.payload.promptLen as number) > 1000)
   const sub: string[] = [
-    `${tr('flow.lbl.route')} ${provider}/${model}`,
+    `${tr('flow.lbl.route')} ${provider}/${model}${carried ? ` · ${tr('flow.answer.carried')}` : ''}`,
     local ? tr('flow.a.localKeep') : tr('flow.a.cloudSend'),
   ]
   if (local && answerSteps.length > 0) {

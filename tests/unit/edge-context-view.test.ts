@@ -214,6 +214,19 @@ describe('session summary fold', () => {
     assert.equal(row.payload.provider, 'deepseek-official')
     assert.equal(row.payload.model, 'deepseek-v4-flash')
   })
+
+  it('§7.106 lastRoute survives on the summary across turns (change-only events)', () => {
+    const svc = makeService()
+    svc.recordSessionEvent('s4', 'request/context', { provider: 'minimax-cn', model: 'MiniMax M3.1-Flash' })
+    svc.recordSessionEvent('s4', 'turn/start', {})
+    svc.recordSessionEvent('s4', 'turn/start', {})
+    // New turn, no new request/context (route unchanged): the answer node
+    // still needs the route — it comes off the summary, not the window.
+    const snap = svc.snapshot('s4')
+    assert.equal(snap.summary.lastRoute?.provider, 'minimax-cn')
+    assert.equal(snap.summary.lastRoute?.model, 'MiniMax M3.1-Flash')
+    assert.equal(typeof snap.summary.lastRoute?.ts, 'number')
+  })
 })
 
 describe('auditLog.onEntry wiring', () => {

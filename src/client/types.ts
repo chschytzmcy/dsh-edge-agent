@@ -27,6 +27,9 @@ export interface EdgeSummary {
   /** §7.106: wall clock of the newest turn/start — window for global-bucket rows. */
   turnStartTs?: number
   tokens?: { input?: number; output?: number; cacheRead?: number }
+  /** §7.106: last observed answer route (survives the turn window; the host
+   *  only re-announces `request/context` when the route changes). */
+  lastRoute?: { provider: string; model: string; ts: number }
 }
 
 export interface EdgeSnapshot {
