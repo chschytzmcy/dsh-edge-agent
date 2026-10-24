@@ -496,10 +496,32 @@ export function installFileLogger(
   resolved?: ResolvedLoggerConfig,
 ): FileLoggerServiceImpl | undefined {
   if (process.env.DSH_EDGE_LOG_FILE === 'false') return undefined
-  if (ctx.logger.exporters.size > 1) return undefined
+  // §CLI-profile (2026-10-24): the dsh-desktop-host CLI (the profile host
+  // binary behind `dsh --profile <name>`) registers its OWN exporter at
+  // boot — a console/stdout one, not a file one. The first-wins guard
+  // below cannot tell the two apart, so in CLI-profile mode the ops log
+  // silently never landed on disk (observed: headless dsh-edge-agent
+  // profile produced zero text-log rows while every plugin was healthy).
+  // `DSH_EDGE_LOG_FILE=force` opts INTO double-registration — the cost is
+  // at most a duplicate console line; the win is the durable ops log that
+  // e2e-ops-log-coverage.sh (and operators on headless profiles) read.
+  if (process.env.DSH_EDGE_LOG_FILE !== 'force' && ctx.logger.exporters.size > 1) return undefined
 
   const config = resolved ?? resolveLoggerConfig()
-  const service = new FileLoggerServiceImpl(ctx, config)
+  // Duplicate-load tolerance: in patch profiles the file-logger ROW applies
+  // first (owns the service name), and the bare aggregator row's apply then
+  // calls installFileLogger a SECOND time — `new Service` throws on the
+  // duplicate provide ("service fileLogger has been registered"), which
+  // used to kill the whole aggregator entry ("1 entry did not activate",
+  // observed on the headless dsh-edge-agent profile 2026-10-24). With the
+  // instance already provided, its exporter is already capturing — skip.
+  let service: FileLoggerServiceImpl
+  try {
+    service = new FileLoggerServiceImpl(ctx, config)
+  } catch (err: any) {
+    process.stderr.write(`[file-logger] skip duplicate install: ${err?.message ?? String(err)}\n`)
+    return undefined
+  }
   service.start()
   // 2026-09-02 diagnostic: dump the web seam provider registry once boot
   // settles. The "configured web provider deepseek-official is not
