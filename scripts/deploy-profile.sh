@@ -178,13 +178,13 @@ if [ "$DO_RESTART" = 0 ]; then
 fi
 
 echo "==> [5/5] restart"
-pids="$(ps -eo pid,cmd 2>/dev/null | grep -F -- "--profile $PROFILE" | grep -v grep | awk '{print $1}' || true)"
+pids="$(ps -eo pid,command 2>/dev/null | grep -F -- "--profile $PROFILE" | grep -v grep | awk '{print $1}' || true)"
 if [ -n "$pids" ]; then
   # shellcheck disable=SC2086
   kill $pids 2>/dev/null || true
   for _ in 1 2 3 4 5; do
     sleep 1
-    ps -eo pid,cmd 2>/dev/null | grep -F -- "--profile $PROFILE" | grep -qv grep || break
+    ps -eo pid,command 2>/dev/null | grep -F -- "--profile $PROFILE" | grep -qv grep || break
   done
 fi
 mkdir -p "$(dirname "$LOG")"
@@ -197,7 +197,7 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
   # The app's `dsh` CLI IS the "DeepSeek Harness" binary — the command line
   # has no "node" in it, so a "node.*dsh --profile X" pattern never matched
   # and the script reported a healthy profile as "did not come up".
-  if ps -eo pid,cmd 2>/dev/null | grep -F -- "--profile $PROFILE" | grep -qv grep; then up=1; break; fi
+  if ps -eo pid,command 2>/dev/null | grep -F -- "--profile $PROFILE" | grep -qv grep; then up=1; break; fi
 done
 [ "$up" = 1 ] || { echo "error: the profile did not come up (see $LOG)" >&2; tail -20 "$LOG" >&2; exit 1; }
 echo "        up (log: $LOG)"
