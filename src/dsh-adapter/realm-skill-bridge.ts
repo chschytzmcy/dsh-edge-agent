@@ -245,6 +245,8 @@ export class RealmSkillBridgeService extends Service {
   private readonly toolRealms = new Map<string, Set<RealmTag>>()
   /** Session id → realm. Written by http-api after intent classification. */
   private readonly sessionRealms = new Map<string, RealmTag>()
+  /** sessionRealms 的 LRU 上限；活跃会话远小于此（http-api 默认 8）。 */
+  private static readonly SESSION_REALMS_CAP = 512
   /** Parsed realm config. Refreshed on hot-reload. */
   private realmConfig: RealmConfig = { ...DEFAULT_CONFIG }
   /** mtime of the config file at last load (for stat-polling). */
@@ -282,12 +284,27 @@ export class RealmSkillBridgeService extends Service {
     }
   }
 
+  /** Drop all per-session realm tags (plugin dispose path). */
+  clearSessionRealms(): void {
+    this.sessionRealms.clear()
+  }
+
   // ── Public API ──────────────────────────────────────────────────────────────
 
   /** Set the realm for a session (called by http-api after intent classification). */
   setSessionRealm(sessionId: string, realm: RealmTag): void {
     if (realm === 'hidden') return
-    this.sessionRealms.set(sessionId, realm)
+    // LRU：delete-then-set 让最近路由的 session 排队尾；超限淘汰队头。
+    // 该 Map 曾只增不减（每 session 一条，进程生命周期内累积），
+    // 同文件的 sessionStartTimes 反而在 turn/end 有 delete —— 补齐。
+    const map = this.sessionRealms
+    map.delete(sessionId)
+    map.set(sessionId, realm)
+    while (map.size > RealmSkillBridgeService.SESSION_REALMS_CAP) {
+      const oldest = map.keys().next().value
+      if (oldest === undefined) break
+      map.delete(oldest)
+    }
   }
 
   /** Resolve the realm for an agent by looking up its session.
@@ -1215,6 +1232,7 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
 
   return async () => {
     service.stop()
+    service.clearSessionRealms()
     disposeSkillsChange?.()
     disposeToolsChange?.()
     disposePreStep?.()

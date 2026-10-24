@@ -666,7 +666,7 @@ export class HttpApiServiceImpl extends Service {
     // Call followup - it's fire-and-forget, agent loop runs async
     record.agent.followup(userMessage)
 
-    let turnResult = await turnEnd
+    const turnResult = await turnEnd
 
     // 2026-08-30 fix: turn-end 是 blocked 时翻译成对应的非 200 状态。
     // attack → 400；policy/intent → 403（与 line 465 对齐）；sanitizer → 503。
@@ -1147,8 +1147,9 @@ export class HttpApiServiceImpl extends Service {
     // next process restart will see an orphan upstream record, which is
     // recoverable (it's metadata, not the live agent state).
     void this.sessionsHelper.deleteSession(id).catch(() => {})
-    // input-guard 使用 WeakMap<Session, State> 维护脱敏状态，session dispose
-    // 后自动回收，无需显式 purge。
+    // input-guard 按 sessionId 用普通 Map 维护脱敏状态（不是 WeakMap —
+    // pre-step 的 session 引用与 hook 里的 sessionId 字符串对不上），
+    // 自带 LRU 上限（SESSION_STATE_CAP），无需这里显式 purge。
     this.audit('info', 'session.deleted', { sessionId: id })
     res.writeHead(204)
     res.end()
@@ -1632,6 +1633,9 @@ export class HttpApiServiceImpl extends Service {
    *  lets future optimization (route hot-reload, per-route metrics) hook
    *  in at a single construction site. */
   private buildRoutes(): RouteDef[] {
+    // 路由表的 handler 闭包统一经 svc 引用服务实例 —— 50+ 处，比把每个
+    // 闭包改成捕获 this 的改动面小得多，故豁免 no-this-alias。
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
     const svc = this
     return [
       // ── Public (no auth) ────────────────────────────────────────────

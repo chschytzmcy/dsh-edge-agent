@@ -190,7 +190,9 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 
-/** Per-session 的"这一步做了脱敏"状态。WeakMap 让 session 被 dispose 后自动回收。*/
+/** Per-session 的"这一步做了脱敏"状态。按 sessionId 存在普通 Map 里
+ *  （pre-step 的 session 引用与 llm/stream 的 sessionId 字符串不是同一
+ *  对象，WeakMap 回收不了），靠 SESSION_STATE_CAP 的 LRU 淘汰兜住。*/
 export interface StepSanitizationState {
   /** 当前 turn/step 是否做了脱敏。每次 agent/pre-step 入口重置。*/
   sanitized: boolean
@@ -459,14 +461,43 @@ export class InputGuardServiceImpl extends Service {
 
   /** Exposed for tests: the step-state map the turn/end restore listener reads. */
   setStepState(sessionId: string, state: StepSanitizationState): void {
-    this.stepState.set(sessionId, state)
+    this.putStepState(sessionId, state)
   }
 
   /** Seed/override the session's last routed category. Tests drive the
    *  LOCAL-credential exemption with it; http-api could pre-seed a known
    *  route the same way. */
   setTurnCategory(sessionId: string, category: string): void {
-    this.turnCategory.set(sessionId, category)
+    this.putTurnCategory(sessionId, category)
+  }
+
+  /** 会话状态 Map 的 LRU 上限。活跃会话远小于此（http-api 默认
+   *  maxActiveSessions=8），被淘汰的是早已结束的 session —— 这两个
+   *  Map 曾经只增不减，长驻进程里随历史会话数无限增长。 */
+  private static readonly SESSION_STATE_CAP = 512
+
+  /** LRU 写入：delete-then-set 让最近路由的 session 排到队尾，超限
+   *  淘汰队头（最久未访问的 session）。 */
+  private putStepState(sessionId: string, state: StepSanitizationState): void {
+    const map = this.stepState
+    map.delete(sessionId)
+    map.set(sessionId, state)
+    this.evictOldestSessionState(map)
+  }
+
+  private putTurnCategory(sessionId: string, category: string): void {
+    const map = this.turnCategory
+    map.delete(sessionId)
+    map.set(sessionId, category)
+    this.evictOldestSessionState(map)
+  }
+
+  private evictOldestSessionState<V>(map: Map<string, V>): void {
+    while (map.size > InputGuardServiceImpl.SESSION_STATE_CAP) {
+      const oldest = map.keys().next().value
+      if (oldest === undefined) break
+      map.delete(oldest)
+    }
   }
 
   /**
@@ -1145,7 +1176,7 @@ export class InputGuardServiceImpl extends Service {
       sessionId, category, edgeRouteUsed, routeSource,
     })
     // §7.106: remember the verdict for the next step's attack-block gate.
-    this.turnCategory.set(sessionId, category)
+    this.putTurnCategory(sessionId, category)
 
     // §7.36 (2026-09-04): 注册 session realm 给 realm-skill-bridge,
     // 让 webui / tui / dsh-tui chat 入口也能被 Layer 3 tool-realm gating 守卫。
@@ -1212,7 +1243,7 @@ export class InputGuardServiceImpl extends Service {
         targetProvider: this.config.localProvider,
         targetModel: this.config.localModel,
       })
-      this.stepState.set(sessionId, {
+      this.putStepState(sessionId, {
         sanitized: false, replacements: 0, sessionId, timestamp: Date.now(),
         downgraded: true,
         downgradeReason: cloudAvail.reason,
@@ -1250,7 +1281,7 @@ export class InputGuardServiceImpl extends Service {
       const hasRawEdgeRoute = typeof (payload.agent as { _edgeRoute?: unknown })?._edgeRoute !== 'undefined'
       const routeSource: 'http-api' | 'webui' = hasRawEdgeRoute ? 'http-api' : 'webui'
       const original = this.resolveOriginalRoute(edgeRoute) // §7.43: TUI 不设 _edgeRoute 时用 fallback
-      this.stepState.set(sessionId, {
+      this.putStepState(sessionId, {
         sanitized: false, replacements: 0, sessionId, timestamp: Date.now(),
         downgraded: wantsDowngradeToLocal,
         downgradeReason: wantsDowngradeToLocal ? 'intent-local' : undefined,
@@ -1294,7 +1325,7 @@ export class InputGuardServiceImpl extends Service {
         // 替换 decision.messages 里 originalLastUser.index 位置的消息（不是最后一条 user，
         // 因为 dsh-agent-instructions 可能在末尾追加了 user-role 注入）。
         const newMessages = replaceAtUserIndex(decision.messages ?? payload.messages, originalLastUser.index, result.sanitizedText)
-        this.stepState.set(sessionId, {
+        this.putStepState(sessionId, {
           sanitized: true, replacements, sessionId, timestamp: Date.now(),
           originalProvider: original.provider,
           originalModel: original.model,
@@ -1312,7 +1343,7 @@ export class InputGuardServiceImpl extends Service {
         return { ...decision, messages: newMessages }
       }
       // 没替换：状态标记 sanitized=false
-      this.stepState.set(sessionId, {
+      this.putStepState(sessionId, {
         sanitized: false, replacements: 0, sessionId, timestamp: Date.now(),
         originalProvider: original.provider,
         originalModel: original.model,
@@ -1358,7 +1389,7 @@ export class InputGuardServiceImpl extends Service {
       // 标记降级：让后续 agent/request 钩子把 route 改写到 LOCAL。
       // messages 不修改（保留原文，LOCAL LLM 不上云无需脱敏）。
       const original = this.resolveOriginalRoute(edgeRoute) // §7.43: TUI 不设 _edgeRoute 时用 fallback
-      this.stepState.set(sessionId, {
+      this.putStepState(sessionId, {
         sanitized: false, replacements: 0, sessionId, timestamp: Date.now(),
         downgraded: true, downgradeReason: reason,
         originalProvider: original.provider,
@@ -1534,7 +1565,7 @@ export class InputGuardServiceImpl extends Service {
       // Clear originalProvider after recovery so we don't keep restoring
       // even when the agent-loop itself has moved past the contamination.
       // Next downgrade will re-set it via handlePreStep.
-      this.stepState.set(sessionId, {
+      this.putStepState(sessionId, {
         ...state,
         originalProvider: undefined,
         originalModel: undefined,
@@ -1593,7 +1624,7 @@ export class InputGuardServiceImpl extends Service {
     const streamingPlaceholderBuffer = { value: '' }
     let chunkCount = 0
     let textDeltaCount = 0
-    let desanitizeCallCount = 0
+    const desanitizeCallCount = 0
     const wrapped = (async function* (): AsyncIterable<StreamChunkLike> {
       try {
         for await (const chunk of stream) {
