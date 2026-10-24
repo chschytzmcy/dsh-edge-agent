@@ -639,6 +639,28 @@ lockfile 更新后仍然报 "Already up to date"，profile 里跑的还是旧代
 只在 CLOUD realm 下放行，所以只有 §7.107 允许出网的那些轮次能用它们；LOCAL realm
 下模型根本看不到这两个工具。
 
+**search 的策略：一条三档 fail-down 链**
+
+`web` row 选中的 provider 永远是本仓的 aggregator（`tavily-bocha-fallback`），
+上游的 `deepseek-official` row 被禁用（两个可用 provider 会让 seam 报
+`WEB_PROVIDER_AMBIGUOUS`）。chain 内部：
+
+| 档 | provider | 在链上的条件 | 失败时 |
+|---|---|---|---|
+| 1 | Tavily | `webSearch.tavilyEnabled` 不是 false **且** `secrets.tavilyApiKey` 在 | warn → 落下一档 |
+| 2 | 博查 AI | `webSearch.bochaEnabled` 不是 false **且** `secrets.bochaApiKey` 在 | warn → 落下一档 |
+| 3 | **DeepSeek** | `secrets.deepseekApiKey` 在 | `WEB_PROVIDER_UNAVAILABLE` |
+
+两条独立的门：**开关**决定这一档在不在链上，**key**决定这一档能不能真答。
+没 key 的档直接跳过，一次请求都不发。一档成功就停 —— 不是三档都查。
+
+DeepSeek 档走 DeepSeek 官方 server-side 检索（`web_search_20250305`），
+自带引用来源；Tavily/博查是通用搜索 API。凭据全部取自 `config/edge.json`，
+**不依赖 `DEEPSEEK_API_KEY` 环境变量** —— GUI 起的桌面和 CLI 起的 profile 行为一致。
+
+`web_fetch` 是另一条路，不分档：宿主的 `dsh-web-fetch-http`（id `http`），
+直接匿名 HTTP(S) 抓取，自带目的地校验（防 SSRF），不经过 DeepSeek。
+
 ### 浏览器 / IM 用户 → `:3080`
 
 打开浏览器访问 `http://127.0.0.1:3080`，使用 DSH 官方 Web UI（chat / task-board / pet / IM机器人 等）。鉴权由 DSH 上游的配对 token 流程处理。
