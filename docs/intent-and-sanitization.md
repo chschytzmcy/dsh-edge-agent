@@ -1707,7 +1707,7 @@ parseClassificationVerdict 返回 null
 外层 catch → classifyWithRules(text)
   ├── Level 1: privacy-policy matchRouting()      ← 零 token
   ├── Level 2: fallbackKeywords 关键词匹配         ← 零 token
-  └── Level 3: defaultCategory（默认 CLOUD, 0.5）  ← 零 token
+  └── Level 3: defaultCategory（§7.107 起默认 LOCAL, 0.5）  ← 零 token
 ```
 
 **核心设计原则**：
@@ -1901,7 +1901,7 @@ private redactPreview(text: string): string | null {
 
 | 参数 | 环境变量 | 默认值 | 说明 |
 |------|---------|-------|------|
-| `defaultCategory` | — | `CLOUD` | 无匹配时的默认分类 |
+| `defaultCategory` | — | `LOCAL` | 无匹配时的默认分类（§7.107：默认本地） |
 | `classificationProvider` | `DSH_EDGE_INTENT_PROVIDER` | `local-llm` | 分类 LLM provider |
 | `classificationModel` | `DSH_EDGE_INTENT_MODEL` | `qwen3-4b` | 分类 LLM model |
 | `confidenceThreshold` | `DSH_EDGE_INTENT_CONFIDENCE_THRESHOLD` | `0.6` | 置信度门控阈值 |
@@ -2119,7 +2119,7 @@ POST /v1/chat 400     0ms no-message
 **核心职责**：
 1. **privacy-policy 规则复用**：再次调用 `matchRouting()`，支持 LOCAL/CLOUD/SANITIZED/REJECT 全类别
 2. **内置关键词匹配**：中英双语 LOCAL 关键词作为 privacy-policy 的后备
-3. **默认分类**：兜底到 `defaultCategory`（默认 CLOUD），保证任何输入都有分类结果
+3. **默认分类**：兜底到 `defaultCategory`（§7.107 起默认 LOCAL），保证任何输入都有分类结果
 4. **REJECT 二次拦截**：LLM 失败时仍能拦截业务危险操作
 
 ## 4.2 触发条件（五个入口）
@@ -2262,7 +2262,7 @@ return {
 
 **设计要点**：
 - **confidence 0.5**：最低置信度，反映「没有任何证据，只能猜」
-- **默认 CLOUD**：权衡可用性和隐私后的选择（详见 §4.5）
+- **默认 LOCAL**：§7.107 起默认本地——未决的轮次留在设备上（详见 §4.5）
 - **rationale 带 `default:` 前缀**：方便审计/运维区分「有规则命中」vs「无规则兜底」
 
 ## 4.4 置信度分配策略
@@ -2288,17 +2288,17 @@ return {
 
 ## 4.5 默认分类 defaultCategory 的安全考量
 
-`defaultCategory` 默认 `CLOUD`，这是有意为之的设计选择：
+`defaultCategory` 默认 `LOCAL`（§7.107，2026-10-23 操作者裁决「默认应该是本地，而不是云端」）。
 
-**为什么默认 CLOUD 而不是 LOCAL？**
-1. **可用性优先**：大部分用户请求（翻译、问答、聊天）需要上云。默认 LOCAL 会导致大量请求被误判为本地操作，用户体验严重下降
-2. **下游仍有防线**：即使默认 CLOUD，http-api 层在真正发送请求前还会再调 `sanitizer.sanitize()`，PII 仍会被脱敏
-3. **隐私 pre-check 已前置**：敏感内容（身份证、银行卡、API Key 等）在 [1] 隐私预检阶段就被 LOCAL 规则匹配，不会到达 default 路径
-4. **可配置**：用户可通过 `defaultCategory: 'LOCAL'` 切换到隐私优先模式（但会牺牲可用性）
+**为什么默认 LOCAL 而不是 CLOUD？**
+1. **隐私优先是产品前提**：这个 agent 存在的理由就是数据不出设备。未决的轮次留在设备上，是最安全的默认——任何一次误判（规则漏配、分类器乱判）都不会变成一次出网。
+2. **出网必须是显式动作**：现在只有**需要检索公网上信息**的请求才出网——联网/上网/搜索引擎、新闻/最新/实时、天气/行情/股价、`web search`。其余一律本地。
+3. **模型的裁决不是出网许可**：分类器（本地小模型）判 CLOUD 不自动放行，没有公网信号就降级回 LOCAL（审计 `intent.cloud.blocked-no-web-need`）。
+4. **可配置**：`defaultCategory` 仍可改回 `SANITIZED`/`CLOUD`（隐私策略与关键词命中不受影响）。
 
-**默认 CLOUD 的风险**：
-- 如果 privacy-policy 规则覆盖不全（漏配某类敏感内容） + sanitizer 不可用 → PII 泄漏
-- **缓解措施**：sanitize-downgrade 策略——sanitizer 失败时降级 LOCAL，不发送原始 PII 上云
+**默认 LOCAL 的代价**：
+- 本地端点不可用时，该轮**无法作答**——LOCAL 兑现不了就 fail-closed（`input-guard.local.route-missing`），不给「悄悄退回云端」这个选项。这是刻意的：宁可报错，也不把本地数据送出去。
+- 本地小模型在开放域问答上质量不如云端大模型。**这是知情取舍**：要查公网的请求会走云端，其余留在本地。
 
 **配置示例**：
 
@@ -2306,7 +2306,7 @@ return {
 # cordis.patch.yml
 - id: intent-router
   config:
-    defaultCategory: LOCAL  # 隐私优先模式（牺牲部分 CLOUD 请求的可用性）
+    defaultCategory: LOCAL  # §7.107 默认（隐私优先）
 ```
 
 ## 4.6 设计权衡与优化建议
@@ -2316,7 +2316,7 @@ return {
 | 维度 | 选择 | 理由 | 潜在问题 |
 |------|------|------|---------|
 | 关键词只返 LOCAL | ✅ | 「本地操作」特征易捕捉，CLOUD 开放域难用关键词 | 漏掉「翻译成英语」（CLOUD 关键词） |
-| defaultCategory=CLOUD | ✅ | 可用性优先，下游 sanitizer 仍有防线 | 规则覆盖不全 + sanitizer 失败 → PII 泄漏风险（已缓解） |
+| defaultCategory=LOCAL | ✅ | 隐私优先（§7.107）：未决轮次不出设备 | 本地端点不可用时该轮无法作答（fail-closed，刻意） |
 | REJECT 双保险 | ✅ | 纵深防御，pre-check fail-open 时仍有二次拦截 | matchRouting 被调用两次（pre-check + fallback），性能微损 |
 | ruleHit 不区分 Level 1/2 | ⚠️ | 计数器简洁 | 运维无法 O(1) 看 Level 1 vs Level 2 命中比例 |
 

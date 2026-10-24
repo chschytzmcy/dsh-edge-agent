@@ -293,8 +293,16 @@ dsh-edge-agent 通过**意图路由**自动选择 LLM，无需手动指定 provi
 
 | 用户消息类型 | 触发关键词 | 路由到 | 示例 |
 |---|---|---|---|
-| **LOCAL** | 文件、读取、写入、计算、设备、本地 | `local-llm`（真实 OpenAI 兼容端点） | `"帮我读取文件"` → 真实 qwen3-4b 回答 |
-| **CLOUD** | 解释、什么是、知识问答 | `cloud-llm` | `"量子力学是什么"` → DeepSeek 真实回答 |
+| **LOCAL**（默认） | 文件、读取、写入、计算、设备、本地，以及**所有没有公网检索需求的普通请求** | `local-llm`（真实 OpenAI 兼容端点） | `"帮我读取文件"` → 真实 qwen3-4b 回答 |
+| **CLOUD** | **只有需要检索公网上信息**：联网/上网/搜索引擎、新闻/最新/实时、天气/行情/股价、`web search` | `cloud-llm` | `"查一下最新的AI新闻"` → DeepSeek 真实回答（脱敏后） |
+
+> **§7.107（2026-10-23）默认本地**：未决的轮次一律留在设备上——三层兜底
+> （input-guard 兜底、intent-router `defaultCategory`、http-api 无分类器兜底）
+> 都是 `LOCAL`。分类器判 CLOUD **不自动放行**：没有公网检索信号就降级回 LOCAL
+> （审计 `intent.cloud.blocked-no-web-need`）。所以"解释/什么是/知识问答"这类
+> 普通问句现在走本地模型，只有真正要查公网的请求才出网。
+> 出网必脱敏：脱敏失败 fail-closed 降级回本地，绝不带原文上云。
+> 详见 [docs/intent-and-sanitization.md](docs/intent-and-sanitization.md)。
 
 > **§7.100 云池可选**：不配置 `CLOUD_LLM_BASEURL` 时，`cloud-llm` 路由进入
 > **DELEGATE 模式**——按「显式指定 → 宿主 profile 当前模型选择（桌面 GUI 实时）→
