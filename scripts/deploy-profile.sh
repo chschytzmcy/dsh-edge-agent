@@ -178,6 +178,16 @@ if [ "$DO_RESTART" = 0 ]; then
 fi
 
 echo "==> [5/5] restart"
+# §7.100/§DELEGATE (2026-10-24): the DELEGATE chain resolves to the HOST
+# provider route (deepseek-official), whose key lives in the host adapter's
+# credentials service — which a headless profile has NOT populated (the web
+# Models page writes it; the CLI cannot). Inject DEEPSEEK_API_KEY from
+# edge.json secrets into the launch environment; an explicitly exported
+# value wins.
+if [ -z "${DEEPSEEK_API_KEY:-}" ] && [ -f "$EDGE_HOME/edge.json" ]; then
+  DEEPSEEK_API_KEY="$("$NODE_BIN" -p "JSON.parse(require('fs').readFileSync('$EDGE_HOME/edge.json','utf8')).secrets?.deepseekApiKey || ''" 2>/dev/null || true)"
+  [ -n "$DEEPSEEK_API_KEY" ] && export DEEPSEEK_API_KEY && echo "        DEEPSEEK_API_KEY ← edge.json secrets (headless DELEGATE credential)"
+fi
 pids="$(ps -eo pid,command 2>/dev/null | grep -F -- "--profile $PROFILE" | grep -v grep | awk '{print $1}' || true)"
 if [ -n "$pids" ]; then
   # shellcheck disable=SC2086
@@ -188,7 +198,7 @@ if [ -n "$pids" ]; then
   done
 fi
 mkdir -p "$(dirname "$LOG")"
-nohup "$DSH_BIN" --profile "$PROFILE" > "$LOG" 2>&1 &
+DSH_EDGE_LOG_FILE=force nohup "$DSH_BIN" --profile "$PROFILE" > "$LOG" 2>&1 &
 disown 2>/dev/null || true
 
 up=0

@@ -44,7 +44,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-LOG_FILE="${LOG_FILE:-$HOME/.dsh-edge-agent/log/dsh-edge-agent.log}"
+# §7.111 (2026-10-24): the desktop-safe patch's file-logger row ships
+# filename: dsh-edge-agent-desktop.log — both profiles write THIS file
+# (shared data plane). The old default here (dsh-edge-agent.log) never
+# existed on disk.
+LOG_FILE="${LOG_FILE:-$HOME/.dsh-edge-agent/log/dsh-edge-agent-desktop.log}"
 
 # §7.47.2 (2026-09-13): source .env to use REAL keys for e2e.
 # Pre-§7.47.2 hardcoded `test-fake-deepseek-key-for-opslog-fixture` and
@@ -108,16 +112,22 @@ fi
 
 # ── 用例定义 ──────────────────────────────────────────────────────
 # 每个用例一个 bash 函数，输出 sessionId；assert_* 函数做断言。
-declare -A CASES=(
-  ["mibao"]="查询密盒的登录状态"
-  ["news"]="查询最新的AI新闻"
-  ["local-ip"]="查询本机的局域网IP"
-  ["knowledge"]="什么是量子力学"
-)
+# §macOS (2026-10-24)：bash 3.2（macOS /bin/bash）不支持 declare -A ——
+# 用 case 函数代替关联数组，脚本在本机 /bin/bash 3.2 下可直接跑。
+case_query() {
+  case "$1" in
+    mibao)     printf '%s' "查询密盒的登录状态" ;;
+    news)      printf '%s' "查询最新的AI新闻" ;;
+    local-ip)  printf '%s' "查询本机的局域网IP" ;;
+    knowledge) printf '%s' "什么是量子力学" ;;
+    *) return 1 ;;
+  esac
+}
 
 run_case() {
   local key="$1"
-  local query="${CASES[$key]}"
+  local query
+  query="$(case_query "$key")" || { echo "未知用例: $key" >&2; return 1; }
   # §7.107: E2E_RUN_ID 追加，保证每次运行的会话互不污染。
   local sid="opslog-canary-${key}"
   [ -n "${E2E_RUN_ID:-}" ] && sid="${sid}-${E2E_RUN_ID}"
@@ -578,7 +588,7 @@ echo
 
 OVERALL_RC=0
 if [ -n "$ONLY" ]; then
-  if [ -z "${CASES[$ONLY]:-}" ]; then
+  if ! case_query "$ONLY" >/dev/null 2>&1; then
     echo "未知用例: $ONLY（可选: mibao / news / local-ip / knowledge）" >&2
     exit 2
   fi
