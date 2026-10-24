@@ -9575,3 +9575,125 @@ skill               skill (按需，非每轮)
 
 
 ---
+
+---
+
+# §7.107 入口与路由设计（2026-10-24 自 README 迁入）
+
+> 本章承接 README 瘦身时迁出的设计内容：LLM 意图路由机制（默认本地）、
+> DEEPSEEK Search + Fetch 三档链、双 profile 入口架构、
+> function-call-external 扩展契约。操作步骤（部署/安装）见 README，
+> 本文只讲设计。
+
+## 1. LLM 路由机制：默认本地（§7.107 操作者裁决）
+
+dsh-edge-agent 通过**意图路由**自动选择 LLM，无需手动指定 provider：
+
+| 用户消息类型 | 触发信号 | 路由到 | 示例 |
+|---|---|---|---|
+| **LOCAL**（默认） | 文件、读取、写入、计算、设备、本地，以及**所有没有公网检索需求的普通请求** | `local-llm`（真实 OpenAI 兼容端点） | `"帮我读取文件"`、`"什么是量子力学"` |
+| **CLOUD** | **只有需要检索公网上信息**：联网/上网/搜索引擎、新闻/最新/实时、天气/行情/股价、`web search` | `cloud-llm` | `"查一下最新的AI新闻"`（脱敏后） |
+
+**未决的轮次一律留在设备上**——三层兜底（input-guard 兜底、
+intent-router `defaultCategory`、http-api 无分类器兜底）都是 `LOCAL`。
+分类器判 CLOUD **不自动放行**：没有公网检索信号就降级回 LOCAL
+（审计 `intent.cloud.blocked-no-web-need`）。所以"解释/什么是/知识问答"
+这类普通问句走本地模型，只有真正要查公网的请求才出网。
+出网必脱敏：脱敏失败 fail-closed 降级回本地，绝不带原文上云。
+详见 [intent-and-sanitization.md](intent-and-sanitization.md)。
+
+### §7.100 云池可选（DELEGATE 模式）
+
+不配置 `CLOUD_LLM_BASEURL` 时，`cloud-llm` 路由进入 **DELEGATE 模式**——
+按「显式指定 → 宿主 profile 当前模型选择（桌面 GUI 实时）→ 活的宿主云
+路由探针」三级链转发，凭据解析归宿主，edge 侧不碰任何 secret；三条都
+没有则显式报错（502 / SSE error）。配置了 `CLOUD_LLM_BASEURL` 则维持
+自研直连（§7.83 语义不变）。**唯一必配的是 LOCAL 池**；意图分类与
+prompt-guard 模型检测只使用本地模型，未配置本地端点时自动降级
+关键词/正则规则档。
+
+> ⚠️ `DSH_EDGE_PROVIDER` 只作 agent-loop 兜底指针与 input-guard 取证镜像，
+> 不会改变实际路由。实际选择由意图分类结果决定。
+
+### LOCAL 实体护栏（§7.58）
+
+密盒/ets/etscli 等只存在于 LOCAL skill 之后的实体词，在任何非 LOCAL
+判决（含 SANITIZED）上确定性压回 LOCAL（`override-local-entity:<词>`），
+分类器对这些资源归属没有视角。中文子串匹配，ASCII 词带词边界
+（`ets` 不会命中 `assets`）。
+
+## 2. DEEPSEEK Search + Fetch（§7.107）
+
+「需要检索公网上的信息」是唯一允许出网的操作——这条路径必须真的能搜
+公网、真的能抓网页：
+
+| 能力 | provider | 凭据 |
+|---|---|---|
+| `web_search` | 本仓 aggregator：Tavily → 博查 AI → **DeepSeek**（`web_search_20250305` server tool） | `config/edge.json` 的 `secrets.tavilyApiKey` / `bochaApiKey` / `deepseekApiKey` |
+| `web_fetch` | 宿主的 `http` provider（`dsh-web-fetch-http`，匿名公共 HTTP(S) 抓取，自带目的地校验防 SSRF） | 无 |
+
+两者都是 **CLOUD realm** 的工具（`tools.ts` 的 `DSH_NATIVE_REALM_MAP`）——
+realm 桥只在 CLOUD realm 下放行，只有 §7.107 允许出网的那些轮次能用
+它们；LOCAL realm 下模型根本看不到这两个工具。
+
+### search 的策略：一条三档 fail-down 链
+
+`web` row 选中的 provider 永远是本仓的 aggregator
+（`tavily-bocha-fallback`），上游的 `deepseek-official` row 被禁用（两个
+可用 provider 会让 seam 报 `WEB_PROVIDER_AMBIGUOUS`）。chain 内部：
+
+| 档 | provider | 在链上的条件 | 失败时 |
+|---|---|---|---|
+| 1 | Tavily | `webSearch.tavilyEnabled` 不是 false **且** `secrets.tavilyApiKey` 在 | warn → 落下一档 |
+| 2 | 博查 AI | `webSearch.bochaEnabled` 不是 false **且** `secrets.bochaApiKey` 在 | warn → 落下一档 |
+| 3 | **DeepSeek** | `secrets.deepseekApiKey` 在 | `WEB_PROVIDER_UNAVAILABLE` |
+
+两条独立的门：**开关**决定这一档在不在链上，**key** 决定这一档能不能
+真答。没 key 的档直接跳过，一次请求都不发。一档成功就停——不是三档
+都查。DeepSeek 档走官方 server-side 检索（`web_search_20250305`），自带
+引用来源。凭据全部取自 `config/edge.json`，**不依赖 `DEEPSEEK_API_KEY`
+环境变量**——GUI 起的桌面和 CLI 起的 profile 行为一致。
+
+## 3. 入口架构：单 profile 端口统一 + §7.107 双 profile
+
+§7.69 起 install.sh 单 profile 架构——一次只跑一个 profile，HTTP 端口
+统一 :21017（http-api schema 默认）。§7.107 后桌面版和 HTTP API 是
+**两个独立进程、同一套 edge 逻辑**：
+
+| profile | 进程 | 入口 | 说明 |
+|---|---|---|---|
+| `desktop` | DSH 桌面 App（Electron 管理） | GUI + 右栏 **Edge** tab | desktop-safe bundle；App 的 plugin manager 管的，CLI 不要碰 |
+| `dsh-edge-agent` | `dsh --profile dsh-edge-agent`（后台） | HTTP API `:21017` | **同一个** desktop-safe bundle + 一层 profile overlay 挂 http-api |
+
+两边共用 `~/.dsh-edge-agent/edge.json`（唯一配置源）与
+`~/.dsh-edge-agent/audit/`（审计落盘）。进程独立 ⇒ edge-context-view 的
+分桶互不可见 ⇒ HTTP 流量**不会**漏进桌面的 Edge tab（只有不带 sessionId
+的全局行会跨会话出现）。
+
+浏览器/IM 用户走 DSH 官方 Web UI（`:3080`，切 web profile 时启）：
+`@xmanrui/dsh-im` 插件通过 webserver 内部 `apiProxy` 把 IM 消息接入
+agent-loop——**不监听新端口**，自动继承 input-guard 隐私管线。支持
+飞书/微信/钉钉/企微/QQ/Slack/Telegram/Discord/WhatsApp +
+AI Office Connector。凭据只入 `dsh-credentials-local` 受保护本地存储，
+RPC 响应不回传原始凭据。AI Office Connector 让本机 Harness 主动连公网
+Office（SSE 下行回公网），**只在用户主动启用**后生效。
+
+## 4. 扩展 function-call-external（§7.94）
+
+`function-call-external` 插件采用 **HTTP 契约边界**——任何实现
+[function-call-external-http-contract.md](function-call-external-http-contract.md)
+的 HTTP 服务都可接入，只需修改环境变量：
+
+```bash
+FUNCTION_CALL_EXTERNAL_URL=http://127.0.0.1:8081   # 任意 HTTP 实现
+FUNCTION_CALL_EXTERNAL_ENABLED=true
+```
+
+支持的实现形态：cactus-needle（当前默认，`callerId='needle-http'`）/
+自训端侧 function-call 模型（包装成 HTTP 服务）/ 第三方 hosted API。
+
+接入步骤：实现 `GET /health`（2xx healthy / 503 loading|busy）+ 实现
+`POST /extract`（按契约返回 `type` / `function_calls` / `confidence` /
+`validation.ungrounded`）→ 启动并设 `FUNCTION_CALL_EXTERNAL_URL` →
+`audit.jsonl` 中所有 `external.*` event 自动携带 `callerId`。
+**plugin 主体零修改**。失败语义、breaker、retry 见契约文档。

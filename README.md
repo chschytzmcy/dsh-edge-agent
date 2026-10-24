@@ -15,64 +15,15 @@
 - **🚨 威胁检测**：实时监控异常行为，自动隔离可疑流量
 - **🔌 插件化**：19 个 plugin（含 1 桌面 webview bundle），全部 subpath 导出
 
-## 🏗️ 架构
+## 🏗️ 架构速览
 
-### 四层架构
+四层架构（安全基础 → 隐私控制 → Agent → 用户交互），数据按 Realm 分级：
+**LOCAL**（完全在设备端）→ **SANITIZED**（PII 替换后上云）→ **CLOUD**（用户授权后原始上云）。
+路由默认本地：未决轮次留在设备上，只有带公网检索信号的请求才（脱敏后）出网。
 
-```
-┌───────────────────────────────────────────────┐
-│ Layer 4: 用户交互（CLI / HTTP API / 语音）     │
-├───────────────────────────────────────────────┤
-│ Layer 3: Agent 层（DSH Agent Loop）            │
-│   agents, llm, tools, sessions                │
-├───────────────────────────────────────────────┤
-│ Layer 2: 隐私控制                              │
-│   intent-router, prompt-guard, sanitizer      │
-│   privacy-policy, audit-log, td-bus           │
-├───────────────────────────────────────────────┤
-│ Layer 1: 安全基础                              │
-│   tcm, local-storage, attestation             │
-│   ohttp-gateway, secure-bridge                │
-└───────────────────────────────────────────────┘
-```
-
-### Realm 数据模型
-
-| Realm | 数据流向 | 安全等级 |
-|---|---|---|
-| **LOCAL** | 完全在设备端 | 最高 |
-| **SANITIZED** | PII 替换后上云 | 中等 |
-| **CLOUD** | 原始数据上云（用户授权） | 最低 |
-
-### 插件体系
-
-单包多 subpath 架构，所有插件从 `@deepseek-harness-edge-agent/dsh-edge-agent` 导出：
-
-| 插件 | 职责 | 状态 |
-|---|---|---|
-| `local-storage` | JSONL 持久化 KV 存储 | ✅ 可用 |
-| `sessions` | 会话管理（CRUD + TTL + LRU） | ✅ 可用 |
-| `audit-log` | JSONL 审计日志 | ✅ 可用 |
-| `cloud-llm-adapter` | 云池双模式：直连客户端（配 `CLOUD_LLM_BASEURL`）/ §7.100 委托宿主 profile 提供商（默认） | ✅ 可用 |
-| `local-llm-adapter` | 本地 LLM（OpenAI 兼容端点直连） | ✅ 可用 |
-| `model-router` | 多模型路由分发 | ✅ 可用 |
-| `intent-router` | LLM 意图分类 → LOCAL/CLOUD 路由 | ✅ 可用 |
-| `http-api` | REST + SSE HTTP 服务器 | ✅ 可用 |
-| `tools` | Realm 工具注册表配置 | ✅ 可用 |
-| `tcm` | 可信计算模块 | 🔲 桩 |
-| `prompt-guard` | 输入/输出安全防护（正则 + LLM 兜底，rejection 翻译） | ✅ 可用 |
-| `sanitizer-pipeline` | PII 脱敏/还原（9 规则，fail-open） | ✅ 可用 |
-| `ohttp-gateway` | OHTTP 网关 | 🔲 桩 |
-| `secure-bridge` | 端云安全通信桥 | 🔲 桩 |
-| `attestation` | TEE 远程证明 | 🔲 桩 |
-| `td-bus` | 威胁检测总线（速率/脱敏/权限阈值告警） | ✅ 可用 |
-| `voice-input` | 语音输入 | 🔲 桩 |
-| `plugin-host` | 第三方插件宿主 | 🔲 桩 |
-| `edge-context-view` | 桌面右栏 `Edge` tab host 半体：折叠 audit 流到 4 panel + session summary，经 `/api/dsh-edge/context` 供 client 拉取（§7.101） | ✅ 可用（桌面 only）|
-
-> **工具复用**: dsh-edge-agent 使用 DSH 原生工具（bash、read/write/edit、web_search/web_fetch），而非自行实现。详见 [docs/architecture.md](docs/architecture.md)。
->
-> M 段（M0–M5）已全部完成，意图识别（LOCAL/CLOUD）路由已端到端打通；A1（input-guard 编排器）与 A2（rejection → HTTP 400/403/503 翻译）已完成。**§7.101 桌面右栏 `Edge` tab** 已落档 + 本环境代码验证通过（8/11 验收项），剩 3 项装机目视待验。详见 [docs/PROGRESS.md](docs/PROGRESS.md) 与 [docs/edge-context-tab-plan.md](docs/edge-context-tab-plan.md)。
+> 完整设计（四层架构图 / Realm 模型 / 19 插件职责表 / LLM 路由与 §7.107
+> 三档搜索链 / 入口架构）见
+> [docs/architecture.md](docs/architecture.md)（§7.107 章为本仓最新设计增量）。
 
 ---
 
@@ -150,7 +101,7 @@ disown
 
 > bundle 是 profile-agnostic 的——`--profile=` 接受任何 DSH profile 名(dsh-tui / web / dsh-edge / 自定义)。HTTP 端口统一 :21017(http-api schema 默认,`http-api.ts:63`);切 profile 前 install.sh 必杀其他进程(避免 EADDRINUSE + audit TOCTOU race)。加新 profile 只在 install.sh `OTHER_PROFILES` 列表里添一行即可。
 
-> **当前桌面版（DeepSeek Harness App）**：CLI 不能管理 Electron 独占的 `desktop` profile，但桌面侧边栏 **Plugins → Add plugin** 支持 npm / Git / 本地目录三个通道。推荐 `bash scripts/build-desktop-bundle.sh --emit-dir` 后走「本地目录」装 `dist/installable/dsh-edge-agent-desktop-safe`；不要直接把全量 `cordis.patch.yml` 装进日常桌面 profile。详见 [docs/load-into-local-dsh.md](docs/load-into-local-dsh.md)。
+> **当前桌面版（DeepSeek Harness App）**：CLI 不能管理 Electron 独占的 `desktop` profile，但桌面侧边栏 **Plugins → Add plugin** 支持 npm / Git / 本地目录三个通道，见下方方式四。
 
 ### 方式三：Windows
 
@@ -165,8 +116,9 @@ dsh plugin --profile dsh-tui add @deepseek-harness-edge-agent/dsh-edge-agent
 > Windows 上的本机构建/打包：`install.sh` 与 `make` 不可用（Git Bash 缺
 > rsync/setsid/ss/make）；实际命令链是 `npm run compile` +
 > `bash scripts/build-desktop-bundle.sh --no-build`（Git Bash 自带 GNU tar
-> 1.35 + shasum，脚本直接能跑）。`build:installable` / `--emit-dir` 在
-> 桌面 App 运行时会被 `link:` 锁死（EPERM），详见下方桌面版部署小节。
+> 1.35 + shasum，脚本直接能跑；`pnpm` 不在 PATH 时统一用 `npm run`）。
+> `build:installable` / `--emit-dir` 在桌面 App 运行时会被 `link:` 锁死
+> （EPERM），详见方式四。
 
 ### 方式四：部署到 DSH 桌面版插件（Windows / macOS）
 
@@ -180,8 +132,11 @@ third-party plugin** 支持 npm / Git / **本地目录** 三个通道。本仓�
 **共同步骤（两平台一致）**：
 
 ```bash
-# 1. 生成可安装目录（macOS 前置：brew install gnu-tar 并入 PATH，见下）
-bash scripts/build-desktop-bundle.sh --emit-dir
+# 0. 完全退出桌面 App（含托盘）——--emit-dir 要 rename 旧目录，App 活着会 EPERM
+
+# 1. 生成可安装目录
+npm run compile                                    # pnpm 不在 PATH 时用 npm run
+bash scripts/build-desktop-bundle.sh --no-build --emit-dir
 # → dist/installable/dsh-edge-agent-desktop-safe/   ← 本地目录通道用这个
 # → dist/dsh-edge-agent-desktop-safe.tar.gz         ← CLI/分发用（不带 config/）
 
@@ -196,10 +151,8 @@ grep -o '"kind":"config.loaded".\{0,240\}' ~/.dsh-edge-agent/audit/audit.plain.j
 
 **Windows 特有（2026-10-24 实测）**：
 
-- **生成前必须完全退出桌面 App**（含托盘）。App 以 `link:` 挂着
-  `dist/installable/dsh-edge-agent-desktop-safe`，`--emit-dir` 内部的
-  rename 会撞 EPERM 死锁且不自愈（renameWithRetry 只救 Defender 瞬时扫描，
-  救不了活句柄）。
+- 生成 `--emit-dir` 前**必须完全退出桌面 App**：App 以 `link:` 挂着
+  installable 目录，rename 撞 EPERM 且不自愈。
 - 填入的路径示例：
   `C:\Users\<你>\GolandProjects\gitlab\dsh-edge-agent\dist\installable\dsh-edge-agent-desktop-safe`
 - **已经装过（link: 模式）的更新不需要重新安装**——直接改文件即可：
@@ -224,7 +177,7 @@ grep -o '"kind":"config.loaded".\{0,240\}' ~/.dsh-edge-agent/audit/audit.plain.j
   步骤见 [docs/load-into-local-dsh.md §8.6](docs/load-into-local-dsh.md)。
 
 > 完整细节（npm/Git/本地目录/tarball 四种 spec 的判定规则、§7.101 Edge
-> tab 验收清单、桌面目录结构一览）见
+> tab 验收清单、桌面目录结构一览、Windows 实测 §8.2.1）见
 > [docs/load-into-local-dsh.md](docs/load-into-local-dsh.md)。
 
 ### 首次启动流程
@@ -352,32 +305,17 @@ JSON
 dsh --profile dsh-tui
 ```
 
-### LLM 路由机制
+### LLM 路由（速览）
 
-dsh-edge-agent 通过**意图路由**自动选择 LLM，无需手动指定 provider：
+意图路由自动选 LLM，无需手动指定 provider：**未决轮次一律 LOCAL**
+（本地 OpenAI 兼容端点）；**只有带公网检索信号的请求**（新闻/最新/天气/
+web search…）才判 CLOUD 脱敏出网——分类器判了 CLOUD 但没公网信号同样
+降级回本地（`no-web-need` gate）。云池不配即 DELEGATE 到宿主 profile
+提供商，唯一必配的是 LOCAL 池。
 
-| 用户消息类型 | 触发关键词 | 路由到 | 示例 |
-|---|---|---|---|
-| **LOCAL**（默认） | 文件、读取、写入、计算、设备、本地，以及**所有没有公网检索需求的普通请求** | `local-llm`（真实 OpenAI 兼容端点） | `"帮我读取文件"` → 真实 qwen3-4b 回答 |
-| **CLOUD** | **只有需要检索公网上信息**：联网/上网/搜索引擎、新闻/最新/实时、天气/行情/股价、`web search` | `cloud-llm` | `"查一下最新的AI新闻"` → DeepSeek 真实回答（脱敏后） |
-
-> **§7.107（2026-10-23）默认本地**：未决的轮次一律留在设备上——三层兜底
-> （input-guard 兜底、intent-router `defaultCategory`、http-api 无分类器兜底）
-> 都是 `LOCAL`。分类器判 CLOUD **不自动放行**：没有公网检索信号就降级回 LOCAL
-> （审计 `intent.cloud.blocked-no-web-need`）。所以"解释/什么是/知识问答"这类
-> 普通问句现在走本地模型，只有真正要查公网的请求才出网。
-> 出网必脱敏：脱敏失败 fail-closed 降级回本地，绝不带原文上云。
-> 详见 [docs/intent-and-sanitization.md](docs/intent-and-sanitization.md)。
-
-> **§7.100 云池可选**：不配置 `CLOUD_LLM_BASEURL` 时，`cloud-llm` 路由进入
-> **DELEGATE 模式**——按「显式指定 → 宿主 profile 当前模型选择（桌面 GUI 实时）→
-> 活的宿主云路由探针」三级链转发，凭据解析归宿主，edge 侧不碰任何 secret；
-> 三条都没有则显式报错（502 / SSE error）。配置了 `CLOUD_LLM_BASEURL` 则维持
-> 自研直连（§7.83 语义不变）。**唯一必配的是 LOCAL 池**；意图分类与 prompt-guard
-> 模型检测只使用本地模型，未配置本地端点时自动降级关键词/正则规则档。
-
-> ⚠️ `DSH_EDGE_PROVIDER` 只作 agent-loop 兜底指针与 input-guard 取证镜像，
-> 不会改变实际路由。实际选择由意图分类结果决定。
+> 路由细节（三层兜底 / 实体护栏 / §7.100 DELEGATE 链 / 三档搜索
+> fail-down）见 [docs/architecture.md §7.107 章](docs/architecture.md) 与
+> [docs/intent-and-sanitization.md](docs/intent-and-sanitization.md)。
 
 ### 本地 LLM 端点
 
@@ -408,12 +346,6 @@ vLLM / Ollama / DashScope 实例 —— 在 `config/edge.json` 的 `llm.local` �
 > **§7.102（2026-10-21）配置归一**：dsh-edge-agent 现在只通过**一个文件**配置 ——
 > `config/edge.json`。旧的 `.env` / `.env.sh` 两条链（裸名 env → `.env.sh` 派生
 > `DSH_EDGE_*` → cordis patch 读 `process.env`）已删除。
->
-> **为什么删**：`process.env` 依赖启动链。`dsh-tui` / `dsh-web` / `dsh-edge` 由
-> `install.sh` 启动时会 source `.env.sh`，所以变量在；**桌面 GUI
-> （`DeepSeek Harness.exe`）不经过 `install.sh`**，进程里一个 `DSH_EDGE_*` 都
-> 没有，patch 里的 `!!js process.env.DSH_EDGE_LOCAL_LLM_BASEURL` 全部解析成
-> `undefined`，本地 LLM 落回硬编码 `127.0.0.1:8080`（撞上无关守护进程）。
 >
 > **新的查找顺序**（与 profile 无关，desktop / tui / web / edge 一致）：
 >
@@ -650,33 +582,21 @@ vLLM / Ollama / DashScope 实例 —— 在 `config/edge.json` 的 `llm.local` �
 
 ---
 
-## 🌐 入口架构（§7.69 重构后：单 profile 架构，端口统一 :21017）
+## 🌐 入口架构
 
-> **2026-09-17 §7.69 修订**：install.sh 单 profile 架构 —— 一次只跑一个 profile。默认 `--profile=dsh-edge`(项目自有 headless,无 UI),HTTP 端口统一 :21017(http-api schema 默认)。切换用 `--profile=web`(webui `:3080` + http-api `:21017`)或 `--profile=tui`(终端 UI + http-api `:21017`)。切 profile 前 install.sh 自动杀掉其他 profile 进程。
->
-> §7.33 仍然有效：dsh-edge-agent 是"纯 plugins" bundle。http-api plugin **re-enabled**(2026-09-04 §7.59 修),所有 profile 都吃同一份 http-api。
+> §7.69 单 profile 架构，HTTP 端口统一 :21017；§7.107 起桌面版和 HTTP API
+> 为**双 profile 双进程、同一套 edge 逻辑**（设计详见
+> [docs/architecture.md §7.107 章](docs/architecture.md)）。
 
-**默认入口（§7.69 dsh-edge profile 宿主）**：
-
-| 入口 | 端口 | 鉴权 | 目标用户 | 状态 |
-|---|---|---|---|---|
-| **http-api**（自研 REST + SSE） | `:21017` | bearer `EDGE_API_KEY` | CLI / SDK / cURL / 外部 agent / mobile | ✅ enabled（§7.59 修） |
-| **DSH 官方 Web UI**（SPA + apiproxy） | `:3080` | loopback trust + pairing | 浏览器 / 真人用户 / IM 渠道 | ✅ 切 web profile 时启 |
-
-### §7.107：桌面 + HTTP 双 profile（一次部署命令）
-
-桌面版和 HTTP API 现在是**两个独立进程、同一套 edge 逻辑**：
-
-| profile | 进程 | 入口 | 说明 |
+| profile | 进程 | 入口 | 状态 |
 |---|---|---|---|
-| `desktop` | DSH 桌面 App（Electron 管理） | GUI + 右栏 **Edge** tab | desktop-safe bundle；App 的 plugin manager 管的，CLI 不要碰 |
-| `dsh-edge-agent` | `dsh --profile dsh-edge-agent`（后台） | HTTP API `:21017` | **同一个** desktop-safe bundle + 一层 profile overlay 挂 http-api |
+| `desktop` | DSH 桌面 App（Electron 管理） | GUI + 右栏 **Edge** tab | desktop-safe bundle；App 的 plugin manager 管，CLI 不要碰 |
+| `dsh-edge-agent` | `dsh --profile dsh-edge-agent`（后台） | HTTP API `:21017` | 同一 desktop-safe bundle + profile overlay 挂 http-api |
+| `web`（切换时） | dsh-web | 官方 Web UI `:3080` + IM 机器人 | 浏览器 / IM 用户入口 |
 
 两边共用 `~/.dsh-edge-agent/edge.json`（唯一配置源）与 `~/.dsh-edge-agent/audit/`（审计落盘）。
-进程独立 ⇒ edge-context-view 的分桶互不可见 ⇒ HTTP 流量**不会**漏进桌面的 Edge tab
-（只有不带 sessionId 的全局行会跨会话出现）。
 
-**一次部署**（不手动复制任何文件）：
+### 部署 dsh-edge-agent HTTP profile（§7.107 一次命令）
 
 ```bash
 bash scripts/deploy-profile.sh dsh-edge-agent          # build + 装 bundle + 同步配置 + 启动 + 验证
@@ -684,66 +604,20 @@ bash scripts/deploy-profile.sh dsh-edge-agent --no-build
 bash scripts/deploy-profile.sh dsh-edge-agent --no-restart
 ```
 
-脚本会：打包 desktop-safe bundle → 从 `profiles/dsh-edge-agent/` 写 profile 骨架与 overlay →
-装进 profile（**强制重新解包** —— pnpm 不会因为 `file:` tarball 内容变了就重新解包，
-lockfile 更新后仍然报 "Already up to date"，profile 里跑的还是旧代码）→ 同步
-`config/privacy-policy.json` 与 `config/edge.json`（**保留运维在
-`~/.dsh-edge-agent/edge.json` 里的活密钥**，部署不会覆盖已轮换的 API key）→ 重启 → 验活。
-
-### §7.107：DEEPSEEK Search + Fetch
-
-§7.107 的路由规则把「需要检索公网上的信息」定为**唯一允许出网**的操作 —— 那这条
-路径就得真的能搜公网、真的能抓网页：
-
-| 能力 | provider | 凭据 |
-|---|---|---|
-| `web_search` | 本仓 aggregator：Tavily → 博查 AI → **DeepSeek**（`web_search_20250305` server tool） | `config/edge.json` 的 `secrets.tavilyApiKey` / `bochaApiKey` / `deepseekApiKey` |
-| `web_fetch` | 宿主的 `http` provider（`dsh-web-fetch-http`，匿名公共 HTTP(S) 抓取，自带目的地校验） | 无 |
-
-两者都是 **CLOUD realm** 的工具（`tools.ts` 的 `DSH_NATIVE_REALM_MAP`）—— realm 桥
-只在 CLOUD realm 下放行，所以只有 §7.107 允许出网的那些轮次能用它们；LOCAL realm
-下模型根本看不到这两个工具。
-
-**search 的策略：一条三档 fail-down 链**
-
-`web` row 选中的 provider 永远是本仓的 aggregator（`tavily-bocha-fallback`），
-上游的 `deepseek-official` row 被禁用（两个可用 provider 会让 seam 报
-`WEB_PROVIDER_AMBIGUOUS`）。chain 内部：
-
-| 档 | provider | 在链上的条件 | 失败时 |
-|---|---|---|---|
-| 1 | Tavily | `webSearch.tavilyEnabled` 不是 false **且** `secrets.tavilyApiKey` 在 | warn → 落下一档 |
-| 2 | 博查 AI | `webSearch.bochaEnabled` 不是 false **且** `secrets.bochaApiKey` 在 | warn → 落下一档 |
-| 3 | **DeepSeek** | `secrets.deepseekApiKey` 在 | `WEB_PROVIDER_UNAVAILABLE` |
-
-两条独立的门：**开关**决定这一档在不在链上，**key**决定这一档能不能真答。
-没 key 的档直接跳过，一次请求都不发。一档成功就停 —— 不是三档都查。
-
-DeepSeek 档走 DeepSeek 官方 server-side 检索（`web_search_20250305`），
-自带引用来源；Tavily/博查是通用搜索 API。凭据全部取自 `config/edge.json`，
-**不依赖 `DEEPSEEK_API_KEY` 环境变量** —— GUI 起的桌面和 CLI 起的 profile 行为一致。
-
-`web_fetch` 是另一条路，不分档：宿主的 `dsh-web-fetch-http`（id `http`），
-直接匿名 HTTP(S) 抓取，自带目的地校验（防 SSRF），不经过 DeepSeek。
+> 脚本要求 dsh CLI 可达（macOS 走 App 内嵌路径，Linux 走 PATH/npm-global，
+> `DSH_EDGE_BIN` 可覆盖；Windows 见
+> [docs/load-into-local-dsh.md §8.2.1](docs/load-into-local-dsh.md) 的内嵌
+> `dsh.cmd` 等价路径）。它会打包 desktop-safe bundle → 写 profile 骨架与
+> overlay → 强制重新解包（pnpm 不重解包坑）→ 同步配置（**保留运维活密钥**）
+> → 重启 → 验活。
 
 ### 浏览器 / IM 用户 → `:3080`
 
 打开浏览器访问 `http://127.0.0.1:3080`，使用 DSH 官方 Web UI（chat / task-board / pet / IM机器人 等）。鉴权由 DSH 上游的配对 token 流程处理。
 
-`@xmanrui/dsh-im` 插件通过 webserver 内部 `apiProxy` 把 IM 消息接入 agent-loop——**不监听新端口**，自动继承 input-guard 隐私管线。
-
-启用步骤：
-
-1. 在浏览器访问 `http://127.0.0.1:3080`，打开 **设置 → IM机器人** 页面
-2. 选择渠道，按页面提示**扫码**或粘贴 App ID / Secret / Bot Token 等凭据
-3. 凭据仅写入 `dsh-credentials-local` 受保护本地存储，配置文件不落盘
-4. 启用后，IM 私聊 / 群消息会自动路由到 agent-loop（流式思考 / 工具执行进度 / 最终回答均原生渠道展示）
-
-支持的 IM 渠道：飞书（WebSocket + 流式卡片）/ 微信（iLink 长轮询）/ 钉钉（Stream + AI Card）/ 企业微信（WebSocket + 「思考中」）/ QQ（WebSocket）/ Slack（Socket Mode）/ Telegram（Bot API + Rich Draft）/ Discord（Gateway v10 + 原生 Thread）/ WhatsApp（WhatsApp Web）+ **AI Office Connector**（公网 HTTPS 心跳 + SSE 下行）。
+`@xmanrui/dsh-im` 插件通过 webserver 内部 `apiProxy` 把 IM 消息接入 agent-loop——**不监听新端口**，自动继承 input-guard 隐私管线。凭据在 Web UI「设置 → IM机器人」页面配置，只入 `dsh-credentials-local` 受保护本地存储，配置文件不落盘。支持飞书 / 微信 / 钉钉 / 企业微信 / QQ / Slack / Telegram / Discord / WhatsApp + AI Office Connector。
 
 > **⚠️ AI Office 风险**：AI Office Connector 让本机 Harness **主动**连接公网 Office（不需公网 IP / 端口转发），但 SSE 下行的增量文本会回到公网 Office。**只在用户主动启用**后生效。
-
-> **⚠️ 凭据安全**：所有 IM 平台 bot credentials 只入 `dsh-credentials-local`，RPC 响应不回传原始凭据。
 
 ### 重新启用 http-api（可选，advanced）
 
@@ -757,388 +631,39 @@ $EDITOR cordis.patch.yml
 ./install.sh --skip-pnpm --profiles=web
 ```
 
-启用后，http-api 会在 `:21017` 重新 listen（与 `:3080` webui 并存）。代码路径完全保留，下面是 REST API 文档存档（§7.33 之前是主入口，现在为 advanced option）：
+启用后，http-api 会在 `:21017` 重新 listen（与 `:3080` webui 并存）。
+REST 完整示例（chat / SSE / 会话管理 / OpenAPI）与鉴权/CORS 约定见
+[docs/TEST-REPORT.md](docs/TEST-REPORT.md)；接口规范详见
+[docs/architecture.md](docs/architecture.md)。
 
-```bash
-# 健康检查（无需鉴权）
-curl http://127.0.0.1:21017/v1/health
-
-# 鉴权 + 同步 chat
-curl -X POST http://127.0.0.1:21017/v1/chat \
-  -H "Authorization: Bearer $EDGE_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"message": "你好"}'
-
-# 流式 chat (SSE，15s keepalive 防代理切断)
-curl -N -X POST http://127.0.0.1:21017/v1/chat/stream \
-  -H "Authorization: Bearer $EDGE_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"message": "你好"}'
-
-# 列出 / 查询 / 取消 / 重命名 / fork / 删除 会话
-curl -H "Authorization: Bearer $EDGE_API_KEY" \
-  http://127.0.0.1:21017/v1/sessions
-curl -H "Authorization: Bearer $EDGE_API_KEY" \
-  http://127.0.0.1:21017/v1/sessions/{id}
-curl -X POST -H "Authorization: Bearer $EDGE_API_KEY" \
-  http://127.0.0.1:21017/v1/sessions/{id}/cancel
-curl -X POST -H "Authorization: Bearer $EDGE_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"title": "新标题"}' \
-  http://127.0.0.1:21017/v1/sessions/{id}/rename
-curl -X POST -H "Authorization: Bearer $EDGE_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{}' \
-  http://127.0.0.1:21017/v1/sessions/{id}/fork
-curl -X DELETE -H "Authorization: Bearer $EDGE_API_KEY" \
-  http://127.0.0.1:21017/v1/sessions/{id}
-
-# 元数据：可用模型 + 审计日志
-curl -H "Authorization: Bearer $EDGE_API_KEY" \
-  http://127.0.0.1:21017/v1/models
-curl -H "Authorization: Bearer $EDGE_API_KEY" \
-  "http://127.0.0.1:21017/v1/audit?limit=20&kind=http.chat.start"
-
-# OpenAPI 3.0 规范（无需鉴权）
-curl http://127.0.0.1:21017/v1/openapi.json
-```
-
-完整接口规范详见 [docs/architecture.md](docs/architecture.md)。
-
-> **⚠️ 鉴权约定**：
-> - **http-api**（如启用）：Bearer token 必须从环境变量 `EDGE_API_KEY` 注入；**不要硬编码**到配置文件。生产环境使用 secret manager。
-> - **dsh-im**：IM 平台 bot credentials 走 webui「设置 → IM机器人」页面，凭据**只入 `dsh-credentials-local`**。
-> - **dsh-webui**：loopback trust + DSH 上游配对 token 流程。
->
-> **⚠️ CORS**：v1 不启用 CORS（`enableCors` 字段在 schema 中完全不暴露）。程序端请同主机调用；若需要从浏览器调用，请用 `:3080` 的官方 Web UI。
+> **⚠️ 鉴权约定**：Bearer token 从环境变量 `EDGE_API_KEY` 注入；**不要硬编码**到配置文件。生产环境使用 secret manager。
+> **⚠️ CORS**：v1 不启用 CORS。程序端请同主机调用；浏览器请走 `:3080` 官方 Web UI。
 
 ---
 
-## 🔌 扩展 function-call-external（§7.94）
+## 🔌 扩展
 
-`function-call-external` 插件采用 **HTTP 契约边界** —— 任何实现
-[docs/function-call-external-http-contract.md](docs/function-call-external-http-contract.md)
-的 HTTP 服务都可接入，只需修改环境变量：
-
-```bash
-FUNCTION_CALL_EXTERNAL_URL=http://127.0.0.1:8081   # 任意 HTTP 实现
-FUNCTION_CALL_EXTERNAL_ENABLED=true
-```
-
-### 支持的实现形态
-
-- **cactus-needle** (当前默认,`callerId='needle-http'`)
-- **自训端侧 function-call 模型** —— 包装成 HTTP 服务即可
-- **第三方 hosted API** —— 反向代理 / 直连均可
-
-### 接入步骤
-
-1. 实现 `GET /health` (返回 2xx healthy / 503 loading|busy)
-2. 实现 `POST /extract` (按契约返回 `type` / `function_calls` / `confidence` / `validation.ungrounded`)
-3. 启动服务,设置 `FUNCTION_CALL_EXTERNAL_URL`
-4. `audit.jsonl` 中所有 `external.*` event 自动携带 `callerId` 标识
-
-**plugin 主体零修改**。详细失败语义、breaker 行为、retry 策略见契约文档。
+`function-call-external` 插件采用 **HTTP 契约边界**——任何实现该契约的 HTTP
+服务（cactus-needle / 自训端侧模型 / 第三方 hosted API）都可通过
+`FUNCTION_CALL_EXTERNAL_URL` 接入，plugin 主体零修改。契约与失败语义见
+[docs/function-call-external-http-contract.md](docs/function-call-external-http-contract.md)。
 
 ---
 
-## 🧪 手动测试
-
-### Webui smoke（推荐，web profile 默认已装并启动）
+## 🧪 测试
 
 ```bash
-# 0. §7.43: 默认 --all 已装 web profile；如未装：
-./install.sh --profiles=web
-
-# 1. web 默认已在 :21017 listen；UI 在 :3080
-# （如需手动启动：cd ~/.dsh/profiles/web && setsid nohup dsh --profile web > run.log 2>&1 < /dev/null & disown）
-
-# 2. 等 5-10s（webui 首次加载慢）
-sleep 10
-
-# 3. 浏览器访问 http://127.0.0.1:3080/
-#    应看到 DSH 官方 Web UI（chat / task-board / pet / IM机器人）
-
-# 4. 验证 dsh-edge-agent bundle plugin 已挂载（input-guard / intent-router / sanitizer）
-curl -s http://127.0.0.1:3080/ | head -3
-# 期望：HTML 含 dsh / webui 字样
-
-# 5. 跟 audit log 验证 input-guard hook 注册
-tail -10 ~/.dsh-edge-agent-web/audit/audit.plain.jsonl \
-  | jq -c 'select(.kind | test("registered|loaded"))' | head -5
-# 期望：input-guard.hook.registered 等事件
-
-# 6. http-api 应 disabled（§7.33）
-curl -s --max-time 3 http://127.0.0.1:21017/v1/health
-# 期望：连接拒绝
+pnpm test                 # 单元测试（2026-10-24：52 文件 1042 passed / 0 failed）
+pnpm run verify:build     # 11 项构建门禁
+pnpm run lint             # eslint（0 error 基线）
+bash scripts/e2e-ops-log-coverage.sh   # E2E ops log 4 用例（2026-10-24：4/4 全绿）
 ```
 
-### Tui smoke（§7.43 primary；**默认就装**）
-
-```bash
-# 1. 启动 dsh-tui（install.sh 默认装；并存启动 dsh-tui + web）
-cd ~/.dsh/profiles/dsh-tui
-setsid nohup dsh --profile dsh-tui > run.log 2>&1 < /dev/null &
-disown
-
-# 2. 等 3-5s
-sleep 5
-
-# 3. 验证 dsh-tui 进程在跑
-pgrep -f 'dsh --profile dsh-tui'   # 期望：返回 PID
-
-# 4. 跟 audit log 验证 input-guard hook 注册
-tail -10 ~/.dsh-edge-agent-dsh-tui/audit/audit.plain.jsonl \
-  | jq -c 'select(.kind | test("registered|loaded"))' | head -5
-# 期望：input-guard.hook.registered 等事件
-```
-
-### http-api 手动测试（advanced，**需先启用**）
-
-> ⚠️ §7.33 后 http-api 默认 disabled。如要跑以下 curl 示例，先 `cordis.patch.yml:313` 删 `disabled: true` 并 `./install.sh --skip-pnpm --profiles=web` 重启 web profile。
-
-假设服务器运行在 `http://127.0.0.1:21017`，API Key 为 `test-secret-key`。
-
-### 启动服务
-
-```bash
-# 方式 1: 使用启动脚本（推荐；§7.43 默认 dsh-tui）
-./scripts/launch-dev.sh
-
-# 方式 2: 手动启动（配置读 config/edge.json，§7.102）
-dsh --profile dsh-tui
-
-# 方式 3: 后台运行
-setsid bash -c 'dsh --profile dsh-tui' > /tmp/dsh.log 2>&1 < /dev/null &
-```
-
-### Health Check
-
-```bash
-curl http://127.0.0.1:21017/v1/health
-```
-
-```json
-{"status":"ok"}
-```
-
-### 认证测试
-
-```bash
-# 无 Token → 401
-curl -s -o /dev/null -w "%{http_code}" -X POST http://127.0.0.1:21017/v1/chat \
-  -H "Content-Type: application/json" -d '{"message":"hi"}'
-
-# 错误 Token → 401
-curl -s -o /dev/null -w "%{http_code}" -X POST http://127.0.0.1:21017/v1/chat \
-  -H "Authorization: Bearer wrong-key" \
-  -H "Content-Type: application/json" -d '{"message":"hi"}'
-
-# 正确 Token → 200
-curl -s -o /dev/null -w "%{http_code}" -X POST http://127.0.0.1:21017/v1/chat \
-  -H "Authorization: Bearer test-secret-key" \
-  -H "Content-Type: application/json" -d '{"message":"hi"}'
-```
-
-### Chat 同步
-
-**LOCAL Intent**（本地处理 — 文件操作、计算）
-
-```bash
-curl -X POST http://127.0.0.1:21017/v1/chat \
-  -H "Authorization: Bearer test-secret-key" \
-  -H "Content-Type: application/json" \
-  -d '{"message":"帮我读取文件","sessionId":"test-local"}'
-```
-
-```json
-{
-  "sessionId": "test-local",
-  "result": "请提供您想要我读取的文件路径，以便我帮您获取其内容。",
-  "intent": {
-    "category": "LOCAL",
-    "targetRealm": "local",
-    "confidence": 0.7,
-    "rationale": "rule-keyword-match"
-  },
-  "duration": 940
-}
-```
-
-> LOCAL intent 路由到本地 LLM（`local-llm`），直连真实 OpenAI 兼容端点（不消耗云端 API 配额）。
-
-**CLOUD Intent**（云端处理 — 知识问答、创意）
-
-```bash
-curl -X POST http://127.0.0.1:21017/v1/chat \
-  -H "Authorization: Bearer test-secret-key" \
-  -H "Content-Type: application/json" \
-  -d '{"message":"用一句话介绍量子力学","sessionId":"test-cloud"}'
-```
-
-```json
-{
-  "sessionId": "test-cloud",
-  "result": "量子力学是研究微观粒子（如原子、电子、光子）运动规律的理论，其核心在于粒子状态由波函数描述，观测结果具有概率性，且存在波粒二象性、叠加与纠缠等现象。",
-  "intent": {
-    "category": "CLOUD",
-    "targetRealm": "cloud",
-    "confidence": 0.5,
-    "rationale": "default:cloud"
-  },
-  "duration": 1575
-}
-```
-
-> CLOUD intent 路由到 `cloud-llm`，需要 `DEEPSEEK_API_KEY` 环境变量。
-
-### 工具调用测试
-
-dsh-edge-agent 使用 DSH 原生工具，所有工具都通过模型自动调用。
-
-**Bash 工具**（本地命令执行）
-
-```bash
-curl -X POST http://127.0.0.1:21017/v1/chat \
-  -H "Authorization: Bearer test-secret-key" \
-  -H "Content-Type: application/json" \
-  -d '{"message":"帮我计算 17*23","sessionId":"test-bash"}'
-```
-
-模型会调用 `bash` 工具执行 `echo $((17*23))`，返回计算结果。
-
-**文件工具**（读/写/编辑）
-
-```bash
-# 读取文件
-curl -X POST http://127.0.0.1:21017/v1/chat \
-  -H "Authorization: Bearer test-secret-key" \
-  -H "Content-Type: application/json" \
-  -d '{"message":"读取 /tmp/test.txt 文件内容","sessionId":"test-file-read"}'
-
-# 写入文件
-curl -X POST http://127.0.0.1:21017/v1/chat \
-  -H "Authorization: Bearer test-secret-key" \
-  -H "Content-Type: application/json" \
-  -d '{"message":"在 /tmp 创建 hello.txt，内容是 Hello World","sessionId":"test-file-write"}'
-
-# 编辑文件
-curl -X POST http://127.0.0.1:21017/v1/chat \
-  -H "Authorization: Bearer test-secret-key" \
-  -H "Content-Type: application/json" \
-  -d '{"message":"将 /tmp/hello.txt 中的 Hello 改为 Hi","sessionId":"test-file-edit"}'
-```
-
-**Web 搜索工具**（DeepSeek 搜索引擎）
-
-```bash
-curl -X POST http://127.0.0.1:21017/v1/chat \
-  -H "Authorization: Bearer test-secret-key" \
-  -H "Content-Type: application/json" \
-  -d '{"message":"搜索 DeepSeek V4 模型的最新消息","sessionId":"test-web-search"}'
-```
-
-模型会调用 `web_search` 工具，返回搜索结果摘要。
-
-**Web 获取工具**（抓取网页内容）
-
-```bash
-curl -X POST http://127.0.0.1:21017/v1/chat \
-  -H "Authorization: Bearer test-secret-key" \
-  -H "Content-Type: application/json" \
-  -d '{"message":"获取 https://example.com 的网页内容","sessionId":"test-web-fetch"}'
-```
-
-模型会调用 `web_fetch` 工具，返回网页内容摘要。
-
-### Intent 分类规则
-
-| 关键词触发 LOCAL | 默认 / 知识类 → CLOUD |
-|---|---|
-| 文件、读取、写入、删除、计算、加减乘除 | 解释、什么是、如何、为什么 |
-| 本地、设备、系统、磁盘、目录、文件夹 | 你好、介绍、帮我写 |
-| file, read, write, delete, calculate | 量子、相对论、Python |
-
-分类流程：先用本地 Qwen3-4B 判断 → 失败时降级到关键词规则。
-
-### Chat 流式（SSE）
-
-```bash
-curl -N -X POST http://127.0.0.1:21017/v1/chat/stream \
-  -H "Authorization: Bearer test-secret-key" \
-  -H "Content-Type: application/json" \
-  -d '{"message":"1+1等于几","sessionId":"test-002"}'
-```
-
-```
-data: {"type":"intent","intent":{"category":"CLOUD","targetRealm":"cloud","confidence":0.85,"rationale":"llm-classified:cloud"}}
-
-data: {"type":"text","text":"1"}
-
-data: {"type":"text","text":"+1"}
-
-data: {"type":"text","text":"=2"}
-
-data: {"type":"done"}
-```
-
-> SSE 流式响应。帧类型：
-> - `intent` — 首帧，携带意图分类结果
-> - `text` — 文本增量片段
-> - `done` — 结束帧
-
-### 会话管理
-
-```bash
-# 列出所有会话
-curl http://127.0.0.1:21017/v1/sessions \
-  -H "Authorization: Bearer test-secret-key"
-
-# 获取特定会话
-curl http://127.0.0.1:21017/v1/sessions/test-001 \
-  -H "Authorization: Bearer test-secret-key"
-
-# 删除会话
-curl -X DELETE http://127.0.0.1:21017/v1/sessions/test-001 \
-  -H "Authorization: Bearer test-secret-key"
-```
-
-### OpenAPI Spec
-
-```bash
-curl http://127.0.0.1:21017/v1/openapi.json | jq .
-```
+完整测试报告（手动 smoke / http-api 示例 / intent 规则表 / 自动化 / §7.107
+E2E 实测记录）见 **[docs/TEST-REPORT.md](docs/TEST-REPORT.md)**。
 
 ---
 
-## 🧪 自动化测试
-
-### 单元测试（48 个测试文件；§7.100 前 2026-10-18 实测 954 passed / 2 skipped；§7.100 新增 3 文件 29 用例，总数待 CI 实测刷新）
-
-```bash
-pnpm test
-```
-
-覆盖 45 个测试文件，包括：
-- 插件形状验证（name/inject/Config/apply）
-- SSE 解析、JSONL 持久化、HTTP 路由
-- 意图分类（LLM + 规则兜底）
-- 会话管理、审计日志
-
-### 构建验证
-
-```bash
-pnpm run verify:build
-```
-
-包含 4 个验证脚本：
-- `verify:boundary` — 适配器边界检查（`@deepseek-ai/*` 仅存在于 `src/dsh-adapter/`）
-- `verify:contract` — 上游兼容性（最低 `0.2.1-rc.2`，允许更新版本；不再精确锁定）
-- `verify:patch-surface` — 补丁面一致性
-- `verify:plugin-spec` — 插件规范（name+inject+Config+apply）
-
----
-
-更多文档见 [docs/architecture.md](docs/architecture.md)：[架构](docs/architecture.md) · [上游适配契约](docs/architecture.md) · [威胁模型](docs/architecture.md) · [插件开发](docs/architecture.md) · [实施进度](docs/PROGRESS.md)
+更多文档见 [docs/architecture.md](docs/architecture.md)：[架构](docs/architecture.md) · [上游适配契约](docs/architecture.md) · [威胁模型](docs/architecture.md) · [插件开发](docs/architecture.md) · [实施进度](docs/PROGRESS.md) · [意图与脱敏详细设计](docs/intent-and-sanitization.md) · [测试报告](docs/TEST-REPORT.md)
 
 MIT License. 详见 [LICENSE](LICENSE)。
