@@ -248,11 +248,15 @@ const DEFAULT_POLICY: PrivacyPolicy = {
   },
 }
 
+/** Policy change listener — variadic on purpose (emit passes per-event
+ *  payloads); `any[]` keeps call-site variance permissive. */
+export type PolicyListener = (...args: any[]) => unknown
+
 export class PrivacyPolicyServiceImpl extends Service implements PrivacyPolicyService {
   private policy: PrivacyPolicy = DEFAULT_POLICY
   private lastMtime: number = 0
   private watchTimer: ReturnType<typeof setInterval> | undefined
-  private listeners = new Map<string, Set<Function>>()
+  private listeners = new Map<string, Set<PolicyListener>>()
   /**
    * HMAC-SHA256 key for policy file signature verification. Read once at
    * construction from `DSH_EDGE_POLICY_HMAC_KEY`. When set, every reload
@@ -463,7 +467,7 @@ export class PrivacyPolicyServiceImpl extends Service implements PrivacyPolicySe
     return highest
   }
 
-  on(event: string, listener: Function): void {
+  on(event: string, listener: PolicyListener): void {
     if (!this.listeners.has(event)) {
       this.listeners.set(event, new Set())
     }

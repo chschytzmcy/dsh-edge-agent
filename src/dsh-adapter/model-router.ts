@@ -122,7 +122,8 @@ export class ModelRouterServiceImpl extends Service {
         llm?: { listProviders?(): Array<{ id: string }> }
         get?: (name: string) => unknown
       }
-      const llm = anyCtx.llm ?? (typeof anyCtx.get === 'function' ? anyCtx.get('llm') as any : undefined)
+      const llm: { listProviders?(): Array<{ id: string }> } | undefined
+        = anyCtx.llm ?? (typeof anyCtx.get === 'function' ? anyCtx.get('llm') as { listProviders?(): Array<{ id: string }> } : undefined)
       if (llm && typeof llm.listProviders === 'function') {
         return new Set(llm.listProviders().map((p) => p.id))
       }

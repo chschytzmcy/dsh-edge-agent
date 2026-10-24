@@ -809,7 +809,7 @@ function parseSafetyResponse(raw: string): SafetyVerdict | null {
   if (!raw.length) return null
   // Strip  blocks first (Qwen3 thinking leakage). Non-greedy; multiple
   // blocks handled by repeat. If no closing tag, drop the trailing .
-  let cleaned = raw
+  const cleaned = raw
     .replace(/[\s\S]*?<\/think>/giu, '')
     .replace(/$/giu, '')
     .replace(/^```(?:json)?/iu, '')

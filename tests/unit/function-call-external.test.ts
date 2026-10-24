@@ -352,8 +352,6 @@ function makeListenerCtx(
   const onHandlers: Array<{ event: string; handler: any; opts: any }> = []
   const onCalls: Array<{ name: string; args: any[] }> = []
   const fetchCalls: Array<{ url: string; body: any }> = []
-  // configurable fetch (tests inject via extra.fetch)
-  let fetchImpl: ((url: string, init: any) => Promise<Response>) | undefined
   const baseCtx = {
     reflect: {
       provide: () => {},
@@ -370,8 +368,8 @@ function makeListenerCtx(
     },
     ...extra,
   } as any
-  // wire fetch through if provided (service.tryFetchOverride() picks this up)
-  fetchImpl = (baseCtx as any).fetch
+  // configurable fetch (tests inject via extra.fetch; service.tryFetchOverride() picks this up)
+  const fetchImpl = (baseCtx as any).fetch as ((url: string, init: any) => Promise<Response>) | undefined
   void fetchImpl // referenced
   void fetchCalls // referenced
   const svc = new FunctionCallExternalServiceImpl(baseCtx, cfg as never, makeAuditLog(entries, auditMode))

@@ -59,6 +59,9 @@ jobs:
       - name: Verify (boundary / contract / patch-surface / plugin-spec / package)
         run: pnpm run verify:build
 
+      - name: Lint (eslint, error-level gate)
+        run: pnpm run lint
+
       - name: Upload build artifact
         if: success()
         uses: actions/upload-artifact@v4
@@ -113,6 +116,40 @@ jobs:
             echo "::error::测试总数 ($TOTAL) 远低于 628 基线——可能漏跑了部分用例，PR block。"
             exit 1
           fi
+
+  # §7.103 (2026-10-21) 曾记录 Windows 上 build 跑不完（门禁依赖 bash）并
+  # 为此改造过门禁 —— 但没有 windows CI job 防回归，下次退化和 §7.104/§7.106
+  # （都在 Windows 桌面部署上炸过）一样只能装机后才发现。本 job 只跑
+  # compile + 单测：verify:build / e2e-opslog 阶段含 bash 脚本，仍 Linux-only。
+  test-windows:
+    name: unit tests (windows)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    needs: build
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.20'
+          cache: 'pnpm'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Compile
+        run: pnpm run compile
+
+      - name: Run unit tests
+        run: pnpm test
 
   e2e-opslog:
     name: ops log coverage (3 cases)
