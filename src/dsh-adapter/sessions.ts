@@ -75,6 +75,20 @@ export class SessionsServiceImpl extends Service {
   private readonly collection: string
   private readonly defaultTtlSeconds: number
   private readonly maxConcurrentSessions: number
+  /** 串行化 read-modify-write 周期：appendMessage / touch / cleanup 的
+   *  get→put 之间会让出事件循环，并发交错时后写覆盖前写（丢消息/丢
+   *  touch）。链内吞错防中毒 —— 一次失败不能让队列永久 rejected
+   *  （local-storage.writeQueue 踩过的坑），错误如实抛给当次调用方。 */
+  private mutationQueue: Promise<unknown> = Promise.resolve()
+
+  /** TTL/LRU 清扫定时器（apply 启动；unref 不阻塞进程退出）。 */
+  private sweepTimer: ReturnType<typeof setInterval> | undefined
+
+  private enqueue<T>(op: () => Promise<T>): Promise<T> {
+    const result = this.mutationQueue.then(op, op)
+    this.mutationQueue = result.catch(() => {})
+    return result
+  }
 
   constructor(ctx: Context, config: Config) {
     super(ctx, 'sessions')
@@ -100,15 +114,17 @@ export class SessionsServiceImpl extends Service {
   }
 
   async appendMessage(id: string, message: SessionMessage): Promise<SessionRecord> {
-    const storage = this.storage()
-    const session = await this.get(id)
-    if (!session) {
-      throw new Error(`sessions: session "${id}" not found`)
-    }
-    session.messages.push(message)
-    session.lastSeenAt = Date.now()
-    await storage.put(this.collection, id, session)
-    return session
+    return this.enqueue(async () => {
+      const storage = this.storage()
+      const session = await this.get(id)
+      if (!session) {
+        throw new Error(`sessions: session "${id}" not found`)
+      }
+      session.messages.push(message)
+      session.lastSeenAt = Date.now()
+      await storage.put(this.collection, id, session)
+      return session
+    })
   }
 
   async getRecentMessages(id: string, limit?: number): Promise<SessionMessage[]> {
@@ -139,42 +155,63 @@ export class SessionsServiceImpl extends Service {
   }
 
   async touch(id: string): Promise<void> {
-    const storage = this.storage()
-    const session = await storage.get<SessionRecord>(this.collection, id)
-    if (!session) return
-    session.lastSeenAt = Date.now()
-    await storage.put(this.collection, id, session)
+    return this.enqueue(async () => {
+      const storage = this.storage()
+      const session = await storage.get<SessionRecord>(this.collection, id)
+      if (!session) return
+      session.lastSeenAt = Date.now()
+      await storage.put(this.collection, id, session)
+    })
   }
 
   async cleanup(): Promise<number> {
-    const storage = this.storage()
-    const entries = await storage.list(this.collection)
-    const now = Date.now()
-    let removed = 0
-    for (const { key, value } of entries) {
-      const session = value as SessionRecord
-      const ttlMs = session.ttlSeconds * 1000
-      if (now - session.lastSeenAt > ttlMs) {
-        await storage.delete(this.collection, key)
-        removed++
-      }
-    }
-    // Enforce the cap by evicting oldest-by-lastSeenAt.
-    const active = await storage.list(this.collection)
-    if (active.length > this.maxConcurrentSessions) {
-      const sorted = (active
-        .map((e) => e.value as SessionRecord)
-        .sort((a, b) => a.lastSeenAt - b.lastSeenAt))
-      const overflow = sorted.length - this.maxConcurrentSessions
-      for (let i = 0; i < overflow; i++) {
-        const victim = sorted[i]
-        if (victim) {
-          await storage.delete(this.collection, victim.id)
+    return this.enqueue(async () => {
+      const storage = this.storage()
+      const entries = await storage.list(this.collection)
+      const now = Date.now()
+      let removed = 0
+      for (const { key, value } of entries) {
+        const session = value as SessionRecord
+        const ttlMs = session.ttlSeconds * 1000
+        if (now - session.lastSeenAt > ttlMs) {
+          await storage.delete(this.collection, key)
           removed++
         }
       }
+      // Enforce the cap by evicting oldest-by-lastSeenAt.
+      const active = await storage.list(this.collection)
+      if (active.length > this.maxConcurrentSessions) {
+        const sorted = (active
+          .map((e) => e.value as SessionRecord)
+          .sort((a, b) => a.lastSeenAt - b.lastSeenAt))
+        const overflow = sorted.length - this.maxConcurrentSessions
+        for (let i = 0; i < overflow; i++) {
+          const victim = sorted[i]
+          if (victim) {
+            await storage.delete(this.collection, victim.id)
+            removed++
+          }
+        }
+      }
+      return removed
+    })
+  }
+
+  /** Start the periodic TTL/LRU sweep; idempotent (apply 唯一调用方). */
+  startSweep(intervalMs = 60_000): void {
+    if (this.sweepTimer !== undefined) return
+    this.sweepTimer = setInterval(() => {
+      void this.cleanup().catch(() => { /* sweep 失败不影响下一轮 */ })
+    }, intervalMs)
+    if (typeof this.sweepTimer.unref === 'function') this.sweepTimer.unref()
+  }
+
+  /** Stop the TTL/LRU sweep timer (plugin dispose path). */
+  stop(): void {
+    if (this.sweepTimer !== undefined) {
+      clearInterval(this.sweepTimer)
+      this.sweepTimer = undefined
     }
-    return removed
   }
 
   private storage(): LocalStorageServiceImpl {
@@ -186,6 +223,12 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
   // SessionsServiceImpl extends `Service`, so its constructor calls
   // `ctx.reflect.provide('sessions', this)` for us. Do not call
   // `ctx.provide` again — that would throw "service already registered".
-  void new SessionsServiceImpl(ctx, config)
-  return async () => {}
+  const service = new SessionsServiceImpl(ctx, config)
+  // cleanup() 此前没有任何调用方 —— TTL/LRU 形同虚设。每 60s 清扫一次
+  // （unref，不阻塞进程退出），与 privacy-policy / realm-skill-bridge 的
+  // 定时器模式一致。
+  service.startSweep()
+  return async () => {
+    service.stop()
+  }
 }

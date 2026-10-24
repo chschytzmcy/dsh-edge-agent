@@ -36,7 +36,7 @@
  * already implements its own watcher for its own file).
  */
 
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -312,6 +312,12 @@ export const DEFAULT_EDGE_CONFIG: EdgeConfig = {
 
 let cached: EdgeConfig | undefined
 let cachedPath: string | undefined
+/** 指纹（path + mtime + size + env 覆盖值）—— loadEdgeConfig(true) 的热路径
+ *  短路用：input-guard 每个云路由 turn 都 force 重载一次（§7.102 桌面 GUI
+ *  没 .env 链，secrets 只能在文件里），文件没变 + env 没变时没必要每次
+ *  existsSync+readFileSync+JSON.parse 阻塞事件循环。 */
+let cachedStat: { path: string; mtimeMs: number; size: number } | undefined
+let cachedEnvSig: string | undefined
 
 /**
  * Root of the installed bundle (the directory holding `lib/` and
@@ -721,6 +727,20 @@ function applyEnvOverrides(cfg: EdgeConfig): EdgeConfig {
  */
 export function loadEdgeConfig(force = false): EdgeConfig {
   if (cached && !force) return cached
+  // force 快速路径：文件指纹（mtime+size）与 env 覆盖值都没变 → 直接回
+  // 缓存。语义不变 —— force 想要的是"看到配置的最新值"，指纹比对恰好
+  // 保证这一点；只有真的动了文件/环境才付 readFileSync+JSON.parse。
+  if (cached && cachedStat) {
+    const sig = envOverrideSignature()
+    if (sig === cachedEnvSig) {
+      try {
+        const st = statSync(cachedStat.path)
+        if (st.mtimeMs === cachedStat.mtimeMs && st.size === cachedStat.size) return cached
+      } catch {
+        /* 文件没了 → 落回候选扫描 */
+      }
+    }
+  }
   for (const candidate of edgeConfigCandidates()) {
     if (!existsSync(candidate)) continue
     try {
@@ -755,6 +775,13 @@ export function loadEdgeConfig(force = false): EdgeConfig {
       }
       cached = applyEnvOverrides(merged)
       cachedPath = candidate
+      try {
+        const st = statSync(candidate)
+        cachedStat = { path: candidate, mtimeMs: st.mtimeMs, size: st.size }
+      } catch {
+        cachedStat = undefined
+      }
+      cachedEnvSig = envOverrideSignature()
       return cached
     } catch {
       // A malformed file must not take the whole bundle down — fall through
@@ -768,6 +795,8 @@ export function loadEdgeConfig(force = false): EdgeConfig {
   // seeing 'deepseek-flash' after the env was cleared).
   cached = applyEnvOverrides(deepCopyDefaults())
   cachedPath = undefined
+  cachedStat = undefined
+  cachedEnvSig = envOverrideSignature()
   return cached
 }
 
@@ -775,6 +804,17 @@ export function loadEdgeConfig(force = false): EdgeConfig {
 export function resetEdgeConfigCache(): void {
   cached = undefined
   cachedPath = undefined
+  cachedStat = undefined
+  cachedEnvSig = undefined
+}
+
+/** ENV_OVERRIDES 覆盖值的指纹 —— force 快速路径必须感知 env 变化（测试
+ *  会改 process.env 后期望重载生效）。 */
+function envOverrideSignature(): string {
+  if (typeof process === 'undefined' || !process.env) return ''
+  let sig = ''
+  for (const { env } of ENV_OVERRIDES) sig += `${env}=${process.env[env] ?? ''}\n`
+  return sig
 }
 
 /* ── Typed accessors ──────────────────────────────────────────────────── */

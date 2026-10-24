@@ -426,11 +426,56 @@ export class IntentRouterServiceImpl extends Service {
   private readonly jevIntentMap: Record<string, 'LOCAL' | 'CLOUD' | 'SANITIZED' | 'REJECT'>
   private readonly llm: any
   private readonly auditLog: AuditLike | undefined
+
+  /** ── classify() 结果缓存（LRU + TTL）───────────────────────────────
+   *  只缓存"贵的"路径的最终 verdict（LLM 采纳 / jev 采纳，均过
+   *  gateCloudVerdict）；规则兜底、policy REJECT、jev-reject 都很便宜
+   *  且依赖可热重载的状态，不缓存。没有 in-flight 合并 —— 并发同文本
+   *  各自走 LLM（保持并发计数语义），只有"完成后"的重复才命中。
+   *  verdict 对同一文本是确定性的（gate 也是纯文本判定），TTL 只为
+   *  让关键词表/策略热重载后的新判定尽快生效。 */
+  private static readonly CLASSIFY_CACHE_TTL_MS = 60_000
+  private static readonly CLASSIFY_CACHE_MAX = 128
+  private readonly classifyCache = new Map<string, { intent: Intent; exp: number }>()
+
+  private classifyCacheKey(text: string, recent: unknown[] | undefined): string {
+    let ctx = ''
+    if (recent && recent.length > 0) {
+      try { ctx = JSON.stringify(recent) } catch { ctx = `unserializable:${recent.length}` }
+    }
+    return `${text}\u0000${ctx}`
+  }
+
+  private classifyCacheGet(key: string): Intent | undefined {
+    const hit = this.classifyCache.get(key)
+    if (!hit) return undefined
+    if (Date.now() > hit.exp) {
+      this.classifyCache.delete(key)
+      return undefined
+    }
+    // LRU refresh：命中搬到队尾。
+    this.classifyCache.delete(key)
+    this.classifyCache.set(key, hit)
+    return { ...hit.intent }
+  }
+
+  private classifyCacheSet(key: string, intent: Intent): void {
+    this.classifyCache.delete(key)
+    this.classifyCache.set(key, { intent, exp: Date.now() + IntentRouterServiceImpl.CLASSIFY_CACHE_TTL_MS })
+    while (this.classifyCache.size > IntentRouterServiceImpl.CLASSIFY_CACHE_MAX) {
+      const oldest = this.classifyCache.keys().next().value
+      if (oldest === undefined) break
+      this.classifyCache.delete(oldest)
+    }
+  }
+
   private readonly stats: IntentRouterStats = {
     total: 0,
     empty: 0,
     truncated: 0,
     llmHit: 0,
+    /** 同文本+同上下文的重复 classify() 命中缓存（不付 LLM/jev 往返）。 */
+    cacheHit: 0,
     ruleHit: 0,
     defaultHit: 0,
     lowConfidence: 0,
@@ -725,6 +770,22 @@ export class IntentRouterServiceImpl extends Service {
     const textPreview = this.redactPreview(effectiveText) ?? `[len=${effectiveText.length}]`
     this.audit('info', 'intent.classify.start', { sessionId: sid, textLen: effectiveText.length, textPreview, classifier: this.classificationProvider, model: this.classificationModel })
 
+    // 缓存命中：同文本+同上下文的已完成 verdict 直接复用，跳过 jev/LLM。
+    const cacheKey = this.classifyCacheKey(effectiveText, context?.recentMessages)
+    const cachedVerdict = this.classifyCacheGet(cacheKey)
+    if (cachedVerdict) {
+      this.stats.cacheHit++
+      this.audit('info', 'intent.classify.end', { sessionId: sid,
+        textLen: effectiveText.length,
+        path: 'cache',
+        category: cachedVerdict.category,
+        confidence: cachedVerdict.confidence,
+        rationale: cachedVerdict.rationale,
+        durationMs: Date.now() - start,
+      })
+      return cachedVerdict
+    }
+
     // §7.92.3 (2026-09-23): jev prefilter. When enabled, runs BEFORE the
     // LLM classifier so confident jev verdicts (action=execute, conf >=
     // threshold, risk < threshold) save the 4-30s LLM round-trip. Failure
@@ -797,7 +858,9 @@ export class IntentRouterServiceImpl extends Service {
         })
         // §7.107: a model's CLOUD opinion is not what decides whether text
         // may leave the device — a public-web need is.
-        return this.gateCloudVerdict(finalIntent, effectiveText, sid)
+        const gatedJev = this.gateCloudVerdict(finalIntent, effectiveText, sid)
+        this.classifyCacheSet(cacheKey, gatedJev)
+        return gatedJev
       }
       // action === 'skip' (low-conf / fallback_llm / unrecognized intent /
       // transport error / timeout). All already audited inside
@@ -849,7 +912,9 @@ export class IntentRouterServiceImpl extends Service {
       })
       // §7.107: the public-web gate. Without a public-web signal the turn
       // stays on the device, whatever the classifier said.
-      return this.gateCloudVerdict(finalIntent, effectiveText, sid)
+      const gatedLlm = this.gateCloudVerdict(finalIntent, effectiveText, sid)
+      this.classifyCacheSet(cacheKey, gatedLlm)
+      return gatedLlm
     } catch (err: any) {
       // classifyWithLlm already audited the specific kind (timeout vs error
       // vs low-confidence vs unclear). Here we just attribute the fallback.
@@ -2017,6 +2082,9 @@ export interface IntentRouterStats {
   truncated: number
   /** LLM verdict adopted as the final intent. */
   llmHit: number
+  /** TTL/LRU 缓存命中 —— 同文本+同上下文的重复 classify() 不再付
+   *  LLM/jev 往返（"你好" 类闲聊在 §7.107 gate 下尤其常见）。 */
+  cacheHit: number
   /** classifyWithRules adopted — privacy-policy match OR hardcoded keyword. */
   ruleHit: number
   /** No LLM verdict, no keyword → defaultCategory returned. */

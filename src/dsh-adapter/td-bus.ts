@@ -65,6 +65,10 @@ export interface TdBusService {
   on(action: 'block-cloud' | 'kill-session' | 'notify-user' | 'lockdown', listener: () => void): () => void
   /** Manually escalate (e.g. after a policy tamper). */
   escalate(reason: string): void
+  /** Operator-facing解除 sticky 升级：escalate() 曾把等级永久钉死在
+   *  critical（Phase D 无 reset 路径）。清空 sticky 与滑动窗口，回落
+   *  normal；新流量按窗口重新累计。 */
+  reset(reason: string): void
   /** Phase D: ingest one cloud-bypass event (called by http-api / upstream). */
   recordCloudRequest(): void
 }
@@ -166,6 +170,22 @@ export class TdBusServiceImpl extends Service {
     this.recomputeLevel()
   }
 
+  reset(reason: string): void {
+    const prev = this.currentLevel
+    this.stickyLevel = null
+    this.cloudHits.length = 0
+    this.currentLevel = 'normal'
+    try {
+      const auditLog = (this.ctx as any)?.auditLog
+      auditLog?.log?.({
+        level: 'info',
+        kind: 'td-bus.reset',
+        source: 'td-bus',
+        payload: { from: prev, to: 'normal', reason },
+      })?.catch?.(() => {})
+    } catch { /* ignore */ }
+  }
+
   /** Phase D: helper for http-api to decide whether to deny the request.
    *  Returns true iff current level is at or above the configured blockLevel. */
   shouldBlock(): boolean {
@@ -203,5 +223,10 @@ export async function apply(ctx: any, config: Config): Promise<() => Promise<voi
   // ctx.get('tdBus') (Cordis convention for subpath services).
   ;(ctx as any).tdBus = service
   void config
-  return async () => {}
+  // 惯例对齐：其余插件的 apply 都返回真 dispose。这里原先返回空函数 —
+  // 插件 reload 后旧 service 既不注销、属性也悬空。
+  return async () => {
+    try { (service as unknown as { dispose?: () => void }).dispose?.() } catch { /* best-effort */ }
+    if ((ctx as any).tdBus === service) (ctx as any).tdBus = undefined
+  }
 }
