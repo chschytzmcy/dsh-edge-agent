@@ -18,6 +18,17 @@
 #   local-ip  本机 IP 查询   sessionId=opslog-canary-local-ip
 #                           期望：tool allow bash 至少 1 次，preflight intentSource=http-api-classified
 #
+# §7.107 (2026-10-24) 新增第 4 用例：
+#   knowledge 纯知识问答     sessionId=opslog-canary-knowledge
+#                           期望：无公网检索信号 → 分类器即便判 CLOUD 也被
+#                           no-web-need gate 降级 LOCAL；全程 0 次云端 LLM
+#                           调用（cloud-llm-adapter LLM call start 不得出现）。
+#                           这是「默认本地」（§7.107 操作者裁决）的核心回归。
+#
+# E2E_RUN_ID：可选运行标识，追加到 sessionId（opslog-canary-<key>-<id>）。
+# 固定 sessionId 复跑时，历史会话的旧 turn 行会污染 turn=1 / 计数类断言
+# ——每次运行带新 id 即可全绿（默认空 = 兼容旧行为）。
+#
 # 23 节点覆盖（来自 ops-log-coverage-principle.md）：
 #   1-9:   input-guard 系列（preflight/sanitize/prompt-guard/privacy-policy/orphan/desanitize/route）
 #   10-13: realm-skill-bridge 系列（pre-step/chat received/finished/tool allow+deny）
@@ -25,7 +36,7 @@
 #   18-19: http-api chat received/reply
 #   20:    input-guard prompt-guard done
 #   21:    input-guard privacy-policy done
-#   22:    realm-skill-bridge llm/stream probe（§7.47.4，frozen-payload read-only 探针，每个 LLM call 必 emit）
+#   22:    realm-skill-bridge assemble filter（§7.37.x 替代原 llm/stream probe —— deepFreeze 后 probe 已死）
 #   23:    realm-skill-bridge tool result（§7.47.6，工具执行全链路 ops log，每个 tool call 必 emit status=ok/error/aborted）
 # ───────────────────────────────────────────────────────────────────
 
@@ -101,22 +112,32 @@ declare -A CASES=(
   ["mibao"]="查询密盒的登录状态"
   ["news"]="查询最新的AI新闻"
   ["local-ip"]="查询本机的局域网IP"
+  ["knowledge"]="什么是量子力学"
 )
 
 run_case() {
   local key="$1"
   local query="${CASES[$key]}"
+  # §7.107: E2E_RUN_ID 追加，保证每次运行的会话互不污染。
   local sid="opslog-canary-${key}"
+  [ -n "${E2E_RUN_ID:-}" ] && sid="${sid}-${E2E_RUN_ID}"
   echo "▶ 用例 [$key] sessionId=$sid query='$query'"
 
   if [ "$DRY_RUN" = "0" ]; then
     local body
     body=$(printf '{"message":"%s","sessionId":"%s"}' "$query" "$sid")
     local resp_file="/tmp/e2e-opslog-${key}.json"
+    # §UTF-8 (2026-10-24): body 走文件 + --data-binary。Git Bash / Windows
+    # 原生 curl 会把命令行里的中文参数按本地代码页（GBK）转码，服务端
+    # UTF-8 解出乱码 —— 实测「查询密盒的登录状态」到达服务端时已不含
+    # 「密盒」二字，LOCAL-entity 护栏的字面匹配全部落空（mibao 误路由
+    # SANITIZED 上云）。@file 让 bash 写出的 UTF-8 字节原样上线。
+    local body_file="/tmp/e2e-opslog-${key}-body.json"
+    printf '%s' "$body" > "$body_file"
     if ! curl -s --max-time "$TIMEOUT" -X POST "$HTTP_API_URL" \
          -H "Authorization: Bearer $AUTH_TOKEN" \
-         -H "Content-Type: application/json" \
-         -d "$body" -o "$resp_file" -w "%{http_code}\n" \
+         -H "Content-Type: application/json; charset=utf-8" \
+         --data-binary @"$body_file" -o "$resp_file" -w "%{http_code}\n" \
          | grep -q '^200$'; then
       echo "  ✗ HTTP POST 失败（非 200），见 $resp_file" >&2
       return 1
@@ -142,6 +163,7 @@ run_case() {
     mibao)    assert_mibao    "$log_lines" "$sid" ;;
     news)     assert_news     "$log_lines" "$sid" ;;
     local-ip) assert_local_ip "$log_lines" "$sid" ;;
+    knowledge) assert_knowledge "$log_lines" "$sid" ;;
   esac
 }
 
@@ -161,7 +183,11 @@ check_node_presence() {
     'sanitize start'
     'sanitize done'
     'pre-step filter'
-    'llm/stream probe'  # §7.47.4 (2026-09-13): frozen-payload probe, every chat round-trip + prompt-guard call
+    # §7.37.x (2026-09-22): 原 'llm/stream probe' 节点已删 —— 上游
+    # dsh-agent-loop 在 llm/stream waterfall 前 deepFreeze 整个 payload，
+    # probe 永远 no-op；由 system-prompt/assemble 阶段的 tools 过滤行
+    # 替代（每个 LLM call 一次，等价覆盖）。断言同步换替代节点。
+    'assemble filter'
     'tool result'       # §7.47.6 (2026-09-13): tool execution ops log, every tool call must emit status
     'chat finished'
     'tool allow'
@@ -174,10 +200,16 @@ check_node_presence() {
   local pat
   for pat in "${MUST[@]}"; do
     if [[ "$pat" == "tool allow" || "$pat" == "tool deny" ]]; then
-      # 至少要有一个 allow 或 deny 行（任一即可——mibao/local-ip 走 allow、news 走 deny）
-      if ! grep -qF 'tool allow' "$log" && ! grep -qF 'tool deny' "$log"; then
-        misses+=('tool allow/deny (任一)')
+      # 至少要有一个 allow 或 deny 行（任一即可——mibao/local-ip 走 allow、news 走 deny）。
+      # knowledge（§7.107 纯知识问答）不要求工具行——纯对话没有工具调用是正常行为。
+      if [ "$key" != "knowledge" ]; then
+        if ! grep -qF 'tool allow' "$log" && ! grep -qF 'tool deny' "$log"; then
+          misses+=('tool allow/deny (任一)')
+        fi
       fi
+    elif [[ "$pat" == "tool result" && "$key" == "knowledge" ]]; then
+      # 同上：knowledge 无工具调用则无 tool result，跳过。
+      :
     elif [[ "$pat" == "sanitize start" || "$pat" == "sanitize done" ]]; then
       # §7.79 (2026-09-18): sanitize 节点只对 CLOUD/SANITIZED 路径必须 emit。
       # LOCAL 路径不上云端，input-guard v2 跳过 sanitizer（设计意图，
@@ -293,12 +325,15 @@ assert_news() {
     echo "  ✓ preflight intent category=CLOUD（cloud keyword 命中）"
   fi
 
-  # §7.47: rationale 应标 rule-cloud-keyword，让 operator 一眼看到来源
-  if ! grep '\[input-guard\] preflight intent' "$log" | grep -qE 'rationale=rule-cloud-keyword'; then
-    echo "  ✗ 期望 rationale=rule-cloud-keyword（§7.47 新增），未找到"
+  # §7.47→§7.107: rationale 标注 CLOUD 判定来源。§7.47 时代分类器常挂、
+  # 靠规则兜底（rule-cloud-keyword）；现在 LLM 分类器稳定在线时走
+  # llm-classified:cloud（§7.107 gate 用同一份关键词表放行）。两种来源
+  # 都是合法的 CLOUD 判定 —— 硬约束是上面的 category=CLOUD。
+  if ! grep '\[input-guard\] preflight intent' "$log" | grep -qE 'rationale=(rule-cloud-keyword|llm-classified)'; then
+    echo "  ✗ 期望 rationale=rule-cloud-keyword|llm-classified（CLOUD 判定须有来源标识），未找到"
     fail=1
   else
-    echo "  ✓ rationale=rule-cloud-keyword:...（§7.47 关键词命中标识）"
+    echo "  ✓ rationale 标注 CLOUD 判定来源（§7.47 关键词 / §7.107 LLM 分类）"
   fi
 
   # 期望：tool allow web_search 至少 1 次（CLOUD realm 不再拒绝 web 工具）。
@@ -453,22 +488,27 @@ assert_local_ip() {
   local log="$1" sid="$2"
   local fail=0
 
-  # 期望：preflight intent intentSource=http-api-classified（HTTP API 入口的意图来源）
-  if ! grep 'preflight intent' "$log" | grep -q 'intentSource=http-api-classified'; then
-    echo "  ✗ 期望 preflight intent intentSource=http-api-classified，未找到"
+  # 期望：preflight intent intentSource 标注判定来源（§7.87.13.2 起三种
+  # 合法路径：http-api-classified（LLM 分类）/ policy-classified（策略
+  # 规则优先，如「IP 地址 PII 必须留在本地」）/ llm-classified）。硬约束
+  # 是来源字段存在且值合法 —— LOCAL 判定怎么来的都算对。
+  if ! grep 'preflight intent' "$log" | grep -qE 'intentSource=(http-api-classified|policy-classified|llm-classified)'; then
+    echo "  ✗ 期望 preflight intent intentSource=http-api-classified|policy-classified|llm-classified，未找到"
     fail=1
   else
-    echo "  ✓ preflight intent intentSource=http-api-classified"
+    echo "  ✓ preflight intent intentSource 判定来源标注完整"
   fi
 
-  # 期望：tool allow tool=bash 至少 1 次
-  if ! grep 'tool allow' "$log" | grep -q 'tool=bash'; then
-    echo "  ✗ 期望 tool allow tool=bash（本地 IP 查询应调 bash），未找到"
+  # 期望：至少一次本地命令执行工具被放行（bash 或 pwsh —— 模型按平台
+  # 自选；Windows profile 上实测选 pwsh，Linux 上选 bash。2026-10-24 前
+  # 该断言写死 tool=bash，在 Windows CLI profile 上误报失败。）
+  if ! grep 'tool allow' "$log" | grep -qE 'tool=(bash|pwsh)'; then
+    echo "  ✗ 期望 tool allow tool=bash|pwsh（本地 IP 查询应调命令工具），未找到"
     fail=1
   else
-    local bash_n
-    bash_n=$(grep 'tool allow' "$log" | grep -c 'tool=bash' || true)
-    echo "  ✓ tool allow tool=bash $bash_n 次"
+    local cmd_n
+    cmd_n=$(grep 'tool allow' "$log" | grep -cE 'tool=(bash|pwsh)' || true)
+    echo "  ✓ tool allow tool=bash|pwsh $cmd_n 次"
   fi
 
   # 期望：chat finished turn=1
@@ -477,6 +517,53 @@ assert_local_ip() {
     fail=1
   else
     echo "  ✓ chat finished turn=1"
+  fi
+
+  return $fail
+}
+
+# §7.107 (2026-10-24)：「默认本地」核心回归——无公网检索信号的知识问答
+# 必须留在设备上。分类器（本地 LLM）对这类问题常判 CLOUD（§7.107 前的
+# 旧行为就是直接上云）；现在 intent-router 的 no-web-need gate 必须把它
+# 拦回 LOCAL，云端 adapter 一次都不能被调用。
+assert_knowledge() {
+  local log="$1" sid="$2"
+  local fail=0
+
+  # 期望：最终生效意图是 LOCAL（gate 降级后的结果；preflight 行读的是
+  # gate 之后的 verdict）
+  if ! grep '\[input-guard\] preflight intent' "$log" | grep -q 'category=LOCAL'; then
+    echo "  ✗ 期望 preflight intent category=LOCAL（§7.107 no-web-need gate），未找到"
+    fail=1
+  else
+    echo "  ✓ preflight intent category=LOCAL（§7.107 默认本地生效）"
+  fi
+
+  # 期望：全程 0 次云端 LLM 调用 —— 这是本用例的硬约束
+  local cloud_n
+  cloud_n=$(grep -c '\[cloud-llm-adapter\] LLM call start' "$log" || true)
+  if [ "$cloud_n" -ne 0 ]; then
+    echo "  ✗ cloud-llm-adapter LLM call start 出现 $cloud_n 次（期望 0 —— 无公网信号不得出网）"
+    fail=1
+  else
+    echo "  ✓ 0 次云端 LLM 调用（数据未出设备）"
+  fi
+
+  # 期望：本地池真实应答（local-llm 至少 1 次 + reply 200）
+  local local_n
+  local_n=$(grep -c '\[local-llm-adapter\] LLM call start' "$log" || true)
+  if [ "$local_n" -lt 1 ]; then
+    echo "  ✗ local-llm-adapter LLM call start 仅 $local_n 次（期望 ≥1）"
+    fail=1
+  else
+    echo "  ✓ local-llm-adapter LLM call start $local_n 次"
+  fi
+
+  if ! grep '\[http-api\] chat reply' "$log" | grep -q 'status=200'; then
+    echo "  ✗ chat reply status!=200"
+    fail=1
+  else
+    echo "  ✓ chat reply status=200"
   fi
 
   return $fail
@@ -492,12 +579,12 @@ echo
 OVERALL_RC=0
 if [ -n "$ONLY" ]; then
   if [ -z "${CASES[$ONLY]:-}" ]; then
-    echo "未知用例: $ONLY（可选: mibao / news / local-ip）" >&2
+    echo "未知用例: $ONLY（可选: mibao / news / local-ip / knowledge）" >&2
     exit 2
   fi
   run_case "$ONLY" || OVERALL_RC=1
 else
-  for key in mibao news local-ip; do
+  for key in mibao news local-ip knowledge; do
     run_case "$key" || OVERALL_RC=1
     echo
   done

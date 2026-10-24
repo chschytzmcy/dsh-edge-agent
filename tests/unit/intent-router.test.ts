@@ -1347,7 +1347,9 @@ describe('intent-router', () => {
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'CLOUD', classificationProvider: 'local-llm', confidenceThreshold: 0.6,
     })
-    for (let i = 0; i < verdicts.length; i++) await service.classify('hi')
+    // 每次不同的文本：classify() 结果缓存会复用同文本的 verdict，而本
+    // 用例要 5 次 LLM 调用各落一个桶 —— 轮转 mock 对同文本已不成立。
+    for (let i = 0; i < verdicts.length; i++) await service.classify(`hi ${i}`)
     const h = service.getStats().confidenceHistogram
     assert.equal(h['0'].rejected, 1)   // 0.0 → bucket 0, < 0.6
     assert.equal(h['1'].rejected, 1)   // 0.15 → bucket 1
@@ -1462,7 +1464,8 @@ describe('intent-router', () => {
     const service = new IntentRouterServiceImpl(mockCtx, {
       defaultCategory: 'LOCAL', classificationProvider: 'local-llm', confidenceThreshold: 0.6,
     })
-    const intent = await service.classify('something arbitrary')
+    // §7.107: 文本须带公网信号词，否则 CLOUD 判决会被 gate 降级 LOCAL。
+    const intent = await service.classify('latest news about something arbitrary')
     assert.equal(intent.category, 'CLOUD')
     assert.equal(intent.confidence, 0.8)
     const stats = service.getStats()
@@ -1843,7 +1846,8 @@ describe('intent-router', () => {
       confidenceThreshold: 0,  // accept everything
     })
 
-    const intent = await service.classify('something')
+    // §7.107: 文本须带公网信号词，否则 CLOUD 判决会被 gate 降级 LOCAL。
+    const intent = await service.classify('something about the latest news')
     assert.equal(intent.category, 'CLOUD')
     assert.equal(intent.confidence, 0)
     assert.equal(service.getStats().llmHit, 1)
@@ -1890,7 +1894,8 @@ describe('intent-router', () => {
       confidenceThreshold: 0.6,
     }, rejectingAudit as any)
 
-    const intent = await service.classify('hello')
+    // §7.107: 文本须带公网信号词，否则 CLOUD 判决会被 gate 降级 LOCAL。
+    const intent = await service.classify('hello, what is the latest news')
     assert.equal(intent.category, 'CLOUD')
     assert.equal(intent.confidence, 0.8)
   })
@@ -1912,9 +1917,12 @@ describe('intent-router', () => {
       confidenceThreshold: 0.6,
     })
 
-    // Fire 10 concurrent classify calls
+    // Fire 10 concurrent classify calls (§7.107: text carries a public-web
+    // signal so the CLOUD verdicts survive the gate; concurrent bursts all
+    // reach the LLM — the result cache only serves *completed* verdicts,
+    // there is no in-flight coalescing).
     const results = await Promise.all(
-      Array.from({ length: 10 }, () => service.classify('test'))
+      Array.from({ length: 10 }, () => service.classify('test latest news'))
     )
     assert.equal(results.length, 10)
     results.forEach(r => assert.equal(r.category, 'CLOUD'))
@@ -2443,7 +2451,8 @@ describe('intent-router', () => {
       confidenceThreshold: 0.6,
     })
 
-    const intent = await service.classify('hi')
+    // §7.107: 文本须带公网信号词，否则 CLOUD 判决会被 gate 降级 LOCAL。
+    const intent = await service.classify('hi, latest news please')
     assert.equal(intent.category, 'CLOUD', 'non-text-delta chunks should be ignored')
     assert.equal(intent.confidence, 0.8)
   })
@@ -2646,7 +2655,8 @@ describe('intent-router', () => {
         jevConfidenceThreshold: 0.85,
       }, audit as any)
 
-      const intent = await service.classify('你好')
+      // §7.107: 文本须带公网信号词，否则 LLM 的 CLOUD 判决会被 gate 降级。
+      const intent = await service.classify('你好，查一下最新新闻')
       assert.equal(intent.category, 'CLOUD', 'LLM verdict adopted after jev fall-through')
       assert.match(intent.rationale, /^llm-classified/u)
 
@@ -2712,7 +2722,8 @@ describe('intent-router', () => {
         jevTimeoutMs: 50, // tiny timeout so abort fires fast
       }, audit as any)
 
-      const intent = await service.classify('你好')
+      // §7.107: 文本须带公网信号词，否则 LLM 的 CLOUD 判决会被 gate 降级。
+      const intent = await service.classify('你好，查一下最新新闻')
       assert.equal(intent.category, 'CLOUD')
 
       const stats = service.getStats()
@@ -2811,7 +2822,8 @@ describe('intent-router', () => {
         jevEnabled: true,
       }, audit as any)
 
-      const intent = await service.classify('unknown intent')
+      // §7.107: 文本须带公网信号词，否则 LLM 的 CLOUD 判决会被 gate 降级。
+      const intent = await service.classify('unknown intent about latest news')
       assert.equal(intent.category, 'CLOUD')
       assert.match(intent.rationale, /^llm-classified/u)
       const stats = service.getStats()
@@ -3049,7 +3061,8 @@ describe('intent-router', () => {
       }, audit as any)
 
       // First call — jev fails 3 times (all HTTP 500), LLM picks up.
-      const intent1 = await service.classify('你好')
+      // §7.107: 文本须带公网信号词（'天气'），否则 CLOUD 判决会被 gate 降级。
+      const intent1 = await service.classify('你好，查一下天气')
       assert.equal(intent1.category, 'CLOUD', 'LLM fallback should run')
       assert.equal(mock.calls.length, 3, 'first call fetches 3 batches (all fail)')
       const stats1 = service.getStats()

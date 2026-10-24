@@ -359,9 +359,13 @@ describe('handlePreStep — attack detection', () => {
 
   it('attaches _edgeRejection on agent when rejecting sanitizer failure', async () => {
     const san = fakeSanitizer({ throwOnSanitize: true })
+    // §7.107: 无 router 时 category 默认 LOCAL、sanitize 根本不会跑 —
+    // 要触发"脱敏失败 → reject"，必须显式给一个 CLOUD 路由（与相邻的
+    // CLOUD 用例同约定）。
+    const ir = fakeIntentRouter({ category: 'CLOUD' })
     const svc = new InputGuardServiceImpl(
       fakeCtx() as any, defaultConfig({ downgradeOnSanitizeFailure: false }),
-      fakePromptGuard().api as any, undefined, undefined, san.api as any, fakeAuditLog().api as any,
+      fakePromptGuard().api as any, undefined, ir.api as any, san.api as any, fakeAuditLog().api as any,
     )
     const payload = makePreStepPayload('hi alice@example.com')
     const result = await svc.handlePreStep(payload as any, makeNext(payload.messages))
