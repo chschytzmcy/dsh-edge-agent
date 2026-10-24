@@ -30,6 +30,54 @@ import { fileURLToPath } from 'node:url'
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const DIST = join(ROOT, 'dist', 'installable')
 
+/** 同步睡眠（rename 重试的 backoff 用）。 */
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
+/** rename 目录，带 EPERM/EBUSY/ENOTEMPTY 短退避（Windows 上 Defender/
+ *  indexer 的瞬时扫描会短暂锁住刚写完的目录）。返回 false = 退避后仍
+ *  锁着（活句柄，重试永远救不了——典型是运行中的桌面 App 以 `link:`
+ *  挂着这个目录），由调用方决定降级路径；其他错误照抛。 */
+function renameDirWithRetry(from, to, attempts = 3, delayMs = 300) {
+  let lastCode
+  for (let i = 0; i < attempts; i++) {
+    if (i > 0) sleepSync(delayMs * i)
+    try {
+      renameSync(from, to)
+      return true
+    } catch (err) {
+      lastCode = err?.code
+      if (lastCode !== 'EPERM' && lastCode !== 'EBUSY' && lastCode !== 'ENOTEMPTY') throw err
+    }
+  }
+  console.warn(`  warning: rename still locked after ${attempts} attempts (${lastCode})`)
+  return false
+}
+
+/** 降级路径：把 staging 的内容逐条覆盖进 target（target 不挪窝）。
+ *  §7.103 的目标本就是让 `link:` 目标路径持续有效——目录级 rename 只是
+ *  手段之一；逐条替换同样达成（docs/load-into-local-dsh.md §8.2.1 的
+ *  手动更新走的就是这条路）。staging 里没有、target 里残留的旧条目
+ *  不主动删（无害：installable 集合由 files+patch+package.json 全量
+ *  枚举）。个别条目仍被锁时告警跳过，不炸整轮。 */
+function syncEntriesInPlace(staging, target) {
+  const failed = []
+  for (const entry of readdirSync(staging)) {
+    const dst = join(target, entry)
+    try {
+      rmSync(dst, { recursive: true, force: true })
+      cpSync(join(staging, entry), dst, { recursive: true })
+    } catch (err) {
+      failed.push(`${entry} (${err?.code ?? err?.message})`)
+    }
+  }
+  if (failed.length > 0) {
+    console.warn(`  warning: ${failed.length} entries could not be synced in-place: ${failed.join(', ')}`)
+    console.warn(`           quit the app holding the directory and rerun for a clean atomic swap`)
+  }
+}
+
 const VARIANTS = [
   {
     dir: 'dsh-edge-agent-desktop-safe',
@@ -141,13 +189,28 @@ for (const variant of VARIANTS) {
   //    rename() over an existing directory is atomic on both POSIX and
   //    Windows (the target is briefly absent, but it was never a link
   //    target being watched at that instant).
+  //    §Windows (2026-10-24): when the target is locked by a LIVE handle
+  //    (the running desktop App holding the `link:` install open — retry
+  //    never clears it, observed 3× in one day), degrade to an entry-wise
+  //    in-place sync instead of dying: the link: target stays valid, the
+  //    App picks the new code up on restart. A clean atomic swap still
+  //    happens whenever the lock is absent (POSIX always; Windows with the
+  //    app quit).
   const retired = join(DIST, `.${variant.dir}.retired`)
   rmSync(retired, { recursive: true, force: true })
-  if (existsSync(target)) renameSync(target, retired)
-  renameSync(staging, target)
-  rmSync(retired, { recursive: true, force: true })
+  let inPlace = false
+  if (existsSync(target) && !renameDirWithRetry(target, retired)) {
+    console.warn(`  warning: ${variant.dir} is locked (running desktop App?) — in-place sync instead of atomic swap`)
+    syncEntriesInPlace(staging, target)
+    rmSync(staging, { recursive: true, force: true })
+    inPlace = true
+  }
+  if (!inPlace) {
+    renameSync(staging, target)
+    rmSync(retired, { recursive: true, force: true })
+  }
 
-  console.log(`  built ${variant.dir} (patch=${variant.patchField}, version=${variantPkg.version})`)
+  console.log(`  built ${variant.dir} (patch=${variant.patchField}, version=${variantPkg.version}${inPlace ? ', in-place' : ''})`)
 }
 
 console.log('rebuild-installable: done')
