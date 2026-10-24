@@ -226,11 +226,13 @@ C:\Users\<你>\GolandProjects\gitlab\dsh-edge-agent\dist\installable\dsh-edge-ag
 
 Windows 专属的三件事：
 
-**① 生成 `--emit-dir` 前必须完全退出桌面 App（含托盘）。**
+**① `--emit-dir` 不需要退桌面 App（2026-10-24 修复后）。**
 App 一旦以 `link:` 装过这个目录，`rebuild-installable.mjs` 的 retire-rename
-就会被活句柄锁死——EPERM 且**不自愈**（`renameWithRetry` 只救
-Defender/indexer 的瞬时扫描，救不了 App 的常驻句柄）。实测：App 5 个
-进程常驻时，手动 rename 该目录也稳定 EPERM。
+就会被活句柄锁死——EPERM 且重试救不了（一天撞了 3 次后修的）。现在脚本
+的行为：rename 带 3 次短退避（救 Defender/indexer 瞬时扫描）；仍锁则
+**自动降级为就地同步**——staging 逐条覆盖进 target、目录不挪窝，`link:`
+目标持续有效（§7.103 的本意），输出带 `in-place` 提示，App 重启即拿新
+代码。想要干净的原子换目录（POSIX 语义），退出 App 再跑。
 
 **② 已装过（`link:` 模式）的更新不需要重新安装。**
 §7.103 的设计就是让 `link:` 目标持续有效——改文件不需要 rename：
@@ -248,8 +250,8 @@ Git Bash 自带 GNU tar 1.35（`--no-xattrs` 能跑）+ `shasum` ✓；
 
 ```bash
 npm run compile                                  # pnpm 不在 PATH 时用 npm run
-bash scripts/build-desktop-bundle.sh --no-build  # 只出 tarball，避开 ① 的 EPERM
-bash scripts/build-desktop-bundle.sh --emit-dir  # 出 installable 目录（先退 App！）
+bash scripts/build-desktop-bundle.sh --no-build  # 只出 tarball
+bash scripts/build-desktop-bundle.sh --emit-dir  # 出 installable 目录（App 开着也行，锁住自动 in-place）
 ```
 
 > 补充：Windows 上 headless CLI profile 的等价部署（不碰桌面 profile）用

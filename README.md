@@ -117,8 +117,8 @@ dsh plugin --profile dsh-tui add @deepseek-harness-edge-agent/dsh-edge-agent
 > rsync/setsid/ss/make）；实际命令链是 `npm run compile` +
 > `bash scripts/build-desktop-bundle.sh --no-build`（Git Bash 自带 GNU tar
 > 1.35 + shasum，脚本直接能跑；`pnpm` 不在 PATH 时统一用 `npm run`）。
-> `build:installable` / `--emit-dir` 在桌面 App 运行时会被 `link:` 锁死
-> （EPERM），详见方式四。
+> `--emit-dir` 在桌面 App 运行时目录被 `link:` 锁住会自动降级为就地同步
+> （2026-10-24 起，详见方式四），无需退 App。
 
 ### 方式四：部署到 DSH 桌面版插件（Windows / macOS）
 
@@ -132,13 +132,12 @@ third-party plugin** 支持 npm / Git / **本地目录** 三个通道。本仓�
 **共同步骤（两平台一致）**：
 
 ```bash
-# 0. 完全退出桌面 App（含托盘）——--emit-dir 要 rename 旧目录，App 活着会 EPERM
-
 # 1. 生成可安装目录
 npm run compile                                    # pnpm 不在 PATH 时用 npm run
 bash scripts/build-desktop-bundle.sh --no-build --emit-dir
 # → dist/installable/dsh-edge-agent-desktop-safe/   ← 本地目录通道用这个
 # → dist/dsh-edge-agent-desktop-safe.tar.gz         ← CLI/分发用（不带 config/）
+# 桌面 App 开着也能跑：目录被 link: 锁住时自动降级为就地同步（输出带 in-place 提示）
 
 # 2. App 里安装：Plugins → Add plugin → 本地目录 → 填【绝对路径】→ 安装 → 启用
 #    （相对路径会被拒："a local path must be absolute"）
@@ -151,8 +150,10 @@ grep -o '"kind":"config.loaded".\{0,240\}' ~/.dsh-edge-agent/audit/audit.plain.j
 
 **Windows 特有（2026-10-24 实测）**：
 
-- 生成 `--emit-dir` 前**必须完全退出桌面 App**：App 以 `link:` 挂着
-  installable 目录，rename 撞 EPERM 且不自愈。
+- `--emit-dir` **不需要退桌面 App**（2026-10-24 起）：App 以 `link:` 挂着
+  installable 目录时 rename 会被活句柄锁住（EPERM，重试救不了），脚本自动
+  降级为**就地同步**——staging 逐条覆盖、目录不挪窝，`link:` 目标持续
+  有效。想要干净的一次性原子换目录（POSIX 语义），退出 App 再跑即可。
 - 填入的路径示例：
   `C:\Users\<你>\GolandProjects\gitlab\dsh-edge-agent\dist\installable\dsh-edge-agent-desktop-safe`
 - **已经装过（link: 模式）的更新不需要重新安装**——直接改文件即可：
