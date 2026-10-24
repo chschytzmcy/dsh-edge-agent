@@ -95,7 +95,25 @@ export class TavilyBochaFallbackProvider implements WebSearchProvider {
     private readonly bochaKey: string | undefined,
     private readonly dsKey: string | undefined,
     private readonly deepseek: DeepSeekSearchProvider,
+    /**
+     * §7.107 (2026-10-24): per-tier switches. `config/edge.json` has always
+     * declared `webSearch.tavilyEnabled` / `bochaEnabled` — and NOTHING read
+     * them: the tiers were gated purely on "is the key present". An operator
+     * who wanted DeepSeek Search as the backend had no way to say so; every
+     * search burned two 401 round-trips on the way down the chain to it.
+     * Defaults to enabled (the shipped behaviour), so an unset config keeps
+     * the three-tier chain.
+     */
+    private readonly tiers: { tavilyEnabled?: boolean; bochaEnabled?: boolean } = {},
   ) {}
+
+  private get tavilyEnabled(): boolean {
+    return this.tiers.tavilyEnabled !== false
+  }
+
+  private get bochaEnabled(): boolean {
+    return this.tiers.bochaEnabled !== false
+  }
 
   /**
    * Cheap local availability check; no network calls. Returns true iff any
@@ -113,12 +131,12 @@ export class TavilyBochaFallbackProvider implements WebSearchProvider {
    * absent-key env is a no-op rather than an error.)
    */
   available(): boolean {
-    return Boolean(this.tavilyKey || this.bochaKey || this.dsKey)
+    return Boolean((this.tavilyEnabled && this.tavilyKey) || (this.bochaEnabled && this.bochaKey) || this.dsKey)
   }
 
   async search(request: WebSearchRequest, signal?: AbortSignal): Promise<WebSearchResult> {
     // Tier 1 — Tavily
-    if (this.tavilyKey) {
+    if (this.tavilyEnabled && this.tavilyKey) {
       try {
         return await this.searchTavily(request, signal)
       } catch (err) {
@@ -132,7 +150,7 @@ export class TavilyBochaFallbackProvider implements WebSearchProvider {
     }
 
     // Tier 2 — 博查 AI
-    if (this.bochaKey) {
+    if (this.bochaEnabled && this.bochaKey) {
       try {
         return await this.searchBocha(request, signal)
       } catch (err) {
@@ -313,7 +331,12 @@ export async function apply(ctx: Context, _config: Config): Promise<void> {
     maxUses: 5,
   }))
 
-  const provider = new TavilyBochaFallbackProvider(tavilyKey, bochaKey, dsKey, dsProvider)
+  const provider = new TavilyBochaFallbackProvider(tavilyKey, bochaKey, dsKey, dsProvider, {
+    // §7.107: the per-tier switches, finally read. Default = enabled, so an
+    // unset config keeps the three-tier chain.
+    tavilyEnabled: cfg.webSearch?.tavilyEnabled,
+    bochaEnabled: cfg.webSearch?.bochaEnabled,
+  })
   // The `web` seam is registered by `@deepseek-ai/dsh-tool-web` upstream;
   // it's not part of the stock `Context` interface, so cast narrowly.
   const webCtx = ctx as Context & {
