@@ -162,6 +162,71 @@ dsh plugin --profile dsh-tui add @deepseek-harness-edge-agent/dsh-edge-agent
 :: §7.43: 想并存启动 dsh-tui + web 用 ./install.sh
 ```
 
+> Windows 上的本机构建/打包：`install.sh` 与 `make` 不可用（Git Bash 缺
+> rsync/setsid/ss/make）；实际命令链是 `npm run compile` +
+> `bash scripts/build-desktop-bundle.sh --no-build`（Git Bash 自带 GNU tar
+> 1.35 + shasum，脚本直接能跑）。`build:installable` / `--emit-dir` 在
+> 桌面 App 运行时会被 `link:` 锁死（EPERM），详见下方桌面版部署小节。
+
+### 方式四：部署到 DSH 桌面版插件（Windows / macOS）
+
+桌面 App（DeepSeek Harness）的 `desktop` profile 由 Electron 独占管理，
+CLI 碰不了——但 App 侧边栏 **Plugins → Add plugin → Install a
+third-party plugin** 支持 npm / Git / **本地目录** 三个通道。本仓标准走法
+是「本地目录」装 desktop-safe 产物（只 insert 隐私栈、不改宿主全局配置；
+全量 `cordis.patch.yml` 会改写 persona/approval/sandbox/session root，不要
+装进日常桌面）。
+
+**共同步骤（两平台一致）**：
+
+```bash
+# 1. 生成可安装目录（macOS 前置：brew install gnu-tar 并入 PATH，见下）
+bash scripts/build-desktop-bundle.sh --emit-dir
+# → dist/installable/dsh-edge-agent-desktop-safe/   ← 本地目录通道用这个
+# → dist/dsh-edge-agent-desktop-safe.tar.gz         ← CLI/分发用（不带 config/）
+
+# 2. App 里安装：Plugins → Add plugin → 本地目录 → 填【绝对路径】→ 安装 → 启用
+#    （相对路径会被拒："a local path must be absolute"）
+
+# 3. 配置（产物故意不带真实密钥）：把 config/edge.json 放到 ~/.dsh-edge-agent/edge.json
+
+# 4. 验证：右栏出现 Edge tab；审计里确认配置来源
+grep -o '"kind":"config.loaded".\{0,240\}' ~/.dsh-edge-agent/audit/audit.plain.jsonl | tail -1
+```
+
+**Windows 特有（2026-10-24 实测）**：
+
+- **生成前必须完全退出桌面 App**（含托盘）。App 以 `link:` 挂着
+  `dist/installable/dsh-edge-agent-desktop-safe`，`--emit-dir` 内部的
+  rename 会撞 EPERM 死锁且不自愈（renameWithRetry 只救 Defender 瞬时扫描，
+  救不了活句柄）。
+- 填入的路径示例：
+  `C:\Users\<你>\GolandProjects\gitlab\dsh-edge-agent\dist\installable\dsh-edge-agent-desktop-safe`
+- **已经装过（link: 模式）的更新不需要重新安装**——直接改文件即可：
+  ```bash
+  npm run compile
+  cp -r lib/. "dist/installable/dsh-edge-agent-desktop-safe/lib/"
+  # 重启桌面 App 生效（§7.103：link: 目标持续有效，改文件无需 rename）
+  ```
+
+**macOS 特有**：
+
+- 脚本用 GNU tar 的 `--no-xattrs`，系统自带 bsdtar 不识别：
+  ```bash
+  brew install gnu-tar
+  export PATH="/opt/homebrew/opt/gnu-tar/libexec/gnubin:$PATH"   # Intel 芯片用 /usr/local/opt
+  ```
+- 退 App：`osascript -e 'tell application "DeepSeek Harness" to quit'`
+- 填入的路径示例：
+  `/Users/<你>/code/dsh-edge-agent/dist/installable/dsh-edge-agent-desktop-safe`
+- 用 **tarball 更新**时注意 pnpm 不重解包的坑（内容变了仍报 "Already up to
+  date"，须 mv 走旧目录再 `dsh plugin --profile desktop install`），完整
+  步骤见 [docs/load-into-local-dsh.md §8.6](docs/load-into-local-dsh.md)。
+
+> 完整细节（npm/Git/本地目录/tarball 四种 spec 的判定规则、§7.101 Edge
+> tab 验收清单、桌面目录结构一览）见
+> [docs/load-into-local-dsh.md](docs/load-into-local-dsh.md)。
+
 ### 首次启动流程
 
 首次运行 `install.sh`（默认 `--profile=dsh-edge`，§7.69 单 profile 架构）会执行：

@@ -1,7 +1,8 @@
-# 加载到本地 DSH（macOS / 当前桌面版 runtime）
+# 加载到本地 DSH（macOS / Windows / 当前桌面版 runtime）
 
 > 2026-10-18 实测通过：DSH `0.2.1-rc.2` + 本仓 `lib/` + 隔离 profile `edge`，
 > `GET /v1/health` → `{"status":"ok"}`。
+> 2026-10-24 Windows 实测补充：§8.2.1（EPERM 坑 + link: 免重装更新）。
 
 ## 0. 先说结论
 
@@ -214,6 +215,50 @@ Plugins → Add plugin → Install a third-party plugin
 
 安装后启用该 bundle。若提示需要重启，就重启 DSH Desktop。
 （tarball 仍可用于 CLI：`dsh plugin --profile <name> add <tarball>`。）
+
+#### 8.2.1 Windows 实测（2026-10-24，Git Bash + 桌面 App）
+
+流程与上面一致，填入的绝对路径形如：
+
+```text
+C:\Users\<你>\GolandProjects\gitlab\dsh-edge-agent\dist\installable\dsh-edge-agent-desktop-safe
+```
+
+Windows 专属的三件事：
+
+**① 生成 `--emit-dir` 前必须完全退出桌面 App（含托盘）。**
+App 一旦以 `link:` 装过这个目录，`rebuild-installable.mjs` 的 retire-rename
+就会被活句柄锁死——EPERM 且**不自愈**（`renameWithRetry` 只救
+Defender/indexer 的瞬时扫描，救不了 App 的常驻句柄）。实测：App 5 个
+进程常驻时，手动 rename 该目录也稳定 EPERM。
+
+**② 已装过（`link:` 模式）的更新不需要重新安装。**
+§7.103 的设计就是让 `link:` 目标持续有效——改文件不需要 rename：
+
+```bash
+npm run compile
+cp -r lib/. "dist/installable/dsh-edge-agent-desktop-safe/lib/"
+# 重启桌面 App 生效；config/ 同理（installable 目录带 config/，直接覆盖）
+```
+
+**③ 构建工具链用 Git Bash 即可，但注意缺件。**
+Git Bash 自带 GNU tar 1.35（`--no-xattrs` 能跑）+ `shasum` ✓；
+但 **make / rsync / setsid / ss 都没有** → `make package`、`install.sh`
+不可用。Windows 的实际构建打包对是：
+
+```bash
+npm run compile                                  # pnpm 不在 PATH 时用 npm run
+bash scripts/build-desktop-bundle.sh --no-build  # 只出 tarball，避开 ① 的 EPERM
+bash scripts/build-desktop-bundle.sh --emit-dir  # 出 installable 目录（先退 App！）
+```
+
+> 补充：Windows 上 headless CLI profile 的等价部署（不碰桌面 profile）用
+> App 内嵌 CLI：
+> `"%LOCALAPPDATA%\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd"`
+> —— `dsh.cmd plugin --profile dsh-edge-agent add file:<tarball>` 后
+> `DSH_EDGE_LOG_FILE=force dsh.cmd --profile dsh-edge-agent` 起服务
+> （force 是 CLI 宿主 exporter 冲突下让文本 ops log 落盘的开关，
+> 2026-10-24 实测）。
 
 ### 8.3 两个包的区别
 
