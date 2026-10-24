@@ -497,3 +497,61 @@ describe('privacy-policy HMAC signing', () => {
     })
   })
 })
+
+describe('privacy-policy stages.intent (§7.108)', () => {
+  it('exposes the policy file stages.intent section via getIntentStages()', async () => {
+    const policyPath = writePolicyFile('stages-policy.json', {
+      ...TEST_POLICY,
+      version: '1.7.0',
+      stages: {
+        intent: {
+          cloudKeywords: ['攻略'],
+          localEntities: ['小程序'],
+          fallbackKeywords: ['foo'],
+        },
+      },
+    })
+    const audit = fakeAuditLog()
+    const svc = new PrivacyPolicyServiceImpl(fakeCtx() as never, {
+      policyPath, hotReload: false, watchIntervalMs: 5000,
+    }, audit)
+    await svc.reload()
+
+    const stages = svc.getIntentStages()
+    assert.deepEqual(stages?.cloudKeywords, ['攻略'])
+    assert.deepEqual(stages?.localEntities, ['小程序'])
+    assert.deepEqual(stages?.fallbackKeywords, ['foo'])
+  })
+
+  it('returns undefined for a policy without a stages section (pre-v1.7.0 shape)', async () => {
+    const policyPath = writePolicyFile('legacy-policy.json')
+    const audit = fakeAuditLog()
+    const svc = new PrivacyPolicyServiceImpl(fakeCtx() as never, {
+      policyPath, hotReload: false, watchIntervalMs: 5000,
+    }, audit)
+    await svc.reload()
+    assert.equal(svc.getIntentStages(), undefined)
+  })
+
+  it('reload() picks up stages.intent changes (hot-reload surface)', async () => {
+    const policyPath = writePolicyFile('hot-stages.json', {
+      ...TEST_POLICY,
+      version: '1.7.0',
+      stages: { intent: { cloudKeywords: [] } },
+    })
+    const audit = fakeAuditLog()
+    const svc = new PrivacyPolicyServiceImpl(fakeCtx() as never, {
+      policyPath, hotReload: false, watchIntervalMs: 5000,
+    }, audit)
+    await svc.reload()
+    assert.equal(svc.getIntentStages()?.cloudKeywords?.length, 0)
+
+    writeFileSync(policyPath, JSON.stringify({
+      ...TEST_POLICY,
+      version: '1.7.1',
+      stages: { intent: { cloudKeywords: ['攻略'] } },
+    }, null, 2), 'utf-8')
+    await svc.reload()
+    assert.deepEqual(svc.getIntentStages()?.cloudKeywords, ['攻略'])
+  })
+})

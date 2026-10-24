@@ -297,15 +297,29 @@ http-api 不再需要包含脱敏逻辑 — 它变薄，只做协议适配。**�
 >
 > 三层旧默认都不算"本地"——SANITIZED 也会脱敏后出网。现在**未决的轮次一律留在设备上**。
 >
-> 出网需要**明确的公网检索信号**，来源三选一：
+> 出网的判定（**§7.109 语义优先裁决**，修订 §7.107 的"模型意见不可信"立场）：
 >
-> 1. **隐私策略的 CLOUD 规则**（`config/privacy-policy.json`，操作者自己写的那条）——
->    已收窄为「联网/上网/搜索引擎/web search/weather forecast/实时行情/股价/汇率…」。
->    **直通，不受下面的闸约束**——这是操作者自己写的"这个操作需要公网"声明。
-> 2. **CLOUD 关键词**（intent-router 的内置表 + `stages.intent.cloudKeywords`）——
->    这张表现在是"需要搜索公网上的信息"的**唯一定义**，也是 web-need 闸的信号源。
->    规则档只可能通过命中关键词走到 CLOUD，所以它天生就是公网需求。
+> 1. **语义判决为主**——jev/LLM 分类器判 CLOUD 且置信度 ≥
+>    `stages.intent.semanticCloudMinConfidence`（policy 文件里的操作者信任阈值，
+>    热重载）→ **无需关键词佐证直接出网**。领域语义（旅游攻略/行程规划/比价…）由
+>    `categories[CLOUD]` 的 description/examples/jevIntents 喂给分类器——改 policy
+>    一处，四面（语义分类、闸门、规则档、jev）同源生效。子串关键词易误命中
+>    （「游戏攻略」也含「攻略」），**不再用于领域扩展**。
+> 2. **护栏与快路径（零 token，正则/关键词只允许在这里存在）**——
+>    a. 隐私策略 REJECT 规则（危险操作）→ 路由边缘直接拒绝；
+>    b. PII LOCAL 规则 + prompt-guard Stage 5 secret 级一票否决 → 含敏感数据的
+>       轮次不出设备（正则在此出错的方向是"多留本地"，安全侧）；
+>    c. 内置 CLOUD 关键词表（新闻/天气/行情类对象名词）+ 可选
+>       `stages.intent.cloudKeywords` 扩展面（§7.108 机制保留，默认空）→ 分类器
+>       不可用时的零成本快路径，也是闸门的另一把钥匙；
+>    d. LOCAL 实体护栏（密盒/ets——只有本地技能能兑现的资源）在任何非 LOCAL
+>       判决上强制压回，语义解锁也不例外。
 > 3. **调用方显式路由**（`agent._edgeRoute`）——显式意图，原样尊重。
+>
+> 分类器不可用时：REJECT/PII 护栏照跑，其余轮次落 `defaultCategory = LOCAL`
+> fail-closed（`input-guard.local.route-missing` 可操作报错），不出网。
+> 语义出网轮次的全部数据保护层不变：sanitizer fail-closed（脱不了敏不上云）、
+> td-bus 限速、审计 `intent.cloud.semantic-unlock` 留痕。
 >
 > **分类器（本地模型）/ jev 判 CLOUD 不再自动放行**：没有公网信号就降级回 LOCAL
 > （审计 `intent.cloud.blocked-no-web-need`）。所以"帮我写封邮件""为什么天是蓝的"

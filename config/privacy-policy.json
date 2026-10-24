@@ -1,89 +1,46 @@
 {
-  "version": "1.6.0",
+  "version": "1.9.0",
   "_comment": "sanitizationRules 的 pattern 必须与 src/dsh-adapter/pii-utils.ts 的 PII_PATTERNS 保持一致（tests/unit/pii-utils.test.ts 有一致性断言）。已移除 replacement 字段：占位符由 sanitizer-pipeline 自行生成为 [<PIITYPE>_<seq>]，该字段历史上不生效。",
+  "_categories_comment": "§7.110（默认本地，类别简并）：categories 只需要**肯定式定义例外**——CLOUD（需要公网信息）和 REJECT（危险请求）；其余一切（本地操作、日常问答、含 PII 的本地处理）都是默认 LOCAL，不设行。SANITIZED 不再单列：CLOUD 路径本来必经 sanitizer（fail-closed，脱不了敏不上云），含敏感数据的操作另有 PII LOCAL 正则护栏兜底。 jevIntents 同步收敛：只保留无歧义的 CLOUD/REJECT 信号标签（知识问答/通用咨询属日常问答 → 默认 LOCAL，不再进 CLOUD）。intent-router 在 policy 无 LOCAL 行时自动补 catch-all 提示行并放行 LOCAL 输出。",
+  "_stages_comment": "§7.109（语义优先裁决）：路由以 jev/LLM 的语义判决为主——stages.intent.semanticCloudMinConfidence 是操作者对分类器的信任阈值，语义判 CLOUD 且置信度 ≥ 阈值即出网（无需关键词佐证）。关键词/正则只作护栏与零成本快路径（REJECT 危险操作、PII LOCAL 安全网、内置新闻/天气类信号），不再为领域扩词——子串匹配易误命中（如「游戏攻略」）。stages.intent.cloudKeywords/localEntities/fallbackKeywords 仍是可用的扩展面（追加/替换语义见 §7.108），但默认为空。全部热重载。",
   "categories": [
     {
-      "id": "LOCAL",
-      "description": "本地文件操作、设备控制、数学计算、系统管理",
-      "examples": [
-        "帮我读一下文件",
-        "看一下磁盘空间",
-        "计算 1+1"
-      ],
-      "jevIntents": [
-        "设备控制",
-        "文件操作",
-        "device_control",
-        "file_ops"
-      ]
-    },
-    {
       "id": "CLOUD",
-      "description": "知识问答、聊天、创意写作、需要联网的任务",
+      "description": "需要检索公网上信息的任务：新闻、天气、行情、搜索引擎，以及旅游攻略、景点推荐、行程规划等需要实时公网信息的任务",
       "examples": [
         "今天北京天气",
-        "翻译这段英文",
-        "写一首诗"
+        "查一下最新的AI新闻",
+        "准备一个杭州游玩的攻略",
+        "规划一个西湖一日游"
       ],
       "jevIntents": [
-        "知识问答",
-        "通用咨询",
         "天气",
-        "翻译",
         "新闻",
         "搜索",
-        "knowledge",
+        "旅游攻略",
+        "景点推荐",
+        "行程规划",
         "weather",
-        "translation",
         "news",
-        "search"
-      ]
-    },
-    {
-      "id": "SANITIZED",
-      "description": "包含 PII 需先脱敏后路由（订单查询、账户管理、客服等含个人信息）",
-      "examples": [
-        "查我的订单状态",
-        "我的账户余额",
-        "我要退款"
-      ],
-      "jevIntents": [
-        "订单查询",
-        "订单状态",
-        "物流跟踪",
-        "物流查询",
-        "快递查询",
-        "退款申请",
-        "退款查询",
-        "账户管理",
-        "账户余额",
-        "账户信息",
-        "客服",
-        "售后服务",
-        "order_inquiry",
-        "refund",
-        "refund_request",
-        "logistics",
-        "account",
-        "customer_service"
+        "search",
+        "travel",
+        "travel_planning",
+        "attraction"
       ]
     },
     {
       "id": "REJECT",
-      "description": "高危 / 违法 / 违规请求（危险系统操作、投诉、法务）",
+      "description": "高危 / 违法 / 违规请求（危险系统操作、破坏性命令、投诉、法务）",
       "examples": [
         "rm -rf /",
-        "我要投诉",
-        "怎么告别人"
+        "drop table users",
+        "我要投诉"
       ],
       "jevIntents": [
         "投诉",
         "法务咨询",
-        "法律咨询",
-        "举报",
         "complaint",
-        "legal",
-        "legal_advice"
+        "legal"
       ]
     }
   ],
@@ -149,6 +106,11 @@
       "rationale": "需要检索公网上的信息 → 才允许走云端 LLM"
     }
   ],
+  "stages": {
+    "intent": {
+      "semanticCloudMinConfidence": 0.75
+    }
+  },
   "sanitizationRules": [
     {
       "pattern": "\\b[1-9]\\d{5}(?:19|20)\\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\\d|3[01])\\d{3}[\\dXx]\\b",

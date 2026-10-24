@@ -3400,3 +3400,177 @@ describe('intent-router', () => {
     }
   })
 })
+
+/** §7.108/§7.109 shared helpers — mock privacy-policy exposing the stages
+ *  surface (+ optional categories). `__emit` lets a test fire the
+ *  policy/loaded listener. */
+function auditSpy() {
+  const entries: any[] = []
+  return { entries, log: async (e: any) => { entries.push(e) } }
+}
+
+function fakePolicy(
+  stages?: {
+    cloudKeywords?: string[]
+    localEntities?: string[]
+    fallbackKeywords?: string[]
+    semanticCloudMinConfidence?: number
+  },
+  categories?: Array<{ id: 'LOCAL' | 'CLOUD' | 'SANITIZED' | 'REJECT'; description: string; jevIntents: string[] }>,
+) {
+  const listeners: Array<(p: any) => void> = []
+  return {
+    getIntentStages: () => stages,
+    getCategories: () => categories ?? [],
+    matchRouting: () => null,
+    on: (_event: string, listener: (p: any) => void) => { listeners.push(listener) },
+    __emit: (p: any) => { for (const l of listeners) l(p) },
+  }
+}
+
+function makeService(ctxExtras: Record<string, unknown>, config: Record<string, unknown> = {}, audit?: unknown) {
+  const mockCtx = { reflect: { provide: () => {} }, llm: null, ...ctxExtras } as any
+  return new IntentRouterServiceImpl(mockCtx, {
+    defaultCategory: 'LOCAL',
+    classificationProvider: 'local-llm',
+    confidenceThreshold: 0.6,
+    ...config,
+  }, audit as any)
+}
+
+describe('intent-router §7.108 policy-configured signal tables', () => {
+  it('rules tier: a policy stages.intent.cloudKeywords word routes CLOUD (杭州游玩攻略)', async () => {
+    const service = makeService({ privacyPolicy: fakePolicy({ cloudKeywords: ['攻略'] }) })
+    const intent = await service.classify('准备一个杭州游玩的攻略')
+    assert.equal(intent.category, 'CLOUD')
+    assert.equal(intent.rationale, 'rule-cloud-keyword:攻略')
+  })
+
+  it('§7.107 gate: an LLM CLOUD verdict unlocked by a POLICY keyword passes', async () => {
+    const verdict = JSON.stringify({ category: 'CLOUD', confidence: 0.93 })
+    const audit = auditSpy()
+    const service = makeService(
+      { privacyPolicy: fakePolicy({ cloudKeywords: ['攻略'] }), llm: fakeLlm(chunksFromText(verdict)) },
+      {},
+      audit)
+    const intent = await service.classify('准备一个杭州游玩的攻略')
+    assert.equal(intent.category, 'CLOUD')
+    assert.match(intent.rationale, /^llm-classified/u)
+    assert.ok(!audit.entries.some((e: any) => e.kind === 'intent.cloud.blocked-no-web-need'))
+  })
+
+  it('§7.107 gate: with NO signal anywhere the LLM CLOUD verdict stays on device', async () => {
+    const verdict = JSON.stringify({ category: 'CLOUD', confidence: 0.93 })
+    const audit = auditSpy()
+    const service = makeService(
+      { privacyPolicy: fakePolicy({ cloudKeywords: [] }), llm: fakeLlm(chunksFromText(verdict)) },
+      {},
+      audit)
+    const intent = await service.classify('规划一下数据库的表结构')
+    assert.equal(intent.category, 'LOCAL')
+    assert.equal(intent.rationale, 'no-web-need')
+    assert.ok(audit.entries.some((e: any) => e.kind === 'intent.cloud.blocked-no-web-need'))
+  })
+
+  it('entity guardrail merges policy stages.intent.localEntities', async () => {
+    const service = makeService({ privacyPolicy: fakePolicy({ localEntities: ['小程序'] }) })
+    const intent = await service.classify('查一下小程序的登录状态')
+    assert.equal(intent.category, 'LOCAL')
+    assert.match(intent.rationale, /rule-local-entity:小程序/u)
+  })
+
+  it('fallback keywords: policy stages.intent.fallbackKeywords REPLACES the LOCAL list', async () => {
+    const service = makeService({ privacyPolicy: fakePolicy({ fallbackKeywords: ['摩斯密码本'] }) })
+    const hit = await service.classify('帮我看看摩斯密码本在哪')
+    assert.equal(hit.category, 'LOCAL')
+    assert.equal(hit.rationale, 'rule-keyword-match')
+    // replaced, not appended: builtin-only words fall through to default
+    const miss = await service.classify('帮我读取文件内容')
+    assert.equal(miss.category, 'LOCAL')
+    assert.equal(miss.rationale, 'default:local')
+  })
+
+  it('categories + jev map follow policy/loaded when the spec came from the policy service', () => {
+    const pol = fakePolicy(undefined, [{ id: 'CLOUD', description: '联网任务', jevIntents: ['search'] }])
+    const service = makeService({ privacyPolicy: pol })
+    assert.equal((service as any).jevIntentMap['旅游攻略'], undefined)
+    pol.__emit({ categories: [{ id: 'CLOUD', description: '联网+旅游任务', jevIntents: ['search', '旅游攻略'] }] })
+    assert.equal((service as any).jevIntentMap['旅游攻略'], 'CLOUD')
+    assert.equal((service as any).categories[0].description, '联网+旅游任务')
+  })
+
+  it('config.categories keeps its override semantics — policy/loaded does not refresh it', () => {
+    const pol = fakePolicy(undefined, [{ id: 'CLOUD', description: 'from policy', jevIntents: [] }])
+    const service = makeService(
+      { privacyPolicy: pol },
+      { categories: [{ id: 'LOCAL', description: 'from config', jevIntents: [] }] })
+    pol.__emit({ categories: [{ id: 'CLOUD', description: 'newer policy', jevIntents: [] }] })
+    assert.equal((service as any).categories[0].description, 'from config')
+  })
+})
+
+describe('intent-router §7.109 semantic unlock (policy-trusted classifier verdicts)', () => {
+  it('an LLM CLOUD verdict without any keyword passes when policy declares semantic trust ≥ threshold', async () => {
+    // "规划黄山两日游" needs public info but carries NO keyword from any
+    // list — only the classifier's semantic judgement can see it.
+    const verdict = JSON.stringify({ category: 'CLOUD', confidence: 0.9 })
+    const audit = auditSpy()
+    const service = makeService(
+      {
+        privacyPolicy: fakePolicy({ semanticCloudMinConfidence: 0.75 }),
+        llm: fakeLlm(chunksFromText(verdict)),
+      },
+      {},
+      audit)
+    const intent = await service.classify('帮我规划一下黄山两日游怎么安排')
+    assert.equal(intent.category, 'CLOUD')
+    assert.match(intent.rationale, /^llm-classified/u)
+    assert.ok(audit.entries.some((e: any) => e.kind === 'intent.cloud.semantic-unlock'))
+    assert.ok(!audit.entries.some((e: any) => e.kind === 'intent.cloud.blocked-no-web-need'))
+  })
+
+  it('an LLM CLOUD verdict BELOW the policy confidence threshold is still kept on device', async () => {
+    const verdict = JSON.stringify({ category: 'CLOUD', confidence: 0.7 })
+    const audit = auditSpy()
+    const service = makeService(
+      {
+        privacyPolicy: fakePolicy({ semanticCloudMinConfidence: 0.75 }),
+        llm: fakeLlm(chunksFromText(verdict)),
+      },
+      {},
+      audit)
+    const intent = await service.classify('帮我规划一下黄山两日游怎么安排')
+    assert.equal(intent.category, 'LOCAL')
+    assert.equal(intent.rationale, 'no-web-need')
+    assert.ok(audit.entries.some((e: any) => e.kind === 'intent.cloud.blocked-no-web-need'))
+    assert.ok(!audit.entries.some((e: any) => e.kind === 'intent.cloud.semantic-unlock'))
+  })
+
+  it('without the policy knob the gate stays keyword-only (§7.107 unchanged)', async () => {
+    const verdict = JSON.stringify({ category: 'CLOUD', confidence: 0.99 })
+    const audit = auditSpy()
+    const service = makeService(
+      { privacyPolicy: fakePolicy(undefined), llm: fakeLlm(chunksFromText(verdict)) },
+      {},
+      audit)
+    const intent = await service.classify('帮我规划一下黄山两日游怎么安排')
+    assert.equal(intent.category, 'LOCAL')
+    assert.equal(intent.rationale, 'no-web-need')
+  })
+
+  it('the LOCAL entity guardrail still wins over a semantically unlocked CLOUD verdict', async () => {
+    const verdict = JSON.stringify({ category: 'CLOUD', confidence: 0.95 })
+    const audit = auditSpy()
+    const service = makeService(
+      {
+        privacyPolicy: fakePolicy({ semanticCloudMinConfidence: 0.5, localEntities: ['密盒'] }),
+        llm: fakeLlm(chunksFromText(verdict)),
+      },
+      {},
+      audit)
+    const intent = await service.classify('把密盒的日志整理成审计报告')
+    assert.equal(intent.category, 'LOCAL')
+    assert.match(intent.rationale, /override-local-entity:密盒/u)
+    assert.ok(!audit.entries.some((e: any) => e.kind === 'intent.cloud.semantic-unlock'))
+  })
+})

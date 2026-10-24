@@ -10892,3 +10892,100 @@ phone 保留 7 位号段（归属信号）、尾 4 位进占位符（`1730096[PH
 desanitize 只还尾段、拼回完整号码。「归属地」撤出实体表（实体=只有本地技能能兑现，号段知识不算）。
 默认策略与两份 shipped privacy-policy.json 同步 keepPrefix；测试 217/217（号段保留/尾号不出网/
 回程还原/归属地不强制本地 4 例新钉）。
+
+## §7.108 —— 公网信号定义配置化：policy 文件一处喂饱规则/闸门/jev/LLM 四面（2026-10-24）
+
+**动机（操作者案例）**：「准备一个杭州游玩的攻略」被判 LOCAL——按 §7.107 信号表它确实无公网
+信号（表里只有新闻/天气/行情类对象名词），但旅游攻略本质上需要公网实时信息；本地 4B 模型
+既答不好、realm 桥又不给 LOCAL 轮次 web 工具。操作者裁决：这类信号**必须配置化**（不写死
+进内置表），且**规则正则、jev、LLM 三个识别层要吃到同一份定义**——否则 LLM 判了 CLOUD
+还是会被闸门按旧词表压回。
+
+**实现**：policy 文件新增 `stages.intent` 配置面（v1.6.0 → v1.7.0）——
+
+- `privacy-policy.ts`：`PolicyIntentStages`（cloudKeywords / localEntities / fallbackKeywords）
+  + `stages?: { intent?: … }` 进 `PrivacyPolicy` + `getIntentStages()` getter（live 视图）。
+- `intent-router.ts`：
+  - `cloudSignal()` 改读合并表 `cloudKeywordsAll()` = 内置 + patch config + **policy**，
+    规则层与 §7.107 闸门共用（二者永不漂移）；闸门对 policy 关键词解锁的 LLM CLOUD
+    判决放行（词本身就是信号，语义不变）。
+  - `matchLocalEntity` 同构合并 `localEntitiesAll()`；`fallbackKeywords` 支持 policy
+    非空整体替换（镜像 env 语义）。
+  - 补上缺失的 `policy/loaded` 监听：categories 从 policy 来时，LLM prompt 与 jev
+    intent map 随热重载刷新（此前注释声称热重载、实际构造期快照）；`config.categories`
+    显式覆盖保持不刷新语义。
+- `config/privacy-policy.json` v1.7.0：`stages.intent.cloudKeywords`（攻略/游玩/旅游/景点/
+  景区/行程/门票/一日游/自由行/旅行/travel/itinerary/attraction）+ routingRules 增旅游
+  CLOUD 规则（操作者正则精调面）+ CLOUD 类别 description/examples/jevIntents 增旅游域。
+
+**语义**：三面一个源头——改 policy 一处，闸门+规则档（关键词面）、LLM 分类（description/
+examples）、jev（jevIntents）同时生效，全部热重载；REJECT/PII LOCAL 规则仍先匹配（含
+PII 的旅游查询照样留在本地）。
+
+**测试**：vitest 52 文件 **1052 passed**（新增 10 例：stages 解析/热重载 3、规则层命中 1、
+闸门放行 1、无信号仍拦 1、实体合并 1、fallback 替换 1、类别热更新 2）。
+
+**本机部署**：desktop（link 模式）`cp config/privacy-policy.json ~/.dsh-edge-agent/privacy-policy.json`
+→ 审计 `policy.loaded version=1.7.0` 热重载生效，**无需重启**。
+
+**环境备忘**：本机 vitest 曾整仓跑不起来——DSH 运行时 node 开 hardened runtime 且无
+`disable-library-validation`，拒绝加载 ad-hoc 签名的 `@rollup/rollup-darwin-arm64.node`
+（dlopen 报 "different Team IDs"）。官方 node 发行版带解锁 entitlement，可正常加载；
+已在 `~/.dsh-dev/node-v24.22.1-darwin-arm64` 落一份官方 node（npmmirror 下载），本地
+跑测试/编译用它 + PATH 前置即可。
+
+## §7.109 —— 语义优先裁决：路由以 jev/LLM 语义判决为主，关键词/正则降级为护栏（2026-10-24）
+
+**裁决演进**：§7.107 立场是"模型意见不能决定文本是否出设备，闸门只认词表"；§7.108 把
+词表配置化时操作者进一步指出：**正则/关键词本身易错**（子串匹配——「游戏攻略」误命中
+「攻略」、「两日游」漏配「一日游」），领域路由应该交给**语义级别**的意图识别。
+
+**新裁决**：路由判定优先级改为——
+1. **语义判决为主**：jev/LLM 判 CLOUD 且置信度 ≥ `stages.intent.semanticCloudMinConfidence`
+   （policy 新增字段，操作者对分类器的信任阈值）→ 无需关键词佐证直接出网，审计
+   `intent.cloud.semantic-unlock` 留痕；
+2. **正则/关键词只作护栏与快路径**：REJECT 危险操作、PII LOCAL 安全网（出错方向是
+   多留本地，安全侧）、prompt-guard secret 一票否决、内置新闻/天气类零成本快路径、
+   LOCAL 实体护栏（先于闸门执行，语义解锁不越过它）；
+3. 调用方显式路由（`agent._edgeRoute`）原样尊重。
+
+**实现**：`gateCloudVerdict` 增语义放行分支（实体护栏之后、blocked 之前）；policy
+v1.7.1 → **v1.8.0**——§7.108 临时加的旅游 cloudKeywords 与旅游 routingRule **撤回**
+（正是易错面），旅游域完全交给语义：`categories[CLOUD]` 的 description/examples/
+jevIntents 已含旅游攻略/景点推荐/行程规划/travel 等，`semanticCloudMinConfidence: 0.75`。
+分类器不可用时落 defaultCategory=LOCAL fail-closed（可操作报错）——诚实降级。
+§7.108 的配置机制（cloudKeywords/localEntities/fallbackKeywords 追加/替换、类别热更新）
+全部保留，作为护栏扩展面。
+
+**数据保护层不变**：sanitizer fail-closed、prompt-guard PII veto、td-bus 限速、审计全链路。
+实体护栏（密盒/ets）先于闸门，语义解锁不越过。
+
+**测试**：+4 例（语义放行 / 低于阈值仍拦 / 无配置维持关键词-only / 实体护栏压回语义放行），
+vitest 52 文件 **1056 passed**。
+
+**部署**：link 模式 rebuild installable + `cp` policy 到 `~/.dsh-edge-agent/privacy-policy.json`
+→ 热重载 policy（1.8.0）+ 重启 App 取新 lib（闸门逻辑是代码）→ 审计确认。
+
+## §7.110 —— 类别简并：默认本地，只肯定式定义 CLOUD / REJECT（2026-10-24 晚）
+
+**裁决**：意图识别默认本地，所以类别表只需要**肯定式定义例外**——CLOUD（需要公网信息）
+和 REJECT（危险请求）；其余一切（本地操作、日常问答、翻译、写诗、含 PII 的本地处理）都是
+默认 LOCAL，不设行。jev 与 LLM 合用这一张表（结构上本就同源：description/examples 喂
+LLM prompt，jevIntents 喂 jev 映射），语义面从 4 行收敛为 2 行。
+
+**要点**：
+- SANITIZED 不再单列——CLOUD 路径本来必经 sanitizer（fail-closed，脱不了敏不上云），
+  两类在数据保护上无差别；含敏感数据的操作另有 PII LOCAL 正则护栏兜底（安全侧错误）。
+- 「知识问答/通用咨询」撤出 CLOUD jevIntents——日常问答按 §7.107 就是 LOCAL，只有
+  带公网需求的语义才进 CLOUD；无歧义标签才留给 jev。
+- `intent-router` prompt 构造：policy 无 LOCAL 行时自动补 catch-all 提示行
+  （"- LOCAL：其余一切请求……拿不准就选它"）并把 LOCAL 并进输出 union；
+  `coerceClassification` 本就接受全 4 值，LOCAL 输出不会被拒。
+- `CATEGORIES_FALLBACK`（无 policy 文件时的代码兜底）保持 4 行不动——那是"操作者
+  什么都没给"时的富默认，与 shipped policy 的简并无冲突。
+
+**测试**：vitest 52 文件 **1056 passed**（含 §7.109 语义解锁 4 例）。
+
+**部署**：desktop（link 模式）rebuild installable + verify 2 bundles → policy 同步
+`~/.dsh-edge-agent/privacy-policy.json`（v1.9.0）→ 重启 App → 审计
+`policy.loaded version=1.9.0`。§7.109/§7.110 两轮改动一并上线。

@@ -59,12 +59,15 @@ export interface Config {
    *  搜索/search/latest/最新/today/今天) and routes them to cloud LLM +
    *  web tools — without waiting for the LLM classifier (which can hang
    *  on Qwen3-4B). Default ships EN + CN built-in list. Override via env
-   *  DSH_EDGE_INTENT_CLOUD_KEYWORDS (comma-sep) — appended to built-in. */
+   *  DSH_EDGE_INTENT_CLOUD_KEYWORDS (comma-sep) — appended to built-in.
+   *  §7.108: the policy file's stages.intent.cloudKeywords ALSO appends
+   *  (hot-reloadable) — preferred operator surface. */
   cloudKeywords?: string[]
   /** §7.58 (2026-09-16): LOCAL-entity list (密盒/ets/etscli built-in)
    *  matched before every keyword layer and used to override a non-LOCAL
    *  LLM verdict. Env DSH_EDGE_INTENT_LOCAL_ENTITIES (comma-sep) appends to
-   *  built-in (NOT replaces), same semantics as cloudKeywords. */
+   *  built-in (NOT replaces), same semantics as cloudKeywords. §7.108:
+   *  policy-file stages.intent.localEntities also appends (hot-reloadable). */
   localEntities?: string[]
   /** §7.92.3 (2026-09-23) + §7.92.5 (2026-09-23): jev HTTP intent
    *  recognizer (port 8001). Toggle — default OFF (opt-in). When ON,
@@ -414,16 +417,19 @@ export class IntentRouterServiceImpl extends Service {
    *  shutdown hook can `await stop()` without leaving a dangling
    *  fetch racing the constructor's first classify() call. */
   private jevBootProbePromise: Promise<void> | null = null
-  /** §7.92.3 (2026-09-23): categories spec — loaded from
-   *  privacyPolicy.getCategories() (hot-reload-aware via the policy/loaded
-   *  event) and cached at construction. Drives both the LLM prompt
-   *  (description field per category) AND the jev-intent → category
-   *  lookup (jevIntents[] per category, flattened into jevIntentMap).
-   *  Tests inject via `config.categories` to bypass privacy-policy. */
-  private readonly categories: readonly import('./privacy-policy.js').IntentCategory[]
+  /** §7.92.3 (2026-09-23) + §7.108 (2026-10-24): categories spec — loaded
+   *  from privacyPolicy.getCategories() at construction AND refreshed on
+   *  every `policy/loaded` event when the spec came from the policy
+   *  service (config.categories keeps its explicit-override semantics and
+   *  is never refreshed). Drives both the LLM prompt (description field
+   *  per category) AND the jev-intent → category lookup (jevIntents[] per
+   *  category, flattened into jevIntentMap). Tests inject via
+   *  `config.categories` to bypass privacy-policy. */
+  private categories: readonly import('./privacy-policy.js').IntentCategory[]
   /** §7.92.3: flat jev-intent-string → category lookup, derived from
-   *  `this.categories[].jevIntents`. Built once at construction. */
-  private readonly jevIntentMap: Record<string, 'LOCAL' | 'CLOUD' | 'SANITIZED' | 'REJECT'>
+   *  `this.categories[].jevIntents`. Rebuilt together with categories on
+   *  policy hot-reload (§7.108). */
+  private jevIntentMap: Record<string, 'LOCAL' | 'CLOUD' | 'SANITIZED' | 'REJECT'>
   private readonly llm: any
   private readonly auditLog: AuditLike | undefined
 
@@ -600,6 +606,28 @@ export class IntentRouterServiceImpl extends Service {
       }
     }
     this.jevIntentMap = map
+    // §7.108 (2026-10-24): when the categories spec came from the policy
+    // service (config.categories not set), follow policy hot-reloads so the
+    // LLM prompt and the jev intent map pick up new categories (e.g. a
+    // travel domain added to CLOUD) without a restart. A reload that drops
+    // categories entirely keeps the last-known spec (defensive).
+    if (!(config.categories && config.categories.length > 0)) {
+      const policySvc = this.softService('privacyPolicy') as {
+        on?: (event: string, listener: (p: import('./privacy-policy.js').PrivacyPolicy) => void) => void
+      } | undefined
+      if (policySvc && typeof policySvc.on === 'function') {
+        policySvc.on('policy/loaded', (p) => {
+          const next = p?.categories ?? []
+          if (next.length === 0) return
+          this.categories = next
+          const m: Record<string, 'LOCAL' | 'CLOUD' | 'SANITIZED' | 'REJECT'> = {}
+          for (const cat of next) {
+            for (const intent of cat.jevIntents) m[intent] = cat.id
+          }
+          this.jevIntentMap = m
+        })
+      }
+    }
     this.llm = (ctx as any).llm
     this.auditLog = auditLog
   }
@@ -651,10 +679,11 @@ export class IntentRouterServiceImpl extends Service {
    * §7.107 (2026-10-23, operator ruling「只有需要搜索公网上的信息才需要用到
    * cloudllm」): a CLOUD verdict needs a public-web need.
    *
-   * The signal is this router's own cloud keyword list (built-in
-   * information-acquisition words + `stages.intent.cloudKeywords`) — the
-   * same list the rules tier matches, so the gate and the rules tier can
-   * never disagree about what counts as a web need.
+ * The signal is this router's own cloud keyword list (built-in
+ * information-acquisition words + `stages.intent.cloudKeywords` + the
+ * policy file's `stages.intent.cloudKeywords`, §7.108) — the same list the
+ * rules tier matches, so the gate and the rules tier can never disagree
+ * about what counts as a web need.
    *
    * The gate is applied to the LLM / jev verdicts ONLY:
    *   - the rules tier reaches CLOUD either through a privacy-policy rule
@@ -673,6 +702,26 @@ export class IntentRouterServiceImpl extends Service {
     if (intent.category !== 'CLOUD') return intent
     const signal = this.cloudSignal(text)
     if (signal !== undefined) return intent
+    // §7.109 (2026-10-24): semantic unlock — the policy file may declare
+    // operator trust in the classifier's SEMANTIC verdict: an LLM/jev CLOUD
+    // at confidence >= stages.intent.semanticCloudMinConfidence passes
+    // without a keyword signal (e.g. "规划黄山两日游怎么安排" needs public
+    // info but carries no keyword). Undefined (default) keeps §7.107
+    // keyword-only. The entity guardrail already ran before this gate and
+    // still wins; downstream sanitizer (fail-closed) / prompt-guard PII
+    // veto / td-bus are untouched — the unlock relaxes only the KEYWORD
+    // requirement, not any data-protection layer.
+    const semanticMin = this.policyIntentStages()?.semanticCloudMinConfidence
+    if (typeof semanticMin === 'number' && intent.confidence >= semanticMin) {
+      this.audit('info', 'intent.cloud.semantic-unlock', {
+        sessionId: sid,
+        confidence: intent.confidence,
+        minConfidence: semanticMin,
+        rationale: intent.rationale,
+        note: 'policy semantic trust: classifier CLOUD verdict passed without a keyword signal',
+      })
+      return intent
+    }
     this.audit('warn', 'intent.cloud.blocked-no-web-need', {
       sessionId: sid,
       category: intent.category,
@@ -1539,8 +1588,19 @@ export class IntentRouterServiceImpl extends Service {
     // the LLM a path to surface SANITIZED/REJECT verdicts without a
     // separate rules pass. Order matches categories[] order in the
     // policy file so operators can control priority by reordering rows.
+    // §7.110 (2026-10-24): 默认本地 —— the operator's taxonomy only needs to
+    // POSITIVELY define the exceptions (CLOUD / REJECT); LOCAL is the
+    // catch-all default and may ship no row at all. When the policy has no
+    // LOCAL row, append a fixed catch-all line and include LOCAL in the
+    // output union so the model can express "neither of the above"
+    // (coerceClassification accepts LOCAL regardless of the taxonomy).
+    const hasLocalRow = this.categories.some((c) => c.id === 'LOCAL')
     const categoryLines = this.categories.map((c) => `- ${c.id}：${c.description}`).join('\n')
-    const categoryUnion = this.categories.map((c) => c.id).join('|')
+      + (hasLocalRow ? '' : '\n- LOCAL：其余一切请求（本地操作、日常问答等——这是默认类别，拿不准就选它）')
+    const categoryUnion = Array.from(new Set([
+      ...this.categories.map((c) => c.id),
+      'LOCAL' as const,
+    ])).join('|')
     const prompt = `判断以下用户请求属于哪类：
 ${categoryLines}
 ${historyBlock}
@@ -1708,7 +1768,7 @@ confidence 含义：
    *  (so 'ets' never fires inside "assets"/"settings"). Returns the matched
    *  (lower-cased) keyword, or undefined. */
   private matchLocalEntity(lower: string): string | undefined {
-    for (const kw of this.localEntities) {
+    for (const kw of this.localEntitiesAll()) {
       const k = kw.toLowerCase().trim()
       if (k.length === 0) continue
       if (/^[\x00-\x7f]+$/.test(k)) {
@@ -1721,16 +1781,53 @@ confidence 含义：
     return undefined
   }
 
+  /** §7.108 (2026-10-24): the policy file's stages.intent signal tables,
+   *  read LIVE on every classify so a policy hot-reload takes effect on
+   *  the next turn. Missing service / old policy → undefined (callers
+   *  fall back to the constructor-built lists). */
+  private policyIntentStages(): import('./privacy-policy.js').PolicyIntentStages | undefined {
+    const policy = this.softService('privacyPolicy')
+    try { return policy?.getIntentStages?.() ?? undefined }
+    catch { return undefined }
+  }
+
+  /** §7.108: the FULL cloud signal list = built-in + patch config +
+   *  policy stages.intent.cloudKeywords. ONE definition shared by the
+   *  rules tier and the §7.107 gate — they can never disagree about what
+   *  counts as a public-web need. */
+  private cloudKeywordsAll(): readonly string[] {
+    const fromPolicy = this.policyIntentStages()?.cloudKeywords
+    return (fromPolicy && fromPolicy.length > 0)
+      ? this.cloudKeywords.concat(fromPolicy)
+      : this.cloudKeywords
+  }
+
+  /** §7.108: the FULL LOCAL entity list = built-in + patch config + policy. */
+  private localEntitiesAll(): readonly string[] {
+    const fromPolicy = this.policyIntentStages()?.localEntities
+    return (fromPolicy && fromPolicy.length > 0)
+      ? this.localEntities.concat(fromPolicy)
+      : this.localEntities
+  }
+
+  /** §7.108: LOCAL last-resort list — policy stages.intent.fallbackKeywords
+   *  (non-empty) REPLACES, mirroring the env var's replace semantics. */
+  private fallbackKeywordsAll(): readonly string[] {
+    const fromPolicy = this.policyIntentStages()?.fallbackKeywords
+    return (fromPolicy && fromPolicy.length > 0) ? fromPolicy : this.fallbackKeywords
+  }
+
   /**
    * §7.107: the public-web signal — the keyword that unlocks the cloud.
    *
    * Same list the rules tier matches (built-in information-acquisition words
-   * + `stages.intent.cloudKeywords`); `classifyWithRules` calls this so the
-   * gate and the rules tier cannot drift apart.
+   * + patch `stages.intent.cloudKeywords` + policy-file
+   * `stages.intent.cloudKeywords` (§7.108)); `classifyWithRules` calls this
+   * so the gate and the rules tier cannot drift apart.
    */
   cloudSignal(text: string): string | undefined {
     const lower = text.toLowerCase()
-    return this.cloudKeywords.find((kw) => lower.includes(kw.toLowerCase()))
+    return this.cloudKeywordsAll().find((kw) => lower.includes(kw.toLowerCase()))
   }
 
   private classifyWithRules(text: string): Intent {
@@ -1825,7 +1922,7 @@ confidence 含义：
         rationale: `rule-cloud-keyword:${cloudMatched}`,
       }
     }
-    const matched = this.fallbackKeywords.find((kw) => lower.includes(kw.toLowerCase()))
+    const matched = this.fallbackKeywordsAll().find((kw) => lower.includes(kw.toLowerCase()))
 
     if (matched !== undefined) {
       this.audit('debug', 'intent.rules.hit', { source: 'fallback-keyword', matchedKeyword: matched })

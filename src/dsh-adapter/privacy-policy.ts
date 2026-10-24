@@ -101,6 +101,33 @@ export interface GlobalConstraints {
   blockIfTcbCompromised: boolean
 }
 
+/** §7.108 (2026-10-24): intent-stage signal tables carried by the policy
+ *  file (config/privacy-policy.json → stages.intent). All recognition
+ *  surfaces — routing regex rules, jev intents, LLM categories AND the
+ *  §7.107 no-web-need gate — merge these, so the operator teaches every
+ *  tier about a new domain (e.g. 旅游攻略) by editing ONE file. */
+export interface PolicyIntentStages {
+  /** APPENDED to the built-in CLOUD keyword list (CLOUD_KEYWORDS_DEFAULT +
+   *  patch config `stages.intent.cloudKeywords`). A word here means "this
+   *  may leave the device" — it unlocks both the rules tier and the gate. */
+  cloudKeywords?: string[]
+  /** APPENDED to the built-in LOCAL entity list (密盒/ets/etscli…). */
+  localEntities?: string[]
+  /** Non-empty value REPLACES the LOCAL last-resort keyword list (same
+   *  semantics as the `DSH_EDGE_INTENT_FALLBACK_KEYWORDS` env var). */
+  fallbackKeywords?: string[]
+  /** §7.109 (2026-10-24): semantic unlock threshold. When set, an LLM/jev
+   *  CLOUD verdict at confidence >= this value passes the §7.107 gate
+   *  WITHOUT a keyword/regex signal — the operator's declaration of trust
+   *  in the classifier (semantic-level intent recognition, e.g.
+   *  "规划黄山两日游怎么安排" needs public info but carries no keyword).
+   *  Undefined (default) = keyword-only, §7.107 behaviour unchanged. The
+   *  entity guardrail runs before the gate and still wins; every
+   *  data-protection layer (sanitizer fail-closed, prompt-guard PII veto,
+   *  td-bus rate limits) is untouched. */
+  semanticCloudMinConfidence?: number
+}
+
 export interface PrivacyPolicy {
   version: string
   /** §7.92.3 (2026-09-23): Intent category specs. Single source of truth
@@ -114,6 +141,10 @@ export interface PrivacyPolicy {
    *  Operators extend by adding entries to either field; unknown jev-intent
    *  strings fall through to LLM (defensive). */
   categories?: IntentCategory[]
+  /** §7.108 (2026-10-24): operator-configurable intent-stage signal tables
+   *  (see PolicyIntentStages). Optional — policies predating v1.7.0 simply
+   *  omit it and the built-in lists apply unchanged. Hot-reloadable. */
+  stages?: { intent?: PolicyIntentStages }
   routingRules: RoutingRule[]
   sanitizationRules: SanitizationRule[]
   dataClassifications: DataClassification[]
@@ -149,6 +180,10 @@ export interface PrivacyPolicyService {
    *  policy predates v1.6.0). Callers must guard with a built-in
    *  fallback when the array is empty. */
   getCategories(): IntentCategory[]
+  /** §7.108: the policy file's stages.intent section (undefined for
+   *  policies predating v1.7.0). intent-router reads this LIVE per
+   *  classify, so a hot-reload takes effect on the next turn. */
+  getIntentStages(): PolicyIntentStages | undefined
   /** Match input against routing rules; returns first match or null. */
   matchRouting(text: string): RoutingRule | null
   /** Classify data based on patterns; returns classification class. */
@@ -429,6 +464,11 @@ export class PrivacyPolicyServiceImpl extends Service implements PrivacyPolicySe
    *  must guard with their own built-in defaults in that case. */
   getCategories(): IntentCategory[] {
     return this.policy.categories ?? []
+  }
+
+  /** §7.108: live view of the policy file's stages.intent section. */
+  getIntentStages(): PolicyIntentStages | undefined {
+    return this.policy?.stages?.intent
   }
 
   /** Match input against routing rules; returns first match or null. */
