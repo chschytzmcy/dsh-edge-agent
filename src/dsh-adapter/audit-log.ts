@@ -17,7 +17,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { Service } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
-import { mkdir, readFile, writeFile, stat } from 'node:fs/promises'
+import { mkdir, readFile, appendFile, stat } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { redactObject } from './pii-utils.js'
@@ -297,13 +297,13 @@ export class AuditLogServiceImpl extends Service {
       await mkdir(dirname(this.filePath), { recursive: true })
       // Check if rotation is needed before writing
       await this.checkAndRotate()
-      const prev = existsSync(this.filePath) ? await readFile(this.filePath, 'utf-8') : ''
       try {
         const lines = toWrite.map((e) => JSON.stringify(e)).join('\n') + '\n'
-        const next = prev + lines
-        const tmp = `${this.filePath}.tmp-${process.pid}`
-        await writeFile(tmp, next, 'utf-8')
-        await renameWithRetry(tmp, this.filePath)
+        // 单次 append（O(新增行)），不再整读整写（旧实现每秒最多重写
+        // 10MB）。O_APPEND 还让 §7.107 双进程（desktop + dsh-edge-agent）
+        // 共写同一 JSONL 时不再互相丢更新 —— 旧的 tmp+rename 整写会用
+        // 自己的快照覆盖另一进程刚 flush 进去的行。
+        await appendFile(this.filePath, lines, 'utf-8')
         this.flushIndex = end
         this.dirty = false
       } catch (err) {

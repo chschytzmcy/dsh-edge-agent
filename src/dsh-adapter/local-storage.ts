@@ -16,7 +16,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { Service } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
-import { mkdir, readFile, writeFile, rename } from 'node:fs/promises'
+import { mkdir, readFile, appendFile, rename } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { redactObject } from './pii-utils.js'
@@ -101,10 +101,15 @@ export class LocalStorageServiceImpl extends Service {
       const op = parsed.op as string | undefined
       const collection = parsed.collection as string | undefined
       const key = parsed.key as string | undefined
-      if (!collection || !key) continue
+      // clear 记录没有 key — 跳过它会让重启后被 clear 的 collection 复活。
+      if (!collection || (!key && op !== 'clear')) continue
+      if (op === 'clear') {
+        this.cache.set(collection, new Map())
+        continue
+      }
       const bucket = this.collection(collection)
-      if (op === 'delete') bucket.delete(key)
-      else if (op === 'put') bucket.set(key, parsed.value)
+      if (op === 'delete') bucket.delete(key!)
+      else if (op === 'put') bucket.set(key!, parsed.value)
     }
     this.loaded = true
   }
@@ -155,19 +160,24 @@ export class LocalStorageServiceImpl extends Service {
     return bucket
   }
 
-  /** Append one record; serialized through a tail-of-promise chain. */
+  /** Append one record; serialized through a tail-of-promise chain.
+   *
+   * 单行 append（O(1)），不再整读整写（旧的 read-merge-write 让每次
+   * put/delete 的成本随历史线性增长）。崩溃一致性：append 中途 crash
+   * 最多留半行，load() 的逐行 JSON.parse 会跳过它。
+   *
+   * 队列防中毒：链内吞掉本次失败并让链继续走 —— 一次磁盘错误（满盘、
+   * 权限）曾把 writeQueue 变成永久 rejected，之后所有 put/delete 静默
+   * 失效直到重启。失败仍如实抛给当次调用方。 */
   private append(record: Record<string, unknown>): Promise<void> {
-    const line = JSON.stringify(record)
-    this.writeQueue = this.writeQueue.then(async () => {
+    const line = `${JSON.stringify(record)}\n`
+    const run = async (): Promise<void> => {
       await mkdir(dirname(this.filePath), { recursive: true })
-      const prev = existsSync(this.filePath) ? await readFile(this.filePath, 'utf-8') : ''
-      const next = prev.length === 0 ? `${line}\n` : `${prev}${line}\n`
-      // Atomic-ish write: write to a temp file and rename.
-      const tmp = `${this.filePath}.tmp-${process.pid}`
-      await writeFile(tmp, next, 'utf-8')
-      await renameWithRetry(tmp, this.filePath)
-    })
-    return this.writeQueue
+      await appendFile(this.filePath, line, 'utf-8')
+    }
+    const result = this.writeQueue.then(run, run)
+    this.writeQueue = result.catch(() => {})
+    return result
   }
 }
 
