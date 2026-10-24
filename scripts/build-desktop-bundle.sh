@@ -1,23 +1,43 @@
 #!/usr/bin/env bash
-# build-desktop-bundle.sh — 把本仓编译产物打成可安装的 bundle（tarball；--emit-dir 另落可安装目录），
-# 用于在 DSH 桌面版 / 任意 profile 里通过 Plugins 页或 `dsh plugin add` 加载。
+# build-desktop-bundle.sh — 构建桌面版两种产物（三平台：macOS / Windows Git Bash / Linux），
+# 并可选直接把桌面 profile 切到对应模式。
+#
+#   tar 模式（分发）   dist/dsh-edge-agent-desktop-safe.tar.gz        profile 记 file:，安装时解包成冻结副本
+#   link 模式（开发）  dist/installable/dsh-edge-agent-desktop-safe/  profile 记 link:，改文件重启 App 即生效
 #
 # 为什么用打包产物而不是直接指源码目录：
 #   源码 package.json 带 `prepare`（编译 TypeScript）。桌面 App 的执行环境里
 #   不一定有 npm（只有 app 自带的 node/pnpm），直接装源码目录会让安装卡在
-#   prepare 脚本。产物（tarball / --emit-dir 目录）预置 lib/ 且删掉
-#   scripts/devDependencies，安装即用。
+#   prepare 脚本。两种产物都预置 lib/ 且删掉 scripts/devDependencies，安装即用。
 #
-# 产出（都落在 dist/，dist/ 已被 .gitignore 忽略）：
-#   dsh-edge-agent-desktop-safe.tar.gz            推荐：只 insert 隐私栈，不改桌面全局配置
-#   dsh-edge-agent-full.tar.gz                    全量：与独立 dsh-edge profile 行为一致
-#   installable/dsh-edge-agent-desktop-safe/      （--emit-dir）桌面「本地目录」通道用
-#   installable/dsh-edge-agent-full/              （--emit-dir）
+# 每次运行全量重建两种产物 + 门禁校验（tar 和 link 永远同源）：
+#   1. pnpm run compile                      tsc → lib/
+#   2. node scripts/build-client.mjs         esbuild → lib/client.js（Edge tab 客户端 bundle；
+#                                            compile 不产它——漏了这步 tarball 照样能打出来，
+#                                            但装上后 Edge tab 静默不出现，2026-10-24 实测）
+#   3. node scripts/rebuild-installable.mjs  → dist/installable/<variant>/（原子换入保 link: 不断；
+#                                            Windows 撞活句柄锁自动降级就地同步）
+#   4. node scripts/verify-installable.mjs   门禁：manifest 引用的文件必须都在盘上
+#   5. tarball 打包（bsdtar / GNU tar 自动识别 + sha256）
 #
 # 用法：
-#   bash scripts/build-desktop-bundle.sh               # 需要 lib/ 时自动编译
-#   bash scripts/build-desktop-bundle.sh --no-build    # 用现有 lib/，不重编译
-#   bash scripts/build-desktop-bundle.sh --emit-dir    # 额外产出 dist/installable/ 可安装目录
+#   bash scripts/build-desktop-bundle.sh                          # 全量构建两种产物
+#   bash scripts/build-desktop-bundle.sh --no-build               # 复用现有 lib/，不重编译
+#   bash scripts/build-desktop-bundle.sh --install-desktop=link   # 构建后把桌面 profile 切到 link:（开发模式）
+#   bash scripts/build-desktop-bundle.sh --install-desktop=tar    # 构建后切回 file: tarball（分发模式）
+#   bash scripts/build-desktop-bundle.sh --desktop-profile=name   # 安装目标 profile（默认 desktop）
+#
+# 平台差异（脚本自动处理，无需前置安装）：
+#   macOS    /usr/bin/tar 是 bsdtar → 自动去掉 --no-xattrs（不必再装 gnu-tar）；
+#            dsh 用 App 内嵌 CLI；sha256 用 shasum
+#   Windows  Git Bash：自带 GNU tar（--no-xattrs 可用）+ shasum；make/rsync 不可用但
+#            本脚本不依赖；dsh 用 App 内嵌 dsh.cmd
+#            （%LOCALAPPDATA%\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd）
+#   Linux    GNU tar；sha256 用 shasum 或 sha256sum；dsh 走 PATH 或 ~/.npm-global/bin
+#
+# 找不到 dsh / node / pnpm 时分别用 DSH_BIN / NODE_BIN / PNPM 覆盖（Windows 的
+# DSH_BIN 指向 dsh.cmd）。App 运行中切模式一般安全，脚本会检测并提示；想零风险
+# 先退 App。--emit-dir 仍被接受（历史用法，现为 no-op）：installable 目录每次都重建。
 
 set -euo pipefail
 
@@ -25,31 +45,37 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST="$REPO/dist"
 DO_BUILD=1
 EMIT_DIR=0
+INSTALL_DESKTOP=""
+DESKTOP_PROFILE="desktop"
 for arg in "$@"; do
   case "$arg" in
     --no-build) DO_BUILD=0 ;;
     --emit-dir) EMIT_DIR=1 ;;
+    --install-desktop=link|--install-desktop=tar) INSTALL_DESKTOP="${arg#*=}" ;;
+    --install-desktop) INSTALL_DESKTOP="link" ;;
+    --desktop-profile=*) DESKTOP_PROFILE="${arg#*=}" ;;
     -h|--help)
-      sed -n '2,20p' "$0"
+      sed -n '2,40p' "$0"
       exit 0
       ;;
     *) echo "unknown option: $arg" >&2; exit 2 ;;
   esac
 done
 
-# ── 0. 定位 node / pnpm（桌面版环境里常常都不在 PATH）────────────────
+# ── 0. 定位 node / pnpm（桌面版环境里常常都不在 PATH；三平台候选链）────
 NODE_BIN="${NODE_BIN:-}"
 PNPM="${PNPM:-}"
 if [ -z "$NODE_BIN" ]; then
-  if command -v node >/dev/null 2>&1; then
-    NODE_BIN="$(command -v node)"
-  else
-    for cand in \
-      "$HOME/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/node/bin/node" \
-      "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/bin/node"; do
-      [ -x "$cand" ] && NODE_BIN="$cand" && break
-    done
-  fi
+  NODE_BIN="$(command -v node 2>/dev/null || true)"
+fi
+if [ -z "$NODE_BIN" ]; then
+  for cand in \
+    "$HOME/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/node/bin/node" \
+    "$HOME/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/node/bin/node.exe" \
+    "${LOCALAPPDATA:-}/Programs/DeepSeek Harness/resources/runtime/bin/node.exe" \
+    "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/bin/node"; do
+    [ -n "$cand" ] && [ -x "$cand" ] && NODE_BIN="$cand" && break
+  done
 fi
 [ -n "$NODE_BIN" ] || { echo "error: 找不到 node。设置 NODE_BIN=/path/to/node" >&2; exit 1; }
 
@@ -59,8 +85,10 @@ if [ -z "$PNPM" ]; then
   else
     for cand in \
       "$HOME/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/pnpm/bin/pnpm.mjs" \
+      "${LOCALAPPDATA:-}/Programs/DeepSeek Harness/resources/runtime/dependencies/pnpm/bin/pnpm.mjs" \
+      "${LOCALAPPDATA:-}/Programs/DeepSeek Harness/resources/runtime/primary-runtime/dependencies/pnpm/bin/pnpm.mjs" \
       "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/primary-runtime/dependencies/pnpm/bin/pnpm.mjs"; do
-      [ -f "$cand" ] && PNPM="$NODE_BIN $cand" && break
+      [ -n "$cand" ] && [ -f "$cand" ] && PNPM="$NODE_BIN $cand" && break
     done
   fi
 fi
@@ -68,20 +96,57 @@ fi
 echo "==> node:  $NODE_BIN ($("$NODE_BIN" -v))"
 echo "==> pnpm:  ${PNPM:-<none>}"
 
-# ── 1. 确保编译产物存在 ───────────────────────────────────────────
-if [ "$DO_BUILD" = 1 ] || [ ! -f "$REPO/lib/index.js" ]; then
+# ── 0.5 三平台工具探测：tar 口味 / sha256 / 桌面 App 是否在运行 ─────────
+# macOS 自带 bsdtar 不认 GNU 的 --no-xattrs（libarchive 默认就不写 xattr，
+# COPYFILE_DISABLE=1 防 AppleDouble 即可）；Git Bash / Linux 的 GNU tar 要它。
+TAR_NOXATTRS="--no-xattrs"
+if tar --version 2>/dev/null | grep -qi bsdtar; then
+  TAR_NOXATTRS=""
+fi
+
+sha256_file() {
+  # $1 = 文件；校验文件写在旁边（<file>.sha256）
+  if command -v shasum >/dev/null 2>&1; then
+    ( cd "$(dirname "$1")" && shasum -a 256 "$(basename "$1")" > "$(basename "$1").sha256" )
+  else
+    ( cd "$(dirname "$1")" && sha256sum "$(basename "$1")" > "$(basename "$1").sha256" )
+  fi
+}
+
+app_running() {
+  # 尽力而为的探测，任何一步拿不到工具都按"没在运行"处理（绝不因此失败）
+  if command -v pgrep >/dev/null 2>&1; then
+    pgrep -f 'DeepSeek Harness.app/Contents/MacOS' >/dev/null 2>&1 && return 0
+    pgrep -f 'DeepSeek Harness.exe' >/dev/null 2>&1 && return 0
+    return 1
+  fi
+  if command -v tasklist >/dev/null 2>&1; then
+    tasklist 2>/dev/null | grep -i 'DeepSeek Harness' >/dev/null && return 0
+    return 1
+  fi
+  return 1
+}
+
+# ── 1. 确保编译产物成套（lib/ = tsc 输出 + esbuild client bundle 两件都齐）──
+if [ "$DO_BUILD" = 1 ] || [ ! -f "$REPO/lib/index.js" ] || [ ! -f "$REPO/lib/client.js" ]; then
   if [ -z "$PNPM" ]; then
     echo "error: 需要编译但没有可用的 pnpm。设置 PNPM 或先手工 compile 后用 --no-build" >&2
     exit 1
   fi
-  echo "==> compile (pnpm run compile)"
+  echo "==> compile (pnpm run compile + build:client)"
   ( cd "$REPO" && PATH="$(dirname "$NODE_BIN"):$PATH" $PNPM run compile )
+  "$NODE_BIN" "$REPO/scripts/build-client.mjs"
 else
-  echo "==> 复用现有 lib/（--no-build 且 lib/index.js 存在）"
+  echo "==> 复用现有 lib/（--no-build 且 index.js + client.js 都在）"
 fi
 [ -f "$REPO/lib/index.js" ] || { echo "error: lib/index.js 不存在" >&2; exit 1; }
+[ -f "$REPO/lib/client.js" ] || { echo "error: lib/client.js 不存在（Edge tab 客户端 bundle，compile 不产它）——跑 node scripts/build-client.mjs" >&2; exit 1; }
 
-# ── 2. 打包两个变体 ───────────────────────────────────────────────
+# ── 2. installable 目录（link 模式产物）+ 门禁：两种产物同源 ────────
+"$NODE_BIN" "$REPO/scripts/rebuild-installable.mjs"
+"$NODE_BIN" "$REPO/scripts/verify-installable.mjs"
+
+# ── 3. 打包 tarball（tar 模式产物）──────────────────────────────────
 mkdir -p "$DIST"
 STAGE_ROOT="$(mktemp -d)"
 trap 'rm -rf "$STAGE_ROOT"' EXIT
@@ -155,63 +220,96 @@ NODEEOF
 for v in dsh-edge-agent-desktop-safe dsh-edge-agent-full; do
   OUT="$DIST/$v.tar.gz"
   # npm/pnpm 期望 tarball 顶层目录名是 `package`。
-  # macOS 是 bsdtar（没有 GNU --transform），所以显式改名后再打包。
+  # GNU tar 有 --transform 但 macOS/Linux 常见配置各异，统一显式改名后再打包
+  #（bsdtar / GNU tar / Git Bash 自带 tar 都这么走）。
   mv "$STAGE_ROOT/$v" "$STAGE_ROOT/package"
-  COPYFILE_DISABLE=1 tar --no-xattrs -czf "$OUT" -C "$STAGE_ROOT" package
+  COPYFILE_DISABLE=1 tar $TAR_NOXATTRS -czf "$OUT" -C "$STAGE_ROOT" package
   mv "$STAGE_ROOT/package" "$STAGE_ROOT/$v"
-  ( cd "$DIST" && shasum -a 256 "$v.tar.gz" > "$v.tar.gz.sha256" )
+  sha256_file "$OUT"
   echo "==> $OUT ($(du -h "$OUT" | cut -f1 | tr -d ' '))"
 done
 
-# ── 3. --emit-dir：落成「可安装目录」（桌面 Plugins 本地目录通道）──────────
+# ── 4. --install-desktop：构建后直接把桌面 profile 切到 link / tar 模式 ──
 #
-# §7.107 (2026-10-23): this used to copy the tarball staging over
-# dist/installable/<variant>/. The two artifacts are NOT the same thing —
-# the installable directory also carries config/ (the operator's
-# config/edge.json and the shipped templates), and the tarball deliberately
-# does not. Copying the staging over the installable directory silently
-# deleted config/ (and flipped the version to the tarball's), so a
-# `pnpm run build` followed by `build-desktop-bundle.sh --emit-dir` undid
-# the work of the previous step.
-#
-# scripts/rebuild-installable.mjs is the single source of truth for the
-# installable directories — it stages, swaps and keeps the `link:` target
-# continuously valid (§7.103). Call it instead of copying.
-if [ "$EMIT_DIR" = 1 ]; then
-  "$NODE_BIN" "$REPO/scripts/rebuild-installable.mjs"
-  for v in dsh-edge-agent-desktop-safe dsh-edge-agent-full; do
-    echo "==> $DIST/installable/$v"
-  done
+# dsh plugin 是 pnpm 转发器（help 原文：forwarding the remaining arguments to
+# pnpm in the profile directory），两种模式就是 pnpm 语义：
+#   link: `add <目录>`      → dependencies 记 "link:<abs>"，node_modules 里是符号链接，
+#                             之后改 dist/installable/ 里的文件 + 重启 App 即生效，无需重装
+#   tar:  `add file:<tgz>`  → dependencies 记 "file:<abs>"，解包成冻结副本；
+#                             add 会重新解析 spec（坑 1 只影响对同 path 跑 `pnpm install`）
+resolve_dsh() {
+  # 探测顺序：显式 DSH_BIN → PATH（dsh / dsh.cmd）→ macOS App 内嵌 →
+  # Windows App 内嵌 dsh.cmd → npm-global；全部落空返回 1
+  if [ -n "${DSH_BIN:-}" ]; then
+    printf '%s' "$DSH_BIN"
+    return 0
+  fi
+  local cand
+  cand="$(command -v dsh 2>/dev/null || true)"
+  [ -n "$cand" ] && { printf '%s' "$cand"; return 0; }
+  cand="$(command -v dsh.cmd 2>/dev/null || true)"
+  [ -n "$cand" ] && { printf '%s' "$cand"; return 0; }
+  cand="/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh"
+  [ -x "$cand" ] && { printf '%s' "$cand"; return 0; }
+  cand="${LOCALAPPDATA:-}/Programs/DeepSeek Harness/resources/runtime/cli/bin/dsh.cmd"
+  [ -f "$cand" ] && { printf '%s' "$cand"; return 0; }
+  cand="$HOME/.npm-global/bin/dsh"
+  [ -x "$cand" ] && { printf '%s' "$cand"; return 0; }
+  return 1
+}
+
+install_desktop() {
+  local mode="$1" prof="$2" spec dsh_bin
+  dsh_bin="$(resolve_dsh)" || {
+    echo "error: 找不到 dsh CLI。设置 DSH_BIN=/path/to/dsh" >&2
+    echo "       （Windows Git Bash：DSH_BIN=\"\$LOCALAPPDATA/Programs/DeepSeek Harness/resources/runtime/cli/bin/dsh.cmd\"）" >&2
+    exit 1
+  }
+  if [ "$mode" = "link" ]; then
+    spec="$DIST/installable/dsh-edge-agent-desktop-safe"
+  else
+    # file: 前缀与桌面 GUI / deploy-profile.sh 的记录一致（file:<abs>）
+    spec="file:$DIST/dsh-edge-agent-desktop-safe.tar.gz"
+  fi
+  echo "==> dsh:    $dsh_bin"
+  if app_running; then
+    echo "  note: 桌面 App 正在运行——改 profile 一般安全，装完重启 App 生效；"
+    echo "        想要零风险（尤其 tar 模式解包换副本），先退 App 再跑本脚本"
+  fi
+  echo "==> install-desktop($mode, profile=$prof): $dsh_bin plugin --profile $prof add $spec"
+  "$dsh_bin" plugin --profile "$prof" add "$spec"
+}
+
+if [ -n "$INSTALL_DESKTOP" ]; then
+  install_desktop "$INSTALL_DESKTOP" "$DESKTOP_PROFILE"
 fi
 
-if [ "$EMIT_DIR" = 1 ]; then
 cat <<EOF
 
-下一步 —— 装进当前桌面版（本地目录通道）：
-  1. 打开 DSH 桌面版侧边栏 Plugins → Add plugin → Install a third-party plugin
-  2. 选择「本地目录」，填入：
-     $DIST/installable/dsh-edge-agent-desktop-safe
-  3. 安装 → 启用 → 按提示重启 DSH
-  （dist/installable/ 下的 package.json 已删 scripts/devDeps，不会触发构建链。）
+产物（两种模式同源，均通过 verify-installable 门禁）：
+  tar（分发）  $DIST/dsh-edge-agent-desktop-safe.tar.gz (+ .sha256)
+  link（开发） $DIST/installable/dsh-edge-agent-desktop-safe/
+EOF
 
-想用命令行验证（不碰桌面 profile，另建一个 profile）：
-  export DSH_BIN="/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh"
-  export DSH_HOME=/tmp/dsh-edge-load
-  "\$DSH_BIN" plugin --profile edge add $DIST/dsh-edge-agent-desktop-safe.tar.gz
+if [ -n "$INSTALL_DESKTOP" ]; then
+  cat <<EOF
+
+已把 profile "$DESKTOP_PROFILE" 切到 $INSTALL_DESKTOP 模式 —— 重启 DeepSeek Harness 生效。
+link 模式迭代循环：改代码 → 重跑本脚本 → 重启 App（pnpm 不用再动）。
+换模式：--install-desktop=tar（分发）或 --install-desktop=link（开发）。
 EOF
 else
-cat <<EOF
+  cat <<EOF
 
-下一步 —— 装进当前桌面版：
-  1. 打开 DSH 桌面版侧边栏 Plugins → Add plugin → Install a third-party plugin
-  2. 填入绝对路径：
-     $DIST/dsh-edge-agent-desktop-safe.tar.gz
-     （若走「本地目录」通道，重跑本脚本加 --emit-dir，填
-      $DIST/installable/dsh-edge-agent-desktop-safe）
+装进桌面版（或构建时直接加 --install-desktop=link|tar 自动装入）：
+  1. 桌面 App 侧边栏 Plugins → Add plugin → Install a third-party plugin
+  2. 本地目录通道（link，开发）：填 $DIST/installable/dsh-edge-agent-desktop-safe
+     tarball 通道（tar，分发）：填 $DIST/dsh-edge-agent-desktop-safe.tar.gz
   3. 安装 → 启用 → 按提示重启 DSH
 
 想用命令行验证（不碰桌面 profile，另建一个 profile）：
-  export DSH_BIN="/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh"
+  export DSH_BIN="/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh"   # macOS
+  # Windows Git Bash: export DSH_BIN="\$LOCALAPPDATA/Programs/DeepSeek Harness/resources/runtime/cli/bin/dsh.cmd"
   export DSH_HOME=/tmp/dsh-edge-load
   "\$DSH_BIN" plugin --profile edge add $DIST/dsh-edge-agent-desktop-safe.tar.gz
 EOF

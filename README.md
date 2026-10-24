@@ -118,7 +118,9 @@ dsh plugin --profile dsh-tui add @deepseek-harness-edge-agent/dsh-edge-agent
 > `bash scripts/build-desktop-bundle.sh --no-build`（Git Bash 自带 GNU tar
 > 1.35 + shasum，脚本直接能跑；`pnpm` 不在 PATH 时统一用 `npm run`）。
 > `--emit-dir` 在桌面 App 运行时目录被 `link:` 锁住会自动降级为就地同步
-> （2026-10-24 起，详见方式四），无需退 App。
+> （2026-10-24 起，详见方式四），无需退 App。模式切换（`--install-desktop=link|tar`）
+> 在 Git Bash 同样可用：脚本自动探测 App 内嵌 `dsh.cmd`
+> （`%LOCALAPPDATA%\Programs\DeepSeek Harness\...`），也可 `DSH_BIN` 显式指定。
 
 ### 方式四：部署到 DSH 桌面版插件（Windows / macOS）
 
@@ -148,6 +150,14 @@ bash scripts/build-desktop-bundle.sh --no-build --emit-dir
 grep -o '"kind":"config.loaded".\{0,240\}' ~/.dsh-edge-agent/audit/audit.plain.jsonl | tail -1
 ```
 
+> **两种模式（2026-10-24 起）**：本地目录通道 = `link:` **开发模式**（profile 只做
+> 符号引用，改 `dist/installable/<variant>/` 里的文件 + 重启 App 即生效，无需重装）；
+> tarball 通道 = `file:` 分发模式（解包成冻结副本，更新需重装）。构建并切换一条命令：
+> `bash scripts/build-desktop-bundle.sh --install-desktop=link`（或 `=tar`；
+> macOS / Windows Git Bash / Linux 三平台通用）。
+> 脚本每次全量重建两种产物并跑 verify-installable 门禁（含 `lib/client.js` Edge tab
+> bundle——它不在 `pnpm run compile` 的产物里，缺了它 Edge tab 静默不出现）。
+
 **Windows 特有（2026-10-24 实测）**：
 
 - `--emit-dir` **不需要退桌面 App**（2026-10-24 起）：App 以 `link:` 挂着
@@ -165,11 +175,8 @@ grep -o '"kind":"config.loaded".\{0,240\}' ~/.dsh-edge-agent/audit/audit.plain.j
 
 **macOS 特有**：
 
-- 脚本用 GNU tar 的 `--no-xattrs`，系统自带 bsdtar 不识别：
-  ```bash
-  brew install gnu-tar
-  export PATH="/opt/homebrew/opt/gnu-tar/libexec/gnubin:$PATH"   # Intel 芯片用 /usr/local/opt
-  ```
+- tar 实现自动识别（2026-10-24 起）：系统自带 bsdtar 自动去掉 `--no-xattrs`
+  （bsdtar 默认不写 xattr，`COPYFILE_DISABLE=1` 防 AppleDouble），**无需再装 gnu-tar**
 - 退 App：`osascript -e 'tell application "DeepSeek Harness" to quit'`
 - 填入的路径示例：
   `/Users/<你>/code/dsh-edge-agent/dist/installable/dsh-edge-agent-desktop-safe`

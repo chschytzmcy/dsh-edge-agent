@@ -252,6 +252,8 @@ Git Bash 自带 GNU tar 1.35（`--no-xattrs` 能跑）+ `shasum` ✓；
 npm run compile                                  # pnpm 不在 PATH 时用 npm run
 bash scripts/build-desktop-bundle.sh --no-build  # 只出 tarball
 bash scripts/build-desktop-bundle.sh --emit-dir  # 出 installable 目录（App 开着也行，锁住自动 in-place）
+bash scripts/build-desktop-bundle.sh --install-desktop=link   # 构建 + 把桌面 profile 切 link（开发）模式
+bash scripts/build-desktop-bundle.sh --install-desktop=tar    # 构建 + 切 tar（分发）模式
 ```
 
 > 补充：Windows 上 headless CLI profile 的等价部署（不碰桌面 profile）用
@@ -260,7 +262,9 @@ bash scripts/build-desktop-bundle.sh --emit-dir  # 出 installable 目录（App 
 > —— `dsh.cmd plugin --profile dsh-edge-agent add file:<tarball>` 后
 > `DSH_EDGE_LOG_FILE=force dsh.cmd --profile dsh-edge-agent` 起服务
 > （force 是 CLI 宿主 exporter 冲突下让文本 ops log 落盘的开关，
-> 2026-10-24 实测）。
+> 2026-10-24 实测）。`build-desktop-bundle.sh --install-desktop` 会自动探测
+> 这个 dsh.cmd（顺序：`DSH_BIN` → PATH → macOS App 内嵌 → 此 Windows 路径
+> → `~/.npm-global/bin`）。
 
 ### 8.3 两个包的区别
 
@@ -311,12 +315,27 @@ if (path !== spec || isAbsolute(path)) {
 
 | 填入 | 桌面认成 | profile 里记成 | 备注 |
 |---|---|---|---|
-| 绝对路径 `…/xxx.tar.gz` / `.tgz` | `tarball` | `file:<path>` | **当前线上用的就是这条** |
-| 绝对路径 `…/dsh-edge-agent-desktop-safe/` | `path` | `link:<path>` | 目录里要有可读 package.json + `dsh.bundle`；name 不能已装 |
+| 绝对路径 `…/xxx.tar.gz` / `.tgz` | `tarball` | `file:<path>` | 分发模式：解包成冻结副本，更新走 §8.6 坑 1 流程 |
+| 绝对路径 `…/dsh-edge-agent-desktop-safe/` | `path` | `link:<path>` | **开发模式**（桌面 profile 当前用的就是这条）：符号引用目录，改文件重启即生效 |
 | 相对路径 `./x` | 拒绝 | — | "a local path must be absolute" |
 | `file:` / `link:` 前缀 | 剥掉前缀再判 | — | |
 
 ### 8.6 §7.107：迭代一次桌面 bundle 的完整步骤（两个坑）
+
+> **两种模式（2026-10-24 起桌面 profile 为 link）**：`link:`（本地目录通道）=
+> **开发模式**——node_modules 里是指向 `dist/installable/<variant>/` 的符号链接，
+> 改目录里的文件 + 重启 App 即生效，**坑 1 不存在**；`file:`（tarball 通道）=
+> 分发模式——安装时解包成冻结副本，更新走下面的坑 1 流程。
+> 构建并切换一条命令（脚本每次全量重建两种产物 + verify-installable 门禁）：
+>
+> ```bash
+> bash scripts/build-desktop-bundle.sh --install-desktop=link   # 构建 + 切开发模式
+> bash scripts/build-desktop-bundle.sh --install-desktop=tar    # 构建 + 切分发模式
+> ```
+>
+> 切换建议退 App 后跑（脚本检测到 App 运行会提示）。三平台通用
+> （macOS / Windows Git Bash / Linux）：脚本自动处理 tar 口味（bsdtar 去掉
+> `--no-xattrs`）、sha256（`shasum`/`sha256sum`）与 dsh CLI 探测。
 
 **坑 1 —— pnpm 不会因为 tarball 内容变了就重新解包。**
 `file:` tarball 依赖的 integrity 变了，lockfile 会更新，但 `pnpm install`
