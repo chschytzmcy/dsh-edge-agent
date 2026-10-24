@@ -1,0 +1,29 @@
+# dsh-edge-agent profile skin — applied AFTER every bundle layer (load order:
+# dsh-base → ...bundles... → @deepseek-harness-edge-agent/dsh-edge-agent → this file).
+#
+# §7.107 (2026-10-23): this profile is the desktop's edge logic over HTTP.
+# Same bundle (desktop-safe patch), same routing rules, same defaults — the
+# ONLY difference is this overlay, which adds the HTTP listener.
+#
+# Why a separate profile (and not the http-api row in the desktop bundle):
+#   - the desktop is Electron-managed; its profile is owned by the app's
+#     plugin manager, and a CLI cannot manage it ("managed exclusively by
+#     the Electron application").
+#   - a separate PROCESS means a separate in-memory fold: the desktop's Edge
+#     tab reads its own profile's edge-context-view buckets, so the HTTP
+#     profile's turns never land in the desktop's panel. (The two profiles do
+#     share ~/.dsh-edge-agent/audit/ — that is the on-disk audit trail, not
+#     the panel's data source.)
+#
+# The listener's host/port/bearer token come from config/edge.json
+# (http.host / http.port / secrets.edgeApiKey) — the same file the desktop
+# reads, so both profiles agree on the configuration.
+#
+# §7.101.x note: rows inside `insert:` must NOT carry `inject:` / `config:`
+# — cordis 0.2.1-rc.2's patch loader silently skips both. The plugin
+# declares its own dependencies in src (http-api's inject = agents,
+# intentRouter, auditLog, tdBus, realmSkillBridge, edgeTools).
+
+- insert:
+    - id: http-api
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/http-api'

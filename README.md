@@ -598,6 +598,47 @@ vLLM / Ollama / DashScope 实例 —— 在 `config/edge.json` 的 `llm.local` �
 | **http-api**（自研 REST + SSE） | `:21017` | bearer `EDGE_API_KEY` | CLI / SDK / cURL / 外部 agent / mobile | ✅ enabled（§7.59 修） |
 | **DSH 官方 Web UI**（SPA + apiproxy） | `:3080` | loopback trust + pairing | 浏览器 / 真人用户 / IM 渠道 | ✅ 切 web profile 时启 |
 
+### §7.107：桌面 + HTTP 双 profile（一次部署命令）
+
+桌面版和 HTTP API 现在是**两个独立进程、同一套 edge 逻辑**：
+
+| profile | 进程 | 入口 | 说明 |
+|---|---|---|---|
+| `desktop` | DSH 桌面 App（Electron 管理） | GUI + 右栏 **Edge** tab | desktop-safe bundle；App 的 plugin manager 管的，CLI 不要碰 |
+| `dsh-edge-agent` | `dsh --profile dsh-edge-agent`（后台） | HTTP API `:21017` | **同一个** desktop-safe bundle + 一层 profile overlay 挂 http-api |
+
+两边共用 `~/.dsh-edge-agent/edge.json`（唯一配置源）与 `~/.dsh-edge-agent/audit/`（审计落盘）。
+进程独立 ⇒ edge-context-view 的分桶互不可见 ⇒ HTTP 流量**不会**漏进桌面的 Edge tab
+（只有不带 sessionId 的全局行会跨会话出现）。
+
+**一次部署**（不手动复制任何文件）：
+
+```bash
+bash scripts/deploy-profile.sh dsh-edge-agent          # build + 装 bundle + 同步配置 + 启动 + 验证
+bash scripts/deploy-profile.sh dsh-edge-agent --no-build
+bash scripts/deploy-profile.sh dsh-edge-agent --no-restart
+```
+
+脚本会：打包 desktop-safe bundle → 从 `profiles/dsh-edge-agent/` 写 profile 骨架与 overlay →
+装进 profile（**强制重新解包** —— pnpm 不会因为 `file:` tarball 内容变了就重新解包，
+lockfile 更新后仍然报 "Already up to date"，profile 里跑的还是旧代码）→ 同步
+`config/privacy-policy.json` 与 `config/edge.json`（**保留运维在
+`~/.dsh-edge-agent/edge.json` 里的活密钥**，部署不会覆盖已轮换的 API key）→ 重启 → 验活。
+
+### §7.107：DEEPSEEK Search + Fetch
+
+§7.107 的路由规则把「需要检索公网上的信息」定为**唯一允许出网**的操作 —— 那这条
+路径就得真的能搜公网、真的能抓网页：
+
+| 能力 | provider | 凭据 |
+|---|---|---|
+| `web_search` | 本仓 aggregator：Tavily → 博查 AI → **DeepSeek**（`web_search_20250305` server tool） | `config/edge.json` 的 `secrets.tavilyApiKey` / `bochaApiKey` / `deepseekApiKey` |
+| `web_fetch` | 宿主的 `http` provider（`dsh-web-fetch-http`，匿名公共 HTTP(S) 抓取，自带目的地校验） | 无 |
+
+两者都是 **CLOUD realm** 的工具（`tools.ts` 的 `DSH_NATIVE_REALM_MAP`）—— realm 桥
+只在 CLOUD realm 下放行，所以只有 §7.107 允许出网的那些轮次能用它们；LOCAL realm
+下模型根本看不到这两个工具。
+
 ### 浏览器 / IM 用户 → `:3080`
 
 打开浏览器访问 `http://127.0.0.1:3080`，使用 DSH 官方 Web UI（chat / task-board / pet / IM机器人 等）。鉴权由 DSH 上游的配对 token 流程处理。

@@ -237,3 +237,45 @@
     # its deps in src; runtime knobs come from process.env inside apply().
     - id: edge-context-view
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/edge-context-view'
+
+    # §7.107 (2026-10-23): web search aggregator — Tavily → 博查 AI →
+    # DeepSeek（三级链，§7.82）。它的 Tier-3 DeepSeek 用
+    # `web_search_20250305` server tool 打 DeepSeek Messages API，凭据读
+    # config/edge.json 的 secrets.deepseekApiKey —— 不依赖环境变量，所以
+    # CLI 起的 profile（dsh-http）也能用。
+    - id: web-search-tavily-bocha
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/web-search-tavily-bocha'
+
+# ── web capability: DEEPSEEK Search + Fetch（§7.107）──────────────────────
+#
+# §7.107 的路由规则把「需要检索公网上的信息」定为唯一允许出网的操作 ——
+# 那这条路径就得真的能搜公网、真的能抓网页，否则规则没有意义。
+#
+#   - search → 本仓的 aggregator（Tavily → 博查 → DeepSeek）；DeepSeek 是
+#     链上的兜底也是唯一不依赖环境变量的后端。
+#   - fetch  → 宿主的 'http' provider（dsh-web-fetch-http，dsh-base 自带，
+#     匿名公共 HTTP(S) 抓取，自带目的地校验）。
+#
+# dsh-web-app 层把 tool-web 禁掉了（桌面版默认不带网工具）；这里重新启用。
+# realm 桥仍然管着：web_search / web_fetch 是 CLOUD realm 的工具
+# (tools.ts 的 DSH_NATIVE_REALM_MAP)，LOCAL realm 下不可见 —— 也就是只有
+# §7.107 允许出网的那些轮次能用它们。
+#
+# 注意：这些是宿主 row 的覆盖（disabled / config），不是 insert。上游
+# 'deepseek-official' search provider 必须禁掉 —— aggregator 内部私有一份
+# DeepSeekSearchProvider，两个都注册会让 seam 报 WEB_PROVIDER_AMBIGUOUS
+# （与 cordis.patch.yml 的 web 段同因同解）。
+- id: tool-web
+  disabled: false
+  config:
+    search: true
+    fetch: true
+    searchMaxResults: 8
+    searchTimeoutMs: 30000
+    fetchTimeoutMs: 30000
+- id: web
+  config:
+    searchProvider: tavily-bocha-fallback
+    fetchProvider: http
+- id: web-search-deepseek
+  disabled: true

@@ -136,8 +136,11 @@ package: build
 	@# 的骨架 package.json + skin cordis.patch.yml),不打 profiles/node_modules/
 	@# (252 symlink 指向开发机)也不打 profiles/dsh-edge-agent/(§7.61 退役
 	@# 的 legacy profile + 自带 node_modules)。
+	@# §7.107 (2026-10-24): dsh-edge-agent/ 是新的 HTTP profile 骨架
+	@# (桌面那套 edge 逻辑 + 一层 http-api overlay),也一起打。
 	@mkdir -p $(PACKAGE_DIR)/dsh-edge-agent-v$(VERSION)/profiles
 	@cp -r profiles/dsh-edge $(PACKAGE_DIR)/dsh-edge-agent-v$(VERSION)/profiles/
+	@cp -r profiles/dsh-edge-agent $(PACKAGE_DIR)/dsh-edge-agent-v$(VERSION)/profiles/
 
 	@# 用户文档 + 入口
 	@cp install.sh $(PACKAGE_DIR)/dsh-edge-agent-v$(VERSION)/
