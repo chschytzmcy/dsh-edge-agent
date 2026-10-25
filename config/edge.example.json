@@ -52,11 +52,13 @@
       "recentLimit": 3,
       "cloudKeywords": [],
       "localEntities": [],
-      "fallbackKeywords": []
+      "fallbackKeywords": [],
+      "llmFallback": true,
+      "_comment": " §7.115：llmFallback=false = 决策模型 only 模式（jev skip 直接落规则层，LLM 分类器不再运行）。"
     }
   },
   "jev": {
-    "_comment": "§7.92.3 jev 意图识别（toggle，默认 ON；开 → 在 LLM classifier 之前先跑）。Toggle=false 时 classify() 完全跳过 jev 路径（无 network call）。高置信 (>=confidenceThreshold) + 低风险 (<riskThreshold) → 直接采纳；否则 fall through 到 LLM。 §7.112（2026-10-25）：provider 可选 local（默认，ONNX /predict）| bailian-decision（阿里 decision-model /systemone——questions 从 categories 自动生成，model 填 decision-model-preview，apiKeyRef 指向 secrets 里的百炼 MaaS key，authScheme raw=Authorization: <key> / bearer=Bearer 前缀）。§7.114：决策模型是配置文件绑定的外部服务——path 默认 /systemone（MaaS 部署）；本地 MLX serve 同一契约时 url 指 http://127.0.0.1:11017/v1、path 改 /classify（它有 /health，探针自动恢复）。",
+    "_comment": "§7.92.3 jev 意图识别（toggle，默认 ON；开 → 在 LLM classifier 之前先跑）。Toggle=false 时 classify() 完全跳过 jev 路径（无 network call）。高置信 (>=confidenceThreshold) + 低风险 (<riskThreshold) → 直接采纳；否则 fall through 到 LLM。 §7.112（2026-10-25）：provider 可选 local（默认，ONNX /predict）| bailian-decision（阿里 decision-model /systemone——questions 从 categories 自动生成，model 填 decision-model-preview，apiKeyRef 指向 secrets 里的百炼 MaaS key，authScheme raw=Authorization: <key> / bearer=Bearer 前缀）。§7.114：决策模型是配置文件绑定的外部服务——path 默认 /systemone（MaaS 部署）；本地 MLX serve 同一契约时 url 指 http://127.0.0.1:11017/v1、path 改 /classify（它有 /health，探针自动恢复）。 §7.115：localAdoptFloor=方向分闸——LOCAL 倾向判决 ≥ 该值直接采纳（默认本地，不落 LLM），非 LOCAL 仍走 confidenceThreshold。",
     "enabled": true,
     "url": "http://127.0.0.1:8001",
     "timeoutMs": 2500,
@@ -71,7 +73,8 @@
     "model": "decision-model-preview",
     "apiKeyRef": "bailianApiKey",
     "authScheme": "raw",
-    "path": "/systemone"
+    "path": "/systemone",
+    "localAdoptFloor": 0.5
   },
   "functionCallExternal": {
     "_comment": "§7.93.1 ExternalToolCaller（纯 client，外部维护）。契约 GET /health + POST /extract {query,tools,system?,max_new_tokens?}。CLOUD intent 不走 caller；caller 不可达 / 低置信 fall through 到 LLM 自提取。",

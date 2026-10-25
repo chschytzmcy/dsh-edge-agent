@@ -80,6 +80,9 @@ export interface EdgeStage {
   model?: string
   /** intent-router: category used when no LLM verdict and no keyword matched. */
   defaultCategory?: string
+  /** §7.115 (2026-10-25): decision-model-only mode — false = the LLM
+   *  classifier never runs; jev skips go straight to rules + default. */
+  llmFallback?: boolean
   enabled?: boolean
   timeoutMs?: number
   maxInput?: number
@@ -108,6 +111,10 @@ export interface EdgeJevConfig {
    *  'bearer' = `Authorization: Bearer <key>` (DashScope compatible-mode
    *  convention). Default 'raw'. */
   authScheme?: 'raw' | 'bearer'
+  /** §7.115: directional confidence gate — a LOCAL-leaning decision-model
+   *  verdict adopts at this floor (default 0.5) instead of paying the LLM
+   *  round-trip; non-LOCAL keeps jev.confidenceThreshold (0.85). */
+  localAdoptFloor?: number
   /** §7.114 (2026-10-25): classify path appended to `url`. '/systemone'
    *  (default) = the MaaS deployments; a local MLX serve of the same
    *  contract exposes '/v1/classify' — point url at its /v1 and set
@@ -622,6 +629,10 @@ const ENV_OVERRIDES: Array<{
   {
     env: 'DSH_EDGE_INTENT_FALLBACK_KEYWORDS',
     apply: (cfg, v) => { cfg.stages!.intent!.fallbackKeywords = v.split(',').filter(Boolean) },
+  },
+  {
+    env: 'DSH_EDGE_INTENT_LLM_FALLBACK',
+    apply: (cfg, v) => { cfg.stages!.intent!.llmFallback = v !== 'false' },
   },
   {
     env: 'DSH_EDGE_INTENT_JEV_ENABLED',

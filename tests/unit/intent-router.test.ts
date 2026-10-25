@@ -3730,3 +3730,113 @@ describe('intent-router §7.114 local MLX decision-model (config-bound external 
     }
   })
 })
+
+describe('intent-router §7.115 directional gate + llmFallback switch', () => {
+  function mockDecision(respond: () => any) {
+    const orig = (globalThis as any).fetch
+    ;(globalThis as any).fetch = async (url: string, init: any) => {
+      if (!String(url).endsWith('/systemone')) {
+        return { ok: true, status: 200, text: async () => '{}', json: async () => ({}) }
+      }
+      const body = respond()
+      return { ok: true, status: 200, text: async () => JSON.stringify(body), json: async () => body }
+    }
+    return { restore: () => { (globalThis as any).fetch = orig } }
+  }
+
+  function decisionService(config: Record<string, unknown>, audit?: unknown) {
+    return new IntentRouterServiceImpl({ reflect: { provide: () => {} }, llm: null } as any, {
+      defaultCategory: 'LOCAL',
+      classificationProvider: 'local-llm',
+      confidenceThreshold: 0.6,
+      jevEnabled: true,
+      jevProvider: 'bailian-decision' as const,
+      jevUrl: 'https://bailian.mock/compatible-mode/v1',
+      jevBootProbeEnabled: false,
+      ...config,
+    }, audit as any)
+  }
+
+  it('directional gate: LOCAL-leaning verdict at conf 0.62 adopts at the 0.5 floor (no LLM paid)', async () => {
+    const mock = mockDecision(() => ({
+      answers: {
+        intent: { type: 'choice', choice: 'LOCAL', confidence: 0.62 },
+        risk: { type: 'score', score: 0.3 },
+      },
+    }))
+    try {
+      const audit = auditSpy()
+      const intent = decisionService({}, audit).classify('随便聊聊今天的心情')
+      assert.equal((await intent).category, 'LOCAL')
+      assert.match((await intent).rationale, /jev-intent:LOCAL/u)
+      const adopt = audit.entries.find((e: any) => e.kind === 'intent.jev.adopt')
+      assert.ok(adopt, 'expected jev adopt row')
+    } finally {
+      mock.restore()
+    }
+  })
+
+  it('directional gate: non-LOCAL verdict keeps the strict 0.85 threshold', async () => {
+    const mock = mockDecision(() => ({
+      answers: {
+        intent: { type: 'choice', choice: 'CLOUD', confidence: 0.62 },
+        risk: { type: 'score', score: 0.4 },
+      },
+    }))
+    try {
+      const audit = auditSpy()
+      const intent = await decisionService({}, audit).classify('查一下最新的AI新闻')
+      // jev skipped (0.62 < 0.85) → llm null → rules: the query carries the
+      // 新闻 cloud keyword, so the rules tier ADOPTS CLOUD (public-web
+      // signal — correct §7.107 behavior, not the default).
+      assert.equal(intent.category, 'CLOUD')
+      assert.match(intent.rationale, /rule-cloud-keyword:/u)
+      const low = audit.entries.find((e: any) => e.kind === 'intent.jev.low_confidence')
+      assert.ok(low, 'expected low_confidence row')
+      assert.equal(low.payload.threshold, 0.85)
+    } finally {
+      mock.restore()
+    }
+  })
+
+  it('localAdoptFloor is config-tunable (0.8 → LOCAL conf 0.62 skips)', async () => {
+    const mock = mockDecision(() => ({
+      answers: {
+        intent: { type: 'choice', choice: 'LOCAL', confidence: 0.62 },
+        risk: { type: 'score', score: 0.3 },
+      },
+    }))
+    try {
+      const audit = auditSpy()
+      const intent = await decisionService({ jevLocalAdoptFloor: 0.8 }, audit).classify('随便聊聊')
+      assert.equal(intent.category, 'LOCAL')
+      const low = audit.entries.find((e: any) => e.kind === 'intent.jev.low_confidence')
+      assert.ok(low, 'expected low_confidence row at the raised floor')
+      assert.equal(low.payload.threshold, 0.8)
+    } finally {
+      mock.restore()
+    }
+  })
+
+  it('llmFallback=false: jev skip goes straight to rules — LLM classifier never runs', async () => {
+    const mock = mockDecision(() => ({
+      answers: {
+        intent: { type: 'choice', choice: 'CLOUD', confidence: 0.5 },
+        risk: { type: 'score', score: 0.2 },
+      },
+    }))
+    try {
+      const audit = auditSpy()
+      const intent = await decisionService({ llmFallback: false }, audit).classify('查一下最新的AI新闻')
+      // jev skip → rules (新闻 keyword → CLOUD). The decisive assertion is
+      // the path: the LLM classifier branch never ran.
+      assert.equal(intent.category, 'CLOUD')
+      const end = audit.entries.find((e: any) => e.kind === 'intent.classify.end')
+      assert.equal(end.payload.path, 'rules-llm-fallback-off')
+      // no classify.start for the LLM classifier would be ambiguous (start
+      // fires for the whole classify) — the decisive proof is the path.
+    } finally {
+      mock.restore()
+    }
+  })
+})

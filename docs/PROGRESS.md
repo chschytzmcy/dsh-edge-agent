@@ -11095,3 +11095,22 @@ jev 后端**——查询原文不出设备（bailian 云端模式下 jev 阶段�
 `url: http://127.0.0.1:11017/v1`、`path: /classify`、`apiKeyRef` 留空。
 
 **测试**：+1 例（/classify 路径变体，请求形状断言），**1061 passed**。
+
+## §7.115 —— 方向分闸 + LLM 兜底开关：决策模型存在时的 LLM 角色收敛（2026-10-25）
+
+**问题**：决策模型存在时 LLM 分类器还该不该跑？逐情形评估：①低置信 skip → LLM
+再判一次（2-4s 确认一个决策模型已倾向的结论——最浪费）；②决策模型不可用 → LLM
+接管（✅ 可用性纵深，别的部署可能两者皆无）；③taxonomy 外幻觉 → LLM（✅ 防御）。
+
+**实现**：
+1. **方向分闸**（`jev.localAdoptFloor`，默认 0.5）——LOCAL 是 §7.107 的 fail-safe
+   默认，LOCAL 倾向判决 ≥ 0.5 直接采纳（省掉 LLM 背书）；非 LOCAL（数据可能出设备）
+   仍走 0.85 严格门。实施：classifyWithBailianDecision 里 mapped 解析提前 + 按方向
+   取 floor。仅 decision-model 后端；local /predict 契约语义不动。
+2. **LLM 兜底开关**（`stages.intent.llmFallback`，默认 true）——false = 决策模型
+   only 模式：jev skip 直接落规则层 + 默认 LOCAL（审计 path=rules-llm-fallback-off），
+   LLM 分类器不再运行。env：DSH_EDGE_INTENT_LLM_FALLBACK。
+
+**测试**：+4 例（方向采纳 / 非 LOCAL 严格门 / floor 可调 / llmFallback=false 直落
+规则——修正过一次错误预期：新闻查询在规则层命中关键词正确返回 CLOUD 而非默认）。
+**1065 passed**。两 profile 已部署。

@@ -35,6 +35,10 @@ export interface Config {
    *  Below this value, the router falls back to keyword rules
    *  (fail-open, not REJECT — see Phase B plan). */
   confidenceThreshold: number
+  /** §7.115 (2026-10-25): decision-model-only mode — false = the LLM
+   *  classifier never runs; a jev skip goes straight to the rules tier +
+   *  default LOCAL (fail-closed). Default true. */
+  llmFallback?: boolean
   /** Hard cap on a single classify() LLM call. The AbortController fires
    *  this many ms after the stream starts; on timeout the call throws
    *  and the caller falls through to the keyword/default path (fail-open).
@@ -102,6 +106,11 @@ export interface Config {
    *  set '/classify'. The decision model is a config-file-bound EXTERNAL
    *  service: url/path/model/key all live in edge.json, zero hardcoding. */
   jevPath?: string
+  /** §7.115: directional confidence gate — a LOCAL-leaning decision-model
+   *  verdict adopts at this floor (default 0.5) instead of paying the LLM
+   *  round-trip for a second opinion; non-LOCAL (data may leave the device)
+   *  keeps the strict jevConfidenceThreshold. */
+  jevLocalAdoptFloor?: number
   /** §7.92.3: per-batch jev HTTP timeout in ms (applies to EACH batch
    *  fired by the §7.92.5 orchestrator). Env DSH_EDGE_INTENT_JEV_TIMEOUT_MS. */
   jevTimeoutMs?: number
@@ -172,6 +181,8 @@ export const Config: Schema<Config> = Schema.object({
     // `local.route-missing`), by design.
     .default('LOCAL'),
   classificationProvider: Schema.string().default('local-llm'),
+  // §7.115: decision-model-only mode switch (see Config docs).
+  llmFallback: Schema.boolean(),
   // §7.102: the classification model follows the LOCAL pool in
   // config/edge.json (llm.local.model). The Schema default is only a
   // last-resort fallback when no config file is present at all.
@@ -205,6 +216,7 @@ export const Config: Schema<Config> = Schema.object({
   jevApiKey: Schema.string(),
   jevAuthScheme: Schema.union(['raw', 'bearer'] as const),
   jevPath: Schema.string(),
+  jevLocalAdoptFloor: Schema.number(),
   // 2.5s = comfortably above jev's documented P95 (< 300ms) with headroom
   // for cold-start model load + inter-container network jitter. Smaller
   // than `llmTimeoutMs` (default 4-30s) so jev-as-prefilter still saves
@@ -437,6 +449,7 @@ export class IntentRouterServiceImpl extends Service {
   private readonly classificationProvider: string
   private readonly classificationModel: string
   private readonly confidenceThreshold: number
+  private readonly llmFallback: boolean
   private readonly llmTimeoutMs: number
   private readonly recentMessagesLimit: number
   private readonly maxInputLength: number
@@ -458,6 +471,7 @@ export class IntentRouterServiceImpl extends Service {
   private readonly jevApiKey: string | undefined
   private readonly jevAuthScheme: 'raw' | 'bearer'
   private readonly jevPath: string
+  private readonly jevLocalAdoptFloor: number
   /** §7.92.3: jev fetch timeout (ms). */
   private readonly jevTimeoutMs: number
   /** §7.92.3: min jev confidence to adopt (else fall through to LLM). */
@@ -616,6 +630,7 @@ export class IntentRouterServiceImpl extends Service {
     this.classificationProvider = config.classificationProvider
     this.classificationModel = config.classificationModel
     this.confidenceThreshold = config.confidenceThreshold
+    this.llmFallback = config.llmFallback ?? true
     this.llmTimeoutMs = config.llmTimeoutMs ?? 4000
     this.recentMessagesLimit = config.recentMessagesLimit ?? 3
     this.maxInputLength = config.maxInputLength ?? 2000
@@ -645,6 +660,7 @@ export class IntentRouterServiceImpl extends Service {
     this.jevApiKey = config.jevApiKey || undefined
     this.jevAuthScheme = config.jevAuthScheme ?? 'raw'
     this.jevPath = config.jevPath ?? '/systemone'
+    this.jevLocalAdoptFloor = config.jevLocalAdoptFloor ?? 0.5
     this.jevTimeoutMs = config.jevTimeoutMs ?? 2500
     this.jevConfidenceThreshold = config.jevConfidenceThreshold ?? 0.85
     this.jevRiskThreshold = config.jevRiskThreshold ?? 0.7
@@ -1016,6 +1032,27 @@ export class IntentRouterServiceImpl extends Service {
       if (jevResult.action === 'skip' && jevResult.skipReason !== 'jev-error' && jevResult.skipReason !== 'jev-timeout') {
         this.stats.jevSkip++
       }
+    }
+
+    // §7.115: decision-model-only mode (stages.intent.llmFallback=false) —
+    // the LLM classifier is a fallback operators can switch off entirely.
+    // When off, a jev skip goes straight to the rules tier + default LOCAL
+    // (fail-closed); no LLM round-trip ever happens.
+    if (!this.llmFallback) {
+      const intent = this.classifyWithRules(effectiveText)
+      if (intent.category === 'REJECT') this.stats.rejected++
+      else if (intent.rationale.startsWith('default:')) this.stats.defaultHit++
+      else this.stats.ruleHit++
+      this.audit('info', 'intent.classify.end', { sessionId: sid,
+        textLen: effectiveText.length,
+        path: 'rules-llm-fallback-off',
+        category: intent.category,
+        confidence: intent.confidence,
+        rationale: intent.rationale,
+        ...this.classifyEvidence(intent),
+        durationMs: Date.now() - start,
+      })
+      return intent
     }
 
     // Try LLM classification first
@@ -1576,26 +1613,12 @@ export class IntentRouterServiceImpl extends Service {
       }
     }
 
-    if (confidence < this.jevConfidenceThreshold) {
-      this.audit('info', 'intent.jev.low_confidence', {
-        provider: 'bailian-decision',
-        intent: intentStr,
-        confidence,
-        threshold: this.jevConfidenceThreshold,
-        latencyMs,
-      })
-      return {
-        action: 'skip',
-        confidence,
-        riskScore,
-        latencyMs,
-        jevIntentString: intentStr ?? undefined,
-        skipReason: 'low-confidence',
-      }
-    }
-
-    // The choice criteria keys ARE the category ids — an answer outside the
-    // taxonomy (model hallucination) falls through to the LLM (defensive).
+    // §7.115 directional confidence gate: resolve the mapped category FIRST,
+    // then split the floor by direction — LOCAL is the fail-safe default
+    // (§7.107), so a LOCAL-leaning verdict adopts at jev.localAdoptFloor
+    // (default 0.5) instead of paying the LLM round-trip for a second
+    // opinion; non-LOCAL (data may leave the device) keeps the strict
+    // jevConfidenceThreshold.
     const mapped = this.categories.find((c) => c.id === intentStr)?.id
     if (!intentStr || !mapped) {
       this.audit('info', 'intent.jev.unmapped_intent', {
@@ -1611,6 +1634,24 @@ export class IntentRouterServiceImpl extends Service {
         latencyMs,
         jevIntentString: intentStr ?? undefined,
         skipReason: 'unmapped-intent',
+      }
+    }
+    const adoptFloor = mapped === 'LOCAL' ? this.jevLocalAdoptFloor : this.jevConfidenceThreshold
+    if (confidence < adoptFloor) {
+      this.audit('info', 'intent.jev.low_confidence', {
+        provider: 'bailian-decision',
+        intent: intentStr,
+        confidence,
+        threshold: adoptFloor,
+        latencyMs,
+      })
+      return {
+        action: 'skip',
+        confidence,
+        riskScore,
+        latencyMs,
+        jevIntentString: intentStr ?? undefined,
+        skipReason: 'low-confidence',
       }
     }
 
@@ -2753,6 +2794,10 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
     }
     if (intentStage.fallbackKeywords !== undefined) {
       ;(config as { fallbackKeywords: string[] }).fallbackKeywords = intentStage.fallbackKeywords
+    }
+    // §7.115: decision-model-only mode switch (stages.intent.llmFallback).
+    if (intentStage.llmFallback !== undefined) {
+      ;(config as { llmFallback: boolean }).llmFallback = intentStage.llmFallback
     }
   }
   // §7.102: the jev pre-filter knobs come from config/edge.json (jev.*).
