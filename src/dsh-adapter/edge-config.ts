@@ -108,6 +108,11 @@ export interface EdgeJevConfig {
    *  'bearer' = `Authorization: Bearer <key>` (DashScope compatible-mode
    *  convention). Default 'raw'. */
   authScheme?: 'raw' | 'bearer'
+  /** §7.114 (2026-10-25): classify path appended to `url`. '/systemone'
+   *  (default) = the MaaS deployments; a local MLX serve of the same
+   *  contract exposes '/v1/classify' — point url at its /v1 and set
+   *  path '/classify'. */
+  path?: string
   timeoutMs?: number
   confidenceThreshold?: number
   riskThreshold?: number
@@ -931,6 +936,7 @@ export function jevPool(cfg: EdgeConfig = loadEdgeConfig()): {
   model?: string
   apiKey?: string
   authScheme?: 'raw' | 'bearer'
+  path?: string
 } {
   const pool = cfg.jev ?? {}
   return {
@@ -940,6 +946,7 @@ export function jevPool(cfg: EdgeConfig = loadEdgeConfig()): {
     model: pool.model || undefined,
     apiKey: resolveSecret(cfg, pool.apiKeyRef),
     authScheme: pool.authScheme || undefined,
+    path: pool.path || undefined,
   }
 }
 

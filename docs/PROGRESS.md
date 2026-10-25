@@ -11075,3 +11075,23 @@ E2E 链路含百炼后端全绿。
 （50 行 jev + 212ms）；jev-reject 行带 semantic="高危 / 违法 / 违规请求…"——顺带实测
 百炼 risk 打分真实拦截（"发到网上"类请求 risk 0.70 → HTTP 403）。keyword 路径由单测
 覆盖（攻略）。**1060 passed**；两 profile 已部署。
+
+## §7.114 —— 决策模型 = 配置文件绑定的外部服务，本地 MLX 接入（2026-10-25）
+
+**需求**：决策模型作为**外部 HTTP 服务**调用，全部参数进配置文件（function-call-external
+的同款「HTTP 契约边界」模式）；org 在本机跑了 MLX serve（127.0.0.1:11017，同一
+systemone 契约、路径 /v1/classify、带 /health）。
+
+**实现**：`jev.path`（默认 /systemone）——classify 调用改 `${jevUrl}${jevPath}` 拼接；
+探针跳过条件收敛为 path==='/systemone'（MaaS 无 /health；本地 MLX 有 → 探针恢复，
+断路器语义完整）。url/path/model/apiKeyRef/authScheme 全部在 edge.json `jev.*`，
+适配器零硬编码——换部署 = 改配置。
+
+**本地 MLX 测评（15 条金标）**：意图准确率 **14/15 (93%)**（唯一误判「密盒登录状态」
+误选 REJECT，conf 0.60 < 0.85 门限 → 落回 LLM，实体护栏双保险，实际管线无影响）；
+risk 闸方向 14/15；平均延迟 2081ms（双问题结构化调用）。定位：**本地优先部署的
+jev 后端**——查询原文不出设备（bailian 云端模式下 jev 阶段在脱敏前，原文出阿里云）、
+零 API 成本；代价是 2s 延迟（≈ LLM 分类器档，比云端 47ms 慢）。切换 = 改三个字段：
+`url: http://127.0.0.1:11017/v1`、`path: /classify`、`apiKeyRef` 留空。
+
+**测试**：+1 例（/classify 路径变体，请求形状断言），**1061 passed**。

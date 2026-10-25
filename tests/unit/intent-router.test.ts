@@ -3684,3 +3684,49 @@ describe('intent-router §7.112 Bailian decision-model jev backend', () => {
     }
   })
 })
+
+describe('intent-router §7.114 local MLX decision-model (config-bound external service)', () => {
+  it('jevPath reroutes the classify call — same contract, external deployment', async () => {
+    const calls: Array<{ url: string; init: any }> = []
+    const orig = (globalThis as any).fetch
+    ;(globalThis as any).fetch = async (url: string, init: any) => {
+      calls.push({ url, init })
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({
+          model: 'decision-model-preview',
+          answers: {
+            intent: { type: 'choice', choice: 'LOCAL', confidence: 0.97 },
+            risk: { type: 'score', score: 0.1 },
+          },
+          latency_ms: 2081,
+        }),
+        json: async () => ({}),
+      }
+    }
+    try {
+      const service = new IntentRouterServiceImpl({ reflect: { provide: () => {} }, llm: null } as any, {
+        defaultCategory: 'LOCAL',
+        classificationProvider: 'local-llm',
+        confidenceThreshold: 0.6,
+        jevEnabled: true,
+        jevProvider: 'bailian-decision' as const,
+        jevUrl: 'http://127.0.0.1:11017/v1',
+        jevPath: '/classify',
+        jevModel: 'decision-model-preview',
+        jevBootProbeEnabled: false,
+      })
+      const intent = await service.classify('帮我读取文件内容')
+      assert.equal(intent.category, 'LOCAL')
+      assert.match(intent.rationale, /jev-intent:LOCAL/u)
+      const call = calls.find((c) => c.url === 'http://127.0.0.1:11017/v1/classify')
+      assert.ok(call, `expected a /v1/classify call, got ${JSON.stringify(calls.map((c) => c.url))}`)
+      const body = JSON.parse(call.init.body)
+      assert.equal(body.model, 'decision-model-preview')
+      assert.equal(body.questions.intent.criteria.LOCAL.length > 0, true)
+    } finally {
+      (globalThis as any).fetch = orig
+    }
+  })
+})

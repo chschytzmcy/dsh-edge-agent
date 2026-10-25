@@ -96,6 +96,12 @@ export interface Config {
    *  'bearer' = `Authorization: Bearer <key>` (compatible-mode
    *  convention). Default 'raw'. */
   jevAuthScheme?: 'raw' | 'bearer'
+  /** §7.114 (2026-10-25): classify path appended to jevUrl. '/systemone'
+   *  (default) = the MaaS deployments; a local MLX serve of the same
+   *  contract exposes '/v1/classify' — point jevUrl at its /v1 root and
+   *  set '/classify'. The decision model is a config-file-bound EXTERNAL
+   *  service: url/path/model/key all live in edge.json, zero hardcoding. */
+  jevPath?: string
   /** §7.92.3: per-batch jev HTTP timeout in ms (applies to EACH batch
    *  fired by the §7.92.5 orchestrator). Env DSH_EDGE_INTENT_JEV_TIMEOUT_MS. */
   jevTimeoutMs?: number
@@ -198,6 +204,7 @@ export const Config: Schema<Config> = Schema.object({
   jevModel: Schema.string(),
   jevApiKey: Schema.string(),
   jevAuthScheme: Schema.union(['raw', 'bearer'] as const),
+  jevPath: Schema.string(),
   // 2.5s = comfortably above jev's documented P95 (< 300ms) with headroom
   // for cold-start model load + inter-container network jitter. Smaller
   // than `llmTimeoutMs` (default 4-30s) so jev-as-prefilter still saves
@@ -450,6 +457,7 @@ export class IntentRouterServiceImpl extends Service {
   private readonly jevModel: string
   private readonly jevApiKey: string | undefined
   private readonly jevAuthScheme: 'raw' | 'bearer'
+  private readonly jevPath: string
   /** §7.92.3: jev fetch timeout (ms). */
   private readonly jevTimeoutMs: number
   /** §7.92.3: min jev confidence to adopt (else fall through to LLM). */
@@ -636,6 +644,7 @@ export class IntentRouterServiceImpl extends Service {
     this.jevModel = config.jevModel ?? 'decision-model-preview'
     this.jevApiKey = config.jevApiKey || undefined
     this.jevAuthScheme = config.jevAuthScheme ?? 'raw'
+    this.jevPath = config.jevPath ?? '/systemone'
     this.jevTimeoutMs = config.jevTimeoutMs ?? 2500
     this.jevConfidenceThreshold = config.jevConfidenceThreshold ?? 0.85
     this.jevRiskThreshold = config.jevRiskThreshold ?? 0.7
@@ -1473,7 +1482,7 @@ export class IntentRouterServiceImpl extends Service {
     const timer = setTimeout(() => controller.abort(), this.jevTimeoutMs)
     let parsed: any = null
     try {
-      const r = await fetch(`${this.jevUrl}/systemone`, {
+      const r = await fetch(`${this.jevUrl}${this.jevPath}`, {
         method: 'POST',
         headers: this.jevHeaders(),
         body: JSON.stringify(body),
@@ -2376,7 +2385,10 @@ confidence 含义：
     // pre-opened the breaker at boot and silently skipped every classify.
     // The backend is billed per call: skip probing entirely and let the
     // breaker open only on real classify failures (TTL gives recovery).
-    if (this.jevProvider === 'bailian-decision') {
+    // §7.114: the skip is path-scoped — the MaaS deployments have no
+    // /health surface, but a local MLX serve DOES (GET {url}/health →
+    // 200), and for that deployment probing is free and desirable.
+    if (this.jevProvider === 'bailian-decision' && this.jevPath === '/systemone') {
       if (phase === 'boot') {
         this.audit('debug', 'intent.jev.boot_probe', { provider: 'bailian-decision', skipped: true, note: 'no /health surface — probe skipped' })
       }
@@ -2759,6 +2771,7 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
     fill('jevProvider', jev.provider)
     fill('jevModel', jev.model)
     fill('jevAuthScheme', jev.authScheme)
+    fill('jevPath', jev.path)
     const jpoolApiKey = jevPool().apiKey
     if (jpoolApiKey !== undefined) fill('jevApiKey', jpoolApiKey)
     fill('jevTimeoutMs', jev.timeoutMs)
