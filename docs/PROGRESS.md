@@ -11057,3 +11057,21 @@ keyRef 都改指 minimaxApiKey（MiniMax 的真 key，实测有效；此前 dash
 挂的其实是 MiniMax key，命名误导链的终点）。**终态**：classify → jev.adopt
 provider=bailian-decision latency 43.7ms → CLOUD → web_search → 云端合成 4594 字，
 E2E 链路含百炼后端全绿。
+
+## §7.113 —— Edge tab 呈现判定证据：正则关键词 + 语义那句话（2026-10-25）
+
+**需求**：Intent 面板把"为什么这么路由"说全——正则命中的**关键词**和语义判定的**那句话**
+（所选类别的描述）都要呈现。
+
+**实现**：`intent-router` 新增 `classifyEvidence()`——从 rationale 提取 `keyword`
+（`rule-cloud-keyword:X` / `rule-local-entity:X` / `override-local-entity:X` /
+`rule-keyword-match:X`），从 policy `categories` 取所选类别的 description 作 `semantic`；
+六个 `intent.classify.end` 发射点统一展开这两个标量（safePayload 直传，PII 扫描照走）。
+客户端 `rows.tsx` intent 白名单前插 `keyword`/`semantic`，semantic 截断放宽到 60 字
+（FIELD_CAP 覆盖默认 24）。顺带修：LOCAL 兜底词命中的 rationale 原来不带关键词
+（`rule-keyword-match` → `rule-keyword-match:<词>`）。
+
+**实测**（headless :21017）：jev-adopt 行带 semantic="需要检索公网上信息的任务：…"
+（50 行 jev + 212ms）；jev-reject 行带 semantic="高危 / 违法 / 违规请求…"——顺带实测
+百炼 risk 打分真实拦截（"发到网上"类请求 risk 0.70 → HTTP 403）。keyword 路径由单测
+覆盖（攻略）。**1060 passed**；两 profile 已部署。

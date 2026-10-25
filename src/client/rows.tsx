@@ -17,9 +17,11 @@ export function shortKind(kind: string): string {
 }
 
 /** Field whitelist per panel, ordered for reading. Unknown kinds degrade to
- *  whatever safe scalars exist. */
+ *  whatever safe scalars exist. §7.113: the intent panel leads with the two
+ *  evidence scalars — `keyword` (the regex hit) and `semantic` (the chosen
+ *  category's description sentence the LLM/jev classifier answered with). */
 const FIELD_ORDER: Record<string, string[]> = {
-  intent: ['category', 'targetRealm', 'confidence', 'rationale', 'classifier', 'textLen'],
+  intent: ['category', 'keyword', 'semantic', 'targetRealm', 'confidence', 'rationale', 'classifier', 'textLen'],
   // §7.106: llm.host.route rows carry provider+model from the session event
   // stream (the host's actual answer route — never visible via edge adapters).
   route: ['provider', 'model', 'toProvider', 'toModel', 'resolved', 'baseUrl', 'status', 'durationMs', 'promptLen'],
@@ -31,8 +33,11 @@ const FIELD_ORDER: Record<string, string[]> = {
 }
 
 /** Scalar cap: baseUrl/model/rationale strings otherwise push a row past any
- *  panel width — 24 chars keeps the field line to at most two wrapped rows. */
+ *  panel width — 24 chars keeps the field line to at most two wrapped rows.
+ *  §7.113: `semantic` carries the classifier's category sentence — the whole
+ *  point of the field — so it gets a wider budget before ellipsising. */
 const VALUE_CAP = 24
+const FIELD_CAP: Record<string, number> = { semantic: 60 }
 
 export function rowFields(row: EdgeRow, panel: string): string {
   const keys = FIELD_ORDER[panel] ?? []
@@ -44,7 +49,8 @@ export function rowFields(row: EdgeRow, panel: string): string {
     } else if (typeof value === 'boolean') {
       parts.push(`${key}=${value}`)
     } else if (typeof value === 'string' && value.length > 0) {
-      parts.push(`${key}=${value.length > VALUE_CAP ? `${value.slice(0, VALUE_CAP - 1)}…` : value}`)
+      const cap = FIELD_CAP[key] ?? VALUE_CAP
+      parts.push(`${key}=${value.length > cap ? `${value.slice(0, cap - 1)}…` : value}`)
     }
   }
   return parts.join(' ')

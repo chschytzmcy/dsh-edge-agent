@@ -725,6 +725,21 @@ export class IntentRouterServiceImpl extends Service {
     void this.auditLog.log({ level, kind, source: 'intent-router', payload }).catch(() => {})
   }
 
+  /** §7.113 (2026-10-25): the two evidence scalars the Edge tab renders
+   *  beside the verdict — `keyword` = the regex keyword/entity the rules
+   *  layer matched (derived from the rationale; empty for semantic
+   *  verdicts), `semantic` = the chosen category's description sentence,
+   *  i.e. the "why" the LLM/jev classifier answered with. Both are plain
+   *  scalars so safePayload passes them (PII-scanned) to the intent panel. */
+  private classifyEvidence(intent: Intent): { keyword?: string; semantic?: string } {
+    const out: { keyword?: string; semantic?: string } = {}
+    const kw = /^(?:rule-cloud-keyword|rule-local-entity|override-local-entity|rule-keyword-match):(.+)$/u.exec(intent.rationale)
+    if (kw) out.keyword = kw[1]
+    const desc = this.categories.find((c) => c.id === intent.category)?.description
+    if (desc) out.semantic = desc
+    return out
+  }
+
   /** Redact PII from a short preview string before logging. Soft-dep on
    *  ctx.piiUtils.redactString. Returns `null` (rather than leaking) if
    *  redaction is unavailable — callers should log length-only in that case.
@@ -809,6 +824,7 @@ export class IntentRouterServiceImpl extends Service {
       category: 'LOCAL',
       confidence: intent.confidence,
       rationale: 'no-web-need',
+      ...(this.classifyEvidence({ ...intent, category: 'LOCAL', rationale: 'no-web-need' })),
     })
     return { category: 'LOCAL', confidence: intent.confidence, targetRealm: 'local', rationale: 'no-web-need' }
   }
@@ -900,6 +916,7 @@ export class IntentRouterServiceImpl extends Service {
         category: cachedVerdict.category,
         confidence: cachedVerdict.confidence,
         rationale: cachedVerdict.rationale,
+        ...this.classifyEvidence(cachedVerdict),
         durationMs: Date.now() - start,
       })
       return cachedVerdict
@@ -924,6 +941,7 @@ export class IntentRouterServiceImpl extends Service {
           category: 'REJECT',
           confidence: jevResult.confidence,
           rationale: `jev-risk:${jevResult.riskScore.toFixed(2)}`,
+          ...this.classifyEvidence({ category: 'REJECT', confidence: jevResult.confidence, targetRealm: 'rejected', rationale: 'jev-risk' }),
           durationMs: Date.now() - start,
           jevLatencyMs: jevResult.latencyMs,
           jevIntent: jevResult.intent,
@@ -970,6 +988,7 @@ export class IntentRouterServiceImpl extends Service {
           category: finalIntent.category,
           confidence: finalIntent.confidence,
           rationale: finalIntent.rationale,
+          ...this.classifyEvidence(finalIntent),
           durationMs: Date.now() - start,
           jevLatencyMs: jevResult.latencyMs,
           jevIntent: jevResult.jevIntentString,
@@ -1027,6 +1046,7 @@ export class IntentRouterServiceImpl extends Service {
         category: finalIntent.category,
         confidence: finalIntent.confidence,
         rationale: finalIntent.rationale,
+        ...this.classifyEvidence(finalIntent),
         durationMs: Date.now() - start,
       })
       // §7.107: the public-web gate. Without a public-web signal the turn
@@ -1049,6 +1069,7 @@ export class IntentRouterServiceImpl extends Service {
         category: intent.category,
         confidence: intent.confidence,
         rationale: intent.rationale,
+        ...this.classifyEvidence(intent),
         durationMs: Date.now() - start,
       })
       return intent
@@ -2255,7 +2276,9 @@ confidence 含义：
         category: 'LOCAL',
         confidence: 0.7,
         targetRealm: 'local',
-        rationale: 'rule-keyword-match',
+        // §7.113: carry the keyword in the rationale — the Edge tab's
+        // keyword evidence scalar derives from it.
+        rationale: `rule-keyword-match:${matched}`,
       }
     }
 

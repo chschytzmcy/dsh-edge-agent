@@ -3483,11 +3483,23 @@ describe('intent-router §7.108 policy-configured signal tables', () => {
     const service = makeService({ privacyPolicy: fakePolicy({ fallbackKeywords: ['摩斯密码本'] }) })
     const hit = await service.classify('帮我看看摩斯密码本在哪')
     assert.equal(hit.category, 'LOCAL')
-    assert.equal(hit.rationale, 'rule-keyword-match')
+    // §7.113: the rationale carries the matched keyword (Edge tab evidence).
+    assert.equal(hit.rationale, 'rule-keyword-match:摩斯密码本')
     // replaced, not appended: builtin-only words fall through to default
     const miss = await service.classify('帮我读取文件内容')
     assert.equal(miss.category, 'LOCAL')
     assert.equal(miss.rationale, 'default:local')
+  })
+
+  it('§7.113: classify.end carries keyword + semantic evidence scalars for the Edge tab', async () => {
+    const audit = auditSpy()
+    const service = makeService({ privacyPolicy: fakePolicy({ cloudKeywords: ['攻略'] }) }, {}, audit)
+    await service.classify('准备一个杭州游玩的攻略')
+    const end = audit.entries.find((e: any) => e.kind === 'intent.classify.end')
+    assert.ok(end, 'expected a classify.end row')
+    assert.equal(end.payload.keyword, '攻略')
+    assert.ok(typeof end.payload.semantic === 'string' && end.payload.semantic.length > 0,
+      `semantic should carry the category description, got ${JSON.stringify(end.payload.semantic)}`)
   })
 
   it('categories + jev map follow policy/loaded when the spec came from the policy service', () => {
