@@ -1496,14 +1496,28 @@ export class IntentRouterServiceImpl extends Service {
     // batched flow's "any successful batch closes it").
     this.jevBreakerOpenUntil = 0
 
+    // §7.112.1 (2026-10-25 实测 shape): answers.intent = {type:'choice',
+    // choice:'<criteria key>', confidence, probabilities}; answers.risk =
+    // {type:'score', score:<0..3 连续>, legend, confidence}. score/3 →
+    // 0..1 接回 jevRiskThreshold（0.7 ≈ score 2.1 起 REJECT）。
     const answers = extractDecisionAnswers(parsed, ['intent', 'risk'])
-    const intentStr = typeof answers?.intent === 'string' ? answers.intent.toUpperCase() : null
-    const confidence = typeof answers?.confidence === 'number'
-      ? Math.max(0, Math.min(1, answers.confidence))
-      : 0.9 // decisive-by-construction: the decision model must pick exactly one criterion
-    const rawRisk = typeof answers?.risk === 'number' ? answers.risk : 1
-    const riskScore = Math.max(0, Math.min(1, (rawRisk - 1) / 3))
-    const latencyMs = Date.now() - jevStart
+    const intentAns = answers?.intent as Record<string, unknown> | string | undefined
+    const riskAns = answers?.risk as Record<string, unknown> | number | undefined
+    let intentStr: string | null = null
+    let confidence = 0.9 // decisive-by-construction: the model must pick exactly one criterion
+    if (typeof intentAns === 'string') {
+      intentStr = intentAns.toUpperCase()
+    } else if (intentAns && typeof intentAns === 'object') {
+      intentStr = typeof intentAns.choice === 'string' ? intentAns.choice.toUpperCase() : null
+      if (typeof intentAns.confidence === 'number') confidence = Math.max(0, Math.min(1, intentAns.confidence))
+    }
+    let rawRisk = 0
+    if (typeof riskAns === 'number') rawRisk = riskAns
+    else if (riskAns && typeof riskAns === 'object' && typeof (riskAns as any).score === 'number') {
+      rawRisk = (riskAns as any).score
+    }
+    const riskScore = Math.max(0, Math.min(1, rawRisk / 3))
+    const latencyMs = typeof parsed?.latency_ms === 'number' ? parsed.latency_ms : Date.now() - jevStart
     this.stats.jevLatencyMsTotal += latencyMs
     this.audit('info', 'intent.jev.response', {
       provider: 'bailian-decision',
@@ -2334,6 +2348,17 @@ confidence 含义：
     preOpenBreaker: boolean,
   ): Promise<boolean> {
     if (phase === 'periodic') this.stats.jevProbeAttempts++
+    // §7.112: the systemone contract has no /health surface — GET /health
+    // answers 400 even with a valid key (observed on token-plan), which
+    // pre-opened the breaker at boot and silently skipped every classify.
+    // The backend is billed per call: skip probing entirely and let the
+    // breaker open only on real classify failures (TTL gives recovery).
+    if (this.jevProvider === 'bailian-decision') {
+      if (phase === 'boot') {
+        this.audit('debug', 'intent.jev.boot_probe', { provider: 'bailian-decision', skipped: true, note: 'no /health surface — probe skipped' })
+      }
+      return true
+    }
     const probeStart = Date.now()
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), timeoutMs)

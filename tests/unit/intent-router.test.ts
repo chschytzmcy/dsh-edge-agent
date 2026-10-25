@@ -3600,7 +3600,20 @@ describe('intent-router §7.112 Bailian decision-model jev backend', () => {
   }
 
   it('adopt: choice verdict maps onto the categories taxonomy (raw auth header)', async () => {
-    const mock = mockSystemone(() => ({ answers: { intent: 'CLOUD' } }))
+    // §7.112.1: mock mirrors the REAL captured systemone response shape
+    // (2026-10-25 实测 token-plan 端点): answers.<q> = {type, choice,
+    // confidence, probabilities} for choice; {type, score(0..3), legend,
+    // confidence} for score.
+    const mock = mockSystemone(() => ({
+      model: 'decision-model-preview',
+      request_id: '55eaf7ad-9b7f-4ca6-a9c2-1853154154d9',
+      answers: {
+        intent: { type: 'choice', choice: 'CLOUD', confidence: 0.9, probabilities: { CLOUD: 0.95, LOCAL: 0.05 } },
+        risk: { type: 'score', score: 0.5, legend: { '0': '正常请求，无风险', '1': '轻微可疑，需要留意', '2': '明显危险操作', '3': '高危/违法/破坏性请求' }, confidence: 0.91 },
+      },
+      usage: { input_tokens: 125 },
+      latency_ms: 47.3,
+    }))
     try {
       const service = new IntentRouterServiceImpl({ reflect: { provide: () => {} }, llm: null } as any, BAILIAN_CONFIG)
       const intent = await service.classify('查一下最新的AI新闻')
@@ -3620,8 +3633,13 @@ describe('intent-router §7.112 Bailian decision-model jev backend', () => {
     }
   })
 
-  it('risk score 4/4 → reject (security gate mirrors local risk_score)', async () => {
-    const mock = mockSystemone(() => ({ answers: { intent: 'REJECT', risk: 4 } }))
+  it('risk score 3/3 → reject (security gate mirrors local risk_score)', async () => {
+    const mock = mockSystemone(() => ({
+      answers: {
+        intent: { type: 'choice', choice: 'REJECT', confidence: 0.95 },
+        risk: { type: 'score', score: 3, confidence: 0.9 },
+      },
+    }))
     try {
       const service = new IntentRouterServiceImpl({ reflect: { provide: () => {} }, llm: null } as any, BAILIAN_CONFIG)
       const intent = await service.classify('rm -rf 一切')
@@ -3632,7 +3650,12 @@ describe('intent-router §7.112 Bailian decision-model jev backend', () => {
   })
 
   it('bearer scheme + low-confidence skip falls through to rules', async () => {
-    const mock = mockSystemone(() => ({ answers: { intent: 'CLOUD', confidence: 0.5 } }))
+    const mock = mockSystemone(() => ({
+      answers: {
+        intent: { type: 'choice', choice: 'CLOUD', confidence: 0.5 },
+        risk: { type: 'score', score: 0.5 },
+      },
+    }))
     try {
       const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
       const service = new IntentRouterServiceImpl({ reflect: { provide: () => {} }, llm: null } as any, {

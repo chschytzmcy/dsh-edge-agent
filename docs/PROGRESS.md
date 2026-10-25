@@ -11042,3 +11042,18 @@ web_search → 直连 MiniMax → resultLen 5320-7448。desktop-safe + profile o
 
 **测试**：+3 例（adopt+请求形状/raw 头、risk 4/4 → REJECT、bearer+低置信 skip），
 vitest 52 文件 **1059 passed**。两产物 verify OK，headless + desktop 已重启载入。
+
+**§7.112.1 追加（2026-10-25 实测联调，token-plan 端点全通）**：真 key（org 的
+token-plan MaaS 部署，注意不是 dashscope.aliyuncs.com 也不是 llm-u1paw6uihtedaa2d
+——key 按部署隔离，先前 401 全是打错端点）。实测响应形状：answers.intent =
+{type:'choice', choice:'<criteria key>', confidence, probabilities}；answers.risk =
+{type:'score', score:<0..3 连续>, legend, confidence}——据此修正解析器（choice 键取值
++ confidence 透传 + score/3 归一化，替换原 1..4 假设）；三个单测 mock 换成实测形状。
+另一个坑：systemone 契约**没有 /health 面**（有效 key 下 GET /health 也 400）→ 启动
+探针误判后预开断路器，分类全部静默跳过 jev 走 LLM。修：bailian-decision 跳过健康探针
+（按次计费的后端也不该被周期探针打），断路器只在真实分类失败时开（TTL 恢复）。
+另：key 布局清理——dashscopeApiKey 统一为 token-plan key；llm.local/llm.cloud 的
+keyRef 都改指 minimaxApiKey（MiniMax 的真 key，实测有效；此前 dashscopeApiKey 名下
+挂的其实是 MiniMax key，命名误导链的终点）。**终态**：classify → jev.adopt
+provider=bailian-decision latency 43.7ms → CLOUD → web_search → 云端合成 4594 字，
+E2E 链路含百炼后端全绿。
