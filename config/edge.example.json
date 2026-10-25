@@ -6,7 +6,8 @@
     "deepseekApiKey": "",
     "dashscopeApiKey": "",
     "tavilyApiKey": "",
-    "bochaApiKey": ""
+    "bochaApiKey": "",
+    "bailianApiKey": ""
   },
   "http": {
     "_comment": "http-api 监听入口。",
@@ -55,7 +56,7 @@
     }
   },
   "jev": {
-    "_comment": "§7.92.3 jev 意图识别（toggle，默认 ON；开 → 在 LLM classifier 之前先跑）。Toggle=false 时 classify() 完全跳过 jev 路径（无 network call）。高置信 (>=confidenceThreshold) + 低风险 (<riskThreshold) → 直接采纳；否则 fall through 到 LLM。",
+    "_comment": "§7.92.3 jev 意图识别（toggle，默认 ON；开 → 在 LLM classifier 之前先跑）。Toggle=false 时 classify() 完全跳过 jev 路径（无 network call）。高置信 (>=confidenceThreshold) + 低风险 (<riskThreshold) → 直接采纳；否则 fall through 到 LLM。 §7.112（2026-10-25）：provider 可选 local（默认，ONNX /predict）| bailian-decision（阿里 decision-model /systemone——questions 从 categories 自动生成，model 填 decision-model-preview，apiKeyRef 指向 secrets 里的百炼 MaaS key，authScheme raw=Authorization: <key> / bearer=Bearer 前缀）。",
     "enabled": true,
     "url": "http://127.0.0.1:8001",
     "timeoutMs": 2500,
@@ -65,7 +66,11 @@
     "bootProbeEnabled": true,
     "bootProbeTimeoutMs": 2000,
     "breakerProbeMs": 5000,
-    "probeTimeoutMs": 1000
+    "probeTimeoutMs": 1000,
+    "provider": "local",
+    "model": "decision-model-preview",
+    "apiKeyRef": "bailianApiKey",
+    "authScheme": "raw"
   },
   "functionCallExternal": {
     "_comment": "§7.93.1 ExternalToolCaller（纯 client，外部维护）。契约 GET /health + POST /extract {query,tools,system?,max_new_tokens?}。CLOUD intent 不走 caller；caller 不可达 / 低置信 fall through 到 LLM 自提取。",

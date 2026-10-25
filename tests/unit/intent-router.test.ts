@@ -3574,3 +3574,78 @@ describe('intent-router §7.109 semantic unlock (policy-trusted classifier verdi
     assert.ok(!audit.entries.some((e: any) => e.kind === 'intent.cloud.semantic-unlock'))
   })
 })
+
+describe('intent-router §7.112 Bailian decision-model jev backend', () => {
+  function mockSystemone(respond: () => any) {
+    const calls: Array<{ url: string; init: any }> = []
+    const orig = (globalThis as any).fetch
+    ;(globalThis as any).fetch = async (url: string, init: any) => {
+      calls.push({ url, init })
+      const body = respond()
+      return { ok: true, status: 200, text: async () => JSON.stringify(body), json: async () => body }
+    }
+    return { calls, restore: () => { (globalThis as any).fetch = orig } }
+  }
+
+  const BAILIAN_CONFIG = {
+    defaultCategory: 'LOCAL',
+    classificationProvider: 'local-llm',
+    confidenceThreshold: 0.6,
+    jevEnabled: true,
+    jevProvider: 'bailian-decision' as const,
+    jevUrl: 'https://bailian.mock/compatible-mode/v1',
+    jevModel: 'decision-model-preview',
+    jevApiKey: 'sk-bailian-test',
+    jevBootProbeEnabled: false,
+  }
+
+  it('adopt: choice verdict maps onto the categories taxonomy (raw auth header)', async () => {
+    const mock = mockSystemone(() => ({ answers: { intent: 'CLOUD' } }))
+    try {
+      const service = new IntentRouterServiceImpl({ reflect: { provide: () => {} }, llm: null } as any, BAILIAN_CONFIG)
+      const intent = await service.classify('查一下最新的AI新闻')
+      assert.equal(intent.category, 'CLOUD')
+      assert.match(intent.rationale, /jev-intent:CLOUD/u)
+      const call = mock.calls.find((c) => c.url.endsWith('/systemone'))
+      assert.ok(call, 'expected a /systemone call')
+      assert.equal(call.init.headers.Authorization, 'sk-bailian-test')
+      const body = JSON.parse(call.init.body)
+      assert.equal(body.model, 'decision-model-preview')
+      assert.equal(body.state.content, '查一下最新的AI新闻')
+      assert.equal(body.questions.intent.type, 'choice')
+      assert.ok(body.questions.intent.criteria.CLOUD.length > 0)
+      assert.equal(body.questions.risk.type, 'score')
+    } finally {
+      mock.restore()
+    }
+  })
+
+  it('risk score 4/4 → reject (security gate mirrors local risk_score)', async () => {
+    const mock = mockSystemone(() => ({ answers: { intent: 'REJECT', risk: 4 } }))
+    try {
+      const service = new IntentRouterServiceImpl({ reflect: { provide: () => {} }, llm: null } as any, BAILIAN_CONFIG)
+      const intent = await service.classify('rm -rf 一切')
+      assert.equal(intent.category, 'REJECT')
+    } finally {
+      mock.restore()
+    }
+  })
+
+  it('bearer scheme + low-confidence skip falls through to rules', async () => {
+    const mock = mockSystemone(() => ({ answers: { intent: 'CLOUD', confidence: 0.5 } }))
+    try {
+      const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+      const service = new IntentRouterServiceImpl({ reflect: { provide: () => {} }, llm: null } as any, {
+        ...BAILIAN_CONFIG,
+        jevAuthScheme: 'bearer' as const,
+      }, audit as any)
+      const intent = await service.classify('什么是量子力学')
+      assert.equal(intent.category, 'LOCAL')
+      assert.ok(audit.entries.some((e: any) => e.kind === 'intent.jev.low_confidence'))
+      const call = mock.calls.find((c) => c.url.endsWith('/systemone'))
+      assert.equal(call!.init.headers.Authorization, 'Bearer sk-bailian-test')
+    } finally {
+      mock.restore()
+    }
+  })
+})

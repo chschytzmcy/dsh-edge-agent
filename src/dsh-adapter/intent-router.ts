@@ -13,7 +13,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { Service } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import { loadEdgeConfig, localPool } from './edge-config.js'
+import { jevPool, loadEdgeConfig, localPool } from './edge-config.js'
 
 export const name = 'intent-router'
 
@@ -80,6 +80,22 @@ export interface Config {
   jevEnabled?: boolean
   /** §7.92.3: jev base URL. Env DSH_EDGE_INTENT_JEV_URL. */
   jevUrl?: string
+  /** §7.112 (2026-10-25): jev backend kind. 'local' = the ONNX /predict
+   *  contract (default); 'bailian-decision' = Alibaba's decision-model
+   *  /systemone structured-decision interface — one call carries the whole
+   *  taxonomy as choice/score questions (no 16-intent cap, no chitchat
+   *  markers). Env DSH_EDGE_INTENT_JEV_PROVIDER. */
+  jevProvider?: 'local' | 'bailian-decision'
+  /** §7.112: decision-model id (bailian-decision only, e.g.
+   *  'decision-model-preview'). Env DSH_EDGE_INTENT_JEV_MODEL. */
+  jevModel?: string
+  /** §7.112: literal Authorization key (edge.json jev.apiKeyRef →
+   *  secrets.*). Bailian MaaS requires it; local ONNX never did. */
+  jevApiKey?: string
+  /** §7.112: 'raw' = `Authorization: <key>` (org systemone examples);
+   *  'bearer' = `Authorization: Bearer <key>` (compatible-mode
+   *  convention). Default 'raw'. */
+  jevAuthScheme?: 'raw' | 'bearer'
   /** §7.92.3: per-batch jev HTTP timeout in ms (applies to EACH batch
    *  fired by the §7.92.5 orchestrator). Env DSH_EDGE_INTENT_JEV_TIMEOUT_MS. */
   jevTimeoutMs?: number
@@ -177,6 +193,11 @@ export const Config: Schema<Config> = Schema.object({
   // no-jev-running path fast-fail.
   jevEnabled: Schema.boolean(),
   jevUrl: Schema.string(),
+  // §7.112: Bailian decision-model backend surface.
+  jevProvider: Schema.union(['local', 'bailian-decision'] as const),
+  jevModel: Schema.string(),
+  jevApiKey: Schema.string(),
+  jevAuthScheme: Schema.union(['raw', 'bearer'] as const),
   // 2.5s = comfortably above jev's documented P95 (< 300ms) with headroom
   // for cold-start model load + inter-container network jitter. Smaller
   // than `llmTimeoutMs` (default 4-30s) so jev-as-prefilter still saves
@@ -322,6 +343,44 @@ const JEV_MAX_INTENTS = 16
  *  `categories[].jevIntents[]` payload into batches that respect the
  *  jev v0.3.0 hard cap. Module-scope so it can be unit-tested in
  *  isolation if needed. */
+/** §7.112 (2026-10-25): best-effort extraction of the decision-model's
+ *  answers map from a not-yet-frozen response envelope. The systemone
+ *  contract is new — tolerate the shapes plausible in compatible-mode
+ *  deployments:
+ *    { answers: { intent: ..., risk: ... } }            — canonical
+ *    { output: { answers: ... } }                        — DashScope native
+ *    { choices: [{ message: { content: '<json>' } }] }   — chat-completions wrap
+ *    { intent: ..., risk: ... }                          — flat
+ *  Returns the first object (depth-first, ≤6 levels) carrying ≥1 question
+ *  key; null when none does. */
+function extractDecisionAnswers(parsed: any, keys: string[]): Record<string, unknown> | null {
+  if (!parsed || typeof parsed !== 'object') return null
+  const content = parsed?.choices?.[0]?.message?.content
+  if (typeof content === 'string') {
+    try {
+      const fromInner = extractDecisionAnswers(JSON.parse(content), keys)
+      if (fromInner) return fromInner
+    } catch { /* content was prose — keep walking the outer envelope */ }
+  }
+  const visit = (node: any, depth: number): Record<string, unknown> | null => {
+    if (!node || typeof node !== 'object' || depth > 6) return null
+    if (Array.isArray(node)) {
+      for (const item of node) {
+        const hit = visit(item, depth + 1)
+        if (hit) return hit
+      }
+      return null
+    }
+    if (keys.some((k) => k in node)) return node as Record<string, unknown>
+    for (const value of Object.values(node)) {
+      const hit = visit(value, depth + 1)
+      if (hit) return hit
+    }
+    return null
+  }
+  return visit(parsed, 0)
+}
+
 function chunkIntents<T>(intents: T[], size: number = JEV_MAX_INTENTS): T[][] {
   const out: T[][] = []
   for (let i = 0; i < intents.length; i += size) {
@@ -386,6 +445,11 @@ export class IntentRouterServiceImpl extends Service {
   private readonly jevEnabled: boolean
   /** §7.92.3: jev base URL, e.g. `http://127.0.0.1:8001`. */
   private readonly jevUrl: string
+  /** §7.112: Bailian decision-model backend surface (see Config docs). */
+  private readonly jevProvider: 'local' | 'bailian-decision'
+  private readonly jevModel: string
+  private readonly jevApiKey: string | undefined
+  private readonly jevAuthScheme: 'raw' | 'bearer'
   /** §7.92.3: jev fetch timeout (ms). */
   private readonly jevTimeoutMs: number
   /** §7.92.3: min jev confidence to adopt (else fall through to LLM). */
@@ -566,6 +630,12 @@ export class IntentRouterServiceImpl extends Service {
     // want jev set DSH_EDGE_INTENT_JEV_ENABLED=false.
     this.jevEnabled = config.jevEnabled ?? false
     this.jevUrl = config.jevUrl ?? 'http://127.0.0.1:8001'
+    // §7.112: Bailian decision-model backend (defaults keep the local
+    // ONNX contract byte-identical when unset).
+    this.jevProvider = config.jevProvider ?? 'local'
+    this.jevModel = config.jevModel ?? 'decision-model-preview'
+    this.jevApiKey = config.jevApiKey || undefined
+    this.jevAuthScheme = config.jevAuthScheme ?? 'raw'
     this.jevTimeoutMs = config.jevTimeoutMs ?? 2500
     this.jevConfidenceThreshold = config.jevConfidenceThreshold ?? 0.85
     this.jevRiskThreshold = config.jevRiskThreshold ?? 0.7
@@ -1063,7 +1133,7 @@ export class IntentRouterServiceImpl extends Service {
     try {
       const r = await fetch(`${this.jevUrl}/predict`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: this.jevHeaders(),
         body: JSON.stringify({
           query: text,
           lang: 'zh',
@@ -1315,6 +1385,240 @@ export class IntentRouterServiceImpl extends Service {
    *  - `metadata.session_id` for cross-service trace correlation.
    *  - `lang` hardcoded 'zh' (we don't auto-detect; the operator's UI
    *    can pass it later if multilingual queries become common). */
+  /** §7.112: headers for every jev HTTP surface (predict / health /
+   *  systemone). Content-Type always; Authorization only when a key is
+   *  configured — Bailian MaaS requires it, the local ONNX service never
+   *  did. */
+  private jevHeaders(): Record<string, string> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    if (this.jevApiKey) {
+      headers.Authorization = this.jevAuthScheme === 'bearer' ? `Bearer ${this.jevApiKey}` : this.jevApiKey
+    }
+    return headers
+  }
+
+  /** §7.112 (2026-10-25): Bailian decision-model backend for the jev stage.
+   *
+   *  One POST `${jevUrl}/systemone` replaces the batched /predict flow:
+   *  the structured-decision interface carries the whole taxonomy at once —
+   *    questions.intent = choice over categories (criteria = id → description)
+   *    questions.risk    = score over 4 danger levels (→ risk_score 0..1)
+   *  so there is no 16-intent cap and no chitchat markers. Confidence/risk
+   *  gates, breaker semantics and audit rows mirror the local flow so
+   *  classify() cannot tell the backends apart. */
+  private async classifyWithBailianDecision(
+    text: string,
+    sessionId: string | undefined,
+    jevStart: number,
+  ): Promise<{
+    action: 'reject' | 'adopt' | 'skip'
+    intent?: Intent
+    jevIntentString?: string
+    confidence: number
+    riskScore: number
+    latencyMs: number
+    skipReason?: string
+  }> {
+    const criteria: Record<string, string> = {}
+    for (const cat of this.categories) criteria[cat.id] = cat.description
+    const body = {
+      model: this.jevModel,
+      state: {
+        session_id: sessionId ?? 'default',
+        content: text,
+      },
+      questions: {
+        intent: {
+          type: 'choice',
+          instructions: '这个用户请求应该路由到哪个处理域？只选一个最合适的。',
+          criteria,
+        },
+        risk: {
+          type: 'score',
+          instructions: '这个请求的危险程度如何？',
+          criteria: ['正常请求，无风险', '轻微可疑，需要留意', '明显危险操作', '高危/违法/破坏性请求'],
+        },
+      },
+    }
+    const batchStart = Date.now()
+    this.audit('debug', 'intent.jev.batch.start', {
+      textLen: text.length,
+      provider: 'bailian-decision',
+      model: this.jevModel,
+      batchLatencyBudgetMs: this.jevTimeoutMs,
+    })
+
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), this.jevTimeoutMs)
+    let parsed: any = null
+    try {
+      const r = await fetch(`${this.jevUrl}/systemone`, {
+        method: 'POST',
+        headers: this.jevHeaders(),
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      })
+      if (!r.ok) {
+        this.stats.jevError++
+        this.audit('warn', 'intent.jev.error', {
+          provider: 'bailian-decision',
+          httpStatus: r.status,
+          batchLatencyMs: Date.now() - batchStart,
+        })
+        this.jevBreakerOpenUntil = Date.now() + this.jevBreakerTtlMs
+        return { action: 'skip', confidence: 0, riskScore: 0, latencyMs: Date.now() - jevStart, skipReason: 'jev-error' }
+      }
+      parsed = JSON.parse(await r.text())
+    } catch (err: any) {
+      const isAbort = err?.name === 'AbortError' || controller.signal.aborted
+      const latencyMs = Date.now() - jevStart
+      if (isAbort) this.stats.jevTimeout++
+      else this.stats.jevError++
+      this.audit('warn', isAbort ? 'intent.jev.timeout' : 'intent.jev.error', {
+        provider: 'bailian-decision',
+        latencyMs,
+        timeoutMs: this.jevTimeoutMs,
+        error: err?.message ?? String(err),
+      })
+      this.jevBreakerOpenUntil = Date.now() + this.jevBreakerTtlMs
+      return {
+        action: 'skip',
+        confidence: 0,
+        riskScore: 0,
+        latencyMs,
+        skipReason: isAbort ? 'jev-timeout' : 'jev-error',
+      }
+    } finally {
+      clearTimeout(timer)
+    }
+
+    // Success → the backend answered; close the breaker (mirrors the
+    // batched flow's "any successful batch closes it").
+    this.jevBreakerOpenUntil = 0
+
+    const answers = extractDecisionAnswers(parsed, ['intent', 'risk'])
+    const intentStr = typeof answers?.intent === 'string' ? answers.intent.toUpperCase() : null
+    const confidence = typeof answers?.confidence === 'number'
+      ? Math.max(0, Math.min(1, answers.confidence))
+      : 0.9 // decisive-by-construction: the decision model must pick exactly one criterion
+    const rawRisk = typeof answers?.risk === 'number' ? answers.risk : 1
+    const riskScore = Math.max(0, Math.min(1, (rawRisk - 1) / 3))
+    const latencyMs = Date.now() - jevStart
+    this.stats.jevLatencyMsTotal += latencyMs
+    this.audit('info', 'intent.jev.response', {
+      provider: 'bailian-decision',
+      model: this.jevModel,
+      intent: intentStr,
+      confidence,
+      riskScore,
+      latencyMs,
+    })
+
+    // Risk gate — same semantics as the local flow's risk_score gate.
+    if (riskScore >= this.jevRiskThreshold) {
+      this.audit('security', 'intent.rules.rejected', {
+        source: 'jev-bailian-decision',
+        intent: intentStr,
+        riskScore,
+        confidence,
+        textLen: text.length,
+      })
+      return {
+        action: 'reject',
+        confidence,
+        riskScore,
+        latencyMs,
+        jevIntentString: intentStr ?? undefined,
+      }
+    }
+
+    if (confidence < this.jevConfidenceThreshold) {
+      this.audit('info', 'intent.jev.low_confidence', {
+        provider: 'bailian-decision',
+        intent: intentStr,
+        confidence,
+        threshold: this.jevConfidenceThreshold,
+        latencyMs,
+      })
+      return {
+        action: 'skip',
+        confidence,
+        riskScore,
+        latencyMs,
+        jevIntentString: intentStr ?? undefined,
+        skipReason: 'low-confidence',
+      }
+    }
+
+    // The choice criteria keys ARE the category ids — an answer outside the
+    // taxonomy (model hallucination) falls through to the LLM (defensive).
+    const mapped = this.categories.find((c) => c.id === intentStr)?.id
+    if (!intentStr || !mapped) {
+      this.audit('info', 'intent.jev.unmapped_intent', {
+        provider: 'bailian-decision',
+        intent: intentStr,
+        confidence,
+        latencyMs,
+      })
+      return {
+        action: 'skip',
+        confidence,
+        riskScore,
+        latencyMs,
+        jevIntentString: intentStr ?? undefined,
+        skipReason: 'unmapped-intent',
+      }
+    }
+
+    const targetRealm = mapped === 'LOCAL' ? 'local'
+      : mapped === 'CLOUD' ? 'cloud'
+      : mapped === 'REJECT' ? 'rejected'
+      : 'sanitized'
+    if (mapped === 'REJECT') {
+      this.audit('security', 'intent.rules.rejected', {
+        source: 'jev-bailian-decision',
+        intent: intentStr,
+        confidence,
+        riskScore,
+        textLen: text.length,
+      })
+      return {
+        action: 'reject',
+        intent: {
+          category: 'REJECT',
+          confidence,
+          targetRealm,
+          rationale: `jev-intent:${intentStr}`,
+        },
+        jevIntentString: intentStr,
+        confidence,
+        riskScore,
+        latencyMs,
+      }
+    }
+    this.audit('info', 'intent.jev.adopt', {
+      provider: 'bailian-decision',
+      intent: intentStr,
+      realm: mapped,
+      confidence,
+      riskScore,
+      latencyMs,
+    })
+    return {
+      action: 'adopt',
+      intent: {
+        category: mapped,
+        confidence,
+        targetRealm,
+        rationale: `jev-intent:${intentStr}`,
+      },
+      jevIntentString: intentStr,
+      confidence,
+      riskScore,
+      latencyMs,
+    }
+  }
+
   private async classifyWithJev(text: string, sessionId?: string): Promise<{
     action: 'reject' | 'adopt' | 'skip'
     intent?: Intent
@@ -1347,6 +1651,13 @@ export class IntentRouterServiceImpl extends Service {
     }
 
     const jevStart = Date.now()
+    // §7.112: Bailian decision-model backend — one /systemone call replaces
+    // the batched /predict flow (no 16-intent cap, no chitchat markers).
+    // Verdict / gates / breaker semantics are mirrored so classify() cannot
+    // tell the backends apart.
+    if (this.jevProvider === 'bailian-decision') {
+      return this.classifyWithBailianDecision(text, sessionId, jevStart)
+    }
     const allIntents = this.buildJevIntentsPayload()
     const chitchatIntents = ['闲聊', '其他'] // §7.92.5: defensive marker for jev v0.3.0+
     const batches = chunkIntents(allIntents, JEV_MAX_INTENTS)
@@ -2032,6 +2343,7 @@ confidence 含义：
     try {
       const r = await fetch(`${this.jevUrl}/health`, {
         method: 'GET',
+        headers: this.jevHeaders(),
         signal: controller.signal,
       })
       httpStatus = r.status
@@ -2395,6 +2707,12 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
     }
     fill('jevEnabled', jev.enabled)
     fill('jevUrl', jev.url)
+    // §7.112: Bailian decision-model backend (provider / model / auth).
+    fill('jevProvider', jev.provider)
+    fill('jevModel', jev.model)
+    fill('jevAuthScheme', jev.authScheme)
+    const jpoolApiKey = jevPool().apiKey
+    if (jpoolApiKey !== undefined) fill('jevApiKey', jpoolApiKey)
     fill('jevTimeoutMs', jev.timeoutMs)
     fill('jevConfidenceThreshold', jev.confidenceThreshold)
     fill('jevRiskThreshold', jev.riskThreshold)

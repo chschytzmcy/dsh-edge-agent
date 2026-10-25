@@ -11018,3 +11018,27 @@ web_search → 直连 MiniMax → resultLen 5320-7448。desktop-safe + profile o
 
 **注意**：edge.json 是两 profile 共用的——llm.cloud 直连配置在 desktop 下次重启后
 同样生效（云轮次从"GUI 委派"切到直连 MiniMax）。
+
+## §7.112 —— 阿里百炼 decision-model 接入 jev 阶段（provider 可切，2026-10-25）
+
+**需求**：意图识别的 jev 阶段支持阿里百炼标准接口——org 在 MaaS 部署的
+`decision-model-preview`（`POST {base}/compatible-mode/v1/systemone`）：`state` 装上下文、
+`questions` 定义结构化问题（choice/score）。本地 ONNX jev 的契约不变。
+
+**设计**：`jev.provider` 配置面——
+- `local`（默认）：现有 /predict 批处理契约逐字节不变；
+- `bailian-decision`：一次 `/systemone` 调用替代批处理——`questions.intent` = choice
+  （criteria = 类别 id→description，从 policy `categories` 自动生成，随热重载走）、
+  `questions.risk` = score 4 档（→ riskScore 0..1，映射 jevRiskThreshold 语义）。
+  无 16-intent 上限、无 chitchat 标记；置信度门 / 风险闸 / 断路器 / 审计行全部镜像
+  本地流（rationale 保持 `jev-intent:*` 格式，Edge tab 无感）。
+- 鉴权：`jev.apiKeyRef` → secrets.*，`jev.authScheme`: `raw`（org 示例的
+  `Authorization: <key>`）| `bearer`；本地 jev 的 predict/health 也顺带支持带
+  Authorization 头（远程托管 jev 可用）。
+- 响应解析容错：answers 深度搜索（canonical / DashScope native / chat-completions
+  包装 / flat 四种 envelope），解析失败 skip fall-through 到 LLM（defensive）。
+  实测 key 暂缺（edge.json 的 dashscopeApiKey 是 MiniMax 的）——运营商填
+  `secrets.bailianApiKey` 后用 §7.111 的 curl 冒烟先验响应形状即可启用。
+
+**测试**：+3 例（adopt+请求形状/raw 头、risk 4/4 → REJECT、bearer+低置信 skip），
+vitest 52 文件 **1059 passed**。两产物 verify OK，headless + desktop 已重启载入。

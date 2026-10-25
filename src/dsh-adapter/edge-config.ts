@@ -93,6 +93,21 @@ export interface EdgeStage {
 export interface EdgeJevConfig {
   enabled?: boolean
   url?: string
+  /** §7.112 (2026-10-25): backend kind. 'local' = the ONNX /predict
+   *  contract (default); 'bailian-decision' = Alibaba's decision-model
+   *  /systemone structured-decision interface (POST {model, state,
+   *  questions}). */
+  provider?: 'local' | 'bailian-decision'
+  /** §7.112: decision-model id (bailian-decision only, e.g.
+   *  'decision-model-preview'). */
+  model?: string
+  /** §7.112: secrets keyRef carrying the Bailian MaaS key. */
+  apiKeyRef?: string
+  /** §7.112: how the key lands in the Authorization header. 'raw' =
+   *  `Authorization: <key>` (the org's systemone examples use this);
+   *  'bearer' = `Authorization: Bearer <key>` (DashScope compatible-mode
+   *  convention). Default 'raw'. */
+  authScheme?: 'raw' | 'bearer'
   timeoutMs?: number
   confidenceThreshold?: number
   riskThreshold?: number
@@ -903,6 +918,28 @@ export function cloudPool(cfg: EdgeConfig = loadEdgeConfig()): {
     delegate: pool.delegate ?? true,
     delegateProvider: pool.delegateProvider || undefined,
     delegateModel: pool.delegateModel || undefined,
+  }
+}
+
+/** §7.112 (2026-10-25): the jev intent-recognizer pool. `apiKey` resolves
+ *  `apiKeyRef` → `secrets.*` — the Bailian MaaS systemone endpoint requires
+ *  an Authorization header, which the local ONNX jev never needed. */
+export function jevPool(cfg: EdgeConfig = loadEdgeConfig()): {
+  enabled?: boolean
+  url?: string
+  provider?: 'local' | 'bailian-decision'
+  model?: string
+  apiKey?: string
+  authScheme?: 'raw' | 'bearer'
+} {
+  const pool = cfg.jev ?? {}
+  return {
+    enabled: pool.enabled,
+    url: pool.url || undefined,
+    provider: pool.provider || undefined,
+    model: pool.model || undefined,
+    apiKey: resolveSecret(cfg, pool.apiKeyRef),
+    authScheme: pool.authScheme || undefined,
   }
 }
 
