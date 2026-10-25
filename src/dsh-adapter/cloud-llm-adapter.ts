@@ -997,6 +997,13 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
     ctx.logger?.info?.(`[cloud-llm-adapter] baseUrl from config/edge.json: ${config.baseUrl} → ${cloud.baseUrl}`)
     ;(config as { baseUrl: string }).baseUrl = cloud.baseUrl
   }
+  // §7.111 (2026-10-24): llm.cloud.model was silently dropped here — the
+  // direct mode then wired the Schema default 'deepseek-chat' to whatever
+  // endpoint the operator configured (observed: MiniMax 400 "unknown model
+  // 'deepseek-chat'"). Map it onto defaultModel like the other pool fields.
+  if (cloud.model !== undefined && cloud.model !== '') {
+    ;(config as { defaultModel?: string }).defaultModel = cloud.model
+  }
   if (cloud.delegateProvider !== undefined) {
     ;(config as { delegateProvider?: string }).delegateProvider = cloud.delegateProvider
   }

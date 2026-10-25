@@ -392,7 +392,7 @@ assert_news() {
   local result_len
   result_len=$(grep '\[http-api\] chat reply' "$log" | tail -1 | grep -oE 'resultLen=[0-9]+' | head -1 | grep -oE '[0-9]+')
   if [ -z "$result_len" ] || [ "$result_len" -lt 1 ]; then
-    echo "  ✗ chat reply resultLen=$result_len（期望 ≥1，§7.47.6 dsh-agent-loop kind=error 间歇性空返回）"
+    echo "  ✗ chat reply resultLen=${result_len}（期望 ≥1，§7.47.6 dsh-agent-loop kind=error 间歇性空返回）"
     fail=1
   else
     echo "  ✓ chat reply resultLen=$result_len"
@@ -415,80 +415,52 @@ assert_news() {
   # 前缀（completed / error / aborted / max-tokens）。
   # 时间窗过滤：log 里有大量历史 sessionId 留有 'reason=unknown' 行（pre-§7.47.6），
   # 用 chat reply 时间戳 ±90s 过滤本次 chat 的 chat finished 行。
-  local latest_reply_ts_cf
-  latest_reply_ts_cf=$(grep '\[http-api\] chat reply' "$log" | tail -1 | grep -oE '^[0-9T:.+-]+' | head -1)
-  if [ -n "$latest_reply_ts_cf" ]; then
-    local reply_epoch_cf
-    reply_epoch_cf=$(date -d "$latest_reply_ts_cf" +%s 2>/dev/null || echo "")
-    if [ -n "$reply_epoch_cf" ]; then
-      local window_start_cf=$((reply_epoch_cf - 90))
-      local window_end_cf=$((reply_epoch_cf + 5))
-      local unknown_in_window=0
-      while IFS= read -r cf_line; do
-        local cf_ts
-        cf_ts=$(echo "$cf_line" | grep -oE '^[0-9T:.+-]+' | head -1)
-        local cf_epoch
-        cf_epoch=$(date -d "$cf_ts" +%s 2>/dev/null || echo "")
-        if [ -n "$cf_epoch" ] && [ "$cf_epoch" -ge "$window_start_cf" ] && [ "$cf_epoch" -le "$window_end_cf" ]; then
-          if echo "$cf_line" | grep -q 'reason=unknown'; then
-            unknown_in_window=1
-            break
-          fi
-        fi
-      done < <(grep 'chat finished' "$log")
-      if [ "$unknown_in_window" = "1" ]; then
-        echo "  ✗ chat finished reason=unknown（§7.47.6 turnEnds object serialize bug 复发，时间窗内）"
-        fail=1
-      else
-        echo "  ✓ chat finished reason 不为 unknown（§7.47.6 turnEnds serialize 生效）"
-      fi
-    else
-      echo "  · 无法解析 chat reply 时间戳，跳过 §7.47.6 reason 断言"
-    fi
-  else
-    echo "  · 无法定位本次 chat reply 时间戳，跳过 §7.47.6 reason 断言"
-  fi
-
-  # §7.47 bug-recovery sanity: 若未来又退回 SANITIZED，下面的 deny
-  # 行应该重新出现——本断言期望它不再出现，作为回归保护。
-  # 只看本次 chat 的最新 chat reply 行（之前的 chat 可能有历史 session 留
-  # 下旧 deny，不能误判）。但 deny 跟 reply 未必同时间——通过 chat
-  # reply 的 durationMs 时戳找到本次 chat 的 deny 时间窗（reply 时间 ±
-  # 60s 范围内的 deny 行）。
+  # §7.47 bug-recovery sanity：早于本次 chat 的 SANITIZED tool deny 行不得
+  # 落进本次回复的时间窗。§7.111 (2026-10-24) 重写：原块有坏字节（bash 把
+  # latest_reply_ts+垃圾字节当成未定义变量，set -u 直接炸），且 date -d 是
+  # GNU 语法、BSD date 必失败。改为纯 ASCII 变量名 + GNU/BSD 双路 epoch 解析。
   local latest_reply_ts
   latest_reply_ts=$(grep '\[http-api\] chat reply' "$log" | tail -1 | grep -oE '^[0-9T:.+-]+' | head -1)
   if [ -z "$latest_reply_ts" ]; then
-    echo "  · 无法定位本次 chat reply 时间戳，跳过 §7.47 regression 断言"
-  else
-    # 把 ISO 时间戳转成 epoch 秒（Linux date -d）
-    local reply_epoch
-    reply_epoch=$(date -d "$latest_reply_ts" +%s 2>/dev/null || echo "")
-    if [ -z "$reply_epoch" ]; then
-      echo "  · 无法解析 chat reply 时间戳 $latest_reply_ts，跳过 §7.47 regression 断言"
-    else
-      # 找 reply 时间前后 90s 内的 deny 行（覆盖单 chat 全流程）
-      local window_start=$((reply_epoch - 90))
-      local window_end=$((reply_epoch + 5))
-      local in_window_deny=0
-      while IFS= read -r deny_line; do
-        local deny_ts
-        deny_ts=$(echo "$deny_line" | grep -oE '^[0-9T:.+-]+' | head -1)
-        local deny_epoch
-        deny_epoch=$(date -d "$deny_ts" +%s 2>/dev/null || echo "")
-        if [ -n "$deny_epoch" ] && [ "$deny_epoch" -ge "$window_start" ] && [ "$deny_epoch" -le "$window_end" ]; then
-          if echo "$deny_line" | grep -q 'tool=web_search.*reason=.*SANITIZED'; then
-            in_window_deny=1
-            break
-          fi
-        fi
-      done < <(grep 'tool deny' "$log")
-      if [ "$in_window_deny" = "1" ]; then
-        echo "  ✗ §7.47 修复 regression: 本次 chat 出现 tool deny web_search SANITIZED"
-        fail=1
-      else
-        echo "  ✓ 无 §7.47 regression（本次 chat 无 tool deny SANITIZED）"
+    echo "  · 无 chat reply 时间戳，跳过 §7.47 regression 检查"
+    return "$fail"
+  fi
+  iso_to_epoch() {
+    local ts="$1" core
+    core=${ts%%.*}
+    core=${core%%[+-]*}
+    date -d "$core" +%s 2>/dev/null \
+      || date -j -f '%Y-%m-%dT%H:%M:%S' "$core" +%s 2>/dev/null \
+      || printf ''
+  }
+  local reply_epoch
+  reply_epoch=$(iso_to_epoch "$latest_reply_ts")
+  if [ -z "$reply_epoch" ]; then
+    echo "  · 无法解析 chat reply 时间戳（${latest_reply_ts}），跳过 §7.47 regression 检查"
+    return "$fail"
+  fi
+  local window_start=$((reply_epoch - 90))
+  local window_end=$((reply_epoch + 5))
+  local in_window_deny=0
+  while IFS= read -r deny_line; do
+    [ -z "$deny_line" ] && continue
+    local deny_ts
+    deny_ts=$(printf '%s' "$deny_line" | grep -oE '^[0-9T:.+-]+' | head -1)
+    [ -z "$deny_ts" ] && continue
+    local deny_epoch
+    deny_epoch=$(iso_to_epoch "$deny_ts")
+    if [ -n "$deny_epoch" ] && [ "$deny_epoch" -ge "$window_start" ] && [ "$deny_epoch" -le "$window_end" ]; then
+      if printf '%s' "$deny_line" | grep -q 'tool=web_search.*reason=.*SANITIZED'; then
+        in_window_deny=1
+        break
       fi
     fi
+  done < <(grep 'tool deny' "$log")
+  if [ "$in_window_deny" = "1" ]; then
+    echo "  ✗ §7.47 修复 regression: 本次 chat 出现 tool deny web_search SANITIZED"
+    fail=1
+  else
+    echo "  ✓ 无 §7.47 regression（本次 chat 无 tool deny SANITIZED）"
   fi
 
   return $fail
@@ -589,7 +561,7 @@ echo
 OVERALL_RC=0
 if [ -n "$ONLY" ]; then
   if ! case_query "$ONLY" >/dev/null 2>&1; then
-    echo "未知用例: $ONLY（可选: mibao / news / local-ip / knowledge）" >&2
+    echo "未知用例: ${ONLY}（可选: mibao / news / local-ip / knowledge）" >&2
     exit 2
   fi
   run_case "$ONLY" || OVERALL_RC=1

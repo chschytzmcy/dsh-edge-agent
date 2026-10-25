@@ -10989,3 +10989,32 @@ LLM prompt，jevIntents 喂 jev 映射），语义面从 4 行收敛为 2 行。
 **部署**：desktop（link 模式）rebuild installable + verify 2 bundles → policy 同步
 `~/.dsh-edge-agent/privacy-policy.json`（v1.9.0）→ 重启 App → 审计
 `policy.loaded version=1.9.0`。§7.109/§7.110 两轮改动一并上线。
+
+## §7.111 —— headless profile E2E 全绿：三轮修掉云链路的三个真阻塞（2026-10-25）
+
+**背景**：dsh-edge-agent（headless HTTP :21017）用 deploy-profile.sh 部署后跑
+e2e-ops-log-coverage.sh，news 用例（查最新 AI 新闻 → CLOUD → web_search → 云端合成）
+连续暴露三个问题，前两个是脚本/环境层，第三个是**产品代码 bug**。
+
+1. **凭据层**：DELEGATE 链解析到宿主路由 deepseek-official，凭据在宿主 adapter 的
+   credentials 服务里——headless profile 没有（Models 页只有 GUI 能写）→ MISSING_CREDENTIAL。
+   修：deploy-profile.sh 启动时从 edge.json secrets 注入 DEEPSEEK_API_KEY（显式导出优先）。
+2. **产品 bug（cloud-llm-adapter apply()）**：改直连模式（llm.cloud.baseUrl → MiniMax，
+   绕开 deepseek-official 不能序列化 tool-result 的限制）后仍 400 "unknown model
+   'deepseek-chat'"——**apply() 映射漏了 cloud.model → config.defaultModel**，wire model
+   一直是 Schema 默认。修：补上映射。README 文档的 llm.cloud.model 由此才真正生效。
+3. **e2e 脚本自身**：a) 默认 LOG_FILE 与 desktop-safe patch 的 filename 不符（盘上
+   从不存在）；b) `declare -A` 需 bash 4+，macOS /bin/bash 3.2 直接炸（此前全绿
+   是 CI）；c) **C locale 下 bash 把 `$var）` 的多字节字符并进变量名** → set -u
+   报 unbound variable（表观"坏字节"，实为 locale 问题——变量后紧跟非 ASCII 必须
+   加花括号，全脚本 3 处已 brace）；d) §7.47 时间窗块的 date -d 是 GNU 语法，BSD
+   date 失败 → 重写为 GNU/BSD 双路 epoch 解析（macOS 上解析失败时优雅跳过）。
+   另：news 全链路（web_search×6 + 30 次 LLM 往返 + 长合成）会超过默认 180s，
+   E2E_TIMEOUT 可调。
+
+**结果**：**4/4 全绿**（mibao/news/local-ip/knowledge）。news：CLOUD → 脱敏 →
+web_search → 直连 MiniMax → resultLen 5320-7448。desktop-safe + profile overlay
+（http-api）+ 直连云池的组合在 headless 下完整可用。
+
+**注意**：edge.json 是两 profile 共用的——llm.cloud 直连配置在 desktop 下次重启后
+同样生效（云轮次从"GUI 委派"切到直连 MiniMax）。
