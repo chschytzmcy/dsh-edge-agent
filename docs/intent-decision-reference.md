@@ -284,3 +284,87 @@ rationale → classifier → textLen`。
 | 云关键词/实体/兜底词 | edge.json `stages.intent.{cloudKeywords,localEntities,fallbackKeywords}` / policy 同名段 | ✅ 热重载（关键词面） |
 | LLM 兜底开关 | edge.json `stages.intent.llmFallback` | 需重启 |
 | 路由正则/脱敏规则 | policy `routingRules` / `sanitizationRules` | ✅ 热重载 |
+
+---
+
+## 7. 一条消息的端到端决策轨迹（从进入到回复）
+
+以两条真实消息为样本走完全部决策点：**A =「查一下最新的AI新闻」**（出网路径）、
+**B =「什么是量子力学」**（本地路径）。每个决策点标注：决策者类型（正则 / 语义 /
+统计 / 配置）、正则侧与语义侧的具体内容、审计证据 kind（可在
+`~/.dsh-edge-agent/log/dsh-edge-agent-desktop.log` 与 `audit/audit.plain.jsonl` 直接 grep）。
+
+### 7.1 阶段一：入口安检（prompt-guard，所有入口共用）
+
+| # | 决策 | 决策者 | 正则侧 | 语义侧 | 审计证据 |
+|---|---|---|---|---|---|
+| 1 | 放行/限流 | 统计 | — | — | 每分钟 20 请求（session 级 + 全局级），超限直接拒绝 |
+| 2 | 截断/放行 | 统计 | — | — | 输入 >10000 字截断（stage 1） |
+| 3 | **注入判定**：block/warn/sanitize | **正则** | 26 条注入模式（§4.1）——直接注入/越狱/提示词泄漏/数据外传/中文变体十连 | （Stage 6 语义检测默认关；开启后 = choice 攻击类型 + score 危险度，见 §4.1 语义补充层） | `guard.*` / `input.*` |
+| 4 | **PII 一票否决**：阻断/放行 | **正则** | 10 类 PII 模式（§4.2）——命中 secret 级（身份证/银行卡/api-key/凭据/护照）→ 整条消息阻断 | — | `input.pii` |
+| 5 | 威胁门禁（http 入口） | 统计 | — | — | td-bus 滑动窗口：≥1× 基线 elevated → 2× high → 4× critical（503）；`td-bus.escalated` / `http.chat.threat-blocked` |
+
+### 7.2 阶段二：意图路由（intent-router，§1–3 的完整串联）
+
+| # | 决策 | 决策者 | 正则侧 | 语义侧 | 审计证据 |
+|---|---|---|---|---|---|
+| 6 | 危险操作预检 | **正则** | routingRules 前 2 条 REJECT（`(导出\|删除\|清空\|格式化).*(数据库\|系统\|磁盘\|全部数据)`、`(drop\s+table\|rm\s+-rf\|…)`） | — | `intent.rules.rejected`（source=privacy-policy-precheck） |
+| 7 | **主判定：路由到哪个域** | **语义（决策模型优先）** | —（题目见 §1.1：intent=choice + risk=score） | choice: CLOUD/REJECT/LOCAL(兜底行) + confidence + probabilities；risk: score 0..3 | `intent.jev.batch.start` → `intent.jev.response` → `intent.jev.adopt` / `intent.jev.low_confidence` / `intent.jev.error` |
+| 8 | 决策模型不可用时的主判定 | **语义（LLM 兜底，`llmFallback` 可关）** | —（prompt 见 §2.1：类别行 + LOCAL 兜底行 + confidence 四档标定） | JSON verdict {category, confidence} | `intent.classify.start` → `intent.classify.end`（path=llm） |
+| 9 | LLM 也不可用时的判定 | **正则** | routingRules 后 8 条（7 LOCAL PII + 1 CLOUD）+ 云关键词表（§3.2）+ LOCAL 兜底表（§3.3） | — | `intent.rules.hit`（source=privacy-policy / cloud-keyword / fallback-keyword） |
+| 10 | **实体压回**：非 LOCAL 判决修正 | **正则** | 实体表 `密盒\|ets\|etscli`（§3.4）——样本 A/B 均无实体；「查询密盒的登录状态」会在此被压回 LOCAL | — | `intent.classify.entity_override` / rationale `override-local-entity:<词>` |
+| 11 | **出网许可**（CLOUD 判决专属） | **正则 + 语义混合** | 关键词信号：`新闻`（§3.2 表命中即放行） | 语义解锁：confidence ≥ 0.75（`semanticCloudMinConfidence`） | 放行无独立行（随 classify.end）；拒绝 = `intent.cloud.blocked-no-web-need`；语义放行 = `intent.cloud.semantic-unlock` |
+
+**样本走线**：
+- A：决策模型 intent.choice=CLOUD conf 0.98（≥0.85 采纳）→ 无实体 → 出网许可走**双通道同时满足**（关键词 `新闻` 命中 + 语义 0.98 ≥ 0.75）→ CLOUD 定案；
+- B：决策模型 intent.choice=LOCAL conf 0.94（≥0.5 方向门采纳）→ 无实体 → CLOUD 闸不适用 → LOCAL 定案；
+- 反例（「把密盒的日志发到网上」）：决策模型 risk 2.1/3 → **风险闸拒绝**（0.70 ≥ 0.70）→ 403，流程终止于阶段二。
+
+### 7.3 阶段三：执行域装配（realm-skill-bridge）
+
+| # | 决策 | 决策者 | 正则侧 | 语义侧 | 审计证据 |
+|---|---|---|---|---|---|
+| 12 | 技能目录过滤（该 agent 能看见哪些 skill） | **配置** | skill-realms.json 映射（web_search/web_fetch=CLOUD 内置种子） | — | `realm-skill-bridge` pre-step filter（catalogDropped=N） |
+| 13 | 工具 schema 过滤（LLM 能看到哪些工具） | **配置** | 同上——LOCAL agent 的视图里 web_search/web_fetch 被摘除 | — | `assemble filter`（removedCount） |
+
+样本 A（CLOUD）：web_search/web_fetch 留在工具视图；样本 B（LOCAL）：两者被摘除——**这就是「LOCAL 判决=模型根本没有出网工具」的执行机制**。
+
+### 7.4 阶段四：Agent 循环（每轮工具调用都过一遍）
+
+| # | 决策 | 决策者 | 正则侧 | 语义侧 | 审计证据 |
+|---|---|---|---|---|---|
+| 14 | 工具执行放行 | **配置** | realm 检查（Layer 3 pre-execute，权威闸） | — | `tool allow tool=web_search …` / `tool deny tool=web_search reason=…SANITIZED` |
+| 15 | 孤儿 tool-call 修复 | 结构处理 | — | — | `orphan-tool-call summary`（syntheticInjected=N） |
+| 16 | 搜索后端选择（web_search 内部） | **配置 + 外部服务** | — | — | 三档 fail-down：duckduckgo（免费默认）→ tavily → bocha；每档带 key 校验（`web-search-tavily-bocha`） |
+
+样本 A 实测：web_search allow 多轮（news 用例 6–10 次）、tool result 全量记账（§7.47.6）。
+
+### 7.5 阶段五：出网与回程（sanitizer + model-router）
+
+| # | 决策 | 决策者 | 正则侧 | 语义侧 | 审计证据 |
+|---|---|---|---|---|---|
+| 17 | **脱敏**：哪些段要掩 | **正则（fail-closed）** | 10 类 PII 模式（§4.2）——CLOUD 轮的用户原文 + 历史逐条过；失败/不可用 → 降级 LOCAL（**脱不了敏就不上云**） | — | `intent.llm.history-sanitized` / `sanitizer.*` |
+| 18 | 云模型路由：直连 or 委派 | **配置** | — | — | 直连（`llm.cloud.baseUrl` 配了）→ MiniMax；委派 → 显式指定 > 宿主选择 > 探针（`cloud-llm-adapter DELEGATE start/done`） |
+| 19 | 回程还原 | **正则（确定性）** | 占位符映射表（desanitize：`[PHONE_1]` → 尾 4 位等） | — | `desanitize.*` |
+| 20 | 本地路径模型调用（样本 B 的回答生成） | **配置** | — | — | `local-llm-adapter LLM call start/done`（MiniMax，mibao/knowledge 用例全链路） |
+
+### 7.6 阶段六：收尾
+
+| # | 决策 | 决策者 | 审计证据 |
+|---|---|---|---|
+| 21 | 云请求记账 → 威胁升级 | 统计（td-bus） | `http.chat.route` 后 rate 计数；`td-bus.escalated` |
+| 22 | 输出 PII 掩码（非 sanitizer 管理的 session） | 正则（PII 模式复用） | `guard.output` |
+| 23 | turn 收尾（reason 序列化 / 会话摘要 / Edge tab 快照） | 记录 | `chat finished turn=N` / Edge summary |
+
+### 7.7 决策点总览（一图）
+
+```
+消息 → [1限流(统计)] → [2截断(统计)] → [3注入(正则|语义*)] → [4PII否决(正则)] → [5威胁门(统计)]
+     → [6危险预检(正则)] → [7主判定(语义:决策模型→LLM兜底)] → [10实体压回(正则)]
+     → [11出网许可(正则+语义)] → [12-13域装配(配置)] → [14工具放行(配置)]×N轮
+     → [15孤儿修复] → [16搜索后端(配置)] → [17脱敏(正则,fail-closed)] → [18模型路由(配置)]
+     → 回复 → [19还原(正则)] → [21记账(统计)] → [22输出掩码(正则)] → [23收尾(记录)]
+
+语义* = Stage 6 模型辅助检测（默认关；开启后本机 MLX 决策模型是现成端点，§7.115 后的
+下一个可迁移项）。正则 5 处 / 语义 2 处（+1 可选）/ 统计 3 处 / 配置 5 处——
+**凡是"数据是否出设备"的决策，正则与语义的出错方向都被设计为 fail-closed**。
