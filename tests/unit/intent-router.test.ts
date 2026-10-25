@@ -3840,3 +3840,77 @@ describe('intent-router §7.115 directional gate + llmFallback switch', () => {
     }
   })
 })
+
+describe('intent-router §7.115.1 decision-model criteria LOCAL catch-all', () => {
+  it('a taxonomy without a LOCAL row still offers LOCAL as a choice criterion', async () => {
+    // §7.110 简并形态：policy 只定义 CLOUD/REJECT——决策模型的 criteria
+    // 必须补 LOCAL 兜底（否则模型被迫二选一，日常问答被推向误判 CLOUD）。
+    const calls: Array<{ url: string; init: any }> = []
+    const orig = (globalThis as any).fetch
+    ;(globalThis as any).fetch = async (url: string, init: any) => {
+      calls.push({ url, init })
+      const body = {
+        answers: { intent: { type: 'choice', choice: 'LOCAL', confidence: 0.9 }, risk: { type: 'score', score: 0.2 } },
+      }
+      return { ok: true, status: 200, text: async () => JSON.stringify(body), json: async () => body }
+    }
+    try {
+      const service = new IntentRouterServiceImpl({ reflect: { provide: () => {} }, llm: null } as any, {
+        defaultCategory: 'LOCAL',
+        classificationProvider: 'local-llm',
+        confidenceThreshold: 0.6,
+        jevEnabled: true,
+        jevProvider: 'bailian-decision' as const,
+        jevUrl: 'https://bailian.mock/compatible-mode/v1',
+        jevBootProbeEnabled: false,
+        categories: [
+          { id: 'CLOUD', description: '需要公网信息的任务', jevIntents: ['search'] },
+          { id: 'REJECT', description: '高危请求', jevIntents: ['legal'] },
+        ],
+      })
+      const intent = await service.classify('什么是量子力学')
+      assert.equal(intent.category, 'LOCAL')
+      assert.match(intent.rationale, /jev-intent:LOCAL/u)
+      const call = calls.find((c) => c.url.endsWith('/systemone'))
+      assert.ok(call)
+      const body = JSON.parse(call.init.body)
+      assert.equal(body.questions.intent.criteria.CLOUD.length > 0, true)
+      assert.equal(body.questions.intent.criteria.REJECT.length > 0, true)
+      assert.match(body.questions.intent.criteria.LOCAL, /拿不准就选它/u)
+    } finally {
+      (globalThis as any).fetch = orig
+    }
+  })
+
+  it('a taxonomy WITH a LOCAL row uses its own description verbatim', async () => {
+    const calls: Array<{ url: string; init: any }> = []
+    const orig = (globalThis as any).fetch
+    ;(globalThis as any).fetch = async (url: string, init: any) => {
+      calls.push({ url, init })
+      const body = {
+        answers: { intent: { type: 'choice', choice: 'LOCAL', confidence: 0.9 }, risk: { type: 'score', score: 0.2 } },
+      }
+      return { ok: true, status: 200, text: async () => JSON.stringify(body), json: async () => body }
+    }
+    try {
+      const service = new IntentRouterServiceImpl({ reflect: { provide: () => {} }, llm: null } as any, {
+        defaultCategory: 'LOCAL',
+        classificationProvider: 'local-llm',
+        confidenceThreshold: 0.6,
+        jevEnabled: true,
+        jevProvider: 'bailian-decision' as const,
+        jevUrl: 'https://bailian.mock/compatible-mode/v1',
+        jevBootProbeEnabled: false,
+        categories: [
+          { id: 'LOCAL', description: '本机自带描述', jevIntents: [] },
+          { id: 'CLOUD', description: '需要公网信息的任务', jevIntents: [] },
+        ],
+      })
+      await service.classify('什么是量子力学')
+      const call = calls.find((c) => c.url.endsWith('/systemone'))
+      assert.equal(JSON.parse(call!.init.body).questions.intent.criteria.LOCAL, '本机自带描述')
+    } finally {
+      (globalThis as any).fetch = orig
+    }
+  })
+})

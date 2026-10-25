@@ -1488,6 +1488,13 @@ export class IntentRouterServiceImpl extends Service {
   }> {
     const criteria: Record<string, string> = {}
     for (const cat of this.categories) criteria[cat.id] = cat.description
+    // §7.110 对齐（§7.115.1 修复）：默认本地简并后 policy 无 LOCAL 行时，
+    // 决策模型的 criteria 必须补 LOCAL 兜底项——否则模型被迫在 CLOUD/REJECT
+    // 二选一，日常问答会被推着误判 CLOUD（≥0.75 还会语义解锁出网）。兜底
+    // 文案与 LLM prompt 的 catch-all 行逐字一致。
+    if (!this.categories.some((c) => c.id === 'LOCAL')) {
+      criteria.LOCAL = '其余一切请求（本地操作、日常问答等——这是默认类别，拿不准就选它）'
+    }
     const body = {
       model: this.jevModel,
       state: {
@@ -1619,7 +1626,12 @@ export class IntentRouterServiceImpl extends Service {
     // (default 0.5) instead of paying the LLM round-trip for a second
     // opinion; non-LOCAL (data may leave the device) keeps the strict
     // jevConfidenceThreshold.
-    const mapped = this.categories.find((c) => c.id === intentStr)?.id
+    // §7.115.1: LOCAL is the default category — it is adoptable even when
+    // the §7.110-simplified taxonomy ships no LOCAL row (the criteria
+    // catch-all above offered it as a choice; the verdict must be adoptable).
+    const mapped = intentStr === 'LOCAL'
+      ? 'LOCAL'
+      : this.categories.find((c) => c.id === intentStr)?.id
     if (!intentStr || !mapped) {
       this.audit('info', 'intent.jev.unmapped_intent', {
         provider: 'bailian-decision',

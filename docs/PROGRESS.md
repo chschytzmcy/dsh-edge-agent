@@ -11114,3 +11114,11 @@ jev 后端**——查询原文不出设备（bailian 云端模式下 jev 阶段�
 **测试**：+4 例（方向采纳 / 非 LOCAL 严格门 / floor 可调 / llmFallback=false 直落
 规则——修正过一次错误预期：新闻查询在规则层命中关键词正确返回 CLOUD 而非默认）。
 **1065 passed**。两 profile 已部署。
+
+**§7.115.1 追加（2026-10-25，决策模型 criteria 的 LOCAL 缺口）**：§7.110 类别简并后
+policy 无 LOCAL 行，决策模型的 questions 生成直接遍历 categories → criteria 只有
+CLOUD/REJECT——模型被迫二选一，日常问答有被推着误判 CLOUD 的风险（≥0.75 还会语义
+解锁出网）。修两处：①criteria 生成补 LOCAL 兜底行（文案与 LLM prompt 的 catch-all
+逐字一致）；②采纳映射对 `choice=LOCAL` 恒可采纳（默认类别无需 taxonomy 行——
+criteria 补了但 mapped 查不到会 skip unmapped，测试抓出的第二半缺口）。
++2 例测试（无 LOCAL 行补兜底 + 有 LOCAL 行用原描述），**1067 passed**。
