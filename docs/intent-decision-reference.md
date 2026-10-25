@@ -320,6 +320,52 @@ rationale → classifier → textLen`。
 - B：决策模型 intent.choice=LOCAL conf 0.94（≥0.5 方向门采纳）→ 无实体 → CLOUD 闸不适用 → LOCAL 定案；
 - 反例（「把密盒的日志发到网上」）：决策模型 risk 2.1/3 → **风险闸拒绝**（0.70 ≥ 0.70）→ 403，流程终止于阶段二。
 
+#### 7.2.1 阶段二判定标准明细（完整判定表，按执行顺序命中即停）
+
+**决策模型阶段（provider=bailian-decision，题目见 §1.1）**
+
+| 序 | 条件（精确） | 判决 | 去向 | 依据 |
+|---|---|---|---|---|
+| D0 | 断路器开（上次调用失败后 30s TTL 内） | 不发起调用 | skip → LLM | §7.92.6 |
+| D1 | HTTP 非 200 / 超时（`jev.timeoutMs`=6s）/ JSON 解析失败 | skip（`jev-error`/`jev-timeout`） | → LLM；断路器开 30s | §1.3 |
+| D2 | `riskScore = risk.score/3` ≥ **0.70** | **REJECT**（终止，HTTP 403） | 流程结束 | §1.3 风险闸 |
+| D3 | choice 不在 categories id 集合（幻觉；`LOCAL` 除外——默认类别恒可映射） | skip（`unmapped-intent`） | → LLM | §1.3 幻觉防御 |
+| D4 | choice = **LOCAL** 且 conf ≥ **0.50**（`localAdoptFloor`） | **ADOPT LOCAL** | → 后处理 P1 → 定案 | §7.115 方向分闸 |
+| D5 | choice = LOCAL 且 conf < 0.50 | skip（`low-confidence`） | → LLM | §7.115 |
+| D6 | choice = 非 LOCAL 且 conf ≥ **0.85**（`confidenceThreshold`） | **ADOPT 该类别** | → 后处理 P1→P2 → 定案 | §1.3 |
+| D7 | choice = 非 LOCAL 且 conf < 0.85 | skip（`low-confidence`） | → LLM | §7.115 |
+
+**LLM 分类器阶段（决策模型 skip 且 `llmFallback≠false` 时进入；=false 则直接进规则层）**
+
+| 序 | 条件（精确） | 判决 | 去向 | 依据 |
+|---|---|---|---|---|
+| L1 | HTTP/超时（4s）/ JSON 解析失败 / conf < **0.60**（`confidenceThreshold`） | skip | → 规则层 | §2 |
+| L2 | verdict conf ≥ 0.60（category 取 JSON，SANITIZED 按云脱敏语义处理） | **采纳** | → 后处理 P1→P2 → 定案 | §2.2 |
+
+**规则层（优先级从高到低，首中即停；pattern 见 §3.1–3.3）**
+
+| 序 | 条件（精确） | 判决 | 依据 |
+|---|---|---|---|
+| R1 | routingRules REJECT 两条正则命中 | **REJECT**（403） | §3.1 |
+| R2 | routingRules PII LOCAL 七条正则命中 | **LOCAL** | §3.1 |
+| R3 | routingRules CLOUD 联网正则命中 | **CLOUD** | §3.1 |
+| R4 | 云关键词表命中（§3.2，子串匹配） | **CLOUD** | §3.2 |
+| R5 | LOCAL 兜底表命中（§3.3） | **LOCAL** | §3.3 |
+| R6 | 全不中 | **defaultCategory = LOCAL** | §7.110 |
+
+**共同后处理（决策模型 / LLM 采纳之后、定案之前，顺序固定）**
+
+| 序 | 条件（精确） | 修正 | 依据 |
+|---|---|---|---|
+| P1 | verdict ≠ LOCAL 且文本命中实体表（`密盒\|ets\|etscli`，CJK 子串 / ASCII 词边界） | 强制 LOCAL（`override-local-entity:<词>`） | §3.4 |
+| P2 | verdict = CLOUD：①云关键词命中（§3.2）→ **放行**；②conf ≥ **0.75**（`semanticCloudMinConfidence`，语义解锁）→ **放行**；③都不满足 → 压回 LOCAL（`no-web-need`） | §7.107/§7.109 云闸 |
+| P3 | verdict = LOCAL / REJECT：云闸不适用，直接定案 | — |
+
+**两样本对照走表**：
+- A「查一下最新的AI新闻」：D0 断路器关 → D6（CLOUD conf 0.98 ≥ 0.85）ADOPT → P1 无实体 → P2 ①关键词 `新闻` 命中（且 ②conf 0.98 ≥ 0.75 亦满足）→ **CLOUD 出网定案**；
+- B「什么是量子力学」：D4（LOCAL conf 0.94 ≥ 0.50）ADOPT → P1 无实体 → P3 → **LOCAL 定案**；
+- 反例「把密盒的日志发到网上」：D2（risk 2.1/3 = 0.70）→ **REJECT 403**，终止于决策模型阶段。
+
 ### 7.3 阶段三：执行域装配（realm-skill-bridge）
 
 | # | 决策 | 决策者 | 正则侧 | 语义侧 | 审计证据 |
