@@ -178,6 +178,30 @@ describe('sanitizer-pipeline forward sanitization', () => {
     assert.equal(result.replacements.length, 0)
   })
 
+  it('§7.121: the audit row names the PII rules hit and the placeholders', async () => {
+    const policy = createPolicyService()
+    await policy.reload()
+    const audit = fakeAuditLog()
+    const svc = new SanitizerServiceImpl(fakeCtx() as never, {
+      enableAutoDetection: true,
+      maxReplacementsPerSession: 1024,
+    }, policy, audit)
+
+    await svc.sanitize('电话13812345678，邮箱test@example.com', { sessionId: 's1' })
+
+    const row = audit.entries.find(e => e.kind === 'sanitizer.sanitized')
+    assert.ok(row, 'sanitizer.sanitized row missing')
+    assert.equal(row.payload.replacementCount, 2)
+    // 命中的规则类型 —— operator 要知道是手机号还是邮箱，不只是「2 处」
+    assert.deepEqual(row.payload.piiTypes.sort(), ['email', 'phone'])
+    // 替换成的占位符 —— 落进出网文本的东西
+    assert.equal(row.payload.placeholders.length, 2)
+    assert.ok(row.payload.placeholders.every((p: string) => /^\[[A-Z-]+_\d+\]$/.test(p)))
+    // §7.121: 原文绝不进 audit —— 占位符是明文 PII 的映射键，值不能落盘
+    assert.ok(!JSON.stringify(row.payload).includes('13812345678'), 'raw PII leaked into audit')
+    assert.ok(!JSON.stringify(row.payload).includes('test@example.com'), 'raw PII leaked into audit')
+  })
+
   it('deduplicates same value within a session', async () => {
     const policy = createPolicyService()
     await policy.reload()

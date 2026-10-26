@@ -1018,6 +1018,10 @@ export class IntentRouterServiceImpl extends Service {
           jevLatencyMs: jevResult.latencyMs,
           jevIntent: jevResult.jevIntentString,
           jevConfidence: jevResult.confidence,
+          // §7.121: 决策模型的**原始风险分**。此前只落了 intent/confidence，
+          // 「模型到底有多确信这条请求有风险」这个问题没有答案 —— 而它正是
+          // §7.107 公网检索闸门和 REJECT 闸门的输入。
+          jevRiskScore: jevResult.riskScore,
         })
         // §7.107: a model's CLOUD opinion is not what decides whether text
         // may leave the device — a public-web need is.

@@ -69,17 +69,33 @@ function clip(v: string, max = 44): string {
   return v.length <= max ? v : `${v.slice(0, max - 1)}…`
 }
 
+/** §7.121: 数组型命中明细（规则名 / PII 类型 / 占位符）读成一行。
+ *  后端 safePayload 现在保留字符串数组（§7.121），这里负责渲染。 */
+function list(v: unknown): string[] {
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
+}
+
 function guardNode(rows: EdgeRow[]): FlowNode {
   const end = latest(rows, r => r.kind === 'guard.model-detect.end')
+  const unsafe = latest(rows, r => r.kind === 'guard.model-detect.unsafe')
   const err = latest(rows, r => /^guard\.model-detect\.(error|timeout|provider_error)$/.test(r.kind))
   const skipped = latest(rows, r => /^guard\.model-detect\.skip/.test(r.kind))
   const started = latest(rows, r => r.kind === 'guard.model-detect.start')
   const injection = latest(rows, r => r.kind === 'input.injection.warned' || r.kind === 'input.injection')
-  if (injection !== undefined && end === undefined) {
+  if (injection !== undefined && (unsafe === undefined && end === undefined)) {
+    // §7.121: 原始判断数据 —— 命中了哪条规则 + 那条规则的**正则原文**。
+    //  光有「命中告警级注入特征」等于没给证据：operator 无法判断是误报
+    //  还是规则本身写宽了。
+    const names = list(field(injection, 'patterns'))
+    const sources = list(field(injection, 'patternSources'))
+    const sub: string[] = []
+    if (names.length > 0) sub.push(`${tr('flow.lbl.hit')} ${names.join(', ')}`)
+    if (sources.length > 0) sub.push(`${tr('flow.lbl.regex')} ${clip(sources[0], 40)}`)
+    if (sub.length === 0) sub.push(tr('flow.g.guardrule'))
     return {
       label: tr('flow.guard'), tone: 'warn',
       detail: tr('flow.guard.injection'),
-      sub: [str(field(injection, 'patterns')) === '?' ? tr('flow.g.guardrule') : `patterns=${str(field(injection, 'patterns'))}`],
+      sub,
     }
   }
   if (err !== undefined && (end === undefined || err.ts > end.ts)) {
@@ -92,22 +108,57 @@ function guardNode(rows: EdgeRow[]): FlowNode {
       ],
     }
   }
+  if (unsafe !== undefined) {
+    // §7.121: 原始判断数据 —— 模型判不安全的**威胁类型**与**理由**。
+    const threats = list(field(unsafe, 'threats'))
+    const sub: string[] = []
+    if (threats.length > 0) sub.push(`${tr('flow.lbl.hit')} ${threats.join(', ')}`)
+    const rationale = field(unsafe, 'rationale')
+    if (typeof rationale === 'string' && rationale.length > 0) sub.push(`${tr('flow.lbl.why')} ${clip(rationale, 40)}`)
+    sub.push(`${tr('flow.lbl.model')} ${str(field(unsafe, 'provider'))}/${str(field(unsafe, 'model'))} · ${ms(field(unsafe, 'durationMs'))}`)
+    return {
+      label: tr('flow.guard'), tone: 'stop',
+      detail: `${tr('flow.guard.unsafe')} · ${str(field(unsafe, 'dataClass'))}`,
+      sub,
+    }
+  }
   if (end !== undefined) {
     const cls = typeof end.payload.dataClass === 'string' ? end.payload.dataClass : '?'
     // The headline already says the verdict ("干净（公开级）"); repeating it
     // as "判定 dataClass=public" underneath was noise in a narrow column.
     // The evidence line now carries what the headline cannot: who judged,
     // how long it took, how much text was scanned.
+    const sub = [
+      `${tr('flow.lbl.model')} ${str(field(end, 'provider'))}/${str(field(end, 'model'))}`,
+      `${tr('flow.lbl.elapsed')} ${ms(field(end, 'durationMs'))} · ${tr('flow.lbl.scanned')} ${str(field(end, 'textLen'))} ${tr('flow.lbl.chars')}`,
+    ]
+    // §7.121: 原始判断数据 —— 模型判「安全」的**理由原文**（§7.121 起
+    //  guard.model-detect.end 落 rationale）。这是「为什么判安全」的唯一
+    //  出处，此前整条链路都丢了。
+    const rationale = field(end, 'rationale')
+    if (typeof rationale === 'string' && rationale.length > 0) {
+      sub.push(`${tr('flow.lbl.why')} ${clip(rationale, 40)}`)
+    }
+    // 正则档命中的规则也要在「安全」轮次露出：模型说安全，但正则档
+    // 命中了 warn 规则 —— 两者并存才是完整的判断依据。
+    if (injection !== undefined) {
+      const names = list(field(injection, 'patterns'))
+      if (names.length > 0) sub.push(`${tr('flow.lbl.hit')} ${names.join(', ')}`)
+    }
     return {
       label: tr('flow.guard'), tone: 'ok',
       detail: cls === 'public' ? tr('flow.guard.public') : classLabel(cls),
-      sub: [
-        `${tr('flow.lbl.model')} ${str(field(end, 'provider'))}/${str(field(end, 'model'))}`,
-        `${tr('flow.lbl.elapsed')} ${ms(field(end, 'durationMs'))} · ${tr('flow.lbl.scanned')} ${str(field(end, 'textLen'))} ${tr('flow.lbl.chars')}`,
-      ],
+      sub,
     }
   }
-  if (skipped !== undefined) return { label: tr('flow.guard'), tone: 'ok', detail: tr('flow.guard.skipped'), sub: [] }
+  if (skipped !== undefined) {
+    const sub: string[] = []
+    const reason = field(skipped, 'reason')
+    if (typeof reason === 'string' && reason.length > 0) sub.push(`${tr('flow.lbl.cause')} ${reason}`)
+    const pattern = field(skipped, 'rationale')
+    if (typeof pattern === 'string' && pattern.length > 0) sub.push(`${tr('flow.lbl.why')} ${clip(pattern, 40)}`)
+    return { label: tr('flow.guard'), tone: 'ok', detail: tr('flow.guard.skipped'), sub }
+  }
   if (started !== undefined) return { label: tr('flow.guard'), tone: 'run', detail: tr('flow.guard.running'), sub: [] }
   return { label: tr('flow.guard'), tone: 'wait', detail: tr('flow.wait'), sub: [] }
 }
@@ -117,6 +168,9 @@ function intentNode(rows: EdgeRow[]): FlowNode {
   const override = latest(rows, r => r.kind === 'intent.classify.entity_override')
   const rejected = latest(rows, r => r.kind === 'intent.rules.rejected')
   const started = latest(rows, r => r.kind === 'intent.classify.start')
+  // §7.121: jev（决策模型）的**原始返回** —— intent/confidence/riskScore。
+  // 此前只有 intent.classify.end 的转述结论，「模型到底怎么说的」不可见。
+  const jev = latest(rows, r => r.kind === 'intent.jev.response')
   // §7.107: the privacy-policy tier decides BEFORE the classifier runs
   // (input-guard.ts §7.87.13.2 short-circuits the LLM call). A turn decided
   // by the policy therefore has NO intent.classify.* row at all — reading
@@ -124,7 +178,13 @@ function intentNode(rows: EdgeRow[]): FlowNode {
   // below announced the verdict. The policy tier is an intent verdict.
   const policy = latest(rows, r => r.kind === 'input-guard.policy.route-applied')
   if (rejected !== undefined && (end === undefined || rejected.ts > end.ts)) {
-    return { label: tr('flow.intent'), tone: 'stop', detail: tr('flow.intent.rejected'), sub: [] }
+    // §7.121: 拒绝也要给原始依据 —— 命中的意图 + 风险分。
+    const sub: string[] = []
+    const risk = field(rejected, 'riskScore')
+    if (typeof risk === 'number') sub.push(`${tr('flow.lbl.risk')} ${risk.toFixed(2)}`)
+    const intent = field(rejected, 'intent')
+    if (typeof intent === 'string' && intent.length > 0) sub.push(`${tr('flow.lbl.hit')} ${intent}`)
+    return { label: tr('flow.intent'), tone: 'stop', detail: tr('flow.intent.rejected'), sub }
   }
   if (end !== undefined) {
     const cat = str(field(end, 'category'))
@@ -138,6 +198,39 @@ function intentNode(rows: EdgeRow[]): FlowNode {
     const startRow = latest(rows, r => r.kind === 'intent.classify.start')
     const textLen = field(end, 'textLen') ?? field(startRow, 'textLen')
     sub.push(`${tr('flow.lbl.classifier')} ${str(field(startRow, 'classifier'))} · ${tr('flow.lbl.elapsed')} ${ms(field(end, 'durationMs'))} · ${tr('flow.lbl.scanned')} ${str(textLen)} ${tr('flow.lbl.chars')}`)
+    // §7.121: 原始判断数据 —— 命中了**哪个关键字**（规则档的正则命中），
+    // 以及分类器对该档位的**语义说明**。§7.113 已把这两个字段写进
+    // classify.end，但只有 rows 面板读，flow 面板一直读不到。
+    const keyword = field(end, 'keyword')
+    if (typeof keyword === 'string' && keyword.length > 0) {
+      sub.push(`${tr('flow.lbl.keyword')} ${clip(keyword, 30)}`)
+    }
+    const semantic = field(end, 'semantic')
+    if (typeof semantic === 'string' && semantic.length > 0) {
+      sub.push(`${tr('flow.lbl.semantic')} ${clip(semantic, 40)}`)
+    }
+    // §7.121: 决策路径的**机器码**（llm / jev-adopt / cache / rules-* …），
+    // 让 operator 分得清「这次是缓存命中」还是「真判了一次」。
+    const path = field(end, 'path')
+    if (typeof path === 'string' && path.length > 0) {
+      sub.push(`${tr('flow.lbl.path')} ${path}`)
+    }
+    // §7.121: jev 决策模型的原始返回（intent / confidence / riskScore）。
+    // 优先读 classify.end 上已并入的 jev* 字段（那条路径恒为 info 级），
+    // 回退到 intent.jev.response 行（本地流那条路径可能是 debug 级，
+    // 会被 audit 的 minLevel 挡掉而收不到）。
+    const jevIntent = field(end, 'jevIntent')
+    const jevConf = field(end, 'jevConfidence')
+    const jevRisk = field(end, 'jevRiskScore')
+    const jevParts: string[] = []
+    if (typeof jevIntent === 'string' && jevIntent.length > 0) jevParts.push(`intent=${jevIntent}`)
+    if (typeof jevConf === 'number') jevParts.push(`confidence=${jevConf.toFixed(2)}`)
+    if (typeof jevRisk === 'number') jevParts.push(`riskScore=${jevRisk.toFixed(2)}`)
+    if (jevParts.length > 0) {
+      const jevProvider = jev !== undefined ? str(field(jev, 'provider')) : '?'
+      const jevModel = jev !== undefined ? str(field(jev, 'model')) : '?'
+      sub.push(`${tr('flow.lbl.jev')} ${jevProvider}/${jevModel} · ${jevParts.join(' · ')}`)
+    }
     // `default:sanitized` rationale = the classifier never returned a verdict
     // (error/timeout upstream — e.g. the model answered non-JSON). Surface
     // WHY from the error rows instead of pretending an LLM decided.
@@ -188,8 +281,23 @@ function sanitizeNode(rows: EdgeRow[], category: string | undefined): FlowNode {
     return { label: tr('flow.sanitize'), tone: 'warn', detail: tr('flow.sanitize.failed'), sub: [`${tr('flow.lbl.cause')} ${str(field(failed, 'reason')) ?? '-'}`] }
   }
   if (done !== undefined) {
-    const n = typeof done.payload.count === 'number' ? done.payload.count : done.payload.replacements
+    // §7.121: 计数字段名有两个来源 —— sanitizer 落的是 `replacementCount`，
+    // 老的 input-guard / guard.rule 行落的是 `count` / `replacements`。
+    // 此前只读后两个，sanitizer 那一路永远显示不出「已替换 N 处」。
+    const n = typeof done.payload.count === 'number'
+      ? done.payload.count
+      : typeof done.payload.replacementCount === 'number'
+        ? done.payload.replacementCount
+        : typeof done.payload.replacements === 'number'
+          ? done.payload.replacements
+          : undefined
     const sub = [typeof n === 'number' ? `${tr('flow.sanitize.hits')} ${n} ${tr('flow.sanitize.unit')}` : tr('flow.sanitize.done')]
+    // §7.121: 原始判断数据 —— **命中了哪条 PII 规则** + 替换成的占位符。
+    //  只说「已替换 3 处」看不出是手机号还是身份证，也看不出替成了什么。
+    const piiTypes = list(field(done, 'piiTypes'))
+    if (piiTypes.length > 0) sub.push(`${tr('flow.lbl.hit')} ${piiTypes.join(', ')}`)
+    const placeholders = list(field(done, 'placeholders'))
+    if (placeholders.length > 0) sub.push(`${tr('flow.lbl.ph')} ${placeholders.join(', ')}`)
     if (back !== undefined) sub.push(tr('flow.s.desanitized'))
     return { label: tr('flow.sanitize'), tone: 'ok', detail: tr('flow.s.done'), sub }
   }
@@ -237,9 +345,19 @@ function routeNode(rows: EdgeRow[]): FlowNode {
     const sub: string[] = []
     if (realOverride !== undefined) {
       sub.push(`${tr('flow.lbl.rewrite')} ${str(field(realOverride, 'from.provider'))}/${str(field(realOverride, 'from.model'))} → ${str(field(realOverride, 'to.provider'))}/${str(field(realOverride, 'to.model'))}`)
-      sub.push(`${tr('flow.lbl.reason')} ${reasonLabel(str(field(realOverride, 'reason')))}`)
+      const rawReason = str(field(realOverride, 'reason'))
+      sub.push(`${tr('flow.lbl.reason')} ${reasonLabel(rawReason)}`)
+      // §7.121: 原始判断数据 —— 改写的**机器原因码**（intent-local /
+      // policy-rule / …）。译文只给人看，对账要靠机器码。
+      if (rawReason !== '?' && rawReason !== reasonLabel(rawReason)) {
+        sub.push(`${tr('flow.lbl.code')} ${rawReason}`)
+      }
     }
     sub.push(`${tr('flow.lbl.entry')} ${str(field(routed, 'routeSource'))} · ${tr('flow.lbl.pool')} ${routed.payload.edgeRouteUsed === true ? tr('flow.lbl.used') : tr('flow.lbl.hostOwn')}`)
+    // §7.121: 原始判断数据 —— 改写前的**原始路由来源**（宿主的默认模型
+    // 从哪来）。没有它就看不出「为什么本来要上云」。
+    const originalSource = str(field(routed, 'originalProviderSource'))
+    if (originalSource !== '?') sub.push(`${tr('flow.lbl.origSource')} ${originalSource}`)
     return {
       label: tr('flow.route'), tone: 'ok',
       detail: forced ? `${cat} · ${tr('flow.route.forced')}` : `${cat} · ${tr('flow.route.kept')}`,
@@ -289,8 +407,20 @@ function threatNode(rows: EdgeRow[]): FlowNode {
       sub: [`${str(field(escalated, 'from'))} → ${str(field(escalated, 'to'))} · ${str(field(escalated, 'count'))}/${str(field(escalated, 'threshold'))}`],
     }
   }
-  if (rate !== undefined) return { label: tr('flow.threat'), tone: 'warn', detail: tr('flow.threat.rate'), sub: [] }
-  return { label: tr('flow.threat'), tone: 'ok', detail: tr('flow.threat.calm'), sub: [] }
+  if (rate !== undefined) {
+    // §7.121: 限流也要给原始计数（命中的是会话档还是全局档）。
+    const global = rate.kind === 'input.global-rate-limit'
+    return {
+      label: tr('flow.threat'), tone: 'warn', detail: tr('flow.threat.rate'),
+      sub: [`${tr('flow.lbl.scope')} ${global ? tr('flow.lbl.global') : tr('flow.lbl.session')}`],
+    }
+  }
+  // §7.121: 「本轮窗口无异常」也要给依据 —— 本轮到底看了多少条信号。
+  const watched = rows.filter(r => r.kind.startsWith('guard.') || r.kind.startsWith('input.') || r.kind.startsWith('td-bus.')).length
+  return {
+    label: tr('flow.threat'), tone: 'ok', detail: tr('flow.threat.calm'),
+    sub: [`${tr('flow.lbl.watched')} ${watched}`],
+  }
 }
 
 function answerNode(rows: EdgeRow[], summary: EdgeSummary): FlowNode {
@@ -299,11 +429,26 @@ function answerNode(rows: EdgeRow[], summary: EdgeSummary): FlowNode {
   // forward (flagged with a 沿用 note — the distinction from a fresh
   // announcement stays honest). Nothing ever seen → honest pending.
   const host = latest(rows, r => r.kind === 'llm.host.route')
-  const effective = host !== undefined
-    ? { provider: str(field(host, 'provider')), model: str(field(host, 'model')), carried: false }
-    : summary.lastRoute !== undefined
-      ? { provider: summary.lastRoute.provider, model: summary.lastRoute.model, carried: true }
-      : undefined
+  // §7.121: `llm.host.route` only exists when the **host** answered through
+  // its own model. In the desktop deployment the answer goes through an
+  // **edge adapter** (local-llm / cloud-llm), and the adapter's own
+  // `llm.local.end` / `llm.cloud.end` row IS the answer egress — but the
+  // node read neither, so it printed 「路由未定」 while the turn had
+  // demonstrably answered (real session: 90 llm.local.* rows, 0
+  // llm.host.route). Read the adapter rows first — they are the actual
+  // wire traffic — and fall back to the host announcement.
+  const adapter = latest(rows, r => r.kind === 'llm.local.end' || r.kind === 'llm.cloud.end')
+  const effective = adapter !== undefined
+    ? {
+      provider: str(field(adapter, 'provider')),
+      model: str(field(adapter, 'model') ?? field(adapter, 'route')),
+      carried: false,
+    }
+    : host !== undefined
+      ? { provider: str(field(host, 'provider')), model: str(field(host, 'model')), carried: false }
+      : summary.lastRoute !== undefined
+        ? { provider: summary.lastRoute.provider, model: summary.lastRoute.model, carried: true }
+        : undefined
   if (effective === undefined) {
     return { label: tr('flow.answer'), tone: 'wait', detail: tr('flow.answer.pending'), sub: [] }
   }
@@ -317,6 +462,20 @@ function answerNode(rows: EdgeRow[], summary: EdgeSummary): FlowNode {
   if (local && answerSteps.length > 0) {
     const total = answerSteps.reduce((n, r) => n + (typeof r.payload.durationMs === 'number' ? r.payload.durationMs : 0), 0)
     sub.push(`${tr('flow.lbl.steps')} ×${answerSteps.length} · ${tr('flow.lbl.total')} ${ms(total)} · ${tr('flow.lbl.context')} ${str(answerSteps.at(-1)?.payload.promptLen)} ${tr('flow.lbl.chars')}`)
+  }
+  // §7.121: 原始判断数据 —— 这一轮实际走了哪条线路的**原始字段**。
+  const egress = adapter ?? host
+  if (egress !== undefined) {
+    const raw: string[] = []
+    const route = field(egress, 'route')
+    if (typeof route === 'string' && route.length > 0 && route !== model) raw.push(`route=${route}`)
+    const dur = field(egress, 'durationMs')
+    if (typeof dur === 'number') raw.push(`durationMs=${dur}`)
+    const promptLen = field(egress, 'promptLen')
+    if (typeof promptLen === 'number') raw.push(`promptLen=${promptLen}`)
+    const resultLen = field(egress, 'resultLen')
+    if (typeof resultLen === 'number') raw.push(`resultLen=${resultLen}`)
+    if (raw.length > 0) sub.push(`${tr('flow.lbl.raw')} ${raw.join(' · ')}`)
   }
   const tok = summary.tokens
   if (tok !== undefined && (tok.input !== undefined || tok.output !== undefined)) {

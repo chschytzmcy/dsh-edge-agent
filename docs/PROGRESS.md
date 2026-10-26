@@ -11456,3 +11456,85 @@ call id 在**消息顶层**，content 里是结果文本块、**没有** `tool-r
 **待决**（未实施）：宿主 bash 工具用 `process.env.PATH`（`which` 包），
 没有命令级白名单配置项，所以"摘 PATH"要么落在宿主启动环境（影响面大），
 要么另找挂载点。本节只记录事实与候选，**未改任何代码**。
+
+## §7.121 —— Edge 面板「每一次判断都要给出原始判断数据」（2026-10-26）
+
+operator 反馈：Edge 面板的六个判定节点只给**结论**，不给**依据**。
+「比如如果是正则，就要给出命中关键字」——命中了哪条规则、规则的正则
+原文是什么、判定的原始字段值是多少，面板一概不显示。
+
+### 调查：原始数据其实都算出来了，只是在链路上被丢掉了
+
+逐节点对照 audit 落盘的真实 payload（真实桌面会话
+`session-e3e5d1bf-…`，`~/.dsh-edge-agent/audit/audit.plain.jsonl`）：
+
+| 节点 | 面板显示 | 缺失的原始依据 | 丢失位置 |
+|---|---|---|---|
+| 攻击检测 | 干净（公开级） | 模型判安全的**理由**、命中威胁类型 | `guard.model-detect.end` 根本没落 `rationale`；`threats` 是数组 |
+| 攻击检测 | 命中告警级注入特征 | 命中**哪条规则** + **正则原文** | `patterns` 是数组，被 `safePayload` 整条丢弃 |
+| 意图判定 | LOCAL 98% · LLM 裁决 | 命中的**关键字**、语义说明、决策路径、jev 原始 riskScore | `keyword`/`semantic` §7.113 已落但**只有 rows 面板读**；flow 面板不读；`jevRiskScore` 未落 |
+| PII 脱敏 | 已脱敏 | 命中了**哪条 PII 规则**、替成了什么占位符 | `sanitizer.sanitized` 只落 `replacementCount`，`replacements` 明细**从未进 audit** |
+| 路由决策 | 意图判定为本地 | **机器原因码** `intent-local` | 译文覆盖了原码 |
+| 答案出口 | **路由未定** | 真实出口 provider/model | **只认 `llm.host.route`，而桌面真实会话该 kind 一次都没产生** |
+| 威胁监控 | 本轮窗口无异常 | 本轮检了多少条信号 | 无 |
+
+### 修复 1 —— 答案出口「路由未定」是真 bug（§7.119 的同源症状）
+
+真实会话统计：`llm.local.start` 90 次 / `llm.local.end` 89 次，
+`llm.host.route` **0 次**。桌面的答案是 edge adapter（local-llm）出的，
+不是宿主自己的模型 —— 所以 `request/context` 事件不产生 host route 行，
+节点读不到就说「路由未定」。**一轮明明作答了的对话，显示未作答。**
+
+改法：`answerNode` 先读 adapter 自己的 `llm.local.end` / `llm.cloud.end`
+行（那是真实 wire 流量），再回退到 `llm.host.route`，最后才用
+`summary.lastRoute`（沿用上一轮）。
+
+顺带修了一个字段名不匹配的 bug：sanitizer 落的是 `replacementCount`，
+面板读的是 `count` / `replacements` —— 计数永远显示不出来。
+
+### 修复 2 —— 后端：让原始数据进 audit
+
+- `safePayload`：**字符串数组不再丢弃**。数组里装的是规则名 / PII 类型
+  / 占位符 —— 规则标识符，不是用户内容。只保留字符串元素（数字与对象
+  元素仍丢），逐个过 PII 扫描，条数上限 32。
+- `sanitizer.sanitized`：新增 `piiTypes`（命中的规则类型）、
+  `placeholders`（替换成的占位符）、`dataClasses`。
+  **原文绝不进 audit** —— 占位符是明文 PII 的映射键，值不能落盘。
+- `guard.model-detect.end`：新增 `safe: true` + `rationale`（模型判安全的
+  理由原文）。
+- `guard.model-detect.unsafe`：`threats` 数组现在能透出（此前被丢）。
+- `input.injection` / `input.injection.warned`：新增 `patternSources`
+  （命中规则的**正则原文**）—— 规则名让人知道是哪条，正则让人能对账
+  是误报还是规则写宽了。
+- `intent.classify.end`（jev 路径）：新增 `jevRiskScore` —— 决策模型
+  「有多确信这条请求有风险」，此前没有答案，而它正是 §7.107 公网检索
+  闸门和 REJECT 闸门的输入。
+
+### 修复 3 —— 前端：每个节点露出原始依据
+
+flow 面板新增证据行（全部可点开对账）：
+
+- 攻击检测：命中规则名 + 正则原文；模型判安全的理由；不安全轮显示
+  威胁类型 + 理由。
+- 意图判定：**命中关键字**（`keyword`）、语义说明（`semantic`）、决策
+  路径机器码（`path`）、决策模型原始 `intent` / `confidence` / `riskScore`。
+- PII 脱敏：命中的 PII 规则类型 + 占位符列表。
+- 路由决策：改写的机器原因码（译文 + 原码并列）。
+- 答案出口：真实出口的原始字段（route / durationMs / promptLen /
+  resultLen）。
+- 威胁监控：本轮检了多少条信号；限流时区分全局档 / 会话档。
+
+### 验证
+
+新增 `tests/unit/flow-panel-raw-evidence.test.ts`（13 例）：用
+`react-dom/server` 静态渲染，断言的是 operator **真正看到的文本**，
+不是内部数据结构。覆盖答案出口四态（adapter / cloud / host / 诚实
+pending）、六个节点的原始数据渲染、数组明细透出。
+
+后端补测：safePayload 数组保留 + PII 扫描 + 条数上限 + 非字符串元素丢弃；
+sanitizer 审计落 PII 类型与占位符且**不含原文**；guard 安全轮落 rationale、
+不安全轮落 threats、注入档落正则原文；intent 落 jevRiskScore。
+
+单测 55 文件 / 1124 passed + 2 skipped（新增 21 例）；eslint 0 error；
+主 tsconfig 与 tsconfig.client 双侧类型检查 exit 0；verify:build 11 项
+门禁 exit 0。

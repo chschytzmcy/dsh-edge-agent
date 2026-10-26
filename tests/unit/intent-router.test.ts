@@ -2602,6 +2602,10 @@ describe('intent-router', () => {
       const endEntry = audit.entries.find((e: any) => e.kind === 'intent.classify.end')
       assert.equal(endEntry.payload.path, 'jev-adopt')
       assert.equal(endEntry.payload.jevIntent, '订单查询')
+      // §7.121: 决策模型的原始风险分也落进 classify.end —— 「模型到底
+      // 有多确信这条请求有风险」此前没有答案，而它是 REJECT 闸门的输入。
+      assert.equal(typeof endEntry.payload.jevRiskScore, 'number')
+      assert.equal(typeof endEntry.payload.jevConfidence, 'number')
     } finally {
       mock.restore()
     }

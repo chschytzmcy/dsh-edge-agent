@@ -380,6 +380,12 @@ export class PromptGuardServiceImpl extends Service implements PromptGuardServic
         await this.audit('security', 'input.injection', {
           sessionId,
           patterns: blockHits,
+          // §7.121: 命中规则的**正则原文** —— operator 要看到是哪条
+          // pattern 判的，光有名字不够对账。pattern 是配置里的正则
+          // 字面量（规则自身），不是用户内容。
+          patternSources: this.injectionPatterns
+            .filter(p => blockHits.includes(p.name))
+            .map(p => p.rawPattern),
           preview: redactString(text.slice(0, 100)).redacted,
         })
         return {
@@ -395,6 +401,11 @@ export class PromptGuardServiceImpl extends Service implements PromptGuardServic
         await this.audit('warn', 'input.injection.warned', {
           sessionId,
           patterns: warnHits.map(h => h.name),
+          // §7.121: 同 block 档 —— 带上命中的正则原文，operator 才能
+          // 对账「到底哪条规则放行了这句」。
+          patternSources: this.injectionPatterns
+            .filter(p => warnHits.some(h => h.name === p.name))
+            .map(p => p.rawPattern),
           preview: redactString(text.slice(0, 100)).redacted,
         })
       }
@@ -732,6 +743,11 @@ export class PromptGuardServiceImpl extends Service implements PromptGuardServic
       dataClass: parsed.dataClass,
       chunks,
       textLen: text.length,
+      // §7.121: 原始判断数据 —— 模型判「安全」时**为什么**判安全才是
+      // operator 要看的。rationale 是模型自己给的理由（原始输出的一行），
+      // safe 显式落 true 让面板不必靠 kind 推断结论。
+      safe: true,
+      rationale: parsed.rationale,
     })
     return null  // safe → let prior regex/PII verdict stand
   }

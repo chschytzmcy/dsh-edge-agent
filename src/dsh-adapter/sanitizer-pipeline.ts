@@ -321,10 +321,21 @@ export class SanitizerServiceImpl extends Service implements SanitizerService {
     }
 
     if (replacements.length > 0) {
+      // §7.121: 原始判断数据 —— 光记「替换了几处」看不出**命中了哪条
+      // PII 规则**。`piiTypes` 是命中的规则类型（phone / id-card / …），
+      // `placeholders` 是替换后落进出网文本的占位符，两者都是**类型与
+      // 序号**，不含用户原文 —— 占位符本身是可逆映射的键，绝不是明文。
+      //
+      // `original` 绝不进 audit：它是用户 PII 明文。面板要看的「命中了
+      // 什么」由类型 + 占位符回答，不需要原文。
+      const piiTypes = [...new Set(replacements.map(r => r.piiType))]
       await this.audit('info', 'sanitizer.sanitized', {
         sessionId,
         replacementCount: replacements.length,
         totalMappings: mapping.placeholders.size,
+        piiTypes,
+        placeholders: replacements.map(r => r.placeholder),
+        dataClasses: [...new Set(replacements.map(r => r.dataClass))],
       })
     }
 

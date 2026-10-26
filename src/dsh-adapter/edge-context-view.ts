@@ -192,6 +192,11 @@ function extractSessionId(payload: Record<string, unknown>): string {
   return typeof sid === 'string' && sid.length > 0 ? sid : GLOBAL_BUCKET
 }
 
+/** §7.121: how many elements of a string array survive into the panel.
+ *  Rule-name lists are short (injection rules ≤ a few dozen); the cap is
+ *  a payload-size guard, not a semantic one. */
+const ARRAY_CAP = 32
+
 /** Copy the payload with only scalar-safe fields, re-tokenized. Nested
  *  objects/arrays are flattened away EXCEPT small primitives we want
  *  (numbers/booleans kept; strings run through the PII scanner). */
@@ -218,8 +223,27 @@ export function safePayload(payload: Record<string, unknown>, piiRedact: boolean
           out[`${key}.${k}`] = v
         }
       }
+    } else if (Array.isArray(value)) {
+      // §7.121: string arrays carry the **原始命中明细** and were dropped
+      // wholesale — which silently erased the very evidence the operator
+      // needs ("哪条规则命中了"). `input.injection.warned` carries
+      // `patterns: ['role-override-zh']`; `guard.model-detect.unsafe`
+      // carries `threats: [...]`; `sanitizer.sanitized` carries the matched
+      // PII types. All of them are **rule/type identifiers** — never user
+      // content — so they are safe to surface verbatim.
+      //
+      // Guardrails: only string elements are kept (numbers/objects are
+      // dropped, an object element could carry anything); the count is
+      // capped; each element is still PII-scanned so a rule name that
+      // somehow embeds a phone number cannot leak.
+      const parts: string[] = []
+      for (const item of value) {
+        if (typeof item !== 'string') continue
+        parts.push(piiRedact ? redactObject({ [key]: item }).redacted[key] as string : item)
+        if (parts.length >= ARRAY_CAP) break
+      }
+      if (parts.length > 0) out[key] = parts
     }
-    // arrays are dropped entirely.
   }
   return out
 }

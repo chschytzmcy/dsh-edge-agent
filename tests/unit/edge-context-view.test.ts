@@ -148,9 +148,34 @@ describe('PII defense', () => {
     assert.equal(row.payload.sample, '13812345678')
   })
 
-  it('safePayload flattens ONE level of scalar objects; deeper values and arrays drop', () => {
+  it('safePayload flattens ONE level of scalar objects; deeper values and non-string array items drop', () => {
     const out = safePayload({ keep: 1, flag: true, one: { a: 'x', b: 2, deep: { c: 3 } }, list: ['a'], s: 'plain' }, true)
-    assert.deepEqual(Object.keys(out).sort(), ['flag', 'keep', 'one.a', 'one.b', 's'])
+    assert.deepEqual(Object.keys(out).sort(), ['flag', 'keep', 'list', 'one.a', 'one.b', 's'])
+  })
+
+  it('§7.121: string arrays survive — they carry the hit details (rule names, PII types)', () => {
+    const out = safePayload({ patterns: ['role-override-zh', 'act-as'], piiTypes: ['phone'] }, true)
+    assert.deepEqual(out.patterns, ['role-override-zh', 'act-as'])
+    assert.deepEqual(out.piiTypes, ['phone'])
+  })
+
+  it('§7.121: array elements are still PII-scanned and the count is capped', () => {
+    // A rule name that somehow embeds a phone number must not leak.
+    const out = safePayload({ patterns: ['rule-13800138000'] }, true) as { patterns?: string[] }
+    assert.equal(out.patterns?.length, 1)
+    assert.ok(!(out.patterns?.[0] ?? '').includes('13800138000'), `phone leaked: ${out.patterns?.[0]}`)
+    // Non-string elements are dropped; the cap keeps the payload bounded.
+    const many = safePayload({ patterns: Array.from({ length: 100 }, (_, i) => `r${i}`) }, true) as { patterns?: string[] }
+    assert.equal(many.patterns?.length, 32)
+    const mixed = safePayload({ patterns: ['ok', 42, { x: 1 }] }, true) as { patterns?: string[] }
+    assert.deepEqual(mixed.patterns, ['ok'])
+  })
+
+  it('§7.121: arrays reach the panel row (the fold no longer erases hit details)', () => {
+    const svc = makeService()
+    svc.record(entry('input.injection.warned', { sessionId: 's1', patterns: ['role-override-zh'] }))
+    const row = svc.snapshot('s1').rows[0]
+    assert.deepEqual(row.payload.patterns, ['role-override-zh'])
   })
 })
 
