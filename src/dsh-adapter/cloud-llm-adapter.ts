@@ -39,7 +39,14 @@ import {
   sseFinishReason,
   terminalChunks,
 } from './openai-sse.js'
-import { cloudPool } from './edge-config.js'
+import { cloudPool, loadEdgeConfig } from './edge-config.js'
+import {
+  buildRequestTrace,
+  buildResponseTrace,
+  formatTraceLine,
+  resolveLlmTraceConfig,
+  type LlmTraceConfig,
+} from './llm-trace.js'
 import {
   bumpSessionToolCallCount,
   MAX_CONSECUTIVE_TOOL_CALLS,
@@ -157,6 +164,87 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
   private audit(level: 'debug' | 'info' | 'warn' | 'error' | 'security', kind: string, payload: Record<string, unknown>): void {
     if (!this.auditLog) return
     void this.auditLog.log({ level, kind, source: 'cloud-llm-adapter', payload }).catch(() => {})
+  }
+
+  /**
+   * §7.118: 当前生效的 LLM trace 配置。
+   *
+   * 每次调用现取，而不是在 apply() 里存一份 —— `loadEdgeConfig()` 自带
+   * mtime+size 指纹缓存，改了 config/edge.json 立刻生效，不用重启进程。
+   * 指纹命中时只付一次 statSync，相对一次 LLM 往返可以忽略。
+   */
+  private traceConfig(): LlmTraceConfig {
+    return resolveLlmTraceConfig(loadEdgeConfig())
+  }
+
+  /**
+   * §7.118: 把详细的 request（messages + system + 参数）写进 ops log。
+   *
+   * 走 `info` 级别而不是 `debug` —— 运维出事之后 tail 的是 ops log，
+   * 不是 debug 日志。完整内容经过脱敏（凭据 + PII）与按字段截断，
+   * 详见 `./llm-trace.js`。
+   *
+   * 观测手段绝不能把主链路带崩：整段包在 try/catch 里。
+   */
+  private traceRequest(
+    sessionId: string,
+    options: GenerateOptions,
+    system: string,
+    messages: Array<{ role: string; content: unknown; source?: { kind?: string } }>,
+  ): void {
+    try {
+      const cfg = this.traceConfig()
+      if (!cfg.enabled || !cfg.includeRequest) return
+      const trace = buildRequestTrace({
+        sessionId,
+        provider: options.provider,
+        model: options.model ?? this.defaultModel,
+        baseUrl: this.baseUrl,
+        system,
+        messages,
+        tools: options.tools as Array<{ name?: string; function?: { name?: string } }> | undefined,
+        params: {
+          temperature: this.temperature,
+          maxTokens: options.maxTokens,
+          stream: true,
+        },
+        config: cfg,
+      })
+      this.logger?.info?.(formatTraceLine('cloud-llm-adapter LLM_REQUEST', trace))
+    } catch { /* 观测失败不拖垮主链路 */ }
+  }
+
+  /**
+   * §7.118: 把详细的 response（正文 + tool calls + finish reason）写进 ops log。
+   */
+  private traceResponse(
+    sessionId: string,
+    provider: string,
+    model: string,
+    content: string,
+    toolCalls: Array<{ id?: string; name: string; arguments?: string }>,
+    finishKind: string | undefined,
+    durationMs: number,
+    attempt: number,
+    error?: string,
+  ): void {
+    try {
+      const cfg = this.traceConfig()
+      if (!cfg.enabled || !cfg.includeResponse) return
+      const trace = buildResponseTrace({
+        sessionId,
+        provider,
+        model,
+        attempt,
+        durationMs,
+        finishReason: finishKind,
+        content,
+        toolCalls,
+        error,
+        config: cfg,
+      })
+      this.logger?.info?.(formatTraceLine('cloud-llm-adapter LLM_RESPONSE', trace))
+    } catch { /* 观测失败不拖垮主链路 */ }
   }
 
   /** Mirror {@link CloudLlmAdapter.providers}; the upstream registry reads it. */
@@ -300,6 +388,14 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
     // at debug level. JSON.stringify keeps the entry single-line so
     // file-logger's `formatLine` newline-collapse doesn't kick in.
     this.logger?.debug?.(`[cloud-llm-adapter] LLM_MESSAGES ${JSON.stringify({ messages: sanitizedMessages })}`)
+    // §7.118: 详细 request trace —— 逐条 message 的角色 / 正文 / 工具回显，
+    // 经凭据 + PII 脱敏、按字段截断后写进 ops log（info 级别，默认可见）。
+    this.traceRequest(
+      sessionId,
+      options,
+      wireSystem,
+      sanitizedMessages as unknown as Array<{ role: string; content: unknown; source?: { kind?: string } }>,
+    )
     this.audit('info', 'llm.cloud.start', { provider: options.provider, model: options.model, messageCount, promptLen, baseUrl: this.baseUrl, systemInjected, retryBudgetUsed: peekSessionSseRetryCount(options.sessionId) })
 
     const headers: Record<string, string> = {
@@ -379,6 +475,9 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
             `[cloud-llm-adapter] LLM call done sessionId=${sessionId} provider=${options.provider} model=${options.model} attempt=${attemptIndex} retried=false durationMs=${durationMs} resultLen=0 toolCallCount=0 finishKind=unknown fetchError=${errMsg}`,
           )
         } catch { /* debug only */ }
+        // §7.118: 失败也要有 response trace —— 否则 ops log 里只剩一个
+        // fetchError= 字样，看不出到底发了什么出去、为什么失败。
+        this.traceResponse(sessionId, options.provider, options.model ?? this.defaultModel, '', [], undefined, durationMs, attemptIndex, errMsg)
         this.audit('info', 'llm.cloud.end', { sessionId: options.sessionId,
           provider: options.provider,
           model: options.model,
@@ -437,6 +536,18 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
             `[cloud-llm-adapter] LLM call done sessionId=${sessionId} provider=${options.provider} model=${options.model} attempt=${attemptIndex} retried=false durationMs=${durationMs} resultLen=0 toolCallCount=0 finishKind=unknown httpError=${response.status}`,
           )
         } catch { /* debug only */ }
+        // §7.118: HTTP 失败同样留 response trace（含上游返回体摘要）。
+        this.traceResponse(
+          sessionId,
+          options.provider,
+          options.model ?? this.defaultModel,
+          '',
+          [],
+          undefined,
+          durationMs,
+          attemptIndex,
+          `HTTP ${response.status}: ${respBody.slice(0, 300)}`,
+        )
         this.audit('info', 'llm.cloud.end', { sessionId: options.sessionId,
           provider: options.provider,
           model: options.model,
@@ -570,6 +681,18 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
         // for `LLM_RESPONSE_TEXT` can isolate the body without parsing JSON.
         this.logger?.debug?.(`[cloud-llm-adapter] LLM_RESPONSE provider=${options.provider} attempt=${attemptIndex} durationMs=${durationMs} resultLen=${assembledText.length} finishKind=${finishKind ?? 'unknown'}`)
         this.logger?.debug?.(`[cloud-llm-adapter] LLM_RESPONSE_TEXT ${JSON.stringify({ text: assembledText })}`)
+        // §7.118: 详细 response trace（正文 + tool calls + finish reason）。
+        this.traceResponse(
+          sessionId,
+          options.provider,
+          options.model ?? this.defaultModel,
+          assembledText,
+          [...toolCalls.values()].map((c) => ({ id: c.id, name: c.name, arguments: c.arguments })),
+          finishKind,
+          durationMs,
+          attemptIndex,
+          wireError,
+        )
       }
     }
 

@@ -8369,7 +8369,7 @@ fi
 **配置切换**(本节改动):
 - `CLOUD_LLM_BASEURL`: `https://token-plan...` → `https://api.minimaxi.com/v1`
 - `CLOUD_LLM_MODEL`: `qwen3.8-flash` → `MiniMax-M2.7-highspeed`
-- 新增 `MINIMAX_API_KEY`(`sk-cp-ZVI4-...` 格式,跟 §7.83 token-plan key 同类)
+- 新增 `MINIMAX_API_KEY`(`sk-cp-XXXX-...` 格式,跟 §7.83 token-plan key 同类)
 - `CLOUD_LLM_KEY_ENV=MINIMAX_API_KEY`
 
 **踩坑**: `api.minimaxi.com` 跟 `api.minimax.io` 是 MiniMax 旗下**两个独立 namespace**,同一个 key 只在其中一个生效。
@@ -11200,3 +11200,144 @@ package）**首次全绿**，release tarball 644K。
 值而非 config/edge.json（该文件当前不在仓库里，gitignore）。环境变量层本身是
 合法入口（env override 优先于文件），这里只把**单测**与它隔开；运行时该由运维
 决定用哪一层（建议：写 config/edge.json，shell 只留 PATH/凭据类变量）。
+## §7.118 —— ops log 记录详细 LLM request/response（守卫修正 + 脱敏截断，2026-10-26）
+
+**问题（两个叠在一起）**：
+
+1. ops log 里只有 LLM 调用的**长度**——`promptLen=121853 systemLen=225
+   resultLen=5006`。想看"到底发了什么、回了什么"，唯一的去处是把
+   `DSH_EDGE_LOG_LEVEL` 降到 `debug`，而 `LLM_MESSAGES` /
+   `LLM_RESPONSE_TEXT` 那两条全量 dump 才会出现。三条问题：全量 dump
+   **没有脱敏**（用户原文 / 工具回显 / 可能夹带的凭据直接落盘）、**没有
+   截断**（一条 120KB 的 prompt 撑爆一行）、且 `debug` 默认被压制
+   （运维出事之后 tail 的是 ops log，不是 debug 日志）。
+2. 更要命的是：**桌面的 ops log 自 2026-10-25T19:47:24 起就完全不再落盘**
+   （CLI profile 同理）。
+
+**根因 2 —— file-logger 的守卫分不出 exporter 类型**：
+`file-logger.ts` 的守卫是 `ctx.logger.exporters.size > 1 → return
+undefined`，理由是"宿主若已注册 file exporter，我们再写一份就是双写"。
+但 size 启发式分不出控制台 exporter 和文件 exporter：
+
+- 桌面 App 的 `dsh-desktop-host` 注册的是**控制台** exporter（输出走
+  Electron 的 stdout，不落盘——`~/Library/Logs/DeepSeek Harness/` 实测是
+  空目录）。size 变成 2 → 我们跳过 → **桌面 ops log 整份消失**。
+- CLI profile 同理（这正是 `DSH_EDGE_LOG_FILE=force` 逃逸口存在的原因）。
+
+也就是说，这个守卫防的是一个**不会发生**的碰撞（两个 exporter 写同一个
+文件），代价却是让 ops log 在两种真实宿主里都从不落盘。而"会不会写坏
+文件"根本不成立：我们的输出路径是 **edge 独占**的 `~/.dsh-edge-agent/log/`，
+宿主没有任何理由往那儿写。真正需要防的"我们自己被装载两次"由重复
+`provide` 的 try/catch 负责，不该由 size 启发式兜。
+
+**修复 1 —— 守卫语义修正**：`installFileLogger` 改成除非显式
+`DSH_EDGE_LOG_FILE=false` 一律注册；`force` 保留为无操作别名（老脚本里
+`DSH_EDGE_LOG_FILE=force` 不会变成未知值）。旧断言"skip when
+exporters.size > 1"改为"registers even when the host already has
+exporters"，另加一例 force 别名。
+
+**修复 2 —— 新模块 `src/dsh-adapter/llm-trace.ts`**：详细 request/response
+追踪，走 `ctx.logger.info`（= ops log 默认级别，不是 debug）。三个可独立
+关闭的维度，每维带硬边界：
+
+- **脱敏**：`redactPii` 走 `pii-utils` 的 10 类规则；`redactSecrets` 走本
+  模块自己的 `SECRET_PATTERNS`。后者是必需的——`pii-utils` 的 api-key 规则
+  是 `sk-(?:proj-|ant-|live-|test-|org-)?[a-zA-Z0-9]{20,}`，**匹配不到**
+  厂商自定义前缀的密钥：`sk-cp-…`（MiniMax）在 `cp-` 处断了且下一段含
+  `_`；`sk-ws-EXAMPLE0.dot0.…`（DashScope，JWS 风格带点）在第一个点处断了；
+  `tvly-…`（Tavily）同理。实测 `config/edge.json` 里三把真 key 全部逃逸。
+  新规则用"长度 ≥16 **且**至少含一个数字"的收敛条件 + 全大写占位形态，
+  既盖住真密钥又不误伤 `key-representation` / `api-key-description` /
+  `sk-1.2.3.45` 这类普通词。
+- **截断**：`maxChars`（默认 2000/字段）+ `maxMessages`（默认 12，只保留
+  **最近** N 条——多轮里真正决定请求的是最近几轮）。截断**显式可见**：
+  `truncated:true` + `…[+N chars]`，绝不让"日志里看起来是完整的"成为可能。
+- **分级**：`includeRequest` / `includeResponse` 各自可关。
+
+配置落在 `config/edge.json` 的 `audit.llmTrace`（日志面归日志面，不另开
+顶层段）；`loadEdgeConfig()` 自带 mtime+size 指纹缓存，改文件立即生效，
+adapters 现取配置而非 apply() 存一份。
+
+**验证**（本机实跑，非转述）：
+
+- 单测：53 文件 / **1094 passed + 2 skipped**（新增 `tests/unit/llm-trace.test.ts`
+  27 例）；lint 0 error（60 warning 基线不变）；`verify:build` 11 项门禁
+  exit 0。
+- 桌面端：重建 → 装回 `link` 模式 → 重启 App，ops log 恢复写入
+  （2026-10-26T20:54:15 起有新行；当日轮转把 10-25 的旧内容推到 `.log.1`）。
+- 真实调用实测 trace 落盘（`~/.dsh-edge-agent/log/dsh-edge-agent-desktop.log`）：
+
+  ```
+  LLM_REQUEST  {"sessionId":"…","provider":"local-llm","model":"MiniMax-M3.1-Flash",
+    "messageCount":64,"droppedMessages":52,"promptLength":78134,
+    "messages":[{"index":52,"role":"tool","kind":"tool",
+      "text":{"text":"…192.168.***.***…"}}],          ← IP 已掩码
+    "tools":["bash","create_goal","read",…],"params":{"stream":true}}
+
+  LLM_RESPONSE {"toolCalls":[{"name":"bash","id":"call_d37dd48b",
+      "arguments":{"text":"{\"command\":\"…\"}","length":192}}],
+    "durationMs":1545,"finishKind":"tool-calls",
+    "content":{"text":"…","length":20}}
+  ```
+
+  手机号 `13800138000` → `138****8000`，全文 0 处泄漏。
+
+**副作用与已知问题**：
+
+- 本轮一次 HTTP profile 的测试请求意外触发真实设备写入（agent 自行把
+  "请帮我记一下" 解读成"存到密盒 / 备忘"）。已按用户指示清理：本地文件
+  入回收站，设备端 `/备忘/联系方式.txt` 已删（`fs ls` 复核为空）。**会话
+  本身是全新的**（`session.v4.jsonl` 首条 `agent/inbox/spliced` 就是测试
+  消息，`isSeeded:false`），不是串挂旧上下文；成因是 agent 的自主解读 +
+  headless 下 `approval/policy:ask` 无法弹窗（自动放行），且 `etscli` 是
+  子进程、**不受 workspace 沙箱约束**。结论：headless HTTP profile 目前
+  能无人工确认地执行设备写操作，这是个独立于本节的真实风险。
+- **隐私不变式仍然被打破**（用户裁决"维持现状不动"，故未改配置）：
+  `llm.local` = `https://api.minimaxi.com/v1` → LOCAL 轮生成 **和**
+  guard/intent 分类（`stages.*.provider='local-llm'` → `localPool()`）都
+  上行 MiniMax；`jev.provider='bailian-decision'` + `jev.url` 指向阿里百炼
+  云 → 决策模型的查询原文也上行。本机当前**无任何本地模型**（HF 缓存只有
+  972K 元数据、无权重），所以"指向真本地"需要先下载并起服务；而把
+  `llm.local` 留空会让 `input-guard.ts:1443` 的 fail-closed 生效
+  （"本地路由不可用，已阻止本轮上云"），桌面默认的 LOCAL 轮直接不可用。
+  本节的 trace 让这三条出网路径**肉眼可见**（每次 request 的 `baseUrl`
+  都在日志里），但配置本身按用户决定保持原样。
+
+**桌面侧验收（补测，2026-10-26 21:12）**：用户在桌面 GUI 发消息后，
+ops log 出现该会话的 8 条 trace（4 REQ + 4 RESP），逐条对应：
+
+```
+[0] REQ  promptLength=119    messages=1   tools=0    ← prompt-guard 的分类调用
+        首条正文: Classify the following user input (length=2). … <<< hi >>>
+[1] RESP durationMs=2305 finish=stop
+        {"safe":true,"threats":[],"dataClass":"public","rationale":"Benign greeting…"}
+[2] REQ  promptLength=165868 messages=301 tools=32  ← 主生成调用
+[3] RESP …content="Hi!👋 有什么需要我做的？…"
+[4] REQ  promptLength=121    messages=1   tools=0    ← 第二轮 guard
+[6] REQ  promptLength=166582 messages=305 tools=30
+[7] RESP …content="😄 看起来是在测我。我在这儿待命…"
+```
+
+主生成调用 messageCount=301/305 → trace 保留 12 条、丢弃 289/293 条
+（`droppedMessages`），`promptLength` 仍记全量长度。截断标记实测 34 处
+`…[+N chars]` + 34 处 `"truncated":true`，成对出现。
+
+**脱敏复核的一个坑（记录下来免得下次重犯）**：用宽松检测式
+`(?<!\d)1[3-9]\d{9}(?!\d)` 扫整份日志会报 184 处"未脱敏手机号"，**全是误报**
+——命中的是路径里的**用户名子串** `a18104385217`（`/Users/a18104385217/…`）。
+PII 的 `phone` 规则是 `\b1[3-9]\d{9}\b`，`\b` 会正确拒绝嵌在更长单词里的
+数字串，所以那些**本来就该被掩**。正确的复核式必须与 PII 规则同语义：
+
+```bash
+node --import tsx/esm -e "
+import {readFileSync} from 'node:fs'
+import {redactString} from './src/dsh-adapter/pii-utils.js'
+const log = readFileSync(process.env.HOME+'/.dsh-edge-agent/log/dsh-edge-agent-desktop.log','utf8')
+const {redacted} = redactString(log)
+console.log('仍未掩码的严格手机号:', (redacted.match(/(?<![0-9A-Za-z_])1[3-9]\d{9}(?![0-9A-Za-z_])/g)||[]).length)
+"
+```
+
+实测该式对整份日志输出 **0** —— 日志里没有任何未脱敏的真手机号。
+响应侧同样生效（模型回复里的 `173****9677` / `192.168.***.***` 均为
+trace 层掩码后的形态）。

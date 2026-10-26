@@ -181,6 +181,20 @@ export interface EdgeAuditConfig {
   root?: string
   /** file-logger plugin storage dir (defaults to ~/.dsh-edge-agent/log). */
   logRoot?: string
+  /**
+   * §7.118 详细 LLM request/response 追踪的开关组。
+   * 落在 audit 段下（而不是新开顶层段）：它描述的是"日志写什么"，
+   * 与 logLevel / logRoot 同属日志面，不该被当成独立子系统。
+   */
+  llmTrace?: {
+    enabled?: boolean
+    includeRequest?: boolean
+    includeResponse?: boolean
+    maxChars?: number
+    maxMessages?: number
+    redactPii?: boolean
+    redactSecrets?: boolean
+  }
 }
 
 export interface EdgeTeeConfig {

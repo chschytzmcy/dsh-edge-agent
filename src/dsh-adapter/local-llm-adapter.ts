@@ -36,7 +36,14 @@ import {
   sseFinishReason,
   terminalChunks,
 } from './openai-sse.js'
-import { localPool } from './edge-config.js'
+import { localPool, loadEdgeConfig } from './edge-config.js'
+import {
+  buildRequestTrace,
+  buildResponseTrace,
+  formatTraceLine,
+  resolveLlmTraceConfig,
+  type LlmTraceConfig,
+} from './llm-trace.js'
 import {
   bumpSessionToolCallCount,
   MAX_CONSECUTIVE_TOOL_CALLS,
@@ -261,6 +268,73 @@ class RealLocalAdapter extends LlmAdapter {
     return this.apiKeyEnv !== undefined ? readApiKey(this.apiKeyEnv) : undefined
   }
 
+  /**
+   * §7.118: 当前生效的 LLM trace 配置。
+   *
+   * 现取而非 apply() 存一份 —— `loadEdgeConfig()` 自带 mtime+size 指纹缓存，
+   * 改了 config/edge.json 立即生效。详见 ./llm-trace.js。
+   */
+  private traceConfig(): LlmTraceConfig {
+    return resolveLlmTraceConfig(loadEdgeConfig())
+  }
+
+  /**
+   * §7.118: 详细 request trace → ops log（info 级别，凭据 + PII 脱敏、按字段截断）。
+   */
+  private traceRequest(
+    sessionId: string,
+    options: GenerateOptions,
+    system: string,
+    messages: Array<{ role: string; content: unknown; source?: { kind?: string } }>,
+  ): void {
+    try {
+      const cfg = this.traceConfig()
+      if (!cfg.enabled || !cfg.includeRequest) return
+      const trace = buildRequestTrace({
+        sessionId,
+        provider: options.provider,
+        model: this.defaultModel,
+        baseUrl: this.baseUrl,
+        system,
+        messages,
+        tools: options.tools as Array<{ name?: string; function?: { name?: string } }> | undefined,
+        params: { stream: true },
+        config: cfg,
+      })
+      this.logger?.info?.(formatTraceLine('local-llm-adapter LLM_REQUEST', trace))
+    } catch { /* 观测失败不拖垮主链路 */ }
+  }
+
+  /**
+   * §7.118: 详细 response trace → ops log。
+   */
+  private traceResponse(
+    sessionId: string,
+    provider: string,
+    content: string,
+    toolCalls: Array<{ id?: string; name: string; arguments?: string }>,
+    finishKind: string | undefined,
+    durationMs: number,
+    error?: string,
+  ): void {
+    try {
+      const cfg = this.traceConfig()
+      if (!cfg.enabled || !cfg.includeResponse) return
+      const trace = buildResponseTrace({
+        sessionId,
+        provider,
+        model: this.defaultModel,
+        durationMs,
+        finishReason: finishKind,
+        content,
+        toolCalls,
+        error,
+        config: cfg,
+      })
+      this.logger?.info?.(formatTraceLine('local-llm-adapter LLM_RESPONSE', trace))
+    } catch { /* 观测失败不拖垮主链路 */ }
+  }
+
   get providers(): string[] {
     return [this.providerName]
   }
@@ -366,6 +440,14 @@ class RealLocalAdapter extends LlmAdapter {
     // `DSH_EDGE_LOG_LEVEL=info` to suppress bodies entirely.
     this.logger?.debug?.(`[local-llm-adapter] LLM_REQUEST provider=${options.provider} model=${options.model} messageCount=${sanitizedMessages.length} promptLen=${promptLen}`)
     this.logger?.debug?.(`[local-llm-adapter] LLM_MESSAGES ${JSON.stringify({ messages: sanitizedMessages })}`)
+    // §7.118: 详细 request trace —— 逐条 message 的角色 / 正文 / 工具回显，
+    // 经凭据 + PII 脱敏、按字段截断后写进 ops log（info 级别，默认可见）。
+    this.traceRequest(
+      sessionId,
+      options,
+      wireSystem,
+      sanitizedMessages as unknown as Array<{ role: string; content: unknown; source?: { kind?: string } }>,
+    )
     audit(this.auditLog, 'info', 'llm.local.start', { provider: options.provider, model: this.defaultModel, route: options.model, messageCount: sanitizedMessages.length, promptLen, baseUrl: this.baseUrl })
 
     // §7.106 (2026-10-23): ONE retry on transport-level failure with a short
@@ -497,6 +579,16 @@ class RealLocalAdapter extends LlmAdapter {
       // debug level (mirrors cloud-llm-adapter).
       this.logger?.debug?.(`[local-llm-adapter] LLM_RESPONSE provider=${options.provider} durationMs=${durationMs} resultLen=${assembledText.length} finishKind=${finishKind ?? 'unknown'}`)
       this.logger?.debug?.(`[local-llm-adapter] LLM_RESPONSE_TEXT ${JSON.stringify({ text: assembledText })}`)
+      // §7.118: 详细 response trace（正文 + tool calls + finish reason）。
+      this.traceResponse(
+        sessionId,
+        options.provider,
+        assembledText,
+        [...toolCalls.values()].map((c) => ({ id: c.id, name: c.name, arguments: c.arguments })),
+        finishKind,
+        durationMs,
+        wireError,
+      )
     }
 
     // §7.42 (2026-09-05) P0-1: malformed-tool-call detection.

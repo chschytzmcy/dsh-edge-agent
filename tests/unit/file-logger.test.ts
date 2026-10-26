@@ -313,15 +313,20 @@ describe('installFileLogger', () => {
     }
   })
 
-  it('skips when ctx.logger.exporters.size > 1 (first-wins)', () => {
+  it('registers even when the host already has exporters (§7.118)', async () => {
     const ctx = fakeCtx()
-    // Pre-register TWO fake exporters so the size check trips: production
-    // hosts have Cordis's ring buffer already at slot 1, so a "1 host
-    // exporter + 1 ours" registration would bring total to 2 and skip
-    // ours. Registering two fakes mirrors that shape.
+    // The host (dsh-desktop-host / dsh --profile) registers its OWN exporter
+    // at boot — a CONSOLE one, not a file one. The old guard
+    // (`exporters.size > 1 → skip`) could not tell them apart, so the ops
+    // log silently vanished on both hosts (desktop's last write was
+    // 2026-10-25 19:47). Our output path is edge-owned
+    // (~/.dsh-edge-agent/log/), so a collision with a host file exporter
+    // cannot happen — the guard was protecting against a non-issue while
+    // causing a real one.
     ctx.logger.exporter({ export() {} })
     ctx.logger.exporter({ export() {} })
-    const result = installFileLogger(ctx as never, {
+    const sizeBefore = ctx.logger.exporters.size
+    const svc = installFileLogger(ctx as never, {
       root,
       filename: 'a.log',
       flushIntervalMs: 60_000,
@@ -330,7 +335,30 @@ describe('installFileLogger', () => {
       maxFileAgeDays: 0,
       maxRotatedFiles: 5,
     })
-    assert.equal(result, undefined)
+    assert.ok(svc instanceof FileLoggerServiceImpl)
+    assert.equal(ctx.logger.exporters.size, sizeBefore + 1)
+    return shutdownFileLogger(svc)
+  })
+
+  it('DSH_EDGE_LOG_FILE=force is accepted as a no-op alias (§7.118)', async () => {
+    const prev = process.env.DSH_EDGE_LOG_FILE
+    try {
+      process.env.DSH_EDGE_LOG_FILE = 'force'
+      const svc = installFileLogger(fakeCtx() as never, {
+        root,
+        filename: 'a.log',
+        flushIntervalMs: 60_000,
+        queueCapacity: 100,
+        maxFileSizeBytes: 50 * 1024 * 1024,
+        maxFileAgeDays: 0,
+        maxRotatedFiles: 5,
+      })
+      assert.ok(svc instanceof FileLoggerServiceImpl)
+      return shutdownFileLogger(svc)
+    } finally {
+      if (prev === undefined) delete process.env.DSH_EDGE_LOG_FILE
+      else process.env.DSH_EDGE_LOG_FILE = prev
+    }
   })
 
   it('returns the service and registers exactly one exporter on a fresh ctx', () => {

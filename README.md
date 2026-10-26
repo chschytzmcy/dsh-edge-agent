@@ -580,6 +580,36 @@ vLLM / Ollama / DashScope 实例 —— 在 `config/edge.json` 的 `llm.local` �
 | `DSH_EDGE_TD_SAN` | `3` | 连续脱敏失败阈值 |
 | `DSH_EDGE_TD_PERM` | `5` | 连续权限拒绝阈值 |
 
+**详细 LLM 追踪**（§7.118，写进 ops log）
+
+ops log 默认只记 LLM 调用的**长度**（`promptLen=… resultLen=…`）。要看
+"到底发了什么、回了什么"，用这组配置把**脱敏 + 截断后的**完整 request /
+response 写进 ops log（`info` 级别，默认可见）：
+
+```jsonc
+// config/edge.json
+{
+  "audit": {
+    "llmTrace": {
+      "enabled": true,          // 总开关
+      "includeRequest": true,   // 逐条 message 的角色 / 正文 / 工具回显
+      "includeResponse": true,  // 正文 + tool calls + finish reason
+      "maxChars": 2000,         // 单字段字符上限（溢出显式标注 …[+N chars]）
+      "maxMessages": 12,        // 只保留最近 N 条 message
+      "redactPii": true,        // 走 pii-utils 的 10 类 PII 规则
+      "redactSecrets": true     // 盖住厂商前缀密钥（sk-cp- / sk-ws- / tvly- …）
+    }
+  }
+}
+```
+
+> `redactSecrets` 不是多余的：pii-utils 的 api-key 规则
+> （`sk-(?:proj-|ant-|live-|test-|org-)?[a-zA-Z0-9]{20,}`）**匹配不到**
+> `sk-cp-…` / `sk-ws-…` / `tvly-…` 这类带厂商前缀的密钥。
+>
+> 改完 `config/edge.json` 即时生效（`loadEdgeConfig()` 带 mtime+size 指纹
+> 缓存），不需要重启进程。
+
 ### 🛠️ 工具配置
 
 **本地工具**

@@ -483,29 +483,39 @@ function firstNonEmpty(...values: Array<string | undefined>): string | undefined
  *
  * Gating:
  *   - `DSH_EDGE_LOG_FILE=false` disables (tests opt out).
- *   - First-wins: if the host already registered an exporter, skip —
- *     prevents double-writing when DSH eventually ships its own file
- *     logger. Detected via `ctx.logger.exporters.size > 1` (Cordis's
- *     default ring-buffer exporter occupies slot 1).
+ *   - `DSH_EDGE_LOG_FILE=force` 仍被接受（历史兼容），但已是默认行为。
  *
- * Returns the service for tests; returns `undefined` when skipped so
- * callers know not to register dispose hooks.
+ * §7.118 (2026-10-26) — 守卫语义修正：
+ *
+ * 旧守卫是 `ctx.logger.exporters.size > 1 → return undefined`，理由是
+ * "宿主若已注册 file exporter，我们再写一份就是双写"。但这个 size 启发式
+ * **分不出控制台 exporter 和文件 exporter**：
+ *
+ *   - 桌面 App 的 dsh-desktop-host 注册的是**控制台** exporter（输出走
+ *     Electron 的 stdout，不落盘 —— `~/Library/Logs/DeepSeek Harness/`
+ *     实测是空目录）。size 变成 2 → 我们跳过 → **桌面 ops log 整份消失**，
+ *     最后一次写入停在 2026-10-25 19:47。
+ *   - CLI profile 同理（这正是 `DSH_EDGE_LOG_FILE=force` 逃逸口存在的原因，
+ *     见本文件下方的历史注释）。
+ *
+ * 也就是说，这个守卫防的是一个**不会发生**的碰撞（两个 exporter 写同一个
+ * 文件），代价却是让 ops log 在两种真实宿主里都从不落盘。而"会不会写坏
+ * 文件"根本不成立：我们的输出路径是 **edge 独占**的
+ * `~/.dsh-edge-agent/log/`，宿主没有任何理由往那儿写。
+ *
+ * 真正需要防的"我们自己被装载两次"由下面的重复 `provide` try/catch 负责，
+ * 不该由 size 启发式兜。
+ *
+ * 现在：除非显式 `false`，一律注册。
  */
 export function installFileLogger(
   ctx: Context,
   resolved?: ResolvedLoggerConfig,
 ): FileLoggerServiceImpl | undefined {
   if (process.env.DSH_EDGE_LOG_FILE === 'false') return undefined
-  // §CLI-profile (2026-10-24): the dsh-desktop-host CLI (the profile host
-  // binary behind `dsh --profile <name>`) registers its OWN exporter at
-  // boot — a console/stdout one, not a file one. The first-wins guard
-  // below cannot tell the two apart, so in CLI-profile mode the ops log
-  // silently never landed on disk (observed: headless dsh-edge-agent
-  // profile produced zero text-log rows while every plugin was healthy).
-  // `DSH_EDGE_LOG_FILE=force` opts INTO double-registration — the cost is
-  // at most a duplicate console line; the win is the durable ops log that
-  // e2e-ops-log-coverage.sh (and operators on headless profiles) read.
-  if (process.env.DSH_EDGE_LOG_FILE !== 'force' && ctx.logger.exporters.size > 1) return undefined
+  // 历史上的 `force` 逃逸口：CLI profile 的宿主也注册了自己的 exporter，
+  // 旧守卫会让 ops log 静默不落盘。§7.118 起默认就注册，`force` 保留为
+  // 无操作别名，避免老脚本里的 `DSH_EDGE_LOG_FILE=force` 变成未知值。
 
   const config = resolved ?? resolveLoggerConfig()
   // Duplicate-load tolerance: in patch profiles the file-logger ROW applies

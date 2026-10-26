@@ -65,6 +65,11 @@ for (const file of sources) {
   // imported by the plugins' apply(); never inserted by a cordis patch row,
   // not in package.json exports.
   if (base === 'edge-config') continue
+  // §7.118: pure helper module for the detailed LLM request/response trace
+  // (redaction + truncation + serialization). Imported by cloud-llm-adapter /
+  // local-llm-adapter; never inserted by a cordis patch row, not in
+  // package.json exports.
+  if (base === 'llm-trace') continue
   if (base === 'plugin' || base === 'index') continue
   const content = readFileSync(file, 'utf8')
 

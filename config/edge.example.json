@@ -123,7 +123,17 @@
     "logMaxAgeDays": 1,
     "logMaxRotated": 7,
     "root": "",
-    "logRoot": ""
+    "logRoot": "",
+    "llmTrace": {
+      "_comment": "§7.118 详细 LLM request/response 追踪（写进 ops log，info 级别默认可见）。enabled=false 全关；includeRequest/includeResponse 可各自单关；maxChars 是单字段字符上限（截断会以 …[+N chars] 显式标注，绝不静默）；maxMessages 只保留最近 N 条 message；redactPii 走 pii-utils 10 类规则；redactSecrets 盖住厂商前缀密钥（sk-cp- / sk-ws- / tvly- …，pii-utils 的 api-key 规则盖不住）。",
+      "enabled": true,
+      "includeRequest": true,
+      "includeResponse": true,
+      "maxChars": 2000,
+      "maxMessages": 12,
+      "redactPii": true,
+      "redactSecrets": true
+    }
   },
   "tee": {
     "_comment": "TEE 后端选择（simulated / trustzone / keystone / sgx）；平台自动探测时可留空。storageRoot 留空 = ~/.dsh-edge-agent。",
