@@ -108,7 +108,9 @@ e2e-benchmark:
 # §7.71 (2026-09-17): install.sh 内部调用此 target —— `make package` 是 install.sh
 # 的 Phase 1,但 install.sh 自身不读 tarball(只读 tarball 准备好的 REPO_ROOT/lib/
 # 镜像)。tarball 仅供 release 分发 / 外部用户下载。
-package: build
+# SKIP_BUILD=1:跳过 package 前置的 `build` 目标(编译)——调用方已经编好
+# lib/ + 客户端 bundle 时用它,避免同一轮构建跑两次 tsc。
+package: $(if $(SKIP_BUILD),,build)
 	@echo "$(BLUE)==> 打包部署文件 v$(VERSION)$(NC)"
 	# §7.87.8 (2026-09-20): 只清 PACKAGE_DIR,不清 DIST_DIR —— 保留 dist/bench-*
 	# (历史 bench 报告落点,git-ignored 但 user 本地需要留存对比)。
@@ -141,6 +143,13 @@ package: build
 	@mkdir -p $(PACKAGE_DIR)/dsh-edge-agent-v$(VERSION)/profiles
 	@cp -r profiles/dsh-edge $(PACKAGE_DIR)/dsh-edge-agent-v$(VERSION)/profiles/
 	@cp -r profiles/dsh-edge-agent $(PACKAGE_DIR)/dsh-edge-agent-v$(VERSION)/profiles/
+	@# profile 骨架只要 package.json(+ skin cordis.patch.yml)。骨架目录里如果
+	@# 带着开发机 runtime(node_modules/,218M real files + 相对 symlink),
+	@# 会被整棵打进 tarball —— 换机即失效,且把 tarball 从 ~2MB 撑到 75MB。
+	@# 装的时候由 install.sh / dsh plugin 各自装依赖,不依赖这份拷贝。
+	@rm -rf $(PACKAGE_DIR)/dsh-edge-agent-v$(VERSION)/profiles/*/node_modules
+	@# 同理:python 字节码缓存不是发布产物。
+	@rm -rf $(PACKAGE_DIR)/dsh-edge-agent-v$(VERSION)/scripts/__pycache__
 
 	@# 用户文档 + 入口
 	@cp install.sh $(PACKAGE_DIR)/dsh-edge-agent-v$(VERSION)/

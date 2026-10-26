@@ -102,6 +102,10 @@ push('DSH_EDGE_INTENT_MAX_INPUT', intent.maxInput)
 pushCsv('DSH_EDGE_INTENT_CLOUD_KEYWORDS', intent.cloudKeywords)
 pushCsv('DSH_EDGE_INTENT_LOCAL_ENTITIES', intent.localEntities)
 pushCsv('DSH_EDGE_INTENT_FALLBACK_KEYWORDS', intent.fallbackKeywords)
+// §7.115：llmFallback=false = 决策模型 only 模式（跳过 LLM 分类器）。
+// 插件侧 edge-config.ts 用 `v !== 'false'` 解析，故 shell 侧直接给
+// 'true' / 'false' 字面量即可往返一致。
+push('DSH_EDGE_INTENT_LLM_FALLBACK', intent.llmFallback)
 
 const jev = cfg.jev ?? {}
 push('DSH_EDGE_INTENT_JEV_ENABLED', jev.enabled)

@@ -11122,3 +11122,44 @@ CLOUD/REJECT——模型被迫二选一，日常问答有被推着误判 CLOUD �
 逐字一致）；②采纳映射对 `choice=LOCAL` 恒可采纳（默认类别无需 taxonomy 行——
 criteria 补了但 mapped 查不到会 skip unmapped，测试抓出的第二半缺口）。
 +2 例测试（无 LOCAL 行补兜底 + 有 LOCAL 行用原描述），**1067 passed**。
+
+## §7.116 —— 构建链收口：合入上游三平台拆分构建 + 修两处真 bug（2026-10-26）
+
+**背景**：上游 `c5e30af`（build(scripts): 三平台拆分构建打包）把构建链按平台
+拆成 `build:windows` / `build:macos` / `build:linux`（`scripts/build-{windows,
+macos,linux}.sh` + 共用纯 Node 打包核心 `scripts/_pack-core.mjs` + shell 层
+`_platform-common.sh`），Linux 入口 = `bash scripts/build-linux.sh`，支持
+`--install-desktop=link|tar` 与 `--deploy-profile=<name>`（CLI profile 部署走
+`scripts/deploy-profile.sh`）。本节记录与之同批的两处修复——**上游没有覆盖到
+的部分**：①`npm run build`（含 verify:build）**在 HEAD 上本来就是断的**；
+②`make package` 出的 release tarball 75M（Makefile 注释预期 ~2MB）。
+
+**修复 1 —— env-bridge 门禁红（build 链断点）**：`DSH_EDGE_INTENT_LLM_FALLBACK`
+（§7.115 加的 LLM 兜底开关）只在 `src/dsh-adapter/edge-config.ts` 的
+ENV_OVERRIDES 半边注册，shell 半边 `scripts/edge-config-env.mjs` 没导出 →
+`verify:env-bridge` 判"consumed by a plugin but never exported"（unreachable
+from the shell）→ `npm run build` / `npm run verify:build` 全红。修法：补
+`push('DSH_EDGE_INTENT_LLM_FALLBACK', intent.llmFallback)`（插件侧用
+`v !== 'false'` 解析，shell 侧给 'true'/'false' 字面量即可往返一致）。
+门禁复跑：`env-bridge: 77 emitted, 77 consumed, 4 shell-only` → OK。
+
+**修复 2 —— release tarball 瘦身 75M → 640K**：§7.107 把 `profiles/dsh-edge-agent/`
+加进 `make package` 范围时只想要"骨架"，`cp -r` 却把整棵 `node_modules/`
+（开发机 runtime，218M real files + 相对 symlink，换机即失效）拖进包，
+tarball 里 51516 个 node_modules 条目。修法：staging 后删
+`profiles/*/node_modules` + `scripts/__pycache__`——profile 骨架只要
+`package.json` + skin `cordis.patch.yml`，依赖由 install.sh / `dsh plugin`
+各自装（install.sh tarball 模式 §2.5 只 rsync `REPO_ROOT/lib/`，不依赖这份拷贝）。
+另给 Makefile 加 `SKIP_BUILD=1` 开关（`package: $(if $(SKIP_BUILD),,build)`），
+让"已经编好 lib/ 的调用方"跳过 package 前置的重复 tsc。
+
+**验证**：`make package SKIP_BUILD=1` → `dist/dsh-edge-agent-v0.1.1.tar.gz` 640K
+（0 个 node_modules 条目），tarball 内 profiles/ 骨架两套齐全（dsh-edge +
+dsh-edge-agent，各 package.json + cordis.patch.yml）；lint 0 error（60 warning
+基线）；`npm run build` 全绿（11 项门禁）。
+
+**已知问题（HEAD 既有，非本次引入）**：`npm test` 7 例红
+（cloud-llm-delegate 1 / function-call-external 3 / http-api 2 /
+local-llm-adapter 1）——`git stash` 后在干净 HEAD 上跑同样这 4 个文件、同样
+7 例红，确认与本次改动无关。连带影响 `make release`（= test + verify + package）
+目前跑不通。
