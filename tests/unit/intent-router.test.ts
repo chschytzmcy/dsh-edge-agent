@@ -10,7 +10,7 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'vitest'
 
 import * as router from '../../src/dsh-adapter/intent-router.ts'
-import { IntentRouterServiceImpl, parseClassificationVerdict, coerceClassification, extractMessageText, resolveIntent } from '../../src/dsh-adapter/intent-router.ts'
+import { IntentRouterServiceImpl, parseClassificationVerdict, coerceClassification, extractMessageText, resolveIntent, isLoopbackEndpoint } from '../../src/dsh-adapter/intent-router.ts'
 
 /** Streaming fake that mimics qwen3-4b's wire-shape: text-delta chunks. */
 function chunksFromText(text: string): AsyncIterable<unknown> {
@@ -3916,5 +3916,28 @@ describe('intent-router §7.115.1 decision-model criteria LOCAL catch-all', () =
     } finally {
       (globalThis as any).fetch = orig
     }
+  })
+})
+
+describe('§7.122 isLoopbackEndpoint — the provider name lies, the endpoint does not', () => {
+  it('loopback endpoints are on-device', () => {
+    assert.equal(isLoopbackEndpoint('http://127.0.0.1:8080/v1'), true)
+    assert.equal(isLoopbackEndpoint('http://localhost:11434/v1'), true)
+    assert.equal(isLoopbackEndpoint('http://[::1]:8080/v1'), true)
+  })
+
+  it('public endpoints are NOT on-device', () => {
+    // config/edge.json 的 llm.local.baseUrl 指向公网 MiniMax —— provider
+    // 名叫 local-llm，落点却在公网。面板必须能说出这一点。
+    assert.equal(isLoopbackEndpoint('https://api.minimaxi.com/v1'), false)
+    assert.equal(isLoopbackEndpoint('http://10.0.0.5:8080/v1'), false)
+    assert.equal(isLoopbackEndpoint('https://example.com'), false)
+  })
+
+  it('missing / malformed endpoints are not treated as local', () => {
+    assert.equal(isLoopbackEndpoint(undefined), false)
+    assert.equal(isLoopbackEndpoint(''), false)
+    assert.equal(isLoopbackEndpoint('   '), false)
+    assert.equal(isLoopbackEndpoint('not a url'), false)
   })
 })

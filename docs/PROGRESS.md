@@ -11538,3 +11538,79 @@ sanitizer 审计落 PII 类型与占位符且**不含原文**；guard 安全轮�
 单测 55 文件 / 1124 passed + 2 skipped（新增 21 例）；eslint 0 error；
 主 tsconfig 与 tsconfig.client 双侧类型检查 exit 0；verify:build 11 项
 门禁 exit 0。
+
+## §7.122 —— 「分类器 local-llm」是误导：本轮裁决者与 provider 真实落点（2026-10-26）
+
+operator 看到 Edge 面板的意图判定节点，问「这个分类器为什么是 local-llm」。
+
+### 事实：那一行指的是**备用**分类器，不是本轮裁决者
+
+`intent.classify.start` 这一行在 `classify()` 的**任何分支之前**无条件落盘
+（intent-router.ts:931），`classifier` 字段装的是配置值
+`stages.intent.provider`：
+
+```
+classify.start (classifier=local-llm)     ← 配置里的备用分类器
+   ↓
+jev 预筛（§7.92.3 加速器）→ action=adopt → 直接返回   ← 本轮在这里就结束了
+   ↓ （jev 没命中才轮到）
+LLM 分类器 classifyWithLlm                            ← 真正的 local-llm 在这里
+```
+
+真实会话实测：`path=jev-adopt`、`classifier=local-llm`。**LLM 分类器
+根本没被调用**，但面板把它渲染成「分类器 local-llm」——把一个没跑过的
+东西说成了裁决者。
+
+这个误导在 §7.121 加了「路径 jev-adopt」那行之前不容易发现：结论行
+「jev-intent:LOCAL」盖住了它。
+
+### 第二层误导：provider 名里的 "local" 也不代表落点
+
+`config/edge.json`：
+
+```json
+"llm": { "local": { "baseUrl": "https://api.minimaxi.com/v1",
+                    "model": "MiniMax-M3.1-Flash" } }
+```
+
+`local-llm` 这个 provider（local-llm-adapter.ts:707 走的正是
+`localPool()`）指向的是**公网 MiniMax**。所以「分类器 local-llm」这句话
+有两重误导：这一轮它没被调用；就算被调用，它也不是「本地」。
+
+这是 §7.118 报告过的 P0（用户 2026-10-26 21:08 裁决「维持现状不动」），
+**本次未改任何配置** —— 但面板现在把问题写在脸上了。
+
+### 修复
+
+**后端**：
+- `intent.classify.start` 新增 `classifierEndpoint`（provider 的真实
+  baseUrl）+ `classifierIsLocal`（落点是否 loopback）。新增导出函数
+  `isLoopbackEndpoint()`：127.0.0.1 / localhost / ::1 算本机，其余
+  （含解析失败）一律**不算**本机 —— 宁可误报出网，不可误报本地。
+- 端点解析口径与 model-router 的 realm 判定一致：provider 以 `cloud-`
+  开头走 cloud 池，否则走 local 池。
+
+**前端**：
+- 「分类器」行改为「**裁决者**」行，按 `path` 显示**本轮实际裁决者**：
+  - `jev-adopt*` / `jev-reject` → 决策模型裁决（**LLM 分类器未调用**）
+  - `llm*` → LLM 分类器（带 provider/model 实体）
+  - `cache` → 缓存命中
+  - `rules-*` → 关键词规则
+  - `gate-no-web-need` → 公网检索闸门
+  - 未知 path → **显示机器码原文**，不猜
+- headline 里的「LLM 裁决」同步改为跟随实际裁决者（jev 路径显示
+  「决策模型裁决」）。
+- 新增「真实落点」行：`<endpoint> · 本机 / 不在本机`。
+
+### 验证
+
+新增单测 8 例：
+- jev 裁决时**不得**出现「分类器 local-llm」，必须出现「决策模型
+  （LLM 分类器未调用）」，headline 不得说「LLM 裁决」；
+- LLM 裁决时确实显示 provider/model 实体；
+- 公网 endpoint 必须标「不在本机」，loopback 必须标「本机」；
+- 缓存命中显示「缓存命中」而非分类器裁决。
+- `isLoopbackEndpoint` 边界：公网 / 局域网 / 空 / 非法 URL 一律非本机。
+
+单测 55 文件 / 1132 passed + 2 skipped（新增 8 例）；eslint 0 error；
+双侧类型检查 exit 0；verify:build 11 项门禁 exit 0。

@@ -138,9 +138,9 @@ describe('flow panel — §7.121 raw judgment data', () => {
     assert.ok(out.includes('尝试索取系统提示词'), `rationale missing: ${out}`)
   })
 
-  it('intent: shows the matched keyword, the semantic meaning and the machine path', () => {
+  it('intent: shows the matched keyword, the semantic meaning and the decider', () => {
     const rows = [
-      row('intent.classify.start', { classifier: 'local-llm', textLen: 6 }, 'intent'),
+      row('intent.classify.start', { classifier: 'local-llm', model: 'qwen3-4b', textLen: 6 }, 'intent'),
       row('intent.classify.end', {
         category: 'LOCAL',
         confidence: 0.98,
@@ -157,8 +157,10 @@ describe('flow panel — §7.121 raw judgment data', () => {
     assert.ok(out.includes('密盒'), `keyword missing: ${out}`)
     assert.ok(out.includes('语义'), `semantic label missing: ${out}`)
     assert.ok(out.includes('本机设备上的应用'), `semantic missing: ${out}`)
-    assert.ok(out.includes('路径'), `path label missing: ${out}`)
-    assert.ok(out.includes('llm'), `path value missing: ${out}`)
+    // §7.122: 路径已并入「裁决者」行 —— LLM 路径要带上 provider/model 实体
+    assert.ok(out.includes('裁决者'), `decided-by label missing: ${out}`)
+    assert.ok(out.includes('LLM 分类器'), `decider missing: ${out}`)
+    assert.ok(out.includes('local-llm/qwen3-4b'), `classifier identity missing: ${out}`)
   })
 
   it('intent: shows the decision model raw intent / confidence / riskScore', () => {
@@ -237,5 +239,122 @@ describe('flow panel — §7.121 array payloads survive the fold', () => {
     const out = render(rows)
     assert.ok(out.includes('act-as'), `first rule missing: ${out}`)
     assert.ok(out.includes('pretend'), `second rule missing: ${out}`)
+  })
+})
+
+describe('flow panel — §7.122 the classifier line must name the ACTUAL decider', () => {
+  it('a jev verdict must NOT claim the LLM classifier decided it', () => {
+    // The bug: `intent.classify.start` records the CONFIGURED fallback
+    // classifier (local-llm) before any branch runs. When jev adjudicates
+    // (path=jev-adopt) the LLM classifier is never called — yet the panel
+    // rendered 「分类器 local-llm」, i.e. it named a decider that did not
+    // run. Real session: path=jev-adopt with classifier=local-llm.
+    const rows = [
+      row('intent.classify.start', {
+        classifier: 'local-llm',
+        model: 'MiniMax-M3.1-Flash',
+        textLen: 6,
+      }, 'intent'),
+      row('intent.classify.end', {
+        category: 'LOCAL',
+        confidence: 0.98,
+        rationale: 'jev-intent:LOCAL',
+        path: 'jev-adopt',
+        durationMs: 308,
+        jevIntent: 'LOCAL',
+        jevConfidence: 0.98,
+        jevRiskScore: 0.14,
+      }, 'intent'),
+    ]
+    const out = render(rows)
+    assert.ok(out.includes('裁决者'), `decided-by label missing: ${out}`)
+    assert.ok(out.includes('决策模型'), `jev decider missing: ${out}`)
+    assert.ok(out.includes('LLM 分类器未调用'), `must say the LLM classifier did NOT run: ${out}`)
+    // 不得再出现「分类器 local-llm」这种把备用分类器说成裁决者的写法
+    assert.ok(!out.includes('分类器 local-llm'), `must not name the unused classifier: ${out}`)
+    assert.ok(out.includes('决策模型裁决'), `headline must not say LLM verdict: ${out}`)
+  })
+
+  it('an LLM verdict does name the LLM classifier', () => {
+    const rows = [
+      row('intent.classify.start', {
+        classifier: 'local-llm',
+        model: 'qwen3-4b',
+        textLen: 6,
+      }, 'intent'),
+      row('intent.classify.end', {
+        category: 'LOCAL',
+        confidence: 0.9,
+        rationale: 'llm-classified:local',
+        path: 'llm',
+        durationMs: 1098,
+      }, 'intent'),
+    ]
+    const out = render(rows)
+    assert.ok(out.includes('裁决者'), `decided-by label missing: ${out}`)
+    assert.ok(out.includes('LLM 分类器'), `LLM decider missing: ${out}`)
+    assert.ok(out.includes('local-llm/qwen3-4b'), `classifier identity missing: ${out}`)
+  })
+
+  it('shows the classifier endpoint and flags when it is NOT on this device', () => {
+    // The provider name says "local" but config/edge.json may point it at a
+    // public endpoint. The operator needs the real destination.
+    const rows = [
+      row('intent.classify.start', {
+        classifier: 'local-llm',
+        model: 'MiniMax-M3.1-Flash',
+        textLen: 6,
+        classifierEndpoint: 'https://api.minimaxi.com/v1',
+        classifierIsLocal: false,
+      }, 'intent'),
+      row('intent.classify.end', {
+        category: 'LOCAL',
+        confidence: 0.98,
+        rationale: 'jev-intent:LOCAL',
+        path: 'jev-adopt',
+        durationMs: 308,
+      }, 'intent'),
+    ]
+    const out = render(rows)
+    assert.ok(out.includes('真实落点'), `endpoint label missing: ${out}`)
+    assert.ok(out.includes('api.minimaxi.com'), `endpoint missing: ${out}`)
+    assert.ok(out.includes('不在本机'), `must flag the off-device endpoint: ${out}`)
+  })
+
+  it('marks a loopback endpoint as on-device', () => {
+    const rows = [
+      row('intent.classify.start', {
+        classifier: 'local-llm',
+        model: 'qwen3-4b',
+        textLen: 6,
+        classifierEndpoint: 'http://127.0.0.1:8080/v1',
+        classifierIsLocal: true,
+      }, 'intent'),
+      row('intent.classify.end', {
+        category: 'LOCAL',
+        confidence: 0.9,
+        rationale: 'llm-classified:local',
+        path: 'llm',
+        durationMs: 300,
+      }, 'intent'),
+    ]
+    const out = render(rows)
+    assert.ok(out.includes('127.0.0.1'), `endpoint missing: ${out}`)
+    assert.ok(out.includes('本机'), `must mark the on-device endpoint: ${out}`)
+  })
+
+  it('a cache hit is named as such, not as a classifier verdict', () => {
+    const rows = [
+      row('intent.classify.start', { classifier: 'local-llm', model: 'x', textLen: 6 }, 'intent'),
+      row('intent.classify.end', {
+        category: 'LOCAL',
+        confidence: 0.9,
+        rationale: 'llm-classified:local',
+        path: 'cache',
+        durationMs: 5,
+      }, 'intent'),
+    ]
+    const out = render(rows)
+    assert.ok(out.includes('缓存命中'), `cache decider missing: ${out}`)
   })
 })

@@ -75,6 +75,12 @@ function list(v: unknown): string[] {
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
 }
 
+/** §7.122: 未知 path 的兜底 —— 宁可显示机器码原文，也不要显示一个
+ *  会误导的「分类器 X」（那正是本次要修的毛病）。 */
+function decidedByFallback(path: string): string {
+  return path.length > 0 ? path : tr('flow.intent.byUnknown')
+}
+
 function guardNode(rows: EdgeRow[]): FlowNode {
   const end = latest(rows, r => r.kind === 'guard.model-detect.end')
   const unsafe = latest(rows, r => r.kind === 'guard.model-detect.unsafe')
@@ -197,7 +203,46 @@ function intentNode(rows: EdgeRow[]): FlowNode {
     // classifier/textLen live on the classify.start row; duration/category on end.
     const startRow = latest(rows, r => r.kind === 'intent.classify.start')
     const textLen = field(end, 'textLen') ?? field(startRow, 'textLen')
-    sub.push(`${tr('flow.lbl.classifier')} ${str(field(startRow, 'classifier'))} · ${tr('flow.lbl.elapsed')} ${ms(field(end, 'durationMs'))} · ${tr('flow.lbl.scanned')} ${str(textLen)} ${tr('flow.lbl.chars')}`)
+    // §7.122: 「分类器」这一行此前**无条件**显示配置里的 provider 名，
+    // 但那是**备用**分类器 —— jev 预筛命中时 LLM 分类器压根没被调用。
+    // 面板要显示**本轮实际是谁判的**，所以按 path 分支：
+    //   jev-adopt* → 决策模型裁决（LLM 分类器未调用）
+    //   llm*      → LLM 分类器裁决
+    //   cache     → 缓存命中
+    //   rules-*   → 规则档裁决
+    // 同时标出 provider 的**真实落点**（provider 名里的 "local" 不代表落
+    // 点在本机 —— config/edge.json 的 llm.local.baseUrl 可以是公网）。
+    const pathRaw = field(end, 'path')
+    const path = typeof pathRaw === 'string' ? pathRaw : ''
+    const classifierProvider = str(field(startRow, 'classifier'))
+    const classifierEndpoint = field(startRow, 'classifierEndpoint')
+    const classifierIsLocal = field(startRow, 'classifierIsLocal')
+    const jevDecided = path.startsWith('jev-adopt') || path.startsWith('jev-reject')
+    const llmDecided = path.startsWith('llm')
+    const decidedBy = jevDecided
+      ? tr('flow.intent.byJev')
+      : llmDecided
+        ? tr('flow.intent.byLlm')
+        : path === 'cache'
+          ? tr('flow.intent.byCache')
+          : path.startsWith('rules-')
+            ? tr('flow.intent.byRules')
+            : path === 'gate-no-web-need'
+              ? tr('flow.intent.byGate')
+              : decidedByFallback(path)
+    // 裁决者身份：LLM 路径带上 provider/model 实体；其它路径不带
+    // （jev / 缓存 / 规则档的「模型身份」在各自的证据行里）。
+    const classifierModel = str(field(startRow, 'model'))
+    const identity = llmDecided && classifierModel !== '?'
+      ? ` ${classifierProvider}/${classifierModel}`
+      : llmDecided ? ` ${classifierProvider}` : ''
+    sub.push(`${tr('flow.lbl.decidedBy')} ${decidedBy}${identity}`)
+    // 真实落点 —— operator 判断「原文有没有出网」要看的不是 provider 名
+    if (typeof classifierEndpoint === 'string' && classifierEndpoint.length > 0) {
+      const localMark = classifierIsLocal === true ? tr('flow.lbl.onDevice') : tr('flow.lbl.offDevice')
+      sub.push(`${tr('flow.lbl.endpoint')} ${clip(classifierEndpoint, 34)} · ${localMark}`)
+    }
+    sub.push(`${tr('flow.lbl.elapsed')} ${ms(field(end, 'durationMs'))} · ${tr('flow.lbl.scanned')} ${str(textLen)} ${tr('flow.lbl.chars')}`)
     // §7.121: 原始判断数据 —— 命中了**哪个关键字**（规则档的正则命中），
     // 以及分类器对该档位的**语义说明**。§7.113 已把这两个字段写进
     // classify.end，但只有 rows 面板读，flow 面板一直读不到。
@@ -211,9 +256,9 @@ function intentNode(rows: EdgeRow[]): FlowNode {
     }
     // §7.121: 决策路径的**机器码**（llm / jev-adopt / cache / rules-* …），
     // 让 operator 分得清「这次是缓存命中」还是「真判了一次」。
-    const path = field(end, 'path')
-    if (typeof path === 'string' && path.length > 0) {
-      sub.push(`${tr('flow.lbl.path')} ${path}`)
+    // §7.122: 路径已并入「裁决者」行；这里只在裁决者行没带出路径时补。
+    if (typeof pathRaw === 'string' && pathRaw.length > 0 && !jevDecided && !llmDecided && path !== 'cache') {
+      sub.push(`${tr('flow.lbl.path')} ${pathRaw}`)
     }
     // §7.121: jev 决策模型的原始返回（intent / confidence / riskScore）。
     // 优先读 classify.end 上已并入的 jev* 字段（那条路径恒为 info 级），
@@ -245,11 +290,26 @@ function intentNode(rows: EdgeRow[]): FlowNode {
       else sub.push(tr('flow.intent.defaultNoCause'))
     }
     if (noWebNeed) sub.push(tr('flow.intent.noWebNeedWhy'))
+    // §7.122: headline 里的「LLM 裁决」此前是**假定** classifier 判的 ——
+    // jev 预筛命中时实际是决策模型判的。把 headline 改成跟随裁决者。
+    const viaLabel = isDefault
+      ? tr('flow.intent.viaDefault')
+      : override !== undefined && override.ts <= end.ts
+        ? tr('flow.intent.viaEntity')
+        : jevDecided
+          ? tr('flow.intent.viaJev')
+          : llmDecided
+            ? tr('flow.intent.viaLlm')
+            : path === 'cache'
+              ? tr('flow.intent.viaCache')
+              : path.startsWith('rules-')
+                ? tr('flow.intent.viaRules')
+                : tr('flow.intent.viaLlm')
     return {
       label: tr('flow.intent'), tone: isDefault ? 'warn' : 'ok',
       detail: noWebNeed
         ? `${cat} ${conf} · ${tr('flow.intent.noWebNeed')}`
-        : `${cat} ${conf} · ${isDefault ? tr('flow.intent.viaDefault') : override !== undefined && override.ts <= end.ts ? tr('flow.intent.viaEntity') : tr('flow.intent.viaLlm')}`,
+        : `${cat} ${conf} · ${viaLabel}`,
       sub,
     }
   }

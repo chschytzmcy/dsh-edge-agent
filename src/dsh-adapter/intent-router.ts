@@ -24,6 +24,24 @@ interface AuditLike {
   log(entry: { level: 'debug' | 'info' | 'warn' | 'error' | 'security'; kind: string; source: string; payload: Record<string, unknown> }): Promise<unknown>
 }
 
+/**
+ * §7.122: 端点是否落在本机。
+ *
+ * provider 名（`local-llm`）**不代表**落点 —— config/edge.json 的
+ * `llm.local.baseUrl` 可以是任何地址，包括公网。operator 要判断
+ * 「这轮原文有没有出网」，看的是落点，不是名字。
+ */
+export function isLoopbackEndpoint(endpoint: string | undefined): boolean {
+  if (endpoint === undefined || endpoint.trim().length === 0) return false
+  let host: string
+  try {
+    host = new URL(endpoint).hostname
+  } catch {
+    return false
+  }
+  return host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '[::1]'
+}
+
 export interface Config {
   /** Default realm when classification finds no rule. */
   defaultCategory: 'LOCAL' | 'CLOUD' | 'SANITIZED'
@@ -750,6 +768,27 @@ export class IntentRouterServiceImpl extends Service {
     void this.auditLog.log({ level, kind, source: 'intent-router', payload }).catch(() => {})
   }
 
+  /**
+   * §7.122: 分类器 provider 的**真实落点**。
+   *
+   * provider 名（`local-llm`）不等于落点 —— config/edge.json 的
+   * `llm.local.baseUrl` 可以指向公网。审计要能回答「这轮原文发到哪去了」，
+   * 光有 provider 名不够。
+   *
+   * 解析规则：provider 以 `cloud-` 开头 → cloud 池；否则 local 池。
+   * （与 model-router 的 realm 判定同一口径：`local-*` 前缀 = LOCAL 域，
+   * 其余按 CLOUD 处理。）
+   */
+  private classifierEndpoint(): string | undefined {
+    try {
+      const provider = this.classificationProvider ?? ''
+      const pool = provider.startsWith('cloud-') ? undefined : localPool()
+      return pool?.baseUrl
+    } catch {
+      return undefined
+    }
+  }
+
   /** §7.113 (2026-10-25): the two evidence scalars the Edge tab renders
    *  beside the verdict — `keyword` = the regex keyword/entity the rules
    *  layer matched (derived from the rationale; empty for semantic
@@ -928,7 +967,25 @@ export class IntentRouterServiceImpl extends Service {
     }
 
     const textPreview = this.redactPreview(effectiveText) ?? `[len=${effectiveText.length}]`
-    this.audit('info', 'intent.classify.start', { sessionId: sid, textLen: effectiveText.length, textPreview, classifier: this.classificationProvider, model: this.classificationModel })
+    // §7.122: `classifier` 是**配置里的备用分类器**，不是本轮的实际裁决者
+    // —— jev 预筛命中时（path=jev-adopt）LLM 分类器根本没被调用，而面板把
+    // 这个配置值渲染成「分类器 local-llm」，operator 会以为本轮是它判的。
+    //
+    // 落两样东西：
+    //   - `classifierEndpoint`：这个 provider 的**真实落点**。provider 名叫
+    //     `local-llm` 但 baseUrl 可能是公网（config/edge.json 的
+    //     llm.local.baseUrl），名字骗人，落点不骗人。
+    //   - `classifierIsLocal`：落点是否真的在本机（127.0.0.1 / localhost）。
+    const classifierEndpoint = this.classifierEndpoint()
+    this.audit('info', 'intent.classify.start', {
+      sessionId: sid,
+      textLen: effectiveText.length,
+      textPreview,
+      classifier: this.classificationProvider,
+      model: this.classificationModel,
+      classifierEndpoint,
+      classifierIsLocal: isLoopbackEndpoint(classifierEndpoint),
+    })
 
     // 缓存命中：同文本+同上下文的已完成 verdict 直接复用，跳过 jev/LLM。
     const cacheKey = this.classifyCacheKey(effectiveText, context?.recentMessages)
