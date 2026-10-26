@@ -498,11 +498,32 @@ vLLM / Ollama / DashScope 实例 —— 在 `config/edge.json` 的 `llm.local` �
 
 | 字段 | 默认值 | 说明 |
 |---|---|---|
-| `llm.local.baseUrl` | （空 = 不注册） | OpenAI 兼容端点 URL |
+| `llm.local.baseUrl` | （空 = 不注册） | OpenAI 兼容端点 URL，**必须含 `/v1`**（adapter 只追加 `/chat/completions`） |
 | `llm.local.model` | `qwen3-4b` | 端点 model id |
 | `llm.local.keyRef` | （空 = 不发 auth 头） | 指向 `secrets` 段里的键名 |
 | `llm.local.stripTools` | `false` | 省略 `body.tools`（minicpm Jinja2 bug 规避） |
 | `llm.local.enableThinking` | `false` | 关掉 thinking-model 的 chain-of-thought |
+| `llm.local.reasoningEffortNone` | `false` | **ollama 池必开** —— 见下 |
+
+> **ollama 用户注意**：ollama 的 `/v1` 兼容层**静默丢弃** `chat_template_kwargs`
+> 和顶层 `think:false`，只有 `reasoning_effort:"none"` 生效。不开这个开关，
+> thinking 会吃满 `max_tokens` → `content` 为空 → 攻击检测 json-parse-failed
+> **静默落回正则档**（实测 24.6s → 6.5s）。
+>
+> ```json
+> "local": {
+>   "baseUrl": "http://<host>:11434/v1",
+>   "model": "<ollama 里实际的 tag>",
+>   "keyRef": "",
+>   "reasoningEffortNone": true
+> }
+> ```
+>
+> 严格网关（OpenAI 官方风格）不认这个参数会返 400，保持 `false`。
+
+> **改完要重启**：`baseUrl` / `model` / `reasoningEffortNone` 都在 adapter
+> 构造时冻结（`local-llm-adapter.ts:243-256`），改配置文件不触发重新注册。
+> 桌面版需**完全退出 DSH App 进程**再打开。
 
 **云端 LLM**（§7.100 起整体可选 —— 不配即 DELEGATE 到宿主 profile 提供商）
 
