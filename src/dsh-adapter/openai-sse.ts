@@ -143,6 +143,41 @@ export function buildChatCompletionsBody(
     //   - tool-call blocks → OpenAI `tool_calls` field (assistant messages)
     //   - tool-result blocks → separate `role: 'tool'` messages with `tool_call_id`
     const blocks = (Array.isArray(message.content) ? message.content : []) as unknown as Array<Record<string, unknown>>
+
+    // §7.119 (2026-10-26): DSH 的**规范** tool-result 形状是「消息级」的 ——
+    //   { role:'tool', toolCallId:'call_x', source:{kind:'tool',callId:'call_x'},
+    //     content:[{type:'text', text:'…'}] }
+    // （上游 `createToolResultMessage()` 造的就是这个形状，见
+    // @deepseek-ai/dsh-llm lib/index.js。）
+    //
+    // 旧实现只认 content 里 `type==='tool-result'` 的块，于是把上面这条消息
+    // 当成普通消息处理：tool_call_id 直接丢失 → §7.106 的配对守卫（下面
+    // 205-215 行）判定它「找不到配对的 call」→ 降级成
+    //   role:'user', content:"[tool-result (unreferenced) lost its matching
+    //   call; output:]\n<真实输出>"
+    // 也就是说**模型的每一个工具结果都是以「丢失配对」的 user 文本进去的**，
+    // 而 assistant 侧的 tool_call 从来没被真正应答过。
+    //
+    // 实测：真实会话里 100% 的 tool/result 事件都是这个形状（77/77）——
+    // 整条工具结果通道是坏的，不是偶发。
+    //
+    // 这里补一条消息级分支：能取到 id 就按真正的 `role:'tool'` + `tool_call_id`
+    // 下发，取不到才回落到下面的块级路径（保持旧行为）。
+    if (message.role === 'tool') {
+      const messageId = firstNonEmptyId([
+        (message as unknown as { toolCallId?: unknown }).toolCallId,
+        (message as unknown as { source?: { callId?: unknown } }).source?.callId,
+        (message as unknown as { source?: { toolCallId?: unknown } }).source?.toolCallId,
+      ], '')
+      if (messageId !== '') {
+        const toolText = typeof message.content === 'string'
+          ? message.content
+          : extractText(blocks as unknown as Array<{ type: string; text?: string }>)
+        wireMessages.push({ role: 'tool', tool_call_id: messageId, content: toolText })
+        continue
+      }
+    }
+
     const textParts: string[] = []
     const toolCalls: Array<Record<string, unknown>> = []
     const toolResults: Array<{ id: string; content: string }> = []

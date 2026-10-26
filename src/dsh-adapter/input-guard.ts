@@ -573,9 +573,37 @@ export class InputGuardServiceImpl extends Service {
      *   3. 缺失则插入一条 user 消息携带合成 tool-result 块
      */
 
-    /** 从一个消息 content 数组里抽所有 tool-result 的 id（dsh 字段名：toolCallId） */
-    const collectResultIds = (content: unknown): Set<string> => {
+    /**
+     * 从一条消息里抽所有 tool-result 的 id。
+     *
+     * §7.119 (2026-10-26)：要认**两种**形状。
+     *
+     * 1. 块级：content 里 `type==='tool-result'` 的块，id 在
+     *    `toolCallId` / `callId` / `id` 三者之一。旧实现只认这一种。
+     * 2. **消息级**：DSH 的规范形状 —— `{role:'tool', toolCallId:'call_x',
+     *    source:{kind:'tool',callId:'call_x'}, content:[{type:'text',…}]}`。
+     *    id 在**消息顶层**，content 里是结果文本块、没有 tool-result 块。
+     *    上游 `createToolResultMessage()` 造的就是这个形状。
+     *
+     * 只认形状 1 时的后果（实测）：真实会话里 **100%** 的工具结果都是
+     * 形状 2 → 每一个 tool_call 都被误判成 orphan → 每轮都注入合成的
+     * "aborted" tool-result → 会话历史每轮 +3 条消息、无限增长
+     * （实测 24 轮后 42 个假 orphan、111 条消息、111KB）。
+     * 合成的那批反而能被 wire builder 正确识别，于是模型每轮都被告知
+     * "上一个工具调用被中止了"，而**真实结果**被 §7.106 的配对守卫降级成
+     * "[tool-result (unreferenced) lost its matching call; output:]" 的
+     * user 文本。模型的工具语义全程是错的。
+     */
+    const collectResultIds = (message: unknown): Set<string> => {
       const ids = new Set<string>()
+      if (!message || typeof message !== 'object') return ids
+      const msg = message as { content?: unknown; toolCallId?: unknown; source?: { callId?: unknown; toolCallId?: unknown } }
+      // 形状 2：消息级 id（role:'tool' 的规范形状）
+      for (const candidate of [msg.toolCallId, msg.source?.callId, msg.source?.toolCallId]) {
+        if (typeof candidate === 'string' && candidate !== '') ids.add(candidate)
+      }
+      // 形状 1：content 里的 tool-result 块
+      const content = msg.content
       if (!Array.isArray(content)) return ids
       for (const block of content) {
         if (!block || typeof block !== 'object') continue
@@ -721,8 +749,7 @@ export class InputGuardServiceImpl extends Service {
     // 放在后续 user 消息的 content 块里，可能隔了几条消息。
     const respondedAll = new Set<string>()
     for (const m of pass0) {
-      const c = (m as { content?: unknown }).content
-      for (const id of collectResultIds(c)) respondedAll.add(id)
+      for (const id of collectResultIds(m)) respondedAll.add(id)
     }
 
     // 第二遍：扫 assistant 消息，遇到有 tool-call 的就补缺失响应
@@ -749,7 +776,7 @@ export class InputGuardServiceImpl extends Service {
       // 但不一定紧跟（中间可能有 user 消息）。所以扫描 i+1 之后所有消息即可。
       const respondedAfter = new Set<string>()
       for (let k = i + 1; k < pass0.length; k++) {
-        for (const id of collectResultIds((pass0[k] as { content?: unknown }).content)) {
+        for (const id of collectResultIds(pass0[k])) {
           respondedAfter.add(id)
         }
       }

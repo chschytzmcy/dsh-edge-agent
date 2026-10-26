@@ -11341,3 +11341,70 @@ console.log('仍未掩码的严格手机号:', (redacted.match(/(?<![0-9A-Za-z_]
 实测该式对整份日志输出 **0** —— 日志里没有任何未脱敏的真手机号。
 响应侧同样生效（模型回复里的 `173****9677` / `192.168.***.***` 均为
 trace 层掩码后的形态）。
+## §7.119 —— 工具结果通道整体失灵：DSH 规范形状是「消息级」，我们只认「块级」（2026-10-26）
+
+**发现路径**：§7.118 的 LLM trace 上线后，桌面会话的
+`orphan-tool-call summary` 行暴露出一个规律 —— 孤儿数**每轮精确 +2**
+（2,4,6,…,42），会话消息每轮 +3 条（7→10→13→…→111）。24 轮后会话涨到
+111 条 / 111KB，且 syntheticInjected 恒等于 orphanCount。这不是噪声，是
+一条确定性 bug。
+
+**根因**：DSH 的**规范** tool-result 形状是**消息级**的 ——
+
+```json
+{ "role": "tool",
+  "toolCallId": "call_x",
+  "source": { "kind": "tool", "callId": "call_x" },
+  "content": [ { "type": "text", "text": "…" } ] }
+```
+
+call id 在**消息顶层**，content 里是结果文本块、**没有** `tool-result` 块。
+（上游 `createToolResultMessage()` 造的就是这个形状，见
+`@deepseek-ai/dsh-llm` lib/index.js:createToolResultMessage。）
+
+我们两处都只认**块级**（content 里 `type==='tool-result'`），于是：
+
+1. **`openai-sse.ts` 的 `buildChatCompletionsBody`**：把 `role:'tool'` 消息
+   当普通消息 → `tool_call_id` 丢失 → §7.106 的配对守卫（205-215 行）判定
+   它「找不到配对的 call」→ 降级成
+   `role:'user', content:"[tool-result (unreferenced) lost its matching call;
+   output:]\n<真实输出>"`。
+   **模型的每一个工具结果都是这样进去的**。
+2. **`input-guard.ts` 的 `collectResultIds`**：同样认不出 id → 每个
+   tool_call 都被误判成 orphan → 每轮注入合成的
+   `{"error":"aborted","reason":"previous tool call was aborted…"}`
+   tool-result → 会话历史无限增长。
+
+两条合起来的效果：模型每轮都被告知「上一个工具调用被中止了」，而**真实
+工具输出**是以「丢失配对」的 user 文本进去的。工具语义全程是错的。
+
+**实测影响面**：真实桌面会话（`session-e3e5d1bf…`）77 个 tool/result 事件
+**100%** 都是消息级形状 —— 整条工具结果通道是坏的，不是偶发。
+
+**修复**（两处，同一根因）：
+
+- `openai-sse.ts`：消息循环开头加一条 `role==='tool'` 分支，从
+  `message.toolCallId` → `message.source.callId` → `message.source.toolCallId`
+  取 id（`firstNonEmptyId`），取到就下发真正的
+  `{role:'tool', tool_call_id:id, content:<结果文本>}`；取不到才回落块级路径。
+- `input-guard.ts`：`collectResultIds` 改为**收整条消息**（不再是 content），
+  同时认消息级 id（`toolCallId` / `source.callId` / `source.toolCallId`）和
+  块级 `tool-result` 块。
+
+**验证**：
+
+- 新增 `tests/unit/tool-result-message-shape.test.ts`（9 例）：消息级形状出
+  `role:tool` + `tool_call_id`、不再降级、旧块级形状仍工作、无 id 时不伪造
+  id、孤儿检测零误判、**10 轮累积不再增长**、真 orphan 仍被抓到。
+- 真实会话重放（同一份 `session.v4.jsonl.zstd`）：修复前 3 条工具结果全部
+  被降级成 "lost its matching call" 的 user 文本；修复后 3 条全部是
+  `role:tool` + 正确 `tool_call_id`，降级数 **0**。
+- 全量：54 文件 / **1103 passed + 2 skipped**；lint 0 error；
+  `verify:build` exit 0。
+
+**为什么之前没人发现**：这条 bug 的表现是「模型看起来还能用」——工具输出
+的**文本**确实进了上下文（以 user 消息的形式），所以回答质量不掉，只是
+每轮都挂着一个「lost its matching call」的横幅，而且模型被反复告知工具调用
+被中止。叠加 §7.118 那条「孤儿数每轮 +2」的规律才暴露出来 —— 而 ops log
+在桌面上自 2026-10-25 起根本不落盘（§7.118 修的），所以这个规律此前
+**根本没人看得到**。两件事互为因果。
