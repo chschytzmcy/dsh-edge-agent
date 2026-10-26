@@ -11200,6 +11200,7 @@ package）**首次全绿**，release tarball 644K。
 值而非 config/edge.json（该文件当前不在仓库里，gitignore）。环境变量层本身是
 合法入口（env override 优先于文件），这里只把**单测**与它隔开；运行时该由运维
 决定用哪一层（建议：写 config/edge.json，shell 只留 PATH/凭据类变量）。
+
 ## §7.118 —— ops log 记录详细 LLM request/response（守卫修正 + 脱敏截断，2026-10-26）
 
 **问题（两个叠在一起）**：
@@ -11341,6 +11342,7 @@ console.log('仍未掩码的严格手机号:', (redacted.match(/(?<![0-9A-Za-z_]
 实测该式对整份日志输出 **0** —— 日志里没有任何未脱敏的真手机号。
 响应侧同样生效（模型回复里的 `173****9677` / `192.168.***.***` 均为
 trace 层掩码后的形态）。
+
 ## §7.119 —— 工具结果通道整体失灵：DSH 规范形状是「消息级」，我们只认「块级」（2026-10-26）
 
 **发现路径**：§7.118 的 LLM trace 上线后，桌面会话的
@@ -11408,3 +11410,49 @@ call id 在**消息顶层**，content 里是结果文本块、**没有** `tool-r
 被中止。叠加 §7.118 那条「孤儿数每轮 +2」的规律才暴露出来 —— 而 ops log
 在桌面上自 2026-10-25 起根本不落盘（§7.118 修的），所以这个规律此前
 **根本没人看得到**。两件事互为因果。
+
+## §7.120 —— 审批/沙箱对「远端设备写操作」不可见（待决，2026-10-26）
+
+**背景**：§7.118 那次测试意外让 agent 把一个文件传到了 MEOS 设备
+`/备忘/联系方式.txt`。当时归因为"agent 自主解读"，本节补齐**为什么没有任何
+一道闸拦得住**。
+
+**实测**（`llmtrace-verify-001` 会话，42 个 tool/call）：
+
+| 指标 | 值 |
+|---|---|
+| `approval/policy` | `ask` |
+| `sandbox/mode` | `workspace-write` |
+| 带审批字段的 tool/call | **0 / 42** |
+| 含 `etscli file upload` 的 tool/call | 2（均为 `bash` 工具，非 etscli 白名单工具） |
+
+**机制**（读宿主 `app.asar` 得出）：
+
+1. 上游有 **Auto review** 闸门：`dsh-sandbox` 的 `classifyRisk()` 用一个
+   固定策略 prompt 调 LLM 做**每次工具调用的风险分类**，判决
+   `allow` / `deny` / `ask`；`ask` 走 `ctx.approval.request(...)` 派发给
+   answerer（`@deepseek-ai/dsh-user-approval`，**fail-closed by default**）。
+2. 但这道闸门**只在 `auto` preset 下安装**（`permissionPresets.current(...)`
+   判定）。本仓 edge preset 用的是 `workspace-write` → **Auto review 不存在**。
+3. 于是只剩**沙箱越界升级**这一条路。而沙箱模型是
+   `SandboxMode = 'read-only' | 'workspace-write' | 'danger-full-access'` ——
+   **纯文件系统视角**。`etscli file upload` 改的是**远端 MEOS 设备**
+   （走 etscli 自己的协议），对文件系统沙箱完全不可见 → 不越界 → 不升级
+   → **不触发审批**。
+
+**关键矛盾**：`src/dsh-adapter/etscli-tools.ts` 的设计声明是
+"**只注册只读工具**……不注册 = 不进 `ctx.tools` = 不出现在
+`getToolSchemasForExternal()` = **needle 物理上无法选中**"。这个保证对
+**模型可见的工具清单**成立，但对**能力**不成立 —— `bash` 是通用逃逸口，
+模型可以直接 `bash: etscli file upload ...`，完全绕过那份精心设计的白名单
+（白名单里明确排除了 `file delete` / `fs rm` / `chat send` 等不可逆操作，
+却没拦住同一个二进制的写子命令）。
+
+**为什么这条在本仓可修**：`etscli-tools` 用的是**绝对路径**
+（`config/edge.json` → `etscli.bin`，默认 `~/.local/bin/etscli`），
+所以从 **bash 工具的 PATH 里摘掉 `~/.local/bin`** 既不会破坏白名单工具
+（仍走绝对路径），又能让模型**无法按名字**够到那个二进制。
+
+**待决**（未实施）：宿主 bash 工具用 `process.env.PATH`（`which` 包），
+没有命令级白名单配置项，所以"摘 PATH"要么落在宿主启动环境（影响面大），
+要么另找挂载点。本节只记录事实与候选，**未改任何代码**。
