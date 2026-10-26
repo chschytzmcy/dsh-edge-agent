@@ -14,6 +14,7 @@
 - **🌐 零信任通信**：RFC 9458 OHTTP 协议，云端无法关联用户身份与请求
 - **🚨 威胁检测**：实时监控异常行为，自动隔离可疑流量
 - **🔌 插件化**：19 个 plugin（含 1 桌面 webview bundle），全部 subpath 导出
+- **🖥️ 三平台**：Windows / macOS / Linux 各自一条构建命令（`npm run build:windows|macos|linux`）；桌面版三平台通吃，独立 HTTP profile 见支持矩阵
 
 ## 🏗️ 架构速览
 
@@ -62,127 +63,142 @@ pnpm --version   # 验证
 # 脚手架阶段可用 simulated 后端，无需真实 TEE。
 ```
 
-### 方式一：从源码构建（推荐开发者）
+### 方式一：构建打包（三平台各自一条命令）
 
 ```bash
 git clone https://github.com/chschytzmcy/dsh-edge-agent.git
 cd dsh-edge-agent
 
 pnpm install
-pnpm run compile
 
-# §7.69 (2026-09-17): 单 profile 架构 —— 默认 dsh-edge,杀其他+启指定,端口统一 :21017
-./install.sh                            # 默认：杀 dsh-tui + web,同步 + 启 dsh-edge(:21017)
-./install.sh --profile=web              # 切 web:杀 dsh-tui + dsh-edge,同步 + 启 web(:21017 + webui :3080)
-./install.sh --profile=tui              # 切 dsh-tui:杀 web + dsh-edge,同步 + 启 dsh-tui(:21017)
-./install.sh --profile=dsh-edge         # 显式(与默认等价)
-./install.sh --no-restart               # 只同步不杀不启(开发改代码反复迭代时)
-
-# 手动启动某个 profile（开发循环）
-cd ~/.dsh/profiles/dsh-tui
-setsid nohup dsh --profile dsh-tui > run.log 2>&1 < /dev/null &
-disown
+npm run build:windows    # Windows（Git Bash）
+npm run build:macos      # macOS
+npm run build:linux      # Linux
 ```
 
-### 方式二：把 bundle 装到现有 dsh-tui / web profile（profile-agnostic）
+**支持矩阵**：
 
-§7.69 单 profile 架构 —— install.sh 一次只部署一个 profile(target),先杀掉其他 profile 进程,再 restart target 拿新代码:
+| | 桌面版 | dsh-cli / dsh-web / dsh-edge-agent HTTP profile |
+|---|---|---|
+| **Windows** | ✅ | ❌ 桌面 App 独占 `desktop` profile，CLI 碰不了 |
+| **macOS** | ✅ | ✅ |
+| **Linux** | ✅ | ✅ |
 
-```bash
-# 默认：部署 dsh-edge(项目自有 headless,无 UI)
-./install.sh
+> Windows 上 `make` / `rsync` 不可用（Git Bash 缺 rsync/setsid/ss/make），
+> `make package` 与 `install.sh` 都用不了——`npm run build:windows` 是
+> Windows 上唯一的构建路径。
 
-# 切到浏览器宿主
-./install.sh --profile=web
+三个脚本共用同一个 Node 核心（`scripts/_pack-core.mjs`），产物**字节一致**；
+平台差异只在 runtime 探测与 tar 口味。
 
-# 切到终端宿主
-./install.sh --profile=tui   # 或 --profile=dsh-tui
+**产物**（两种模式同源，均过 verify-installable 门禁）：
+
+```
+dist/installable/dsh-edge-agent-desktop-safe/   ← link（开发）
+dist/installable/dsh-edge-agent-full/
+dist/dsh-edge-agent-desktop-safe.tar.gz         ← tar（分发）
+dist/dsh-edge-agent-full.tar.gz
 ```
 
-> bundle 是 profile-agnostic 的——`--profile=` 接受任何 DSH profile 名(dsh-tui / web / dsh-edge / 自定义)。HTTP 端口统一 :21017(http-api schema 默认,`http-api.ts:63`);切 profile 前 install.sh 必杀其他进程(避免 EADDRINUSE + audit TOCTOU race)。加新 profile 只在 install.sh `OTHER_PROFILES` 列表里添一行即可。
+**两个变体**：用 `desktop-safe`（只 insert 隐私栈，不改宿主 persona /
+approval / sandbox / session root，不起 http-api）；`full` 会改写宿主全局
+配置，只适合专用 profile，不要装进日常桌面。
 
-> **当前桌面版（DeepSeek Harness App）**：CLI 不能管理 Electron 独占的 `desktop` profile，但桌面侧边栏 **Plugins → Add plugin** 支持 npm / Git / 本地目录三个通道，见下方方式四。
-
-### 方式三：Windows
-
-```cmd
-:: PowerShell 或 cmd
-:: （Windows 上 dsh CLI 行为一致；具体启动命令参考 DSH 官方 Windows 文档）
-dsh plugin --profile dsh-tui add @deepseek-harness-edge-agent/dsh-edge-agent
-:: 或装到任意 profile：dsh plugin --profile <name> add @deepseek-harness-edge-agent/dsh-edge-agent
-:: §7.43: 想并存启动 dsh-tui + web 用 ./install.sh
-```
-
-> Windows 上的本机构建/打包：`install.sh` 与 `make` 不可用（Git Bash 缺
-> rsync/setsid/ss/make）；实际命令链是 `npm run compile` +
-> `bash scripts/build-desktop-bundle.sh --no-build`（Git Bash 自带 GNU tar
-> 1.35 + shasum，脚本直接能跑；`pnpm` 不在 PATH 时统一用 `npm run`）。
-> `--emit-dir` 在桌面 App 运行时目录被 `link:` 锁住会自动降级为就地同步
-> （2026-10-24 起，详见方式四），无需退 App。模式切换（`--install-desktop=link|tar`）
-> 在 Git Bash 同样可用：脚本自动探测 App 内嵌 `dsh.cmd`
-> （`%LOCALAPPDATA%\Programs\DeepSeek Harness\...`），也可 `DSH_BIN` 显式指定。
-
-### 方式四：部署到 DSH 桌面版插件（Windows / macOS）
+### 方式二：装进 DSH 桌面版（Windows / macOS / Linux）
 
 桌面 App（DeepSeek Harness）的 `desktop` profile 由 Electron 独占管理，
 CLI 碰不了——但 App 侧边栏 **Plugins → Add plugin → Install a
 third-party plugin** 支持 npm / Git / **本地目录** 三个通道。本仓标准走法
-是「本地目录」装 desktop-safe 产物（只 insert 隐私栈、不改宿主全局配置；
-全量 `cordis.patch.yml` 会改写 persona/approval/sandbox/session root，不要
-装进日常桌面）。
+是「本地目录」装 desktop-safe 产物。
 
-**共同步骤（两平台一致）**：
+**手动安装**：
 
-```bash
-# 1. 生成可安装目录
-npm run compile                                    # pnpm 不在 PATH 时用 npm run
-bash scripts/build-desktop-bundle.sh --no-build --emit-dir
-# → dist/installable/dsh-edge-agent-desktop-safe/   ← 本地目录通道用这个
-# → dist/dsh-edge-agent-desktop-safe.tar.gz         ← CLI/分发用（不带 config/）
-# 桌面 App 开着也能跑：目录被 link: 锁住时自动降级为就地同步（输出带 in-place 提示）
-
-# 2. App 里安装：Plugins → Add plugin → 本地目录 → 填【绝对路径】→ 安装 → 启用
-#    （相对路径会被拒："a local path must be absolute"）
-
-# 3. 配置（产物故意不带真实密钥）：把 config/edge.json 放到 ~/.dsh-edge-agent/edge.json
-
-# 4. 验证：右栏出现 Edge tab；审计里确认配置来源
-grep -o '"kind":"config.loaded".\{0,240\}' ~/.dsh-edge-agent/audit/audit.plain.jsonl | tail -1
+```
+1. 桌面 App 侧边栏 Plugins → Add plugin → 本地目录
+2. 填【绝对路径】：
+   Windows  C:\Users\<你>\GolandProjects\gitlab\dsh-edge-agent\dist\installable\dsh-edge-agent-desktop-safe
+   macOS    /Users/<你>/code/dsh-edge-agent/dist/installable/dsh-edge-agent-desktop-safe
+   Linux    /home/<你>/code/dsh-edge-agent/dist/installable/dsh-edge-agent-desktop-safe
+   （相对路径会被拒："a local path must be absolute"；
+     Git Bash 里的 /c/Users/… 是 MSYS2 虚拟路径，桌面 App 不认，必须用 C:\… ）
+3. 安装 → 启用 → 重启 DSH
+4. 验证：右栏出现 Edge tab；审计里确认配置来源
+   grep -o '"kind":"config.loaded".\{0,240\}' ~/.dsh-edge-agent/audit/audit.plain.jsonl | tail -1
 ```
 
-> **两种模式（2026-10-24 起）**：本地目录通道 = `link:` **开发模式**（profile 只做
-> 符号引用，改 `dist/installable/<variant>/` 里的文件 + 重启 App 即生效，无需重装）；
-> tarball 通道 = `file:` 分发模式（解包成冻结副本，更新需重装）。构建并切换一条命令：
-> `bash scripts/build-desktop-bundle.sh --install-desktop=link`（或 `=tar`；
-> macOS / Windows Git Bash / Linux 三平台通用）。
-> 脚本每次全量重建两种产物并跑 verify-installable 门禁（含 `lib/client.js` Edge tab
-> bundle——它不在 `pnpm run compile` 的产物里，缺了它 Edge tab 静默不出现）。
+**一键安装**（构建 + 切模式）：
 
-**Windows 特有（2026-10-24 实测）**：
+```bash
+npm run build:windows -- --install-desktop=link   # 开发模式（link:）
+npm run build:windows -- --install-desktop=tar    # 分发模式（file:）
+npm run build:macos   -- --install-desktop=link
+npm run build:linux   -- --install-desktop=link
+```
 
-- `--emit-dir` **不需要退桌面 App**（2026-10-24 起）：App 以 `link:` 挂着
-  installable 目录时 rename 会被活句柄锁住（EPERM，重试救不了），脚本自动
-  降级为**就地同步**——staging 逐条覆盖、目录不挪窝，`link:` 目标持续
-  有效。想要干净的一次性原子换目录（POSIX 语义），退出 App 再跑即可。
-- 填入的路径示例：
-  `C:\Users\<你>\GolandProjects\gitlab\dsh-edge-agent\dist\installable\dsh-edge-agent-desktop-safe`
-- **已经装过（link: 模式）的更新不需要重新安装**——直接改文件即可：
-  ```bash
-  npm run compile
-  cp -r lib/. "dist/installable/dsh-edge-agent-desktop-safe/lib/"
-  # 重启桌面 App 生效（§7.103：link: 目标持续有效，改文件无需 rename）
-  ```
+**两种模式**：
 
-**macOS 特有**：
+| | link（开发） | tar（分发） |
+|---|---|---|
+| profile 里记成 | `link:<abs>` | `file:<abs>` |
+| node_modules 里 | 符号链接指向 `dist/installable/` | 解包后的冻结副本 |
+| 改代码后 | 同步文件 + 重启 App | 必须重装 |
 
-- tar 实现自动识别（2026-10-24 起）：系统自带 bsdtar 自动去掉 `--no-xattrs`
-  （bsdtar 默认不写 xattr，`COPYFILE_DISABLE=1` 防 AppleDouble），**无需再装 gnu-tar**
-- 退 App：`osascript -e 'tell application "DeepSeek Harness" to quit'`
-- 填入的路径示例：
-  `/Users/<你>/code/dsh-edge-agent/dist/installable/dsh-edge-agent-desktop-safe`
-- 用 **tarball 更新**时注意 pnpm 不重解包的坑（内容变了仍报 "Already up to
-  date"，须 mv 走旧目录再 `dsh plugin --profile desktop install`），完整
-  步骤见 [docs/load-into-local-dsh.md §8.6](docs/load-into-local-dsh.md)。
+**link 模式的迭代循环**（免重装）：
+
+```bash
+npm run compile
+cp -r lib/. "dist/installable/dsh-edge-agent-desktop-safe/lib/"
+# 重启桌面 App 生效
+```
+
+> ⚠️ **`dist/installable/*/config/edge.json` 含明文 API key**（桌面 link 模式
+> 靠它找到活配置）。别把 `dist/` 整个目录发给别人——tarball 那份是干净的
+> （已排除 `edge.json`）。
+
+### 方式三：部署独立 HTTP profile（macOS / Linux）
+
+`dsh-edge-agent` profile = **桌面那套 edge 逻辑 + 一层 HTTP overlay**
+（`profiles/dsh-edge-agent/cordis.patch.yml` 只加一条 http-api row）。独立
+进程 = 独立的内存 fold，所以 HTTP profile 的轮次不会污染桌面 Edge tab
+面板（两者只共享 `~/.dsh-edge-agent/audit/` 磁盘审计轨）。
+
+```bash
+# 一条命令：build + 装 bundle + 同步配置 + 重启 + 验活
+npm run build:macos -- --deploy-profile=dsh-edge-agent
+npm run build:macos -- --deploy-profile=dsh-web
+npm run build:macos -- --deploy-profile=dsh-tui
+
+# 等价底层命令
+bash scripts/deploy-profile.sh dsh-edge-agent [--no-build] [--no-restart]
+```
+
+| profile | 用途 | UI |
+|---|---|---|
+| `dsh-edge-agent` | 独立 HTTP profile（`:21017`） | 无（headless） |
+| `dsh-web` | 官方 Web UI（`:3080`）+ IM 机器人 | 浏览器 |
+| `dsh-tui` | 终端 | 终端 |
+
+> 脚本要求 dsh CLI 可达（macOS 走 App 内嵌路径，Linux 走 PATH/npm-global，
+> `DSH_EDGE_BIN` 可覆盖）。它会打包 desktop-safe bundle → 写 profile 骨架与
+> overlay → 强制重新解包（pnpm 不重解包坑）→ 同步配置（**保留运维活密钥**）
+> → 重启 → 验活。
+
+### 方式四：从源码部署到现有 dsh-tui / web profile（macOS / Linux）
+
+`install.sh` 一次只部署一个 profile(target)，先杀掉其他 profile 进程，
+再 restart target 拿新代码：
+
+```bash
+./install.sh                            # 默认：dsh-edge(:21017)
+./install.sh --profile=web              # 切 web(:21017 + webui :3080)
+./install.sh --profile=tui              # 切 dsh-tui(:21017)
+./install.sh --no-restart               # 只同步不杀不启(开发改代码反复迭代时)
+```
+
+> bundle 是 profile-agnostic 的——`--profile=` 接受任何 DSH profile 名。HTTP
+> 端口统一 :21017；切 profile 前 install.sh 必杀其他进程（避免 EADDRINUSE +
+> audit TOCTOU race）。加新 profile 只在 install.sh `OTHER_PROFILES` 列表里
+> 添一行即可。
 
 > 完整细节（npm/Git/本地目录/tarball 四种 spec 的判定规则、§7.101 Edge
 > tab 验收清单、桌面目录结构一览、Windows 实测 §8.2.1）见
@@ -190,36 +206,58 @@ grep -o '"kind":"config.loaded".\{0,240\}' ~/.dsh-edge-agent/audit/audit.plain.j
 
 ### 首次启动流程
 
-首次运行 `install.sh`（默认 `--profile=dsh-edge`，§7.69 单 profile 架构）会执行：
+**桌面版**：`npm run build:<platform>` → App 里按方式二装 → 重启 DSH。插件挂载后
+右栏出现 Edge tab，审计里出现 `input-guard.hook.registered` / `http.started`。
 
-1. 检测 dsh CLI / pnpm 是否已安装
-2. `dsh plugin add @deepseek-harness-edge-agent/dsh-edge-agent` 注册本 bundle 到 target profile 的 `dsh.profile.bundles` 列表
-3. pnpm 装 7 个上游包（dsh-agent-loop / dsh-tool-web / dsh-web / dsh-web-search-deepseek / dsh-skill / dsh-tool-skill / dsh-skill-filesystem）
-4. rsync `lib/` → profile 嵌套包
-5. 同步 `cordis.patch.yml` 到嵌套包（**bundle-level patch**，§7.31 fix）
-6. 数据面单 root `~/.dsh-edge-agent/`（§7.36 起各 profile 共享，§7.68 撤回 §7.61 audit 分流，所有 profile 共写 `audit/audit.plain.jsonl`）
-7. 加载默认策略 `config/privacy-policy.json`（§7.87.13.3 起从仓库根 `config/` 复制到 `~/.dsh-edge-agent/privacy-policy.json`；也可由 `DSH_EDGE_PRIVACY_POLICY_PATH` 覆盖）
-8. **杀掉其他 profile 进程**(dsh-tui + web,§7.69)+ 杀掉 target profile 旧进程 + restart target 拿新代码,HTTP 端口统一 :21017
+**独立 HTTP profile**（`npm run build:macos -- --deploy-profile=dsh-edge-agent`
+或 `bash scripts/deploy-profile.sh dsh-edge-agent`）会执行：
 
-完成后 HTTP API 监听 `:21017`(`/v1/chat`, GET `/v1/health`)。切 UI 用 `./install.sh --profile=web`(webui `:3080`)或 `--profile=tui`(终端)。
+
+1. 检测 dsh CLI / node 是否已安装
+2. 打包 desktop-safe bundle → `dist/*.tar.gz`
+3. 写 profile 骨架 + overlay（`profiles/<name>/` → `~/.dsh/profiles/<name>/`）
+4. `dsh plugin --profile <name> add file:<tarball>`；**先把旧目录挪走**——pnpm
+   不会因为 tarball 内容变了就重新解包（会报 "Already up to date" 但
+   `node_modules/` 里还是旧代码）
+5. 同步 `config/privacy-policy.json` + `config/edge.json` → `~/.dsh-edge-agent/`
+   （**运维的活密钥优先**，部署不会覆盖已轮换的 API key）
+6. 重启 profile → 验活（`/v1/health` 带 bearer）
+
+完成后 HTTP API 监听 `:21017`（`/v1/chat`，GET `/v1/health`）。
+
+**从源码部署到现有 profile**（`install.sh`，§7.69 单 profile 架构）额外会：
+装 7 个上游包（dsh-agent-loop / dsh-tool-web / dsh-web / dsh-web-search-deepseek
+/ dsh-skill / dsh-tool-skill / dsh-skill-filesystem）、rsync `lib/` → 嵌套包、
+同步 `cordis.patch.yml`（**bundle-level patch**，§7.31 fix）、杀掉其他 profile
+进程（避免 EADDRINUSE + audit TOCTOU race）。
+
+数据面单 root `~/.dsh-edge-agent/`（§7.36 起各 profile 共享，§7.68 撤回 §7.61
+audit 分流，所有 profile 共写 `audit/audit.plain.jsonl`）。
 
 ### 验证安装
 
 ```bash
 # 1. bundle 已注册到 target profile？
-grep '@deepseek-harness-edge-agent/dsh-edge-agent' ~/.dsh/profiles/dsh-edge/package.json
+grep '@deepseek-harness-edge-agent/dsh-edge-agent' ~/.dsh/profiles/<profile>/package.json
 
-# 2. 19 个 plugin 全部挂载？
-dsh --profile dsh-edge --dump-config | grep -E 'input-guard|file-logger|intent-router|sanitizer' | wc -l
+# 2. 隐私栈全部挂载？（desktop-safe 是 18 个 row，full 19 个）
+dsh --profile <profile> --dump-config | grep -E 'input-guard|file-logger|intent-router|sanitizer' | wc -l
 # 期望：≥4
 
 # 3. 单 profile 运行(§7.69)?只一个 dsh 进程 + :21017 在听
 pgrep -af 'dsh --profile' | grep -v pgrep
 ss -tlnp | grep -E '21017'
 
-# 4. http-api 健康检查
-curl -s --max-time 3 http://127.0.0.1:21017/v1/health
+# 4. http-api 健康检查（带 bearer）
+TOKEN=$(node -p "require('fs').readFileSync(process.env.HOME+'/.dsh-edge-agent/edge.json','utf8').secrets.edgeApiKey")
+curl -s --max-time 3 -H "Authorization: Bearer $TOKEN" http://127.0.0.1:21017/v1/health
 ```
+
+> **桌面版**的验证：右栏出现 **Edge** tab → 发一条本地 query → Intent panel
+> 出现一行；审计里确认配置来源：
+> ```bash
+> grep -o '"kind":"config.loaded".\{0,240\}' ~/.dsh-edge-agent/audit/audit.plain.jsonl | tail -1
+> ```
 
 ### 故障排查
 
@@ -232,6 +270,10 @@ curl -s --max-time 3 http://127.0.0.1:21017/v1/health
 | 19 个 plugin 只挂载 dsh-base 的 30 个（bundle 没生效） | `dsh plugin --profile dsh-tui add @deepseek-harness-edge-agent/dsh-edge-agent` 重装；或者 `install.sh §2.6 + §2.7` 没跑，手动 cp `cordis.patch.yml` 到嵌套包根 |
 | `adapter boundary violated` | 把 `@deepseek-ai/*` 的 import 移到 `src/dsh-adapter/` 内（或经 `src/dsh-adapter/types.ts` 重新导出） |
 | `upstream contract violated` | 上游 DSH 包低于最低兼容版本（当前 `0.2.1-rc.2`），或各 `@deepseek-ai/dsh-*` 包版本不一致；运行 `pnpm install` 或 `pnpm update @deepseek-ai/dsh-agent @deepseek-ai/dsh-llm ...` |
+| Windows：`a local path must be absolute` | 填的是 Git Bash 的 `/c/Users/...`（MSYS2 虚拟路径），桌面 App 只认原生 `C:\Users\...`。用构建脚本输出的路径 |
+| Windows：`Cannot connect to C: resolve failed` | tar 把 `C:` 当成远程主机名（GNU tar 的 `host:path` 语法）。当前脚本已规避（tar 只收相对路径）；若仍遇到，检查是否有旧版 `build-desktop-bundle.sh` |
+| Windows：`/c/Program: No such file or directory` | 旧版 `build-desktop-bundle.sh` 把 node+pnpm 拼成字符串再未加引号展开，路径含空格被切开。用 `npm run build:windows` |
+| Windows：`rename still locked (EPERM)` → `in-place` | **不是错误**——桌面 App 开着并持有 `dist/installable/` 句柄，脚本降级为逐条覆盖，`link:` 目标持续有效，重启 App 即生效。想要干净原子换目录就退出 App 再跑 |
 
 ### 卸载
 
@@ -274,20 +316,25 @@ cp config/edge.example.json config/edge.json
 $EDITOR config/edge.json   # 填入 secrets.* 的真实 key、llm.local.baseUrl 等
 
 # 3. 部署（会把 config/edge.json 同步到 ~/.dsh-edge-agent/edge.json）
-./install.sh --skip-pnpm
+#    桌面版：npm run build:macos -- --install-desktop=link
+#    CLI profile：npm run build:macos -- --deploy-profile=dsh-edge-agent
+#    或从源码部署到既有 profile：./install.sh --skip-pnpm
 
-# 4. 启动（§7.43 默认 = dsh-tui）
-cd ~/.dsh/profiles/dsh-tui
-setsid nohup dsh --profile dsh-tui > run.log 2>&1 < /dev/null &
+# 4. 启动（桌面版由 App 管理；CLI profile 手动起）
+cd ~/.dsh/profiles/dsh-edge-agent
+setsid nohup dsh --profile dsh-edge-agent > run.log 2>&1 < /dev/null &
 disown
 
 # 或前台（debug 用）
-dsh --profile dsh-tui
+dsh --profile dsh-edge-agent
 ```
 
 > **桌面 GUI 用户**：`config/edge.json` 随 bundle 一起装进
 > `~/.dsh/profiles/<profile>/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/config/`，
 > GUI Add Plugin 后立即生效 —— **不需要 source 任何 env**。
+>
+> ⚠️ `dist/installable/*/config/edge.json`（桌面 link 模式用的那份）**含明文
+> API key**——别把 `dist/` 整个目录发给别人。tarball 那份是干净的。
 
 ### 方式二：改用系统环境变量（CI / 临时调试）
 
@@ -596,17 +643,26 @@ vLLM / Ollama / DashScope 实例 —— 在 `config/edge.json` 的 `llm.local` �
 > 为**双 profile 双进程、同一套 edge 逻辑**（设计详见
 > [docs/architecture.md §7.107 章](docs/architecture.md)）。
 
-| profile | 进程 | 入口 | 状态 |
-|---|---|---|---|
-| `desktop` | DSH 桌面 App（Electron 管理） | GUI + 右栏 **Edge** tab | desktop-safe bundle；App 的 plugin manager 管，CLI 不要碰 |
-| `dsh-edge-agent` | `dsh --profile dsh-edge-agent`（后台） | HTTP API `:21017` | 同一 desktop-safe bundle + profile overlay 挂 http-api |
-| `web`（切换时） | dsh-web | 官方 Web UI `:3080` + IM 机器人 | 浏览器 / IM 用户入口 |
+| profile | 进程 | 入口 | 状态 | 平台 |
+|---|---|---|---|---|
+| `desktop` | DSH 桌面 App（Electron 管理） | GUI + 右栏 **Edge** tab | desktop-safe bundle；App 的 plugin manager 管，CLI 不要碰 | Windows / macOS / Linux |
+| `dsh-edge-agent` | `dsh --profile dsh-edge-agent`（后台） | HTTP API `:21017` | 同一 desktop-safe bundle + profile overlay 挂 http-api | macOS / Linux |
+| `web`（切换时） | dsh-web | 官方 Web UI `:3080` + IM 机器人 | 浏览器 / IM 用户入口 | macOS / Linux |
+| `dsh-tui`（切换时） | dsh-tui | 终端 | 终端用户入口 | macOS / Linux |
 
 两边共用 `~/.dsh-edge-agent/edge.json`（唯一配置源）与 `~/.dsh-edge-agent/audit/`（审计落盘）。
+
+> **Windows 只有桌面版**：桌面 App 独占 `desktop` profile，CLI 碰不了；所以
+> Windows 上没有独立的 dsh-cli / dsh-web / dsh-edge-agent profile 部署路径。
 
 ### 部署 dsh-edge-agent HTTP profile（§7.107 一次命令）
 
 ```bash
+# 顶层（推荐：构建 + 部署一步到位）
+npm run build:macos -- --deploy-profile=dsh-edge-agent
+npm run build:linux -- --deploy-profile=dsh-edge-agent
+
+# 底层等价命令
 bash scripts/deploy-profile.sh dsh-edge-agent          # build + 装 bundle + 同步配置 + 启动 + 验证
 bash scripts/deploy-profile.sh dsh-edge-agent --no-build
 bash scripts/deploy-profile.sh dsh-edge-agent --no-restart
@@ -661,11 +717,22 @@ REST 完整示例（chat / SSE / 会话管理 / OpenAPI）与鉴权/CORS 约定�
 ## 🧪 测试
 
 ```bash
-pnpm test                 # 单元测试（2026-10-24：52 文件 1042 passed / 0 failed）
+pnpm test                 # 单元测试（2026-10-26：52 文件 1067 passed / 2 skipped / 0 failed）
 pnpm run verify:build     # 11 项构建门禁
 pnpm run lint             # eslint（0 error 基线）
 bash scripts/e2e-ops-log-coverage.sh   # E2E ops log 4 用例（2026-10-24：4/4 全绿）
 ```
+
+## 📦 构建打包
+
+```bash
+npm run build:windows     # Windows（仅桌面版）
+npm run build:macos       # macOS（桌面版 + CLI profile）
+npm run build:linux       # Linux（桌面版 + CLI profile）
+```
+
+三个脚本共用 `scripts/_pack-core.mjs`（纯 Node），产物字节一致；平台差异
+只在 runtime 探测与 tar 口味。详见上文「方式一 / 方式二 / 方式三」。
 
 完整测试报告（手动 smoke / http-api 示例 / intent 规则表 / 自动化 / §7.107
 E2E 实测记录）见 **[docs/TEST-REPORT.md](docs/TEST-REPORT.md)**。

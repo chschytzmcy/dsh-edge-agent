@@ -18,7 +18,7 @@
     "_comment": "§7.100：LOCAL 池必配；CLOUD 池可选 —— 不配时 cloud-llm 路由 DELEGATE 到宿主 profile 已配置的模型提供商（桌面 GUI 选的模型 / dsh-base 默认 deepseek-official），凭据全归宿主 adapter，edge 侧不碰任何 secret。",
     "local": {
       "baseUrl": "",
-      "model": "qwen3-4b",
+      "model": "",
       "keyRef": "",
       "stripTools": false,
       "enableThinking": false
@@ -39,14 +39,14 @@
       "provider": "local-llm",
       "model": "",
       "enabled": true,
-      "timeoutMs": 20000,
+      "timeoutMs": 60000,
       "maxInput": 2000
     },
     "intent": {
       "provider": "local-llm",
       "model": "",
       "defaultCategory": "LOCAL",
-      "timeoutMs": 30000,
+      "timeoutMs": 60000,
       "confidenceThreshold": 0.6,
       "maxInput": 2000,
       "recentLimit": 3,

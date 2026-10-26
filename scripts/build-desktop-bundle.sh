@@ -63,8 +63,29 @@ for arg in "$@"; do
 done
 
 # ── 0. 定位 node / pnpm（桌面版环境里常常都不在 PATH；三平台候选链）────
+#
+# 2026-10-26 fix: PNPM 之前是一个**字符串**（"$NODE_BIN $cand"），调用处
+# 用未加引号的 `$PNPM run compile` 展开 —— bash 按空格切词，于是 Windows
+# 上 "/c/Program Files/nodejs/node" 被切成 "/c/Program" + "Files/…"，脚本
+# 去执行 "/c/Program" → "No such file or directory"。macOS/Linux 路径通常
+# 无空格，所以一直没暴露。
+#
+# 现在 PNPM_CMD 是一个 bash **数组**：调用处 "${PNPM_CMD[@]}" 传参，argv
+# 按元素传递，不依赖单词分割。
+#
+# 数组 + `set -u` 的坑：bash 3.2（macOS 的 /bin/bash 至今还是 3.2）在
+# 展开空数组时报 "unbound variable"。所以数组的判空一律用 ${#arr[@]}（3.2
+# 安全），实际调用统一走 pnpm_run()。
+PNPM_CMD=()
+
+# Git Bash 把 LOCALAPPDATA 导成 Windows 风格（"C:\Users\cheng\AppData\Local"），
+# 直接拼 "/Programs/…" 会得到混合分隔符路径 —— 有些工具处理不好。统一
+# 转成正斜杠。
+if [ -n "${LOCALAPPDATA:-}" ]; then
+  LOCALAPPDATA="${LOCALAPPDATA//\\//}"
+fi
+
 NODE_BIN="${NODE_BIN:-}"
-PNPM="${PNPM:-}"
 if [ -z "$NODE_BIN" ]; then
   NODE_BIN="$(command -v node 2>/dev/null || true)"
 fi
@@ -73,28 +94,50 @@ if [ -z "$NODE_BIN" ]; then
     "$HOME/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/node/bin/node" \
     "$HOME/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/node/bin/node.exe" \
     "${LOCALAPPDATA:-}/Programs/DeepSeek Harness/resources/runtime/bin/node.exe" \
+    "${LOCALAPPDATA:-}/Programs/DeepSeek Harness/resources/runtime/primary-runtime/dependencies/node/bin/node.exe" \
     "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/bin/node"; do
     [ -n "$cand" ] && [ -x "$cand" ] && NODE_BIN="$cand" && break
   done
 fi
 [ -n "$NODE_BIN" ] || { echo "error: 找不到 node。设置 NODE_BIN=/path/to/node" >&2; exit 1; }
 
-if [ -z "$PNPM" ]; then
-  if command -v pnpm >/dev/null 2>&1; then
-    PNPM="pnpm"
+if [ -n "${PNPM:-}" ]; then
+  # 用户显式覆盖：PNPM 必须是**可执行文件的路径**（可以含空格，因为环境
+  # 变量值本身是一个整体）。旧的 "node script.mjs" 双词形式不再支持 ——
+  # 它正是切词 bug 的来源。
+  if [ -x "$PNPM" ]; then
+    PNPM_CMD=("$PNPM")
   else
-    for cand in \
-      "$HOME/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/pnpm/bin/pnpm.mjs" \
-      "${LOCALAPPDATA:-}/Programs/DeepSeek Harness/resources/runtime/dependencies/pnpm/bin/pnpm.mjs" \
-      "${LOCALAPPDATA:-}/Programs/DeepSeek Harness/resources/runtime/primary-runtime/dependencies/pnpm/bin/pnpm.mjs" \
-      "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/primary-runtime/dependencies/pnpm/bin/pnpm.mjs"; do
-      [ -n "$cand" ] && [ -f "$cand" ] && PNPM="$NODE_BIN $cand" && break
-    done
+    echo "error: PNPM 覆盖值不是可执行文件：$PNPM" >&2
+    exit 1
   fi
+elif command -v pnpm >/dev/null 2>&1; then
+  PNPM_CMD=("$(command -v pnpm)")
+else
+  for cand in \
+    "$HOME/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/pnpm/bin/pnpm.mjs" \
+    "${LOCALAPPDATA:-}/Programs/DeepSeek Harness/resources/runtime/dependencies/pnpm/bin/pnpm.mjs" \
+    "${LOCALAPPDATA:-}/Programs/DeepSeek Harness/resources/runtime/primary-runtime/dependencies/pnpm/bin/pnpm.mjs" \
+    "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/primary-runtime/dependencies/pnpm/bin/pnpm.mjs"; do
+    if [ -n "$cand" ] && [ -f "$cand" ]; then
+      PNPM_CMD=("$NODE_BIN" "$cand")
+      break
+    fi
+  done
 fi
 
+# 用数组调用 pnpm。${#PNPM_CMD[@]} 在 bash 3.2 下对空数组也安全（返回 0），
+# 而 "${PNPM_CMD[@]}" 在空数组 + set -u 下会炸 —— 所以判空和调用都在这里。
+pnpm_run() {
+  if [ "${#PNPM_CMD[@]}" -eq 0 ]; then
+    echo "error: 没有可用的 pnpm。设置 PNPM=/path/to/pnpm" >&2
+    return 1
+  fi
+  "${PNPM_CMD[@]}" "$@"
+}
+
 echo "==> node:  $NODE_BIN ($("$NODE_BIN" -v))"
-echo "==> pnpm:  ${PNPM:-<none>}"
+echo "==> pnpm:  ${PNPM_CMD[*]:-<none>}"
 
 # ── 0.5 三平台工具探测：tar 口味 / sha256 / 桌面 App 是否在运行 ─────────
 # macOS 自带 bsdtar 不认 GNU 的 --no-xattrs（libarchive 默认就不写 xattr，
@@ -129,12 +172,15 @@ app_running() {
 
 # ── 1. 确保编译产物成套（lib/ = tsc 输出 + esbuild client bundle 两件都齐）──
 if [ "$DO_BUILD" = 1 ] || [ ! -f "$REPO/lib/index.js" ] || [ ! -f "$REPO/lib/client.js" ]; then
-  if [ -z "$PNPM" ]; then
+  if [ "${#PNPM_CMD[@]}" -eq 0 ]; then
     echo "error: 需要编译但没有可用的 pnpm。设置 PNPM 或先手工 compile 后用 --no-build" >&2
     exit 1
   fi
   echo "==> compile (pnpm run compile + build:client)"
-  ( cd "$REPO" && PATH="$(dirname "$NODE_BIN"):$PATH" $PNPM run compile )
+  # dirname 出来的路径可能含空格（"C:\Program Files\nodejs"）—— 整串作为一个
+  # PATH 元素，冒号分隔，Windows 上分号是分隔符但 Git Bash 的 PATH 沿用
+  # 冒号语义，这里保持与既有脚本一致。
+  ( cd "$REPO" && export PATH="$(dirname "$NODE_BIN"):$PATH" && pnpm_run run compile )
   "$NODE_BIN" "$REPO/scripts/build-client.mjs"
 else
   echo "==> 复用现有 lib/（--no-build 且 index.js + client.js 都在）"
