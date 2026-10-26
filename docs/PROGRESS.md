@@ -11163,3 +11163,40 @@ dsh-edge-agent，各 package.json + cordis.patch.yml）；lint 0 error（60 warn
 local-llm-adapter 1）——`git stash` 后在干净 HEAD 上跑同样这 4 个文件、同样
 7 例红，确认与本次改动无关。连带影响 `make release`（= test + verify + package）
 目前跑不通。
+
+## §7.117 —— 单测 7 例红的真根因：环境变量层泄漏（CI 绿 / 开发机红）（2026-10-26）
+
+**问题**：§7.116 记的"7 例红"一直挂着。CI 全绿、开发机全红——断言跟着机器走。
+同一份代码、同一份 commit，两个环境两种结果。
+
+**根因**：vitest 只挡住了**配置文件**层（§7.102 的 `DSH_EDGE_CONFIG_FILE=off`
+让 edge-config.ts 跳过 config/edge.json），**环境变量**层是敞开的：开发机的
+交互 shell 导出了整套 `DSH_EDGE_*`（legacy `.env.sh` 翻译层的残留，共 66 个
+变量），vitest 直接继承 → 断言被环境改写：
+
+| 测试断言 | 被哪个环境变量推翻 | 表现 |
+|---|---|---|
+| local-llm：无 baseUrl 不注册路由 | `DSH_EDGE_LOCAL_LLM_BASEURL` | 路由被注册（`[['local-llm']]` vs `[]`） |
+| http-api：fallback 恒为 `deepseek-chat` | `DSH_EDGE_MODEL` | fallback 变成 `qwen3.8-flash` |
+| cloud-llm-delegate：空 baseUrl 走 delegate | `DSH_EDGE_CLOUD_LLM_BASEURL` | 注册成 direct adapter，不是 delegate |
+| function-call-external：默认 `enabled=false` | `DSH_EDGE_FUNCTION_CALL_EXTERNAL_ENABLED` | 变成 enabled=true，boot 行与 ops log 断言全偏 |
+
+CI 环境干净 → CI 永远绿；开发机永远红。这就是"最坏的一种漂移"：只有写代码
+的人看得见。
+
+**修复**：新增 `tests/unit/setup-env.ts`（每个测试文件前跑一次，清掉环境里的
+全部 `DSH_EDGE_*`，只保留 `DSH_EDGE_CONFIG_FILE=off`），vitest.config.ts 用
+`setupFiles` 挂上。套件从此只看到"没配置、没 export"的干净状态 = 插件 Schema
+默认值。测试自己设 env 的（http-api / cloud-available / privacy-policy /
+local-llm 那几处）不受影响——setup 在测试体之前跑，测试体里的赋值在其后。
+
+**验证**：`npm test` **1069 passed / 52 files 全绿**（此前 1062 passed + 7 失败）；
+`npm run lint` 0 error（60 warning 基线）；`make release`（= test + verify:build +
+package）**首次全绿**，release tarball 644K。
+
+**同一个根因的另一个面**：开发机 shell 里那 66 个 `DSH_EDGE_*` 也会被
+`dsh --profile X` 子进程继承 → 部署出来的 dsh-edge-agent profile 跑在
+`DSH_EDGE_HTTP_PORT=21018`（而不是 §7.69 定的 21017），模型/端点也走环境里的
+值而非 config/edge.json（该文件当前不在仓库里，gitignore）。环境变量层本身是
+合法入口（env override 优先于文件），这里只把**单测**与它隔开；运行时该由运维
+决定用哪一层（建议：写 config/edge.json，shell 只留 PATH/凭据类变量）。

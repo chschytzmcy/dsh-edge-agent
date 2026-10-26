@@ -11,6 +11,11 @@
  * DSH_EDGE_CONFIG_FILE=off makes edge-config.ts skip every file candidate,
  * so the suite sees only the env override layer and the plugin Schema
  * defaults — the same state a fresh install with no config would produce.
+ *
+ * The ENV layer needed the same treatment (tests/unit/setup-env.ts): a
+ * developer's shell exports the whole DSH_EDGE_* set, and vitest inherits
+ * it — assertions then depended on the machine (CI was green, the dev box
+ * red). The setup file clears the ambient names before each test file.
  */
 import { defineConfig } from 'vitest/config'
 
@@ -19,5 +24,6 @@ export default defineConfig({
     env: {
       DSH_EDGE_CONFIG_FILE: 'off',
     },
+    setupFiles: ['tests/unit/setup-env.ts'],
   },
 })
