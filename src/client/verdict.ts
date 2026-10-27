@@ -11,16 +11,14 @@
  * actually ran under is now taken from whichever tier decided it — classifier,
  * policy rule, or the guard's own routing.
  *
- * §7.129: 「数据未离开设备」是一句**断言**，必须能被出口端点证实。
- * provider 名叫 `local-llm` **不代表**落点在本机 —— config/edge.json 的
- * `llm.local.baseUrl` 可以指向公网（§7.118 的 P0）。审计里的 baseUrl 是
- * 脱敏的（`http://67.0.***.***:11434/v1`），客户端算不出它是不是本机，
- * 所以**服务端**把判定结果算成布尔值 `baseUrlIsLocal` 随出口行下发。
+ * §7.129 / §7.130: 判定「是否出网」的依据是 **category（哪个池）**，不是端点
+ * 落在哪台机。主人裁决（2026-10-27）：「只要定位到 category=LOCAL，就不算到
+ * 公网，不用关心具体的模型来源」—— `llm.local` 池是 operator 自有设施
+ * （当前部署指向 67.0.0.5，那是主人自己的机器/内网，不是公网），所以
+ * provider 名叫 `local-llm`、端点不在本机，**都不构成出网**。
  *
- * 三态：
- *   - 出口行证实落在本机 → 「数据未离开设备」（隐私承诺成立）
- *   - 出口行证实不在本机 → 「落点不在本机（原文已出设备）」（**不撒谎**）
- *   - 出口行还没落（这一轮刚开始）→ 「落点待确认」（**不下断言**）
+ * 因此：§7.129 曾把 verdict 改成「按出口端点判定」（已证实本机 / 不在本机 /
+ * 待确认三态），该结论由 §7.130 撤回。端点位置不参与出网判断。
  *
  * 单独成模块：verdictLine 是纯函数（只吃 rows，不碰 React），单测可以直接
  * 断言它 —— 不必把整个 webview 入口拖进测试。
@@ -28,31 +26,7 @@
 import { tr } from './i18n'
 import type { EdgeRow } from './types'
 
-export type VerdictTone = 'local' | 'cloud' | 'wait' | 'warn'
-
-/** 出口行 —— 请求真正发出去时落的那几行。 */
-const EGRESS_KINDS = new Set([
-  'llm.local.start', 'llm.cloud.start',
-  'llm.local.end', 'llm.cloud.end',
-])
-
-/**
- * 这一轮的答案**实际发去了本机还是别处**。
- *
- * 取**最新那条带 `baseUrlIsLocal` 的出口行** —— `.end` 行不带这个字段
- * （只有 `.start` 行知道请求发去了哪），所以按字段过滤而不是按类型。
- *
- * `undefined` = 还不知道（出口行没落，或这一轮还没开始出网）。
- * 三个值都要区分：「在本机」「不在本机」「不知道」—— 不知道时**不下断言**。
- */
-export function egressOnDevice(rows: EdgeRow[]): boolean | undefined {
-  const newest = <T extends EdgeRow>(list: T[]): T | undefined => list.at(-1)
-  const row = newest(rows.filter(r =>
-    EGRESS_KINDS.has(r.kind) && typeof r.payload.baseUrlIsLocal === 'boolean'
-  ))
-  const value = row?.payload.baseUrlIsLocal
-  return typeof value === 'boolean' ? value : undefined
-}
+export type VerdictTone = 'local' | 'cloud' | 'wait'
 
 export function verdictLine(rows: EdgeRow[]): { text: string; tone: VerdictTone } {
   const newest = <T extends EdgeRow>(list: T[]): T | undefined => list.at(-1)
@@ -65,11 +39,6 @@ export function verdictLine(rows: EdgeRow[]): { text: string; tone: VerdictTone 
   if (category === undefined && host === undefined) return { text: tr('verdict.waiting'), tone: 'wait' }
   const local = category === 'LOCAL'
     || host !== undefined && String(host.payload.provider ?? '').startsWith('local-llm')
-  if (local) {
-    const onDevice = egressOnDevice(rows)
-    if (onDevice === true) return { text: tr('verdict.local'), tone: 'local' }
-    if (onDevice === false) return { text: tr('verdict.localOffDevice'), tone: 'warn' }
-    return { text: tr('verdict.localPending'), tone: 'wait' }
-  }
+  if (local) return { text: tr('verdict.local'), tone: 'local' }
   return { text: tr('verdict.cloud') + (scrubbed ? tr('verdict.sanitized') : ''), tone: 'cloud' }
 }

@@ -12122,6 +12122,14 @@ category=REJECT confidence=0.85 rationale=ambiguous targetRealm=CLOUD routeSourc
 
 ## §7.129 面板不得断言与审计数据相矛盾的事（2026-10-27）
 
+> ⚠️ **本节「端点判定」部分的结论已由 §7.130 撤回**（见本文件末尾）。
+> 主人裁决：判定「是否出网」的依据是 **category（哪个池）**，不是端点落在
+> 哪台机 —— `llm.local` 池是 operator 自有设施，端点不在本机也**不算出网**。
+> 本节**保留**的部分：device-command 裁决者标签（分类器没跑却宣称「LLM 裁决」，
+> 这仍然是谎）、`verdict.ts` 模块拆分。**撤回**的部分：顶部 verdict 三态、
+> PII 节点端点感知、答案出口端点文案、服务端 `baseUrlIsLocal` 字段、
+> `isLoopbackEndpoint` 搬家。
+
 ### 触发：主人发「开灯」，面板同一屏里两处自相矛盾
 
 实测那一轮（`session-115987fa`，`audit.plain.jsonl`）：
@@ -12305,3 +12313,100 @@ sanitizeLocalTraffic`）的**前提**是「LOCAL = 不上云 = 无需脱敏」�
 **81.59%** / 分支 79.53% / 函数 77.04%（`src/client/verdict.ts` 行 100%）；
 双侧类型检查 exit 0；eslint 0 error / 58 warning（未引入新警告）；
 `verify:build` 12 项门禁 exit 0。
+
+## §7.130 出网判据是 category，不是端点（撤回 §7.129 的端点判定）（2026-10-27）
+
+### 裁决
+
+主人看 §7.129 的新文案后问「为什么是 但落点不在本机」。§7.129 的推理链是：
+
+```
+config/edge.json → llm.local.baseUrl = http://67.0.0.5:11434/v1
+67.0.0.5 不是 loopback  ⇒  判定「原文出网」
+⇒ 顶部结论改三态、PII 节点改「未脱敏（落点不在本机）」、答案出口改「全部离开了本机」
+```
+
+**主人的裁决**：
+
+> `http://67.0.0.5:11434/v1` **不是公网** —— 那是 operator 自己的机器/内网。
+> 判定「是否出网」的依据是 **category（哪个池）**，**不是**端点落在哪台机。
+> 只要定位到 `category=LOCAL`，就**不算出公网**，**不用关心具体的模型来源**。
+
+由此推出的三条，本轮据此执行：
+
+1. `llm.local` 池是 **operator 自有设施** ⇒ 该池的一切端点都不算出网。
+2. 端点位置**不参与**任何出网判断 —— 不是「端点在本机才算不出网」，而是**根本不看端点**。
+3. provider 名叫 `local-llm`、端点不在本机、端点是不是 loopback，**都不构成出网**。
+   §7.129 那套 `isLoopbackEndpoint` 推导整体作废。
+
+面板诚实性原则本身**不变**（仍然不许断言审计数据不支持的事），但适用范围**收窄**：
+只对「事实层面」的不一致动手（分类器没跑却宣称「LLM 裁决」），**不把「端点不在
+本机」解读成「出网」**。
+
+### 撤回清单
+
+| 文件 | 动作 |
+|---|---|
+| `src/client/verdict.ts` | 移除 `egressOnDevice()`；`verdictLine` 回到 category 驱动（LOCAL → `verdict.local` / tone=local；CLOUD → `verdict.cloud`）；`VerdictTone` 去掉 `'warn'` |
+| `src/client/flowPanel.tsx` | `sanitizeNode` 的 LOCAL 分支回到「无需（本地作答）」+「答案不出设备，无需脱敏」；`answerNode` 的 sub 行回到「问题、上下文、答案全部留在本机」；删掉 `import { egressOnDevice }` |
+| `src/client/i18n.ts` | 删 6 个废弃键（zh + en 各一份）：`verdict.localOffDevice`、`verdict.localPending`、`flow.sanitize.localOffDevice`、`flow.s.localOffDeviceWhy`、`flow.s.localPendingWhy`、`flow.a.localOffDevice` |
+| `src/client/theme.ts` | 删 `.dsh-edge-verdict--warn`（已无 verdict 用 warn；flow node 的 `--warn` 是原有的，保留） |
+| `src/dsh-adapter/local-llm-adapter.ts` | 出口行删 `baseUrlIsLocal`；删 `isLoopbackEndpoint` import |
+| `src/dsh-adapter/cloud-llm-adapter.ts` | 同上 |
+| `src/dsh-adapter/edge-config.ts` | 删搬过去的 `isLoopbackEndpoint` |
+| `src/dsh-adapter/intent-router.ts` | 恢复原本地定义；撤掉 `import { isLoopbackEndpoint }` 与 `export { isLoopbackEndpoint }` |
+
+### 保留清单
+
+- **§7.129 的 device-command 裁决者标签**（§7.130 保留）：标题「设备指令正则裁决」/
+  裁决者「设备指令正则（分类器未调用）」—— 分类器确实一次没跑（durationMs=1），
+  宣称「LLM 裁决」是事实层面的谎，与出网判据无关。
+- **`src/client/verdict.ts` 模块拆分**（§7.130 保留）：`verdictLine` 是纯函数
+  （只吃 rows，不碰 React），单测可以直接断言它，不必把 webview 入口拖进测试。
+  与端点判定无关。
+- **§7.127 的「作答中…」/「作答失败」**、**§7.128 的全部 REJECT 修复**：未被裁决
+  触及，事实正确，原样保留。
+
+### 一处遗留：「真实落点 · 不在本机」那一行
+
+意图判定节点里的「真实落点 http://67.0.***.***:11434/v1 · 不在本机」是 §7.122
+加的**端点披露**，主人当时自己要的，从未反对过 —— 本轮**原样保留**。
+
+它和顶部「数据未离开设备」说的**不是同一件事**：
+
+- 顶部结论回答「**出没出公网**」→ 依据 category=LOCAL（operator 自有设施）⇒ 没出
+- 「不在本机」回答「**地址是不是 127.0.0.1**」→ 备查信息，告诉 operator 分类器
+  实际打到了哪个地址
+
+但字面上确实容易打架（一个说「未离开设备」、一个说「不在本机」）。若主人觉得吵，
+去掉那一行即可 —— 本轮按「最小改动、尊重既有裁决」保留原样。
+
+### §7.129 遗留的「要不要改行为」待办 —— 随之作废
+
+§7.129 末尾提了个待主人裁决的问题：「LOCAL 轮次仍然不脱敏，要不要改成 local 池
+落点不在本机时也脱敏？」
+
+按 §7.130 的裁决，**这个问题不存在了**：`llm.local` 池不出公网，脱敏公式
+（`shouldSanitize = category === 'CLOUD' || 'SANITIZED' || sanitizeLocalTraffic`）
+的**前提「LOCAL = 不上云 = 无需脱敏」成立**。行为不动，仍是零风险。
+
+### 验证
+
+`tests/unit/flow-panel-verdict-honesty.test.ts` 重写（15 例 → **17 例**）：
+- 保留 device-command 裁决者 4 例（§7.130 保留项）
+- 顶部结论 6 例：`category=LOCAL` + 端点不在本机 → 仍是「数据未离开设备」（tone=local）；
+  结论文案**不得**出现「落点不在本机」/「待确认」；出口行**残留** `baseUrlIsLocal=false`
+  （旧字段/旧产物）也不得改变结论；policy 层定的 LOCAL 同样不出网；CLOUD 仍是云端结论；
+  什么都没发生仍是「等待意图判定」
+- PII 节点 3 例：LOCAL + 端点不在本机 → 「无需（本地作答）」/「答案不出设备，无需脱敏」；
+  端点推导的告警文案不得再出现；CLOUD 走「未发现 PII」（不误伤）
+- 答案出口 3 例：本地池 + 端点不在本机 → 「问题、上下文、答案全部留在本机」；
+  「全部离开了本机」不得再出现；云池仍是「出网文本已先行检查/脱敏」（不误伤）
+- §7.122 落点披露 1 例：「真实落点 … · 不在本机」仍然透出（备查信息，不是出网判断）
+
+`tests/unit/local-llm-adapter.test.ts`：§7.129 的 2 例（`baseUrlIsLocal` 真/假）
+反转为 2 例 —— **出口行不再带该字段**（钉死「字段已撤回」，避免被当成仍在生效的契约）。
+
+单测 **61 文件 / 1252 passed + 2 skipped**；覆盖率行 **81.54%** / 分支 79.45% /
+函数 76.97%（`src/client/verdict.ts` 行 100% / 分支 85.71%）；双侧类型检查 exit 0；
+eslint 0 error / 58 warning（未引入新警告）；`verify:build` 12 项门禁 exit 0。

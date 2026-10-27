@@ -719,12 +719,11 @@ describe('local-llm-adapter (M4, real-only)', () => {
     })
   })
 
-  // §7.129: 出口行必须带 `baseUrlIsLocal` —— provider 名叫 local-llm
-  // 不代表落点在本机（config/edge.json 的 llm.local.baseUrl 可以指向
-  // 公网）。审计里的 baseUrl 是脱敏的（67.0.***.***），客户端算不出它
-  // 是不是本机，所以服务端把判定结果算成布尔值一起下发；面板的
-  // 「数据未离开设备」只在这个布尔值为 true 时才敢说。
-  describe('§7.129 — 出口行带 baseUrlIsLocal', () => {
+  // §7.130: §7.129 曾让出口行带一个 `baseUrlIsLocal` 布尔值（服务端算好
+  // 落点是否本机，随出口行下发）。该字段已撤回 —— 判定「是否出网」的依据
+  // 是 category（哪个池），不是端点落在哪台机，端点位置不参与出网判断。
+  // 这里钉死「该字段不再存在」，避免它被当成仍在生效的契约。
+  describe('§7.130 — 出口行不再带 baseUrlIsLocal', () => {
     async function startRowFor(baseUrl: string): Promise<any> {
       installFetchMock(() => sseResponse([
         { choices: [{ delta: { content: 'pong' }, finish_reason: null }] },
@@ -745,16 +744,16 @@ describe('local-llm-adapter (M4, real-only)', () => {
       return entries.find(e => e.kind === 'llm.local.start')
     }
 
-    it('loopback 端点 → baseUrlIsLocal=true', async () => {
+    it('loopback 端点 → 出口行不带 baseUrlIsLocal', async () => {
       const row = await startRowFor('http://127.0.0.1:8080/v1')
       assert.ok(row, 'llm.local.start 必须落盘')
-      assert.equal(row.payload.baseUrlIsLocal, true)
+      assert.equal('baseUrlIsLocal' in row.payload, false)
     })
 
-    it('公网端点 → baseUrlIsLocal=false（provider 名字骗人，落点不骗人）', async () => {
+    it('非 loopback 端点 → 出口行同样不带 baseUrlIsLocal', async () => {
       const row = await startRowFor('http://67.0.1.1:11434/v1')
       assert.ok(row, 'llm.local.start 必须落盘')
-      assert.equal(row.payload.baseUrlIsLocal, false)
+      assert.equal('baseUrlIsLocal' in row.payload, false)
     })
   })
 })

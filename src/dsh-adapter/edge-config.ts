@@ -955,31 +955,6 @@ export function cloudPool(cfg: EdgeConfig = loadEdgeConfig()): {
   }
 }
 
-/**
- * §7.129 (2026-10-27): 端点是否落在本机。
- *
- * provider 名（`local-llm`）**不代表**落点 —— config/edge.json 的
- * `llm.local.baseUrl` 可以是任何地址，包括公网。operator 要判断
- * 「这轮原文有没有出网」，看的是落点，不是名字。
- *
- * 口径：127.0.0.1 / localhost / ::1 算本机，其余（含解析失败、缺失）
- * 一律**不算**本机 —— 宁可误报出网，不可误报本地。
- *
- * 为什么住在这里：落点是**配置**事实（哪个池指向哪里），而 edge-config
- * 正是本仓「运行时设置唯一读点」，且 local-llm-adapter /
- * cloud-llm-adapter / intent-router 三方都已依赖它 —— 放这里不会有
- * 循环依赖，也不会出现两份口径不同的副本。
- */
-export function isLoopbackEndpoint(endpoint: string | undefined): boolean {
-  if (endpoint === undefined || endpoint.trim().length === 0) return false
-  let host: string
-  try {
-    host = new URL(endpoint).hostname
-  } catch {
-    return false
-  }
-  return host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '[::1]'
-}
 
 /** §7.112 (2026-10-25): the jev intent-recognizer pool. `apiKey` resolves
  *  `apiKeyRef` → `secrets.*` — the Bailian MaaS systemone endpoint requires

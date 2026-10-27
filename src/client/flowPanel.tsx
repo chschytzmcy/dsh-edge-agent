@@ -31,7 +31,6 @@ import { createElement as h } from 'react'
 import type { ReactElement } from 'react'
 import type { EdgeRow, EdgeSummary } from './types'
 import { tr } from './i18n'
-import { egressOnDevice } from './verdict'
 
 type Tone = 'wait' | 'run' | 'ok' | 'warn' | 'stop' | 'info'
 
@@ -367,27 +366,11 @@ function sanitizeNode(rows: EdgeRow[], category: string | undefined): FlowNode {
     return { label: tr('flow.sanitize'), tone: 'ok', detail: tr('flow.s.done'), sub }
   }
   if (category === 'LOCAL') {
-    // §7.129: 「无需脱敏」的理由是「答案不出设备」—— 而这句话只有在**本地
-    // 池真的落在本机**时才成立。provider 名叫 local-llm 不代表落点在本机
-    // （config/edge.json 的 llm.local.baseUrl 可以指向公网，§7.118 的 P0）。
-    // 落点不在本机时还显示「答案不出设备」就是在撒谎 —— 而且这一轮的用户
-    // 原文是**未脱敏**发出去的。
-    const onDevice = egressOnDevice(rows)
-    if (onDevice === false) {
-      return {
-        label: tr('flow.sanitize'), tone: 'warn',
-        detail: tr('flow.sanitize.localOffDevice'),
-        sub: [tr('flow.s.localOffDeviceWhy')],
-      }
-    }
-    if (onDevice === undefined) {
-      // 出口行还没落 —— 不知道就不下断言。
-      return {
-        label: tr('flow.sanitize'), tone: 'wait',
-        detail: tr('flow.sanitize.localSkip'),
-        sub: [tr('flow.s.localPendingWhy')],
-      }
-    }
+    // §7.129 / §7.130: 「无需脱敏」的理由是「答案不出设备」—— 依据是
+    // **category（哪个池）**，不是端点落在哪台机。主人裁决：category=LOCAL
+    // 即不算出公网，`llm.local` 池是 operator 自有设施（当前部署指向
+    // 67.0.0.5，那是主人自己的机器/内网）。§7.129 曾按出口端点把这个节点
+    // 改成「未脱敏（落点不在本机）」，该推导已由 §7.130 撤回。
     return { label: tr('flow.sanitize'), tone: 'ok', detail: tr('flow.sanitize.localSkip'), sub: [tr('flow.s.localWhy')] }
   }
   if (category !== undefined) {
@@ -589,12 +572,10 @@ function answerNode(rows: EdgeRow[], summary: EdgeSummary): FlowNode {
   const answerSteps = rows.filter(r => r.kind === 'llm.local.end' && typeof r.payload.promptLen === 'number' && (r.payload.promptLen as number) > 1000)
   const sub: string[] = [
     `${tr('flow.lbl.route')} ${provider}/${model}${carried ? ` · ${tr('flow.answer.carried')}` : ''}`,
-    // §7.129: 「问题、上下文、答案全部留在本机」只有在**本地池真的落在本机**
-    // 时才成立。provider 名叫 local-llm 不代表落点在本机（§7.118 的 P0）——
-    // 这一句曾经在答案已经发去公网之后还说「留在本机」。
-    local
-      ? (egressOnDevice(rows) === false ? tr('flow.a.localOffDevice') : tr('flow.a.localKeep'))
-      : tr('flow.a.cloudSend'),
+    // §7.129 / §7.130: 「全部留在本机」的依据是 **category（哪个池）**。
+    // §7.129 曾按出口端点改成「全部离开了本机」，该推导已由 §7.130 撤回 ——
+    // 主人裁决：category=LOCAL 即不算出公网，llm.local 池是 operator 自有设施。
+    local ? tr('flow.a.localKeep') : tr('flow.a.cloudSend'),
   ]
   if (local && answerSteps.length > 0) {
     const total = answerSteps.reduce((n, r) => n + (typeof r.payload.durationMs === 'number' ? r.payload.durationMs : 0), 0)

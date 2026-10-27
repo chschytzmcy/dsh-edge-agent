@@ -39,7 +39,6 @@ const CSS = `
 .dsh-edge-verdict { font-size: 12px; font-weight: 600; padding: 5px 8px; border-radius: 6px; border-left: 2px solid currentColor; background: color-mix(in srgb, currentColor 5%, transparent); }
 .dsh-edge-verdict--local { color: #16a34a; }
 .dsh-edge-verdict--cloud { color: inherit; }
-.dsh-edge-verdict--warn { color: #d97706; }
 .dsh-edge-verdict--wait { opacity: 0.55; font-weight: 400; }
 .dsh-edge-summary { display: flex; flex-wrap: wrap; gap: 10px; padding: 6px 8px; border-radius: 6px; background: color-mix(in srgb, currentColor 6%, transparent); }
 .dsh-edge-summary b { font-weight: 600; }
