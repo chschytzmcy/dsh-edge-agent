@@ -154,3 +154,65 @@ describe('§7.129 — 顶部结论：「数据未离开设备」必须能被出�
     assert.equal(v.tone, 'wait')
   })
 })
+
+describe('§7.129 — PII 节点：落点不在本机时不得说「答案不出设备」', () => {
+  // 「无需脱敏」的理由是「答案不出设备」—— 而这句话只有在本地池**真的**落在
+  // 本机时才成立。实测：83 个 LOCAL 轮次，脱敏事件 0 次（19 次脱敏全部是
+  // CLOUD / SANITIZED 轮次），而 LOCAL 的落点是公网 67.0.0.5 —— 也就是说
+  // LOCAL 轮次里的 PII 是**未脱敏**发出去的。
+  it('落点不在本机 → 「未脱敏（落点不在本机）」并明确告警', () => {
+    const rows = [
+      row('intent.classify.end', { path: 'device-command', category: 'LOCAL', confidence: 0.95 }, 'intent'),
+      row('llm.local.start', { provider: 'local-llm', baseUrlIsLocal: false }, 'route'),
+    ]
+    const out = render(rows)
+    assert.ok(out.includes('未脱敏（落点不在本机）'), `expected the warning: ${out}`)
+    assert.ok(out.includes('本轮原文未脱敏发出'), `expected the disclosure: ${out}`)
+    assert.ok(!out.includes('答案不出设备'), `must not claim the answer stayed on-device: ${out}`)
+  })
+
+  it('落点在本机 → 保留「答案不出设备，无需脱敏」', () => {
+    const rows = [
+      row('intent.classify.end', { path: 'llm', category: 'LOCAL', confidence: 0.9 }, 'intent'),
+      row('llm.local.start', { provider: 'local-llm', baseUrlIsLocal: true }, 'route'),
+    ]
+    const out = render(rows)
+    assert.ok(out.includes('答案不出设备'), `expected the original wording: ${out}`)
+  })
+
+  it('落点未知 → 「落点待确认 —— 未做脱敏」，不得断言「答案不出设备」', () => {
+    const rows = [
+      row('intent.classify.end', { path: 'llm', category: 'LOCAL', confidence: 0.9 }, 'intent'),
+    ]
+    const out = render(rows)
+    assert.ok(out.includes('落点待确认'), `expected the pending state: ${out}`)
+    assert.ok(!out.includes('答案不出设备'), `must not make an unproven claim: ${out}`)
+  })
+})
+
+describe('§7.129 — 答案出口：落点不在本机时不得说「全部留在本机」', () => {
+  it('落点不在本机 → 「全部离开了本机」', () => {
+    const rows = [
+      row('llm.local.start', { provider: 'local-llm', model: 'qwen3.8:27b', baseUrlIsLocal: false }, 'route'),
+      row('llm.local.end', {
+        provider: 'local-llm', model: 'qwen3.8:27b', route: 'qwen3.8:27b',
+        durationMs: 96384, promptLen: 31587, resultLen: 118,
+      }, 'route'),
+    ]
+    const out = render(rows)
+    assert.ok(out.includes('全部离开了本机'), `expected the disclosure: ${out}`)
+    assert.ok(!out.includes('全部留在本机'), `must not claim it stayed: ${out}`)
+  })
+
+  it('落点在本机 → 保留「全部留在本机」', () => {
+    const rows = [
+      row('llm.local.start', { provider: 'local-llm', model: 'qwen3-4b', baseUrlIsLocal: true }, 'route'),
+      row('llm.local.end', {
+        provider: 'local-llm', model: 'qwen3-4b', route: 'qwen3-4b',
+        durationMs: 2063, promptLen: 101298, resultLen: 412,
+      }, 'route'),
+    ]
+    const out = render(rows)
+    assert.ok(out.includes('全部留在本机'), `expected the original wording: ${out}`)
+  })
+})

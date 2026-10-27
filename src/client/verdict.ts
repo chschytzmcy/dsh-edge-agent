@@ -36,6 +36,24 @@ const EGRESS_KINDS = new Set([
   'llm.local.end', 'llm.cloud.end',
 ])
 
+/**
+ * 这一轮的答案**实际发去了本机还是别处**。
+ *
+ * 取**最新那条带 `baseUrlIsLocal` 的出口行** —— `.end` 行不带这个字段
+ * （只有 `.start` 行知道请求发去了哪），所以按字段过滤而不是按类型。
+ *
+ * `undefined` = 还不知道（出口行没落，或这一轮还没开始出网）。
+ * 三个值都要区分：「在本机」「不在本机」「不知道」—— 不知道时**不下断言**。
+ */
+export function egressOnDevice(rows: EdgeRow[]): boolean | undefined {
+  const newest = <T extends EdgeRow>(list: T[]): T | undefined => list.at(-1)
+  const row = newest(rows.filter(r =>
+    EGRESS_KINDS.has(r.kind) && typeof r.payload.baseUrlIsLocal === 'boolean'
+  ))
+  const value = row?.payload.baseUrlIsLocal
+  return typeof value === 'boolean' ? value : undefined
+}
+
 export function verdictLine(rows: EdgeRow[]): { text: string; tone: VerdictTone } {
   const newest = <T extends EdgeRow>(list: T[]): T | undefined => list.at(-1)
   const classify = newest(rows.filter(r => r.kind === 'intent.classify.end'))
@@ -48,11 +66,7 @@ export function verdictLine(rows: EdgeRow[]): { text: string; tone: VerdictTone 
   const local = category === 'LOCAL'
     || host !== undefined && String(host.payload.provider ?? '').startsWith('local-llm')
   if (local) {
-    // 取**最新那条带 baseUrlIsLocal 的出口行** —— `.end` 行不带这个字段
-    // （只有 `.start` 行知道请求发去了哪），所以按字段过滤而不是按类型。
-    const onDevice = newest(rows.filter(r =>
-      EGRESS_KINDS.has(r.kind) && typeof r.payload.baseUrlIsLocal === 'boolean'
-    ))?.payload.baseUrlIsLocal
+    const onDevice = egressOnDevice(rows)
     if (onDevice === true) return { text: tr('verdict.local'), tone: 'local' }
     if (onDevice === false) return { text: tr('verdict.localOffDevice'), tone: 'warn' }
     return { text: tr('verdict.localPending'), tone: 'wait' }
