@@ -12117,3 +12117,120 @@ category=REJECT confidence=0.85 rationale=ambiguous targetRealm=CLOUD routeSourc
 分支 79.27% / 函数 76.91%（`input-guard.ts` 行 82.16% / 分支 80.95%）；
 双侧类型检查 exit 0；eslint 0 error / 58 warning（未引入新警告）；
 `verify:build` 12 项门禁 exit 0。
+
+---
+
+## §7.129 面板不得断言与审计数据相矛盾的事（2026-10-27）
+
+### 触发：主人发「开灯」，面板同一屏里两处自相矛盾
+
+实测那一轮（`session-115987fa`，`audit.plain.jsonl`）：
+
+```
+08:48:21.625  guard.device-command.detected  device=灯 action=开 pure=true
+08:48:21.625  guard.model-detect.skip        reason=pure-device-command
+08:48:21.626  intent.classify.start          classifier=local-llm model=qwen3.8:27b
+08:48:21.626  intent.classify.end            path=device-command category=LOCAL conf=0.95 durationMs=1
+08:48:21.680  llm.local.start                baseUrl=http://67.0.***.***:11434/v1 promptLen=31587
+08:49:58.062  llm.local.end                  durationMs=96384 resultLen=118
+```
+
+面板上：
+
+```
+意图判定
+LOCAL 95% · LLM 裁决        ← 谎：分类器一次都没被调用
+裁决者 device-command        ← 真：Tier-0 正则裁决
+真实落点 http://67.0.***.***:11434/v1 · 不在本机   ← 真
+…
+答案出口
+作答中…                     ← §7.127 的修复，这一处是对的
+本轮：本地模型作答 —— 数据未离开设备   ← 谎：31587 字符发去了公网
+```
+
+**两处不诚实，同一个原则：面板断言了审计数据不支持的事。**
+
+### 一、「LLM 裁决」——分类器压根没跑（§7.124 引入的）
+
+§7.124 加了 Tier-0 设备指令正则层，`intent.classify.end` 的 `path` 多了一个
+新值 `device-command`。但面板的 `viaLabel` 链最后是**兜底**：
+
+```ts
+: path === 'cache' ? viaCache
+: path.startsWith('rules-') ? viaRules
+: tr('flow.intent.viaLlm')      // ← device-command 掉进这里
+```
+
+于是「设备指令正则裁决」被显示成「LLM 裁决」。裁决者行同理：`decidedBy` 链
+兜底到 `decidedByFallback(path)` → 直接吐机器码 `device-command`（诚实但不像
+人话）。
+
+实测那一轮 **durationMs=1**、审计里没有任何 jev / 分类器调用 —— 分类器一次都
+没被调用过，说它「裁决了」是假话。
+
+修：两条链各加一个分支（`flow.intent.viaDeviceCommand` /
+`flow.intent.byDeviceCommand`），文案「设备指令正则裁决」/「设备指令正则
+（分类器未调用）」。机器码路径行照旧透出（`路径 device-command`）—— 对账靠
+机器码，给人看的那行给人话。
+
+### 二、「数据未离开设备」——原文确实出了设备（§7.118 的 P0）
+
+`verdictLine` 只看 `category === 'LOCAL'` 就断言「数据未离开设备」。但
+**provider 名叫 `local-llm` 不代表落点在本机** —— `config/edge.json` 的
+`llm.local.baseUrl` 指向 `https://api.minimaxi.com/v1`（§7.118 报过的 P0，
+主人 21:08 裁决「维持现状不动」）。本轮 31587 字符就发去了
+`http://67.0.***.***:11434/v1`。
+
+而同一屏的「真实落点 · **不在本机**」（§7.122 加的）已经在说这件事了 ——
+面板自己在打自己的脸。
+
+修：**判定落点的事实由服务端算成布尔值下发**，面板只在能证实时才下断言。
+
+- `isLoopbackEndpoint` 从 `intent-router.ts` 移到 `edge-config.ts`（落点是
+  **配置**事实；且 local-llm-adapter / cloud-llm-adapter / intent-router 三方
+  都已依赖 edge-config，放这里没有循环依赖，也不会出现两份口径不同的副本）。
+  `intent-router.ts` 保留再导出，历史 import 路径不变。
+- 两个适配器的出口行（`llm.local.start` / `llm.cloud.start`）加
+  `baseUrlIsLocal: boolean`。**为什么在服务端算**：审计里的 baseUrl 是脱敏的
+  （`http://67.0.***.***:11434/v1`），客户端拿到手也算不出它是不是本机。
+- `verdictLine` 改三态：
+  - 出口行证实落在本机 → 「数据未离开设备」（隐私承诺成立）
+  - 出口行证实**不在本机** → 「但落点不在本机（原文已出设备）」（tone=warn）
+  - 出口行还没落（这一轮刚开始）→ 「落点待确认」（**不下断言**）
+
+第三态是刻意的：分类与出口之间有几十毫秒的窗口（实测 54ms），那一瞬间既不
+能说「未离开」也不能说「已出网」——**宁可说待确认，也不先给一句可能错的
+隐私承诺**。
+
+`verdictLine` 拆成独立模块 `src/client/verdict.ts`（纯函数，不碰 React），
+单测可以直接断言它，不必把整个 webview 入口拖进测试。
+
+### 顺带确认：这一轮「开灯」的路由决策本身是对的
+
+- 纯设备指令（pure=true）→ 入口安检的语义检测被跳过（省一次 LLM 往返）
+- Tier-0 正则定案 LOCAL 95% → 不进 jev、不进 LLM 分类器
+- 路由改写 `qwen-token-plan-cn/qwen3.8-flash` → `local-llm/qwen3.8:27b`
+- `realm-skill-bridge.tools.filtered {"agentRealm":"LOCAL","removedCount":2,
+  "removed":["web_fetch","web_search"]}` —— Layer 3 工具闸门生效，云端工具
+  被摘掉
+
+### 验证
+
+新增 12 例（`tests/unit/flow-panel-verdict-honesty.test.ts` 10 例 +
+`tests/unit/local-llm-adapter.test.ts` 2 例）：
+
+- device-command 标题显示「设备指令正则裁决」，**不得**出现「LLM 裁决」
+- 裁决者行显示「设备指令正则（分类器未调用）」，**不得**出现「LLM 分类器」
+- 机器码路径行仍透出 `device-command`
+- LLM 真裁决时不受影响（不误伤）
+- verdict：出口证实本机 → 保留「数据未离开设备」
+- verdict：出口证实**不在本机** → 不得再说「数据未离开设备」，tone=warn
+- verdict：出口行还没落 → 「落点待确认」，不得做未经证实的承诺
+- verdict：provider 叫 local-llm 但落点不在本机 → 同样不得说「未离开」
+- verdict：CLOUD 轮次仍是云端结论；什么都没发生仍是「等待意图判定」
+- 适配器：loopback 端点 → `baseUrlIsLocal=true`；公网端点 → `false`
+
+单测 **61 文件 / 1245 passed + 2 skipped**（新增 12 例）；覆盖率行 **81.54%** /
+分支 79.36% / 函数 76.97%（`src/client/verdict.ts` 行 100%）；双侧类型检查
+exit 0；eslint 0 error / 58 warning（未引入新警告）；`verify:build` 12 项门禁
+exit 0。

@@ -39,7 +39,7 @@ import {
   sseFinishReason,
   terminalChunks,
 } from './openai-sse.js'
-import { cloudPool, loadEdgeConfig } from './edge-config.js'
+import { cloudPool, isLoopbackEndpoint, loadEdgeConfig } from './edge-config.js'
 import {
   buildRequestTrace,
   buildResponseTrace,
@@ -396,7 +396,10 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
       wireSystem,
       sanitizedMessages as unknown as Array<{ role: string; content: unknown; source?: { kind?: string } }>,
     )
-    this.audit('info', 'llm.cloud.start', { provider: options.provider, model: options.model, messageCount, promptLen, baseUrl: this.baseUrl, systemInjected, retryBudgetUsed: peekSessionSseRetryCount(options.sessionId) })
+    // §7.129: `baseUrlIsLocal` —— 云池的落点是否真在本机。baseUrl 为空
+    // = DELEGATE 模式（宿主自己的云模型作答），isLoopbackEndpoint(undefined)
+    // 返回 false —— 正是我们想要的：不是本机。
+    this.audit('info', 'llm.cloud.start', { provider: options.provider, model: options.model, messageCount, promptLen, baseUrl: this.baseUrl, baseUrlIsLocal: isLoopbackEndpoint(this.baseUrl), systemInjected, retryBudgetUsed: peekSessionSseRetryCount(options.sessionId) })
 
     const headers: Record<string, string> = {
       'content-type': 'application/json',

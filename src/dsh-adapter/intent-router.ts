@@ -13,7 +13,13 @@ import type { Context } from '@deepseek-ai/cordis'
 import { Service } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import { jevPool, loadEdgeConfig, localPool } from './edge-config.js'
+import { isLoopbackEndpoint, jevPool, loadEdgeConfig, localPool } from './edge-config.js'
+
+// §7.129: the endpoint check moved to edge-config (the single read point for
+// runtime settings — the landing point is a CONFIG fact, and the adapters need
+// the very same rule). Re-exported here so the historical import path keeps
+// working.
+export { isLoopbackEndpoint }
 
 export const name = 'intent-router'
 
@@ -30,17 +36,10 @@ interface AuditLike {
  * provider 名（`local-llm`）**不代表**落点 —— config/edge.json 的
  * `llm.local.baseUrl` 可以是任何地址，包括公网。operator 要判断
  * 「这轮原文有没有出网」，看的是落点，不是名字。
+ *
+ * §7.129: 实现已移到 edge-config（落点是配置事实，两个适配器要用同一条
+ * 口径）；这里只做再导出，历史 import 路径不变。
  */
-export function isLoopbackEndpoint(endpoint: string | undefined): boolean {
-  if (endpoint === undefined || endpoint.trim().length === 0) return false
-  let host: string
-  try {
-    host = new URL(endpoint).hostname
-  } catch {
-    return false
-  }
-  return host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '[::1]'
-}
 
 export interface Config {
   /** Default realm when classification finds no rule. */

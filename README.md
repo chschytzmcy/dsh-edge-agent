@@ -389,6 +389,12 @@ web search…）才判 CLOUD 脱敏出网——分类器判了 CLOUD 但没公�
 > **REJECT 永不出网**（§7.128）：策略规则或分类器判下的 REJECT 绝不会被改写成
 > CLOUD —— fail-closed（默认）直接拦下，fail-open 也只降级到 LOCAL 留在设备上
 > 继续，且仍会注册 session realm（Layer 3 的 tool-realm gating 不许 fail-open）。
+>
+> **面板不得断言与数据相矛盾的事**（§7.129）：顶部结论「数据未离开设备」只在
+> **出口端点证实落在本机**时才说 —— provider 名叫 `local-llm` 不代表落点在本机
+> （`llm.local.baseUrl` 可以指向公网）。证实不在本机就如实说「落点不在本机」，
+> 还没落盘就说「落点待确认」。同理，Tier-0 设备指令正则裁决的一轮显示
+> 「设备指令正则裁决」，不会谎称「LLM 裁决」（分类器压根没被调用）。
 
 ### 本地 LLM 端点
 

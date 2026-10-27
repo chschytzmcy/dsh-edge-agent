@@ -36,7 +36,7 @@ import {
   sseFinishReason,
   terminalChunks,
 } from './openai-sse.js'
-import { localPool, loadEdgeConfig } from './edge-config.js'
+import { isLoopbackEndpoint, localPool, loadEdgeConfig } from './edge-config.js'
 import {
   buildRequestTrace,
   buildResponseTrace,
@@ -448,7 +448,12 @@ class RealLocalAdapter extends LlmAdapter {
       wireSystem,
       sanitizedMessages as unknown as Array<{ role: string; content: unknown; source?: { kind?: string } }>,
     )
-    audit(this.auditLog, 'info', 'llm.local.start', { provider: options.provider, model: this.defaultModel, route: options.model, messageCount: sanitizedMessages.length, promptLen, baseUrl: this.baseUrl })
+    // §7.129: `baseUrlIsLocal` —— 这个池的落点是否真在本机。provider 名
+    // 叫 `local-llm` 不代表落点在本机（config/edge.json 的
+    // llm.local.baseUrl 可以指向公网）。面板要判断「原文有没有出网」，
+    // 必须看落点；URL 本身在审计里是脱敏的（67.0.***.***），客户端算
+    // 不了，所以**在服务端算成布尔值**下发。
+    audit(this.auditLog, 'info', 'llm.local.start', { provider: options.provider, model: this.defaultModel, route: options.model, messageCount: sanitizedMessages.length, promptLen, baseUrl: this.baseUrl, baseUrlIsLocal: isLoopbackEndpoint(this.baseUrl) })
 
     // §7.106 (2026-10-23): ONE retry on transport-level failure with a short
     // backoff. The LAN ollama blips (observed 11:35:09: `fetch failed` mid

@@ -229,7 +229,9 @@ function intentNode(rows: EdgeRow[]): FlowNode {
             ? tr('flow.intent.byRules')
             : path === 'gate-no-web-need'
               ? tr('flow.intent.byGate')
-              : decidedByFallback(path)
+              : path === 'device-command'
+                ? tr('flow.intent.byDeviceCommand')
+                : decidedByFallback(path)
     // 裁决者身份：LLM 路径带上 provider/model 实体；其它路径不带
     // （jev / 缓存 / 规则档的「模型身份」在各自的证据行里）。
     const classifierModel = str(field(startRow, 'model'))
@@ -304,7 +306,9 @@ function intentNode(rows: EdgeRow[]): FlowNode {
               ? tr('flow.intent.viaCache')
               : path.startsWith('rules-')
                 ? tr('flow.intent.viaRules')
-                : tr('flow.intent.viaLlm')
+                : path === 'device-command'
+                  ? tr('flow.intent.viaDeviceCommand')
+                  : tr('flow.intent.viaLlm')
     return {
       label: tr('flow.intent'), tone: isDefault ? 'warn' : 'ok',
       detail: noWebNeed
