@@ -30,6 +30,7 @@ import { ensureStyles } from './theme'
 import { EDGE_DICTIONARIES, EDGE_LOCALE_NS, setTranslator, tr } from './i18n'
 import { SessionSummaryBar } from './sessionSummary'
 import { FlowPanel } from './flowPanel'
+import { TracePanel } from './tracePanel'
 import type { EdgeRow, EdgeSummary } from './types'
 
 /* ── Identity ──────────────────────────────────────────────────────────── */
@@ -141,6 +142,8 @@ function EdgeView(props: SessionProps) {
     h(SessionSummaryBar, { summary }),
     h('div', { class: `dsh-edge-verdict dsh-edge-verdict--${verdict.tone}` }, verdict.text),
     h(FlowPanel, { rows: allRows, summary }),
+    // §7.133: the LLM call log — one line per call (index), body on demand.
+    h(TracePanel, { rows: allRows }),
     edgeStore.failing(sessionId) ? h('div', { class: 'dsh-edge-stale' }, tr('row.stale')) : null,
   )
 }

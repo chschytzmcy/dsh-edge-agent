@@ -96,6 +96,12 @@ for (const file of sources) {
   // intent-router.ts / both llm-adapters; never inserted by a cordis patch
   // row, not in package.json exports.
   if (base === 'llm-internal-caller') continue
+  // §7.133: the LLM trace BODY store (in-memory ring buffer holding the
+  // full request/response bodies; the Edge panel pulls them on demand via
+  // /api/dsh-edge/trace). Imported by both llm-adapters / intent-router /
+  // edge-context-view; never inserted by a cordis patch row, not in
+  // package.json exports.
+  if (base === 'llm-trace-store') continue
   if (base === 'plugin' || base === 'index') continue
   const content = readFileSync(file, 'utf8')
 

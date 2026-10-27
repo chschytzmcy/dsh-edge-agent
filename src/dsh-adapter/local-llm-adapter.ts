@@ -40,16 +40,18 @@ import { localPool, loadEdgeConfig } from './edge-config.js'
 import {
   buildRequestTrace,
   buildResponseTrace,
-  formatTraceLine,
+  emitTrace,
   resolveLlmTraceConfig,
   type LlmTraceConfig,
+  type TraceSink,
 } from './llm-trace.js'
+import { getTraceStore } from './llm-trace-store.js'
 import {
   bumpSessionToolCallCount,
   MAX_CONSECUTIVE_TOOL_CALLS,
   resetSessionToolCallCount,
 } from './llm-max-turns.js'
-import { egressAuditFields } from './llm-internal-caller.js'
+import { egressAuditFields, internalCallerOf } from './llm-internal-caller.js'
 
 export const name = 'local-llm-adapter'
 
@@ -281,6 +283,7 @@ class RealLocalAdapter extends LlmAdapter {
 
   /**
    * §7.118: 详细 request trace → ops log（info 级别，凭据 + PII 脱敏、按字段截断）。
+   * §7.133: 同时落 Edge 面板的**索引行** + **正文**（正文按需拉取）。
    */
   private traceRequest(
     sessionId: string,
@@ -302,12 +305,13 @@ class RealLocalAdapter extends LlmAdapter {
         params: { stream: true },
         config: cfg,
       })
-      this.logger?.info?.(formatTraceLine('local-llm-adapter LLM_REQUEST', trace))
+      this.emit('REQ', 'local-llm-adapter LLM_REQUEST', trace, options)
     } catch { /* 观测失败不拖垮主链路 */ }
   }
 
   /**
    * §7.118: 详细 response trace → ops log。
+   * §7.133: 同时落 Edge 面板的索引行 + 正文。
    */
   private traceResponse(
     sessionId: string,
@@ -317,6 +321,7 @@ class RealLocalAdapter extends LlmAdapter {
     finishKind: string | undefined,
     durationMs: number,
     error?: string,
+    options?: GenerateOptions,
   ): void {
     try {
       const cfg = this.traceConfig()
@@ -332,8 +337,35 @@ class RealLocalAdapter extends LlmAdapter {
         error,
         config: cfg,
       })
-      this.logger?.info?.(formatTraceLine('local-llm-adapter LLM_RESPONSE', trace))
+      this.emit('RESP', 'local-llm-adapter LLM_RESPONSE', trace, options)
     } catch { /* 观测失败不拖垮主链路 */ }
+  }
+
+  /**
+   * §7.133: trace 的统一出口 —— ops log + Edge 面板索引行 + 正文。
+   *
+   * `options` 里有 §7.132 的 `edgeInternalCaller` 标记时，索引行带上
+   * caller，面板据此把「检测调用」（安检 / 分类器）与「主对话出网」分开
+   * 显示。检测调用与主对话走的是**同一段代码** —— 不存在「检测调用忘了
+   * 记」的第二套实现。
+   */
+  private emit(
+    kind: 'REQ' | 'RESP',
+    tag: string,
+    trace: unknown,
+    options?: GenerateOptions,
+  ): void {
+    const caller = internalCallerOf(options)
+    const sink: TraceSink = {
+      log: (entry) => this.auditLog?.log(entry) ?? Promise.resolve(),
+      logger: this.logger,
+      store: getTraceStore(),
+    }
+    // §7.132 的判据落到索引行：带工具 = 主对话，一件不带 = 内部调用。
+    const tools = options?.tools
+    emitTrace(sink, kind, tag, trace, caller, {
+      toolCount: Array.isArray(tools) ? tools.length : 0,
+    })
   }
 
   get providers(): string[] {
@@ -590,6 +622,7 @@ class RealLocalAdapter extends LlmAdapter {
         finishKind,
         durationMs,
         wireError,
+        options,
       )
     }
 

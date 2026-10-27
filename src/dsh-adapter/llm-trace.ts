@@ -40,6 +40,8 @@
 
 import { redactString } from './pii-utils.js'
 import type { EdgeConfig } from './edge-config.js'
+import { nextTraceId } from './llm-trace-store.js'
+import type { StoredTrace, TraceCaller } from './llm-trace-store.js'
 
 /* ── 配置 ───────────────────────────────────────────────────────────────── */
 
@@ -438,4 +440,172 @@ export function formatTraceLine(tag: string, trace: unknown): string {
   }
   const singleLine = json.replace(/[\u0000-\u001f\u007f\u2028\u2029]/g, ' ')
   return `[${tag}] ${singleLine}`
+}
+
+/* ── §7.133 Edge 面板通路 ───────────────────────────────────────────────── */
+
+/**
+ * §7.133: trace 的**索引行**（进 Edge 面板）+ **正文**（按需拉取）。
+ *
+ * §7.118 的 trace 只走 `ctx.logger.info` → ops log 文件，而 Edge 面板的
+ * 数据源是 audit-log —— 两条通路不相通，面板看不到任何 request/response。
+ *
+ * 这里把一次调用拆成两半：
+ *
+ *   - **索引行**（`llm.trace.index`）：几十字节的标量摘要，进 audit 行，
+ *     于是面板能列出「这一轮调了哪几次 LLM、各自多大、多久」。
+ *   - **正文**：完整的 trace（12 条 message 的正文 / response 的正文与
+ *     tool calls），存在 `LlmTraceStore` 里，点开才取。
+ *
+ * 为什么不把正文直接塞进 audit 行：单轮主对话的 request 正文实测 **22.5 万
+ * 字符**，几十轮后面板常驻内存线性膨胀。索引 + 按需拉取是本仓一贯的
+ * 纪律（§7.107 / §7.129：宁可漏显示，也不能显示一件没发生过的事）。
+ */
+
+/** 索引行的 payload（全部是标量，可安全进面板）。 */
+export interface TraceIndexPayload {
+  /** 与 store 里的正文对应。 */
+  traceId: string
+  /** REQ = 请求，RESP = 响应。 */
+  kind: 'REQ' | 'RESP'
+  provider: string
+  model: string
+  /** §7.132：内部调用标记；undefined = 主对话出网。 */
+  caller?: string
+  /** 请求：实际发出的 message 条数 / 正文总长 / 因 maxMessages 丢掉几条。 */
+  messageCount?: number
+  droppedMessages?: number
+  promptLength?: number
+  /** 响应：助手正文长度 / tool call 数 / 用时 / finish reason。 */
+  contentLength?: number
+  toolCallCount?: number
+  durationMs?: number
+  finishReason?: string
+  /** 出错时的原因。 */
+  error?: string
+  /**
+   * 本次请求带的工具数。
+   *
+   * §7.132 的判据：主对话恒带 30+ 件工具，一切内部调用（安检 / 分类器 /
+   * 宿主会话标题生成）**一件都不带**。索引行带上这个数，面板就能把
+   * 「没有 caller 标记、也没带工具」的调用认成**宿主的内部调用**而不是
+   * 冒充主对话出网。
+   */
+  toolCount?: number
+  /** 本条 trace 的正文总字节（面板可据此提示「点开看 N KB」）。 */
+  bodyBytes?: number
+  /** 底座 URL —— 判断这一轮发去了哪。 */
+  baseUrl?: string
+}
+
+/**
+ * 构造索引行 payload。
+ *
+ * 从 trace 对象里**提取标量**——不复制正文。正文另存 store。
+ */
+export function buildTraceIndex(
+  traceId: string,
+  kind: 'REQ' | 'RESP',
+  trace: unknown,
+  caller?: string,
+  extra?: { toolCount?: number },
+): TraceIndexPayload {
+  const t = (trace ?? {}) as {
+    provider?: unknown
+    model?: unknown
+    baseUrl?: unknown
+    messageCount?: unknown
+    droppedMessages?: unknown
+    promptLength?: unknown
+    content?: { length?: unknown }
+    toolCalls?: unknown[]
+    tools?: unknown[]
+    durationMs?: unknown
+    finishReason?: unknown
+    error?: unknown
+  }
+  const out: TraceIndexPayload = {
+    traceId,
+    kind,
+    provider: typeof t.provider === 'string' ? t.provider : '?',
+    model: typeof t.model === 'string' ? t.model : '?',
+  }
+  if (caller !== undefined) out.caller = caller
+  if (typeof t.baseUrl === 'string') out.baseUrl = t.baseUrl
+  if (typeof t.messageCount === 'number') out.messageCount = t.messageCount
+  if (typeof t.droppedMessages === 'number') out.droppedMessages = t.droppedMessages
+  if (typeof t.promptLength === 'number') out.promptLength = t.promptLength
+  if (typeof t.content?.length === 'number') out.contentLength = t.content.length
+  if (Array.isArray(t.toolCalls)) out.toolCallCount = t.toolCalls.length
+  if (typeof t.durationMs === 'number') out.durationMs = t.durationMs
+  if (typeof t.finishReason === 'string') out.finishReason = t.finishReason
+  if (typeof t.error === 'string') out.error = t.error
+  // 工具数：response trace 里没有请求的工具表，由调用方通过 extra 补上；
+  // request trace 自己带 tools[]。
+  if (extra?.toolCount !== undefined) out.toolCount = extra.toolCount
+  else if (Array.isArray(t.tools)) out.toolCount = t.tools.length
+  let bytes = 0
+  try { bytes = JSON.stringify(trace)?.length ?? 0 } catch { bytes = 0 }
+  out.bodyBytes = bytes
+  return out
+}
+
+/** emitTrace 需要的最小依赖面。 */
+export interface TraceSink {
+  /** audit-log 的 log() —— 索引行走这里。 */
+  log(entry: {
+    level: 'debug' | 'info' | 'warn' | 'error' | 'security'
+    kind: string
+    source: string
+    payload: Record<string, unknown>
+  }): Promise<unknown>
+  /** 正文存储 —— 正文走这里（可缺省：那就只有 ops log 的老通路）。 */
+  store?: { put(id: string, entry: StoredTrace): void }
+  /** ops log 的 logger —— 保持 §7.118 的老通路不变。 */
+  logger?: { info?: (msg: string) => void }
+  /** 生成 trace id（测试可注入固定值）。 */
+  nextTraceId?: () => string
+}
+
+/**
+ * §7.133: 一次 LLM 调用的**统一出口**。
+ *
+ * 三条通路同时写：
+ *   1. ops log（§7.118 的老行为，`LLM_REQUEST` / `LLM_RESPONSE` 单行）
+ *   2. audit 索引行（`llm.trace.index`）→ Edge 面板列出这次调用
+ *   3. 正文 store（`LlmTraceStore`）→ 面板点开时取
+ *
+ * 检测调用（安检 / 分类器）经 `caller` 标出来 —— §7.132 的
+ * `edgeInternalCaller` 是同一个标记体系。**标记的来源是 options**：
+ * adapter 调 `emitTrace` 时把 `options` 传进来，由 `internalCallerOf()`
+ * 读出标记。所以检测调用的 trace 与主对话的 trace 走的是**同一段代码**，
+ * 不存在「检测调用忘了记」的第二套实现。
+ */
+export function emitTrace(
+  sink: TraceSink,
+  kind: 'REQ' | 'RESP',
+  tag: string,
+  trace: unknown,
+  caller?: TraceCaller,
+  extra?: { toolCount?: number },
+): string | undefined {
+  try {
+    // 老通路：ops log（§7.118）—— 保持不变，运维 tail ops log 的习惯不破。
+    sink.logger?.info?.(formatTraceLine(tag, trace))
+
+    const traceId = sink.nextTraceId?.() ?? nextTraceId()
+    // 正文进 store
+    sink.store?.put(traceId, { kind, ...(caller !== undefined ? { caller } : {}), trace })
+    // 索引行进 audit —— 面板 fold 认这个 kind
+    void sink.log({
+      level: 'info',
+      kind: 'llm.trace.index',
+      source: 'llm-trace',
+      payload: buildTraceIndex(traceId, kind, trace, caller, extra) as unknown as Record<string, unknown>,
+    }).catch(() => {})
+    return traceId
+  } catch {
+    // 观测失败不拖垮主链路 —— 与本模块既有纪律一致。
+    return undefined
+  }
 }

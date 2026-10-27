@@ -41,3 +41,6 @@ export interface EdgeSnapshot {
 /** Browser-relative spelling — root-absolute would drop a reverse proxy's
  *  path prefix at the gateway (dsh-context apiRoutes note). */
 export const CONTEXT_ROUTE = 'api/dsh-edge/context'
+
+/** §7.133: 取 LLM trace 正文的路由（点开一次调用时才拉）。 */
+export const TRACE_ROUTE = 'api/dsh-edge/trace'

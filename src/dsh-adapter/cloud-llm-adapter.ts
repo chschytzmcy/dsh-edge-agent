@@ -43,7 +43,8 @@ import { cloudPool, loadEdgeConfig } from './edge-config.js'
 import {
   buildRequestTrace,
   buildResponseTrace,
-  formatTraceLine,
+  emitTrace,
+  type TraceSink,
   resolveLlmTraceConfig,
   type LlmTraceConfig,
 } from './llm-trace.js'
@@ -60,7 +61,8 @@ import {
   type EgressMessage,
 } from './cloud-egress.js'
 import { PII_ORDER, PII_PATTERNS } from './pii-utils.js'
-import { egressAuditFields } from './llm-internal-caller.js'
+import { egressAuditFields, internalCallerOf } from './llm-internal-caller.js'
+import { getTraceStore } from './llm-trace-store.js'
 
 export const name = 'cloud-llm-adapter'
 
@@ -396,7 +398,7 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
         },
         config: cfg,
       })
-      this.logger?.info?.(formatTraceLine('cloud-llm-adapter LLM_REQUEST', trace))
+      this.emit('REQ', 'cloud-llm-adapter LLM_REQUEST', trace, options)
     } catch { /* 观测失败不拖垮主链路 */ }
   }
 
@@ -413,6 +415,7 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
     durationMs: number,
     attempt: number,
     error?: string,
+    options?: GenerateOptions,
   ): void {
     try {
       const cfg = this.traceConfig()
@@ -429,8 +432,32 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
         error,
         config: cfg,
       })
-      this.logger?.info?.(formatTraceLine('cloud-llm-adapter LLM_RESPONSE', trace))
+      this.emit('RESP', 'cloud-llm-adapter LLM_RESPONSE', trace, options)
     } catch { /* 观测失败不拖垮主链路 */ }
+  }
+
+  /**
+   * §7.133: trace 的统一出口 —— ops log + Edge 面板索引行 + 正文。
+   *
+   * 检测调用（安检 / 分类器）经 §7.132 的 `edgeInternalCaller` 标记带上
+   * caller —— 与主对话走的是同一段代码。
+   */
+  private emit(
+    kind: 'REQ' | 'RESP',
+    tag: string,
+    trace: unknown,
+    options?: GenerateOptions,
+  ): void {
+    const sink: TraceSink = {
+      log: (entry) => this.auditLog?.log(entry) ?? Promise.resolve(),
+      logger: this.logger,
+      store: getTraceStore(),
+    }
+    // §7.132 的判据落到索引行：带工具 = 主对话，一件不带 = 内部调用。
+    const tools = options?.tools
+    emitTrace(sink, kind, tag, trace, internalCallerOf(options), {
+      toolCount: Array.isArray(tools) ? tools.length : 0,
+    })
   }
 
   /** Mirror {@link CloudLlmAdapter.providers}; the upstream registry reads it. */
@@ -715,7 +742,7 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
         } catch { /* debug only */ }
         // §7.118: 失败也要有 response trace —— 否则 ops log 里只剩一个
         // fetchError= 字样，看不出到底发了什么出去、为什么失败。
-        this.traceResponse(sessionId, options.provider, options.model ?? this.defaultModel, '', [], undefined, durationMs, attemptIndex, errMsg)
+        this.traceResponse(sessionId, options.provider, options.model ?? this.defaultModel, '', [], undefined, durationMs, attemptIndex, errMsg, options)
         this.audit('info', 'llm.cloud.end', { sessionId: options.sessionId,
           provider: options.provider,
           model: options.model,
@@ -787,6 +814,7 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
           durationMs,
           attemptIndex,
           `HTTP ${response.status}: ${respBody.slice(0, 300)}`,
+          options,
         )
         this.audit('info', 'llm.cloud.end', { sessionId: options.sessionId,
           provider: options.provider,
@@ -934,6 +962,7 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
           durationMs,
           attemptIndex,
           wireError,
+          options,
         )
       }
     }

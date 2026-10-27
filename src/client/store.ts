@@ -12,7 +12,7 @@
  */
 
 import type { EdgePanel, EdgeRow, EdgeSnapshot, EdgeSummary } from './types'
-import { CONTEXT_ROUTE } from './types'
+import { CONTEXT_ROUTE, TRACE_ROUTE } from './types'
 
 const POLL_MS = 2_000
 /** Per-panel row cap on the client (the host caps at its bufferSize; the
@@ -89,6 +89,51 @@ function stopPollingIfIdle(): void {
   if (attached > 0 || pollTimer === undefined) return
   clearInterval(pollTimer)
   pollTimer = undefined
+}
+
+/**
+ * §7.133: 拉一条 LLM trace 的**正文**。
+ *
+ * 索引行（每次调用一行摘要）随 audit 行一起进面板；正文（完整 request /
+ * response）留在宿主的内存 ring 里，点开才取 —— 单轮主对话的 request 正文
+ * 实测 22.5 万字符，进面板常驻内存会随轮次线性膨胀。
+ *
+ * 取不到就说取不到（404 = 已被 ring 淘汰），绝不返回空对象冒充「正文是空的」。
+ */
+export interface TraceFetchResult {
+  ok: boolean
+  /** 格式化后的正文（JSON）。 */
+  text?: string
+  /** 失败原因（机器码，如 `trace-not-found`）。 */
+  error?: string
+}
+
+export async function fetchTraceBody(traceId: string): Promise<TraceFetchResult> {
+  try {
+    const response = await fetch(TRACE_ROUTE, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ traceId }),
+    })
+    if (!response.ok) {
+      let error = `HTTP ${response.status}`
+      try {
+        const parsed = await response.json() as { error?: unknown }
+        if (typeof parsed?.error === 'string' && parsed.error.length > 0) error = parsed.error
+      } catch { /* keep the status form */ }
+      return { ok: false, error }
+    }
+    const payload = await response.json() as unknown
+    let text: string
+    try {
+      text = JSON.stringify(payload, null, 2) ?? String(payload)
+    } catch {
+      text = String(payload)
+    }
+    return { ok: true, text }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
 }
 
 export const edgeStore = {

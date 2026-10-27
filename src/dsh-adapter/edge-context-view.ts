@@ -35,6 +35,8 @@ import type { Context } from '@deepseek-ai/cordis'
 import { Service } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
 import { redactObject } from './pii-utils.js'
+import { provideTraceStore } from './llm-trace-store.js'
+import type { LlmTraceStoreService } from './llm-trace-store.js'
 import type { AuditEntry } from './audit-log.js'
 
 export const name = 'edge-context-view'
@@ -118,6 +120,11 @@ export interface EdgeContextViewService {
   snapshot(sessionId: string, cursor?: number): EdgeContextSnapshot
   /** Test/inspection helper. */
   trackedSessionIds(): string[]
+  /**
+   * §7.133: LLM trace 正文存储 —— 索引行在 audit 里，正文在这里。
+   * 面板点开一次调用时按 traceId 取。
+   */
+  readonly traceStore: LlmTraceStoreService
 }
 
 /** Kinds that should never reach a panel — boot-time plumbing, hook
@@ -145,7 +152,11 @@ const PANEL_BY_KIND: Array<{ match: (kind: string) => boolean; panel: EdgePanel 
       // the desktop GUI answers through the host's own model (never an
       // edge adapter), so without these the Route panel cannot show where
       // the reply actually came from.
-      || k.startsWith('llm.host.'),
+      || k.startsWith('llm.host.')
+      // §7.133: LLM 调用的**索引行** —— 面板列出「这一轮调了哪几次 LLM、
+      // 各自多大、多久」。正文不在行里（单轮 22.5 万字符），点开时按
+      // traceId 去 store 取。
+      || k === 'llm.trace.index',
     panel: 'route',
   },
   {
@@ -257,6 +268,8 @@ export class EdgeContextViewServiceImpl extends Service implements EdgeContextVi
   private readonly cfg: Config
   private readonly buckets = new Map<string, Bucket>()
   private readonly summaries = new Map<string, EdgeSessionSummary>()
+  /** §7.133: LLM trace 正文存储（内存 ring）。 */
+  readonly traceStore: LlmTraceStoreService
   /** Service-global row sequence (the pull cursor). */
   private rowSeq = 0
   private sweepTimer: ReturnType<typeof setInterval> | undefined
@@ -264,6 +277,9 @@ export class EdgeContextViewServiceImpl extends Service implements EdgeContextVi
   constructor(ctx: Context, config: Config) {
     super(ctx, 'edgeContextView')
     this.cfg = config
+    // §7.133: 取**共享**的 trace store（写方是 adapter / 安检 / 分类器，
+    // 它们先注册；这里取同一个实例 —— 模块单例保证读写同库）。
+    this.traceStore = provideTraceStore(ctx)
   }
 
   /** Wire the live fold. Returns a disposer. */
@@ -376,7 +392,15 @@ export class EdgeContextViewServiceImpl extends Service implements EdgeContextVi
 
   snapshot(sessionId: string, cursor = 0): EdgeContextSnapshot {
     const rows: EdgeRow[] = []
-    for (const bucket of [this.buckets.get(sessionId), this.buckets.get(GLOBAL_BUCKET)]) {
+    // §7.133: the global bucket must not be visited twice. Asking for the
+    // `_global` snapshot used to push every global row **twice** (the same
+    // bucket object came back from both lookups) — the panel then rendered
+    // each event twice. It became visible with the trace rows (§7.133): one
+    // LLM call showed as two identical entries.
+    const buckets = sessionId === GLOBAL_BUCKET
+      ? [this.buckets.get(GLOBAL_BUCKET)]
+      : [this.buckets.get(sessionId), this.buckets.get(GLOBAL_BUCKET)]
+    for (const bucket of buckets) {
       if (!bucket) continue
       for (const row of bucket.rows) {
         if (row.seq > cursor) rows.push(row)
@@ -432,6 +456,15 @@ declare module '@deepseek-ai/cordis' {
  *  harness `/api` fence — same discipline as dsh-context apiRoutes). */
 export const EDGE_CONTEXT_ROUTE = '/api/dsh-edge/context'
 
+/**
+ * §7.133: 取 LLM trace 正文的路由。
+ *
+ * 面板点开一次调用 → POST `{ traceId }` → 返回那条 trace 的完整正文。
+ * 索引行在 audit 里（几十字节），正文在这里按需取 —— 面板常驻内存不
+ * 受 22.5 万字符的 request 正文影响。
+ */
+export const EDGE_TRACE_ROUTE = '/api/dsh-edge/trace'
+
 interface ConnectionFetchRegister {
   register?(route: {
     path: string
@@ -481,6 +514,34 @@ export async function apply(ctx: Context, config: Config): Promise<() => void> {
           // Host rows are already PII-scanned at store time; keep the audit
           // trail of who is pulling out of the payload (no new kinds).
           return new Response(JSON.stringify(snapshot), { status: 200, headers: { 'content-type': 'application/json' } })
+        },
+      })
+    } catch { /* a rejecting registry only costs the route, not the plugin */ }
+
+    // §7.133: trace 正文路由 —— 面板点开一次调用时按 traceId 取。
+    try {
+      register.call(c.connection!.fetch!, {
+        path: EDGE_TRACE_ROUTE,
+        methods: ['POST'],
+        requestBody: 'buffered',
+        fetch: async (request: Request) => {
+          let body: { traceId?: unknown }
+          try {
+            body = await request.json() as typeof body
+          } catch {
+            return new Response('{"error":"invalid-json"}', { status: 400, headers: { 'content-type': 'application/json' } })
+          }
+          const traceId = typeof body.traceId === 'string' ? body.traceId : ''
+          if (traceId.length === 0) {
+            return new Response('{"error":"missing-trace-id"}', { status: 400, headers: { 'content-type': 'application/json' } })
+          }
+          const found = service.traceStore.get(traceId)
+          if (found === undefined) {
+            // 正文已被 ring 淘汰 / id 不存在 —— 诚实地说「取不到」，不返回空对象
+            // 冒充「正文是空的」。
+            return new Response('{"error":"trace-not-found"}', { status: 404, headers: { 'content-type': 'application/json' } })
+          }
+          return new Response(JSON.stringify(found), { status: 200, headers: { 'content-type': 'application/json' } })
         },
       })
     } catch { /* a rejecting registry only costs the route, not the plugin */ }

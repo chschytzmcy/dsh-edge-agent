@@ -53,6 +53,23 @@ const CSS = `
 .dsh-edge-row.error, .dsh-edge-row.security { background: color-mix(in srgb, #dc2626 14%, transparent); }
 .dsh-edge-empty, .dsh-edge-stale { opacity: 0.5; font-style: italic; }
 .dsh-edge-stale { color: #dc2626; opacity: 0.8; }
+/* §7.133: the LLM call log — one line per call, body on demand. */
+.dsh-edge-trace { display: flex; flex-direction: column; gap: 4px; }
+.dsh-edge-trace-count { margin-left: auto; opacity: 0.5; font-variant-numeric: tabular-nums; }
+.dsh-edge-trace-list { display: flex; flex-direction: column; gap: 4px; }
+.dsh-edge-trace-item { padding: 4px 6px; border-radius: 4px; background: color-mix(in srgb, currentColor 4%, transparent); }
+.dsh-edge-trace-head { display: flex; gap: 6px; align-items: baseline; width: 100%; text-align: left; background: none; border: none; color: inherit; font: inherit; padding: 0; cursor: pointer; }
+.dsh-edge-trace-badge { flex: none; font-size: 10px; font-weight: 700; letter-spacing: 0.03em; padding: 0 3px; border-radius: 3px; background: color-mix(in srgb, currentColor 15%, transparent); }
+.dsh-edge-trace-badge--req { color: #2563eb; }
+.dsh-edge-trace-badge--resp { color: #16a34a; }
+.dsh-edge-trace-model { flex: 1 1 auto; font-weight: 600; overflow-wrap: anywhere; }
+.dsh-edge-trace-caller { flex: none; font-size: 10px; opacity: 0.65; border: 1px solid color-mix(in srgb, currentColor 25%, transparent); border-radius: 3px; padding: 0 3px; }
+.dsh-edge-trace-caller--main { opacity: 0.9; }
+.dsh-edge-trace-sum { font-size: 11px; opacity: 0.8; padding-left: 2px; overflow-wrap: anywhere; }
+.dsh-edge-trace-meta { font-size: 10px; opacity: 0.45; overflow-wrap: anywhere; }
+.dsh-edge-trace-body { margin-top: 4px; }
+.dsh-edge-trace-body-err { font-size: 11px; color: #d97706; }
+.dsh-edge-trace-pre { margin: 0; max-height: 260px; overflow: auto; padding: 5px 6px; border-radius: 4px; background: color-mix(in srgb, currentColor 6%, transparent); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
 `
 
 export function ensureStyles(doc?: Document): void {

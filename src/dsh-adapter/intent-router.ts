@@ -15,6 +15,14 @@ import Schema from '@deepseek-ai/schemastery'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { jevPool, loadEdgeConfig, localPool } from './edge-config.js'
 import { withInternalCaller } from './llm-internal-caller.js'
+import {
+  buildRequestTrace,
+  buildResponseTrace,
+  emitTrace,
+  resolveLlmTraceConfig,
+  type TraceSink,
+} from './llm-trace.js'
+import { getTraceStore } from './llm-trace-store.js'
 
 export const name = 'intent-router'
 
@@ -728,6 +736,86 @@ export class IntentRouterServiceImpl extends Service {
     void this.auditLog.log({ level, kind, source: 'intent-router', payload }).catch(() => {})
   }
 
+  /* ── §7.133: jev 决策模型调用的 trace ────────────────────────────────── */
+
+  /**
+   * §7.133: jev 决策模型调用的 trace。
+   *
+   * jev 走的是**裸 fetch**，不经过 `ctx.llm` —— 所以 adapter 那条路看不到
+   * 它。而它恰恰是把用户原文送出设备的那一call（当前配置指向百炼云端
+   * decision-model，§7.112/§7.114）。面板若只显示 local-llm 的分类器调用，
+   * 就是在显示一件没发生过的事（§7.107 的诚实性纪律）。
+   *
+   * 所以这里补一路 trace：caller 仍是 `intent-classifier`（它就是意图
+   * 分类器），provider 用 `bailian-decision` / `jev` 区分是哪条后端。
+   */
+  private traceJevRequest(
+    provider: string,
+    model: string,
+    url: string,
+    sessionId: string | undefined,
+    text: string,
+    system: string,
+  ): void {
+    try {
+      const cfg = resolveLlmTraceConfig(loadEdgeConfig())
+      if (!cfg.enabled || !cfg.includeRequest) return
+      const trace = buildRequestTrace({
+        sessionId: sessionId ?? 'default',
+        provider,
+        model,
+        baseUrl: url,
+        system,
+        messages: [{ role: 'user', content: text }],
+        config: cfg,
+      })
+      this.emitJevTrace('REQ', 'intent-router jev LLM_REQUEST', trace)
+    } catch { /* 观测失败不拖垮主链路 */ }
+  }
+
+  private traceJevResponse(
+    provider: string,
+    model: string,
+    sessionId: string | undefined,
+    content: string,
+    durationMs: number,
+    error?: string,
+  ): void {
+    try {
+      const cfg = resolveLlmTraceConfig(loadEdgeConfig())
+      if (!cfg.enabled || !cfg.includeResponse) return
+      const trace = buildResponseTrace({
+        sessionId: sessionId ?? 'default',
+        provider,
+        model,
+        durationMs,
+        finishReason: error === undefined ? 'stop' : 'error',
+        content,
+        toolCalls: [],
+        error,
+        config: cfg,
+      })
+      this.emitJevTrace('RESP', 'intent-router jev LLM_RESPONSE', trace)
+    } catch { /* 观测失败不拖垮主链路 */ }
+  }
+
+  private emitJevTrace(kind: 'REQ' | 'RESP', tag: string, trace: unknown): void {
+    try {
+      // ctx.logger 在某些宿主形态下取不到（未 inject 的 plugin proxy 会抛）
+      // —— 那是**老通路**（ops log）的事，不能连累索引行与正文 store。
+      let logger: { info?: (m: string) => void } | undefined
+      try {
+        logger = (this.ctx as unknown as { logger?: { info?: (m: string) => void } }).logger
+      } catch { logger = undefined }
+      const sink: TraceSink = {
+        log: (entry) => this.auditLog?.log(entry) ?? Promise.resolve(),
+        logger,
+        store: getTraceStore(),
+      }
+      emitTrace(sink, kind, tag, trace, 'intent-classifier', { toolCount: 0 })
+    } catch { /* 观测失败不拖垮主链路 */ }
+  }
+
   /**
    * §7.122: 分类器 provider 的**真实落点**。
    *
@@ -1286,12 +1374,15 @@ export class IntentRouterServiceImpl extends Service {
       batchSize: intents.length,
       batchLatencyBudgetMs: this.jevTimeoutMs,
     })
+    // §7.133: 本机 jev 后端同样是「把原文发出去的模型调用」—— 留痕。
+    this.traceJevRequest('jev', 'jev-local', `${this.jevUrl}/predict`, sessionId, text, '')
 
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), this.jevTimeoutMs)
 
     let responseText = ''
     let parsed: any = null
+    let jevError: string | undefined
     try {
       const r = await fetch(`${this.jevUrl}/predict`, {
         method: 'POST',
@@ -1316,6 +1407,7 @@ export class IntentRouterServiceImpl extends Service {
           httpStatus: r.status,
           batchLatencyMs: Date.now() - batchStart,
         })
+        jevError = `HTTP ${r.status}`
         return { action: 'skip', confidence: 0, riskScore: 0, latencyMs: Date.now() - jevStart, skipReason: 'jev-error' }
       }
       responseText = await r.text()
@@ -1328,6 +1420,7 @@ export class IntentRouterServiceImpl extends Service {
           error: parseErr?.message ?? String(parseErr),
           batchLatencyMs: Date.now() - batchStart,
         })
+        jevError = `parse-failure: ${parseErr?.message ?? String(parseErr)}`.slice(0, 200)
         return { action: 'skip', confidence: 0, riskScore: 0, latencyMs: Date.now() - jevStart, skipReason: 'jev-error' }
       }
     } catch (err: any) {
@@ -1341,6 +1434,7 @@ export class IntentRouterServiceImpl extends Service {
         batchLatencyMs: Date.now() - batchStart,
         error: err?.message ?? String(err),
       })
+      jevError = isAbort ? 'timeout' : (err?.message ?? String(err)).slice(0, 200)
       return {
         action: 'skip',
         confidence: 0,
@@ -1350,6 +1444,8 @@ export class IntentRouterServiceImpl extends Service {
       }
     } finally {
       clearTimeout(timer)
+      // §7.133: jev 本机后端的 response trace（失败也有）。
+      this.traceJevResponse('jev', 'jev-local', sessionId, responseText, Date.now() - batchStart, jevError)
     }
 
     // Response envelope: {code, message, request_id, data: {...}}
@@ -1608,10 +1704,22 @@ export class IntentRouterServiceImpl extends Service {
       model: this.jevModel,
       batchLatencyBudgetMs: this.jevTimeoutMs,
     })
+    // §7.133: jev 是裸 fetch，不走 ctx.llm —— 这里补一路 trace，
+    // 否则面板看不到「用户原文被送去了百炼」这一事实。
+    this.traceJevRequest(
+      'bailian-decision',
+      this.jevModel,
+      `${this.jevUrl}${this.jevPath}`,
+      sessionId,
+      text,
+      JEV_INTENT_INSTRUCTIONS,
+    )
 
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), this.jevTimeoutMs)
     let parsed: any = null
+    let jevBody = ''
+    let jevError: string | undefined
     try {
       const r = await fetch(`${this.jevUrl}${this.jevPath}`, {
         method: 'POST',
@@ -1627,9 +1735,11 @@ export class IntentRouterServiceImpl extends Service {
           batchLatencyMs: Date.now() - batchStart,
         })
         this.jevBreakerOpenUntil = Date.now() + this.jevBreakerTtlMs
+        jevError = `HTTP ${r.status}`
         return { action: 'skip', confidence: 0, riskScore: 0, latencyMs: Date.now() - jevStart, skipReason: 'jev-error' }
       }
-      parsed = JSON.parse(await r.text())
+      jevBody = await r.text()
+      parsed = JSON.parse(jevBody)
     } catch (err: any) {
       const isAbort = err?.name === 'AbortError' || controller.signal.aborted
       const latencyMs = Date.now() - jevStart
@@ -1642,6 +1752,7 @@ export class IntentRouterServiceImpl extends Service {
         error: err?.message ?? String(err),
       })
       this.jevBreakerOpenUntil = Date.now() + this.jevBreakerTtlMs
+      jevError = isAbort ? 'timeout' : (err?.message ?? String(err)).slice(0, 200)
       return {
         action: 'skip',
         confidence: 0,
@@ -1651,6 +1762,16 @@ export class IntentRouterServiceImpl extends Service {
       }
     } finally {
       clearTimeout(timer)
+      // §7.133: 失败也要有 response trace —— 否则面板只剩「发出去了」而
+      // 没有「回来没有 / 为什么没回来」。
+      this.traceJevResponse(
+        'bailian-decision',
+        this.jevModel,
+        sessionId,
+        jevBody,
+        Date.now() - batchStart,
+        jevError,
+      )
     }
 
     // Success → the backend answered; close the breaker (mirrors the
