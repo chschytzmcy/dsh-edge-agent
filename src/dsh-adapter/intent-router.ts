@@ -91,6 +91,8 @@ export interface Config {
    *  built-in (NOT replaces), same semantics as cloudKeywords. §7.108:
    *  policy-file stages.intent.localEntities also appends (hot-reloadable). */
   localEntities?: string[]
+  /** §7.124 (2026-10-27): 家庭设备操作正则层的扩展词表（追加到内置词表）。 */
+  deviceCommands?: { devices?: string[]; actions?: string[] }
   /** §7.92.3 (2026-09-23) + §7.92.5 (2026-09-23): jev HTTP intent
    *  recognizer (port 8001). Toggle — default OFF (opt-in). When ON,
    *  jev runs BEFORE the LLM classifier and short-circuits high-
@@ -217,6 +219,12 @@ export const Config: Schema<Config> = Schema.object({
   fallbackKeywords: Schema.array(Schema.string()).default([] as string[]),
   cloudKeywords: Schema.array(Schema.string()).default([] as string[]),
   localEntities: Schema.array(Schema.string()).default([] as string[]),
+  // §7.124 (2026-10-27): 家庭设备操作正则层的 operator 扩展点。追加到内置
+  // 词表（不替换）——运维加一个新电器名只改 config/edge.json 一行。
+  deviceCommands: Schema.object({
+    devices: Schema.array(Schema.string()).default([] as string[]),
+    actions: Schema.array(Schema.string()).default([] as string[]),
+  }).default({ devices: [], actions: [] } as any),
   // §7.92.3 (2026-09-23): jev HTTP intent recognizer. Schema default
   // is `false` so a bare unit-test construction (no env) skips jev
   // entirely. §7.102: the toggle's value now comes from config/edge.json
@@ -276,6 +284,21 @@ export interface Intent {
   confidence: number
   targetRealm: string
   rationale: string
+  /**
+   * §7.123 (2026-10-27): provenance of `confidence`.
+   *
+   * `false` means "this number is a PLACEHOLDER, not a reported confidence"
+   * — today only the bailian decision-model path produces it: the backend
+   * returns a `choice` without a numeric confidence, so the decoder
+   * substitutes a synthetic 0.9 ("decisive-by-construction"). A synthetic
+   * value must not be able to satisfy an operator's *semantic trust*
+   * threshold (stages.intent.semanticCloudMinConfidence), because the
+   * operator is trusting a measurement that does not exist.
+   *
+   * `undefined` = reported (the normal case: LLM classifier, local ONNX
+   * jev, rules tier). Only `false` disables the semantic unlock.
+   */
+  confidenceReported?: boolean
 }
 
 export interface IntentRouterService {
@@ -301,79 +324,36 @@ export interface IntentRouterService {
 
 /** Built-in last-resort LOCAL keyword list (EN + CN). Used only when
  *  privacy-policy is absent / empty AND `config.fallbackKeywords` is unset.
- *  Users override via env `DSH_EDGE_INTENT_FALLBACK_KEYWORDS` (comma-sep). */
-const LOCAL_KEYWORDS_DEFAULT: readonly string[] = [
-  '文件', '读', '写', '删除', '创建', '计算', '加减乘除',
-  '本地', '设备', '系统', '磁盘', '目录', '文件夹',
-  'file', 'read', 'write', 'delete', 'calculate', 'compute',
-  'local', 'device', 'disk', 'directory', 'folder',
-]
+ *  Users override via env `DSH_EDGE_INTENT_FALLBACK_KEYWORDS` (comma-sep).
+ *
+ *  §7.123 (2026-10-27): moved to `./intent-signals.ts` — the strategy DATA
+ *  (keyword tables, entity tables, the fallback taxonomy) now lives apart
+ *  from the decision LOGIC in this file. */
+import {
+  LOCAL_KEYWORDS_DEFAULT,
+  CLOUD_KEYWORDS_DEFAULT,
+  LOCAL_ENTITY_KEYWORDS_DEFAULT,
+  JEV_MAX_INTENTS,
+  CATEGORIES_FALLBACK,
+  RULE_CATEGORIES,
+  matchDeviceCommand,
+} from './intent-signals.js'
+import {
+  buildClassificationPrompt,
+  buildJevIntentCriteria,
+  JEV_INTENT_INSTRUCTIONS,
+  JEV_RISK_INSTRUCTIONS,
+  JEV_RISK_CRITERIA,
+} from './intent-prompts.js'
 
-/** §7.47 (2026-09-12): Built-in CLOUD keyword list. Matched BEFORE
- *  fallbackKeywords in classifyWithRules so queries that obviously need
- *  web/search (新闻 / news / 最新 / latest / 今天 / today / 实时 / live /
- *  趋势 / trend / 排行榜 / ranking) go straight to CLOUD, without
- *  depending on the LLM classifier (which can hang on Qwen3-4B).
- *  Users extend via env `DSH_EDGE_INTENT_CLOUD_KEYWORDS` (comma-sep) —
- *  appended to built-in (NOT replaced). Lower priority than privacy-policy
- *  rules (which can REJECT) but higher than fallbackKeywords (which is
- *  LOCAL-only).
- *  §7.58 (2026-09-16): bare query VERBS (搜索/查询/查找/搜/查, search) were
- *  REMOVED from the built-in list. A verb is a query *action*, not an
- *  online-object signal — it fires on local questions too ("查询密盒登录状态"
- *  was mis-routed CLOUD by `rule-cloud-keyword:查询`, 2026-09-15 incident;
- *  any "检查一下设备" trips the single-char "查"). Verb-only queries now fall
- *  through to the LOCAL keyword list → defaultCategory (fail-closed,
- *  LOCAL as of §7.107), with the LLM classifier (when alive) doing the
- *  nuanced work. Online OBJECT nouns (新闻/最新/热搜/news/latest/…) stay
- *  as-is — they are the public-web signal that unlocks the cloud. */
-const CLOUD_KEYWORDS_DEFAULT: readonly string[] = [
-  // 中文: 信息获取类信号词（§7.58: 只留对象/时间名词，不留裸动词）
-  //
-  // §7.107 (2026-10-23): this list is now the DEFINITION of "需要搜索公网上的
-  // 信息" — the operator's ruling「只有需要搜索公网上的信息才需要用到
-  // cloudllm」. It gates the classifier's CLOUD verdict (input-guard's
-  // `cloud.blocked-no-web-need`), so a word in this list means "this may
-  // leave the device" and a word NOT in it means "it may not".
-  //
-  // That made the ambiguous single words a liability: 「今天」("今天开会吗")
-  // 「消息」("发个消息给张三") 「进展」「动态」("项目动态") are ordinary
-  // device-side wording that used to cost a cloud round-trip. The specific
-  // web readings survive through their companions — 最新消息 → 最新,
-  // 今日新闻 → 新闻, 股市动态 → 行情.
-  '新闻', '最新', '实时', '热搜', '趋势', '排行榜', '资讯',
-  '网上', '互联网', '在线', '联网',
-  '天气', '股价',
-  // English: information-acquisition signals
-  'news', 'latest', 'live', 'trending', 'ranking',
-  'online', 'internet', 'web search', 'web',
-  'weather', 'forecast', 'price',
-]
-
-/** §7.58 (2026-09-16): product/device entities that physically live behind
- *  LOCAL skills only (realm table: ets-* = LOCAL). Matched FIRST in
- *  classifyWithRules — above CLOUD strong keywords and the generic LOCAL
- *  fallback — and re-checked as a deterministic override after an
- *  LLM-classified non-LOCAL verdict (the qwen classifier answered CLOUD
- *  conf=1 for "查询共登陆了几个密盒": it cannot know which realms own
- *  which resources). CJK entries match as substrings; ASCII entries match
- *  with word boundaries so 'ets' cannot fire inside "assets". Extend via
- *  env `DSH_EDGE_INTENT_LOCAL_ENTITIES` (comma-sep) — appended to
- *  built-in, same semantics as cloudKeywords. */
-const LOCAL_ENTITY_KEYWORDS_DEFAULT: readonly string[] = [
-  '密盒', 'ets', 'etscli',
-  // 注：§7.106 曾把「归属地」加进本表以强制本地（当时认为全量脱敏会让号码
-  // 归属查询任务失效）。操作者裁决 2026-10-23：这类查询**走云端是对的**——
-  // 真正的问题是掩码粒度，改为号段部分脱敏（phone 保留前 7 位，policy
-  // keepPrefix），云端拿到「号段+占位符」仍可查归属地。
-]
-
-/** §7.92.5 (2026-09-23): jev v0.3.0 hard cap on the `intents[]` payload
- *  field per `~/work/jev-branch/docs/api_reference.md §3.7`. ONNX model
- *  has `head_max_len=256`, which translates to ~16 intents × ~16
- *  description tokens. Source of truth is the upstream spec — bump this
- *  constant if jev ever relaxes the cap. */
-const JEV_MAX_INTENTS = 16
+export {
+  LOCAL_KEYWORDS_DEFAULT,
+  CLOUD_KEYWORDS_DEFAULT,
+  LOCAL_ENTITY_KEYWORDS_DEFAULT,
+  JEV_MAX_INTENTS,
+  CATEGORIES_FALLBACK,
+  RULE_CATEGORIES,
+}
 
 /** §7.92.5: pure helper that splits an array into ≤ `size`-sized
  *  chunks. Used by `classifyWithJev()` to break the full
@@ -426,42 +406,6 @@ function chunkIntents<T>(intents: T[], size: number = JEV_MAX_INTENTS): T[][] {
   return out
 }
 
-/** §7.92.3 (2026-09-23): hardcoded built-in fallback for the
- *  categories spec. Used ONLY when neither `config.categories` is set
- *  nor `ctx.privacyPolicy.getCategories()` returns a non-empty array.
- *  In normal operation the categories live in config/privacy-policy.json
- *  and are loaded by the privacy-policy service at boot — operators
- *  extend them there. The constant here keeps unit tests + early-boot
- *  paths working without requiring the privacy-policy service to be
- *  mounted. Mirrors `DEFAULT_POLICY.categories` in privacy-policy.ts:118. */
-const CATEGORIES_FALLBACK: readonly import('./privacy-policy.js').IntentCategory[] = [
-  {
-    id: 'LOCAL',
-    description: '本地文件操作、设备控制、数学计算、系统管理',
-    jevIntents: ['设备控制', '文件操作', 'device_control', 'file_ops'],
-  },
-  {
-    id: 'CLOUD',
-    description: '知识问答、聊天、创意写作、需要联网的任务',
-    jevIntents: ['知识问答', '通用咨询', '天气', '翻译', '新闻', '搜索', 'knowledge', 'weather', 'translation', 'news', 'search'],
-  },
-  {
-    id: 'SANITIZED',
-    description: '包含 PII 需先脱敏后路由（订单查询、账户管理、客服等含个人信息）',
-    jevIntents: [
-      '订单查询', '订单状态', '物流跟踪', '物流查询', '快递查询',
-      '退款申请', '退款查询', '账户管理', '账户余额', '账户信息',
-      '客服', '售后服务',
-      'order_inquiry', 'refund', 'refund_request', 'logistics', 'account', 'customer_service',
-    ],
-  },
-  {
-    id: 'REJECT',
-    description: '高危 / 违法 / 违规请求（危险系统操作、投诉、法务）',
-    jevIntents: ['投诉', '法务咨询', '法律咨询', '举报', 'complaint', 'legal', 'legal_advice'],
-  },
-]
-
 export class IntentRouterServiceImpl extends Service {
   private readonly defaultCategory: Intent['category']
   private readonly classificationProvider: string
@@ -478,6 +422,9 @@ export class IntentRouterServiceImpl extends Service {
   /** §7.58 (2026-09-16): LOCAL-entity list, merged with built-in defaults.
    *  Checked FIRST in classifyWithRules + as LLM-verdict override guardrail. */
   private readonly localEntities: readonly string[]
+  /** §7.124: operator-extended device-command terms (ADDITIVE on top of the
+   * built-in vocabulary in ./intent-signals.ts). */
+  private readonly deviceCommandOverrides: { devices: readonly string[]; actions: readonly string[] }
   /** §7.92.3 (2026-09-23): jev HTTP intent recognizer (toggle). When
    *  true, classify() invokes classifyWithJev() BEFORE classifyWithLlm(). */
   private readonly jevEnabled: boolean
@@ -587,6 +534,8 @@ export class IntentRouterServiceImpl extends Service {
     /** 同文本+同上下文的重复 classify() 命中缓存（不付 LLM/jev 往返）。 */
     cacheHit: 0,
     ruleHit: 0,
+    /** §7.124: Tier-0 家庭设备操作正则命中数。 */
+    deviceCommandHit: 0,
     defaultHit: 0,
     lowConfidence: 0,
     timeout: 0,
@@ -664,6 +613,12 @@ export class IntentRouterServiceImpl extends Service {
     // §7.58 (2026-09-16): localEntities APPENDED to built-in (not replaced),
     // same safety-net semantics as cloudKeywords.
     this.localEntities = LOCAL_ENTITY_KEYWORDS_DEFAULT.concat(config.localEntities ?? [])
+    // §7.124 (2026-10-27): operator-extended device-command terms, ADDITIVE
+    // on top of the built-in vocabulary (same semantics as cloudKeywords).
+    this.deviceCommandOverrides = {
+      devices: config.deviceCommands?.devices ?? [],
+      actions: config.deviceCommands?.actions ?? [],
+    }
     // §7.92.3 + §7.92.7: jev config. Schema default is `false` so unit
     // tests that construct the service with minimal config don't make
     // real fetches. PRODUCTION default (set by cordis.patch.yml) is
@@ -860,8 +815,28 @@ export class IntentRouterServiceImpl extends Service {
     // still wins; downstream sanitizer (fail-closed) / prompt-guard PII
     // veto / td-bus are untouched — the unlock relaxes only the KEYWORD
     // requirement, not any data-protection layer.
+    //
+    // §7.123 (2026-10-27): a SYNTHETIC confidence cannot unlock the gate.
+    // The bailian decision-model answers a `choice` question; when it does
+    // not report a numeric confidence the decoder substitutes 0.9
+    // ("decisive-by-construction"). With the shipped policy threshold of
+    // 0.75 that placeholder was ALWAYS >= threshold, so every CLOUD verdict
+    // from that provider left the device with no public-web signal — the
+    // §7.107 gate was inert on exactly the path that talks to a cloud
+    // service. Requiring a *reported* confidence restores the gate's
+    // meaning: the operator's trust threshold is a threshold on a
+    // measurement, not on a placeholder.
     const semanticMin = this.policyIntentStages()?.semanticCloudMinConfidence
-    if (typeof semanticMin === 'number' && intent.confidence >= semanticMin) {
+    const syntheticConfidence = intent.confidenceReported === false
+    if (syntheticConfidence) {
+      this.audit('warn', 'intent.cloud.semantic-unlock-skipped', {
+        sessionId: sid,
+        confidence: intent.confidence,
+        minConfidence: semanticMin,
+        rationale: intent.rationale,
+        note: 'classifier confidence is synthetic (not reported) — semantic unlock does not apply; a public-web signal is required',
+      })
+    } else if (typeof semanticMin === 'number' && intent.confidence >= semanticMin) {
       this.audit('info', 'intent.cloud.semantic-unlock', {
         sessionId: sid,
         confidence: intent.confidence,
@@ -1002,6 +977,60 @@ export class IntentRouterServiceImpl extends Service {
         durationMs: Date.now() - start,
       })
       return cachedVerdict
+    }
+
+    // §7.124 (2026-10-27): Tier-0 — 家庭设备操作正则快速层。
+    //
+    // 用户裁决：「意图识别需要先走正则，快速决策，比如开灯、关门、开空调
+    // 这些家庭里家电操作，然后才是决策模型分类，最后才是 llm 分类」。
+    //
+    // 三级阶梯现在是：
+    //   Tier-0  正则（本层）      ~0ms        命中即定案，绝不外呼
+    //   Tier-1  jev 决策模型      ~150ms-6s   语义分类
+    //   Tier-2  LLM 分类器        4s-30s      最后兜底
+    //
+    // 位置说明：放在缓存之后、jev 之前。缓存命中本来就是 ~0ms 且语义等价，
+    // 没有理由绕过它；而放在 jev 之前才能兑现「正则优先」——命中即定案，
+    // 原始指令不出设备、不进 jev 的上行请求体（jev 指向云端时这一点尤其
+    // 重要）。
+    //
+    // 判定一律 LOCAL：家电操作由 LOCAL realm 的设备技能执行，不该上云
+    // （与 §7.107「默认本地」一致）。
+    //
+    // 未命中不惩罚 —— 直接落到 jev / LLM，行为与本层存在时完全一致。
+    const deviceMatch = matchDeviceCommand(effectiveText, this.deviceCommandTerms())
+    if (deviceMatch) {
+      this.stats.deviceCommandHit++
+      this.audit('info', 'intent.device-command.hit', {
+        sessionId: sid,
+        device: deviceMatch.device,
+        action: deviceMatch.action,
+        matched: deviceMatch.matched,
+        textLen: effectiveText.length,
+      })
+      const deviceIntent: Intent = {
+        category: 'LOCAL',
+        confidence: 0.95,
+        targetRealm: 'local',
+        rationale: `device-command:${deviceMatch.action}:${deviceMatch.device}`,
+        // §7.123: a regex verdict is a MEASURED decision, not a model-reported
+        // confidence — mark it as such so the semantic-unlock provenance guard
+        // can tell it apart from a synthetic placeholder.
+        confidenceReported: true,
+      }
+      this.audit('info', 'intent.classify.end', { sessionId: sid,
+        textLen: effectiveText.length,
+        path: 'device-command',
+        category: deviceIntent.category,
+        confidence: deviceIntent.confidence,
+        rationale: deviceIntent.rationale,
+        ...this.classifyEvidence(deviceIntent),
+        durationMs: Date.now() - start,
+        device: deviceMatch.device,
+        action: deviceMatch.action,
+      })
+      this.classifyCacheSet(cacheKey, deviceIntent)
+      return deviceIntent
     }
 
     // §7.92.3 (2026-09-23): jev prefilter. When enabled, runs BEFORE the
@@ -1547,15 +1576,7 @@ export class IntentRouterServiceImpl extends Service {
     latencyMs: number
     skipReason?: string
   }> {
-    const criteria: Record<string, string> = {}
-    for (const cat of this.categories) criteria[cat.id] = cat.description
-    // §7.110 对齐（§7.115.1 修复）：默认本地简并后 policy 无 LOCAL 行时，
-    // 决策模型的 criteria 必须补 LOCAL 兜底项——否则模型被迫在 CLOUD/REJECT
-    // 二选一，日常问答会被推着误判 CLOUD（≥0.75 还会语义解锁出网）。兜底
-    // 文案与 LLM prompt 的 catch-all 行逐字一致。
-    if (!this.categories.some((c) => c.id === 'LOCAL')) {
-      criteria.LOCAL = '其余一切请求（本地操作、日常问答等——这是默认类别，拿不准就选它）'
-    }
+    const criteria = buildJevIntentCriteria(this.categories)
     const body = {
       model: this.jevModel,
       state: {
@@ -1565,13 +1586,13 @@ export class IntentRouterServiceImpl extends Service {
       questions: {
         intent: {
           type: 'choice',
-          instructions: '这个用户请求应该路由到哪个处理域？只选一个最合适的。',
+          instructions: JEV_INTENT_INSTRUCTIONS,
           criteria,
         },
         risk: {
           type: 'score',
-          instructions: '这个请求的危险程度如何？',
-          criteria: ['正常请求，无风险', '轻微可疑，需要留意', '明显危险操作', '高危/违法/破坏性请求'],
+          instructions: JEV_RISK_INSTRUCTIONS,
+          criteria: [...JEV_RISK_CRITERIA],
         },
       },
     }
@@ -1639,12 +1660,20 @@ export class IntentRouterServiceImpl extends Service {
     const intentAns = answers?.intent as Record<string, unknown> | string | undefined
     const riskAns = answers?.risk as Record<string, unknown> | number | undefined
     let intentStr: string | null = null
+    // §7.123 (2026-10-27): `confidenceReported` tracks whether the backend
+    // actually sent a numeric confidence. The 0.9 fallback below is a
+    // PLACEHOLDER ("the model had to pick exactly one criterion"), not a
+    // measurement — it must not be able to unlock the semantic-trust gate.
+    let confidenceReported = false
     let confidence = 0.9 // decisive-by-construction: the model must pick exactly one criterion
     if (typeof intentAns === 'string') {
       intentStr = intentAns.toUpperCase()
     } else if (intentAns && typeof intentAns === 'object') {
       intentStr = typeof intentAns.choice === 'string' ? intentAns.choice.toUpperCase() : null
-      if (typeof intentAns.confidence === 'number') confidence = Math.max(0, Math.min(1, intentAns.confidence))
+      if (typeof intentAns.confidence === 'number') {
+        confidence = Math.max(0, Math.min(1, intentAns.confidence))
+        confidenceReported = true
+      }
     }
     let rawRisk = 0
     if (typeof riskAns === 'number') rawRisk = riskAns
@@ -1769,6 +1798,9 @@ export class IntentRouterServiceImpl extends Service {
         confidence,
         targetRealm,
         rationale: `jev-intent:${intentStr}`,
+        // §7.123: carry the confidence provenance so the §7.109 semantic
+        // gate can tell a measured confidence from the synthetic 0.9.
+        confidenceReported,
       },
       jevIntentString: intentStr,
       confidence,
@@ -2063,26 +2095,15 @@ export class IntentRouterServiceImpl extends Service {
     // LOCAL row, append a fixed catch-all line and include LOCAL in the
     // output union so the model can express "neither of the above"
     // (coerceClassification accepts LOCAL regardless of the taxonomy).
-    const hasLocalRow = this.categories.some((c) => c.id === 'LOCAL')
-    const categoryLines = this.categories.map((c) => `- ${c.id}：${c.description}`).join('\n')
-      + (hasLocalRow ? '' : '\n- LOCAL：其余一切请求（本地操作、日常问答等——这是默认类别，拿不准就选它）')
-    const categoryUnion = Array.from(new Set([
-      ...this.categories.map((c) => c.id),
-      'LOCAL' as const,
-    ])).join('|')
-    const prompt = `判断以下用户请求属于哪类：
-${categoryLines}
-${historyBlock}
-Respond ONLY with a single JSON object — no prose, no Markdown:
-{ "category": ${categoryUnion}, "confidence": <0.0-1.0> }
-
-confidence 含义：
-- 1.0 = 非常确定（请求明确属于该类别，无歧义）
-- 0.7 = 较确定（请求大概率属于该类别，但有少许模糊）
-- 0.5 = 不确定（请求模糊，可能是 LOCAL 也可能是 CLOUD）
-- <0.5 = 完全不确定（无法判断类别）
-
-用户请求：${promptText}`
+    // §7.123 (2026-10-27): the prompt template moved to
+    // `./intent-prompts.ts` — the two prompt surfaces (local LLM classifier
+    // + Bailian decision-model) now live side by side and cannot drift on
+    // the LOCAL catch-all wording.
+    const { prompt } = buildClassificationPrompt({
+      categories: this.categories,
+      historyBlock,
+      promptText,
+    })
 
     const userMessage = createUserMessage({
       content: [{ type: 'text', text: prompt }],
@@ -2281,6 +2302,18 @@ confidence 含义：
 
   /** §7.108: LOCAL last-resort list — policy stages.intent.fallbackKeywords
    *  (non-empty) REPLACES, mirroring the env var's replace semantics. */
+  /** §7.124 (2026-10-27): the device-command extension terms = patch config
+   *  (config/edge.json stages.intent.deviceCommands) + the policy file's
+   *  stages.intent.deviceCommands (hot-reloadable, read LIVE per classify).
+   *  Both are ADDITIVE on top of the built-in vocabulary. */
+  private deviceCommandTerms(): { devices: readonly string[]; actions: readonly string[] } {
+    const fromPolicy = this.policyIntentStages()?.deviceCommands
+    return {
+      devices: this.deviceCommandOverrides.devices.concat(fromPolicy?.devices ?? []),
+      actions: this.deviceCommandOverrides.actions.concat(fromPolicy?.actions ?? []),
+    }
+  }
+
   private fallbackKeywordsAll(): readonly string[] {
     const fromPolicy = this.policyIntentStages()?.fallbackKeywords
     return (fromPolicy && fromPolicy.length > 0) ? fromPolicy : this.fallbackKeywords
@@ -2652,7 +2685,6 @@ interface ClassificationVerdict {
 
 /** Valid category values produced by classifyWithRules — wider than the LLM
  *  verdict set because privacy-policy rules can declare REJECT. */
-const RULE_CATEGORIES = ['LOCAL', 'CLOUD', 'SANITIZED', 'REJECT'] as const
 type RuleCategory = typeof RULE_CATEGORIES[number]
 
 /** In-memory counters exposed via getStats(). Pure observability; the audit
@@ -2670,6 +2702,10 @@ export interface IntentRouterStats {
   cacheHit: number
   /** classifyWithRules adopted — privacy-policy match OR hardcoded keyword. */
   ruleHit: number
+  /** §7.124 (2026-10-27): Tier-0 device-command regex hit — the turn was
+   * decided locally by regex, without calling jev or the LLM classifier.
+   * Every hit saved one decision-model round-trip (~150ms-6s). */
+  deviceCommandHit: number
   /** No LLM verdict, no keyword → defaultCategory returned. */
   defaultHit: number
   /** LLM returned below confidence threshold (cause of fallback to rules). */
@@ -2777,7 +2813,16 @@ export function parseClassificationVerdict(raw: string): ClassificationVerdict |
   // parseFailure counter and fall through to keyword rules — instead of
   // returning a 0.5-confidence verdict that ALWAYS fails the 0.6
   // confidence gate and wastes the LLM call.
-  const categoryMatch = /["']?category["']?\s*[:=]\s*["']?(LOCAL|CLOUD)["']?/iu.exec(cleaned)
+  //
+  // §7.123 (2026-10-27): the category alternation MUST cover the full
+  // 4-category union. It used to accept only `LOCAL|CLOUD`, while
+  // `coerceClassification` accepts LOCAL|CLOUD|SANITIZED|REJECT — so a
+  // malformed-JSON verdict whose category was SANITIZED or REJECT fell
+  // through Tier 3 and landed on the keyword-rules tier. A dropped REJECT
+  // is a dropped BLOCK: the request was classified as dangerous and then
+  // silently re-routed. The alternation now mirrors coerceClassification
+  // exactly; unknown categories still return null → rules tier.
+  const categoryMatch = /["']?category["']?\s*[:=]\s*["']?(LOCAL|CLOUD|SANITIZED|REJECT)["']?/iu.exec(cleaned)
   // `[:=]?` — separator is optional: qwen3-4b sometimes emits
   // `confidence 0.8` (whitespace only), sometimes `confidence: 0.8`,
   // sometimes `confidence=0.8`. All three should be recovered.
@@ -2785,7 +2830,7 @@ export function parseClassificationVerdict(raw: string): ClassificationVerdict |
   if (categoryMatch && confidenceMatch) {
     const conf = Number(confidenceMatch[1])
     return {
-      category: categoryMatch[1].toUpperCase() as 'LOCAL' | 'CLOUD',
+      category: categoryMatch[1].toUpperCase() as 'LOCAL' | 'CLOUD' | 'SANITIZED' | 'REJECT',
       confidence: Number.isFinite(conf) ? Math.max(0, Math.min(1, conf)) : 0.5,
     }
   }
@@ -2867,6 +2912,13 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
     }
     if (intentStage.fallbackKeywords !== undefined) {
       ;(config as { fallbackKeywords: string[] }).fallbackKeywords = intentStage.fallbackKeywords
+    }
+    // §7.124 (2026-10-27): 家庭设备操作正则层的 operator 扩展词表。
+    if (intentStage.deviceCommands !== undefined) {
+      ;(config as { deviceCommands: { devices: string[]; actions: string[] } }).deviceCommands = {
+        devices: intentStage.deviceCommands.devices ?? [],
+        actions: intentStage.deviceCommands.actions ?? [],
+      }
     }
     // §7.115: decision-model-only mode switch (stages.intent.llmFallback).
     if (intentStage.llmFallback !== undefined) {

@@ -98,7 +98,22 @@ export function findRoute(
     if (!m) continue
     const params: Record<string, string> = {}
     for (let i = 0; i < paramNames.length; i++) {
-      params[paramNames[i]] = decodeURIComponent(m[i + 1])
+      // `decodeURIComponent` throws URIError on malformed percent-escapes
+      // ('%zz'), and `new URL()` preserves such sequences verbatim in
+      // `pathname`. The matcher runs OUTSIDE any try/catch in the
+      // dispatcher (and the server callback drops the promise), so an
+      // unhandled URIError would take the whole process down — a remote
+      // DoS for anyone holding a token. Decode defensively: an undecodable
+      // param keeps its raw form and the request continues (the handler
+      // then answers 404/400 on an unknown id rather than crashing).
+      const raw = m[i + 1]
+      let decoded = raw
+      try {
+        decoded = decodeURIComponent(raw)
+      } catch {
+        decoded = raw
+      }
+      params[paramNames[i]] = decoded
     }
     return { route, params }
   }

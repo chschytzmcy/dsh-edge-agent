@@ -10,12 +10,24 @@
  *
  * 设计详见：docs/input-guard-design.md
  *
+ * §7.123 (2026-10-27): the pure message-array helpers (find / replace user
+ * turns) moved to `./input-guard-messages.ts` — they encode the
+ * payload.messages vs decision.messages contract, which is the part of this
+ * module that upstream keeps changing. This file keeps the hook LOGIC.
+ *
  * @module dsh-edge-agent/input-guard
  */
 
 import type { Context } from '@deepseek-ai/cordis'
 import { Service } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
+
+import {
+  findLastUserText,
+  findUserTexts,
+  replaceAtUserIndex,
+  replaceUserTextsAt,
+} from './input-guard-messages.js'
 
 // §7.100: 复用 cloud-llm-adapter 的委托探针（同一条解析链，保证
 // "input-guard 认为能不能上云" 与 "adapter stream 时实际找不找得到目标"
@@ -146,12 +158,24 @@ interface IntentRouterLike {
   }>
 }
 
-/** Minimal sanitizer 接口。*/
+/** Minimal sanitizer 接口。
+ *  §7.123 (2026-10-27): the replacement shape was STALE here — it declared
+ *  `{ type, original, token }` while sanitizer-pipeline's real `Replacement`
+ *  is `{ original, placeholder, piiType, dataClass, keptPrefix? }`. The
+ *  mismatch was invisible while input-guard only read `.length`; now that
+ *  the audit records which PII types were hit, the interface must match
+ *  the real contract. */
 interface SanitizerLike {
   sanitize(text: string, context?: { sessionId?: string }): Promise<{
     sanitizedText: string
     sessionId: string
-    replacements: Array<{ type: string; original: string; token: string }>
+    replacements: Array<{
+      original: string
+      placeholder: string
+      piiType: string
+      dataClass: string
+      keptPrefix?: string
+    }>
   }>
   desanitize(text: string, sessionId: string): Promise<string>
 }
@@ -1338,20 +1362,42 @@ export class InputGuardServiceImpl extends Service {
     // cloud/local-llm-adapter §7.46.1 done 行对齐。失败/降级由外层
     // catch（handlePreStep 原结构）继续处理 sanitize-failed audit + 路由降级。
     const sanitizeStart = Date.now()
+    // §7.123 (2026-10-27): sanitize EVERY user message, not just the last.
+    // The agent loop ships the whole conversation to the model, so a PII
+    // value typed in an earlier turn rode along in the history unredacted.
+    // `userMessages` comes from payload.messages (the real user turns) —
+    // decision.messages additionally carries synthetic user-role runtime
+    // context injected by dsh-agent-instructions, which is not user content
+    // and must not be rewritten.
+    const userMessages = findUserTexts(payload.messages)
     try {
       this.ctx?.logger?.info?.(
-        `[input-guard] sanitize start sessionId=${sessionId} category=${category} inputLen=${originalLastUser.text.length}`,
+        `[input-guard] sanitize start sessionId=${sessionId} category=${category} inputLen=${originalLastUser.text.length} userMessages=${userMessages.length}`,
       )
     } catch { /* debug only */ }
     try {
-      const result = await this.sanitizer.sanitize(originalLastUser.text, { sessionId })
-      const replacements = result.replacements.length
+      // Sanitize each user turn independently. The sanitizer's mapping table
+      // is session-scoped, so the same PII value across turns collapses onto
+      // the same placeholder (and `maxReplacementsPerSession` still bounds
+      // the session-wide total).
+      const sanitizedByIndex = new Map<number, string>()
+      const piiTypes = new Set<string>()
+      let totalReplacements = 0
+      for (const um of userMessages) {
+        const result = await this.sanitizer.sanitize(um.text, { sessionId })
+        if (result.replacements.length === 0) continue
+        totalReplacements += result.replacements.length
+        for (const r of result.replacements) piiTypes.add(r.piiType)
+        sanitizedByIndex.set(um.index, result.sanitizedText)
+      }
+      const replacements = totalReplacements
       const original = this.resolveOriginalRoute(edgeRoute) // §7.43: TUI 不设 _edgeRoute 时用 fallback
       const sanitizeDurationMs = Date.now() - sanitizeStart
       if (replacements > 0) {
-        // 替换 decision.messages 里 originalLastUser.index 位置的消息（不是最后一条 user，
-        // 因为 dsh-agent-instructions 可能在末尾追加了 user-role 注入）。
-        const newMessages = replaceAtUserIndex(decision.messages ?? payload.messages, originalLastUser.index, result.sanitizedText)
+        // 用 index（来自 payload.messages）替换 decision.messages 里对应的
+        // user 消息 —— 不是最后一条 user，因为 dsh-agent-instructions 可能在
+        // 末尾追加了 user-role 注入。
+        const newMessages = replaceUserTextsAt(decision.messages ?? payload.messages, sanitizedByIndex)
         this.putStepState(sessionId, {
           sanitized: true, replacements, sessionId, timestamp: Date.now(),
           originalProvider: original.provider,
@@ -1360,11 +1406,16 @@ export class InputGuardServiceImpl extends Service {
         })
         this.audit('info', 'input-guard.sanitized', {
           sessionId, replacementCount: replacements, category,
+          // §7.123: how many user turns were rewritten — the "1" that used
+          // to be implied by "only the last message" is now explicit.
+          sanitizedMessages: sanitizedByIndex.size,
+          userMessages: userMessages.length,
+          piiTypes: [...piiTypes],
         })
         // §7.46.2: sanitize done 行 (success, replaced) — 跟 start 行配对
         try {
           this.ctx?.logger?.info?.(
-            `[input-guard] sanitize done sessionId=${sessionId} category=${category} durationMs=${sanitizeDurationMs} replacementCount=${replacements} outcome=replaced`,
+            `[input-guard] sanitize done sessionId=${sessionId} category=${category} durationMs=${sanitizeDurationMs} replacementCount=${replacements} sanitizedMessages=${sanitizedByIndex.size} outcome=replaced`,
           )
         } catch { /* debug only */ }
         return { ...decision, messages: newMessages }
@@ -1736,75 +1787,6 @@ export class InputGuardServiceImpl extends Service {
 }
 
 /** 找 messages 数组里最后一条 user 消息的文本。*/
-function findLastUserText(
-  messages: ReadonlyArray<Record<string, unknown>>,
-): { text: string; index: number } | undefined {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i]
-    if (m?.role !== 'user') continue
-    const content = m.content
-    if (typeof content === 'string' && content.length > 0) {
-      return { text: content, index: i }
-    }
-    if (Array.isArray(content)) {
-      const texts: string[] = []
-      for (const block of content) {
-        if (block && typeof block === 'object' && (block as any).type === 'text' && typeof (block as any).text === 'string') {
-          texts.push((block as any).text)
-        }
-      }
-      const joined = texts.join('')
-      if (joined.length > 0) return { text: joined, index: i }
-    }
-  }
-  return undefined
-}
-
-/** 替换 messages 数组里指定 index 的 user 消息文本（不可变，返回新数组）。*/
-function replaceLastUserText(
-  messages: ReadonlyArray<Record<string, unknown>>,
-  newText: string,
-): Array<Record<string, unknown>> {
-  const found = findLastUserText(messages)
-  if (!found) return [...messages]
-  return replaceAtUserIndex(messages, found.index, newText)
-}
-
-/** 替换 messages 数组里指定 index 位置的消息的 user 文本（不可变，返回新数组）。
- *  用于 dsh-agent-instructions 在 decision.messages 末尾追加注入内容后，
- *  我们仍想替换"原始"用户消息（index 从 payload.messages 继承）的场景。*/
-function replaceAtUserIndex(
-  messages: ReadonlyArray<Record<string, unknown>>,
-  index: number,
-  newText: string,
-): Array<Record<string, unknown>> {
-  if (index < 0 || index >= messages.length) return [...messages]
-  const result = [...messages]
-  const original = result[index]
-  const originalContent = original.content
-  if (typeof originalContent === 'string') {
-    result[index] = { ...original, content: newText }
-  } else if (Array.isArray(originalContent)) {
-    // 替换所有 text block 为单个合并的 text block
-    const newContent: unknown[] = []
-    let replaced = false
-    for (const block of originalContent) {
-      if (block && typeof block === 'object' && (block as any).type === 'text') {
-        if (!replaced) {
-          newContent.push({ type: 'text', text: newText })
-          replaced = true
-        }
-        // 后续 text block 丢弃（已合并到 newText）
-      } else {
-        newContent.push(block)
-      }
-    }
-    if (!replaced) newContent.unshift({ type: 'text', text: newText })
-    result[index] = { ...original, content: newContent }
-  }
-  return result
-}
-
 /** 审计日志用 redact：截取前 60 字符。不引入 pii-utils 循环依赖。*/
 function redact(text: string): string {
   const slice = text.slice(0, 60)

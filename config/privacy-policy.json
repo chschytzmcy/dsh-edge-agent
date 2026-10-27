@@ -108,7 +108,13 @@
   ],
   "stages": {
     "intent": {
-      "semanticCloudMinConfidence": 0.75
+      "_semantic_comment": "§7.123 (2026-10-27): raised 0.75 → 0.95. The bailian decision-model answers a `choice` question and frequently reports NO numeric confidence; the decoder then substitutes a synthetic 0.9 ('decisive-by-construction'). At 0.75 that placeholder was always >= threshold, so EVERY CLOUD verdict from that provider left the device with no public-web signal — the §7.107 gate was inert on the one path that talks to a cloud service. 0.95 sits above the synthetic placeholder so only a MEASURED high confidence can unlock the semantic path. §7.123 also added a provenance guard in code (Intent.confidenceReported): a synthetic confidence can never satisfy this threshold at all. Lower it only if your classifier genuinely reports calibrated confidences; 0.95 is the safe floor for a choice-style model.",
+      "semanticCloudMinConfidence": 0.95,
+      "deviceCommands": {
+        "_comment": "家庭设备操作正则层的扩展词表 —— 追加到内置词表（灯/空调/电视/窗帘…）。devices = 设备名词，actions = 动作词。改这里即时生效（热重载），不用重启 App。",
+        "devices": [],
+        "actions": []
+      }
     }
   },
   "sanitizationRules": [

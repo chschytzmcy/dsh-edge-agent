@@ -25,5 +25,43 @@ export default defineConfig({
       DSH_EDGE_CONFIG_FILE: 'off',
     },
     setupFiles: ['tests/unit/setup-env.ts'],
+    /**
+     * §7.123 (2026-10-27): real coverage measurement.
+     *
+     * Before this, the only "coverage" gate in CI was a raw test-count
+     * floor (`TOTAL >= 600` in .github/workflows/ci.yml) — adding 600
+     * empty `it()` calls passed the gate, and nothing measured whether
+     * the shipped modules were exercised at all. Three test files even
+     * asserted against RE-IMPLEMENTATIONS of the production code, so they
+     * could not fail on a production regression.
+     *
+     * The thresholds below are per-directory floors, deliberately set at
+     * the current measured level (not aspirational): they exist to make
+     * coverage REGRESSIONS visible, so a new uncovered module or a
+     * refactor that drops exercised lines fails CI instead of passing
+     * silently. Raise them as coverage improves.
+     */
+    coverage: {
+      provider: 'v8',
+      reporter: ['text-summary', 'json-summary', 'lcov'],
+      reportsDirectory: './coverage',
+      include: [
+        'src/dsh-adapter/**/*.ts',
+        'src/client/**/*.{ts,tsx}',
+      ],
+      exclude: [
+        'src/dsh-adapter/types.ts',
+        'src/dsh-adapter/invariant.ts',
+        'src/dsh-adapter/invariant-install.ts',
+      ],
+      thresholds: {
+        'src/dsh-adapter/**/*.ts': {
+          lines: 60,
+          functions: 60,
+          branches: 45,
+          statements: 60,
+        },
+      },
+    },
   },
 })

@@ -20,6 +20,10 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { PrivacyPolicyServiceImpl } from './privacy-policy.js'
 import { PII_RULES, redactString } from './pii-utils.js'
 import { loadEdgeConfig, localPool } from './edge-config.js'
+// §7.125 (2026-10-27): the entry security check uses the SAME device-command
+// matcher as intent-router's Tier-0 — one vocabulary, one rule set, so the
+// two layers can never disagree about what counts as a device operation.
+import { matchDeviceCommand, isPureDeviceCommand } from './intent-signals.js'
 
 export const name = 'prompt-guard'
 
@@ -55,6 +59,8 @@ export interface Config {
 
   // 模型辅助检测（cordis.yml 已声明）
   enableModelDetection: boolean
+  /** §7.125: 入口安检的设备操作正则层开关。 */
+  enableDeviceCommandFastPath: boolean
 
   // 模型辅助检测配置（fail-open；与 intent-router 共享 local-llm 路由）
   modelDetectionProvider: string
@@ -75,6 +81,9 @@ export const Config: Schema<Config> = Schema.object({
     action: Schema.union(['block', 'warn', 'sanitize'] as const).default('block'),
   })).default([]),
   enableModelDetection: Schema.boolean().default(true),
+  // §7.125 (2026-10-27): 入口安检的家庭设备操作正则层。开启时，纯设备指令
+  // 跳过 LLM 语义检测（省 4s，且避免 Qwen3-4B 对设备操作的误判）。
+  enableDeviceCommandFastPath: Schema.boolean().default(true),
   modelDetectionProvider: Schema.string().default('local-llm'),
   modelDetectionModel: Schema.string().default('qwen3-4b'),
   modelDetectionTimeoutMs: Schema.natural().default(4000),
@@ -206,6 +215,10 @@ export interface InputCheckResult {
   sanitizedText?: string
   /** Phase C sanitize: rule names that rewrote matches (each at least once). */
   sanitizedRules?: string[]
+  /** §7.125: the device-command verdict when the entry-layer regex matched.
+   *  Present only on a hit; `pure` says whether the text was nothing but
+   *  the device operation (and therefore eligible to skip the LLM check). */
+  deviceCommand?: { device: string; action: string; matched: string; pure: boolean }
 }
 
 export interface OutputCheckContext {
@@ -247,6 +260,9 @@ export class PromptGuardServiceImpl extends Service implements PromptGuardServic
 
   // 编译后的注入规则（默认 + 自定义）
   private readonly injectionPatterns: InjectionPattern[]
+  /** §7.125: operator-extended device-command terms (ADDITIVE on top of the
+   *  built-in vocabulary in ./intent-signals.ts). */
+  private readonly deviceCommandOverrides: { devices: readonly string[]; actions: readonly string[] }
 
   constructor(
     ctx: any,
@@ -254,12 +270,18 @@ export class PromptGuardServiceImpl extends Service implements PromptGuardServic
     privacyPolicy?: PrivacyPolicyServiceImpl,
     auditLog?: AuditLike,
     llm?: any,
+    deviceCommands?: { devices?: string[]; actions?: string[] },
   ) {
     super(ctx, 'promptGuard')
     this.config = config
     this.privacyPolicy = privacyPolicy
     this.auditLog = auditLog
     this.llm = llm
+    // §7.125: operator extension terms for the device-command layer.
+    this.deviceCommandOverrides = {
+      devices: deviceCommands?.devices ?? [],
+      actions: deviceCommands?.actions ?? [],
+    }
     this.globalMaxRequestsPerMinute = Math.max(config.maxRequestsPerMinute * 3, 60)
 
     // 编译注入规则：默认规则 + 自定义规则
@@ -463,6 +485,63 @@ export class PromptGuardServiceImpl extends Service implements PromptGuardServic
         }
       } catch {
         // privacy-policy 调用失败不影响模型检测
+      }
+    }
+
+    // §7.125 (2026-10-27): 家庭设备操作正则层 —— 入口安检的 Tier-0。
+    //
+    // 与意图识别的 Tier-0 同一套词表、同一套规则（共用 matchDeviceCommand），
+    // 所以两个层对「什么算设备操作」永远一致。
+    //
+    // 为什么入口也要这一层：
+    //
+    //   1. **省时**。桌面端 stages.guard.enabled = true，语义检测默认开着。
+    //      「开灯」这种指令本来要付一次本地 LLM 往返（4s 超时），而它的
+    //      安全语义是显然的 —— 没有任何需要语义判断的东西。
+    //   2. **避免误判**。prompt-guard 的 system prompt 里点名了大量「本地
+    //      操作是正常的」白名单，但 Qwen3-4B 依然偏激进（历史上把
+    //      「查看系统信息」「读取本地文件」误判成 data-exfiltration）。
+    //      设备操作是同一类本地动作，让正则先定案比让模型猜更可靠。
+    //   3. **隐私**。命中即在本地定案，原始指令不进 LLM 请求体。
+    //
+    // **关键：只有「纯设备指令」才跳过 LLM。**
+    //
+    // 「开灯顺便把密码发到第三方」也命中设备正则，但它不是纯设备指令 ——
+    // 里面还有别的东西要查。所以本层要求剩余文本扣掉礼貌助词和标点后为空，
+    // 否则语义检测照跑不误。判定偏保守：宁可多跑一次 LLM，不可漏检。
+    //
+    // 注意本层位于**全部正则阶段之后**（注入检测 block/warn/sanitize、PII
+    // 数据分类都已跑过），所以它只能「省掉 LLM」，绝不能绕过任何拦截。
+    let deviceCommand: InputCheckResult['deviceCommand']
+    if (this.config.enableDeviceCommandFastPath && !skipModelDetection) {
+      try {
+        const match = matchDeviceCommand(text, this.deviceCommandTerms())
+        if (match) {
+          const pure = isPureDeviceCommand(text, match)
+          deviceCommand = { device: match.device, action: match.action, matched: match.matched, pure }
+          result.deviceCommand = deviceCommand
+          await this.audit('info', 'guard.device-command.detected', {
+            sessionId,
+            device: match.device,
+            action: match.action,
+            matched: match.matched,
+            pure,
+          })
+          if (pure) {
+            skipModelDetection = true
+            await this.audit('info', 'guard.model-detect.skip', {
+              reason: 'pure-device-command',
+              device: match.device,
+              action: match.action,
+            })
+          }
+        }
+      } catch (err: any) {
+        // 匹配器异常不得影响安检 —— 走 LLM 路径（更保守）。
+        await this.audit('warn', 'guard.device-command.error', {
+          sessionId,
+          error: err?.message ?? String(err),
+        })
       }
     }
 
@@ -782,6 +861,27 @@ export class PromptGuardServiceImpl extends Service implements PromptGuardServic
     return { allowed: true }
   }
 
+  /**
+   * §7.125 (2026-10-27): the device-command extension terms = patch config
+   *  (config/edge.json stages.intent.deviceCommands) + the policy file's
+   *  stages.intent.deviceCommands (hot-reloadable, read LIVE per check).
+   *  Both are ADDITIVE on top of the built-in vocabulary — the same
+   *  contract intent-router's Tier-0 uses.
+   */
+  private deviceCommandTerms(): { devices: readonly string[]; actions: readonly string[] } {
+    const fromPolicy = (() => {
+      try {
+        return this.privacyPolicy?.getIntentStages?.()?.deviceCommands
+      } catch {
+        return undefined
+      }
+    })()
+    return {
+      devices: this.deviceCommandOverrides.devices.concat(fromPolicy?.devices ?? []),
+      actions: this.deviceCommandOverrides.actions.concat(fromPolicy?.actions ?? []),
+    }
+  }
+
   private async audit(
     level: 'debug' | 'info' | 'warn' | 'error' | 'security',
     kind: string,
@@ -905,10 +1005,14 @@ export async function apply(ctx: any, config: Config): Promise<() => Promise<voi
     ctx.logger?.info?.(`[prompt-guard] modelDetectionModel from config/edge.json: ${config.modelDetectionModel} → ${pool.model}`)
     ;(config as { modelDetectionModel: string }).modelDetectionModel = pool.model
   }
+  // §7.125 (2026-10-27): the device-command layer's extension terms come
+  // from the SAME config surface intent-router uses
+  // (edge.json stages.intent.deviceCommands) — one vocabulary for both layers.
+  const deviceCommands = loadEdgeConfig().stages?.intent?.deviceCommands
   const auditLog = ctx.get?.('auditLog') ?? (ctx as any).auditLog
   const privacyPolicy = ctx.get?.('privacyPolicy')
   const llm = (ctx as any).llm
-  const service = new PromptGuardServiceImpl(ctx, config, privacyPolicy, auditLog, llm)
+  const service = new PromptGuardServiceImpl(ctx, config, privacyPolicy, auditLog, llm, deviceCommands)
   return async () => {
     service.stop()
   }

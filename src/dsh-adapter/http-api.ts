@@ -9,7 +9,7 @@
 import { Service } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http'
-import { randomUUID } from 'node:crypto'
+import { randomUUID, timingSafeEqual } from 'node:crypto'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
@@ -150,9 +150,36 @@ export class HttpApiServiceImpl extends Service {
     void this.auditLog.log({ level, kind, source: 'http-api', payload }).catch(() => {})
   }
 
-  /** One-line access log (visible in /tmp/dsh.log via stdout exporter). */
+  /** One-line access log (visible in /tmp/dsh.log via stdout exporter).
+   *
+   *  §7.123 (2026-10-27): wrapped in try/catch + optional chaining, the same
+   *  pattern the §7.46.5 chat lines already use. This helper runs on EVERY
+   *  request, so an unguarded `this.ctx.logger?.info?.(...)` meant a logger
+   *  that throws (full disk, a formatter bug, a broken exporter) turned
+   *  every HTTP call into a 500 — the observability path took the data path
+   *  down with it. A log line must never be able to fail a request. */
   private accessLog(reqId: string, method: string, path: string, status: number, durationMs: number, extra?: string): void {
-    this.ctx.logger?.info?.(`[http-api][${reqId}] ${method} ${path} ${status} ${durationMs}ms${extra ? ' ' + extra : ''}`)
+    this.safeLog('info', `[http-api][${reqId}] ${method} ${path} ${status} ${durationMs}ms${extra ? ' ' + extra : ''}`)
+  }
+
+  /**
+   * §7.123 (2026-10-27): logger call that can never throw.
+   *
+   * A logger is not a trusted dependency: a full disk, a broken exporter or
+   * a formatter bug makes `logger.info(...)` throw. On the request path that
+   * turned a successful chat into a 500 (see `ensureSession`'s "Creating
+   * agent" line, which sat unguarded in the middle of session creation).
+   * Observability must never be able to fail the data path.
+   */
+  private safeLog(level: 'debug' | 'info' | 'warn' | 'error', line: string): void {
+    try {
+      const logger = this.ctx?.logger as
+        | { debug?: (l: string) => void; info?: (l: string) => void; warn?: (l: string) => void; error?: (l: string) => void }
+        | undefined
+      logger?.[level]?.(line)
+    } catch {
+      // Intentionally swallowed — see the doc comment.
+    }
   }
 
   /** Append a recent-message entry to the session's ring buffer. Evicts
@@ -295,7 +322,28 @@ export class HttpApiServiceImpl extends Service {
     // back to in-memory metadata (tests run that way).
     this.sessionsHelper = new HttpApiSessionsImpl(this.cordisCtx)
 
-    this.server = createServer((req, res) => this.handleRequest(req, res))
+    // §7.123 (2026-10-27): the server callback must not drop the promise.
+    // `handleRequest` is async; an unhandled rejection inside it (a
+    // throwing logger, a malformed route param) would otherwise surface as
+    // an unhandledRejection and — depending on the host's process policy —
+    // terminate the process. Catch here, answer 500, and log defensively.
+    this.server = createServer((req, res) => {
+      void this.handleRequest(req, res).catch((err: unknown) => {
+        try {
+          this.ctx.logger?.error?.(`[http-api] unhandled request error: ${(err as Error)?.message ?? String(err)}`)
+        } catch {
+          // logger may be the thing that threw — do not re-throw.
+        }
+        if (!res.headersSent) {
+          res.writeHead(500, { 'Content-Type': 'application/json' })
+        }
+        try {
+          res.end(JSON.stringify({ error: 'Internal error' }))
+        } catch {
+          // socket already gone.
+        }
+      })
+    })
     await new Promise<void>((resolve, reject) => {
       this.server!.once('error', reject)
       this.server!.listen(this.config.port, this.config.host, () => {
@@ -433,11 +481,26 @@ export class HttpApiServiceImpl extends Service {
   }
 
   private checkAuth(req: IncomingMessage): boolean {
-    if (!this.config.bearerToken) return true
+    // Fail-CLOSED: an unset token means "no credential exists", not "any
+    // credential is acceptable". The previous fail-open branch
+    // (`if (!this.config.bearerToken) return true`) turned a missing
+    // secrets.edgeApiKey into a fully open API — /v1/audit, session
+    // delete/fork included. apply() now refuses to start without a token,
+    // so reaching here with an empty token means the service was constructed
+    // directly (tests / embedding) — deny.
+    const expected = this.config.bearerToken
+    if (!expected) return false
     const auth = req.headers.authorization
     if (!auth) return false
     const [scheme, token] = auth.split(' ')
-    return scheme === 'Bearer' && token === this.config.bearerToken
+    if (scheme !== 'Bearer' || !token) return false
+    // Constant-time compare: a length-independent byte comparison keeps the
+    // token out of reach of timing analysis. `timingSafeEqual` throws when
+    // the buffers differ in length, so the length check comes first.
+    const a = Buffer.from(token, 'utf-8')
+    const b = Buffer.from(expected, 'utf-8')
+    if (a.length !== b.length) return false
+    return timingSafeEqual(a, b)
   }
 
   private async handleChat(req: IncomingMessage, res: ServerResponse, reqId: string, start: number, body: any): Promise<void> {
@@ -625,7 +688,7 @@ export class HttpApiServiceImpl extends Service {
         resolve(text.length === 0 && lastError ? { result: '', upstreamError: lastError } : { result: text })
       }).catch((err) => {
         // Driver crashed mid-loop (rare). Fall back to best-effort snapshot.
-        this.ctx?.logger?.warn?.(`[http-api] whenIdle rejected, falling back to snapshot sessionId=${sessionId} err=${String(err)}`)
+        this.safeLog('warn', `[http-api] whenIdle rejected, falling back to snapshot sessionId=${sessionId} err=${String(err)}`)
         if (blockedFired) return
         dispose()
         const events = snapshotSessionEvents(record.agent.session as any)
@@ -1292,7 +1355,7 @@ export class HttpApiServiceImpl extends Service {
     }
     catch (error) {
       const reason = error instanceof Error ? error.message : String(error)
-      this.ctx.logger?.warn?.(`[http-api] agent preset (default) unavailable (${reason}) — composing session without a preset`)
+      this.safeLog('warn', `[http-api] agent preset (default) unavailable (${reason}) — composing session without a preset`)
       return {}
     }
     return {
@@ -1310,7 +1373,7 @@ export class HttpApiServiceImpl extends Service {
       if (this.config.maxActiveSessions > 0 && this.sessions.size >= this.config.maxActiveSessions) {
         await this.evictLeastRecentSession()
       }
-      this.ctx.logger?.info?.(`[http-api] Creating agent with provider=${provider}, model=${model}`)
+      this.safeLog('info', `[http-api] Creating agent with provider=${provider}, model=${model}`)
       // §7.38 (2026-09-04): compose preset before agents.create() so the agent
       // joins the standard preset (tools + skills + prompt sections).
       // Without this, dsh-agent-presets logs
@@ -1339,7 +1402,7 @@ export class HttpApiServiceImpl extends Service {
         // joining an agent preset" and the agent runs on empty global layer.
         ...(composed.setup === undefined ? {} : { setup: composed.setup }),
       })
-      this.ctx.logger?.info?.(`[http-api] Agent created successfully`)
+      this.safeLog('info', '[http-api] Agent created successfully')
       const now = Date.now()
       record = {
         agent: handle.agent,
@@ -1814,9 +1877,7 @@ export async function apply(ctx: any, config: Config): Promise<() => Promise<voi
   // §7.102: the bearer token's historic source was the bare EDGE_API_KEY env
   // exported by .env.sh (`set -a; . .env`) — with the file-based config that
   // chain is gone, so an unset config.bearerToken must fall back to
-  // secrets.edgeApiKey in config/edge.json. checkAuth() is fail-open on an
-  // unset token, so when BOTH are empty we say so loudly in the log instead
-  // of silently serving an unauthenticated API.
+  // secrets.edgeApiKey in config/edge.json.
   const cfg = loadEdgeConfig(true)
   // §7.102: bind / session / body knobs likewise come from config/edge.json
   // (http.* / resources.*), explicit row values first, literals last.
@@ -1834,12 +1895,18 @@ export async function apply(ctx: any, config: Config): Promise<() => Promise<voi
       (config as { bearerToken?: string }).bearerToken = fromFile
     }
   }
-  if (config.bearerToken === undefined) {
-    ctx.logger?.warn?.(
-      '[http-api] no bearerToken configured (config/edge.json secrets.edgeApiKey is empty) '
-      + '— the HTTP API will accept requests WITHOUT authentication. '
-      + 'Set secrets.edgeApiKey or keep the API disabled.',
+  if (!config.bearerToken) {
+    // Fail-CLOSED at startup: the API exposes /v1/audit (full decision log)
+    // and session delete/fork. Serving it without a credential is worse than
+    // not serving it at all — a caller cannot distinguish "no API" from
+    // "open API", and the operator's intent (a loopback-only, credential-
+    // gated control plane) is silently violated. Refuse to start.
+    ctx.logger?.error?.(
+      '[http-api] REFUSING TO START: no bearerToken configured '
+      + '(config/edge.json secrets.edgeApiKey is empty). '
+      + 'Set secrets.edgeApiKey, or remove the http-api row from the patch.',
     )
+    throw new Error('http-api: bearerToken is required (set secrets.edgeApiKey in config/edge.json)')
   }
   const agents = ctx.get('agents')
   const auditLog = ctx.get('auditLog')

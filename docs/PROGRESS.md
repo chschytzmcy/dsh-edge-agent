@@ -11614,3 +11614,340 @@ LLM 分类器 classifyWithLlm                            ← 真正的 local-llm
 
 单测 55 文件 / 1132 passed + 2 skipped（新增 8 例）；eslint 0 error；
 双侧类型检查 exit 0；verify:build 11 项门禁 exit 0。
+
+## §7.123 —— 代码审计后的加固批次（2026-10-27）
+
+对全仓做了一次系统性代码审计（68 个源文件 / 20.6K 行，1132 个单测），
+把发现的问题按"隐私语义漏洞 → 部署漂移 → 健壮性 → 工程门禁"四档处理。
+本节记录**改了什么、为什么、以及哪些没改**。
+
+### 一、隐私语义漏洞（本次的核心）
+
+**1. 脱敏只覆盖最后一条 user 消息 —— 历史轮次的 PII 原样出网**
+
+`input-guard.ts:1354` 旧代码：
+```ts
+const newMessages = replaceAtUserIndex(decision.messages ?? payload.messages, originalLastUser.index, result.sanitizedText)
+```
+只重写了 **最后一条** user 消息的 index。但 agent loop 把**整段对话**发给模型，
+所以第 1 轮说出的手机号在第 2 轮随 `messages` 历史原样上云。
+（讽刺的是 intent-router 自己的云调用反而做全量脱敏 —— `intent-router.ts:1999-2032`。
+这个不对称是 bug，不是设计。）
+
+**修复**：新增 `findUserTexts()` / `replaceUserTextsAt()`，对
+`payload.messages` 里的**每一条** user 消息分别脱敏（会话级映射表保证跨轮同值
+同占位符）。只取 `payload.messages` 而非 `decision.messages` ——
+后者尾部有 dsh-agent-instructions 注入的**合成 user-role 运行上下文**，
+那不是用户内容，不能改写。
+
+**2. §7.107 公网信号闸门在 bailian 路径上完全失效**
+
+`config/privacy-policy.json` 的 `semanticCloudMinConfidence: 0.75` 低于
+bailian decision-model 的**合成置信度** 0.9（`intent-router.ts:1642`
+"decisive-by-construction" 占位符）→ `0.9 >= 0.75` 恒成立 → 每一条 CLOUD
+判决都能在没有公网信号的情况下出网，闸门形同虚设。
+
+**修复（两处，缺一不可）**：
+- 阈值 0.75 → **0.95**（高于合成占位符）；
+- 新增 `Intent.confidenceReported` **溯源标记**：解码器区分"模型报了置信度"
+  和"没报、用占位符顶上"，后者**永远不能**满足语义信任阈值
+  （`gateCloudVerdict` 里新增 `intent.cloud.semantic-unlock-skipped` 审计）。
+
+只调阈值是不够的：如果模型固定报 1.0，阈值调到任何值都会放行。溯源标记才是
+真正的护栏。
+
+**3. LLM 判决的正则兜底吞掉 REJECT**
+
+`intent-router.ts:2780` 的 Tier-3 正则只认 `(LOCAL|CLOUD)`，但同文件的
+`coerceClassification` 接受 `LOCAL|CLOUD|SANITIZED|REJECT`。畸形 JSON 的
+REJECT 判决因此落回关键词规则层 —— **丢掉的 REJECT 就是丢掉的阻断**。
+
+**修复**：正则改为完整的四类并集，与 `coerceClassification` 逐字对齐。
+
+### 二、部署漂移
+
+`cordis.patch.yml:579` 的 input-guard 行缺 `realmSkillBridge`，
+而 `input-guard.ts:35-39` 明写"必须 inject realmSkillBridge，否则
+`this.ctx.realmSkillBridge` 永远 undefined"。缺了它，`setSessionRealm()`
+被静默跳过 → 会话 realm 从不落地 → Layer 3 工具闸门没有 realm 可依（fail-open）。
+已补齐。
+
+### 三、健壮性
+
+- **http-api 鉴权 fail-open**：`checkAuth()` 原本在未配置 token 时 `return true`
+  —— `/v1/audit`、session delete/fork 全部裸奔。改为 **fail-closed**：
+  `apply()` 拿不到 `secrets.edgeApiKey` 直接**拒绝启动**；token 比较换
+  `timingSafeEqual`（非常量时间）。
+- **`decodeURIComponent` 崩溃**：`http-api-routes.ts` 的路径参数解码在
+  matcher 里、不在任何 try/catch 内，`%zz` 会抛 URIError → unhandled rejection
+  → 进程退出。已加防御性解码。
+- **logger 抛异常打挂请求**：`ensureSession()` 里的 "Creating agent" 日志行
+  没有 try/catch，logger 一抛（磁盘满 / 格式化 bug）整个 chat 变 500。新增
+  `safeLog()` 统一兜底，并给 server callback 加了 catch（原来 Promise 被丢弃）。
+
+### 四、工程门禁（本次最大的结构性改动）
+
+- **`verify:package` 成了孤儿**：定义在 package.json，但没进 `verify:build`，
+  `.github/` 全仓无引用 —— 而它恰好是"密钥不进 tarball"的那道门。已接入。
+- **零覆盖率测量**：CI 唯一的"覆盖率"门槛是 `TOTAL >= 600` 的用例数下限，
+  加 600 个空 `it()` 就能过。已装 `@vitest/coverage-v8`，在
+  `vitest.config.ts` 里加了**目录级**阈值（`src/dsh-adapter/**` 行 60 /
+  函数 60 / 分支 45），并接进 CI。当前实测 **79.2% 行覆盖**。
+- **三个同义反复的测试文件**：`http-api-session.test.ts`（自建
+  `TestSessionManager` 复刻会话逻辑）、`privacy-precheck.test.ts`（复刻
+  `matchRouting()`）、`http-api.test.ts` 前 343 行（自建 mock server 复刻
+  路由器）—— 断言的都是**副本**，生产代码回归时它们不会红。已全部改成打真实
+  模块（http-api 改成真起 server + 真 HTTP 请求）。
+- **文件拆分**：`intent-router.ts`（2923 行）与 `input-guard.ts`（2086 行）
+  里混着大量**策略数据**（关键词表 / 正则表 / prompt 模板）。已拆出
+  `intent-signals.ts`（关键词与实体表 + fallback 分类法）、
+  `intent-prompts.ts`（两个 prompt 模板）、
+  `input-guard-messages.ts`（messages 数组契约）。判定与策略数据分离。
+
+### 五、桩实现的显式化（不是修，是钉住）
+
+审计确认 **Layer 1 安全基座整体是桩**：`tcm` 的 crypto 返回零字节、
+`ohttp-gateway` 恒返回 200、`secure-bridge` 的 `isBlocked()` 恒 false、
+`attestation` 的 `verifyToken()` 恒无效，另有 `voice-input` / `plugin-host`。
+但 README 把"RFC 9458 零信任""TEE 远程证明"写成了核心特性。
+
+本次**不实装**这些后端（工程量另计），而是：
+1. 新增 `tests/unit/layer1-stubs-and-edge-config.test.ts` —— 把桩行为**钉死**。
+   一旦有人实装真实后端，这些断言会失败，强制在同一变更里更新 README 与
+   architecture.md。这是一条**绊线**，不是对桩的祝福。
+2. README 的"核心特性"改成状态表，明确标注 ✅ 已实装 / 🚧 路线图；
+   `docs/architecture.md` 加"分层实现状态"小节。
+
+### 六、明确没动的
+
+- **jev 云端 provider 把用户原文发到云端**：`intent-router.ts:1559-1564` /
+  `:1262-1268` 把未经脱敏的原文发给决策模型，而 `config/edge.json` 里 jev 指向
+  阿里百炼 MaaS。这与 `stages._comment` 里"分类只吃本地模型"的不变式直接矛盾。
+  **操作者裁决（2026-10-27）：jev 后续会换成本地，此项暂不处理。**
+  但本机的 `config/edge.json` 里那段注释（"当前指向本地 MLX 决策模型"）已经与
+  实际 URL 漂移 —— 下次改配置时顺手校正。
+- **`input-guard.ts:1111` 的 REJECT → CLOUD 静默升格**：当前不可达
+  （http-api 先拦 REJECT），但任何别的 transport 写 `_edgeRoute` 就会中招。
+  留待 §7.124 处理。
+
+### 验证
+
+- 单测：**58 文件 / 1191 passed + 2 skipped**（新增 59 例，删掉 ~40 例同义反复）
+- 覆盖率：`src/dsh-adapter/**` 行 **79.2%** / 分支 78.7% / 函数 73.8%
+- 双侧类型检查 exit 0；eslint 0 error
+- `verify:build` 12 项门禁全绿（含本次接入的 `verify:package`）
+
+---
+
+## §7.124 意图识别三级阶梯：正则优先 → 决策模型 → LLM（2026-10-27）
+
+### 背景：原顺序缺了第一级
+
+用户裁决（2026-10-27）：「意图识别，需要先走正则，快速决策，比如开灯、
+关门、开空调，这些家庭里家电操作，然后才是决策模型分类，最后才是 llm 分类」。
+
+审计 `intent-router.classify()` 确认改造前的实际顺序是：
+
+```
+policy REJECT 正则 → 缓存 → jev 决策模型 → LLM 分类 → (仅 LLM 失败时) 关键词兜底
+```
+
+**正则层是有的，但位置错了** —— 它只在 LLM 抛异常后才跑（`classifyWithRules`）。
+也就是说一条「开灯」要先去问决策模型（本地 MLX 2-3.5s / 云端 ~47ms），甚至
+去问 LLM 分类器（4-30s），才轮得到兜底时才发现答案就在正则里。
+
+三笔账都不划算：
+
+1. **延迟**：5 个字的指令付 5 秒往返。
+2. **确定性**：家电开关是二值动作，没有语义灰度；决策模型和 LLM 只能在
+   「开灯」和「关灯」之间猜。
+3. **隐私**：命中本可以在本地定案，原始指令不必进 jev 的上行请求体 ——
+   jev 指向云端时这一点尤其重要。
+
+### 实现：Tier-0 正则快速层
+
+新增三级阶梯的**第一级**：
+
+| 级 | 形态 | 耗时 | 命中后 |
+|---|---|---|---|
+| **Tier-0** | 家庭设备操作正则 | ~0ms | 直接定案 LOCAL，**不外呼** |
+| Tier-1 | jev 决策模型 | ~150ms-6s | 语义分类 |
+| Tier-2 | LLM 分类器 | 4s-30s | 最后兜底 |
+
+**位置**：`classify()` 内，**缓存之后、jev 之前**。缓存命中本就是 ~0ms 且语义
+等价，没有理由绕过；而必须在 jev 之前，才能兑现「正则优先」。
+
+**判定**：一律 LOCAL —— 家电操作由 LOCAL realm 的设备技能执行，不该上云
+（与 §7.107「默认本地」一致）。
+
+**词表**（`src/dsh-adapter/intent-signals.ts`，§7.123 拆出的策略数据模块）：
+
+- 设备名词：空调/灯/电视/窗帘/风扇/加湿器/热水器/门/锁/插座…（含英文）
+- 动作词：打开/开启/关/启动/熄灭/调到/调暗/设置…（含英文）
+- 否定/疑问词：别/不要/怎么/如何/是否/吗/呢/how to/should i…
+
+**判定规则**（刻意的保守 —— 宁可漏判，不可误判）：
+
+1. 否定/疑问语境出现 → 直接放弃，交下一级。
+2. 动作词与设备名词必须**相邻**，中间只能夹礼貌/处置助词
+   （把/将/请/帮我/一下/了/吧）。这是「打开空调」与「空调的价格」+「打开网页」
+   的分界。
+3. 支持中文两种语序：
+   - 动宾式「打开空调」「开灯」—— 开关类动词的默认语序；
+   - 受事前置「把灯打开」「空调调到26度」—— 处置前缀（把/将/请…）或调参类动词
+     （调到/调低/设置…）许可的倒装语序。
+
+**operator 扩展面**（都��**追加**，不替换内置词表）：
+
+- `config/edge.json` → `stages.intent.deviceCommands.{devices,actions}`
+- `config/privacy-policy.json` → `stages.intent.deviceCommands.{devices,actions}`
+  （**热重载**，intent-router 每轮 classify 实时读取）
+
+加一个新电器名只改一行 JSON，不用改代码。
+
+### 可观测性
+
+- 审计 `intent.device-command.hit`（带 device / action / matched）+ 
+  `intent.classify.end` 的 `path: 'device-command'`。
+- 计数 `getStats().deviceCommandHit` —— 每次命中省下一次决策模型往返。
+- 置信度标记 `confidenceReported: true` —— 正则裁决是**实测**的，不是模型
+  自报的，与 §7.123 的溯源护栏一致。
+
+### 验证
+
+对**重建后的桌面产物**（而非源码树）做端到端活体验证：
+
+```
+DEVICE    18ms  开灯            -> LOCAL  device-command:开:灯
+DEVICE    41ms  关灯            -> LOCAL  device-command:关:灯
+DEVICE     0ms  打开空调         -> LOCAL  device-command:打开:空调
+DEVICE   140ms  把灯打开         -> LOCAL  device-command:打开:灯
+DEVICE    41ms  空调调到26度      -> LOCAL  device-command:调到:空调
+DEVICE     1ms  帮我关一下空调     -> LOCAL  device-command:关:空调
+DEVICE     8ms  turn on the light -> LOCAL  device-command:turn on:light
+  next    25ms  怎么开空调        -> LOCAL  default:local        （疑问句 → 下一级）
+  next     1ms  帮我查一下最新新闻   -> CLOUD  rule-cloud-keyword:新闻
+  next    29ms  你好             -> LOCAL  default:local
+
+stats: deviceCommandHit=7  jevHit=0  llmHit=0  ruleHit=1  total=10
+```
+
+**jev 调用 0 次** —— 正则层确实把决策模型完全短路了。
+
+回归：单测 **59 文件 / 1209 passed + 2 skipped**（新增 18 例，
+`tests/unit/intent-device-command.test.ts`）；覆盖率行 **81.17%**
+（`intent-signals.ts` 行 100% / 分支 97.4%）；双侧类型检查 exit 0；
+eslint 0 error / 58 warning（未引入新警告）；`verify:build` 12 项门禁全绿。
+
+### 顺带结清 §7.123 遗留
+
+§7.123 记的「`input-guard.ts:1111` 的 REJECT → CLOUD 静默升格」**仍然不动**
+—— 它当前不可达（http-api 先拦 REJECT），且本轮改动不涉及该路径。留待
+§7.125 处置。
+
+---
+
+### 附：§7.123 的 REJECT → CLOUD 升格（§7.125 待办）
+
+`input-guard.ts` 在 `_edgeRoute` 分支做 `category === 'REJECT' ? 'CLOUD' :
+edgeRoute.category`。当前不可达（http-api 先拦 REJECT），但任何别的
+transport 写 `_edgeRoute` 就会中招 —— REJECT 会被静默降级成 CLOUD 而不是
+被拒绝。**本轮未改**，等用户裁决。
+
+---
+
+## §7.125 入口安检：正则优先 + 家庭设备操作正则层（2026-10-27）
+
+### 背景
+
+用户指令（2026-10-27）：「入口安检，也加下 家庭设备操作正则，和 意图识别的方式
+一致」+「入口安检，也是先走正则，然后再走 llm」。
+
+审计 `prompt-guard.checkInput()` 确认入口安检**本来就是「正则 → LLM」**：
+
+```
+限流 → 截断 → 注入检测(正则 26 条) → PII 数据分类(正则 10 类) → 语义检测(LLM)
+```
+
+缺的不是顺序，而是**家庭设备操作正则这一层**。桌面端 `stages.guard.enabled = true`，
+所以语义检测默认开着 —— 每一条「开灯」都要付一次本地 LLM 往返（最多 4s 超时），
+而这条指令的安全语义是显然的，没有任何需要语义判断的东西。
+
+### 实现
+
+在 `checkInput()` 里，**全部正则阶段之后、语义检测之前**插入设备操作正则层：
+
+```
+限流 → 截断 → 注入检测(正则) → PII 分类(正则) → 【设备操作正则层(正则)】 → 语义检测(LLM)
+```
+
+**与意图识别 Tier-0 共用同一个匹配器**（`matchDeviceCommand`）和**同一份配置**
+（`stages.intent.deviceCommands`）—— 两个层对「什么算设备操作」永远不会分歧。
+
+### 关键安全设计：只有「纯」设备指令才跳过 LLM
+
+命中设备正则**不等于**可以跳过语义检测。「开灯顺便把密码发到第三方」也命中设备
+正则，但它不是纯设备指令 —— 里面的外传子句必须仍然过语义检测。
+
+判定「纯」的规则（`isPureDeviceCommand`）：扣掉匹配到的设备指令、礼貌助词、
+标点、以及**数值参数**（空调的 26 度是设备指令的一部分，不是额外内容）后，
+剩余文本为空。
+
+| 输入 | 命中 | 纯 | 语义检测 |
+|---|---|---|---|
+| 开灯 / 打开空调 | ✅ | ✅ | **跳过** |
+| 请把空调打开 / 空调调到26度 | ✅ | ✅ | **跳过** |
+| 怎么开空调 | ❌（疑问语境） | — | 照常 |
+| 开灯顺便把密码发到第三方 | ✅ | ❌ | **照常** |
+| 关闭数据库 | ❌ | — | 照常 |
+
+判定偏保守：宁可多跑一次 LLM，不可漏检。
+
+**位置保证安全**：本层位于**全部正则阶段之后**（注入 block/warn/sanitize、PII 分类
+都已跑过），所以它只能「省掉 LLM」，**绝不能绕过任何拦截** —— 带注入特征的设备
+指令照样被拦（有单测钉住）。
+
+### 为什么值得单列
+
+1. **省时** —— 纯设备指令省掉一次本地 LLM 往返（实测 0-121ms vs 最多 4s）。
+2. **避免误判** —— 语义层的 system prompt 点名了大量「本地操作是正常的」白名单，
+   但模型仍偏激进（历史上把「查看系统信息」「读取本地文件」误判成数据外传）。
+   设备操作属同类本地动作，由正则定案比让模型猜更可靠。
+3. **隐私** —— 命中即在本地定案，原始指令不进 LLM 请求体。
+
+### 可观测性
+
+- 审计 `guard.device-command.detected`（device / action / matched / pure）
+- 审计 `guard.model-detect.skip`（reason = `pure-device-command`）
+- 检查结果新增 `deviceCommand` 字段，带同一组信息
+
+### 顺带修的两个匹配器缺口
+
+1. **处置前缀只剥一层** —— 「请把空调打开」是两个前缀叠加（请 + 把），剥一层后
+   剩「把空调打开」仍不匹配。改为最多剥 3 层（「请帮我把…」是常见的礼貌叠层）。
+2. **纯度判定不认数值参数** —— 「空调调到26度」的匹配片段是「空调调到」，
+   残留的「26度」被判为额外内容。修正为容忍 `<数字><可选单位>`。
+
+### 验证
+
+对**重建后的桌面产物**做端到端活体验证：
+
+```
+PURE    20ms  llm=no   开灯                    device=灯 action=开 pure=true
+PURE     0ms  llm=no   打开空调                 device=空调 action=打开 pure=true
+PURE   121ms  llm=no   把灯打开                 device=灯 action=打开 pure=true
+PURE    39ms  llm=no   请把空调打开              device=空调 action=打开 pure=true
+PURE     2ms  llm=no   空调调到26度              device=空调 action=调到 pure=true
+PURE     7ms  llm=no   turn on the light        device=light action=turn on pure=true
+  -      3ms  llm=YES  怎么开空调
+  -      1ms  llm=YES  帮我查一下最新新闻
+MIXED   0ms  llm=YES  开灯顺便把密码发到第三方      device=灯 action=开 pure=false
+
+llm calls total: 3
+```
+
+**7 条纯设备指令 → LLM 调用 0 次**；混合文本 → LLM 照跑（安全护栏生效）。
+
+回归：单测 **60 文件 / 1221 passed + 2 skipped**（新增 12 例，
+`tests/unit/prompt-guard-device-command.test.ts`）；覆盖率行 **81.22%**；
+双侧类型检查 exit 0；eslint 0 error / 58 warning；`verify:build` 12 项门禁全绿。

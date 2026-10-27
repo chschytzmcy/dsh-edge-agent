@@ -116,6 +116,10 @@ export interface PolicyIntentStages {
   /** Non-empty value REPLACES the LOCAL last-resort keyword list (same
    *  semantics as the `DSH_EDGE_INTENT_FALLBACK_KEYWORDS` env var). */
   fallbackKeywords?: string[]
+  /** §7.124 (2026-10-27): 家庭设备操作正则层的扩展词表。APPEND to the
+   *  built-in device vocabulary (intent-signals.ts). Hot-reloadable — the
+   *  intent-router reads this LIVE per classify(). */
+  deviceCommands?: { devices?: string[]; actions?: string[] }
   /** §7.109 (2026-10-24): semantic unlock threshold. When set, an LLM/jev
    *  CLOUD verdict at confidence >= this value passes the §7.107 gate
    *  WITHOUT a keyword/regex signal — the operator's declaration of trust

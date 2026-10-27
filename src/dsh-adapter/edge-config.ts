@@ -91,6 +91,8 @@ export interface EdgeStage {
   cloudKeywords?: string[]
   localEntities?: string[]
   fallbackKeywords?: string[]
+  /** §7.124 (2026-10-27): 家庭设备操作正则层的扩展词表（追加到内置词表）。 */
+  deviceCommands?: { devices?: string[]; actions?: string[] }
 }
 
 export interface EdgeJevConfig {
@@ -283,6 +285,8 @@ export const DEFAULT_EDGE_CONFIG: EdgeConfig = {
       cloudKeywords: [],
       localEntities: [],
       fallbackKeywords: [],
+      // §7.124: 内置词表已覆盖常见家电；此处是 operator 追加面。
+      deviceCommands: { devices: [], actions: [] },
     },
   },
   jev: {

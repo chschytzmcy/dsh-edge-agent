@@ -9,12 +9,26 @@
 
 ## ✨ 核心特性
 
-- **🔒 端侧优先**：默认本地 LLM 处理，云端仅在明确需要时调用
-- **🛡️ 隐私保护**：PII 自动脱敏 + 隐私策略热重载（[AES-256-GCM 加密存储](./docs/PROGRESS.md#planned)）
-- **🌐 零信任通信**：RFC 9458 OHTTP 协议，云端无法关联用户身份与请求
-- **🚨 威胁检测**：实时监控异常行为，自动隔离可疑流量
-- **🔌 插件化**：19 个 plugin（含 1 桌面 webview bundle），全部 subpath 导出
-- **🖥️ 三平台**：Windows / macOS / Linux 各自一条构建命令（`npm run build:windows|macos|linux`）；桌面版三平台通吃，独立 HTTP profile 见支持矩阵
+> **实现状态说明（2026-10-27）**：下表区分「已实装」与「路线图」。
+> Layer 1 安全基座（`tcm` / `ohttp-gateway` / `secure-bridge` / `attestation`）
+> 目前是**桩实现**（crypto 返回零字节、网关恒返回 200），尚未接入真实 TEE 与
+> RFC 9458 中继。**当前真正生效的隐私保证来自 Layer 2**（脱敏管线 + 策略引擎
+> + 审计链 + Realm 闸门）。详见
+> [docs/architecture.md](./docs/architecture.md#第1章-总览四层模型--realm--cordis-插件机制)
+> 的分层状态表与 `tests/unit/layer1-stubs-and-edge-config.test.ts`
+> （桩契约测试：一旦有人实装真实后端，这些断言会失败，强制同步改文档）。
+
+| 能力 | 状态 | 说明 |
+|---|---|---|
+| **🔒 端侧优先** | ✅ 已实装 | 默认本地 LLM 处理，云端仅在明确需要时调用；`stages.*.provider` 固定走本地模型 |
+| **🛡️ 隐私保护** | ✅ 已实装 | PII 可逆脱敏（10 类规则，单一事实源）+ 不可逆日志掩码 + 隐私策略热重载 + 策略文件 HMAC 签名校验 |
+| **🚦 Realm 三级闸门** | ✅ 已实装 | LOCAL → SANITIZED → CLOUD；分类→脱敏→路由→执行的完整拦截链，缺件即降级本地 |
+| **🚨 威胁检测** | ✅ 已实装 | `td-bus` 滑动窗口计数 + 分级 + 隔离；超阈值返回 503 |
+| **📜 审计与可追溯** | ✅ 已实装 | 追加式 JSONL 审计链 + ops log 详细 LLM request/response 追踪（PII + 厂商密钥双重脱敏） |
+| **🔌 插件化** | ✅ 已实装 | 22+1 个 plugin（含 1 桌面 webview bundle），全部 subpath 导出，`verify:*` 门禁锁死装配面 |
+| **🌐 零信任通信** | 🚧 路线图 | RFC 9458 OHTTP 网关为**桩实现**；当前云端通道走标准 TLS |
+| **🔑 TEE / 远程证明** | 🚧 路线图 | `tcm` / `attestation` 为**桩实现**；真实 TEE 后端待接入 |
+| **🖥️ 三平台** | ✅ 已实装 | Windows / macOS / Linux 各自一条构建命令（`npm run build:windows|macos|linux`）；桌面版三平台通吃，独立 HTTP profile 见支持矩阵 |
 
 ## 🏗️ 架构速览
 

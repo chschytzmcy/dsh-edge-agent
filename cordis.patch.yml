@@ -576,7 +576,14 @@
         # functionCallExternalProbeTimeoutMs: !!js parseInt(process.env.DSH_EDGE_FUNCTION_CALL_EXTERNAL_PROBE_TIMEOUT_MS ?? '2000', 10)
     - id: input-guard
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/input-guard'
-      inject: [promptGuard, privacyPolicy, intentRouter, sanitizer, auditLog]
+      # §7.123 (2026-10-27): realmSkillBridge was missing here while
+      # input-guard.ts:35-39 declares it MANDATORY ("必须 inject realmSkillBridge，
+      # 否则 this.ctx.realmSkillBridge 永远 undefined"). With it absent,
+      # setSessionRealm() was silently skipped → the session realm was never
+      # registered → the Layer-3 tools/pre-execute gate had no realm to
+      # enforce against (fail-open). The row now matches the plugin's own
+      # inject declaration.
+      inject: [promptGuard, privacyPolicy, intentRouter, sanitizer, auditLog, realmSkillBridge]
       config:
         # §7.102 (2026-10-21): 开关 + 降级 model 迁到 config/edge.json
         # (privacy.* + llm.local.model)。patch 不再读 process.env。

@@ -136,7 +136,14 @@ function fakeSanitizer(overrides: {
         const token = overrides.token ?? '[PII_1]'
         const sanitized = n > 0 ? text.replace(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/, token) : text
         const replacements = Array.from({ length: n }, (_, i) => ({
-          type: 'email', original: 'user@example.com', token: `${token}_${i}`,
+          // §7.123: align with sanitizer-pipeline's real `Replacement` shape
+          // ({ original, placeholder, piiType, dataClass, keptPrefix? }) —
+          // the duck-typed interface in input-guard.ts used to declare a
+          // stale `{ type, original, token }` that no producer ever emitted.
+          original: 'user@example.com',
+          placeholder: `${token}_${i}`,
+          piiType: 'email',
+          dataClass: 'confidential',
         }))
         return { sanitizedText: sanitized, sessionId: ctx?.sessionId ?? 's', replacements }
       },

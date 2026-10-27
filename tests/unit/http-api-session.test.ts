@@ -1,266 +1,240 @@
 /**
- * http-api session management tests — session expiration, audit, max sessions.
+ * http-api session management tests — against the REAL `HttpApiServiceImpl`.
  *
- * Tests session management logic through a lightweight test harness
- * that simulates the key behaviors.
+ * §7.123 (2026-10-27): this file used to define its own `TestSessionManager`
+ * class ("Test harness that mimics the session management logic in
+ * HttpApiServiceImpl") and assert against THAT copy. A copy cannot fail when
+ * the production code regresses — it only proves the test author's
+ * re-implementation was self-consistent. Every assertion below now drives
+ * the production service (`ensureSession`, `cleanupExpiredSessions`,
+ * `evictLeastRecentSession`, `handleDeleteSession`, `handleListSessions`).
  */
 import assert from 'node:assert/strict'
-import { describe, it, beforeEach } from 'vitest'
+import { describe, it } from 'vitest'
 
-interface SessionRecord {
-  id: string
-  createdAt: number
-  lastAccessedAt: number
+import { HttpApiServiceImpl } from '../../src/dsh-adapter/http-api.ts'
+
+/** Minimal ServerResponse double capturing status + body. */
+function mockRes() {
+  const cap: any = { status: 0, body: undefined }
+  const res: any = {
+    writeHead(status: number) { cap.status = status; return res },
+    setHeader() { return res },
+    end(payload?: any) { cap.body = payload; return res },
+    write(_chunk: any) { return true },
+    on(_event: string, _fn: any) { return res },
+  }
+  return { res, cap }
 }
 
-/**
- * Test harness that mimics the session management logic in HttpApiServiceImpl.
- */
-class TestSessionManager {
-  private sessions = new Map<string, SessionRecord>()
-  private auditLog: Array<{ kind: string; payload: Record<string, unknown> }> = []
-
-  constructor(
-    private sessionIdleTimeoutMs: number,
-    private maxActiveSessions: number,
-  ) {}
-
-  getAuditLog() {
-    return this.auditLog
-  }
-
-  getSessionCount() {
-    return this.sessions.size
-  }
-
-  hasSession(id: string) {
-    return this.sessions.has(id)
-  }
-
-  getSession(id: string) {
-    return this.sessions.get(id)
-  }
-
-  async ensureSession(id: string) {
-    let record = this.sessions.get(id)
-    if (!record) {
-      // Check max and evict if needed
-      if (this.maxActiveSessions > 0 && this.sessions.size >= this.maxActiveSessions) {
-        this.evictLeastRecentSession()
-      }
-      const now = Date.now()
-      record = { id, createdAt: now, lastAccessedAt: now }
-      this.sessions.set(id, record)
-      this.auditLog.push({ kind: 'session.created', payload: { sessionId: id, totalSessions: this.sessions.size } })
-    } else {
-      record.lastAccessedAt = Date.now()
-    }
-    return record
-  }
-
-  async deleteSession(id: string) {
-    if (this.sessions.has(id)) {
-      this.sessions.delete(id)
-      this.auditLog.push({ kind: 'session.deleted', payload: { sessionId: id } })
-    }
-  }
-
-  cleanupExpiredSessions() {
-    if (this.sessionIdleTimeoutMs <= 0) return
-    const now = Date.now()
-    const expired: string[] = []
-    for (const [id, record] of this.sessions.entries()) {
-      if (now - record.lastAccessedAt > this.sessionIdleTimeoutMs) {
-        expired.push(id)
-      }
-    }
-    for (const id of expired) {
-      const record = this.sessions.get(id)
-      if (record) {
-        this.sessions.delete(id)
-        this.auditLog.push({
-          kind: 'session.expired',
-          payload: { sessionId: id, idleMs: now - record.lastAccessedAt },
-        })
-      }
-    }
-  }
-
-  private evictLeastRecentSession() {
-    let oldest: { id: string; lastAccessedAt: number } | null = null
-    for (const [id, record] of this.sessions.entries()) {
-      if (!oldest || record.lastAccessedAt < oldest.lastAccessedAt) {
-        oldest = { id, lastAccessedAt: record.lastAccessedAt }
-      }
-    }
-    if (oldest) {
-      this.sessions.delete(oldest.id)
-      this.auditLog.push({
-        kind: 'session.evicted',
-        payload: { sessionId: oldest.id, reason: 'max-active-sessions-reached' },
-      })
-    }
-  }
-
-  /** Manually set lastAccessedAt for testing expiration. */
-  setLastAccessed(id: string, offsetMs: number) {
-    const record = this.sessions.get(id)
-    if (record) {
-      record.lastAccessedAt = Date.now() - offsetMs
-    }
+/** Fake `agents` service: `create()` returns the AgentHandle itself
+ *  (the production code reads `handle.agent` and calls `handle.dispose()`). */
+function fakeAgents() {
+  const created: string[] = []
+  const disposed: string[] = []
+  return {
+    created,
+    disposed,
+    api: {
+      async create(opts: any) {
+        const id = String(opts?.sessionId ?? 'unknown')
+        created.push(id)
+        return {
+          agent: { id, session: { id } },
+          async dispose() { disposed.push(id) },
+          async whenIdle() {},
+        }
+      },
+    },
   }
 }
 
-describe('http-api session management', () => {
+function fakeAuditLog() {
+  const entries: any[] = []
+  return { entries, api: { log: async (e: any) => { entries.push(e) } } }
+}
+
+function fakeCtx() {
+  return {
+    reflect: { provide(_n: string, _v: unknown) { return () => {} } },
+    provide(_n: string, _v: unknown) { return () => {} },
+    on: () => () => {},
+  }
+}
+
+function buildService(opts: {
+  sessionIdleTimeoutMs?: number
+  maxActiveSessions?: number
+} = {}) {
+  const audit = fakeAuditLog()
+  const agents = fakeAgents()
+  const svc = new HttpApiServiceImpl(
+    fakeCtx() as any,
+    {
+      host: '127.0.0.1',
+      port: 0,
+      bearerToken: 'test-token',
+      sessionIdleTimeoutMs: opts.sessionIdleTimeoutMs ?? 30_000,
+      maxActiveSessions: opts.maxActiveSessions ?? 10,
+      maxRequestBodyBytes: 1024 * 1024,
+    } as any,
+    agents.api as any,
+    audit.api as any,
+  )
+  return { svc, audit, agents }
+}
+
+/** The production session map (private field — accessed for assertions). */
+function sessionsOf(svc: any): Map<string, any> {
+  return svc.sessions
+}
+
+describe('http-api session management (production service)', () => {
   describe('session creation', () => {
-    it('creates a new session with createdAt and lastAccessedAt', async () => {
-      const mgr = new TestSessionManager(30000, 10)
-      const record = await mgr.ensureSession('s1')
+    it('creates a session and records createdAt / lastAccessedAt', async () => {
+      const { svc } = buildService()
+      const record = await (svc as any).ensureSession('s1')
       assert.ok(record.createdAt > 0)
       assert.ok(record.lastAccessedAt >= record.createdAt)
-      assert.equal(mgr.getSessionCount(), 1)
+      assert.equal(sessionsOf(svc).size, 1)
+      assert.equal(sessionsOf(svc).has('s1'), true)
     })
 
     it('audits session creation', async () => {
-      const mgr = new TestSessionManager(30000, 10)
-      await mgr.ensureSession('s1')
-      const log = mgr.getAuditLog()
-      assert.equal(log.length, 1)
-      assert.equal(log[0]!.kind, 'session.created')
-      assert.equal(log[0]!.payload.sessionId, 's1')
+      const { svc, audit } = buildService()
+      await (svc as any).ensureSession('s1')
+      const created = audit.entries.filter((e) => e.kind === 'session.created')
+      assert.equal(created.length, 1)
+      assert.equal(created[0].payload.sessionId, 's1')
     })
 
-    it('updates lastAccessedAt on subsequent access', async () => {
-      const mgr = new TestSessionManager(30000, 10)
-      const r1 = await mgr.ensureSession('s1')
-      const firstAccess = r1.lastAccessedAt
-      // Small delay
+    it('updates lastAccessedAt on subsequent access and does NOT re-create the agent', async () => {
+      const { svc, agents } = buildService()
+      const first = await (svc as any).ensureSession('s1')
+      const firstAccess = first.lastAccessedAt
       await new Promise((r) => setTimeout(r, 5))
-      const r2 = await mgr.ensureSession('s1')
-      assert.ok(r2.lastAccessedAt >= firstAccess)
-      assert.equal(mgr.getSessionCount(), 1)
+      const second = await (svc as any).ensureSession('s1')
+      assert.ok(second.lastAccessedAt >= firstAccess)
+      assert.equal(sessionsOf(svc).size, 1)
+      // A second ensureSession on an existing id must NOT spawn a second agent.
+      assert.equal(agents.created.length, 1)
     })
   })
 
   describe('session expiration', () => {
-    it('expires sessions idle longer than timeout', async () => {
-      const mgr = new TestSessionManager(100, 10) // 100ms timeout
-      await mgr.ensureSession('s1')
-      await mgr.ensureSession('s2')
-      // s1 is now idle
-      mgr.setLastAccessed('s1', 200) // 200ms ago
+    it('expires sessions idle longer than the timeout and disposes the agent', async () => {
+      const { svc, agents } = buildService({ sessionIdleTimeoutMs: 100 })
+      await (svc as any).ensureSession('s1')
+      await (svc as any).ensureSession('s2')
+      // Backdate s1 so it looks idle.
+      sessionsOf(svc).get('s1').lastAccessedAt = Date.now() - 200
 
-      mgr.cleanupExpiredSessions()
-      assert.equal(mgr.getSessionCount(), 1)
-      assert.ok(!mgr.hasSession('s1'))
-      assert.ok(mgr.hasSession('s2'))
+      ;(svc as any).cleanupExpiredSessions()
+
+      assert.equal(sessionsOf(svc).has('s1'), false, 's1 应被过期清理')
+      assert.equal(sessionsOf(svc).has('s2'), true, 's2 仍在活动期')
+      assert.ok(agents.disposed.includes('s1'), '过期会话的 agent handle 应被 dispose')
     })
 
     it('audits session expiration', async () => {
-      const mgr = new TestSessionManager(100, 10)
-      await mgr.ensureSession('s1')
-      mgr.setLastAccessed('s1', 200)
+      const { svc, audit } = buildService({ sessionIdleTimeoutMs: 100 })
+      await (svc as any).ensureSession('s1')
+      sessionsOf(svc).get('s1').lastAccessedAt = Date.now() - 200
 
-      mgr.cleanupExpiredSessions()
-      const log = mgr.getAuditLog()
-      const expired = log.filter((e) => e.kind === 'session.expired')
+      ;(svc as any).cleanupExpiredSessions()
+
+      const expired = audit.entries.filter((e) => e.kind === 'session.expired')
       assert.equal(expired.length, 1)
-      assert.equal(expired[0]!.payload.sessionId, 's1')
+      assert.equal(expired[0].payload.sessionId, 's1')
     })
 
-    it('does not expire sessions when timeout is 0', async () => {
-      const mgr = new TestSessionManager(0, 10)
-      await mgr.ensureSession('s1')
-      mgr.setLastAccessed('s1', 999999)
+    it('does not expire sessions when the timeout is 0', async () => {
+      const { svc } = buildService({ sessionIdleTimeoutMs: 0 })
+      await (svc as any).ensureSession('s1')
+      sessionsOf(svc).get('s1').lastAccessedAt = Date.now() - 999_999
 
-      mgr.cleanupExpiredSessions()
-      assert.equal(mgr.getSessionCount(), 1) // still alive
+      ;(svc as any).cleanupExpiredSessions()
+
+      assert.equal(sessionsOf(svc).size, 1, 'timeout=0 表示永不过期')
     })
 
     it('does not expire recently accessed sessions', async () => {
-      const mgr = new TestSessionManager(30000, 10)
-      await mgr.ensureSession('s1')
-      await mgr.ensureSession('s2')
-      // Both accessed recently
-      mgr.cleanupExpiredSessions()
-      assert.equal(mgr.getSessionCount(), 2)
+      const { svc } = buildService({ sessionIdleTimeoutMs: 30_000 })
+      await (svc as any).ensureSession('s1')
+      await (svc as any).ensureSession('s2')
+
+      ;(svc as any).cleanupExpiredSessions()
+
+      assert.equal(sessionsOf(svc).size, 2)
     })
   })
 
-  describe('session deletion', () => {
-    it('removes session and audits deletion', async () => {
-      const mgr = new TestSessionManager(30000, 10)
-      await mgr.ensureSession('s1')
-      await mgr.deleteSession('s1')
-      assert.equal(mgr.getSessionCount(), 0)
-      const log = mgr.getAuditLog()
-      const deleted = log.filter((e) => e.kind === 'session.deleted')
-      assert.equal(deleted.length, 1)
-    })
+  describe('LRU eviction at maxActiveSessions', () => {
+    it('evicts the least-recently-used session and audits it', async () => {
+      const { svc, audit, agents } = buildService({ maxActiveSessions: 2 })
+      await (svc as any).ensureSession('s1')
+      await new Promise((r) => setTimeout(r, 5))
+      await (svc as any).ensureSession('s2')
+      // Touch s2 so s1 becomes the least-recently-used.
+      await new Promise((r) => setTimeout(r, 5))
+      await (svc as any).ensureSession('s2')
+      await new Promise((r) => setTimeout(r, 5))
 
-    it('handles deleting non-existent session', async () => {
-      const mgr = new TestSessionManager(30000, 10)
-      await mgr.deleteSession('nonexistent')
-      assert.equal(mgr.getSessionCount(), 0)
-    })
-  })
+      await (svc as any).ensureSession('s3') // over the cap → evict LRU
 
-  describe('max active sessions (LRU eviction)', () => {
-    it('evicts LRU session when max is reached', async () => {
-      const mgr = new TestSessionManager(30000, 3)
-      await mgr.ensureSession('s1')
-      await new Promise((r) => setTimeout(r, 2))
-      await mgr.ensureSession('s2')
-      await new Promise((r) => setTimeout(r, 2))
-      await mgr.ensureSession('s3')
-      assert.equal(mgr.getSessionCount(), 3)
+      assert.equal(sessionsOf(svc).has('s1'), false, 's1（最久未访问）应被淘汰')
+      assert.equal(sessionsOf(svc).has('s2'), true)
+      assert.equal(sessionsOf(svc).has('s3'), true)
+      assert.equal(sessionsOf(svc).size, 2)
 
-      // s4 triggers eviction of s1 (oldest lastAccessedAt)
-      await mgr.ensureSession('s4')
-      assert.equal(mgr.getSessionCount(), 3)
-      assert.ok(!mgr.hasSession('s1'))
-      assert.ok(mgr.hasSession('s2'))
-      assert.ok(mgr.hasSession('s3'))
-      assert.ok(mgr.hasSession('s4'))
-    })
-
-    it('audits eviction', async () => {
-      const mgr = new TestSessionManager(30000, 2)
-      await mgr.ensureSession('s1')
-      await new Promise((r) => setTimeout(r, 2))
-      await mgr.ensureSession('s2')
-
-      await mgr.ensureSession('s3')
-      const log = mgr.getAuditLog()
-      const evicted = log.filter((e) => e.kind === 'session.evicted')
+      const evicted = audit.entries.filter((e) => e.kind === 'session.evicted')
       assert.equal(evicted.length, 1)
-      assert.equal(evicted[0]!.payload.sessionId, 's1')
-      assert.equal(evicted[0]!.payload.reason, 'max-active-sessions-reached')
+      assert.equal(evicted[0].payload.sessionId, 's1')
+      assert.equal(evicted[0].payload.reason, 'max-active-sessions-reached')
+      assert.ok(agents.disposed.includes('s1'), '被淘汰会话的 agent handle 应被 dispose')
+    })
+  })
+
+  describe('session deletion (DELETE /v1/sessions/{id})', () => {
+    it('404s for an unknown session', async () => {
+      const { svc } = buildService()
+      const { res, cap } = mockRes()
+      await (svc as any).handleDeleteSession('nope', res)
+      assert.equal(cap.status, 404)
     })
 
-    it('does not evict when maxActiveSessions is 0 (unlimited)', async () => {
-      const mgr = new TestSessionManager(30000, 0)
-      for (let i = 0; i < 20; i++) {
-        await mgr.ensureSession(`s${i}`)
-      }
-      assert.equal(mgr.getSessionCount(), 20)
+    it('204s for a known session, disposes the agent and audits the delete', async () => {
+      const { svc, audit, agents } = buildService()
+      await (svc as any).ensureSession('s1')
+      const { res, cap } = mockRes()
+
+      await (svc as any).handleDeleteSession('s1', res)
+
+      assert.equal(cap.status, 204)
+      assert.equal(sessionsOf(svc).has('s1'), false)
+      assert.ok(agents.disposed.includes('s1'))
+      const deleted = audit.entries.filter((e) => e.kind === 'session.deleted')
+      assert.equal(deleted.length, 1)
+      assert.equal(deleted[0].payload.sessionId, 's1')
     })
+  })
 
-    it('evicts LRU, not MRU, when idle times differ', async () => {
-      const mgr = new TestSessionManager(30000, 3)
-      await mgr.ensureSession('s1')
-      await new Promise((r) => setTimeout(r, 2))
-      await mgr.ensureSession('s2')
-      await new Promise((r) => setTimeout(r, 2))
-      await mgr.ensureSession('s3')
+  describe('session listing (GET /v1/sessions)', () => {
+    it('lists the live sessions with their timestamps', async () => {
+      const { svc } = buildService()
+      await (svc as any).ensureSession('s1')
+      await (svc as any).ensureSession('s2')
+      const { res, cap } = mockRes()
 
-      // Access s1 to make it most-recent
-      await mgr.ensureSession('s1')
+      ;(svc as any).handleListSessions(res)
 
-      // s2 is now the LRU
-      await mgr.ensureSession('s4')
-      assert.ok(!mgr.hasSession('s2'), 's2 should be evicted as LRU')
-      assert.ok(mgr.hasSession('s1'), 's1 should survive as recently accessed')
+      assert.equal(cap.status, 200)
+      const body = JSON.parse(cap.body)
+      assert.equal(body.sessions.length, 2)
+      const ids = body.sessions.map((s: any) => s.sessionId).sort()
+      assert.deepEqual(ids, ['s1', 's2'])
+      assert.ok(body.sessions[0].createdAt > 0)
+      assert.ok(body.sessions[0].lastAccessedAt > 0)
     })
   })
 })

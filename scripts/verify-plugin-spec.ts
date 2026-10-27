@@ -70,6 +70,21 @@ for (const file of sources) {
   // local-llm-adapter; never inserted by a cordis patch row, not in
   // package.json exports.
   if (base === 'llm-trace') continue
+  // §7.123: the STRATEGY DATA extracted out of intent-router.ts —
+  // keyword/entity tables + the fallback taxonomy. Imported by
+  // intent-router.ts; never inserted by a cordis patch row, not in
+  // package.json exports.
+  if (base === 'intent-signals') continue
+  // §7.123: the PROMPT TEMPLATES extracted out of intent-router.ts (the
+  // local-LLM classifier prompt + the Bailian decision-model criteria).
+  // Imported by intent-router.ts; never inserted by a cordis patch row, not
+  // in package.json exports.
+  if (base === 'intent-prompts') continue
+  // §7.123: the message-array helpers extracted out of input-guard.ts (the
+  // payload.messages vs decision.messages contract). Imported by
+  // input-guard.ts; never inserted by a cordis patch row, not in
+  // package.json exports.
+  if (base === 'input-guard-messages') continue
   if (base === 'plugin' || base === 'index') continue
   const content = readFileSync(file, 'utf8')
 

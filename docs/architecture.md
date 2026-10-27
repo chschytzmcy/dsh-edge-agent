@@ -113,9 +113,29 @@ dsh-edge-agent 由 **22 个核心插件 + 1 个可选 http-api** 组成（原 §
 
 dsh-edge-agent 由 **22 个核心插件 + 1 个可选 http-api** 组成（原 §"19+1"已过时）。所有插件都遵循 Cordis 的 `name` + `inject` + `Config` + `apply` 模式。具体 `inject` 依赖见 [第 2 章 §0](#0-插件分类dsh-原生-vs-dsh-edge-agent) 表（基于 `grep "export const inject" src/dsh-adapter/*.ts` 实测）。
 
+### 分层实现状态（2026-10-27 实测）
+
+> 本表区分「已实装」与「桩实现」。Layer 1 安全基座整体仍是**桩**：
+> `tcm` 的 crypto 返回零字节、`ohttp-gateway` 恒返回 200、`secure-bridge`
+> 的 `isBlocked()` 恒 false、`attestation` 的 `verifyToken()` 恒 `valid:false`。
+> **今天真正生效的隐私保证来自 Layer 2**。
+> 桩契约由 `tests/unit/layer1-stubs-and-edge-config.test.ts` 钉死：一旦有人
+> 实装真实后端，那些断言会失败，强制在同一变更里更新本表与 README。
+
+| 层 | 模块 | 状态 |
+|---|---|---|
+| L1 安全基座 | `tcm` / `ohttp-gateway` / `secure-bridge` / `attestation` | 🚧 **桩实现**（crypto 返回零字节 / 网关恒 200 / 证明恒无效） |
+| L1 安全基座 | `local-storage` / `audit-log` / `sessions` | ✅ 已实装（明文 JSONL，未加密——见下表注） |
+| L2 隐私控制 | `privacy-policy` / `sanitizer-pipeline` / `prompt-guard` | ✅ 已实装（可逆脱敏 / HMAC 签名策略 / 16 注入规则） |
+| L2 隐私控制 | `intent-router` / `input-guard` / `realm-skill-bridge` | ✅ 已实装（5 级级联分类 / 3 全局 hook 编排 / 三层 Realm 闸门） |
+| L3 智能体 | `model-router` / `local-llm-adapter` / `cloud-llm-adapter` | ✅ 已实装（真 OpenAI 兼容 SSE 协议） |
+| L3 智能体 | `tools` / `etscli-tools` / `function-call-external` | ✅ 已实装 |
+| L4 用户交互 | `http-api` / `edge-context-view` / `src/client` | ✅ 已实装（12 路由 + 桌面 Edge 侧栏） |
+| L4 用户交互 | `voice-input` / `plugin-host` | 🚧 **桩实现**（转写返回空串 / 插件注册表为空） |
+
 | 插件 | 职责 | Realm |
 |---|---|---|
-| `tcm` | 可信计算模块（**当前 stub**，A3 后实装真实 TEE 后端） | — |
+| `tcm` | 可信计算模块（**当前为 stub**：crypto 方法返回零字节，A3 后实装真实 TEE 后端） | — |
 | `local-storage` | 会话 / 审计 JSONL 持久化（deployed 为 plain，PII 脱敏未加密） | LOCAL |
 | `sessions` | 加密会话管理 | LOCAL |
 | `audit-log` | 防篡改审计日志 | LOCAL |
@@ -129,12 +149,12 @@ dsh-edge-agent 由 **22 个核心插件 + 1 个可选 http-api** 组成（原 §
 | `local-llm-adapter` | 本地 LLM 适配器（Qwen3-4B） | LOCAL |
 | `cloud-llm-adapter` | 云端 LLM 适配器（DeepSeek） | CLOUD |
 | `sanitizer-pipeline` | PII 脱敏管线（9 条规则） | SANITIZED |
-| `ohttp-gateway` | OHTTP（RFC 9458）网关（**A3 后实装**） | — |
-| `secure-bridge` | 端云安全桥 | — |
-| `attestation` | TEE 远程证明 | — |
+| `ohttp-gateway` | OHTTP（RFC 9458）网关（🚧 **桩实现**：`send()` 恒返回 200 + 空 body，无 HPKE 封装） | — |
+| `secure-bridge` | 端云安全桥（🚧 **桩实现**：`sendCloudRequest()` 恒 200，`isBlocked()` 恒 false） | — |
+| `attestation` | TEE 远程证明（🚧 **桩实现**：`verifyToken()` 恒 `valid:false`） | — |
 | `td-bus` | 威胁检测总线 | — |
-| `voice-input` | 语音输入（v0.5.0+） | LOCAL |
-| `plugin-host` | 第三方插件互操作锚点 | — |
+| `voice-input` | 语音输入（🚧 **桩实现**：`transcribe()` 恒返回空串） | LOCAL |
+| `plugin-host` | 第三方插件互操作锚点（🚧 **桩实现**：注册表恒为空） | — |
 | `http-api` | HTTP API（可选，:21017） | — |
 
 > **工具复用**: dsh-edge-agent 不再自行实现工具插件，而是复用 DSH 原生工具（仅 `@deepseek-ai/dsh-tool-web` 在 `package.json` `peerDependencies` 中声明；`dsh-tool-bash` / `dsh-tool-fs` 经 `@deepseek-ai/dsh-tools` peer 链 transitive 引入），通过 `tools` 插件配置 Realm 标记。详见 [#第5章--dsh-原生工具复用决策为何不自己实现](#第5章--dsh-原生工具复用决策为何不自己实现)。
