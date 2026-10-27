@@ -90,6 +90,12 @@ for (const file of sources) {
   // cloud-llm-adapter.ts / input-guard.ts; never inserted by a cordis patch
   // row, not in package.json exports.
   if (base === 'cloud-egress') continue
+  // §7.132: the internal-caller tagging helpers extracted out of
+  // prompt-guard.ts / intent-router.ts (标记内部 LLM 调用, 让面板把
+  // 安检/分类器 与 主对话出网 区分开). Imported by prompt-guard.ts /
+  // intent-router.ts / both llm-adapters; never inserted by a cordis patch
+  // row, not in package.json exports.
+  if (base === 'llm-internal-caller') continue
   if (base === 'plugin' || base === 'index') continue
   const content = readFileSync(file, 'utf8')
 

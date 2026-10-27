@@ -60,6 +60,7 @@ import {
   type EgressMessage,
 } from './cloud-egress.js'
 import { PII_ORDER, PII_PATTERNS } from './pii-utils.js'
+import { egressAuditFields } from './llm-internal-caller.js'
 
 export const name = 'cloud-llm-adapter'
 
@@ -618,7 +619,7 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
       wireSystem,
       sanitizedMessages as unknown as Array<{ role: string; content: unknown; source?: { kind?: string } }>,
     )
-    this.audit('info', 'llm.cloud.start', { provider: options.provider, model: options.model, messageCount, promptLen, baseUrl: this.baseUrl, systemInjected, retryBudgetUsed: peekSessionSseRetryCount(options.sessionId), historyDropped: egressDropped, egressReplacements: egressReplacements, egressSanitized })
+    this.audit('info', 'llm.cloud.start', { provider: options.provider, model: options.model, messageCount, promptLen, baseUrl: this.baseUrl, systemInjected, retryBudgetUsed: peekSessionSseRetryCount(options.sessionId), historyDropped: egressDropped, egressReplacements: egressReplacements, egressSanitized, ...egressAuditFields(options) })
     // §7.131: 出网裁剪单独留一行 —— operator grep `llm.cloud.egress` 就能看到
     // 「这一轮带了多少历史上去 / 丢了多少本地段 / 脱敏替换了几处」。
     if (egressDropped > 0 || egressReplacements > 0 || !egressSanitized) {
@@ -702,6 +703,7 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
           durationMs,
           attempt: attemptIndex,
           error: errMsg,
+          ...egressAuditFields(options),
         })
         // §7.50 followup: emit bookkeeping on fetch throw too. AbortError
         // (signal aborted by dsh-agent-loop) is the common case — ops log
@@ -718,6 +720,7 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
           provider: options.provider,
           model: options.model,
           durationMs,
+          ...egressAuditFields(options),
           promptLen,
           resultLen: 0,
           toolCallCount: 0,
@@ -760,6 +763,7 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
           status: response.status,
           durationMs,
           respBody: respBody.slice(0, 500),
+          ...egressAuditFields(options),
         })
         // §7.50 followup (2026-09-13): also emit the LLM call done / end
         // bookkeeping on HTTP error so the ops log + audit pipeline
@@ -788,6 +792,7 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
           provider: options.provider,
           model: options.model,
           durationMs,
+          ...egressAuditFields(options),
           promptLen,
           resultLen: 0,
           toolCallCount: 0,
@@ -895,6 +900,7 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
           provider: options.provider,
           model: options.model,
           durationMs,
+          ...egressAuditFields(options),
           promptLen,
           resultLen: assembledText.length,
           toolCallCount: toolCalls.size,

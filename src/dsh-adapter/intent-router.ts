@@ -14,6 +14,7 @@ import { Service } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { jevPool, loadEdgeConfig, localPool } from './edge-config.js'
+import { withInternalCaller } from './llm-internal-caller.js'
 
 export const name = 'intent-router'
 
@@ -2139,6 +2140,8 @@ export class IntentRouterServiceImpl extends Service {
         // llm/stream waterfall payload. Both go from <pre-session> to the
         // real sessionId when this is set.
         ...(sessionId ? { sessionId } : {}),
+        // §7.132: 标记这是**意图分类器内部调用**，不是主对话出网。
+        ...withInternalCaller({}, 'intent-classifier'),
       })
       // §7.37: this.llm.stream() returns Promise<AsyncIterable<StreamChunk>>
       // since dsh-llm 0.1.2-rc.1 — await if thenable, otherwise use directly.

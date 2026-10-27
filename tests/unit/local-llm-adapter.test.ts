@@ -801,4 +801,52 @@ describe('local-llm-adapter (M4, real-only)', () => {
       assert.ok(texts.some(t => t.includes('本轮输入')), `本轮必须带上: ${JSON.stringify(texts)}`)
     })
   })
+
+  // §7.132: 出口审计行必须带出网判别字段 —— `tools`（这次请求带了几件工具）
+  // 与 `internal`（内部调用标记）。面板靠它们把「主对话出网」与「插件的
+  // 内部 LLM 调用」分开（prompt-guard 的安检、intent-router 的分类器、
+  // 宿主的会话标题生成全都落同样的 llm.local.start 行）。
+  describe('§7.132 — 出口行带出网判别字段', () => {
+    async function startRowFor(options: Record<string, unknown>): Promise<any> {
+      installFetchMock(() => sseResponse([
+        { choices: [{ delta: { content: 'pong' }, finish_reason: null }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] },
+      ]))
+      const entries: any[] = []
+      const auditLog = { log: async (e: any) => { entries.push(e) } }
+      const adapter = new LocalLlmAdapterImpl(
+        { providers: ['local-llm'], baseUrl: 'http://127.0.0.1:11434/v1', defaultModel: 'qwen3-4b' },
+        auditLog as any,
+      )
+      for await (const _ of adapter.stream({
+        provider: 'local-llm',
+        model: 'qwen3-4b',
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
+        ...options,
+      } as any)) { /* drain */ }
+      restoreFetch()
+      return entries.find(e => e.kind === 'llm.local.start')
+    }
+
+    it('主对话（带工具）→ tools 落数量，无 internal 标记', async () => {
+      const row = await startRowFor({ tools: [{ name: 'read' }, { name: 'grep' }] })
+      assert.ok(row, 'llm.local.start 必须落盘')
+      assert.equal(row.payload.tools, 2)
+      assert.equal(row.payload.internal, undefined)
+    })
+
+    it('内部调用（无工具 + internal 标记）→ tools=0 + internal 落标记', async () => {
+      const row = await startRowFor({ tools: [], edgeInternalCaller: 'prompt-guard' })
+      assert.ok(row, 'llm.local.start 必须落盘')
+      assert.equal(row.payload.tools, 0)
+      assert.equal(row.payload.internal, 'prompt-guard')
+    })
+
+    it('宿主没传 tools → 恒落 tools=0（这样宿主的内部调用也能被排除）', async () => {
+      const row = await startRowFor({})
+      assert.ok(row, 'llm.local.start 必须落盘')
+      assert.equal(row.payload.tools, 0)
+      assert.equal(row.payload.internal, undefined)
+    })
+  })
 })

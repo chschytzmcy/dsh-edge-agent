@@ -12585,3 +12585,187 @@ cordis 插件）。照 §7.123 的先例（`intent-prompts` / `input-guard-messa
 工作区文件指令、工具目录、当前时间等）**没有**被裁 —— 它每轮重新组装，不是
 会话历史，且 LOCAL 轮次本来也带着它。如果主人认为「本地工作区内容不该上云」，
 那是一条**新裁决**，需要单独设计（system 的裁剪口径与 messages 不同）。
+## §7.132 答案出口只认本对话的出网（2026-10-27）
+
+### 触发：主人问「意图判定 / 路由决策没结束，为什么就有答案出口」
+
+主人 18:2x 的面板截图：
+
+```
+意图判定   等待
+路由决策   等待
+答案出口   作答中…   路由 local-llm/qwen3.8:27b   messageCount=1 · promptLen=125
+```
+
+下一轮更严重 —— 面板显示的是**一件根本没发生过的事**：
+
+```
+答案出口   作答失败   路由 local-llm/qwen3.8:27b
+           原因 SESSION_TITLE_TIMEOUT after 60000ms · 用时 60.0s
+```
+
+主对话压根没失败（`SESSION_TITLE_TIMEOUT` 是**宿主会话标题插件**的错）。
+
+### 根因：插件的内部调用与主对话落同样的行
+
+插件自己也调 LLM：
+
+- `prompt-guard` —— 入口安检的**语义检测**（模型档）
+- `intent-router` —— **意图分类器**
+- 宿主的**会话标题生成**插件
+
+它们都走同一个 `ctx.llm.stream(...)`，在 adapter 眼里与主对话**完全一致** ——
+都落 `llm.local.start` / `llm.local.end` 审计行。而面板的答案出口节点取
+**「最后一条 `llm.local.start`」**，于是抓到了那条**短的**（安检调用：
+单条消息 125 字符），把主对话的真实出网状态盖掉了。
+
+实测（ops log，18:24-18:25 那轮）—— 三次调用**同一个 sessionId**：
+
+```
+mc=5  tools=32   kinds=system-prompt,user,…        ← 主对话
+mc=1  tools=<无>  kinds=dsh-session-title-llm        ← 宿主标题插件
+mc=1  tools=<无>  kinds=user                        ← 安检 / 分类器
+```
+
+**sessionId 全都相同**（同一个 session）→ 靠 sessionId 分不开。
+**tools 数量能分**：主对话恒带 30+ 件工具（agent loop 一定带工具表），
+一切内部调用**一件都不带**。
+
+旁证（39 次 LLM 调用的 `messageCount` 直方图）：主对话恒 ≥ 5，内部调用恒 = 1。
+
+### 做法：出口审计行带两个判别字段
+
+新文件 `src/dsh-adapter/llm-internal-caller.ts`：
+
+| 字段 | 含义 | 来源 |
+|---|---|---|
+| `internal` | 我们自己的内部调用标记 | `prompt-guard` / `intent-classifier` |
+| `tools` | 这次请求带了几件工具 | 宿主 options |
+
+- `withInternalCaller(options, caller)` —— 内部调用方在 options 上挂
+  `edgeInternalCaller` 字段（带 `edge` 前缀是为了不与宿主 `GenerateOptions`
+  撞名 —— 宿主不认这个字段，会原样透传给 adapter）。
+- `internalCallerOf(options)` —— 读标记。
+- `egressAuditFields(options)` —— 出口审计行要带的字段。
+
+**`tools` 为什么恒落**（而不是「宿主传了才落」）：第一版是「宿主传了数组才落
+长度，否则不落」—— 想保住旧数据。但那只保住了**旧数据**，没保住**宿主的
+内部调用**：宿主标题生成走同一个 `ctx.llm.stream`、**不传 tools**，于是它落下
+来的行既没有 `internal` 也没有 `tools`，面板按「两者皆无 → 保留」的旧数据兼容
+分支会把它当成主对话的出网，**继续冒充答案出口**（18:34:59 实测：
+`messageCount=1 · promptLen=96`）。
+
+改成恒落后，「字段不存在」与「字段为 0」被区分开：
+
+| 行的来源 | `tools` 字段 | 面板判据 | 结果 |
+|---|---|---|---|
+| 主对话 | `32` | `> 0` | **保留** ✓ |
+| 我们的内部调用 | `0` + `internal` | 有 `internal` | **排除** ✓ |
+| 宿主内部调用（标题生成） | `0` | `=== 0` | **排除** ✓ |
+| §7.132 之前的旧数据 | *字段不存在* | 既无 `internal` 也无 `tools` | **保留** ✓ |
+
+旧数据不会被误判（字段缺失 ≠ 0），新数据里的内部调用一条不漏。
+
+残留风险：若某个宿主版本**对主对话也不传 tools**，主对话会落 `tools=0` 而被
+排除，答案出口会**漏显示**。那是「少显示」而不是「显示假信息」—— 按面板诚实性
+原则，宁可漏显示也不能让面板显示一件没发生过的事。实测（18:24、18:34 两轮）
+宿主对主对话恒传 32 件工具。
+
+### 改动文件（10 个）
+
+| 文件 | 改动 |
+|---|---|
+| `src/dsh-adapter/llm-internal-caller.ts` | **新文件**：标记读写 + `egressAuditFields` |
+| `src/dsh-adapter/prompt-guard.ts` | 调用加 `...withInternalCaller({}, 'prompt-guard')` |
+| `src/dsh-adapter/intent-router.ts` | 调用加 `...withInternalCaller({}, 'intent-classifier')` |
+| `src/dsh-adapter/local-llm-adapter.ts` | 出口审计行（start / end / network_error ×2 / http_error）加 `...egressAuditFields(options)` |
+| `src/dsh-adapter/cloud-llm-adapter.ts` | 同上（start / end ×3 / network_error / http_error） |
+| `src/client/flowPanel.tsx` | `answerNode` 新增 `isConversation(r)` 判别，三个取值（started / failed / adapter）全部套用 |
+| `scripts/verify-plugin-spec.ts` | 纯函数模块豁免（照 §7.123 / §7.131 先例） |
+| `tests/unit/llm-internal-caller.test.ts` | **新文件**（9 例） |
+| `tests/unit/flow-panel-internal-calls.test.ts` | **新文件**（8 例） |
+| `tests/unit/local-llm-adapter.test.ts` | +3 例 |
+
+面板的判别（`src/client/flowPanel.tsx` `answerNode`）：
+
+```ts
+const isConversation = (r: EdgeRow): boolean => {
+  const internal = field(r, 'internal')
+  if (internal !== undefined && internal !== null) return false
+  const tools = field(r, 'tools')
+  if (typeof tools === 'number' && tools === 0) return false
+  return true
+}
+```
+
+`started` / `failed` / `adapter` 三个取值**都**套用同一个判据 —— 只改一个的话，
+主对话在飞而内部调用失败时，面板还是会显示那条失败的内部调用。
+
+顺带把 `sse_interrupted` 并入 `failed` 的正则（云侧 SSE 中断也是出网失败态）。
+
+### 测试
+
+- `tests/unit/flow-panel-internal-calls.test.ts`（**8 例**）：内部调用不得显示
+  作答中/作答失败；**宿主的标题插件也不得冒充**；主对话与内部并存时显示主对话
+  那条；内部失败不得冒充本对话的失败；主对话自身失败照实显示；**旧数据不退化**
+- `tests/unit/llm-internal-caller.test.ts`（**9 例**）：标记读写、判别字段语义
+  （含「宿主内部调用（无 tools、无 internal）→ 仍能被 tools=0 排除」）
+- `tests/unit/local-llm-adapter.test.ts`（**+3 例**）：出口行带 `tools`/`internal`；
+  宿主没传 tools 时落 `tools=0`
+
+单测 **65 文件 / 1300 passed + 2 skipped**；覆盖率行 **81.75%** / 分支 80.01% /
+函数 77.53%；双侧类型检查 exit 0；eslint 0 error / 58 warning（未引入新警告）；
+`verify:build` 12 项门禁 exit 0（package surface 214 files / 63 entry targets
+—— 新增 `llm-internal-caller.js` + `.d.ts`）。
+
+### 运行时核验（18:33-18:34，桌面版实跑）
+
+桌面版已重建并重启（18:33:41），重启后恰好自动续跑了一轮真实对话
+（`session-b3cca38e`），当场可证：
+
+```
+llm.local.start        {"messageCount":5,"promptLen":10171,"tools":32}              ← 主对话
+llm.local.start        {"messageCount":1,"promptLen":125,"internal":"prompt-guard"} ← 安检
+llm.local.network_error {"durationMs":60005,"internal":"prompt-guard"}            ← 安检超时
+llm.local.start        {"messageCount":1,"promptLen":96}                            ← 宿主标题生成（漏网点）
+```
+
+前两行正是修复前后要区分的那一对；**第四行是这一轮才发现的漏网点**，促成
+`tools` 改成恒落（见上）。
+
+### 主人第二个疑问：「为什么有威胁监控内容」
+
+**这是事实，不是谎。** 威胁信号来自**入口安检**，而安检在**意图判定之前**就
+跑完了 —— 所以面板上「攻击检测 / 威胁监控」先填好，「意图判定 / 路由决策」还在
+等，是**正确的时序**。
+
+「已检信号 3」的口径（`src/client/flowPanel.tsx` `threatNode`）：
+
+```ts
+const watched = rows.filter(r =>
+  r.kind.startsWith('guard.') || r.kind.startsWith('input.') || r.kind.startsWith('td-bus.')
+).length
+```
+
+主人截图那轮的 3 条，逐条核过（审计文件）：
+
+```
+input.injection.warned          ← 命中 role-override-zh（告警放行）
+guard.model-detect.start        ← 语义检测档开始
+guard.model-detect.provider_error ← 60s 超时（本地模型推理超时）
+```
+
+所以「已检信号」与「本轮窗口」措辞**相符**，不是累计口径的谎。
+
+「本轮窗口无异常」的准确含义是：本轮**没有**阻断级 / 升级级 / 限流级威胁事件
+（`http.chat.threat-blocked` / `td-bus.escalated` / `input.rate-limit`）。
+注入命中走的是 `input.injection.warned` —— **告警放行**（warn 级，不阻断），
+所以不计入「异常」。这与上面「攻击检测」节点显示的「命中注入特征（告警放行）」
+不矛盾，但两处措辞放在一起容易读成矛盾 —— 记在这里备查。
+
+### 一个**没有**纳入本轮的问题（留给主人决定）
+
+`guard.model-detect.provider_error`（安检的语义检测档 60s 超时）**没有**在面板上
+显示 —— 「攻击检测」节点只显示了正则档命中的注入特征，读者会以为语义检测档也
+跑过了。这是**另一个诚实性缺口**，但与本轮的「答案出口冒充」是不同的问题，
+未擅自扩大范围。

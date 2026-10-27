@@ -24,6 +24,7 @@ import { loadEdgeConfig, localPool } from './edge-config.js'
 // matcher as intent-router's Tier-0 — one vocabulary, one rule set, so the
 // two layers can never disagree about what counts as a device operation.
 import { matchDeviceCommand, isPureDeviceCommand } from './intent-signals.js'
+import { withInternalCaller } from './llm-internal-caller.js'
 
 export const name = 'prompt-guard'
 
@@ -726,6 +727,9 @@ export class PromptGuardServiceImpl extends Service implements PromptGuardServic
         // llm/stream waterfall payload. Both go from <pre-session> to the
         // real sessionId when this is set.
         ...(sessionId ? { sessionId } : {}),
+        // §7.132: 标记这是**安检内部调用**，不是主对话出网。adapter 会把它
+        // 落到出口审计行的 `internal` 字段，面板据此把「答案出口」与它分开。
+        ...withInternalCaller({}, 'prompt-guard'),
       })
       // §7.37: this.llm.stream() returns Promise<AsyncIterable<StreamChunk>>
       // since dsh-llm 0.1.2-rc.1 — await if thenable, otherwise use directly.

@@ -493,6 +493,27 @@ function threatNode(rows: EdgeRow[]): FlowNode {
 }
 
 function answerNode(rows: EdgeRow[], summary: EdgeSummary): FlowNode {
+  // §7.132: 出口行必须先分清「**主对话出网**」与「插件的内部 LLM 调用」。
+  //
+  // 插件自己也调 LLM（prompt-guard 的安检、intent-router 的分类器、宿主的
+  // 会话标题生成），它们同样落 `llm.local.start` / `llm.local.end` 审计行。
+  // 主人现场看到的就是这个：同一屏里「意图判定 / 路由决策」都还在等，下面
+  // 却有「答案出口：作答中… · messageCount=1 · promptLen=125」—— 那是**安检
+  // 的内部调用**（单条消息 125 字符），不是主对话的出网（同一时刻还有一条
+  // messageCount=5 · promptLen=10171 才是）。面板因此把主对话的真实状态盖住了。
+  //
+  // 判据（实测 18:24-18:25 那轮）：
+  // - `internal` 字段 → 我们自己的内部调用（prompt-guard / intent-classifier）
+  // - `tools === 0`  → 一切不带工具的调用（内部调用恒为 0；主对话恒带 30+ 件）
+  // - 两者都没有 → 旧数据（没有 tools 字段）→ **保留**，退化到旧行为而不是
+  //   把主对话误判成内部调用而漏掉出网
+  const isConversation = (r: EdgeRow): boolean => {
+    const internal = field(r, 'internal')
+    if (internal !== undefined && internal !== null) return false
+    const tools = field(r, 'tools')
+    if (typeof tools === 'number' && tools === 0) return false
+    return true
+  }
   // No in-window host.route ≠ no route: `request/context` fires only on
   // CHANGES, so a same-model turn carries the session's last observed route
   // forward (flagged with a 沿用 note — the distinction from a fresh
@@ -506,7 +527,7 @@ function answerNode(rows: EdgeRow[], summary: EdgeSummary): FlowNode {
   // demonstrably answered (real session: 90 llm.local.* rows, 0
   // llm.host.route). Read the adapter rows first — they are the actual
   // wire traffic — and fall back to the host announcement.
-  const adapter = latest(rows, r => r.kind === 'llm.local.end' || r.kind === 'llm.cloud.end')
+  const adapter = latest(rows, r => (r.kind === 'llm.local.end' || r.kind === 'llm.cloud.end') && isConversation(r))
   // §7.127: an answer that is still in flight is NOT an undecided route.
   // `llm.local.start` lands when the request leaves and carries the egress
   // target (provider/model/promptLen); `llm.local.end` lands only when the
@@ -516,8 +537,10 @@ function answerNode(rows: EdgeRow[], summary: EdgeSummary): FlowNode {
   // the start row names the model the bytes are going to). Read the
   // in-flight and failed states off the start/error rows so the node stops
   // claiming the route is undecided while it is plainly running.
-  const started = latest(rows, r => r.kind === 'llm.local.start' || r.kind === 'llm.cloud.start')
-  const failed = latest(rows, r => /^llm\.(local|cloud)\.(http_error|network_error)$/.test(r.kind))
+  const started = latest(rows, r => (r.kind === 'llm.local.start' || r.kind === 'llm.cloud.start') && isConversation(r))
+  // §7.132: sse_interrupted 也是出网失败态（云侧 SSE 中断）—— 与
+  // http_error / network_error 同属「作答失败」，一并纳入判定。
+  const failed = latest(rows, r => /^llm\.(local|cloud)\.(http_error|network_error|sse_interrupted)$/.test(r.kind) && isConversation(r))
   const inFlight = started !== undefined
     && (adapter === undefined || started.ts > adapter.ts)
     && (failed === undefined || failed.ts < started.ts)
