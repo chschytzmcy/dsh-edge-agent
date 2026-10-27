@@ -386,6 +386,10 @@ web search…）才判 CLOUD 脱敏出网——分类器判了 CLOUD 但没公�
 > fail-down）见 [docs/architecture.md §7.107 章](docs/architecture.md) 与
 > [docs/intent-and-sanitization.md](docs/intent-and-sanitization.md)。
 
+> **REJECT 永不出网**（§7.128）：策略规则或分类器判下的 REJECT 绝不会被改写成
+> CLOUD —— fail-closed（默认）直接拦下，fail-open 也只降级到 LOCAL 留在设备上
+> 继续，且仍会注册 session realm（Layer 3 的 tool-realm gating 不许 fail-open）。
+
 ### 本地 LLM 端点
 
 `local-llm-adapter` 始终走真实 OpenAI 兼容端点。端点指向任一 llama.cpp /

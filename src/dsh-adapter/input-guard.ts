@@ -1132,7 +1132,28 @@ export class InputGuardServiceImpl extends Service {
     } else {
       edgeRoute = this.readEdgeRoute(payload.agent)
       if (edgeRoute) {
-        category = edgeRoute.category === 'REJECT' ? 'CLOUD' : edgeRoute.category
+        if (edgeRoute.category === 'REJECT') {
+          // §7.128: 调用方显式判了 REJECT —— 那是「拦下」的意思。此前这行
+          // 是 `edgeRoute.category === 'REJECT' ? 'CLOUD' : edgeRoute.category`：
+          // 把「拦下」静默升格成「上云」—— 本该拦下的原文反而送上云。
+          // 今天走不到（http-api 的 REJECT 短路先于 _edgeRoute 写入，宿主
+          // 也从不写它 —— app.asar 里 `_edgeRoute` 0 命中），所以是颗
+          // **未引爆的地雷**：任何新增入口（fork / 新路由 / 宿主自己写）
+          // 都会把「拦下」变成「上云」。按与 intentRouter REJECT 完全相同
+          // 的语义处理：fail-closed 拦下，fail-open 交给下面的统一降级点。
+          const reason = edgeRoute.rationale ?? 'edge-route-reject'
+          this.audit('security', 'input-guard.blocked.edge-route', {
+            sessionId, confidence: edgeRoute.confidence, rationale: edgeRoute.rationale,
+          })
+          if (this.config.rejectOnPolicyViolation) {
+            this.attachRejection(payload.agent, { kind: 'intent', reason })
+            return { kind: 'reject', reason }
+          }
+          this.audit('warn', 'input-guard.edge-route.fail-open', {
+            sessionId, rationale: edgeRoute.rationale,
+          })
+        }
+        category = edgeRoute.category
         edgeRouteUsed = true
         intentConfidence = edgeRoute.confidence ?? 0
         intentRationale = edgeRoute.rationale
@@ -1168,6 +1189,21 @@ export class InputGuardServiceImpl extends Service {
         // A caller-supplied route stays honoured: it IS an explicit
         // statement of intent.
       }
+    }
+    // §7.128: **REJECT 绝不走 CLOUD。**
+    // 走到这里说明 rejectOnPolicyViolation=false（fail-open）—— fail-closed
+    // 的两条分支早已 return。REJECT 的意思是「这条别处理」，让它出网（哪怕
+    // 去云池）恰恰是它说的反面：category='REJECT' 会让 shouldSanitize=false
+    // 且 wantsDowngradeToLocal=false，于是原始路由（CLOUD）被原样保留 ——
+    // 文本真的上云。统一在这里降级到 LOCAL：留在设备上继续。
+    if (category === 'REJECT') {
+      this.audit('warn', 'input-guard.reject.degraded-local', {
+        sessionId, rationale: intentRationale,
+      })
+      category = 'LOCAL'
+      intentRationale = intentRationale
+        ? `${intentRationale}+reject-degraded-local`
+        : 'reject-degraded-local'
     }
     // §7.106 (2026-10-23) 凭据粘性规则（操作者裁决：凭据交付不应走云端）：
     // 「用户名：X；密码：Y」这类消息是设备操作链（登录）的一环。上一轮被
@@ -1206,7 +1242,10 @@ export class InputGuardServiceImpl extends Service {
     // 之前只能靠 rationale 字段反推（default:sanitized / llm-classified:* /
     // http-api-classified:*），mibao trace 看到 default:sanitized 时 root cause
     // 不明显（是 local-llm hang fallback？还是 http-api resolveRoute 返回？）
-    targetRealm = category === 'LOCAL' ? 'LOCAL' : (category === 'SANITIZED' ? 'LOCAL' : 'CLOUD')
+    // §7.128: 映射写死「只有 CLOUD 才是 CLOUD」—— REJECT 永远不是 CLOUD。
+    // 上一段已把 REJECT 降级为 LOCAL，这里是第二道保险：万一将来又有一条
+    // 路径把 REJECT 塞进 category，它也不会被映射成出网。
+    targetRealm = category === 'CLOUD' ? 'CLOUD' : 'LOCAL'
     const routeSource: 'http-api' | 'webui' = edgeRouteUsed ? 'http-api' : 'webui'
     // §7.87.13.2 (2026-09-21): 'policy-classified' added — matchRouting result
     // overrode LLM/edgeRoute (see §7.87.13.2 comment block above). Distinct
@@ -1239,24 +1278,28 @@ export class InputGuardServiceImpl extends Service {
     // web_search / web_fetch 等 CLOUD tool 不被 deny,LOCAL LLM 自由上云搜。
     //
     // input-guard 在分类后立即补一次 setSessionRealm,使 webui/tui 入口的
-    // session 也能被 realm-skill-bridge 识别。REJECT 不注册（后续 turn 不跑）。
+    // session 也能被 realm-skill-bridge 识别。
+    // §7.128: 此前这里是 `if (category !== 'REJECT')` —— REJECT 不注册 realm，
+    // 因为那一轮不跑。但 §7.128 之后 REJECT 已被统一降级点改成 LOCAL
+    // （fail-open 时），那一轮**会**跑：若仍不注册 realm，gating 又走
+    // fail-open（agentRealm === undefined）→ 本地模型可以调 web_search 出网
+    // —— 正好是 REJECT 要防的那件事。所以现在无条件注册（类型也随之收窄到
+    // 'LOCAL' | 'CLOUD' | 'SANITIZED'，与 setSessionRealm 签名一致）。
     // 失败/缺失时静默 no-op（realmSkillBridge 是可选依赖）。
-    if (category !== 'REJECT') {
-      const bridge = (this.ctx as unknown as { realmSkillBridge?: RealmSkillBridgeLike }).realmSkillBridge
-      if (bridge && typeof bridge.setSessionRealm === 'function') {
-        try {
-          bridge.setSessionRealm(sessionId, category)
-          this.audit('info', 'input-guard.session-realm.registered', {
-            sessionId,
-            category,
-            edgeRouteUsed,
-            routeSource: edgeRouteUsed ? 'http-api' : 'webui',
-          })
-        } catch (err: any) {
-          this.audit('warn', 'input-guard.session-realm.failed', {
-            sessionId, error: err?.message ?? String(err),
-          })
-        }
+    const bridge = (this.ctx as unknown as { realmSkillBridge?: RealmSkillBridgeLike }).realmSkillBridge
+    if (bridge && typeof bridge.setSessionRealm === 'function') {
+      try {
+        bridge.setSessionRealm(sessionId, category)
+        this.audit('info', 'input-guard.session-realm.registered', {
+          sessionId,
+          category,
+          edgeRouteUsed,
+          routeSource: edgeRouteUsed ? 'http-api' : 'webui',
+        })
+      } catch (err: any) {
+        this.audit('warn', 'input-guard.session-realm.failed', {
+          sessionId, error: err?.message ?? String(err),
+        })
       }
     }
 

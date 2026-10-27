@@ -2178,3 +2178,158 @@ describe('§7.106 sticky-credential-local', () => {
     )
   })
 })
+
+// §7.128 —— REJECT 绝不走 CLOUD
+//
+// 遗留的静默升格：input-guard 读到调用方给的 _edgeRoute 时写的是
+//   category = edgeRoute.category === 'REJECT' ? 'CLOUD' : edgeRoute.category
+// 把「拦下」升格成「上云」——本该拦下的原文反而送上云。
+// 今天走不到（http-api 的 REJECT 短路先于 _edgeRoute 写入，宿主也从不写
+// 它 —— app.asar 里 `_edgeRoute` 0 命中），但地雷还在：任何新增入口都会
+// 引爆它。而且 category='REJECT' 在 fail-open 下还有第二个后果：
+// shouldSanitize=false 且 wantsDowngradeToLocal=false → 原始 CLOUD 路由
+// 被原样保留 → 文本真的上云。
+//
+// 不变量：**REJECT 永不出网。** fail-closed 拦下，fail-open 留在设备上。
+describe('§7.128 — REJECT 绝不走 CLOUD', () => {
+  /** 模拟 http-api 挂上去的、显式判了 REJECT 的路由。*/
+  function rejectEdgeRoute(payload: { agent: Record<string, unknown> }): void {
+    ;(payload.agent as any)._edgeRoute = {
+      provider: 'cloud-llm',
+      model: 'deepseek-chat',
+      realm: 'CLOUD',
+      category: 'REJECT',
+      confidence: 0.95,
+      rationale: 'policy-rule:reject',
+    }
+  }
+
+  it('调用方显式 REJECT + fail-closed → 拦下，绝不升格成 CLOUD', async () => {
+    const audit = fakeAuditLog()
+    const { ctx, infoLines } = fakeCtxWithLogger()
+    const svc = new InputGuardServiceImpl(
+      ctx as any, defaultConfig({ rejectOnPolicyViolation: true }),
+      fakePromptGuard().api as any, undefined, undefined, undefined, audit.api as any,
+    )
+    const payload = makePreStepPayload('危险内容')
+    rejectEdgeRoute(payload)
+    const result = await svc.handlePreStep(payload as any, makeNext(payload.messages))
+
+    assert.equal(result.kind, 'reject', '调用方判的 REJECT 必须被拦下')
+    assert.equal(result.reason, 'policy-rule:reject')
+    assert.ok(
+      audit.entries.some(e => e.kind === 'input-guard.blocked.edge-route'),
+      '必须留下 blocked.edge-route 审计',
+    )
+    assert.ok(
+      !audit.entries.some(e => e.kind === 'input-guard.routed'),
+      '被拦下的轮次不该产生 routed 事件（更不该有路由出去）',
+    )
+    assert.ok(
+      !infoLines.some(l => l.includes('targetRealm=CLOUD')),
+      'REJECT 绝不能映射成 CLOUD',
+    )
+  })
+
+  it('调用方显式 REJECT + fail-open → 留在本地，绝不上云', async () => {
+    const audit = fakeAuditLog()
+    const { ctx, infoLines } = fakeCtxWithLogger()
+    const svc = new InputGuardServiceImpl(
+      ctx as any, defaultConfig({ rejectOnPolicyViolation: false }),
+      fakePromptGuard().api as any, undefined, undefined, undefined, audit.api as any,
+    )
+    const payload = makePreStepPayload('危险内容')
+    rejectEdgeRoute(payload)
+    const result = await svc.handlePreStep(payload as any, makeNext(payload.messages))
+
+    assert.equal(result.kind, 'enter', 'fail-open 放行，但绝不等于放行到云端')
+    assert.ok(
+      audit.entries.some(e => e.kind === 'input-guard.reject.degraded-local'),
+      '必须留下 reject.degraded-local 审计',
+    )
+    const preflight = infoLines.find(l => l.includes('preflight intent'))
+    assert.ok(preflight, 'preflight should fire')
+    assert.ok(preflight!.includes('category=LOCAL'), `REJECT 必须降级为 LOCAL: ${preflight}`)
+    assert.ok(preflight!.includes('targetRealm=LOCAL'), `REJECT 绝不能映射成 CLOUD: ${preflight}`)
+    assert.ok(
+      !preflight!.includes('targetRealm=CLOUD'),
+      'REJECT 绝不能映射成 CLOUD',
+    )
+
+    // 真正的出口检查：handleAgentRequest 必须把路由改写到本地模型
+    const seedConfig = { provider: 'cloud-llm', model: 'deepseek-chat' }
+    const routed = await svc.handleAgentRequest(payload as any, seedConfig as any, async () => seedConfig as any)
+    assert.equal((routed as any).provider, 'local-llm', 'fail-open 的 REJECT 轮必须留在本地')
+    assert.equal((routed as any).model, 'qwen3-4b-instruct-2507')
+  })
+
+  it('intent-router 判 REJECT + fail-open → 同样留在本地', async () => {
+    const ir = fakeIntentRouter({ category: 'REJECT', rationale: 'ambiguous' })
+    const audit = fakeAuditLog()
+    const { ctx, infoLines } = fakeCtxWithLogger()
+    const svc = new InputGuardServiceImpl(
+      ctx as any, defaultConfig({ rejectOnPolicyViolation: false }),
+      undefined, undefined, ir.api as any, undefined, audit.api as any,
+    )
+    const payload = makePreStepPayload('do weird thing')
+    const result = await svc.handlePreStep(payload as any, makeNext(payload.messages))
+
+    assert.equal(result.kind, 'enter')
+    const preflight = infoLines.find(l => l.includes('preflight intent'))
+    assert.ok(preflight, 'preflight should fire')
+    assert.ok(preflight!.includes('targetRealm=LOCAL'), `REJECT 绝不能映射成 CLOUD: ${preflight}`)
+
+    const seedConfig = { provider: 'cloud-llm', model: 'deepseek-chat' }
+    const routed = await svc.handleAgentRequest(payload as any, seedConfig as any, async () => seedConfig as any)
+    assert.equal((routed as any).provider, 'local-llm', 'fail-open 的 REJECT 轮必须留在本地')
+  })
+
+  it('intent-router 判 REJECT + fail-closed → 仍然拦下（回归护栏）', async () => {
+    const ir = fakeIntentRouter({ category: 'REJECT', rationale: 'ambiguous' })
+    const svc = new InputGuardServiceImpl(
+      fakeCtx() as any, defaultConfig({ rejectOnPolicyViolation: true }),
+      undefined, undefined, ir.api as any,
+    )
+    const payload = makePreStepPayload('do weird thing')
+    const result = await svc.handlePreStep(payload as any, makeNext(payload.messages))
+    assert.equal(result.kind, 'reject')
+    assert.equal(result.reason, 'ambiguous')
+  })
+
+  it('普通 LOCAL 判定不受影响（不误伤）', async () => {
+    const ir = fakeIntentRouter({ category: 'LOCAL' })
+    const { ctx, infoLines } = fakeCtxWithLogger()
+    const svc = new InputGuardServiceImpl(
+      ctx as any, defaultConfig(),
+      undefined, undefined, ir.api as any, undefined,
+    )
+    const payload = makePreStepPayload('查一下本地文件')
+    const result = await svc.handlePreStep(payload as any, makeNext(payload.messages))
+    assert.equal(result.kind, 'enter')
+    const preflight = infoLines.find(l => l.includes('preflight intent'))
+    assert.ok(preflight!.includes('category=LOCAL'))
+    assert.ok(preflight!.includes('targetRealm=LOCAL'))
+  })
+
+  it('fail-open 的 REJECT 轮会注册 LOCAL realm —— Layer 3 gating 不能 fail-open', async () => {
+    // §7.128: REJECT 降级成 LOCAL 后这一轮**会**跑。若仍不注册 realm，
+    // realm-skill-bridge 的 checkToolRealm 走 fail-open（agentRealm ===
+    // undefined）→ 本地模型可以调 web_search 出网 —— 正好是 REJECT 要防的。
+    const realms: Array<[string, string]> = []
+    const ctx = {
+      ...fakeCtx(),
+      realmSkillBridge: {
+        setSessionRealm(sessionId: string, realm: string) { realms.push([sessionId, realm]) },
+      },
+    }
+    const ir = fakeIntentRouter({ category: 'REJECT', rationale: 'ambiguous' })
+    const svc = new InputGuardServiceImpl(
+      ctx as any, defaultConfig({ rejectOnPolicyViolation: false }),
+      undefined, undefined, ir.api as any, undefined,
+    )
+    const payload = makePreStepPayload('do weird thing')
+    await svc.handlePreStep(payload as any, makeNext(payload.messages))
+    assert.equal(realms.length, 1, 'fail-open 的 REJECT 轮必须注册 realm')
+    assert.equal(realms[0][1], 'LOCAL', '注册的必须是 LOCAL（REJECT 永不注册）')
+  })
+})

@@ -12019,3 +12019,101 @@ operator 发「开灯」，Edge 面板的**答案出口**节点显示**「路由
 单测 **60 文件 / 1227 passed + 2 skipped**（新增 6 例）；覆盖率行 **81.27%** /
 分支 79.25% / 函数 76.91%；双侧类型检查 exit 0；eslint 0 error / 58 warning
 （未引入新警告）；`verify:build` 12 项门禁 exit 0。
+
+---
+
+## §7.128 REJECT 绝不走 CLOUD（2026-10-27）
+
+### 遗留项
+
+§7.124 / §7.125 两轮留下的待办：`input-guard.ts` 里调用方给的 REJECT 被**静默
+升格成 CLOUD**。
+
+```ts
+category = edgeRoute.category === 'REJECT' ? 'CLOUD' : edgeRoute.category
+```
+
+调用方（http-api）显式判了「拦下」，这行把它改写成「送去云端」——本该拦下的
+原文反而上云。
+
+### 今天是颗未引爆的地雷，不是活着的泄漏
+
+查清了三件事：
+
+1. **`_edgeRoute` 只有 http-api 写**（`http-api.ts:720` / `:1057`），两处都在
+   REJECT 短路（`:576` / `:871`）**之后**——短路直接 403 返回，
+   `category: 'REJECT'` 根本到不了 `_edgeRoute`。
+2. **宿主从不写它**——`app.asar`（182MB）里 `_edgeRoute` / `_edgeRejection`
+   **0 命中**。
+3. **`readEdgeRoute` 只认 `realm ∈ {LOCAL, CLOUD, SANITIZED}`**——REJECT 连
+   数据模型都进不来。
+
+所以今天走不到。但它是颗地雷：任何新增入口（fork 路由 / 新 http-api 路径 /
+宿主自己写 `_edgeRoute`）都会把「拦下」变成「上云」，而且**不会有任何测试变红**
+——因为根本没有测试覆盖这个分支。
+
+### 顺着这条线查出第二个、更真的问题
+
+`category === 'REJECT'` 在 fail-open 下（`rejectOnPolicyViolation=false`）是
+**真的**会出网的：
+
+- `shouldSanitize = category === 'CLOUD' || 'SANITIZED'` → false → 不脱敏
+- `wantsDowngradeToLocal = category === 'LOCAL'` → false → **不降级**
+- 于是原始 CLOUD 路由原样保留 → 文本上云
+- `targetRealm` 映射 `LOCAL ? LOCAL : (SANITIZED ? LOCAL : 'CLOUD')` → REJECT
+  落进 else → `CLOUD`
+
+实测（改之前的代码，preflight ops log）：
+
+```
+category=REJECT confidence=0.85 rationale=ambiguous targetRealm=CLOUD routeSource=webui
+```
+
+**REJECT 的意思是「这条别处理」，让它出网恰恰是它说的反面。**
+
+### 修复
+
+不变量收成一句话：**REJECT 永不出网。**
+
+1. **调用方的 REJECT 按 intentRouter 同语义处理**（不再静默升格）：
+   - fail-closed（默认）→ `attachRejection` + 拦下，审计
+     `input-guard.blocked.edge-route`
+   - fail-open → 审计 `input-guard.edge-route.fail-open`，交给统一降级点
+2. **统一降级点**（分类块之后）：`category === 'REJECT'` → 降级为 `LOCAL`，
+   审计 `input-guard.reject.degraded-local`。这样 `shouldSanitize` /
+   `wantsDowngradeToLocal` / realm 注册三层全部落到 LOCAL——留在设备上继续。
+3. **realm 映射写死**「只有 CLOUD 才是 CLOUD」：第二道保险，万一将来又有路径
+   把 REJECT 塞进 category，它也不会被映射成出网。
+
+副作用（都朝更保守的方向）：
+
+- fail-open 的 REJECT 轮现在会注册 session realm **LOCAL** → Layer 3 的
+  tool-realm gating 生效。此前 REJECT 不注册 realm → gating fail-open
+  （`agentRealm === undefined`）→ 本地模型可以调 `web_search` 出网——
+  正好是 REJECT 要防的那件事。
+- TypeScript 的控制流分析因此收窄了 `category` 的类型（REJECT 不再可能出现在
+  后面），`if (category !== 'REJECT')` 成了死代码 → 删掉，类型正好与
+  `setSessionRealm(sessionId, realm: 'LOCAL' | 'CLOUD' | 'SANITIZED')`
+  完全一致。
+
+### 验证
+
+新增 6 例（`tests/unit/input-guard.test.ts`）：
+
+- 调用方 REJECT + fail-closed → 拦下（不是 `'enter'`），有
+  `blocked.edge-route` 审计，无 `routed` 事件，`targetRealm` 不是 CLOUD
+- 调用方 REJECT + fail-open → 留在本地：`category=LOCAL`、`targetRealm=LOCAL`，
+  且 `handleAgentRequest` 真的把路由改写到 `local-llm`
+- intent-router REJECT + fail-open → 同样留在本地
+- intent-router REJECT + fail-closed → 仍然拦下（回归护栏）
+- 普通 LOCAL 判定不受影响（不误伤）
+- fail-open 的 REJECT 轮注册 LOCAL realm（Layer 3 gating 不许 fail-open）
+
+**反向验证**：`git stash` 掉修复后重跑，6 例中 3 例变红，其中一例外挂观测到的
+正是 `targetRealm=CLOUD`；`调用方判的 REJECT 必须被拦下` 拿到的是 `'enter'`
+——旧代码真的把 REJECT 放行成了普通轮次。测试有效，不是自说自话。
+
+单测 **60 文件 / 1233 passed + 2 skipped**（新增 6 例）；覆盖率行 **81.37%** /
+分支 79.27% / 函数 76.91%（`input-guard.ts` 行 82.16% / 分支 80.95%）；
+双侧类型检查 exit 0；eslint 0 error / 58 warning（未引入新警告）；
+`verify:build` 12 项门禁 exit 0。
