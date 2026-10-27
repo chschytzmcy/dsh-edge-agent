@@ -56,6 +56,11 @@
       "cloudKeywords": [],
       "localEntities": [],
       "fallbackKeywords": [],
+      "deviceCommands": {
+        "_comment": "§7.124 家庭设备操作正则层（Tier-0）的扩展词表 —— 追加到内置词表（灯/空调/电视/窗帘…）。加一个新电器名只改这里一行，不用改代码。devices = 设备名词，actions = 动作词。",
+        "devices": [],
+        "actions": []
+      },
       "llmFallback": true,
       "_comment": " §7.115：llmFallback=false = 决策模型 only 模式（jev skip 直接落规则层，LLM 分类器不再运行）。"
     }

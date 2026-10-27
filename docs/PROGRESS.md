@@ -11951,3 +11951,71 @@ llm calls total: 3
 回归：单测 **60 文件 / 1221 passed + 2 skipped**（新增 12 例，
 `tests/unit/prompt-guard-device-command.test.ts`）；覆盖率行 **81.22%**；
 双侧类型检查 exit 0；eslint 0 error / 58 warning；`verify:build` 12 项门禁全绿。
+
+---
+
+## §7.127 Edge 面板「答案出口」的飞行中/失败态（2026-10-27）
+
+### 症状
+
+operator 发「开灯」，Edge 面板的**答案出口**节点显示**「路由未定」**——但那一轮明明
+在作答，而且路由早已定死（路由决策节点已经把 `qwen-token-plan-cn/qwen3.8-flash`
+改写成 `local-llm/qwen3.8:27b`）。
+
+### 真因：不是路由没定，是答案还在路上
+
+`llm.local.start` 在**请求发出时**落盘，`llm.local.end` 在**答案回来时**落盘。
+面板的答案出口节点只读 `.end`（外加宿主公告 `llm.host.route`、上一轮沿用），
+所以整段「在途」窗口里它什么都读不到 → 落到兜底文案「路由未定」。
+
+实测（`session-115987fa`，审计 `audit.plain.jsonl`）：
+
+```
+07:27:16.878  guard.device-command.detected  device=灯 action=开 pure=true
+07:27:16.879  intent.classify.end           path=device-command confidence=0.95
+07:27:16.892  input-guard.route.overridden  → local-llm/qwen3.8:27b
+07:27:16.904  llm.local.start               promptLen=30268 messageCount=64
+               ← 面板此刻显示「路由未定」，此后 101 秒一直显示
+07:28:57.983  llm.local.end                 durationMs=101080
+```
+
+**101 秒**。桌面版的 `llm.local.baseUrl` 指向公网端点，30K 字符 / 64 条消息的
+上下文在途这么久是常态 —— 也就是说**「路由未定」会在每一轮长回答的整个过程中挂在
+面板上**，而它恰恰出现在最需要看懂发生了什么的时候。
+
+### 三态变四态
+
+| 状态 | 判据 | 文案 |
+|---|---|---|
+| 已作答 | `llm.local.end` / `llm.cloud.end` | 本地模型 / 云端 |
+| **作答中** | 有 `.start`，比最新的 `.end` 新，其后无 error | **作答中…**（+ 出口目标 + 原始字段） |
+| **作答失败** | 有 `http_error` / `network_error`，比最新的 `.end` 新，其后无 `.start` | **作答失败**（+ 原因） |
+| 路由未定 | 什么都没观察到 | 路由未定（保持原样） |
+
+「作答中」必须给出**出口目标**（`provider/model` 就在 start 行里）——路由确实已经
+定了，start 行写明了答案要发给谁。
+
+「作答失败」的原因取 `status`（http_error 带），没有 status 时退回**机器码原文**
+（`llm.local.network_error`）—— 历史数据里 `error` 字段被序列化成
+`"[object Object]"`，等于没说话；宁可显示机器码，也不显示占位符。
+
+失败后若重试（新的 `.start` 跟进），状态回到「作答中」。
+
+### 顺带补齐：config/edge.example.json 模板过期
+
+`config/edge.example.json` 一直是 tracked 的模板，但 `stages.intent` 少了
+§7.124 新增的 `deviceCommands` 段 —— 照模板复制出来的配置看不到这个扩展点。
+补上后与真实 `config/edge.json` 做结构比对：**零路径缺失**（示例里多出的
+`llmFallback` / `audit.llmTrace` / `jev.localAdoptFloor` 是「可选开关」方向的反向
+差集，保留）。模板所有 secret 字段仍是空串，`sk-` 形态密钥扫描 0 命中。
+
+### 验证
+
+新增 6 例（`tests/unit/flow-panel-raw-evidence.test.ts`）：在途显示「作答中」+
+出口目标+原始字段；上一轮已 end、本轮在途仍是「作答中」；http_error 显示
+「作答失败」+ status=404；network_error 退回机器码原文且**不出现**
+`[object Object]`；失败后重试在途回到「作答中」；什么都没发生仍是「路由未定」。
+
+单测 **60 文件 / 1227 passed + 2 skipped**（新增 6 例）；覆盖率行 **81.27%** /
+分支 79.25% / 函数 76.91%；双侧类型检查 exit 0；eslint 0 error / 58 warning
+（未引入新警告）；`verify:build` 12 项门禁 exit 0。

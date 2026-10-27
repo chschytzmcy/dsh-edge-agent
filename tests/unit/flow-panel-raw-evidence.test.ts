@@ -358,3 +358,120 @@ describe('flow panel — §7.122 the classifier line must name the ACTUAL decide
     assert.ok(out.includes('缓存命中'), `cache decider missing: ${out}`)
   })
 })
+
+describe('flow panel — §7.127 答案出口的飞行中/失败态', () => {
+  // 真实桌面截图：发「开灯」，答案出口显示「路由未定」——但那一轮**正在
+  // 作答**（llm.local.start 已落，llm.local.end 还要 101s 后才落）。路由
+  // 早就定了（路由决策节点已把 qwen-token-plan-cn 改写成 local-llm），
+  // 「路由未定」是假话。
+  it('答案在途时显示「作答中」而不是「路由未定」', () => {
+    const rows = [
+      row('llm.local.start', {
+        provider: 'local-llm',
+        model: 'qwen3.8:27b',
+        route: 'qwen3.8:27b',
+        messageCount: 64,
+        promptLen: 30268,
+      }, 'route'),
+    ]
+    const out = render(rows)
+    assert.ok(!out.includes('路由未定'), `must not say 路由未定: ${out}`)
+    assert.ok(out.includes('作答中'), `running state missing: ${out}`)
+    // 出口目标早在 start 行就定了 —— 面板要把它说出来
+    assert.ok(out.includes('local-llm/qwen3.8:27b'), `egress target missing: ${out}`)
+    // 原始判断数据：这一轮出口的原始字段
+    assert.ok(out.includes('messageCount=64'), `raw messageCount missing: ${out}`)
+    assert.ok(out.includes('promptLen=30268'), `raw promptLen missing: ${out}`)
+  })
+
+  it('上一轮已答完、本轮又在途时，仍然显示「作答中」', () => {
+    // agent loop：第一次调用已 end，第二次调用在途 —— 最新的 start 比 end 新
+    const rows = [
+      row('llm.local.end', {
+        provider: 'local-llm',
+        model: 'qwen3.8:27b',
+        route: 'qwen3.8:27b',
+        durationMs: 7400,
+        promptLen: 28000,
+        resultLen: 200,
+      }, 'route'),
+      row('llm.local.start', {
+        provider: 'local-llm',
+        model: 'qwen3.8:27b',
+        route: 'qwen3.8:27b',
+        messageCount: 64,
+        promptLen: 30268,
+      }, 'route'),
+    ]
+    const out = render(rows)
+    assert.ok(out.includes('作答中'), `running state missing: ${out}`)
+    assert.ok(!out.includes('路由未定'), `must not say 路由未定: ${out}`)
+  })
+
+  it('出口失败时显示「作答失败」并给出原因，而不是「路由未定」', () => {
+    const rows = [
+      row('llm.local.start', {
+        provider: 'local-llm',
+        model: 'qwen3.8:27b',
+        route: 'qwen3.8:27b',
+        messageCount: 64,
+        promptLen: 30268,
+      }, 'route'),
+      row('llm.local.http_error', {
+        provider: 'local-llm',
+        model: 'qwen3.8:27b',
+        route: 'qwen3.8:27b',
+        status: 404,
+        durationMs: 25,
+      }, 'route'),
+    ]
+    const out = render(rows)
+    assert.ok(out.includes('作答失败'), `failed state missing: ${out}`)
+    assert.ok(out.includes('status=404'), `cause missing: ${out}`)
+    assert.ok(!out.includes('路由未定'), `must not say 路由未定: ${out}`)
+  })
+
+  it('网络错误没有 status 时退回机器码原文（error 字段是 [object Object]）', () => {
+    const rows = [
+      row('llm.local.network_error', {
+        provider: 'local-llm',
+        model: 'qwen3.8:27b',
+        route: 'qwen3.8:27b',
+        durationMs: 31262,
+        error: '[object Object]',
+      }, 'route'),
+    ]
+    const out = render(rows)
+    assert.ok(out.includes('作答失败'), `failed state missing: ${out}`)
+    assert.ok(out.includes('llm.local.network_error'), `machine code missing: ${out}`)
+    assert.ok(!out.includes('[object Object]'), `must not show the placeholder: ${out}`)
+  })
+
+  it('失败后重试在途 —— 回到「作答中」', () => {
+    const rows = [
+      row('llm.local.network_error', {
+        provider: 'local-llm',
+        model: 'qwen3.8:27b',
+        route: 'qwen3.8:27b',
+        durationMs: 999,
+        error: '[object Object]',
+      }, 'route'),
+      row('llm.local.start', {
+        provider: 'local-llm',
+        model: 'qwen3.8:27b',
+        route: 'qwen3.8:27b',
+        messageCount: 64,
+        promptLen: 30268,
+      }, 'route'),
+    ]
+    const out = render(rows)
+    assert.ok(out.includes('作答中'), `running state missing: ${out}`)
+    assert.ok(!out.includes('作答失败'), `must not stay failed: ${out}`)
+  })
+
+  it('什么都没发生过时仍然是诚实的「路由未定」', () => {
+    const out = render([row('intent.classify.start', { classifier: 'local-llm' })])
+    assert.ok(out.includes('路由未定'), `expected pending state: ${out}`)
+    assert.ok(!out.includes('作答中'), `must not claim running: ${out}`)
+  })
+})

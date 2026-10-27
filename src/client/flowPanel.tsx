@@ -498,6 +498,52 @@ function answerNode(rows: EdgeRow[], summary: EdgeSummary): FlowNode {
   // llm.host.route). Read the adapter rows first — they are the actual
   // wire traffic — and fall back to the host announcement.
   const adapter = latest(rows, r => r.kind === 'llm.local.end' || r.kind === 'llm.cloud.end')
+  // §7.127: an answer that is still in flight is NOT an undecided route.
+  // `llm.local.start` lands when the request leaves and carries the egress
+  // target (provider/model/promptLen); `llm.local.end` lands only when the
+  // answer comes back. The desktop shot exposed the gap: a 101s answer sat
+  // on 「路由未定」 for its whole duration — but the route had been decided
+  // long before (the routing node above already showed the rewrite, and
+  // the start row names the model the bytes are going to). Read the
+  // in-flight and failed states off the start/error rows so the node stops
+  // claiming the route is undecided while it is plainly running.
+  const started = latest(rows, r => r.kind === 'llm.local.start' || r.kind === 'llm.cloud.start')
+  const failed = latest(rows, r => /^llm\.(local|cloud)\.(http_error|network_error)$/.test(r.kind))
+  const inFlight = started !== undefined
+    && (adapter === undefined || started.ts > adapter.ts)
+    && (failed === undefined || failed.ts < started.ts)
+  if (inFlight && started !== undefined) {
+    const provider = str(field(started, 'provider'))
+    const model = str(field(started, 'model') ?? field(started, 'route'))
+    const sub: string[] = [`${tr('flow.lbl.route')} ${provider}/${model}`]
+    const raw: string[] = []
+    const messageCount = field(started, 'messageCount')
+    if (typeof messageCount === 'number') raw.push(`messageCount=${messageCount}`)
+    const promptLen = field(started, 'promptLen')
+    if (typeof promptLen === 'number') raw.push(`promptLen=${promptLen}`)
+    if (raw.length > 0) sub.push(`${tr('flow.lbl.raw')} ${raw.join(' · ')}`)
+    return { label: tr('flow.answer'), tone: 'run', detail: tr('flow.answer.running'), sub }
+  }
+  if (failed !== undefined && (adapter === undefined || failed.ts > adapter.ts)) {
+    const provider = str(field(failed, 'provider'))
+    const model = str(field(failed, 'model') ?? field(failed, 'route'))
+    const status = field(failed, 'status')
+    const errMsg = field(failed, 'error')
+    // §7.127: 宁可显示机器码原文，也不要显示一个没信息量的占位符
+    // （`error` 字段历史上被序列化成 "[object Object]"，等于没说话）。
+    const cause = typeof status === 'number'
+      ? `status=${status}`
+      : typeof errMsg === 'string' && errMsg.length > 0 && errMsg !== '[object Object]'
+        ? errMsg
+        : failed.kind
+    return {
+      label: tr('flow.answer'), tone: 'warn', detail: tr('flow.answer.failed'),
+      sub: [
+        `${tr('flow.lbl.route')} ${provider}/${model}`,
+        `${tr('flow.lbl.cause')} ${cause} · ${tr('flow.lbl.elapsed')} ${ms(field(failed, 'durationMs'))}`,
+      ],
+    }
+  }
   const effective = adapter !== undefined
     ? {
       provider: str(field(adapter, 'provider')),
