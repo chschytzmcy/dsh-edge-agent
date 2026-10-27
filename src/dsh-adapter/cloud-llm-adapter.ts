@@ -55,6 +55,11 @@ import {
   resetSessionSseRetryCount,
   tryConsumeSseRetryBudget,
 } from './llm-max-turns.js'
+import {
+  planCloudEgress,
+  type EgressMessage,
+} from './cloud-egress.js'
+import { PII_ORDER, PII_PATTERNS } from './pii-utils.js'
 
 export const name = 'cloud-llm-adapter'
 
@@ -84,6 +89,183 @@ interface InputGuardLike {
     orphanCount: number
     syntheticInjected: number
   }
+}
+
+/**
+ * Minimal sanitizer interface — mirrors input-guard's `SanitizerLike` so the
+ * two consumers stay on the same real contract (`Replacement` is
+ * `{ original, placeholder, piiType, dataClass, keptPrefix? }`, §7.123).
+ */
+interface SanitizerLike {
+  sanitize(text: string, context?: { sessionId?: string }): Promise<{
+    sanitizedText: string
+    sessionId: string
+    replacements: Array<{
+      original: string
+      placeholder: string
+      piiType: string
+      dataClass: string
+      keptPrefix?: string
+    }>
+  }>
+  desanitize(text: string, sessionId: string): Promise<string>
+}
+
+/**
+ * 出网准备结果。 */
+export interface CloudEgressResult {
+  /** 真正发出去的消息（已裁剪 + 已脱敏）。 */
+  messages: EgressMessage[]
+  /** 被拦下的本地段消息条数。 */
+  droppedCount: number
+  /** 脱敏替换次数。 */
+  replacements: number
+  /** 是否真的做了脱敏（sanitizer 缺席 → false）。 */
+  sanitized: boolean
+}
+
+/**
+ * §7.131 (2026-10-27): 出网准备器 —— 裁剪 + 脱敏。
+ *
+ * **为什么 ctx 在这里而不是 apply() 时取**：`cordis.patch.yml` 里
+ * cloud-llm-adapter(373) 排在 sanitizer-pipeline(506) **之前**，所以 apply()
+ * 执行的那一刻 `ctx.sanitizer` 还是 undefined。但 stream() 是 boot 完成后的
+ * 运行时调用 —— 那时所有插件都已 apply，ctx 完整。所以这里持有 ctx，在
+ * **运行时**再取 sanitizer。
+ *
+ * 同理 `ctx.inputGuard` 也是运行时才拿得到 —— apply() 时取到的那个
+ * `inputGuard` 一直是 undefined（§7.17 的孤儿 tool_call 清洗在当前部署下
+ * 因此是**失效**的）。本轮不改那件事，只把脱敏需要的 sanitizer 运行时取到。
+ */
+export class CloudEgressGuard {
+  constructor(private readonly ctx: Context) {}
+
+  /** 运行时取 sanitizer（apply 时拿不到，见类注释）。 */
+  private sanitizer(): SanitizerLike | undefined {
+    return (this.ctx as unknown as { sanitizer?: SanitizerLike }).sanitizer
+  }
+
+  /**
+   * 运行时取本地 provider 名单。
+   *
+   * 用 model-router 的 `listDetailed()`（带 realm 标注）—— 与路由判定同一份
+   * 事实源，避免「出网裁剪认为它是本地、路由认为它是云」这种口径漂移。
+   * model-router 在 patch 里排在 cloud-llm-adapter 之后，所以同样运行时取。
+   */
+  private localProviders(): string[] {
+    const router = (this.ctx as unknown as {
+      modelRouter?: { listDetailed?: () => Array<{ provider?: string; realm?: string }> }
+    }).modelRouter
+    try {
+      const detailed = router?.listDetailed?.() ?? []
+      const locals = detailed
+        .filter(d => d.realm === 'LOCAL' && typeof d.provider === 'string')
+        .map(d => d.provider as string)
+      if (locals.length > 0) return locals
+    } catch { /* fall through to the default */ }
+    return ['local-llm']
+  }
+
+  /**
+   * 裁剪到「只带云段历史 + 本轮」，并对保留块做可逆脱敏。
+   *
+   * 脱敏失败（占位符超限等）→ 抛错，**fail-closed**：宁可这一轮不出网，
+   * 也不放行半脱敏文本（与 sanitizer-pipeline 的既有语义一致）。
+   */
+  async prepare(
+    messages: readonly EgressMessage[],
+    sessionId: string | undefined,
+  ): Promise<CloudEgressResult> {
+    const plan = planCloudEgress(messages, {
+      currentSegment: 'cloud',
+      localProviders: this.localProviders(),
+    })
+    const sanitizer = this.sanitizer()
+    if (!sanitizer) {
+      // 没有 sanitizer = 隐私栈没开（enableInputGuard=false 等）。裁剪仍然
+      // 执行（主人要求无条件成立），脱敏记审计 —— 不能假装脱过了。
+      return { messages: plan.kept, droppedCount: plan.droppedCount, replacements: 0, sanitized: false }
+    }
+    let replacements = 0
+    const kept = await Promise.all(plan.kept.map(async (m) => {
+      // 先用同一批 PII 正则做**廉价预检**，只有疑似才真的调 sanitizer ——
+      // sanitizer.sanitize() 每次都要 sweepExpired（遍历全部 session mapping），
+      // 一条会话动辄几十上百条消息，逐条调会明显拖慢出网。
+      if (!mayContainPii(m.content)) return m
+      const r = await this.sanitizeMessage(m, sanitizer, sessionId)
+      replacements += r.replacements
+      return r.message
+    }))
+    return { messages: kept, droppedCount: plan.droppedCount, replacements, sanitized: true }
+  }
+
+  private async sanitizeMessage(
+    message: EgressMessage,
+    sanitizer: SanitizerLike,
+    sessionId: string | undefined,
+  ): Promise<{ message: EgressMessage; replacements: number }> {
+    let count = 0
+    const next = await mapMessageStringsAsync(message, async (text) => {
+      const result = await sanitizer.sanitize(text, sessionId ? { sessionId } : undefined)
+      count += result.replacements.length
+      return result.sanitizedText
+    })
+    return { message: next, replacements: count }
+  }
+}
+
+/** 内容里是否**可能**含 PII —— 预检，避免对每条消息都调 sanitizer。 */
+function mayContainPii(content: unknown): boolean {
+  const texts: string[] = []
+  collectStrings(content, texts)
+  for (const t of texts) {
+    for (const name of PII_ORDER) {
+      // 正则带 g flag 时 lastIndex 有状态 —— 每次重建。
+      if (new RegExp(PII_PATTERNS[name], 'i').test(t)) return true
+    }
+  }
+  return false
+}
+
+function collectStrings(value: unknown, out: string[]): void {
+  if (typeof value === 'string') {
+    out.push(value)
+    return
+  }
+  if (Array.isArray(value)) {
+    for (const v of value) collectStrings(v, out)
+    return
+  }
+  if (value !== null && typeof value === 'object') {
+    for (const v of Object.values(value as Record<string, unknown>)) collectStrings(v, out)
+  }
+}
+
+/** mapMessageStrings 的 async 版本（脱敏是 async 的）。 */
+async function mapMessageStringsAsync(
+  message: EgressMessage,
+  fn: (text: string) => Promise<string>,
+): Promise<EgressMessage> {
+  const next: EgressMessage = { ...message }
+  next.content = await mapStringsAsync(message.content, fn)
+  return next
+}
+
+async function mapStringsAsync(value: unknown, fn: (text: string) => Promise<string>): Promise<unknown> {
+  if (typeof value === 'string') return await fn(value)
+  if (Array.isArray(value)) {
+    const out: unknown[] = []
+    for (const v of value) out.push(await mapStringsAsync(v, fn))
+    return out
+  }
+  if (value !== null && typeof value === 'object') {
+    const out: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = await mapStringsAsync(v, fn)
+    }
+    return out
+  }
+  return value
 }
 
 export interface Config {
@@ -147,8 +329,10 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
   private readonly auditLog: AuditLike | undefined
   private readonly inputGuard: InputGuardLike | undefined
   private readonly logger: LoggerLike | undefined
+  /** §7.131: 出网准备器（裁剪云段 + 脱敏）。 */
+  private readonly egress: CloudEgressGuard | undefined
 
-  constructor(config: Config, auditLog?: AuditLike, inputGuard?: InputGuardLike, logger?: LoggerLike) {
+  constructor(config: Config, auditLog?: AuditLike, inputGuard?: InputGuardLike, logger?: LoggerLike, egress?: CloudEgressGuard) {
     super()
     this.providersList = [...config.providers]
     this.baseUrl = config.baseUrl.replace(/\/+$/u, '')
@@ -159,6 +343,7 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
     this.auditLog = auditLog
     this.inputGuard = inputGuard
     this.logger = logger
+    this.egress = egress
   }
 
   private audit(level: 'debug' | 'info' | 'warn' | 'error' | 'security', kind: string, payload: Record<string, unknown>): void {
@@ -323,6 +508,43 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
       sanitizedMessages = result.messages as unknown as typeof options.messages
     }
 
+    // §7.131 (2026-10-27): 出网准备 —— 裁掉本地段历史 + 对保留块脱敏。
+    //
+    // 主人裁决：「发给 cloudllm 的请求，只能携带之前所有的上 cloudllm 的历史」——
+    // 默认路由是本地池，本地轮次积累的会话历史属于本地资产，路由被改写/恢复
+    // 切回云端时不能跟着上云（实测 10-24 的 route.restored 就带着 28 条本地
+    // 历史上过云）。
+    //
+    // 脱敏失败（占位符超限等）→ fail-closed：宁可这一轮不出网，也不放行半脱敏
+    // 文本 —— 与 sanitizer-pipeline 的既有语义一致。
+    const egressSessionId = (options as { sessionId?: string }).sessionId
+    let egressDropped = 0
+    let egressReplacements = 0
+    let egressSanitized = false
+    if (this.egress) {
+      try {
+        const prepared = await this.egress.prepare(
+          sanitizedMessages as unknown as EgressMessage[],
+          egressSessionId,
+        )
+        sanitizedMessages = prepared.messages as unknown as typeof options.messages
+        egressDropped = prepared.droppedCount
+        egressReplacements = prepared.replacements
+        egressSanitized = prepared.sanitized
+      } catch (err: any) {
+        this.audit('security', 'llm.cloud.egress.blocked', {
+          provider: options.provider,
+          model: options.model,
+          sessionId: egressSessionId ?? 'unknown',
+          reason: err?.message ?? String(err),
+        })
+        throw new LlmError(
+          `cloud-llm-adapter: egress preparation failed (${err?.message ?? String(err)}) — refusing to send unscrubbed text`,
+          'SANITIZE_FAILED',
+        )
+      }
+    }
+
     // §7.48 (2026-09-13): system-prompt augmentation to nudge DeepSeek to
     // synthesize answer after receiving tool results, instead of looping
     // additional tool calls. 5x news verification (§7.47 followup):
@@ -396,7 +618,21 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
       wireSystem,
       sanitizedMessages as unknown as Array<{ role: string; content: unknown; source?: { kind?: string } }>,
     )
-    this.audit('info', 'llm.cloud.start', { provider: options.provider, model: options.model, messageCount, promptLen, baseUrl: this.baseUrl, systemInjected, retryBudgetUsed: peekSessionSseRetryCount(options.sessionId) })
+    this.audit('info', 'llm.cloud.start', { provider: options.provider, model: options.model, messageCount, promptLen, baseUrl: this.baseUrl, systemInjected, retryBudgetUsed: peekSessionSseRetryCount(options.sessionId), historyDropped: egressDropped, egressReplacements: egressReplacements, egressSanitized })
+    // §7.131: 出网裁剪单独留一行 —— operator grep `llm.cloud.egress` 就能看到
+    // 「这一轮带了多少历史上去 / 丢了多少本地段 / 脱敏替换了几处」。
+    if (egressDropped > 0 || egressReplacements > 0 || !egressSanitized) {
+      this.audit('info', 'llm.cloud.egress', {
+        provider: options.provider,
+        model: options.model,
+        sessionId: egressSessionId ?? 'unknown',
+        keptMessages: messageCount,
+        droppedLocalHistory: egressDropped,
+        replacements: egressReplacements,
+        sanitized: egressSanitized,
+      })
+    }
+
 
     const headers: Record<string, string> = {
       'content-type': 'application/json',
@@ -865,6 +1101,8 @@ export class CloudLlmDelegateAdapterImpl extends LlmAdapter {
   private readonly auditLog: AuditLike | undefined
   private readonly inputGuard: InputGuardLike | undefined
   private readonly logger: LoggerLike | undefined
+  /** §7.131: 出网准备器（裁剪云段 + 脱敏）。 */
+  private readonly egress: CloudEgressGuard | undefined
 
   /** Cached probe result (undefined = not probed yet; null = probed, none). */
   private targetCache: CloudDelegateTarget | null | undefined
@@ -877,6 +1115,7 @@ export class CloudLlmDelegateAdapterImpl extends LlmAdapter {
     auditLog?: AuditLike,
     inputGuard?: InputGuardLike,
     logger?: LoggerLike,
+    egress?: CloudEgressGuard,
   ) {
     super()
     this.providersList = [...config.providers]
@@ -885,6 +1124,7 @@ export class CloudLlmDelegateAdapterImpl extends LlmAdapter {
     this.auditLog = auditLog
     this.inputGuard = inputGuard
     this.logger = logger
+    this.egress = egress
   }
 
   private audit(level: 'debug' | 'info' | 'warn' | 'error' | 'security', kind: string, payload: Record<string, unknown>): void {
@@ -1003,17 +1243,61 @@ export class CloudLlmDelegateAdapterImpl extends LlmAdapter {
       forwardMessages = result.messages as unknown as typeof options.messages
     }
 
+    // §7.131 (2026-10-27): delegate 路径同样要裁剪 —— 它转发给宿主的云模型，
+    // 那也是出网。当前部署走的就是这条（llm.cloud.baseUrl="" = DELEGATE），实测
+    // 10-24 的 route.restored 就是带着 28 条本地历史走到这里的。
+    let egressDropped = 0
+    let egressReplacements = 0
+    let egressSanitized = false
+    if (this.egress) {
+      try {
+        const prepared = await this.egress.prepare(
+          forwardMessages as unknown as EgressMessage[],
+          sessionId,
+        )
+        forwardMessages = prepared.messages as unknown as typeof options.messages
+        egressDropped = prepared.droppedCount
+        egressReplacements = prepared.replacements
+        egressSanitized = prepared.sanitized
+      } catch (err: any) {
+        this.audit('security', 'llm.cloud.egress.blocked', {
+          provider: target.provider,
+          model: wireModel,
+          sessionId,
+          reason: err?.message ?? String(err),
+        })
+        throw new LlmError(
+          `cloud-llm-adapter: egress preparation failed (${err?.message ?? String(err)}) — refusing to send unscrubbed text`,
+          'SANITIZE_FAILED',
+        )
+      }
+    }
+
     this.audit('info', 'llm.cloud.delegate.resolved', {
       from: 'cloud-llm',
       toProvider: target.provider,
       toModel: wireModel,
       source: target.source,
       sessionId,
-      messageCount: options.messages.length,
+      messageCount: forwardMessages.length,
+      historyDropped: egressDropped,
+      egressReplacements,
+      egressSanitized,
     })
+    if (egressDropped > 0 || egressReplacements > 0 || !egressSanitized) {
+      this.audit('info', 'llm.cloud.egress', {
+        provider: target.provider,
+        model: wireModel,
+        sessionId,
+        keptMessages: forwardMessages.length,
+        droppedLocalHistory: egressDropped,
+        replacements: egressReplacements,
+        sanitized: egressSanitized,
+      })
+    }
     try {
       this.logger?.info?.(
-        `[cloud-llm-adapter] DELEGATE start sessionId=${sessionId} from=cloud-llm to=${target.provider}/${wireModel} source=${target.source} messageCount=${options.messages.length}`,
+        `[cloud-llm-adapter] DELEGATE start sessionId=${sessionId} from=cloud-llm to=${target.provider}/${wireModel} source=${target.source} messageCount=${forwardMessages.length} droppedLocalHistory=${egressDropped}`,
       )
     } catch { /* debug only */ }
 
@@ -1159,6 +1443,10 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
   }).llm
 
   let delegate: CloudLlmDelegateAdapterImpl | undefined
+  // §7.131: 出网准备器。ctx 在这里持有 —— sanitizer / modelRouter 都是运行时
+  // 才拿得到（apply 时 cloud-llm-adapter 排在 sanitizer-pipeline 与
+  // model-router 之前，ctx 里还没有它们）。
+  const egress = new CloudEgressGuard(ctx)
   const adapter: CloudLlmAdapterImpl | CloudLlmDelegateAdapterImpl = delegateMode
     ? (() => {
         const accessors: DelegateAccessors = {
@@ -1173,10 +1461,10 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
             }
           },
         }
-        delegate = new CloudLlmDelegateAdapterImpl(config, accessors, auditLog, inputGuard, logger)
+        delegate = new CloudLlmDelegateAdapterImpl(config, accessors, auditLog, inputGuard, logger, egress)
         return delegate
       })()
-    : new CloudLlmAdapterImpl(config, auditLog, inputGuard, logger)
+    : new CloudLlmAdapterImpl(config, auditLog, inputGuard, logger, egress)
 
   // §7.100 热更新：路由拓扑变更（宿主 pi-ai replace / adapter 装卸）→ 清缓存，
   // 下次 stream 重新探针。agentDefaultModel 是 volatile Config，GUI 换模型无需订阅。

@@ -12410,3 +12410,178 @@ config/edge.json → llm.local.baseUrl = http://67.0.0.5:11434/v1
 单测 **61 文件 / 1252 passed + 2 skipped**；覆盖率行 **81.54%** / 分支 79.45% /
 函数 76.97%（`src/client/verdict.ts` 行 100% / 分支 85.71%）；双侧类型检查 exit 0；
 eslint 0 error / 58 warning（未引入新警告）；`verify:build` 12 项门禁 exit 0。
+
+## §7.131 出网只带云段历史：本地资产不跟着上云（2026-10-27）
+
+### 触发：主人看完「本地积累的历史被原样送到云端」
+
+§7.130 之前查实的事实（`audit.plain.jsonl`）：
+
+```
+input-guard.route.restored
+  session-60298f3e-…   local-llm/qwen3.8:27b → cloud-llm/deepseek-chat
+  reason: recovery-from-previous-downgrade
+        ↓
+llm.cloud.delegate.resolved   messageCount=24 / 26 / 28
+  toProvider: qwen-token-plan-cn
+```
+
+前面几轮在本地攒的历史（24→26→28 条），在路由被改写/恢复切回云端的那一刻
+**原样跟着上云**了。
+
+### 主人的裁决（三条，逐条收紧）
+
+> 1. 「发往 cloudllm 的请求，不能携带历史会话信息，并且当前的请求内容需要脱敏」
+> 2. 「cloudllm 只能携带 **之前所有的上 cloudllm 的历史**，所有 locallm 的历史会话信息都不能带」
+> 3. 「locallm 需要携带**所有的**历史会话信息」
+> 4. 「不用兼容历史会话，新会话支撑即可」
+
+第 2 条把第 1 条细化成了**按 provider 分段**：不是「只带本轮」，而是「**云段
+历史照带，本地段历史一律不带**」。
+
+第 3 条是第 2 条的**不对称另一半**，也是关键：
+
+| 出口 | 允许携带的历史 | 理由 |
+|---|---|---|
+| `local-llm` | **全部**历史会话信息 | 本地池是 operator 自有设施，带什么都不算出网 |
+| `cloud-llm` | **只有之前上过 cloud-llm 的历史** | 本地轮次积累的历史属于**本地资产**，切回云端时不能跟着走 |
+
+第 4 条砍掉了「为旧会话写兼容分支」的成本 —— 产不出 provider 的那一段直接按
+`unknown` **保守丢弃**。
+
+### 判据：宿主给每条 assistant 消息打了 provider 标记
+
+`@deepseek-ai/dsh-llm` 的类型契约（`lib/types/message.d.ts`）：
+
+```ts
+/** Provider/model identity and adapter-private replay data for an assistant message. */
+export interface AssistantProviderMetadata {
+    /** Provider route that produced the message. */
+    provider: string;
+    /** Provider model id that produced the message. */
+    model: string;
+    replayState?: unknown;
+}
+export interface ModelMessageSource extends AssistantProviderMetadata {
+    kind: 'model';
+}
+```
+
+`provider` 是**必填**字段，注释写明是「产生这条消息的 **route**」。所以「这段
+历史是本地池产生的还是云端产生的」是**逐条可判的事实**，不需要靠推断，也不需要
+按会话边界记账。
+
+### 轮次起点：只认「真实用户输入」
+
+用户消息与工具结果没有 provider 标记 —— 它们归属于**所在的那一轮**。轮次起点 =
+一条真实用户输入消息（`role === 'user' && source.kind === 'user'`）。
+
+实测（桌面版 ops log，18:05:09 主人发「开灯」那一轮）证明这个判据必须精确 ——
+宿主往同一个 user-role 里塞了**四种**不同 kind 的消息：
+
+```
+index 0: role=system  kind=system-prompt
+index 1: role=user    kind=user            ← 真实用户输入（唯一）
+index 2: role=user    kind=runtime-context
+index 3: role=user    kind=skill-catalog
+index 4: role=user    kind=time-context
+```
+
+只有 `kind === 'user'` 才是轮次起点；`runtime-context` / `skill-catalog` /
+`time-context` / `model-selection` 都不是。宿主 dsh-agent 还会插一条
+`kind='model-selection'` 的 user-role 通知（`[model changed: …]`）—— 同样不是轮次起点。
+
+**model-switch 通知的归属**：它描述的是「**上面**的 assistant 回合由谁生成」，
+所以归属它**前面**那一段。本地段被丢弃时通知也一起丢 —— 否则云端会收到一句
+「上面的回合由 local-llm 生成」，而那些回合根本不在请求里，语义反而错乱。
+
+### 实现
+
+**新模块 `src/dsh-adapter/cloud-egress.ts`**（纯函数，无 Cordis / 无 React，
+单测直接断言）：
+
+- `providerSegment(provider, localProviders)` → `'cloud' | 'local' | 'unknown'`
+  （规则与 `model-router.resolveRoute` 同源：本地名单内或 `local-` 前缀 → local；
+  其余 → cloud；缺失 → **unknown**）
+- `planCloudEgress(messages, { currentSegment, localProviders })` → 切分 + 标注
+- `assistantProviderHistogram(messages)` → provider 分布（观测用）
+
+**`src/dsh-adapter/cloud-llm-adapter.ts`**：
+
+- 新增 `CloudEgressGuard`（持 ctx，出网前 `prepare()`）
+- **直连路径**（`llm.cloud.start`）与 **delegate 路径**（`llm.cloud.delegate.resolved`）
+  **都**接入 —— 当前部署 `llm.cloud.baseUrl=""` 走的就是 delegate
+- 裁剪后对保留块做**可逆脱敏**（sanitizer 占位符）；脱敏失败 → **fail-closed**，
+  抛 `SANITIZE_FAILED`，绝不放行半脱敏文本
+- 审计：新增 `llm.cloud.egress` 行（`keptMessages` / `droppedLocalHistory` /
+  `replacements` / `sanitized`）+ 出口行加 `historyDropped` / `egressReplacements`
+  / `egressSanitized` 字段
+
+**`src/dsh-adapter/local-llm-adapter.ts`**：**一行未动** —— 本地池带全部历史。
+
+### 一处必须说清的技术细节：sanitizer 与 modelRouter 都是**运行时**才拿得到
+
+`cordis.patch.yml` 里 cloud-llm-adapter 排在 `sanitizer-pipeline`(506) 与
+`model-router`(400) **之前**，所以 `apply()` 执行的那一刻 `ctx.sanitizer` /
+`ctx.modelRouter` 还是 undefined。`CloudEgressGuard` 因此**持有 ctx**，
+在 **stream()（运行时）**再取 —— 那时所有插件都已 apply，ctx 完整。
+
+同理 `ctx.inputGuard`：`apply()` 时取到的那个一直是 undefined
+（§7.17 的孤儿 tool_call 清洗因此在当前部署下是**失效**的 —— 审计里
+`input-guard.orphan-tool-call.recovered` 反而有 218 行，说明 Cordis 实际的
+apply 顺序由 inject 拓扑决定，不是 patch 列表顺序）。**本轮不动那件事**，
+只把脱敏需要的 sanitizer 运行时取到。
+
+### 可观测性：两个观测点
+
+- `input-guard.message-sources`（审计，info 级）—— 每轮记一行 assistant 消息的
+  provider 分布。只在历史里**已有** assistant 消息时记（首轮分布是空的，记了
+  是噪音）。审计只落 info/warn/security/error（**debug 被过滤** —— 第一版写成
+  debug 级，实测审计文件里根本没有 debug 行，已改 info）。
+- `llm-trace` 的 message trace 新增 `provider` 字段 —— ops log 的
+  `LLM_REQUEST` 里能直接看到每条 assistant 消息的归属。
+
+这两个点让「判据成不成立」**可被证伪**：如果哪天宿主改了 provider 的填法，
+审计里一眼能看出来，不会静默退化成「本地历史照带」。
+
+### 验证
+
+新增 29 例：
+
+- `tests/unit/cloud-egress.test.ts`（**21 例**，纯函数层）：provider→段归属三态；
+  轮次起点识别（model-switch / tool / runtime-context 不算）；本地段整段丢弃；
+  云段历史保留；云/本地交替逐段判定；宿主自选模型名算云段；unknown 段丢弃；
+  本轮工具交互完整保留；model-switch 通知随本地段一起丢；退化路径（无用户
+  输入 → 全保留；空数组不抛）；本地名单可配；provider 分布观测
+- `tests/unit/cloud-egress-adapter.test.ts`（**7 例**，接线层）：wire body 里没有
+  本地段；云段历史在 wire body 里；本轮 PII 出网前已脱敏；审计行字段正确；
+  无 sanitizer 时仍裁剪但如实记 `sanitized=false`；**delegate 路径**同样裁剪 +
+  脱敏（当前部署走的就是这条）
+- `tests/unit/local-llm-adapter.test.ts`（**1 例**）：本地池出网 `messageCount=5`
+  ——云段 + 本地段 + 本轮**一条不少**（钉死不对称规则的另一半）
+
+单测 **63 文件 / 1281 passed + 2 skipped**；覆盖率行 **81.76%** / 分支 79.86% /
+函数 77.41%（三项均较 §7.130 上升）；双侧类型检查 exit 0；eslint 0 error /
+58 warning（未引入新警告）；`verify:build` 12 项门禁 exit 0（package surface
+211 files / 63 entry targets —— 新增 `cloud-egress.js` + `.d.ts`）。
+
+`verify:plugin-spec` 门禁：纯函数模块需要豁免（`src/dsh-adapter/*.ts` 默认被当成
+cordis 插件）。照 §7.123 的先例（`intent-prompts` / `input-guard-messages`）
+加了一条 `cloud-egress` 豁免。
+
+### 桌面版
+
+已重建并重启（18:07:18），`config.loaded` 指向
+`dist/installable/dsh-edge-agent-desktop-safe`。
+
+**运行时核验待主人一条消息**：观测点已就位，但桌面版的 http-api 插件没启用
+（21017 / 21018 都不在监听）、webui 的 API 要宿主鉴权 token —— 自动触发一轮
+走不通。主人在 App 里再发一条消息，`input-guard.message-sources` 审计行就会
+给出 assistant 消息的 provider 分布，当场可证。
+
+### 一处**没有**纳入本轮的口径（留给主人决定）
+
+本轮只管了**会话历史**（messages）。`options.system`（宿主组装的运行上下文：
+工作区文件指令、工具目录、当前时间等）**没有**被裁 —— 它每轮重新组装，不是
+会话历史，且 LOCAL 轮次本来也带着它。如果主人认为「本地工作区内容不该上云」，
+那是一条**新裁决**，需要单独设计（system 的裁剪口径与 messages 不同）。

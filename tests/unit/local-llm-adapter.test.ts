@@ -756,4 +756,49 @@ describe('local-llm-adapter (M4, real-only)', () => {
       assert.equal('baseUrlIsLocal' in row.payload, false)
     })
   })
+
+  // §7.131 (2026-10-27): 主人裁决的两条规则是**不对称**的 ——
+  //   cloud-llm：只能携带之前所有上 cloudllm 的历史（本地段一律不带）
+  //   local-llm：携带**所有**历史会话信息
+  // 本地池是 operator 自有设施，带全部历史不算出网，所以**不裁**。
+  // 这条用例钉死「本地路径没有被顺手裁掉」—— 它是云端那条规则的反面。
+  describe('§7.131 — 本地池出网携带全部历史', () => {
+    it('云段 + 本地段的历史一条都不少', async () => {
+      installFetchMock(() => sseResponse([
+        { choices: [{ delta: { content: 'pong' }, finish_reason: null }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] },
+      ]))
+      const entries: any[] = []
+      const auditLog = { log: async (e: any) => { entries.push(e) } }
+      const adapter = new LocalLlmAdapterImpl(
+        { providers: ['local-llm'], baseUrl: 'http://127.0.0.1:11434/v1', defaultModel: 'qwen3-4b' },
+        auditLog as any,
+      )
+      const messages = [
+        { role: 'user', content: [{ type: 'text', text: '云轮输入' }], source: { kind: 'user' } },
+        { role: 'assistant', content: [{ type: 'text', text: '云轮回答' }], source: { kind: 'model', provider: 'cloud-llm', model: 'm' } },
+        { role: 'user', content: [{ type: 'text', text: '本地轮输入' }], source: { kind: 'user' } },
+        { role: 'assistant', content: [{ type: 'text', text: '本地轮回答' }], source: { kind: 'model', provider: 'local-llm', model: 'm' } },
+        { role: 'user', content: [{ type: 'text', text: '本轮输入' }], source: { kind: 'user' } },
+      ]
+      for await (const _ of adapter.stream({
+        provider: 'local-llm',
+        model: 'qwen3-4b',
+        messages: messages as any,
+      })) { /* drain */ }
+      restoreFetch()
+
+      const row = entries.find(e => e.kind === 'llm.local.start')
+      assert.ok(row, 'llm.local.start 必须落盘')
+      assert.equal(row.payload.messageCount, 5, '本地池必须携带全部历史（云段 + 本地段）')
+
+      const wire = (captured?.bodyJson?.messages ?? []) as Array<{ content: unknown }>
+      const texts = wire.map(m => typeof m.content === 'string'
+        ? m.content
+        : (Array.isArray(m.content) ? m.content.map(b => (b as { text?: string }).text ?? '').join('') : ''))
+      assert.ok(texts.some(t => t.includes('云轮输入')), `云段历史必须带上: ${JSON.stringify(texts)}`)
+      assert.ok(texts.some(t => t.includes('本地轮输入')), `本地段历史必须带上: ${JSON.stringify(texts)}`)
+      assert.ok(texts.some(t => t.includes('本轮输入')), `本轮必须带上: ${JSON.stringify(texts)}`)
+    })
+  })
 })

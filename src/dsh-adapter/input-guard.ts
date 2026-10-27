@@ -28,6 +28,7 @@ import {
   replaceAtUserIndex,
   replaceUserTextsAt,
 } from './input-guard-messages.js'
+import { assistantProviderHistogram } from './cloud-egress.js'
 
 // §7.100: 复用 cloud-llm-adapter 的委托探针（同一条解析链，保证
 // "input-guard 认为能不能上云" 与 "adapter stream 时实际找不找得到目标"
@@ -969,6 +970,28 @@ export class InputGuardServiceImpl extends Service {
     // 是原始 payload.messages 里的最后一条 user 消息。
     const originalLastUser = findLastUserText(payload.messages)
     if (!originalLastUser) return decision
+
+    // §7.131 (2026-10-27): 消息来源观测 —— 纯审计，不改任何行为。
+    //
+    // 出网裁剪（cloud-egress）依赖「每条 assistant 消息的 source.provider」把
+    // 会话历史切成「云段 / 本地段」。这个字段由宿主 dsh-llm 写（见
+    // `ModelMessageSource extends AssistantProviderMetadata`），但值是运行时
+    // 才有的 —— 静态读代码看不出来它到底填没填、填的是什么。
+    //
+    // 所以记一行分布：operator / 后续维护者能直接确认「这一段历史是本地
+    // 池产生的还是云端产生的」，也就能验证裁剪的判据成立。
+    //
+    // 只在历史里**已有** assistant 消息时记 —— 首轮没有 assistant，分布是空
+    // 的，记了也是噪音。审计只落 info/warn/security/error（debug 被过滤），
+    // 所以这一行必须是 info。
+    const assistantProviders = assistantProviderHistogram(payload.messages)
+    if (Object.keys(assistantProviders).length > 0) {
+      this.audit('info', 'input-guard.message-sources', {
+        sessionId,
+        messageCount: payload.messages.length,
+        assistantProviders,
+      })
+    }
 
     // 1. 攻击检测 — 最便宜、最先阻断
     if (this.promptGuard) {

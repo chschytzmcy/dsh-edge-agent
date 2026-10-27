@@ -232,6 +232,12 @@ export interface LlmMessageTrace {
   role: string
   /** `source.kind`（`tool` / `user` / …），能区分"工具回显"和"用户输入"。 */
   kind?: string
+  /**
+   * §7.131: `source.provider` —— 产出这条 assistant 消息的 provider 路由。
+   * 出网裁剪（cloud-egress）按它把会话历史切成「云段 / 本地段」，所以把它
+   * 也透出到 trace 里：operator 一眼能看出「这段历史是本地池的还是云端的」。
+   */
+  provider?: string
   /** 正文原始长度。 */
   length: number
   /** 正文（已脱敏 + 截断）。 */
@@ -267,7 +273,7 @@ export interface LlmRequestTraceInput {
   model: string
   baseUrl?: string
   system?: string
-  messages: Array<{ role: string; content: unknown; source?: { kind?: string } }>
+  messages: Array<{ role: string; content: unknown; source?: { kind?: string; provider?: string } }>
   tools?: Array<{ name?: string; function?: { name?: string } }>
   params?: LlmRequestTrace['params']
   config: LlmTraceConfig
@@ -312,6 +318,7 @@ export function buildRequestTrace(input: LlmRequestTraceInput): LlmRequestTrace 
       length: raw.length,
     }
     if (m.source?.kind) trace.kind = m.source.kind
+    if (m.source?.provider) trace.provider = m.source.provider
     // 空正文的消息（比如只有 tool_calls 的 assistant 回合）留空，不写 `text`
     // 字段 —— 让读日志的人分得清"没有正文"和"正文被截断成空"。
     if (raw.length > 0) trace.text = sanitizeTraceText(raw, config)

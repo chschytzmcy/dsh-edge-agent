@@ -85,6 +85,11 @@ for (const file of sources) {
   // input-guard.ts; never inserted by a cordis patch row, not in
   // package.json exports.
   if (base === 'input-guard-messages') continue
+  // §7.131: the egress-segmentation helpers extracted out of
+  // cloud-llm-adapter.ts (云段/本地段切分 + provider 判定). Imported by
+  // cloud-llm-adapter.ts / input-guard.ts; never inserted by a cordis patch
+  // row, not in package.json exports.
+  if (base === 'cloud-egress') continue
   if (base === 'plugin' || base === 'index') continue
   const content = readFileSync(file, 'utf8')
 
