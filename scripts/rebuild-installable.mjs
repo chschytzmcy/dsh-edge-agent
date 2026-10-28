@@ -82,6 +82,11 @@ const VARIANTS = [
   {
     dir: 'dsh-edge-agent-desktop-safe',
     patch: 'cordis.desktop-safe.patch.yml',
+    // §7.135: the edge stack ships as an **Agent Preset** patch — the host's
+    // "work mode" mechanism. The desktop-safe bundle must point at the
+    // desktop-safe preset (its plugin set differs: it carries the Edge
+    // panel's host half, the full one carries http-api / etscli-tools).
+    preset: 'presets/edge.desktop-safe.patch.yml',
     // The desktop-safe bundle must point its cordis patch at the safe
     // variant — the full patch ships host rewrites the desktop profile
     // must not apply.
@@ -94,6 +99,7 @@ const VARIANTS = [
   {
     dir: 'dsh-edge-agent-full',
     patch: 'cordis.patch.yml',
+    preset: 'presets/edge.patch.yml',
     patchField: 'cordis.patch.yml',
     versionSuffix: '-full',
   },
@@ -170,7 +176,14 @@ for (const variant of VARIANTS) {
   variantPkg.version = `${pkg.version}${variant.versionSuffix}`
   if (!variantPkg.dsh) variantPkg.dsh = {}
   if (!variantPkg.dsh.bundle) variantPkg.dsh.bundle = {}
-  variantPkg.dsh.bundle.patch = `./${variant.patchField}`
+  // §7.135: the bundle carries TWO patch layers — the host-row overrides
+  // (cordis patch) and the **Agent Preset** declaration (the 边缘模式 work
+  // mode). The host's own dsh-web-app bundle uses the same array shape
+  // (`"patch": ["./cordis.patch.yml", "./presets/standard.patch.yml", …]`).
+  variantPkg.dsh.bundle.patch = [
+    `./${variant.patchField}`,
+    `./${variant.preset}`,
+  ]
   // The installable directory is installed as a `file:` DIRECTORY dependency.
   // npm/pnpm run a directory dependency's `prepare` script after install —
   // and this repo's `prepare` compiles TypeScript, which needs the dev

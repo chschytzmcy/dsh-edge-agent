@@ -7,6 +7,18 @@
 
 `dsh-edge-agent` 是一个面向用户的端侧私密智能体，基于 [DeepSeek Harness](https://github.com/deepseek-harness) 的 Cordis 插件机制构建。敏感数据默认留在设备端，仅在用户授权时通过零信任通道与云端通信。
 
+> **它是一种「工作方式」，不是替代品**（§7.135）：本 bundle 在宿主的 DSH 桌面版上
+> 注册了一个新的 **Agent Preset** —— **边缘模式**。宿主自带的标准 / 创造 / PTC /
+> 极简四种工作方式之外，边缘模式 = **标准模式 + 本项目的全部功能**（隐私护栏、
+> 意图判定、路由决策、PII 脱敏、Realm 闸门、审计链、Edge 面板）。它以 bundle
+> 补丁的形式声明（`presets/edge*.patch.yml`），与宿主内置 preset 同一套机制。
+> 默认仍是标准模式；在设置页选中「边缘模式」即启用。
+>
+> 隔离边界要说清楚：preset 决定的是**这个 Agent 对话里有哪些工具与提示词**；
+> 而本项目的护栏 hook 带 `{ global: true }`（`agent/pre-step` / `llm/stream` /
+> `agent/request`），**跨工作方式全局生效** —— 切回标准模式不会让路由改写与
+> PII 脱敏停摆。
+
 ## ✨ 核心特性
 
 > **实现状态说明（2026-10-27）**：下表区分「已实装」与「路线图」。

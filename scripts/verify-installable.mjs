@@ -107,29 +107,40 @@ function verifyBundle(dir) {
     }
   }
 
-  // 2. bundle.patch path must exist on disk.
+  // 2. bundle.patch path(s) must exist on disk.
   //    This is the failure mode that triggered §7.101.x.
-  const dshBundlePatch = unquote(pkg?.dsh?.bundle?.patch)
-  if (!dshBundlePatch) {
+  //
+  //    §7.135: the field may be a STRING (one patch) or an ARRAY (several
+  //    patch layers) — the host's own dsh-web-app bundle uses the array
+  //    shape (`["./cordis.patch.yml", "./presets/standard.patch.yml", …]`).
+  //    This bundle now ships two layers: the host-row overrides (cordis
+  //    patch) and the **Agent Preset** declaration (the 边缘模式 work mode).
+  const rawBundlePatch = pkg?.dsh?.bundle?.patch
+  const bundlePatches = Array.isArray(rawBundlePatch)
+    ? rawBundlePatch.map((p) => unquote(p))
+    : [unquote(rawBundlePatch)]
+  if (!rawBundlePatch || bundlePatches.length === 0 || bundlePatches.some((p) => !p)) {
     throw new Error(`${relative(ROOT, dir)}: package.json#dsh.bundle.patch missing`)
   }
-  if (typeof dshBundlePatch !== 'string') {
-    throw new Error(
-      `${relative(ROOT, dir)}: package.json#dsh.bundle.patch is not a string: ${typeof dshBundlePatch}`,
-    )
-  }
-  // Desktop forbids non-yaml patches: must end in .yml/.yaml.
-  if (!/\.(ya?ml)$/i.test(dshBundlePatch)) {
-    throw new Error(
-      `${relative(ROOT, dir)}: dsh.bundle.patch must be a yaml file, got: ${dshBundlePatch}`,
-    )
-  }
-  const patchAbs = join(dir, dshBundlePatch)
-  if (!existsSync(patchAbs)) {
-    throw new Error(
-      `${relative(ROOT, dir)}: dsh.bundle.patch points at ` +
-        `${dshBundlePatch} but the file is missing on disk`,
-    )
+  for (const dshBundlePatch of bundlePatches) {
+    if (typeof dshBundlePatch !== 'string') {
+      throw new Error(
+        `${relative(ROOT, dir)}: package.json#dsh.bundle.patch entry is not a string: ${typeof dshBundlePatch}`,
+      )
+    }
+    // Desktop forbids non-yaml patches: must end in .yml/.yaml.
+    if (!/\.(ya?ml)$/i.test(dshBundlePatch)) {
+      throw new Error(
+        `${relative(ROOT, dir)}: dsh.bundle.patch must be a yaml file, got: ${dshBundlePatch}`,
+      )
+    }
+    const patchAbs = join(dir, dshBundlePatch)
+    if (!existsSync(patchAbs)) {
+      throw new Error(
+        `${relative(ROOT, dir)}: dsh.bundle.patch points at ` +
+          `${dshBundlePatch} but the file is missing on disk`,
+      )
+    }
   }
 
   // 3. dsh.client (optional). The webview module system requires the
@@ -184,7 +195,8 @@ function verifyBundle(dir) {
   return {
     bundle: pkg.name,
     version: pkg.version,
-    variant: dshBundlePatch,
+    // §7.135: several patch layers (host-row overrides + the Agent Preset).
+    variant: bundlePatches.join(' + '),
     client: clientNote,
     presets: presetFiles.length,
   }

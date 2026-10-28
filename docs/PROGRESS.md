@@ -12910,3 +12910,138 @@ i18n 键**（`flow.guard` / `flow.intent` / `flow.route`）—— 同一个概�
    `body.state.content = text`）—— §7.133 未引入此行为，但让它首次在面板
    上可见。§7.131 的「出网前脱敏」裁决只写了 cloudllm 池，jev 不在其内，
    要不要扩口径是一条**新裁决**。
+## §7.135 边缘模式：本项目注册成宿主的一个新工作方式（2026-10-28）
+
+### 触发：主人给项目定位
+
+> 「我希望本项目是通过引入一种新的工作方式，在「标准模式」的基础上增加」
+> 「我需要在 dsh 桌面上出一新的 agent 工作时间，叫做边缘模式，功能是在 标准模式 之上增加 本项目的功能」
+> 「只有选择 边缘模式 才会出现 edge tab」
+
+### 宿主已有这套机制（本轮第一次把它挖出来）
+
+宿主的 **Agent Preset** 就是「工作方式」：
+
+- 内置四种：`standard`（标准模式）/ `creator`（创造）/ `ptc` / `minimal`（极简），
+  由 `@deepseek-ai/dsh-web-app/presets/*.patch.yml` 声明，bundle 清单里这样挂：
+  ```yaml
+  "dsh": { "bundle": { "patch": [
+    "./cordis.patch.yml",
+    "./presets/standard.patch.yml",
+    "./presets/ptc.patch.yml",
+    "./presets/minimal.patch.yml",
+    "./presets/cordis.patch.yml" ] } }
+  ```
+- preset = **一行 cordis insert patch**：
+  ```yaml
+  - insert:
+      - id: preset-standard
+        name: '@deepseek-ai/dsh-agent-preset'
+        config:
+          id: standard
+          order: 1
+          plugins:
+            - id: persona
+              name: '@deepseek-ai/dsh-persona'
+              config: { prefix: You are a coding agent powered by the {{model}} model. }
+            # … 共 22 行
+  ```
+  `config` 字段（`@deepseek-ai/dsh-agent-preset` 官方 README）：
+
+  | 字段 | 含义 |
+  |---|---|
+  | `id` | 稳定的 preset 标识符（会话保存的就是它） |
+  | `plugins` | 子插件行列表（**必填**，且是**完整**列表） |
+  | `name` | 展示名称 |
+  | `description` | 展示说明 |
+  | `order` | 列表排序 |
+
+- **注册表不合并**：「用户覆盖替换完整子插件列表，不自动合并内置列表的未来更新」
+  → 边缘模式要「在标准模式之上增加」，必须把标准模式的 22 行**整份抄进来**。
+- 「新建 preset 或覆盖内置 preset 都是 **bundle 补丁**：插入一行
+  `@deepseek-ai/dsh-agent-preset`」→ 本项目作为 bundle，**能**声明自己的工作方式。
+
+### 本轮做了什么
+
+1. **新增两份 preset patch**（两个 bundle 变体各一份，插件集不同）：
+   - `presets/edge.desktop-safe.patch.yml` —— 桌面版：22 标准行 + **18** 本项目行
+   - `presets/edge.patch.yml` —— full/CLI：22 标准行 + **20** 本项目行
+2. **本项目的插件行全部从 bundle 顶层 insert 段迁进 preset**（desktop-safe
+   282 行 → 57 行；顶层只剩 3 段**宿主行覆盖**）。
+   留在顶层会在**所有**工作方式下生效 —— 那样切回标准模式时 Edge 照样在跑，
+   「标准模式 + 本项目功能」就是空话。
+3. **bundle 清单改为 patch 数组**（与宿主 dsh-web-app 同形）：
+   `["./cordis.desktop-safe.patch.yml", "./presets/edge.desktop-safe.patch.yml"]`
+   —— `package.json` + `scripts/rebuild-installable.mjs`（每个变体指向自己的 preset）。
+4. **门禁扩展**（`scripts/verify-patch-surface.ts`）：
+   - 快照新增 `presets` 段 —— preset 里的 82 行插件行**重新回到门禁视野**
+     （否则它们游离在门禁之外，谁改都看不见）；
+   - 新增**语义门禁**：本 bundle 的插件行必须全部在 preset 里、顶层 insert 段
+     必须为空 —— 直接锁住 §7.135 的核心不变量。
+   - `verify:plugin-spec` 的 export 豁免改成模式化（任何 `.yml` 结尾的 export
+     都是 loader 配置，不是 Cordis 插件）。
+5. **两个生成器**（可重复执行，防手抄 22 行出错）：
+   `scripts/_gen-edge-preset.mjs`（从宿主 standard.patch.yml 抽 22 行）+
+   `scripts/_migrate-edge-rows.mjs`（把本 bundle 的行搬进 preset）。
+
+### 实测：宿主认了，但 preset 隔离的是「工具可见性」，不是「hook 行为」
+
+桌面版重建并重启（10:37:20）后，启动日志显示 **Edge 的插件在默认的
+`standard` 模式下照样挂载了**：
+
+```
+10:37:38.180 [input-guard]    localModel from config/edge.json: …
+10:37:38.185 [cloud-llm-adapter] apply() called with providers: cloud-llm
+10:37:38.190 [local-llm-adapter] apply() called with providers: local-llm
+```
+
+这**证明宿主正确识别了我们的 preset 声明**（若没识别，40 行插件不会挂载），
+同时暴露了机制的真实语义：
+
+| 隔离的东西 | 是否随 preset 切换 | 证据 |
+|---|---|---|
+| **工具 / 提示词 / 技能**（模型看得见的） | ✅ 是 | registry：「插件注册继承 preset scope，Agent scope 的父链接决定可见性」 |
+| **hook 行为**（改写路由 / 脱敏） | ❌ 否 | 本仓三个 hook 全带 `{ global: true }`：`agent/pre-step`、`llm/stream`、`agent/request` |
+
+`global: true` 是显式要求**跨 scope 全局生效**。所以：
+
+- 选边缘模式 → 多了本项目的工具与能力；
+- 切回标准模式 → Edge 的**工具**不可见，但 Edge 的**护栏行为仍在**
+  （路由改写 / PII 脱敏 / 威胁计数照跑）。
+
+**待主人裁决**：标准模式要不要「纯宿主」（护栏也停）？若要，input-guard 的
+hook 里得查「当前 agent 绑定的 preset id」，不是 `edge` 就放行 —— 那是另一块
+工作（要摸清宿主的 preset 查询 API）。
+
+### 主人已定的三项
+
+1. **名称**：边缘模式（`config.id: edge`，展示名「边缘模式」）。
+2. **默认**：仍是 `standard` —— 装上后是纯宿主行为，主人手动选边缘模式才生效。
+3. **Edge tab**：只在边缘模式出现（本项目全部插件行都进 preset，包括
+   `edge-context-view` 与它的 webview client 注册行）。
+
+### 验证
+
+- 单测 **67 文件 / 1353 passed + 2 skipped**（无回归 —— 本轮只动装配面，不动代码）
+- 双侧类型检查 exit 0；`verify:build` 12 项门禁 exit 0（package surface
+  **219 files / 65 entry targets** —— 新增两个 preset export）
+- 产物核验：`bundle.patch` = `["./cordis.desktop-safe.patch.yml",
+  "./presets/edge.desktop-safe.patch.yml"]`；preset 文件含 `preset-edge` /
+  `config.id: edge` / 展示名「边缘模式」/ **40 行插件**（22 标准 + 18 本项目）
+
+### 运行时核验（需主人操作）
+
+1. 设置页的 Agent preset 选择器里有没有「**边缘模式**」这张卡？
+2. 当前（标准模式）Edge tab 在不在？切到边缘模式后**在不在**？
+3. 切到边缘模式后发一条消息 —— Edge 行为（意图判定 / 路由决策 / 答案出口 /
+   LLM 调用记录）是否齐活？
+
+### 已知代价（如实记录）
+
+- **宿主升级后标准模式的插件列表若变了，边缘模式不会自动跟随** —— 注册表
+  不合并。需要人把宿主的 `standard.patch.yml` 重新对齐到本仓的 preset
+  （`scripts/_gen-edge-preset.mjs` 就是干这件事的）。快照门禁能发现漂移，
+  但发现的是「本仓的 preset 与当初抄的版本不一致」，不是「宿主变了」。
+- **bundle 顶层对宿主行的覆盖（`tool-web` / `web` / `web-search-deepseek`）
+  在任何工作方式下都生效** —— preset 只能声明插件行，不能覆盖宿主行。这是
+  preset 机制的边界。

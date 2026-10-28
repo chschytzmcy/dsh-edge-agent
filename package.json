@@ -51,6 +51,8 @@
       "default": "./lib/dsh-adapter/edge-context-view.js"
     },
     "./cordis.patch.yml": "./cordis.patch.yml",
+    "./presets/edge.patch.yml": "./presets/edge.patch.yml",
+    "./presets/edge.desktop-safe.patch.yml": "./presets/edge.desktop-safe.patch.yml",
     "./file-logger": {
       "types": "./lib/dsh-adapter/file-logger.d.ts",
       "import": "./lib/dsh-adapter/file-logger.js",
@@ -286,7 +288,10 @@
   },
   "dsh": {
     "bundle": {
-      "patch": "./cordis.patch.yml"
+      "patch": [
+        "./cordis.desktop-safe.patch.yml",
+        "./presets/edge.desktop-safe.patch.yml"
+      ]
     },
     "client": {
       "platform": "web",

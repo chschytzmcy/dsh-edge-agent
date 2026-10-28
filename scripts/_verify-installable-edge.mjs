@@ -45,7 +45,20 @@ for (const f of requiredFiles) {
 
 console.log()
 console.log('=== edge-context-view patch row sanity ===')
-const patch = readFileSync(join(TARGET, 'cordis.desktop-safe.patch.yml'), 'utf8')
+// §7.135: the edge-context-view row moved into the **Agent Preset** patch
+// (presets/edge.desktop-safe.patch.yml) — it is the Edge panel's host half
+// and belongs to the 边缘模式 work mode, not to the global patch layer.
+const patchCandidates = [
+  join(TARGET, 'presets', 'edge.desktop-safe.patch.yml'),
+  join(TARGET, 'cordis.desktop-safe.patch.yml'),
+]
+const patchPath = patchCandidates.find((p) => existsSync(p))
+if (patchPath === undefined) {
+  console.error('no patch file to inspect for the edge-context-view row')
+  process.exit(1)
+}
+const patch = readFileSync(patchPath, 'utf8')
+console.log(`  (inspected: ${patchPath.split(/[\\/]/).slice(-2).join('/')})`)
 // Find the edge-context-view row block.
 const rowStart = patch.indexOf('- id: edge-context-view')
 if (rowStart < 0) {
