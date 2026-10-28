@@ -15,14 +15,16 @@
 > （`dsh.bundle.patch` → `insert` 一行 `@deepseek-ai/dsh-agent-preset`）。
 > 默认仍是标准模式；在设置页选中「边缘模式」即启用。
 >
-> **「边缘模式」是默认，还是当前会话选的，决定了什么会出现**（§7.138，运行时实测）：
+> **「边缘模式」是默认，还是当前会话选的，决定了什么会出现**（§7.138 / §7.139，运行时实测）：
 > - **服务端**：会话级选择就够 —— 护栏 hook 是 scope 化的，选了边缘模式的会话
 >   立刻按端侧规则走。
 > - **Edge tab**：tab 类型注册表是**全局**的，宿主没有按会话隐藏 tab 的接口，
 >   所以客户端只能按**名册里的默认 preset** 判定 ⇒ 要看到 Edge tab，请在设置页
->   把「边缘模式」**设为默认**（5s 内出现）。
->   用 `node scripts/probe-desktop-preset-roster.mjs "<dsh web URL>"` 可以查
->   活着的名册（挂载是否健康、谁在当默认）。
+>   把「边缘模式」**设为默认**。
+>   在边缘模式下 **Edge tab 会自己打开**（§7.139：会话上台即自动打开 —— 宿主本身
+>   从不自动打开任何 tab，默认页永远是 guide）；切回标准模式它会自己关掉。
+>   活着的名册（挂载是否健康、谁在当默认）用
+>   `node scripts/probe-desktop-preset-roster.mjs "<dsh web URL>"` 查。
 >
 > **现在是真正隔离的**（§7.136）：本项目的护栏 hook **不再带 `{ global: true }`**，
 > 改由宿主的 scope 链判定 —— 监听器只在**自己的 preset scope 或其子 scope**
@@ -31,9 +33,10 @@
 > 也只在边缘模式出现（客户端按 preset 名册的默认项注册 / 注销 tab 类型）。
 > 唯一保留全局的是 `llm/stream`：该事件不带 scope 载体，去掉也不生效。
 >
-> **桌面版启动失败 / preset 状态异常** ⇒ 看
+> **桌面版启动失败 / preset 状态异常 / Edge tab 不出现** ⇒ 看
 > [docs/desktop-troubleshooting.md](./docs/desktop-troubleshooting.md)
-> （桌面壳层故障手册：宿主认证 cookie 累积导致 431、活体名册探针、通用排查动作表）。
+> （桌面壳层故障手册：宿主认证 cookie 累积导致 431、活体名册探针、
+> Edge tab 不出现的两类判据、通用排查动作表）。
 
 ## ✨ 核心特性
 

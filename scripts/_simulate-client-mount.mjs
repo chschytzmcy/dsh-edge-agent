@@ -16,6 +16,15 @@
 //        edge preset      → the tab type IS registered, body + title seated
 //        back to standard → the tab type is unregistered again
 //
+//   6. assert the §7.139 auto-open contract:
+//
+//        standard preset  → the Edge tab is NOT opened, even with a session
+//                            on screen
+//        edge preset      → the Edge tab IS opened for the session on screen
+//        same session     → opened once only (a poll must not re-open it)
+//        another session  → opened for that session too
+//        back to standard → the Edge tab is CLOSED again (标准模式 = 纯宿主)
+//
 // This reproduces the exact contract the host checks:
 //   - registration id === package name (client-modules: `factories.has(id)`)
 //   - factory returns { name, inject, apply }
@@ -55,9 +64,30 @@ const fakeClearInterval = (id) => {
   timers.delete(id)
 }
 
+// §7.139: the auto-open ladder uses setTimeout (the session's store is
+// minted in the render that follows the on-screen change). The fake timer
+// keeps the ladder deterministic — it is fired by hand, in delay order.
+const timeouts = new Map()
+let nextTimeoutId = 1
+const fakeSetTimeout = (cb, ms) => {
+  const id = nextTimeoutId++
+  timeouts.set(id, { cb, ms })
+  return id
+}
+const fakeClearTimeout = (id) => {
+  timeouts.delete(id)
+}
+
 console.log(`simulating webview load of: ${bundlePath}`)
 const code = readFileSync(bundlePath, 'utf8')
-vm.runInNewContext(code, { window: mockWindow, console, setInterval: fakeSetInterval, clearInterval: fakeClearInterval })
+vm.runInNewContext(code, {
+  window: mockWindow,
+  console,
+  setInterval: fakeSetInterval,
+  clearInterval: fakeClearInterval,
+  setTimeout: fakeSetTimeout,
+  clearTimeout: fakeClearTimeout,
+})
 
 if (!registration) {
   console.error('FAIL: the bundle never called window.__ModuleLoader__.load — the webview would report "loaded without registering".')
@@ -106,7 +136,11 @@ const roster = {
   ],
 }
 const agentPresets = {
+  /** How often the roster was actually READ — §7.139: the watcher must reach
+   *  the roster, not merely register a tab type it guessed about. */
+  reads: 0,
   async list() {
+    agentPresets.reads += 1
     return { ok: true, value: roster }
   },
 }
@@ -139,13 +173,72 @@ const locale = {
   },
 }
 
+// §7.139: the host's right-sidebar controller, mocked to the contract the
+// bundle uses (dsh-client-ui-sidebar-right/src/client/service.ts):
+//   - `mounted` publishes the session on screen
+//   - `openTab(kind)` acts on THAT session, and throws without one
+//   - `tabsIn(sessionId)` lists one session's committed tabs
+//   - `close(tabId)` / `closeIn(sessionId, tabId)` remove a tab
+const sidebar = {
+  onScreen: undefined,
+  listeners: new Set(),
+  tabs: new Map(),
+  opened: [],
+  closed: [],
+  show(sessionId) {
+    sidebar.onScreen = sessionId
+    for (const listener of [...sidebar.listeners]) listener()
+  },
+}
+const sidebarRight = {
+  mounted: {
+    getSnapshot: () => sidebar.onScreen,
+    subscribe(listener) {
+      sidebar.listeners.add(listener)
+      return () => {
+        sidebar.listeners.delete(listener)
+      }
+    },
+  },
+  openTab(kind) {
+    sidebar.opened.push({ kind, sessionId: sidebar.onScreen })
+    if (sidebar.onScreen === undefined) throw new Error('sidebarRight: no session surface is mounted')
+    const tabs = sidebar.tabs.get(sidebar.onScreen) ?? []
+    if (!tabs.some((t) => t.kind === kind)) tabs.push({ id: `tab-${kind}-${sidebar.onScreen}`, kind })
+    sidebar.tabs.set(sidebar.onScreen, tabs)
+  },
+  tabsIn(sessionId) {
+    return sidebar.tabs.get(sessionId) ?? []
+  },
+  close(tabId) {
+    sidebar.closed.push(tabId)
+    for (const tabs of sidebar.tabs.values()) {
+      const index = tabs.findIndex((t) => t.id === tabId)
+      if (index >= 0) {
+        tabs.splice(index, 1)
+        return
+      }
+    }
+  },
+  closeIn(sessionId, tabId) {
+    sidebar.closed.push(tabId)
+    const tabs = sidebar.tabs.get(sessionId) ?? []
+    const index = tabs.findIndex((t) => t.id === tabId)
+    if (index >= 0) tabs.splice(index, 1)
+  },
+}
+
 const services = {
   locale,
   slots,
+  sidebarRight,
   sidebarRightTabs: tabs,
   remote: { agentPresets },
   'remote.agentPresets': agentPresets,
 }
+
+// A session is on screen from the start: the auto-open must key off it.
+sidebar.onScreen = 's1'
 
 /**
  * Build the object an inject callback receives.
@@ -153,6 +246,13 @@ const services = {
  * The client framework hands the callback a CONTEXT-like object whose
  * properties are the injected services (`ctx.locale`, `ctx.slots`,
  * `ctx.remote.agentPresets`); a dotted dependency nests under its path.
+ *
+ * CORDIS SEMANTICS (§7.139): that object is a context PROXY — reading a name
+ * the scope does not carry THROWS "cannot get property … without inject"
+ * (@deepseek-ai/cordis lib/index.js:676). The mock reproduces the throw,
+ * because a plain object let §7.136's scope-blind face probe
+ * (`scope.list` / `scope.agentPresets`) slip through and kill the roster
+ * watcher at runtime — the Edge tab then never registered, in any work mode.
  */
 const namespaceFor = (wanted) => {
   const ns = {}
@@ -165,7 +265,13 @@ const namespaceFor = (wanted) => {
     }
     cursor[parts[parts.length - 1]] = services[name]
   }
-  return ns
+  return new Proxy(ns, {
+    get(target, prop) {
+      if (typeof prop === 'symbol') return Reflect.get(target, prop)
+      if (prop in target) return Reflect.get(target, prop)
+      throw new Error(`cannot get property "${String(prop)}" without inject`)
+    },
+  })
 }
 
 const pending = []
@@ -183,6 +289,13 @@ function makeCtx(declared) {
     },
     on() {
       return () => {}
+    },
+    // Cordis semantics: `ctx.get(name)` reads a service by name and answers
+    // `undefined` when it is not registered (dsh-client-web's context proxy
+    // — `ctx.get('sidebarRightTabs')?.get('browser')` in the host's own
+    // chat plugin).
+    get(name) {
+      return services[name]
     },
     // Cordis semantics: `effect(execute)` runs `execute` immediately and
     // collects the disposer it returns; the disposer runs when the fiber
@@ -231,6 +344,18 @@ const poll = async () => {
   await settle()
 }
 
+/** Fire the pending auto-open timers, in delay order, until none remain.
+ *  The ladder re-arms itself after a failed attempt, so this loops. */
+const flushTimers = async () => {
+  for (let round = 0; round < 12; round++) {
+    if (timeouts.size === 0) break
+    const pending = [...timeouts.entries()].sort((a, b) => a[1].ms - b[1].ms)
+    timeouts.clear()
+    for (const [, timer] of pending) timer.cb()
+    await settle()
+  }
+}
+
 // --- assertions ----------------------------------------------------------
 let failed = false
 const fail = (message) => {
@@ -243,16 +368,22 @@ const report = (phase) => {
   for (const t of registeredTabs) {
     console.log(`    id=${t.id} kind=${t.kind} title=${typeof t.title === 'function' ? 'fn' : JSON.stringify(t.title)} guide=${(t.guide ?? []).length}`)
   }
+  console.log(`    auto-opens: ${sidebar.opened.length} (${sidebar.opened.map((o) => `${o.kind}@${o.sessionId}`).join(', ') || 'none'})  closed: ${sidebar.closed.length}`)
 }
 
 console.log(`  locale namespaces: ${locales.map((l) => l.ns).join(', ') || '(none)'}`)
 console.log(`  slot entries:      ${slotEntries.length}`)
 
-// Phase 1 — 标准模式: no Edge tab type may exist.
+// Phase 1 — 标准模式: no Edge tab type may exist, and the tab must not open
+// itself: 标准模式 is a pure host (主人裁决 2026-10-28).
 await settle()
+await flushTimers()
 report('standard')
 if (registeredTabs.length !== 0) {
   fail(`the Edge tab type is registered while the active preset is "standard" — the tab must exist only in 边缘模式`)
+}
+if (sidebar.opened.length !== 0) {
+  fail(`the Edge tab opened itself while the active preset is "standard" (opened=${JSON.stringify(sidebar.opened)}) — 标准模式 must stay a pure host`)
 }
 
 // The body/title seats are registered unconditionally (the sidebar dispatches
@@ -275,6 +406,7 @@ if (!titleSeat) {
 roster.presets[0].isDefault = false
 roster.presets[1].isDefault = true
 await poll()
+await flushTimers()
 report('edge')
 if (registeredTabs.length !== 1) {
   fail(`the Edge tab type is NOT registered while 边缘模式 is the active preset (registered=${registeredTabs.length})`)
@@ -295,13 +427,53 @@ if (registeredTabs.length !== 1) {
   }
 }
 
-// Phase 3 — back to 标准模式: the tab type must be dropped again.
+// §7.139 — the auto-open contract, asserted in both directions.
+//
+// The Edge tab opens itself in 边缘模式 (the host never opens a tab on its
+// own — the guide page is the default), once per session, and it is closed
+// again when the master leaves 边缘模式 (标准模式 = 纯宿主, no dead chip).
+const openedIn = (sessionId) => sidebar.opened.filter((o) => o.sessionId === sessionId && o.kind === 'dsh-edge-agent')
+
+// Phase 3 — 边缘模式 opens the Edge tab in the session on screen.
+if (agentPresets.reads < 1) {
+  fail(`the roster was never read (reads=${agentPresets.reads}) — the roster watcher must reach \`agentPresets.list()\`, or the tab type is registered on a guess`)
+}
+if (openedIn('s1').length !== 1) {
+  fail(`expected exactly ONE auto-open of the Edge tab in session s1, got ${openedIn('s1').length} (all opens: ${JSON.stringify(sidebar.opened)})`)
+}
+if (!sidebarRight.tabsIn('s1').some((t) => t.kind === 'dsh-edge-agent')) {
+  fail('the Edge tab is not among the session tabs after the auto-open')
+}
+
+// A further poll must not open it again — one open per session.
+await poll()
+await flushTimers()
+if (openedIn('s1').length !== 1) {
+  fail(`the Edge tab was opened ${openedIn('s1').length} times in session s1 — one open per session, and never re-opened after the user closes it`)
+}
+
+// Another session on screen gets its own Edge tab.
+sidebar.show('s2')
+await flushTimers()
+if (openedIn('s2').length !== 1) {
+  fail(`expected exactly ONE auto-open of the Edge tab in session s2, got ${openedIn('s2').length}`)
+}
+
+// Phase 4 — back to 标准模式: the tab type must be dropped again, and the
+// Edge tab we opened must be closed with it.
 roster.presets[0].isDefault = true
 roster.presets[1].isDefault = false
 await poll()
+await flushTimers()
 report('standard again')
 if (registeredTabs.length !== 0) {
   fail(`the Edge tab type survived the switch back to "standard" (registered=${registeredTabs.length})`)
+}
+if (sidebarRight.tabsIn('s2').some((t) => t.kind === 'dsh-edge-agent')) {
+  fail('the Edge tab survived the switch back to "standard" — 标准模式 must not keep our tab')
+}
+if (sidebar.closed.length === 0) {
+  fail('the Edge tab was not closed when the master left 边缘模式')
 }
 
 if (failed) process.exit(1)

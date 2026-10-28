@@ -127,7 +127,63 @@ node scripts/probe-desktop-preset-roster.mjs "<URL>" --set-default edge
 
 ---
 
-## 3. 通用排查动作
+## 3. Edge tab 不出现（**任何**工作模式都没有）
+
+**现象**：会话右侧没有 Edge 页签；guide 里也没有 Edge 入口（只有宿主自带的
+工作区文件 / 上下文 / 新建终端 / 浏览器）。
+
+### 3.1 先分清「门控为 false」与「门控从未运行」
+
+两者现象相同，判据不同：
+
+| 判据 | 门控为 false（名册说不是边缘模式） | 门控从未运行（读名册就抛了） |
+|---|---|---|
+| 探针读活体 roster | `edge.isDefault=false` | `edge.isDefault=true`、healthy |
+| web 端 network 里 `/api/agentPresets/list` | 有 5s 间隔的轮询 | **只有启动突发的几次，没有间隔** |
+| 宿主 guide 里有没有 Edge 入口 | 没有 | 没有 |
+
+**两栏都指向第二列 ⇒ 就是这一类。**
+
+### 3.2 根因（2026-10-28 实锤，§7.139）
+
+Cordis 的**注入作用域是 context PROXY**：读一个该作用域没有提供的服务名会
+**抛错** —— `cannot get property "list" without inject`
+（`@deepseek-ai/cordis` lib/index.js:676）。
+
+我们 §7.136 的 `pickAgentPresets(raw)` 依次探测 `raw.list` / `raw.agentPresets`
+/ `raw.remote.agentPresets` —— 前两个名字本作用域**没有提供** ⇒ 探测第一下就抛
+⇒ 名册 watcher 当场死 ⇒ **Edge tab 类型从未注册** ⇒ 任何工作模式都不会出现。
+
+修法：所有作用域属性读取都包一层 try/catch（`readProperty()`），只走已知安全的
+路径（`raw.remote.agentPresets`）。
+
+**门禁为什么当时没抓到**：`scripts/_simulate-client-mount.mjs` 的 mock 把注入作用域
+做成了**普通对象**（读不到就是 `undefined`）⇒ 复刻不出 proxy 的抛错语义。
+现已改成复刻 Cordis 语义（读未提供的名字就抛错）+ 断言「名册必须真的被读到」。
+
+### 3.3 动作
+
+```bash
+# 1) 名册对不对（默认 preset 是谁）
+node scripts/probe-desktop-preset-roster.mjs "http://127.0.0.1:<port>/?token=…"
+
+# 2) 客户端 bundle 是不是新版（按 rev 取，看是否含 diag 标记/体积变化）
+#    宿主启动清单：window.__DSH_BOOT__ 里的 entries[].url
+# 3) 门禁自证（本地就能复现这类故障）
+node scripts/_simulate-client-mount.mjs
+```
+
+### 3.4 附带结论：宿主**从不自动打开任何 tab**
+
+默认页是 guide，tab 要从 guide 点开
+（`dsh-client-ui-sidebar-right/src/client/contract/seed.ts:26` `defaultSeed`：
+只有唯一 guide 条目才作默认页，否则默认页是 guide）。
+所以「边缘模式自动打开 Edge tab」是我们自己做的（`ctx.get('sidebarRight').openTab`），
+不是宿主行为 —— 升级宿主后这条要重新验证。
+
+---
+
+## 4. 通用排查动作
 
 | 想知道的 | 去哪看 |
 |---|---|

@@ -129,26 +129,83 @@ interface AgentPresetsFace {
   }>
 }
 
+/** The `sidebarRight` face — the host's right-sidebar controller.
+ *
+ *  `openTab(kind)` acts on the session **currently on screen** (the host
+ *  throws when there is none) and expands the column, because content the
+ *  user cannot see is not opened; `mounted` publishes that session;
+ *  `tabsIn(sessionId)` lists one session's committed tabs; `close(tabId)`
+ *  closes one of the on-screen session's tabs. */
+interface SidebarRightFace {
+  openTab(kind: string, options?: { replaceTab?: boolean }): void
+  close?(tabId: string): void
+  /** The controller's per-session close — NOT part of the published face
+   *  interface, but the controller instance behind the face carries it
+   *  (dsh-client-ui-sidebar-right/src/client/service.ts:375 `closeIn`).
+   *  We use it to clear a session's Edge tab that is not on screen. */
+  closeIn?(sessionId: string, tabId: string): void
+  mounted?: { getSnapshot(): string | undefined; subscribe(listener: () => void): () => void }
+  tabsIn?(sessionId: string): readonly { id?: string; kind?: string }[]
+}
+
+/** §7.139: how long the auto-open ladder waits between attempts (ms).
+ *
+ *  The host names the on-screen session BEFORE React renders the change that
+ *  brings it on screen, and the sidebar's seat mints that session's store
+ *  during that render (dsh-client-ui-sidebar-right/src/client/service.ts:
+ *  "It changes before React renders the selection or panel change that causes
+ *  it … its seat mints its store in the same render"). So at the moment we
+ *  learn about a session its store does not exist yet, and `openTab` throws
+ *  "no session surface is mounted" (service.ts:746).
+ *
+ *  The ladder waits for that render. A ladder that runs out is restarted by
+ *  the 5s roster poll, so a session that never settles is retried forever
+ *  without a busy loop. */
+const AUTO_OPEN_RETRY_MS = [0, 80, 300, 900, 2500] as const
+
+/**
+ * Read one property without letting a hostile scope throw.
+ *
+ *  The injected scope is a CORDIS CONTEXT PROXY, not a plain object: reading a
+ *  name that the scope does not carry throws
+ *  "cannot get property \"…\" without inject"
+ *  (@deepseek-ai/cordis lib/index.js:676). §7.136 probed `scope.list` and
+ *  `scope.agentPresets` unguarded — neither name is provided — so the roster
+ *  watcher THREW on its first line and never read the roster: the Edge tab
+ *  type was never registered, in any work mode (§7.139).
+ */
+function readProperty(source: unknown, key: string): unknown {
+  if (source === null || typeof source !== 'object') return undefined
+  try {
+    return (source as Record<string, unknown>)[key]
+  } catch {
+    return undefined
+  }
+}
+
 /**
  * Find the roster face in whatever the framework handed us.
  *
  * The host's own preset UI injects BOTH `remote` and `remote.agentPresets`
- * (packages/client/ui-agent-preset/src/client/index.ts) and reads the roster
- * as `ctx.remote.agentPresets.list()`. A sub-namespace injection may hand
+ * (packages/client/ui-agent-preset/src/client/index.ts:65-67) and reads the
+ * roster as `ctx.remote.agentPresets.list()`. A sub-namespace injection may hand
  * over the namespace itself, the parent namespace, or the enclosing context —
  * accept every shape and never let a missing face throw (the tab simply stays
  * hidden).
  */
 function pickAgentPresets(raw: unknown): AgentPresetsFace | undefined {
   if (raw === null || typeof raw !== 'object') return undefined
-  const r = raw as { list?: unknown; agentPresets?: unknown; remote?: unknown }
-  if (typeof r.list === 'function') return raw as AgentPresetsFace
-  const nested = r.agentPresets as AgentPresetsFace | undefined
-  if (nested !== undefined && typeof nested.list === 'function') return nested
-  const remote = r.remote as { agentPresets?: unknown } | undefined
-  if (remote !== undefined) {
-    const face = remote.agentPresets as AgentPresetsFace | undefined
-    if (face !== undefined && typeof face.list === 'function') return face
+  // The namespace itself (a scope that carries the methods directly).
+  if (typeof readProperty(raw, 'list') === 'function') return raw as AgentPresetsFace
+  const candidates: unknown[] = []
+  // The namespace under its bare name.
+  candidates.push(readProperty(raw, 'agentPresets'))
+  // The namespace under the parent namespace (`ctx.remote.agentPresets`).
+  const remote = readProperty(raw, 'remote')
+  if (remote !== undefined) candidates.push(readProperty(remote, 'agentPresets'))
+  for (const candidate of candidates) {
+    if (candidate === null || candidate === undefined) continue
+    if (typeof readProperty(candidate, 'list') === 'function') return candidate as AgentPresetsFace
   }
   return undefined
 }
@@ -175,6 +232,10 @@ interface CordisCtx {
   inject(deps: readonly string[], cb: (raw: unknown) => void): void
   on?(event: string, cb: (session: unknown, event: unknown) => void): () => void
   effect?(cb: () => void | (() => void), label?: string): () => void
+  /** Read a service by name; `undefined` when it is not registered.
+   *  The host's own client code reads faces this way
+   *  (dsh-client-ui-chat/src/client/apply.ts:280 `ctx.get('sidebarRightTabs')`). */
+  get?(name: string): unknown
 }
 
 /* ── The view ──────────────────────────────────────────────────────────── */
@@ -270,40 +331,170 @@ export function apply(ctx: CordisCtx): void {
   // src/dsh-adapter/input-guard.ts).
   let tabVisible = false
   let disposeTabType: (() => void) | undefined
-  const setTabVisible = (visible: boolean): void => {
-    tabVisible = visible
-    if (visible) {
-      if (disposeTabType !== undefined) return
-      ctx.inject(['sidebarRightTabs'], (raw) => {
-        // The roster may have flipped back while the face was still pending;
-        // registering then would publish a tab nobody asked for.
-        if (!tabVisible || disposeTabType !== undefined) return
-        const c = raw as unknown as CordisCtx & { sidebarRightTabs?: SidebarTabsFace }
-        const tabs = c.sidebarRightTabs
-        if (tabs === undefined || typeof tabs.register !== 'function') return
-        try {
-          const dispose = tabs.register({
-            id: TAB_ID,
-            kind: TAB_ID,
-            title: () => tr('tab.title'),
-            guide: [{
-              // The registry validates guide entries by `id` uniqueness
-              // (`new Set(entries.map(e => e.id)).size === entries.length`) and
-              // the guide body keys capsules by it — an undefined id would make
-              // one entry look duplicated to a second contributor.
-              id: `${TAB_ID}-guide`,
-              order: 30,
-              title: () => tr('tab.title'),
-              description: () => tr('guide.description'),
-            }],
-          })
-          disposeTabType = dispose
-        } catch (error) {
-          reportFailure('sidebar tab type registration', error)
+
+  // ── §7.139: 边缘模式 opens its own tab ──────────────────────────────────
+  //
+  // 主人报（2026-10-28）：「重新启动了 dsh 桌面版，全部工作模式都没有出现
+  // edge tab」。定性结论（§7.138）：tab 类型确实注册了（在会话里点开可见），
+  // 但宿主**不会自动打开任何一个 tab** —— 默认页是 guide，tab 要从 guide 点
+  // 开 (dsh-client-ui-sidebar-right/src/client/contract/seed.ts:26
+  // `defaultSeed`: 只有唯一 guide 条目才作默认页，否则默认页是 guide)。
+  //
+  // 所以边缘模式自己开：会话上台的那一刻，把 Edge tab 开在它里面。这正是
+  // 宿主自己的插件用的导航（`ctx.sidebarRight.openTab(kind)`，
+  // dsh-experimental-client-ui-forge/src/client/mount.ts:251）。
+
+  /** Sessions the Edge tab was auto-opened in — one open per session, and
+   *  never re-opened after the user closed it themselves. */
+  const openedSessions = new Set<string>()
+  /** The host's right-sidebar controller, once it is readable. */
+  let sidebar: SidebarRightFace | undefined
+  /** The retry ladder in flight (at most one: only the on-screen session
+   *  matters, and the ladder is restarted for the next one). */
+  let pendingOpen: { sessionId: string; attempt: number; timer: ReturnType<typeof setTimeout> } | undefined
+
+  /** The Edge tab record of one session, if that session has one. */
+  const edgeTabIn = (sessionId: string): { id?: string } | undefined => {
+    if (sidebar === undefined || typeof sidebar.tabsIn !== 'function') return undefined
+    try {
+      return sidebar.tabsIn(sessionId).find(tab => tab.kind === TAB_ID)
+    } catch (error) {
+      reportFailure('edge tab lookup', error)
+      return undefined
+    }
+  }
+
+  /** Close the Edge tab of one session — 标准模式是纯宿主，我们的 tab 必须走。 */
+  const closeEdgeTabIn = (sessionId: string): void => {
+    if (sidebar === undefined) return
+    const tab = edgeTabIn(sessionId)
+    if (tab === undefined || typeof tab.id !== 'string') return
+    try {
+      if (typeof sidebar.closeIn === 'function') {
+        sidebar.closeIn(sessionId, tab.id)
+        return
+      }
+      // The published face closes only the on-screen session's tab.
+      if (typeof sidebar.close === 'function' && sidebar.mounted?.getSnapshot() === sessionId) {
+        sidebar.close(tab.id)
+      }
+    } catch (error) {
+      reportFailure('edge tab close', error)
+    }
+  }
+
+  /** One rung of the auto-open ladder: open the Edge tab in `sessionId`. */
+  const tryAutoOpen = (sessionId: string, attempt: number): void => {
+    const timer = setTimeout(() => {
+      pendingOpen = undefined
+      if (!tabVisible || sidebar === undefined) return
+      // The session moved on while we waited — that ladder is not ours.
+      if (sidebar.mounted?.getSnapshot() !== sessionId) return
+      if (edgeTabIn(sessionId) !== undefined) {
+        openedSessions.add(sessionId)
+        return
+      }
+      try {
+        sidebar.openTab(TAB_ID)
+        openedSessions.add(sessionId)
+      } catch (error) {
+        // Two known throws, both transient: the session's store is not minted
+        // yet (service.ts:746), or the tab type is not registered yet (the
+        // `sidebarRightTabs` injection is deferred). Both clear on their own.
+        const next = attempt + 1
+        if (next >= AUTO_OPEN_RETRY_MS.length) {
+          reportFailure('edge tab auto-open', error)
+          return
         }
-      })
+        tryAutoOpen(sessionId, next)
+      }
+    }, AUTO_OPEN_RETRY_MS[attempt])
+    pendingOpen = { sessionId, attempt, timer }
+  }
+
+  /** Start the ladder for the session on screen, unless it is already open. */
+  const scheduleAutoOpen = (): void => {
+    if (!tabVisible || sidebar === undefined) return
+    const sessionId = sidebar.mounted?.getSnapshot()
+    if (typeof sessionId !== 'string' || sessionId === '') return
+    if (openedSessions.has(sessionId)) return
+    if (pendingOpen !== undefined) {
+      if (pendingOpen.sessionId === sessionId) return
+      clearTimeout(pendingOpen.timer)
+      pendingOpen = undefined
+    }
+    tryAutoOpen(sessionId, 0)
+  }
+
+  /** Adopt the host's right-sidebar controller as soon as it is readable.
+   *
+   *  Read, never injected: the face is optional by contract, and this fiber
+   *  must never pend on it (a pending entry fails the whole web boot —
+   *  dsh-client-web/src/boot-client.ts:66-88). The roster poll calls this
+   *  every 5s, so a face that shows up late is still adopted. */
+  const adoptSidebar = (): void => {
+    if (sidebar !== undefined) return
+    let raw: unknown
+    try {
+      raw = ctx.get?.('sidebarRight')
+    } catch {
       return
     }
+    const face = raw as SidebarRightFace | undefined
+    if (face === undefined || typeof face.openTab !== 'function') return
+    sidebar = face
+    const mounted = face.mounted
+    if (mounted !== undefined && typeof mounted.subscribe === 'function') {
+      // The snapshot publishes the session that just came on screen.
+      mounted.subscribe(() => { scheduleAutoOpen() })
+    }
+    scheduleAutoOpen()
+  }
+
+  const setTabVisible = (visible: boolean): void => {
+    const changed = tabVisible !== visible
+    tabVisible = visible
+    if (visible) {
+      if (disposeTabType === undefined) {
+        ctx.inject(['sidebarRightTabs'], (raw) => {
+          // The roster may have flipped back while the face was still pending;
+          // registering then would publish a tab nobody asked for.
+          if (!tabVisible || disposeTabType !== undefined) return
+          const c = raw as unknown as CordisCtx & { sidebarRightTabs?: SidebarTabsFace }
+          const tabs = c.sidebarRightTabs
+          if (tabs === undefined || typeof tabs.register !== 'function') return
+          try {
+            const dispose = tabs.register({
+              id: TAB_ID,
+              kind: TAB_ID,
+              title: () => tr('tab.title'),
+              guide: [{
+                // The registry validates guide entries by `id` uniqueness
+                // (`new Set(entries.map(e => e.id)).size === entries.length`) and
+                // the guide body keys capsules by it — an undefined id would make
+                // one entry look duplicated to a second contributor.
+                id: `${TAB_ID}-guide`,
+                order: 30,
+                title: () => tr('tab.title'),
+                description: () => tr('guide.description'),
+              }],
+            })
+            disposeTabType = dispose
+          } catch (error) {
+            reportFailure('sidebar tab type registration', error)
+          }
+        })
+      }
+      if (changed) scheduleAutoOpen()
+      return
+    }
+    if (!changed) return
+    // 离开边缘模式 —— 标准模式是纯宿主：把我们的 tab 收掉，别留一个死 chip。
+    if (sidebar !== undefined) {
+      const sessionId = sidebar.mounted?.getSnapshot()
+      if (typeof sessionId === 'string' && sessionId !== '') closeEdgeTabIn(sessionId)
+    }
+    openedSessions.clear()
     // Hide: drop the type again — the sidebar refreshes on registry change.
     const dispose = disposeTabType
     disposeTabType = undefined
@@ -318,6 +509,9 @@ export function apply(ctx: CordisCtx): void {
     if (api === undefined || typeof api.list !== 'function') return
     const check = async (): Promise<void> => {
       try {
+        // The right-sidebar controller may have shown up since the last tick;
+        // adopting it is what makes the auto-open possible at all.
+        adoptSidebar()
         const result = await api.list()
         if (!result.ok) return
         const presets = result.value?.presets
@@ -328,6 +522,9 @@ export function apply(ctx: CordisCtx): void {
         // the tab would promise panels the server cannot fill.
         const healthy = edge !== undefined && edge.broken === undefined
         setTabVisible(healthy && active?.id === EDGE_PRESET_ID)
+        // The session on screen may have arrived while the tab type was not
+        // registered yet — the ladder retries, and this is the cheap retry.
+        scheduleAutoOpen()
       } catch (error) {
         // A roster fault must not blank the panel: keep the current state.
         reportFailure('preset roster read', error)

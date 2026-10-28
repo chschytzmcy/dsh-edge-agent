@@ -13324,4 +13324,83 @@ preset」这一层。补齐它需要一条**按会话**的可见性判据，而�
 但那是全局注册/注销，仍不是真按会话 ⇒ **待主人裁决**：维持现状（边缘模式
 作为默认 ⇒ 有 tab），还是另做一套按会话跟随的门控。
 
+## §7.139 Edge tab 全模式消失的真正根因：作用域读取抛错（§7.136 引入）+ 边缘模式自动开 tab（2026-10-28）
+
+### 主人报的现象
+
+「重新启动了 dsh 桌面版，**全部工作模式都没有出现 edge tab**」。
+
+§7.138 当时的结论是「门控跟默认 preset，而默认已是 edge ⇒ 应该出现」——
+与现象矛盾。说明 §7.138 的定性只到「名册这一层」，**没有解释 tab 类型为什么
+没被注册**。
+
+### 定位路径（本轮，逐环可复现）
+
+1. **服务端名册是对的**：探针读活体 roster ⇒ `edge` isDefault=true、healthy；
+   宿主启动清单（`window.__DSH_BOOT__`）里也有我们的 entry ⇒ bundle 确实被加载、
+   服务端也确实发的是新版 bundle（按 `rev` 取到新内容）。
+2. **客户端没有名册轮询**：web 端 network 里 `/api/agentPresets/list` 只有启动
+   突发的几次，**没有 5s 间隔** ⇒ 我们的 5s 轮询根本没跑。
+3. **客户端 bundle 跑了**：给 client 加临时诊断（写进 `document.title`，因为
+   webview console 在外面不可观测：桌面壳只把 error 级渲染器输出留作崩溃报告）⇒
+   `client apply start` 与 `locale face` 都有，**唯独 `roster injection fired` 没有**
+   ⇒ `ctx.inject(['remote','remote.agentPresets'], cb)` **从未触发**。
+4. **依赖其实早就在**：诊断里 `ctx.get('remote')` 与 `ctx.get('remote.agentPresets')`
+   都是 object ⇒ 服务在 apply 时**已经可用**，inject 却没回调 ⇒ 只剩一个解释：
+   **inject 回调里的第一行就抛了**。
+
+### 根因：§7.136 的「防御式探测」在真 Cordis 上是抛错的
+
+§7.136 为「修加载失败」把名册读取改成了 `pickAgentPresets(raw)`，依次探测
+`raw.list` / `raw.agentPresets` / `raw.remote.agentPresets`。
+
+- 在**门禁的 mock** 里，注入作用域是**普通对象** ⇒ 读不到就是 `undefined` ⇒ 安全。
+- **真宿主里注入作用域是 Cordis 的 context PROXY**：读一个该作用域没有提供的
+  服务名会**抛错** —— `cannot get property "list" without inject`
+  （`@deepseek-ai/cordis` lib/index.js:676）。`raw.list` 与 `raw.agentPresets`
+  两个名字都不是本作用域提供的（它提供的是 `remote` 与 `remote.agentPresets`）⇒
+  **roster watcher 在第一行就死掉** ⇒ 名册从未被读 ⇒ Edge tab 类型从未注册 ⇒
+  **任何工作模式都不会出现 Edge tab**。
+
+**这不是「门控为 false」，是「门控从未运行过」** —— §7.138 用探针看到的
+`isDefault=true` 与客户端现象并存，正是因为两者根本不在一条链路上。
+
+§7.136 引入、§7.136 之后一直存在 ⇒ 主人「重启后所有工作模式都没有 edge tab」
+与 §7.135 时代还能看见 Edge tab 的截图并不矛盾：**那是旧构建的产物**。
+
+### 修复
+
+1. **作用域读取改为不抛错**（`src/client/index.ts`）：新增 `readProperty()` 包装
+   每次属性读取（try/catch），`pickAgentPresets()` 只走已知安全的路径
+   （`raw.remote.agentPresets`），并在注释里写明 Cordis 的 proxy 语义。
+2. **边缘模式自动打开 Edge tab**（§7.139 新能力）：宿主**从不自动打开任何 tab**
+   —— 默认页是 guide，tab 要从 guide 点开
+   （`dsh-client-ui-sidebar-right/src/client/contract/seed.ts:26` `defaultSeed`：
+   只有唯一 guide 条目才作默认页，否则默认页是 guide）。所以边缘模式自己开：
+   会话上台的那一刻 `ctx.get('sidebarRight').openTab(kind)`（宿主自己的插件也是
+   这么导航的，`dsh-experimental-client-ui-forge/src/client/mount.ts:251`）。
+   - 每会话只开一次；主人自己关掉后不再自动重开。
+   - 宿主命名屏上会话**早于** React 渲染，会话的 store 那时还没铸出来
+     （`service.ts:746` "no session surface is mounted"）⇒ 阶梯重试
+     0/80/300/900/2500 ms，5s 名册轮询再兜底。
+   - **切回标准模式时把我们的 tab 关掉**（标准模式 = 纯宿主，不留死 chip）：
+     `closeIn(sessionId, tabId)`（控制器上的按会话关闭；非公开面，但控制器实例带它）。
+3. **门禁加固**（`scripts/_simulate-client-mount.mjs`）：mock 的注入作用域改成
+   **复刻 Cordis 语义**（读未提供的名字就抛错），并加断言「名册必须真的被读到
+   （`agentPresets.list()` 至少被调过一次）」。
+   **反向验证**：把 §7.136 的旧实现放回去 ⇒ 门禁红
+   （`FAIL: apply() threw: cannot get property "list" without inject`）
+   ⇒ 这类 bug 以后进门禁。
+
+### 实机验证（桌面版，截图取证）
+
+| 默认 preset | 右栏 | 结论 |
+|---|---|---|
+| 边缘模式 | 「开始」+ **Edge**（面板完整：轮次 0 / 六节点流程 / 威胁监控 / LLM 调用 0） | 自动打开 ✓ |
+| 标准模式 | 只剩「开始」（Edge tab 自动关闭） | 标准模式 = 纯宿主 ✓ |
+| 切回边缘模式 | Edge tab 自动回来 | 双向可逆 ✓ |
+
+门禁：`verify:client-mount`（含新增 auto-open 断言）通过；`verify:build` 14 项全绿。
+
+
 
