@@ -12769,3 +12769,144 @@ guard.model-detect.provider_error ← 60s 超时（本地模型推理超时）
 显示 —— 「攻击检测」节点只显示了正则档命中的注入特征，读者会以为语义检测档也
 跑过了。这是**另一个诚实性缺口**，但与本轮的「答案出口冒充」是不同的问题，
 未擅自扩大范围。
+## §7.134 LLM 调用面板按类别分组 + 请求/响应成对（2026-10-28）
+
+### 触发
+
+主人看完 §7.133 部署后的面板，提了两条要求：
+
+> 「edge tab 的 LLM 调用里没有按 攻击检测，意图判定，路由决策 等类别来列出来，
+> 需要有请求和响应成对显示，上面是请求下面是响应」
+
+### 根因：REQ 与 RESP 是两个不相干的条目
+
+§7.133 的索引行里，每次 LLM 往返落**两条**行 —— REQ 一条、RESP 一条 —— 而
+它们各有各的 `traceId`（正文存储的键），**没有任何字段把它们关联起来**。
+于是面板上一次调用显示成两行不相干的东西，主人看到的是「一串调用」而不是
+「几次调用，每次的请求和响应」。
+
+§7.133 的 commit message 里写的「每次调用一行摘要」与实现本身就不符 ——
+那是措辞不准，但主人要的功能也确实没做。
+
+### 做法（一）：callId —— 一次 LLM 往返的配对键
+
+新增 `callId`：**一次 `stream()` = 一个 call**，REQ 与所有 RESP 共用它。
+
+粒度依据：
+
+| 路径 | REQ 次数 | RESP 次数 | 说明 |
+|---|---|---|---|
+| local adapter | 1 | 1 | 一发一收 |
+| cloud adapter（直连） | 1（**在重试循环之前**） | 最多 3 个出口 | network error / HTTP error / 成功 |
+| jev（裸 fetch） | 1 | 1 | 同一方法内 |
+
+cloud 重试时可能出现「失败 RESP + 成功 RESP」共用同一个 `callId` —— 面板取
+**最后一个** RESP，那才是这次调用的最终结果。
+
+**键怎么在 REQ 与 RESP 之间传递？** 用 `options` 的**对象身份**：
+
+```ts
+const callIds = new WeakMap<object, string>()
+export function callIdFor(options: unknown): string {
+  if (options === null || typeof options !== 'object') return nextCallId()
+  const existing = callIds.get(options)
+  if (existing !== undefined) return existing
+  const id = nextCallId()
+  callIds.set(options, id)
+  return id
+}
+```
+
+宿主每次 `stream()` 传一个**新的** `options` 对象，而同一次往返的 REQ 与 RESP
+拿到的是**同一个引用** —— 所以 WeakMap 天然配得上，且：
+
+- 不用改 `traceResponse` 的三个调用点的签名（只改方法内部一行）；
+- `WeakMap` 不泄漏：`options` 被回收，条目随之消失；
+- 非对象入参退化成「每次一个新 id」—— 宁可配不上，也不错配。
+
+jev 没有 `options` 对象（裸 fetch），它在方法内自己 `nextCallId()` 一次，
+REQ/RESP 共用。
+
+### 做法（二）：按类别分组
+
+类别**复用 §7.132 的 `caller` 标记**，标题文案**复用 Flow 面板的同一批
+i18n 键**（`flow.guard` / `flow.intent` / `flow.route`）—— 同一个概念两处
+文案必然漂移，所以只留一处。
+
+| 类别 | 判据 | 标题 |
+|---|---|---|
+| 攻击检测 | `caller === 'prompt-guard'` | `flow.guard` |
+| 意图判定 | `caller === 'intent-classifier'` | `flow.intent` |
+| 路由决策 | 无 caller 且带工具（主对话出网） | `flow.route` |
+| 宿主内部调用 | 无 caller 且 `toolCount === 0` | `trace.caller.host` |
+| 其他调用 | 未知 caller | `trace.group.other`（新键） |
+
+未知 caller 归「其他调用」而不是硬塞进某一类 —— 一个我们认不出的调用方，
+不该被归到「攻击检测」或「路由决策」里去（§7.129：不得断言与数据相矛盾的
+事）。
+
+分组顺序与 Flow 面板的节点顺序一致：攻击检测 → 意图判定 → 路由决策 →
+宿主内部调用 → 其他调用。
+
+### 做法（三）：成对显示（上请求、下响应）
+
+面板把索引行按 `callId` 配成组，组内 **REQ 恒在上、RESP 恒在下**。
+
+- 有 `callId` → 同 callId 归一组；
+- 无 `callId`（§7.133 之前的数据）→ 每条自成一组，**不硬配** —— 把两条
+  不相干的调用凑成一对是面板在说假话；
+- 缺哪一半就只显示那半，不补。
+
+### 改动文件（11 个）
+
+| 文件 | 改动 |
+|---|---|
+| `src/dsh-adapter/llm-trace-store.ts` | `nextCallId()` / `callIdFor()`（WeakMap 配对键） |
+| `src/dsh-adapter/llm-trace.ts` | `TraceIndexPayload.callId` + `buildTraceIndex` + `emitTrace` 透传 |
+| `src/dsh-adapter/local-llm-adapter.ts` | `emit()` 带 `callId: callIdFor(options)` |
+| `src/dsh-adapter/cloud-llm-adapter.ts` | 同上（三个 RESP 出口自动共用） |
+| `src/dsh-adapter/intent-router.ts` | jev 两个后端各自生成 callId，REQ/RESP 共用 |
+| `src/client/tracePanel.tsx` | `traceGroup()` / `pairTraces()` + 分组渲染 + 成对渲染 |
+| `src/client/i18n.ts` | 新键 `trace.group.other` |
+| `src/client/theme.ts` | 分组标题、成对容器、REQ/RESP 左边框的样式 |
+| `tests/unit/trace-panel-grouping.test.ts` | **新文件**（17 例） |
+| `tests/unit/llm-trace-panel.test.ts` | +7 例（callId 契约） |
+
+### 测试
+
+- `tests/unit/trace-panel-grouping.test.ts`（**17 例**）：三类归属判别；未知
+  caller 归「其他」；同 callId 配对；多 RESP 取最后一个；无 callId 各自成对；
+  读索引行带上 callId；**渲染后「请求」在「响应」之上**；一次往返只出现一个
+  「请求」和一个「响应」；分组标题顺序；宿主内部调用单独成组
+- `tests/unit/llm-trace-panel.test.ts`（**+7 例**）：callId 的读写语义、
+  `nextCallId` 单调、索引行透传
+
+单测 **67 文件 / 1353 passed + 2 skipped**；覆盖率行 **82.23%** / 分支 80.15% /
+函数 77.31%（三项均较 §7.133 上升）；双侧类型检查 exit 0；eslint 0 error /
+58 warning（未引入新警告）；`verify:build` 12 项门禁 exit 0（package surface
+217 files / 63 entry targets）。
+
+产物核验：`client.js` 44773 → **47061 B**（含 `dsh-edge-trace-group` /
+`-pair` / `-half--req` / `-half--resp`）；`llm-trace-store.js` 含
+`callIdFor`；`intent-router.js` 含 `nextCallId`。
+
+### 桌面版
+
+已重建并重启（9:38:25）。
+
+### 遗留（本轮**未**处理，记在这里备查）
+
+1. **cloud adapter 的 delegate 路径完全没有 trace**（`cloud-llm-adapter.ts`
+   的第二个 `stream()`，1247 行起 —— 那正是**当前部署的云端出网主路径**）。
+   §7.133 只给直连路径接了 trace。所以当路由切到云端走 delegate 时，
+   面板的「路由决策」这一类是**空的**。补它需要记 `forwardMessages`（REQ）
+   与宿主回流的 chunk 汇总（RESP），是独立的一块工作。
+2. `bodyBytes` 是**字符数**却标成字节（`JSON.stringify(...).length`）——
+   中文 1 字符 = 3 字节 UTF-8，实际体积约为面板显示值的 3 倍。
+3. `approxBytes` 对不可序列化的值返回 `0` → 该条 trace 绕过 2 MB 字节上限。
+4. `traceId` 完全可预测（`t{时间戳36进制}-{序号36进制}`）→ 本机任何进程都
+   能枚举取正文。
+5. jev 把**未脱敏的用户原文**送到百炼（`intent-router.ts:1685`
+   `body.state.content = text`）—— §7.133 未引入此行为，但让它首次在面板
+   上可见。§7.131 的「出网前脱敏」裁决只写了 cloudllm 池，jev 不在其内，
+   要不要扩口径是一条**新裁决**。

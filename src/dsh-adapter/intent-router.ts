@@ -22,7 +22,7 @@ import {
   resolveLlmTraceConfig,
   type TraceSink,
 } from './llm-trace.js'
-import { getTraceStore } from './llm-trace-store.js'
+import { getTraceStore, nextCallId } from './llm-trace-store.js'
 
 export const name = 'intent-router'
 
@@ -756,6 +756,7 @@ export class IntentRouterServiceImpl extends Service {
     sessionId: string | undefined,
     text: string,
     system: string,
+    callId: string,
   ): void {
     try {
       const cfg = resolveLlmTraceConfig(loadEdgeConfig())
@@ -769,7 +770,7 @@ export class IntentRouterServiceImpl extends Service {
         messages: [{ role: 'user', content: text }],
         config: cfg,
       })
-      this.emitJevTrace('REQ', 'intent-router jev LLM_REQUEST', trace)
+      this.emitJevTrace('REQ', 'intent-router jev LLM_REQUEST', trace, callId)
     } catch { /* 观测失败不拖垮主链路 */ }
   }
 
@@ -779,7 +780,8 @@ export class IntentRouterServiceImpl extends Service {
     sessionId: string | undefined,
     content: string,
     durationMs: number,
-    error?: string,
+    error: string | undefined,
+    callId: string,
   ): void {
     try {
       const cfg = resolveLlmTraceConfig(loadEdgeConfig())
@@ -795,11 +797,11 @@ export class IntentRouterServiceImpl extends Service {
         error,
         config: cfg,
       })
-      this.emitJevTrace('RESP', 'intent-router jev LLM_RESPONSE', trace)
+      this.emitJevTrace('RESP', 'intent-router jev LLM_RESPONSE', trace, callId)
     } catch { /* 观测失败不拖垮主链路 */ }
   }
 
-  private emitJevTrace(kind: 'REQ' | 'RESP', tag: string, trace: unknown): void {
+  private emitJevTrace(kind: 'REQ' | 'RESP', tag: string, trace: unknown, callId: string): void {
     try {
       // ctx.logger 在某些宿主形态下取不到（未 inject 的 plugin proxy 会抛）
       // —— 那是**老通路**（ops log）的事，不能连累索引行与正文 store。
@@ -812,7 +814,7 @@ export class IntentRouterServiceImpl extends Service {
         logger,
         store: getTraceStore(),
       }
-      emitTrace(sink, kind, tag, trace, 'intent-classifier', { toolCount: 0 })
+      emitTrace(sink, kind, tag, trace, 'intent-classifier', { toolCount: 0, callId })
     } catch { /* 观测失败不拖垮主链路 */ }
   }
 
@@ -1375,7 +1377,9 @@ export class IntentRouterServiceImpl extends Service {
       batchLatencyBudgetMs: this.jevTimeoutMs,
     })
     // §7.133: 本机 jev 后端同样是「把原文发出去的模型调用」—— 留痕。
-    this.traceJevRequest('jev', 'jev-local', `${this.jevUrl}/predict`, sessionId, text, '')
+    // §7.134: REQ/RESP 共用一个 callId（面板据此配成一对）。
+    const jevCallId = nextCallId()
+    this.traceJevRequest('jev', 'jev-local', `${this.jevUrl}/predict`, sessionId, text, '', jevCallId)
 
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), this.jevTimeoutMs)
@@ -1445,7 +1449,7 @@ export class IntentRouterServiceImpl extends Service {
     } finally {
       clearTimeout(timer)
       // §7.133: jev 本机后端的 response trace（失败也有）。
-      this.traceJevResponse('jev', 'jev-local', sessionId, responseText, Date.now() - batchStart, jevError)
+      this.traceJevResponse('jev', 'jev-local', sessionId, responseText, Date.now() - batchStart, jevError, jevCallId)
     }
 
     // Response envelope: {code, message, request_id, data: {...}}
@@ -1706,6 +1710,8 @@ export class IntentRouterServiceImpl extends Service {
     })
     // §7.133: jev 是裸 fetch，不走 ctx.llm —— 这里补一路 trace，
     // 否则面板看不到「用户原文被送去了百炼」这一事实。
+    // §7.134: REQ/RESP 共用一个 callId（面板据此配成一对）。
+    const jevCallId = nextCallId()
     this.traceJevRequest(
       'bailian-decision',
       this.jevModel,
@@ -1713,6 +1719,7 @@ export class IntentRouterServiceImpl extends Service {
       sessionId,
       text,
       JEV_INTENT_INSTRUCTIONS,
+      jevCallId,
     )
 
     const controller = new AbortController()
@@ -1771,6 +1778,7 @@ export class IntentRouterServiceImpl extends Service {
         jevBody,
         Date.now() - batchStart,
         jevError,
+        jevCallId,
       )
     }
 

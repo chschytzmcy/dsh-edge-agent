@@ -156,6 +156,61 @@ export function nextTraceId(): string {
   return formatTraceId(traceSeq++)
 }
 
+/* ── call id（REQ/RESP 配对键）────────────────────────────────────────────── */
+
+/** call id 的进程内计数器。 */
+let callSeq = 0
+
+/**
+ * §7.134: 生成 call id —— **一次 LLM 往返**的配对键。
+ *
+ * ## 为什么需要它
+ *
+ * §7.133 的索引行里，REQ 与 RESP 各自有独立的 `traceId`，于是面板上一次
+ * 调用显示成**两行不相干的条目** —— 主人在 §7.134 里要求「请求和响应成对
+ * 显示，上面是请求下面是响应」。配对需要一个跨 REQ/RESP 的共同键。
+ *
+ * ## 键的粒度：一次 `stream()` = 一个 call
+ *
+ * - local adapter：一次 `stream()` 一发一收，天然一对。
+ * - cloud adapter（直连）：`traceRequest` 在**重试循环之前**只调一次，
+ *   而 `traceResponse` 有三个出口（network error / HTTP error / 成功）。
+ *   重试时可能出现「一次失败 RESP + 一次成功 RESP」—— 它们共用同一个
+ *   callId，面板取**最后一个** RESP（那才是这次调用的最终结果）。
+ * - jev（裸 fetch）：REQ/RESP 在同一个方法内。
+ *
+ * ## 用 `options` 对象身份当键
+ *
+ * 宿主每次 `stream()` 传一个新的 `options` 对象，而 REQ 与 RESP 拿到的是
+ * **同一个**对象引用 —— 所以 `WeakMap<options, callId>` 就能把两半配上，
+ * 且不需要改 `traceResponse` 的三个调用点的签名。
+ *
+ * `WeakMap` 不会泄漏：`options` 被回收，条目随之消失。
+ */
+const callIds = new WeakMap<object, string>()
+
+/** §7.134: 取一个新的 call id（进程内单调）。 */
+export function nextCallId(): string {
+  return `c${callSeq++}`
+}
+
+/**
+ * §7.134: 取这次调用的 call id（第一次调用时创建，之后复用）。
+ *
+ * 传入的不是对象时（理论上不会发生）退化成「每次一个新 call id」——
+ * 宁可配不上，也不把两个不相干的调用错配成一对。
+ */
+export function callIdFor(options: unknown): string {
+  if (options === null || typeof options !== 'object') {
+    return nextCallId()
+  }
+  const existing = callIds.get(options)
+  if (existing !== undefined) return existing
+  const id = nextCallId()
+  callIds.set(options, id)
+  return id
+}
+
 /* ── service 形态 ───────────────────────────────────────────────────────── */
 
 /**

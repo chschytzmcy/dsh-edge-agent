@@ -62,7 +62,7 @@ import {
 } from './cloud-egress.js'
 import { PII_ORDER, PII_PATTERNS } from './pii-utils.js'
 import { egressAuditFields, internalCallerOf } from './llm-internal-caller.js'
-import { getTraceStore } from './llm-trace-store.js'
+import { getTraceStore, callIdFor } from './llm-trace-store.js'
 
 export const name = 'cloud-llm-adapter'
 
@@ -457,6 +457,10 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
     const tools = options?.tools
     emitTrace(sink, kind, tag, trace, internalCallerOf(options), {
       toolCount: Array.isArray(tools) ? tools.length : 0,
+      // §7.134: REQ 与 RESP 共用一个 callId —— 面板据此把两半配成一对。
+      // 重试时可能出现「失败 RESP + 成功 RESP」，它们共用同一个 callId，
+      // 面板取最后一个（那才是这次调用的最终结果）。
+      callId: callIdFor(options),
     })
   }
 

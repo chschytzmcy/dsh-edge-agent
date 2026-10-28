@@ -496,6 +496,13 @@ export interface TraceIndexPayload {
   bodyBytes?: number
   /** 底座 URL —— 判断这一轮发去了哪。 */
   baseUrl?: string
+  /**
+   * §7.134: **一次 LLM 往返**的配对键。
+   *
+   * REQ 与 RESP 各有自己的 `traceId`（正文存储的键），但同一次往返的两半
+   * 共用这个 `callId` —— 面板据此把「请求 / 响应」配成一对，上下排列。
+   */
+  callId?: string
 }
 
 /**
@@ -508,7 +515,7 @@ export function buildTraceIndex(
   kind: 'REQ' | 'RESP',
   trace: unknown,
   caller?: string,
-  extra?: { toolCount?: number },
+  extra?: { toolCount?: number; callId?: string },
 ): TraceIndexPayload {
   const t = (trace ?? {}) as {
     provider?: unknown
@@ -544,6 +551,7 @@ export function buildTraceIndex(
   // request trace 自己带 tools[]。
   if (extra?.toolCount !== undefined) out.toolCount = extra.toolCount
   else if (Array.isArray(t.tools)) out.toolCount = t.tools.length
+  if (extra?.callId !== undefined) out.callId = extra.callId
   let bytes = 0
   try { bytes = JSON.stringify(trace)?.length ?? 0 } catch { bytes = 0 }
   out.bodyBytes = bytes
@@ -587,7 +595,7 @@ export function emitTrace(
   tag: string,
   trace: unknown,
   caller?: TraceCaller,
-  extra?: { toolCount?: number },
+  extra?: { toolCount?: number; callId?: string },
 ): string | undefined {
   try {
     // 老通路：ops log（§7.118）—— 保持不变，运维 tail ops log 的习惯不破。

@@ -29,6 +29,8 @@ import {
   formatTraceId,
   getTraceStore,
   provideTraceStore,
+  callIdFor,
+  nextCallId,
 } from '../../src/dsh-adapter/llm-trace-store.js'
 import { internalCallerOf, withInternalCaller } from '../../src/dsh-adapter/llm-internal-caller.js'
 import { panelForKind } from '../../src/dsh-adapter/edge-context-view.js'
@@ -444,5 +446,51 @@ describe('§7.133 trace body route', () => {
     assert.equal(badJson.status, 400)
 
     await dispose?.()
+  })
+})
+
+/* ── 6. §7.134: callId —— 一次 LLM 往返的配对键 ───────────────────────────── */
+
+describe('§7.134 callId —— REQ/RESP 配对键', () => {
+  it('同一个 options 对象 → 同一个 callId（REQ 与 RESP 配成一对）', () => {
+    const options = { provider: 'local-llm', model: 'm' }
+    assert.equal(callIdFor(options), callIdFor(options))
+  })
+
+  it('不同的 options 对象 → 不同的 callId', () => {
+    assert.notEqual(callIdFor({}), callIdFor({}))
+  })
+
+  it('非对象入参 → 每次一个新 callId（宁可配不上也不错配）', () => {
+    assert.notEqual(callIdFor(undefined), callIdFor(undefined))
+  })
+
+  it('nextCallId 单调且互不相同', () => {
+    const a = nextCallId()
+    const b = nextCallId()
+    assert.notEqual(a, b)
+    assert.ok(a.startsWith('c'))
+  })
+
+  it('索引行带上 callId', () => {
+    const idx = buildTraceIndex('t1', 'REQ', { provider: 'p', model: 'm' }, undefined, { callId: 'c7' })
+    assert.equal(idx.callId, 'c7')
+  })
+
+  it('没有 callId 时索引行不含该字段', () => {
+    const idx = buildTraceIndex('t1', 'REQ', { provider: 'p', model: 'm' })
+    assert.equal(idx.callId, undefined)
+  })
+
+  it('emitTrace 把 callId 写进索引行', async () => {
+    const entries: any[] = []
+    const sink: TraceSink = {
+      log: async (e) => { entries.push(e) },
+      nextTraceId: () => 't-fixed',
+    }
+    emitTrace(sink, 'REQ', 'tag', { provider: 'p', model: 'm' }, undefined, { toolCount: 3, callId: 'c42' })
+    await new Promise((r) => setTimeout(r, 0))
+    const row = entries.find((e) => e.kind === 'llm.trace.index')
+    assert.equal(row.payload.callId, 'c42')
   })
 })

@@ -70,6 +70,14 @@ const CSS = `
 .dsh-edge-trace-body { margin-top: 4px; }
 .dsh-edge-trace-body-err { font-size: 11px; color: #d97706; }
 .dsh-edge-trace-pre { margin: 0; max-height: 260px; overflow: auto; padding: 5px 6px; border-radius: 4px; background: color-mix(in srgb, currentColor 6%, transparent); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+/* §7.134: 按类别分组 + 请求/响应成对（上请求、下响应）。 */
+.dsh-edge-trace-group { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.dsh-edge-trace-group-head { display: flex; gap: 6px; align-items: baseline; padding: 1px 2px; border-bottom: 1px solid color-mix(in srgb, currentColor 15%, transparent); }
+.dsh-edge-trace-group-name { font-size: 11px; font-weight: 700; letter-spacing: 0.02em; }
+.dsh-edge-trace-pair { display: flex; flex-direction: column; gap: 2px; padding: 4px 6px; border-radius: 4px; background: color-mix(in srgb, currentColor 4%, transparent); }
+.dsh-edge-trace-half { padding-left: 6px; border-left: 2px solid transparent; }
+.dsh-edge-trace-half--req { border-left-color: #2563eb; }
+.dsh-edge-trace-half--resp { border-left-color: #16a34a; }
 `
 
 export function ensureStyles(doc?: Document): void {

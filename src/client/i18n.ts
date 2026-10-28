@@ -156,6 +156,7 @@ const EN: Dict = {
   'trace.body.loading': 'loading body…',
   'trace.body.gone': 'body no longer in memory (only the latest calls are kept)',
   'trace.body.error': 'could not load body',
+  'trace.group.other': 'other calls',
 }
 
 const ZH: Dict = {
@@ -307,6 +308,7 @@ const ZH: Dict = {
   'trace.body.loading': '拉取正文中…',
   'trace.body.gone': '正文已不在内存（只保留最近的调用）',
   'trace.body.error': '取正文失败',
+  'trace.group.other': '其他调用',
 }
 
 // Built-in fallback is the Chinese table (operator ruling 2026-10-23

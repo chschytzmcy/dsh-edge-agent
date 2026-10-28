@@ -45,7 +45,7 @@ import {
   type LlmTraceConfig,
   type TraceSink,
 } from './llm-trace.js'
-import { getTraceStore } from './llm-trace-store.js'
+import { getTraceStore, callIdFor } from './llm-trace-store.js'
 import {
   bumpSessionToolCallCount,
   MAX_CONSECUTIVE_TOOL_CALLS,
@@ -365,6 +365,10 @@ class RealLocalAdapter extends LlmAdapter {
     const tools = options?.tools
     emitTrace(sink, kind, tag, trace, caller, {
       toolCount: Array.isArray(tools) ? tools.length : 0,
+      // §7.134: REQ 与 RESP 共用一个 callId —— 面板据此把两半配成一对。
+      // 键是 `options` 的对象身份：宿主每次 stream() 传新对象，而同一次
+      // 往返的 REQ/RESP 拿到的是**同一个**引用。
+      callId: callIdFor(options),
     })
   }
 
