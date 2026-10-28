@@ -13837,6 +13837,37 @@ Edge 面板实测文本：**「LLM 调用 10」**，「路由决策 3」组下 *
 stringify 了。现在累积器在 `finish` 分支里：**对象且有字符串 `kind` 就取
 `kind`**，否则才回落 `safeStringify`（不丢信息、不抛）。
 
+### 修复后的实机复验（重启桌面版，宿主 `127.0.0.1:57524`）
+
+重建 installable + 重启后，同一条消息（「今天北京天气怎么样」）再跑一轮：
+
+```
+intent.jev.adopt     intent=CLOUD confidence=0.94
+intent.classify.end  category=CLOUD path=jev-adopt
+input-guard.routed   category=CLOUD edgeRouteUsed=false routeSource=webui
+llm.trace.index REQ   provider=qwen-token-plan-cn model=deepseek-v4.1-flash callId=c2
+llm.trace.index RESP  provider=qwen-token-plan-cn model=deepseek-v4.1-flash callId=c2
+                      finishReason="tool-calls"     ← 修复前是 "{\"kind\":\"tool-calls\"}"
+llm.trace.index REQ/RESP callId=c3 → finishReason="tool-calls"
+llm.trace.index REQ/RESP callId=c4 → finishReason="stop"   ← 修复前是 "{\"kind\":\"stop\"}"
+```
+
+面板实测文本（节选）：
+
+```
+LLM 调用 10
+  路由决策 3
+    响应 qwen-token-plan-cn/deepseek-v4.1-flash 主对话 370 字符 · 工具调用 0 · 用时 9.4s 工具 32 · stop · 1.2 KB
+    响应 qwen-token-plan-cn/deepseek-v4.1-flash 主对话 工具调用 2 · 用时 1.6s 工具 32 · tool-calls · 1.1 KB
+    响应 qwen-token-plan-cn/deepseek-v4.1-flash 主对话 工具调用 1 · 用时 3.1s 工具 32 · tool-calls · 777 B
+```
+
+finish reason 现在是干净的 `stop` / `tool-calls`；页面 console 零 error 零 warning。
+
+> 踩坑留档：**Edge 面板整宽展开时会盖住 composer** —— 点「发送消息」看着
+> `dispatched: true`，实际点在了面板上，消息根本发不出去（审计链零事件、
+> 网络里也只有面板自己的轮询）。**发送前先点「退出全屏」**。
+
 ### 遗留
 
 - `body` 是宿主层信封，不是 provider 的 wire body（那一跳看不见 wire body）。
