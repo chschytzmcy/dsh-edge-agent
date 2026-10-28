@@ -59,14 +59,16 @@ if (patchPath === undefined) {
 }
 const patch = readFileSync(patchPath, 'utf8')
 console.log(`  (inspected: ${patchPath.split(/[\\/]/).slice(-2).join('/')})`)
-// Find the edge-context-view row block.
+// Find the edge-context-view row block. §7.136 moved it one level deeper
+// (inside the preset's `cordis:group`), so cut the slice at the NEXT row
+// header instead of a fixed byte count — otherwise the following row's
+// fields leak into this row's verdict.
 const rowStart = patch.indexOf('- id: edge-context-view')
 if (rowStart < 0) {
   console.error('edge-context-view row not found in patch')
   process.exit(1)
 }
-// Slice ~30 lines after the row start to capture the whole row block.
-const rowSlice = patch.slice(rowStart, rowStart + 800)
+const rowSlice = patch.slice(rowStart, rowStart + 2000).split(/\n\s*- id: /)[0]
 const hasInject = /^\s*inject:/m.test(rowSlice)
 const hasConfig = /^\s*config:/m.test(rowSlice)
 const hasName = /^\s*name:\s*['"]([^'"]+)['"]/m.exec(rowSlice)?.[1]

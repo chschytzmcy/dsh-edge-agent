@@ -23,6 +23,23 @@
  *     mode — the Edge behaviour would keep running while the host sits in
  *     标准模式, and 「边缘模式 = 标准模式 + 本项目功能」 would be a lie.
  *
+ * §7.136 (2026-10-28): rule 2 got an exception, and the reason is the host
+ * mechanism — three rows MUST stay on the host tree:
+ *
+ *  - `dsh-edge-agent`（裸包名行）: the host's client-modules scans
+ *    `ctx.loader.entries()` — the HOST Loader's entries. A preset's plugin
+ *    list lives in its own EntryTree, outside that enumeration, so the
+ *    browser half (the Edge tab's webview) is only discoverable from a bare
+ *    row on the host tree.
+ *  - `audit-log` / `file-logger`: the bare row injects `auditLog`, and its
+ *    apply() installs the file logger (which claims the `fileLogger`
+ *    service name). Both must therefore live in the root realm.
+ *
+ * The preset's own rows now sit inside a `cordis:group` with an `isolate`
+ * map — the host refuses to mount a preset whose rows publish services into
+ * the root realm (that is what made 设置页 show 「加载失败」). The isolate
+ * contract itself is gated by scripts/verify-preset-isolate.ts.
+ *
  * Run via `node --import tsx/esm scripts/verify-patch-surface.ts`.
  */
 import { readFileSync, existsSync, writeFileSync, readdirSync } from 'node:fs'
@@ -78,13 +95,38 @@ function parsePresets(text: string): ParsedPreset[] {
         name: typeof cfg.name === 'string' ? cfg.name : undefined,
         description: typeof cfg.description === 'string' ? cfg.description : undefined,
         order: typeof cfg.order === 'number' ? cfg.order : undefined,
-        plugins: pluginRows
-          .filter((p): p is Record<string, unknown> => p !== null && typeof p === 'object')
-          .map((p) => ({
-            id: typeof p.id === 'string' ? p.id : '?',
-            name: typeof p.name === 'string' ? p.name : '?',
-          })),
+        plugins: flattenPluginRows(pluginRows),
       })
+    }
+  }
+  return out
+}
+
+/**
+ * Flatten a preset's plugin list: a `group: true` row contributes itself AND
+ * the rows nested in its `config` list (§7.136 puts this bundle's rows inside
+ * a `cordis:group` so their services live in an isolated realm).
+ */
+function flattenPluginRows(
+  pluginRows: unknown[],
+): Array<{ id: string; name: string }> {
+  const out: Array<{ id: string; name: string }> = []
+  for (const p of pluginRows) {
+    if (p === null || typeof p !== 'object') continue
+    const row = p as Record<string, unknown>
+    out.push({
+      id: typeof row.id === 'string' ? row.id : '?',
+      name: typeof row.name === 'string' ? row.name : '?',
+    })
+    if (row.group === true && Array.isArray(row.config)) {
+      for (const child of row.config) {
+        if (child === null || typeof child !== 'object') continue
+        const c = child as Record<string, unknown>
+        out.push({
+          id: typeof c.id === 'string' ? c.id : '?',
+          name: typeof c.name === 'string' ? c.name : '?',
+        })
+      }
     }
   }
   return out
@@ -157,9 +199,25 @@ const computed: Snapshot = {
   presets: Object.fromEntries(presets.map((p) => [p.file ?? p.presetId, p.plugins.map((x) => x.id)])),
 }
 
-// ── §7.135 semantic rule: the bundle's rows live INSIDE a preset ────────
+// ── §7.135/§7.136 semantic rule: the bundle's rows live INSIDE a preset ─
+//
+// §7.136 修正：有三行**必须**留在宿主树（顶层 insert 段）—— 宿主机制的限制，
+// 不是偏好：
+//
+//   dsh-edge-agent（裸包名行）—— 宿主的 client-modules 只扫宿主 Loader 的
+//     entries（`ctx.loader.entries()`），preset 的插件树不在其中 ⇒ Edge tab
+//     的浏览器半边只有从宿主树里的裸包名行才能被发现。
+//   audit-log / file-logger —— 裸包名行 inject ['auditLog']，且它 apply() 里的
+//     installFileLogger 会先占住 `fileLogger` 服务名 ⇒ 两者必须在 root realm。
+//
+// 其余本 bundle 的行必须住在 preset 里：留在顶层 insert 段的行对**所有**工作
+// 方式生效 —— 那样切回标准模式时 Edge 的行为依然在跑，「标准模式 + 本项目功能」
+// 就是空话。
 const isBundleRow = (name: string): boolean =>
   name === BUNDLE_PKG || name.startsWith(`${BUNDLE_PKG}/`)
+
+/** Rows the host mechanism forces onto the host tree (§7.136). */
+const HOST_FORCED_ROWS = new Set(['dsh-edge-agent', 'file-logger', 'audit-log'])
 
 const bundleRowsInPreset = new Set<string>()
 for (const p of presets) {
@@ -167,24 +225,39 @@ for (const p of presets) {
     if (isBundleRow(row.name)) bundleRowsInPreset.add(row.name)
   }
 }
-const bundleRowsAtTopLevel = patch.inserts
-  .map((r) => r.id)
-  .filter((id) => {
-    // A row that is ALSO declared inside a preset is fine; the violation is
-    // a row that lives ONLY at the top level (mounted for every mode).
-    for (const preset of presets) {
-      if (preset.plugins.some((x) => x.id === id)) return false
-    }
-    return true
-  })
+const topLevelIds = [
+  ...patch.inserts.map((r) => r.id),
+  // The desktop-safe variant ships its own top-level patch; the semantic rule
+  // must hold for BOTH (the desktop is the variant that ships).
+  ...parsePatch(readFileSync(join(root, 'cordis.desktop-safe.patch.yml'), 'utf8')).inserts.map((r) => r.id),
+]
+const bundleRowsAtTopLevel = topLevelIds.filter((id) => {
+  // A row that is ALSO declared inside a preset is fine; the violation is
+  // a row that lives ONLY at the top level (mounted for every mode).
+  for (const preset of presets) {
+    if (preset.plugins.some((x) => x.id === id)) return false
+  }
+  return true
+})
 
 const violations: string[] = []
-if (bundleRowsAtTopLevel.length > 0) {
-  violations.push(
-    `bundle plugin rows left in the top-level insert section: ${bundleRowsAtTopLevel.join(', ')}`
-    + ' — a top-level row is mounted for EVERY work mode; the 边缘模式 would'
-    + ' not be a separate mode at all.',
-  )
+for (const id of bundleRowsAtTopLevel) {
+  if (!HOST_FORCED_ROWS.has(id)) {
+    violations.push(
+      `bundle plugin row left in the top-level insert section: ${id}`
+      + ' — a top-level row is mounted for EVERY work mode; the 边缘模式 would'
+      + ' not be a separate mode at all. Move it into presets/edge*.patch.yml.',
+    )
+  }
+}
+for (const id of HOST_FORCED_ROWS) {
+  if (!topLevelIds.includes(id)) {
+    violations.push(
+      `host-forced row "${id}" is missing from the top-level insert section`
+      + ' — the host mechanism needs it on the host tree (see §7.136 in'
+      + ' scripts/_isolate-edge-group.mjs).',
+    )
+  }
 }
 if (presets.length === 0) {
   violations.push('no Agent Preset declared — the edge stack has no work mode to live in.')

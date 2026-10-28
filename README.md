@@ -7,17 +7,20 @@
 
 `dsh-edge-agent` 是一个面向用户的端侧私密智能体，基于 [DeepSeek Harness](https://github.com/deepseek-harness) 的 Cordis 插件机制构建。敏感数据默认留在设备端，仅在用户授权时通过零信任通道与云端通信。
 
-> **它是一种「工作方式」，不是替代品**（§7.135）：本 bundle 在宿主的 DSH 桌面版上
+> **它是一种「工作方式」，不是替代品**（§7.135 / §7.136）：本 bundle 在宿主的 DSH 桌面版上
 > 注册了一个新的 **Agent Preset** —— **边缘模式**。宿主自带的标准 / 创造 / PTC /
 > 极简四种工作方式之外，边缘模式 = **标准模式 + 本项目的全部功能**（隐私护栏、
 > 意图判定、路由决策、PII 脱敏、Realm 闸门、审计链、Edge 面板）。它以 bundle
-> 补丁的形式声明（`presets/edge*.patch.yml`），与宿主内置 preset 同一套机制。
+> 补丁的形式声明（`presets/edge*.patch.yml`），与宿主内置 preset 同一套机制
+> （`dsh.bundle.patch` → `insert` 一行 `@deepseek-ai/dsh-agent-preset`）。
 > 默认仍是标准模式；在设置页选中「边缘模式」即启用。
 >
-> 隔离边界要说清楚：preset 决定的是**这个 Agent 对话里有哪些工具与提示词**；
-> 而本项目的护栏 hook 带 `{ global: true }`（`agent/pre-step` / `llm/stream` /
-> `agent/request`），**跨工作方式全局生效** —— 切回标准模式不会让路由改写与
-> PII 脱敏停摆。
+> **现在是真正隔离的**（§7.136）：本项目的护栏 hook **不再带 `{ global: true }`**，
+> 改由宿主的 scope 链判定 —— 监听器只在**自己的 preset scope 或其子 scope**
+> 收到事件，而 Agent 绑到所选 preset 的代际 scope ⇒ **标准模式下本项目的插件
+> 完全不生效**（路由改写 / PII 脱敏 / 护栏都停），边缘模式下才生效。Edge tab
+> 也只在边缘模式出现（客户端按 preset 名册的默认项注册 / 注销 tab 类型）。
+> 唯一保留全局的是 `llm/stream`：该事件不带 scope 载体，去掉也不生效。
 
 ## ✨ 核心特性
 

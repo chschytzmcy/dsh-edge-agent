@@ -8,9 +8,13 @@
 //   3. materialize the factory with a `require` that resolves the platform
 //      seed words (react / react/jsx-runtime / react-dom/client)
 //   4. mount the materialized plugin against a mock cordis webview context
-//      that provides the three services the plugin waits for
-//      (locale / sidebarRightTabs / slots)
-//   5. assert the tab registration and the keyed slot entry both landed
+//      that provides the services the plugin waits for
+//      (locale / sidebarRightTabs / slots / remote.agentPresets)
+//   5. assert the preset gate in BOTH directions (§7.136):
+//
+//        standard preset  → NO Edge tab type registered
+//        edge preset      → the tab type IS registered, body + title seated
+//        back to standard → the tab type is unregistered again
 //
 // This reproduces the exact contract the host checks:
 //   - registration id === package name (client-modules: `factories.has(id)`)
@@ -37,9 +41,23 @@ const mockWindow = {
   },
 }
 
+// The bundle polls the preset roster, so the sandbox needs a timer. A fake
+// one keeps the test deterministic: the poll callback is captured and fired
+// by hand instead of waiting for wall-clock time.
+const timers = new Map()
+let nextTimerId = 1
+const fakeSetInterval = (cb, ms) => {
+  const id = nextTimerId++
+  timers.set(id, { cb, ms })
+  return id
+}
+const fakeClearInterval = (id) => {
+  timers.delete(id)
+}
+
 console.log(`simulating webview load of: ${bundlePath}`)
 const code = readFileSync(bundlePath, 'utf8')
-vm.runInNewContext(code, { window: mockWindow, console })
+vm.runInNewContext(code, { window: mockWindow, console, setInterval: fakeSetInterval, clearInterval: fakeClearInterval })
 
 if (!registration) {
   console.error('FAIL: the bundle never called window.__ModuleLoader__.load — the webview would report "loaded without registering".')
@@ -78,10 +96,28 @@ const registeredTabs = []
 const slotEntries = []
 const locales = []
 
+// §7.136: the Edge tab exists only while 边缘模式 is the ACTIVE preset.
+// The mock lets the script flip the roster and re-read it, so the gate is
+// exercised in both directions.
+const roster = {
+  presets: [
+    { id: 'standard', name: '标准模式', isDefault: true },
+    { id: 'edge', name: '边缘模式', isDefault: false },
+  ],
+}
+const agentPresets = {
+  async list() {
+    return { ok: true, value: roster }
+  },
+}
+
 const tabs = {
   register(def) {
     registeredTabs.push(def)
-    return () => {}
+    return () => {
+      const index = registeredTabs.indexOf(def)
+      if (index >= 0) registeredTabs.splice(index, 1)
+    }
   },
 }
 const slots = {
@@ -103,28 +139,59 @@ const locale = {
   },
 }
 
+const services = {
+  locale,
+  slots,
+  sidebarRightTabs: tabs,
+  remote: { agentPresets },
+  'remote.agentPresets': agentPresets,
+}
+
+/**
+ * Build the object an inject callback receives.
+ *
+ * The client framework hands the callback a CONTEXT-like object whose
+ * properties are the injected services (`ctx.locale`, `ctx.slots`,
+ * `ctx.remote.agentPresets`); a dotted dependency nests under its path.
+ */
+const namespaceFor = (wanted) => {
+  const ns = {}
+  for (const name of wanted) {
+    const parts = name.split('.')
+    let cursor = ns
+    for (let i = 0; i < parts.length - 1; i++) {
+      cursor[parts[i]] ??= {}
+      cursor = cursor[parts[i]]
+    }
+    cursor[parts[parts.length - 1]] = services[name]
+  }
+  return ns
+}
+
 const pending = []
 function makeCtx(declared) {
-  const services = { locale, sidebarRightTabs: tabs, slots }
   const base = {
     inject(names, cb) {
       const wanted = Array.isArray(names) ? names : [names]
-      const fire = () => cb(makeCtx(declared))
-      if (wanted.every((w) => w in services)) fire()
-      else pending.push({ wanted, fire })
+      const missing = wanted.filter((w) => !(w in services))
+      if (missing.length > 0) {
+        pending.push({ wanted, missing })
+        return () => {}
+      }
+      cb(namespaceFor(wanted))
       return () => {}
     },
     on() {
       return () => {}
     },
+    // Cordis semantics: `effect(execute)` runs `execute` immediately and
+    // collects the disposer it returns; the disposer runs when the fiber
+    // unloads. Running it here would tear the roster watcher down at once.
     effect(cb) {
-      try {
-        const r = cb()
-        if (typeof r === 'function') r()
-      } catch (e) {
-        console.error('   [effect threw]', e?.message ?? e)
+      const disposer = cb()
+      return () => {
+        if (typeof disposer === 'function') disposer()
       }
-      return () => {}
     },
   }
   return new Proxy(base, {
@@ -147,55 +214,94 @@ try {
 }
 
 // flush any deferred injects the mock queued
-for (const p of pending.splice(0)) p.fire()
-
-console.log(`  locale namespaces: ${locales.map((l) => l.ns).join(', ') || '(none)'}`)
-console.log(`  registered tabs:   ${registeredTabs.length}`)
-for (const t of registeredTabs) {
-  console.log(`    id=${t.id} kind=${t.kind} title=${typeof t.title === 'function' ? 'fn' : JSON.stringify(t.title)} guide=${(t.guide ?? []).length}`)
+for (const p of pending.splice(0)) {
+  console.error(`FAIL: the bundle pends on ${p.missing.join(', ')} — the web boot audit THROWS on a pending entry`)
+  process.exit(1)
 }
-console.log(`  slot entries:      ${slotEntries.length}`)
-for (const s of slotEntries) {
-  console.log(`    seat=${s.seat} key=${s.entry?.key ?? '(no key)'} name=${s.entry?.name ?? '?'}`)
+
+/** Let the roster read settle (the bundle awaits `agentPresets.list()`). */
+const settle = async () => {
+  await new Promise((r) => setImmediate(r))
+  await new Promise((r) => setImmediate(r))
+}
+
+/** Fire the captured roster poll, exactly as the 5s timer would. */
+const poll = async () => {
+  for (const timer of [...timers.values()]) timer.cb()
+  await settle()
 }
 
 // --- assertions ----------------------------------------------------------
 let failed = false
-if (registeredTabs.length === 0) {
-  console.error('FAIL: no tab registered — the right rail has nothing to show')
+const fail = (message) => {
+  console.error(`FAIL: ${message}`)
   failed = true
 }
+
+const report = (phase) => {
+  console.log(`  [${phase}] registered tabs: ${registeredTabs.length}`)
+  for (const t of registeredTabs) {
+    console.log(`    id=${t.id} kind=${t.kind} title=${typeof t.title === 'function' ? 'fn' : JSON.stringify(t.title)} guide=${(t.guide ?? []).length}`)
+  }
+}
+
+console.log(`  locale namespaces: ${locales.map((l) => l.ns).join(', ') || '(none)'}`)
+console.log(`  slot entries:      ${slotEntries.length}`)
+
+// Phase 1 — 标准模式: no Edge tab type may exist.
+await settle()
+report('standard')
+if (registeredTabs.length !== 0) {
+  fail(`the Edge tab type is registered while the active preset is "standard" — the tab must exist only in 边缘模式`)
+}
+
+// The body/title seats are registered unconditionally (the sidebar dispatches
+// them by key, so an unseated body would break the chip), but they must carry
+// the registry id as their key.
 const bodySeat = slotEntries.find((s) => s.seat === 'sidebar.right.pane.tab')
+const titleSeat = slotEntries.find((s) => s.seat === 'sidebar.right.pane.tab.title')
 if (!bodySeat) {
-  console.error('FAIL: no body seated at sidebar.right.pane.tab')
-  failed = true
+  fail('no body seated at sidebar.right.pane.tab')
+} else if (bodySeat.entry?.key !== 'dsh-edge-agent') {
+  fail(`slot key "${bodySeat.entry?.key}" !== registry id "dsh-edge-agent" — sidebar-right dispatches with entryKey = definition.id`)
+}
+if (!titleSeat) {
+  fail('no title seated at sidebar.right.pane.tab.title')
+} else if (titleSeat.entry?.key !== 'dsh-edge-agent') {
+  fail(`title slot key "${titleSeat.entry?.key}" !== registry id "dsh-edge-agent"`)
+}
+
+// Phase 2 — 边缘模式: the tab type must appear.
+roster.presets[0].isDefault = false
+roster.presets[1].isDefault = true
+await poll()
+report('edge')
+if (registeredTabs.length !== 1) {
+  fail(`the Edge tab type is NOT registered while 边缘模式 is the active preset (registered=${registeredTabs.length})`)
 } else {
   const tab = registeredTabs[0]
-  const expectedKey = tab?.id ?? tab?.kind
-  if (bodySeat.entry?.key !== expectedKey) {
-    console.error(`FAIL: slot key "${bodySeat.entry?.key}" !== registry id "${expectedKey}" — sidebar-right dispatches with entryKey = definition.id`)
-    failed = true
+  if (tab.id !== 'dsh-edge-agent' || tab.kind !== 'dsh-edge-agent') {
+    fail(`the registered tab type is id="${tab.id}" kind="${tab.kind}", expected "dsh-edge-agent"`)
   }
-  // The chip title seat. The harness dispatches the title under the TYPE's
-  // id (SidebarRight.tsx:211 → entryKey = definition?.id ?? tab.kind); a
-  // missing title registration still renders the chip (the captured title
-  // is the fallback), but the plugin is expected to seat it explicitly.
-  const titleSeat = slotEntries.find((s) => s.seat === 'sidebar.right.pane.tab.title')
-  if (!titleSeat) {
-    console.error('FAIL: no title seated at sidebar.right.pane.tab.title')
-    failed = true
-  } else if (titleSeat.entry?.key !== expectedKey) {
-    console.error(`FAIL: title slot key "${titleSeat.entry?.key}" !== registry id "${expectedKey}"`)
-    failed = true
+  if ((tab.guide ?? []).length !== 1) {
+    fail(`the tab type carries ${(tab.guide ?? []).length} guide entries, expected 1`)
   }
   // The body must render a React element (the host renderer is React).
-  const el = bodySeat.entry?.render?.({ sessionId: 's1' })
+  const el = bodySeat?.entry?.render?.({ sessionId: 's1' })
   if (!el || typeof el !== 'object' || !('type' in el)) {
-    console.error('FAIL: slot render did not return a React element')
-    failed = true
+    fail('slot render did not return a React element')
   } else {
     console.log(`  body element type: ${typeof el.type === 'string' ? `<${el.type}>` : (el.type?.name ?? 'component')}`)
   }
+}
+
+// Phase 3 — back to 标准模式: the tab type must be dropped again.
+roster.presets[0].isDefault = true
+roster.presets[1].isDefault = false
+await poll()
+report('standard again')
+if (registeredTabs.length !== 0) {
+  fail(`the Edge tab type survived the switch back to "standard" (registered=${registeredTabs.length})`)
 }
 
 if (failed) process.exit(1)

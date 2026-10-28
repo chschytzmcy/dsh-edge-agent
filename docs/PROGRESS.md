@@ -13045,3 +13045,156 @@ hook 里得查「当前 agent 绑定的 preset id」，不是 `edge` 就放行 �
 - **bundle 顶层对宿主行的覆盖（`tool-web` / `web` / `web-search-deepseek`）
   在任何工作方式下都生效** —— preset 只能声明插件行，不能覆盖宿主行。这是
   preset 机制的边界。
+
+## §7.136 边缘模式真正隔离：修「加载失败」+ 标准模式变纯宿主（2026-10-28）
+
+### 主人报的两件事
+
+1. 设置页的 Agent preset 选择器里**有**「边缘模式」这张卡，但显示**加载失败**。
+2. 「现在是全部模式都有 本项目能力，有 edge tab，应该只有边缘模式，本项目
+   插件才有效，才有 edge tab」。
+
+并按主人要求，核对了宿主仓库 `deepseek-harness` 里「如何增加自定义 preset」
+的官方做法（结论见第二节）。
+
+### 一、「加载失败」的根因与修法（宿主源码实证）
+
+**根因**：preset 的挂载审计（`packages/preset/agent-preset-registry/src/mount.ts`
+→ `leakedServices`）会检查「挂在 preset 子树里的服务有没有被存进 **root
+realm**」；是 ⇒ 泄漏 ⇒ **整个 preset 挂载失败** ⇒ 设置页那张卡显示「加载失败」。
+宿主 README 的原话（`agent-preset-registry/README.zh.md`）：
+
+> preset 的服务提供方及其消费方必须共享同一个 `cordis:group` 隔离 realm。
+> 条目局部隔离不会沿 Agent 注册 scope 传播：组外的普通 Context 查找（包括
+> `agent.ctx`）仍选择 Host realm。
+
+**修法**：本项目的插件行整体关进一个 `cordis:group`（`id: edge-stack`），
+组内用 `isolate` 名单把每一行提供的服务关进组内 realm —— 组内互相可见、
+组外看不见 ⇒ 不泄漏。宿主内置 preset 的 `planning` / `compaction` /
+`delegation` 三组用的是同一个手法。
+
+- isolate 名单**从源码推导**（`src/dsh-adapter/<sub>.ts` 里的
+  `super(<ctx>,'<service>')`），生成器 `scripts/_isolate-edge-group.mjs`、
+  复核门禁 `scripts/verify-preset-isolate.ts`（带 `--selftest` 自证三条规则
+  都会响）—— 改源码不会让名单漂移。
+- **三行必须留在宿主树**（bundle 顶层 `insert` 段）：`dsh-edge-agent`（裸包名
+  行 —— 宿主 `dsh-client-modules` 只扫**宿主 Loader 的 entries**，preset 的
+  插件树是独立 EntryTree、不在其中 ⇒ Edge tab 的浏览器半边只能从宿主树发现）；
+  `audit-log` / `file-logger`（裸包名行 inject `['auditLog']`，且
+  `installFileLogger` 会先占住 `fileLogger` 服务名 ⇒ 二者必须在 root realm，
+  且 file-logger 必须更早装载，否则 ops log 文件名会退回
+  `dsh-edge-agent.log`）。
+
+### 二、官方「增加自定义 preset」的做法（deepseek-harness 实证）
+
+本轮读了宿主仓库源码，确认**我们的做法与官方一致**，并补了三处细节：
+
+| 官方做法 | 出处 | 本仓 |
+|---|---|---|
+| bundle 的 `package.json` 用 `dsh.bundle.patch` 列出 patch 文件 | `@deepseek-ai/dsh-web-app/package.json` | 同构 ✓ |
+| patch 文件 `insert` 一行 `@deepseek-ai/dsh-agent-preset`，`config` 带 `id` / `name` / `description` / `order` / `plugins` | `web-app/presets/*.patch.yml` | 同构 ✓ |
+| `plugins` 是**完整列表**，注册表不合并（用户覆盖 = 整份替换） | `agent-preset-registry/README.zh.md` | 已记录为已知代价 |
+| 服务提供方与消费方共享一个 `cordis:group` isolate realm | 同上 | §7.136 第一节 ✓ |
+| 自定义 preset 自带 `name` ⇒ 设置页显示自己的名字与描述 | `agent-preset-registry/src/display.ts`（`isBuiltInPreset`） | ✓ |
+| `order` 决定排序（同序按 id 字典序） | `agent-preset-registry/src/index.ts` `list()` | `order: 2` → **`5`**（内置 standard/ptc/minimal/cordis 占 1..4） |
+
+官方「最小配置」长这样 ours 与之同形：
+
+```yaml
+- id: preset-edge
+  name: '@deepseek-ai/dsh-agent-preset'
+  config:
+    id: edge
+    name: 边缘模式
+    plugins: [ ... ]
+```
+
+### 三、真正的工作方式隔离
+
+宿主 preset 是**启动即挂载**的（声明会提前加载），选哪个只决定 **Agent 绑到
+哪个 scope**。所以「标准模式变纯宿主」不能靠卸载插件，只能靠**事件作用域**。
+
+**服务端 —— hook 去掉 `{ global: true }`**：
+
+- 宿主的派发过滤（`cordis/src/events.ts` `EventsService.dispatch`）：
+  `hook.global || !filter || filter.call(thisArg, hook.ctx)`；
+- 过滤规则（`dsh-scope` `scopeTarget`）：**监听器自己的 scope 必须是派发
+  scope 或其祖先**（事件沿 scope 链向上流，不向下）；
+- Agent 的 scope 父链接到所选 preset 的代际 scope
+  （`agent-preset-registry` 的 `bindScopeParent`）；
+- ⇒ 边缘模式 preset 里的 hook 在标准模式的 Agent 上**收不到**。
+
+改了 4 个文件 7 处 hook：`input-guard.ts`（`agent/pre-step`、`agent/request`）、
+`function-call-external.ts`（`agent/pre-step`）、`realm-skill-bridge.ts`
+（`agent/pre-step` / `system-prompt/assemble` / `tools/pre-execute` /
+`tools/result`）。审计 payload 由 `global: true` 改成 `scopedTo: 'agent-preset'`。
+
+**`llm/stream` 保留 `{ global: true }`**：该事件**不带 scope 载体**
+（宿主里 `scopeTarget` 只出现在 dsh-agent / dsh-tools / dsh-system-prompt /
+dsh-session / dsh-subagent / dsh-client-connection），去掉也不生效；且没有
+pre-step state 时它恒直通。
+
+**客户端 —— Edge tab 按 roster 的默认 preset 注册/注销**：客户端只有一张全局
+boot 图，tab 类型是全局注册表（`dsh-client-ui-sidebar-right` 的 `register()`
+返回 disposer，变更会 refresh），所以「只有边缘模式才有 edge tab」只能靠
+**注册 / 注销 tab 类型**实现。判据是 `agentPresets.list()` 的 `isDefault`
+（= 注册表 `defaultId` = `selectedDefault ?? default`，即设置页「设为默认」
+的值），5s 轮询。三条守卫：
+
+1. preset 挂载失败（roster 行带 `broken`）⇒ 不显示（不承诺空面板）；
+2. inject 延迟期间 roster 切走 ⇒ 不注册（race 守卫）；
+3. `ctx.remote` 读取要 try/catch（未声明的服务会抛）。
+
+### 四、顺带定位并规避的 `tool "subagent" is already registered in this scope`
+
+桌面版启动日志里那条 ERROR 的根因查清了：**旧宿主**的 `dsh-tool-subagent`
+有一条 per-agent 安装路径（`tools/change` 重投 `tools` 服务 ⇒ inject 回调再次
+触发 ⇒ `install()` 二次执行 ⇒ 同一 scope 里重复注册 `subagent`）。宿主上游
+新版已改成「挂载时注册一次」，问题不存在。
+
+- 边缘模式的 `tool-subagent` 行**故意不写** `modelSelectionSettings: true` ——
+  不写就走「挂载时注册一次」的路（注册进 preset 自己的 scope 层）⇒ 无重复、
+  无报错。
+- **代价（如实记录）**：边缘模式没有「子 Agent 选模型」参数。工具本体
+  （`subagent` / `subagent_fork`）由宿主 base 层的全局行提供，模型可见面不变。
+- **标准模式仍会撞** —— 那是宿主自己的 preset 行 + 旧宿主代码路径的问题。
+  我们不改宿主的 `preset-standard`（覆盖它等于整份替换它的 plugins 列表），
+  如实记录在这里。
+
+### 验证
+
+- 单测 **67 文件 / 1353 passed + 2 skipped**（改了一个旧契约断言：
+  `function-call-external.test.ts` 原先断言 hook 带 `global: true`，现断言
+  **不带** global 且 `scopedTo: 'agent-preset'`）
+- `npx eslint src tests/unit scripts`：**0 error / 58 warning**
+- `verify:build` **13 项全绿**（新增 `verify:preset-isolate`，含 `--selftest`）；
+  客户端门禁脚本改成**三态断言**：standard ⇒ 无 tab / edge ⇒ 有 tab /
+  切回 standard ⇒ tab 被注销
+- 桌面版两次重启（11:43 / 11:47）**零 ERROR 零 WARN**，preset 正常挂载
+  （`edge-tools-registry` / `realm-skill-bridge` / `prompt-guard` /
+  `intent-router` / `input-guard` / `cloud-llm-adapter` / `local-llm-adapter`
+  全部 apply 成功，**没有** broken 告警）
+
+### 运行时核验（需主人操作）
+
+1. 设置页的「边缘模式」卡片**还显示「加载失败」吗**？
+2. 标准模式下 **Edge tab 应该消失**；在设置页把默认改成「边缘模式」后
+   **应该出现**（5s 内）。
+3. 标准模式发一句话 → Edge 面板**不应有**本项目的行（护栏不生效 = 纯宿主）。
+4. 切到边缘模式发一句话 → Edge 面板**应该有**行（意图判定 / 路由决策 /
+   答案出口 / LLM 调用记录）。
+
+### 已知缺口（如实记录）
+
+- **会话级选 preset 时 Edge tab 不出现**：tab 门控跟随的是 roster 的**默认**
+  preset；对话 chip 的会话级选择不改默认 ⇒ 服务端行为已按会话切换（hook 是
+  scope 化的），但 tab 仍隐藏。tab 列表是全局的、没有按会话隐藏的接口
+  （`SidebarRightTabDefinition` 无可见性谓词），要补齐得另想办法。
+- **宿主升级后标准模式的插件列表若变了，边缘模式不会自动跟随**（注册表不
+  合并）—— 同 §7.135 记录的代价。
+- **`presets/edge*.patch.yml` 是按当前安装的桌面版 asar 里的
+  `standard.patch.yml` 抄的**（该版本用 `modelSelectionSettings: true`、
+  多一行 `tool-subagent-control/list-agents`）；宿主仓库 master 已经改成
+  `modelSelection: true` + `modelDiscovery: true`、少了那一行 ⇒ 宿主升级后
+  需要重新对齐。
+

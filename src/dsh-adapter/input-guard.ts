@@ -2022,19 +2022,44 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
   const disposers: Array<() => void> = []
 
   if (on) {
-    // 正向：agent/pre-step（全局，让它在所有 agent 上生效）
+    // 正向：agent/pre-step。
+    //
+    // §7.136（2026-10-28，主人裁决）：**去掉 `{ global: true }`**。
+    //
+    // 宿主的 scope 过滤（@deepseek-ai/dsh-scope lib/index.js#scopeTarget）：
+    // agent 事件用 `agentCarrier(agent) = scopeTarget(agent, agent)` 派发，
+    // 载体的 filter 规则是「监听器自己的 scope 必须是派发 scope 或其祖先」
+    // （事件沿 scope 链向上流，不向下）。带 `{ global: true }` 会**绕过**这个
+    // 过滤 —— 于是本 hook 在**任何**工作方式下都会触发，标准模式也照样被
+    // 护栏改写。
+    //
+    // 本插件挂在**边缘模式 preset 的 scope** 里；绑定到该 preset 的 Agent 的
+    // scope 链包含 preset scope ⇒ hook 生效；绑定到标准模式的 Agent 链上
+    // 只有标准 preset 的 scope ⇒ hook 不触发 ⇒ 标准模式是纯宿主。
+    //
+    // 动态创建的 Agent（http-api 每次 followup 新建）同样经宿主工厂创建，
+    // 注册表会把它 bind 到当前 preset ⇒ scope 链一样成立（§7.36 那条
+    // 「per-agent 注册收不到动态 agent」的顾虑在 scope 语义下不成立）。
     const d1 = on('agent/pre-step', async (payload: any, next: any) => {
       return service.handlePreStep(payload, next)
-    }, { global: true })
+    })
     void auditLog?.log?.({
       level: 'info',
       kind: 'input-guard.hook.registered',
       source: 'input-guard',
-      payload: { event: 'agent/pre-step', global: true, disposerReturned: typeof d1 === 'function' },
+      payload: { event: 'agent/pre-step', scopedTo: 'agent-preset', disposerReturned: typeof d1 === 'function' },
     })
     if (d1) disposers.push(d1)
 
-    // 反向：llm/stream（全局）
+    // 反向：llm/stream。
+    //
+    // 这个事件由 @deepseek-ai/dsh-llm 派发，**不带 scope 载体**（宿主里
+    // scopeTarget 只出现在 dsh-agent / dsh-tools / dsh-system-prompt 等），
+    // 所以 scope 过滤对它不生效 —— 保留 global 以免改变既有行为。
+    // 它本身是「无害的」：handleLlmStream 只在 pre-step 已经 sanitize 过
+    // （stepState.sanitized）时才做事；pre-step 现在只在边缘模式触发 ⇒
+    // 标准模式下这里恒等于直通。
+    //
     // agent-loop 在 buildRequest 时把 sessionId 写到 GenerateOptions，
     // 我们直接从 options.sessionId 读，跨 hook 状态用 Map<string, state>
     // 维护（pre-step 的 session 对象和 llm/stream 的 sessionId 字符串不
@@ -2050,23 +2075,26 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
     })
     if (d2) disposers.push(d2)
 
-    // 路由改写：agent/request（全局）。
+    // 路由改写：agent/request。
+    //
     // 当 handlePreStep 因 sanitize 失败标记了 stepState.downgraded，
     // 这里把 provider/model 从 CLOUD 改写到 LOCAL，原始 PII 不离开设备。
     // agent-loop 的 contract：监听器真实签名是 `(payload, next)`，
     // payload 由 dsh-agent 的 fused wrapper 注入了 `agent` 字段
     // （dispatch.js#agentEvents）。next() 返回 chain 默认的 seedConfig。
     // 我们必须先 await next() 拿到 seedConfig 再决定是否改写，不能跳过。
+    //
+    // §7.136：同 agent/pre-step —— 不带 global，靠 scope 过滤只在边缘模式生效。
     const d3 = on('agent/request', async (payload: any, next: any) => {
       const seedConfig = await next()
       const result = await service.handleAgentRequest(payload ?? {}, seedConfig, async () => seedConfig)
       return result
-    }, { global: true })
+    })
     void auditLog?.log?.({
       level: 'info',
       kind: 'input-guard.hook.registered',
       source: 'input-guard',
-      payload: { event: 'agent/request', global: true, disposerReturned: typeof d3 === 'function' },
+      payload: { event: 'agent/request', scopedTo: 'agent-preset', disposerReturned: typeof d3 === 'function' },
     })
     if (d3) disposers.push(d3)
 

@@ -2694,22 +2694,26 @@ dsh-im ────┘              统一执行管线
 
 intent-router 在 v2 里**降级为叶子服务**——`input-guard.handlePreStep` 调用 `intentRouter.classify()` 来决定 LOCAL/CLOUD/SANITIZED/REJECT，但不再被 http-api 命令式驱动。
 
-## 5.3 三个全局 hook（input-guard 注册到 agent-loop）
+## 5.3 三个 hook（input-guard 注册到 agent-loop）
 
-`src/dsh-adapter/input-guard.ts:765-799`：
+> **§7.136 更新**：`agent/pre-step` 与 `agent/request` **不再带 `{ global: true }`** ——
+> 改为 scope 绑定（只在边缘模式 preset 的 Agent 上生效）。只有 `llm/stream` 仍是
+> 全局的（该事件不带 scope 载体，去掉也不生效）。详见 §5.3.1。
+
+`src/dsh-adapter/input-guard.ts`：
 
 ```ts
-// 正向：agent/pre-step（全局，让它在所有 agent 上生效）
+// 正向：agent/pre-step（scope 绑定 —— 只在边缘模式 preset 的 Agent 上生效）
 const d1 = on('agent/pre-step', async (payload: any, next: any) => {
   return service.handlePreStep(payload, next)
-}, { global: true })
+})
 
-// 反向：llm/stream（全局）
+// 反向：llm/stream（全局 —— 事件不带 scope 载体）
 const d2 = on('llm/stream', (options: any, next: any) => {
   return service.handleLlmStream(options, next)
 }, { global: true })
 
-// 路由改写：agent/request（全局）。
+// 路由改写：agent/request（scope 绑定）。
 // 当 handlePreStep 因 sanitize 失败标记了 stepState.downgraded，
 // 这里把 provider/model 从 CLOUD 改写到 LOCAL。
 // DSH waterfall 契约：listener 是 (payload, next)；seedConfig 从 await next() 取。
@@ -2717,14 +2721,36 @@ const d3 = on('agent/request', async (payload: any, next: any) => {
   const seedConfig = await next()
   const result = await service.handleAgentRequest(payload ?? {}, seedConfig, async () => seedConfig)
   return result
-}, { global: true })
+})
 ```
 
-| Hook | 触发时机 | 内部动作 | 输出 |
-|---|---|---|---|
-| `agent/pre-step` | agent-loop 每步进入 | ① `promptGuard.checkInput` ② `privacyPolicy.matchRouting`（REJECT 短路）③ `intentRouter.classify`（读 `agent._edgeRoute` 优先，否则 fallback classify）④ `sanitizer.sanitize`（CLOUD 路径） | `decision`（可能改写 messages 或返回 reject）|
-| `agent/request`  | agent-loop 组装 LLM 请求 | 检查 `stepState.downgraded`，若 true 则改写 provider/model 到 LOCAL | `AgentRequestConfig` |
-| `llm/stream`     | LLM 流式输出 text-delta | 跨 chunk 累积占位符前缀，flush 后 `sanitizer.desanitize` 还原 PII | 流式 chunk |
+### 5.3.1 为什么 `agent/pre-step` / `agent/request` 改成 scope 绑定（§7.136）
+
+宿主的派发过滤（`cordis/src/events.ts` `EventsService.dispatch`）是：
+
+```ts
+.filter(hook => hook.global || !filter || filter.call(thisArg, hook.ctx))
+```
+
+`{ global: true }` = 显式要求**跨 scope 全局生效**。而 scope 过滤规则
+（`dsh-scope` 的 `scopeTarget`）是：**监听器自己的 scope 必须是派发 scope 或其
+祖先**（事件沿 scope 链向上流，不向下）。Agent 的 scope 父链接到所选 preset
+的代际 scope（`dsh-agent-preset-registry` 的 `bindScopeParent`）。
+
+⇒ 本项目的插件在**边缘模式 preset** 的 scope 里，标准模式的 Agent 绑的是标准
+preset 的 scope ⇒ 链上没有本插件的 scope ⇒ **收不到事件** ⇒ 标准模式是纯宿主
+（本项目的路由改写 / PII 脱敏 / 护栏全部不生效），边缘模式才生效。
+
+`llm/stream` 保留全局：宿主里 `scopeTarget` 只出现在 dsh-agent / dsh-tools /
+dsh-system-prompt / dsh-session / dsh-subagent / dsh-client-connection，
+`llm/stream` 由 `dsh-llm` 派发、**不带 scope 载体** ⇒ 去掉 global 也不生效；
+且没有 pre-step state 时它恒直通。
+
+| Hook | 触发时机 | 作用域 | 内部动作 | 输出 |
+|---|---|---|---|---|
+| `agent/pre-step` | agent-loop 每步进入 | **边缘模式 preset** | ① `promptGuard.checkInput` ② `privacyPolicy.matchRouting`（REJECT 短路）③ `intentRouter.classify`（读 `agent._edgeRoute` 优先，否则 fallback classify）④ `sanitizer.sanitize`（CLOUD 路径） | `decision`（可能改写 messages 或返回 reject）|
+| `agent/request`  | agent-loop 组装 LLM 请求 | **边缘模式 preset** | 检查 `stepState.downgraded`，若 true 则改写 provider/model 到 LOCAL | `AgentRequestConfig` |
+| `llm/stream`     | LLM 流式输出 text-delta | 全局（无 scope 载体） | 跨 chunk 累积占位符前缀，flush 后 `sanitizer.desanitize` 还原 PII | 流式 chunk |
 
 ## 5.4 sanitize 失败降级 LOCAL
 
@@ -3026,9 +3052,9 @@ flowchart LR
         I5["auditLog"]
     end
 
-    subgraph HOOKS["3 个全局 hook (apply 注册)"]
-        H1["on('agent/pre-step')<br/>global: true"]
-        H2["on('agent/request')<br/>global: true"]
+    subgraph HOOKS["3 个 hook (apply 注册)"]
+        H1["on('agent/pre-step')<br/>scope 绑定"]
+        H2["on('agent/request')<br/>scope 绑定"]
         H3["on('llm/stream')<br/>global: true"]
     end
 
@@ -3056,21 +3082,22 @@ flowchart LR
     class P1,P2,P3,P4 pipe
 ```
 
-**实现位置**：`src/dsh-adapter/input-guard.ts:677-702`
+**实现位置**：`src/dsh-adapter/input-guard.ts`（§7.136 起 `agent/pre-step` 与
+`agent/request` 去掉 `{ global: true }`）
 
 ```ts
-// input-guard.ts:677-702 (节选)
+// input-guard.ts (节选)
 const d1 = on('agent/pre-step', async (payload, next) => {
   return service.handlePreStep(payload, next)
-}, { global: true })   // ← 全局：所有 agent 都过
+})   // ← scope 绑定：只有边缘模式 preset 的 Agent 会过
 
 const d2 = on('llm/stream', (options, next) => {
   return service.handleLlmStream(options, next)
-}, { global: true })
+}, { global: true })   // ← 事件不带 scope 载体，只能全局
 
 const d3 = on('agent/request', async (payload, seed, next) => {
   return service.handleAgentRequest(payload ?? {}, seed ?? {}, async () => next())
-}, { global: true })
+})
 ```
 
 ---
@@ -3157,25 +3184,25 @@ export const inject = [
 
 > **字段命名修正**：早期文档版本误用 `rejectOnSanitizeFailure`。实际 input-guard.ts:42 定义 `downgradeOnSanitizeFailure: boolean`，默认 `true`。
 
-### 5.3 Hook 注册（3 个全局 hook，均带 `{ global: true }`）
+### 5.3 Hook 注册（3 个 hook：`agent/pre-step` / `agent/request` scope 绑定，`llm/stream` 全局）
 
 ```typescript
-// 1. 正向：agent/pre-step
+// 1. 正向：agent/pre-step（scope 绑定 —— 只在边缘模式 preset 的 Agent 上生效）
 const d1 = on('agent/pre-step', async (payload, next) => {
   return service.handlePreStep(payload, next)
-}, { global: true })
+})
 
-// 2. 反向：llm/stream
+// 2. 反向：llm/stream（全局 —— 事件不带 scope 载体）
 const d2 = on('llm/stream', (options, next) => {
   return service.handleLlmStream(options, next)
 }, { global: true })
 
-// 3. 路由改写：agent/request（sanitize 失败时 CLOUD → LOCAL）
+// 3. 路由改写：agent/request（scope 绑定；sanitize 失败时 CLOUD → LOCAL）
 const d3 = on('agent/request', async (payload, next) => {
   const seedConfig = await next()
   const result = await service.handleAgentRequest(payload ?? {}, seedConfig, async () => seedConfig)
   return result
-}, { global: true })
+})
 ```
 
 **DSH waterfall 契约**：listener 是 `(payload, next)`（**2 参数**，非 3 参数）；上游的 seedConfig 通过 `await next()` 在 listener 内部取，不能作为 listener 的形参传入。

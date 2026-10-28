@@ -993,6 +993,16 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
   // input-guard 用了 { global: true },realm-skill-bridge 之前漏了 → 整个
   // fail-open 链路"hook 在,但 agent 收不到"。
   //
+  // §7.136 (2026-10-28, 主人裁决「只有边缘模式才有本项目能力」): 上面那条
+  // 顾虑在宿主的 **scope** 语义下已经不成立 —— agent 事件用
+  // `scopeTarget(agent, agent)` 派发,filter 规则是「监听器的 scope 必须是
+  // 派发 scope 或其祖先」。动态创建的 Agent 同样经宿主工厂创建、注册表把它
+  // bind 到当前 preset ⇒ scope 链一样成立。
+  //
+  // 而 `{ global: true }` 会**绕过**这个过滤 ⇒ 护栏在任何工作方式下都生效、
+  // 标准模式不是纯宿主。所以这里去掉它:本插件挂在边缘模式 preset 的 scope,
+  // 绑定标准模式的 Agent 收不到这些 hook。
+  //
   // §7.37 (2026-09-04): catalog filter on agent/pre-step is currently a no-op
   // because decision.messages is empty (msgCount=0) — <available_skills> is
   // injected by dsh-system-prompt plugin below the hook surface. Kept as a
@@ -1023,7 +1033,7 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
       } catch { /* debug only */ }
     }
     return { ...decision, messages: result.messages }
-  }, { global: true })
+  })
 
   // ── Layer 1.5-replacement: Filter tool schemas at system-prompt/assemble ───
   // §7.37.x (2026-09-22): replace the deleted `llm/stream` tools probe.
@@ -1077,7 +1087,7 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
       `[realm-skill-bridge] assemble filter sessionId=${sessionId ?? 'unknown'} realm=${agentRealm} removedCount=${filter.removed.length} removed=${filter.removed.join(',')}`,
     )
     return { ...result, tools: filter.tools }
-  }, { global: true })
+  })
 
   // ── Layer 3: Gate tool execution by realm ─────────────────────────────────
   const disposePreExec = (ctx as unknown as {
@@ -1124,7 +1134,7 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
       return { kind: 'deny', reason: denyReason }
     }
     return next()
-  }, { global: true })
+  })
 
   // ── Layer 3.5: tool execution result ops log (§7.47.6) ──────────────────
   //
@@ -1159,7 +1169,7 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
         )
       } catch { /* debug only */ }
     } catch { /* debug only */ }
-  }, { global: true })
+  })
 
   // ── Flow-level ops log for every chat round-trip (§7.44.1) ───────────────
   //

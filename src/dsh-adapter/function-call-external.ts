@@ -1195,14 +1195,17 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
   const on = (ctx as unknown as { on?: <T extends (...args: any[]) => any>(event: string, handler: T, opts?: Record<string, unknown>) => () => void }).on
   const disposers: Array<() => void> = []
   if (on) {
+    // §7.136（2026-10-28）：去掉 `{ global: true }`。agent 事件用
+    // scopeTarget 派发，监听器只在自己 scope（边缘模式 preset）或其子 scope
+    // 收到 —— 标准模式绑定到标准 preset，链上没有本插件的 scope ⇒ 不触发。
     const d1 = on('agent/pre-step', async (payload: any, next: any) => {
       return service.handlePreStep(payload, next)
-    }, { global: true })
+    })
     void auditLog?.log?.({
       level: 'info',
       kind: 'external.hook.registered',
       source: 'function-call-external',
-      payload: { event: 'agent/pre-step', global: true, disposerReturned: typeof d1 === 'function' },
+      payload: { event: 'agent/pre-step', scopedTo: 'agent-preset', disposerReturned: typeof d1 === 'function' },
     })
     if (typeof d1 === 'function') disposers.push(d1)
   } else {

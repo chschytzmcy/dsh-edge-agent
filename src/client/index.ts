@@ -56,6 +56,20 @@ export const inject: readonly string[] = ['slots', 'locale']
 
 const TAB_ID = 'dsh-edge-agent'
 
+/** §7.136: the Agent Preset id this bundle declares (presets/edge*.patch.yml). */
+const EDGE_PRESET_ID = 'edge'
+
+/** How often the preset roster is re-read (ms).
+ *
+ *  The roster is the only client-visible source for "which preset is the
+ *  active one" that does not require a live session: `agentPresets.list()`
+ *  marks the row with `isDefault` — the registry's `defaultId`, i.e. the
+ *  preset new sessions run under (the settings page's 「设为默认」 writes it).
+ *  5s keeps the tab's appearance within a blink of the switch without
+ *  hammering the host (the response is a handful of small rows).
+ */
+const ROSTER_POLL_MS = 5_000
+
 /* ── Face types (mirror dsh-context's services.ts) ─────────────────────── */
 
 interface SidebarGuideEntry {
@@ -102,6 +116,53 @@ interface LocaleFace {
   bind(ns: string): (key: string, params?: Record<string, string | number>) => string
 }
 
+/** The `remote.agentPresets` face — the preset roster.
+ *
+ *  `broken` is the activation diagnostic the registry publishes for a preset
+ *  whose composition failed to mount (dsh-agent-preset-registry/src/index.ts
+ *  `list()`): a broken preset has no working plugin tree, so nothing it
+ *  promises can reach the model. */
+interface AgentPresetsFace {
+  list(): Promise<{
+    ok: boolean
+    value?: { presets?: Array<{ id?: string; name?: string; isDefault?: boolean; broken?: string }> }
+  }>
+}
+
+/**
+ * Find the roster face in whatever the framework handed us.
+ *
+ * The host's own preset UI injects BOTH `remote` and `remote.agentPresets`
+ * (packages/client/ui-agent-preset/src/client/index.ts) and reads the roster
+ * as `ctx.remote.agentPresets.list()`. A sub-namespace injection may hand
+ * over the namespace itself, the parent namespace, or the enclosing context —
+ * accept every shape and never let a missing face throw (the tab simply stays
+ * hidden).
+ */
+function pickAgentPresets(raw: unknown): AgentPresetsFace | undefined {
+  if (raw === null || typeof raw !== 'object') return undefined
+  const r = raw as { list?: unknown; agentPresets?: unknown; remote?: unknown }
+  if (typeof r.list === 'function') return raw as AgentPresetsFace
+  const nested = r.agentPresets as AgentPresetsFace | undefined
+  if (nested !== undefined && typeof nested.list === 'function') return nested
+  const remote = r.remote as { agentPresets?: unknown } | undefined
+  if (remote !== undefined) {
+    const face = remote.agentPresets as AgentPresetsFace | undefined
+    if (face !== undefined && typeof face.list === 'function') return face
+  }
+  return undefined
+}
+
+/** Read `ctx.remote` — an undeclared service throws, so the read is guarded. */
+function remoteFace(ctx: CordisCtx): AgentPresetsFace | undefined {
+  try {
+    const remote = (ctx as unknown as { remote?: unknown }).remote
+    return pickAgentPresets(remote)
+  } catch {
+    return undefined
+  }
+}
+
 interface SessionProps {
   sessionId?: string
 }
@@ -113,6 +174,7 @@ interface SessionProps {
 interface CordisCtx {
   inject(deps: readonly string[], cb: (raw: unknown) => void): void
   on?(event: string, cb: (session: unknown, event: unknown) => void): () => void
+  effect?(cb: () => void | (() => void), label?: string): () => void
 }
 
 /* ── The view ──────────────────────────────────────────────────────────── */
@@ -186,30 +248,97 @@ export function apply(ctx: CordisCtx): void {
     }
   })
 
-  // Tab type seat — deferred; absent on CLI/TUI hosts.
-  ctx.inject(['sidebarRightTabs'], (raw) => {
-    const c = raw as unknown as CordisCtx & { sidebarRightTabs?: SidebarTabsFace }
-    const tabs = c.sidebarRightTabs
-    if (tabs === undefined || typeof tabs.register !== 'function') return
-    try {
-      tabs.register({
-        id: TAB_ID,
-        kind: TAB_ID,
-        title: () => tr('tab.title'),
-        guide: [{
-          // The registry validates guide entries by `id` uniqueness
-          // (`new Set(entries.map(e => e.id)).size === entries.length`) and
-          // the guide body keys capsules by it — an undefined id would make
-          // one entry look duplicated to a second contributor.
-          id: `${TAB_ID}-guide`,
-          order: 30,
-          title: () => tr('tab.title'),
-          description: () => tr('guide.description'),
-        }],
+  // ── §7.136: the Edge tab exists only in 边缘模式 ─────────────────────────
+  //
+  // 主人裁决（2026-10-28）：「只有选择 边缘模式 才会出现 edge tab」。
+  //
+  // The webview's module graph is GLOBAL — the host composes ONE boot graph
+  // for the whole app (@deepseek-ai/dsh-client-modules), and the sidebar's tab
+  // registry lists every registered tab type for every session. So the only
+  // way to make the tab appear in one work mode and not in another is to
+  // register / unregister the tab TYPE.
+  //
+  // The signal: `agentPresets.list()` marks the roster row with `isDefault` —
+  // the registry's `defaultId`, i.e. the preset new sessions run under (the
+  // settings page's 「设为默认」 writes exactly that). We poll it and register
+  // the type only while the active preset is ours.
+  //
+  // Known gap (documented in docs/PROGRESS.md §7.136): a per-session pick
+  // (the conversation chip's preset selector) does NOT change the default,
+  // so the tab stays hidden for that session — the SERVER side still behaves
+  // per session (the Edge hooks are scope-bound to the preset, see
+  // src/dsh-adapter/input-guard.ts).
+  let tabVisible = false
+  let disposeTabType: (() => void) | undefined
+  const setTabVisible = (visible: boolean): void => {
+    tabVisible = visible
+    if (visible) {
+      if (disposeTabType !== undefined) return
+      ctx.inject(['sidebarRightTabs'], (raw) => {
+        // The roster may have flipped back while the face was still pending;
+        // registering then would publish a tab nobody asked for.
+        if (!tabVisible || disposeTabType !== undefined) return
+        const c = raw as unknown as CordisCtx & { sidebarRightTabs?: SidebarTabsFace }
+        const tabs = c.sidebarRightTabs
+        if (tabs === undefined || typeof tabs.register !== 'function') return
+        try {
+          const dispose = tabs.register({
+            id: TAB_ID,
+            kind: TAB_ID,
+            title: () => tr('tab.title'),
+            guide: [{
+              // The registry validates guide entries by `id` uniqueness
+              // (`new Set(entries.map(e => e.id)).size === entries.length`) and
+              // the guide body keys capsules by it — an undefined id would make
+              // one entry look duplicated to a second contributor.
+              id: `${TAB_ID}-guide`,
+              order: 30,
+              title: () => tr('tab.title'),
+              description: () => tr('guide.description'),
+            }],
+          })
+          disposeTabType = dispose
+        } catch (error) {
+          reportFailure('sidebar tab type registration', error)
+        }
       })
-    } catch (error) {
-      reportFailure('sidebar tab type registration', error)
+      return
     }
+    // Hide: drop the type again — the sidebar refreshes on registry change.
+    const dispose = disposeTabType
+    disposeTabType = undefined
+    if (typeof dispose === 'function') dispose()
+  }
+
+  // Roster watcher — deferred: a missing remote must never pend this fiber
+  // (the web boot audit THROWS on a pending entry; a missing tab is a small
+  // loss, a boot failure is the app).
+  ctx.inject(['remote', 'remote.agentPresets'], (raw) => {
+    const api = pickAgentPresets(raw) ?? remoteFace(ctx)
+    if (api === undefined || typeof api.list !== 'function') return
+    const check = async (): Promise<void> => {
+      try {
+        const result = await api.list()
+        if (!result.ok) return
+        const presets = result.value?.presets
+        if (!Array.isArray(presets)) return
+        const edge = presets.find((p) => p.id === EDGE_PRESET_ID)
+        const active = presets.find((p) => p.isDefault === true)
+        // A preset that failed to mount has no working composition: showing
+        // the tab would promise panels the server cannot fill.
+        const healthy = edge !== undefined && edge.broken === undefined
+        setTabVisible(healthy && active?.id === EDGE_PRESET_ID)
+      } catch (error) {
+        // A roster fault must not blank the panel: keep the current state.
+        reportFailure('preset roster read', error)
+      }
+    }
+    void check()
+    const timer = setInterval(() => { void check() }, ROSTER_POLL_MS)
+    ctx.effect?.(() => () => {
+      clearInterval(timer)
+      setTabVisible(false)
+    }, 'dsh-edge-agent: preset roster watcher')
   })
 
   // Body seat — keyed by the tab kind, painted with the React tree.

@@ -670,7 +670,8 @@ describe('function-call-external:Phase 5 异常/异常路径', () => {
   })
 
   it('apply() 默认注册 listener(disposerReturned=true → audit external.hook.registered)', async () => {
-    // 测试 apply() 注册了 hook:ctx.on 收到 'agent/pre-step' + global:true
+    // 测试 apply() 注册了 hook:ctx.on 收到 'agent/pre-step'，且**不带** global
+    // （§7.136：scope 绑定 ⇒ 只有绑定到边缘模式 preset 的 Agent 才收得到）
     const { ctx, entries } = makeListenerCtx({})
     const dispose = await (await import('../../src/dsh-adapter/function-call-external.js')).apply(ctx, {} as never)
     assert.equal(typeof dispose, 'function')
@@ -678,7 +679,8 @@ describe('function-call-external:Phase 5 异常/异常路径', () => {
     assert.ok(entries.some(e => e.kind === 'external.hook.registered'), 'external.hook.registered audit must fire on apply()')
     const reg = entries.find(e => e.kind === 'external.hook.registered')!
     assert.equal((reg.payload as any).event, 'agent/pre-step')
-    assert.equal((reg.payload as any).global, true)
+    assert.equal((reg.payload as any).global, undefined, 'the hook must stay scope-bound — a global listener would fire in every work mode')
+    assert.equal((reg.payload as any).scopedTo, 'agent-preset')
     await dispose()
   })
 })

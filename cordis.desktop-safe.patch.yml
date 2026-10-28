@@ -54,3 +54,53 @@
     fetchProvider: http
 - id: web-search-deepseek
   disabled: true
+
+# ── 本 bundle 留在宿主树的三行（§7.136）──────────────────────────────────
+# 理由见 scripts/_isolate-edge-group.mjs 的文件头：
+#   dsh-edge-agent（裸包名）—— 宿主 client-modules 只扫宿主 Loader 的 entries，
+#     preset 树不在其中 ⇒ Edge tab 的浏览器半边只能从这里被发现；
+#   audit-log / file-logger —— 裸包名行 inject auditLog，且它的 installFileLogger
+#     会先占住 fileLogger 服务名 ⇒ 两者必须在 root realm，且 file-logger 行要更早装载。
+- insert:
+    # §7.101.x (2026-10-20, fix #5) + §7.136: the BARE-package host-half row.
+    # The webview client-module system (@deepseek-ai/dsh-client-modules) scans
+    # LOADER ENTRY NAMES for a `dsh.client` declaration — and its package
+    # locator only accepts bare package-root specifiers (`exactPackageSpecifier`),
+    # so subpath rows like '@scope/pkg/audit-log' can never surface the
+    # bundle's browser half. dsh-context shows the working shape: one bare
+    # row (`name: dsh-context`) whose main entry IS the plugin AND whose
+    # manifest carries `dsh.client.platform: "web"`.
+    #
+    # §7.136: this row must stay in the HOST tree. client-modules scans
+    # `ctx.loader.entries()` — the host Loader's entries — while a preset's
+    # plugin list lives in its own EntryTree, outside that enumeration. A bare
+    # row inside the preset would therefore never surface the browser half and
+    # the Edge tab would vanish in every work mode.
+    - id: dsh-edge-agent
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent'
+
+    # Ops log exporter. Mount first so later plugin logs land on disk.
+    - id: file-logger
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/file-logger'
+      config:
+        # §7.102 "one config file": only profile-specific statics live here.
+        # root / level / rotation come from config/edge.json (audit.*);
+        # no process.env reads — the desktop GUI never had them.
+        filename: dsh-edge-agent-desktop.log
+        flushIntervalMs: 1000
+        queueCapacity: 10000
+        maxFileSizeBytes: 52428800
+
+    # Security ledger. Default root stays isolated under ~/.dsh-edge-agent.
+    - id: audit-log
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/audit-log'
+      config:
+        # §7.102 "one config file": minLevel / flush / root come from
+        # config/edge.json (audit.*). Only static wiring stays here.
+        ringBufferSize: 512
+        filename: audit.plain.jsonl
+        enablePIIRedaction: true
+        maxFileSizeBytes: 10485760
+        maxFileAgeDays: 7
+        maxRotatedFiles: 5
+

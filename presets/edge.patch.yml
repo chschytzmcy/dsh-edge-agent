@@ -9,17 +9,57 @@
 #               delegation / subagent …
 #   ptc / minimal / cordis —— 另外三种
 #
-# 本文件声明**边缘模式**：标准模式的插件列表 **+ 本项目的全部功能**（隐私
-# 护栏、意图判定、路由决策、PII 脱敏、两个 LLM adapter、Realm 闸门、威胁总线、
-# 审计链、Edge 面板）。主人裁决（2026-10-28）：
+# 本文件声明**边缘模式**：标准模式的插件列表 **+ 本项目的功能**（隐私护栏、
+# 意图判定、路由决策、PII 脱敏、两个 LLM adapter、Realm 闸门、威胁总线、
+# Edge 面板）。主人裁决（2026-10-28）：
 #
-#   「我需要在 dsh 桌面上出一新的 agent 工作时间，叫做边缘模式，功能是在
+#   「我需要在 dsh 桌面上成一新的 agent 工作时间，叫做边缘模式，功能是在
 #     标准模式之上增加本项目的功能」
 #   「只有选择 边缘模式 才会出现 edge tab」
 #
-# 所以本 bundle 的 **18 行插件全部在这里** —— 连 Edge 面板（edge-context-view）
-# 与它的 webview client 注册（裸包名行）一起。切回标准模式 ⇒ 本 bundle 的
-# 插件一行都不挂载 ⇒ 标准模式是**纯 DSH**，连 Edge tab 都没有。
+# ## 本项目的插件行在哪（§7.136 修正）
+#
+# 行为面（护栏 / 判定 / 路由 / 脱敏 / Realm / Edge 面板）**在这里**，并且整体
+# 关进一个 `cordis:group` + `isolate` 隔离 realm —— 宿主规则（dsh-agent-preset-
+# registry README）：「preset 的服务提供方及其消费方必须共享同一个 cordis:group
+# 隔离 realm」。挂载审计（lib/types/mount.js）会把「挂在 preset 子树里却把服务
+# 存进 root realm」的行判为泄漏 ⇒ 整个 preset 挂载失败 ⇒ 设置页那张卡显示
+# 「加载失败」。这正是 §7.135 那版预设加载失败的原因。
+#
+# **三行必须留在宿主树**（bundle 顶层 insert 段）—— 宿主机制的限制，不是偏好：
+#
+#   dsh-edge-agent（裸包名行）—— 宿主的 client-modules 只扫**宿主 Loader 的
+#     entries**（dsh-client-modules/lib/index.js：「scans the host Loader's
+#     entries」；processOne() 遍历 `this.ctx.loader.entries()`），preset 的插件树
+#     是独立的 EntryTree、不在其中 ⇒ Edge tab 的浏览器半边只有从宿主树里的裸
+#     包名行才能被发现。
+#   audit-log / file-logger —— 裸包名行 inject ['auditLog']，且它 apply() 里的
+#     installFileLogger 会先占住 `fileLogger` 服务名 ⇒ 两者必须在 root realm，
+#     且 file-logger 行必须比裸包名行更早装载（否则桌面 ops log 的文件名会从
+#     `dsh-edge-agent-desktop.log` 退回 `dsh-edge-agent.log`）。
+#
+# ## 「切回标准模式会怎样」（§7.136 实测结论）
+#
+# 宿主的 preset 是**启动即挂载**的（dsh-agent-preset README：「声明会提前加载」）：
+# 声明过的 preset 在启动时都建好插件树，选哪个只决定 **Agent 绑到哪个 scope**
+# （可见的工具 / 提示词 / 服务）。所以：
+#
+#   * 本项目的插件在任何工作方式下都已挂载 —— 切回标准模式**不会**卸载它们；
+#     让标准模式变「纯宿主」的是**事件作用域**，不是卸载：
+#   * 我们的 hook（agent/pre-step / agent/request / system-prompt/assemble /
+#     tools/pre-execute / tools/result）**不再带 `{ global: true }`**。宿主的
+#     事件过滤（cordis EventsService.dispatch：
+#     `hook.global || !filter || filter.call(thisArg, hook.ctx)`）按 scope 链
+#     判定 —— 监听器自己的 scope 必须是派发 scope 或其祖先；Agent 的 scope 父
+#     链接到所选 preset 的代际 scope（dsh-agent-preset-registry 的
+#     `bindScopeParent`），事件沿 scope 链向上流、不向下 ⇒ 标准模式的 Agent
+#     收不到边缘模式 preset 里的 hook ⇒ 标准模式不经过本项目的护栏；
+#   * `llm/stream` 保留 `{ global: true }`：该事件不带 scope 载体（去掉也不
+#     生效），且无 pre-step state 时恒直通；
+#   * Edge tab 的浏览器半边是全局的（客户端只有一张全局 boot 图，tab 类型是
+#     全局注册表），所以「只有边缘模式才有 edge tab」由**客户端按 roster 的
+#     默认 preset 注册/注销 tab 类型**实现（src/client/index.ts，5s 轮询
+#     `agentPresets.list()` 的 `isDefault`）。
 #
 # ## 为什么标准模式的行是抄来的
 #
@@ -45,7 +85,7 @@
         id: edge
         name: 边缘模式
         description: 标准模式 + 本项目的端侧隐私能力（意图判定 / 路由决策 / PII 脱敏 / Realm 闸门）
-        order: 2
+        order: 5
         plugins:
           - id: persona
             name: '@deepseek-ai/dsh-persona'
@@ -134,7 +174,17 @@
                 config:
                   provider: spawn
                   toolName: subagent
-                  modelSelectionSettings: true
+                  # §7.136：**故意不写** `modelSelectionSettings: true`。
+                  # 旧宿主（桌面版 asar 里的 dsh-tool-subagent）的 per-agent 安装
+                  # 路径在 `tools/change` 重投 `tools` 服务时会再次执行 install()
+                  # → 同一 scope 里重复注册 'subagent' ⇒
+                  # `tool "subagent" is already registered in this scope`。
+                  # 不带 modelSelectionSettings 时该行走「挂载时注册一次」的路
+                  # （注册进 preset 自己的 scope 层）⇒ 无重复、无报错。
+                  # 代价：边缘模式没有「子 Agent 选模型」参数（宿主 base 层
+                  # 的全局 tool-subagent 行仍提供 subagent / subagent_fork
+                  # 工具本体，模型可见面不变）。
+                  # 上游新版 tool-subagent 已改为挂载时注册一次，问题消失。
               - id: tool-subagent-fork
                 name: '@deepseek-ai/dsh-tool-subagent'
                 config:
@@ -166,286 +216,271 @@
             name: '@deepseek-ai/dsh-plugin-market/tools'
             disabled: true
 
-          # ── 边缘模式：本项目的功能（从 bundle 顶层 insert 段迁入，§7.135）─────
-          # 迁移的理由：preset 的 plugins 是该工作方式的**完整**列表；留在顶层
-          # insert 段的行对**所有**工作方式生效 —— 那样切回标准模式时 Edge 的
-          # 行为依然在跑，「标准模式 + 本项目功能」就成了空话。
-          # 观测面（dsh-edge-agent / file-logger / audit-log / edge-context-view）
-          # 刻意留在顶层：它们不改行为，主人任何时候都该看得见审计与面板。
-          - id: dsh-edge-agent
-            name: '@deepseek-harness-edge-agent/dsh-edge-agent'
-
-          - id: file-logger
-            name: '@deepseek-harness-edge-agent/dsh-edge-agent/file-logger'
-            config:
-              # §7.102 "one config file": root / level / rotation come from
-              # config/edge.json (audit.*) inside the plugin. Only static wiring
-              # stays in the row. (Rotation semantics unchanged — see PROGRESS
-              # §7.56; the effective values logMaxAgeDays=1 / logMaxRotated=7 /
-              # logLevel=info are in edge.json.)
-              filename: dsh-edge-agent.log
-              flushIntervalMs: 1000
-              queueCapacity: 10000
-              maxFileSizeBytes: 52428800  # 50MB
-
-          # tcm: prompt-guard injects this; must mount first
-          - id: tcm
-            name: '@deepseek-harness-edge-agent/dsh-edge-agent/tcm'
-            # §7.102: teeType / keyStorePath come from config/edge.json (tee.*).
-
-          # td-bus: http-api injects this; must mount before http-api.
-          # Config schema (`td-bus.ts`):
-          #   - windowSeconds: number             (sliding window in seconds; default 60)
-          #   - thresholds.cloudRequestsPerMinute: number (default 20)
-          #   - blockLevel: 'elevated' | 'high' | 'critical'  (default 'critical')
-          # Block triggers at 4× threshold within windowSeconds.
-          - id: td-bus
-            name: '@deepseek-harness-edge-agent/dsh-edge-agent/td-bus'
-            inject: [auditLog, privacyPolicy]
-            config:
-              windowSeconds: 60
-              thresholds:
-                cloudRequestsPerMinute: 8        # tighter than default 20 — escalate earlier
-                failedSanitizationStreak: 3
-                permissionDeniedStreak: 5
-              blockLevel: critical                # block on critical (4× = 32/min)
-
-          # realm-skill-bridge: realm-aware skill catalog filtering + tool gating.
-          # Must mount before http-api (which injects realmSkillBridge).
-          # §7.102: configPath / hot-reload knobs come from config/edge.json
-          # (privacy.realm*). Row carries no config.
-          - id: realm-skill-bridge
-            name: '@deepseek-harness-edge-agent/dsh-edge-agent/realm-skill-bridge'
-            inject: [auditLog, skills, edgeTools, tools]
-
-          # §7.102: host/port from config/edge.json http.*, session/body caps
-          # from resources.*, bearer token from secrets.edgeApiKey — all filled
-          # fill-if-unset in http-api.ts apply(). The bare EDGE_API_KEY env stays
-          # a per-process override via edge-config's ENV_OVERRIDES. Row carries
-          # no config.
-          - id: http-api
-            name: '@deepseek-harness-edge-agent/dsh-edge-agent/http-api'
-            inject: [agents, intentRouter, auditLog, tdBus, realmSkillBridge, edgeTools]
-
-          - id: cloud-llm-adapter
-            name: '@deepseek-harness-edge-agent/dsh-edge-agent/cloud-llm-adapter'
-            inject: [llm, auditLog]
-            config:
-              providers: [cloud-llm]
-              # §7.100: 兜底链改为 `||`（空串视为未配置，根治 .env.sh export "" +
-              # §7.102 (2026-10-21): 池配置 + delegate 旋钮迁到 config/edge.json
-              # (llm.cloud.*)。patch 不再读 process.env —— 桌面 GUI 起进程时没有
-              # 任何 DSH_EDGE_* 变量，读到的全是 undefined。
-              #   baseUrl 空 = DELEGATE 模式：cloud-llm 路由转发到宿主 profile 已
-              #   配置的模型提供商（GUI selection > live 宿主路由），key/凭据归
-              #   宿主 adapter。显式配置 llm.cloud.baseUrl 才走自研直连。
-              #   delegate=false → 禁用委托（LOCAL-only 部署；恢复 §7.35
-              #   "云不可用→降级 LOCAL" 语义）
-              #   delegateProvider → 显式指定目标路由 id
-              #   delegateModel   → wire model override（压过 GUI selection.model）
-
-          - id: local-llm-adapter
-            name: '@deepseek-harness-edge-agent/dsh-edge-agent/local-llm-adapter'
-            inject: [llm, auditLog]
-            config:
-              providers: [local-llm]
-              # §7.102: baseUrl / model / key / stripTools / enableThinking 全部
-              # 来自 config/edge.json 的 llm.local.*。baseUrl 留空 = 不注册本地
-              # LLM 路由（模型列表里不出现 local-llm，意图分类 / prompt-guard
-              # 自动降级到关键词 / 正则规则档）。
-
-          - id: model-router
-            name: '@deepseek-harness-edge-agent/dsh-edge-agent/model-router'
-            inject: [llm]
-            config:
-              # §7.75: 删 defaultModel（v0.1.x 死字段，model-router.ts:143 构造时
-              # 只接 localModels/cloudModels）。routing 由 intent 分类 + classificationProvider
-              # 走 modelRouter.resolve() 决定，不靠"默认目标"变量
-              localModels: [local-llm]
-              cloudModels: [cloud-llm]
-
-          - id: intent-router
-            name: '@deepseek-harness-edge-agent/dsh-edge-agent/intent-router'
-            inject: [llm, auditLog, privacyPolicy]
-            config:
-              # 2026-09-02: changed from CLOUD to SANITIZED. Old default failed open
-              # (ambiguous requests → CLOUD LLM, raw data egress). New default routes
-              # through input-guard sanitizer first; sanitize failure downgrades to
-              # LOCAL (fail-closed). See intent-router.ts:60 schema default.
-              defaultCategory: SANITIZED
-              # §7.102 (2026-10-21): 分类器 + jev 全部参数迁到 config/edge.json
-              # (stages.intent.* / jev.*)。patch 不再读 process.env。
-
-          # NOTE: id renamed from `tools` to avoid colliding with dsh-base.
-          - id: edge-tools-registry
-            name: '@deepseek-harness-edge-agent/dsh-edge-agent/tools'
-            inject: [auditLog, tools]
-            config:
-              defaultRateLimitPerMinute: 60
-              enableToolIsolation: true
-              presentationMode: native
-
-          # §7.98:14 个**只读** etscli 子命令注册进 ctx.tools。
+          # ── 边缘模式：本项目的功能（§7.135 + §7.136）──────────────────────
           #
-          # 注册即安全边界:不在注册表里的工具不会出现在
-          # realm-skill-bridge.getToolSchemasForExternal() 的产物里,needle 物理上选不中,
-          # ctx.tools.execute() 也没法执行它。写/删类工具(auth logout / fs rm /
-          # file delete / chat send / migrate verify …)一律**不注册**,排除依据见
-          # src/dsh-adapter/etscli-tools.ts 模块头。
+          # 宿主规则（dsh-agent-preset-registry README）：
+          #   「preset 的服务提供方及其消费方必须共享同一个 cordis:group 隔离 realm」
+          # 挂载审计（lib/types/mount.js）：preset 子树里的服务如果存进 root realm
+          # ⇒ 泄漏 ⇒ 整个 preset 挂载失败（设置页那张卡显示「加载失败」）。
+          # 所以本组用 cordis:group + isolate 把组内每一行提供的服务关进组内 realm：
+          # 组内互相可见，组外（宿主）看不见 ⇒ 不泄漏。
           #
-          # 依赖 tools + shell:前者是注册表本体;后者提供子进程执行,白拿超时/中止
-          # 判别、输出截断、凭据擦除 env、进程组 kill 升级 —— 不自己 spawn。
-          # §7.102: etscliBin / timeoutMs come from config/edge.json (etscli.*).
-          - id: etscli-tools
-            name: '@deepseek-harness-edge-agent/dsh-edge-agent/etscli-tools'
-            inject: [tools, shell]
-
-          - id: local-storage
-            name: '@deepseek-harness-edge-agent/dsh-edge-agent/local-storage'
+          # isolate 名单由 scripts/_isolate-edge-group.mjs 从源码推导
+          # （super(ctx,'<svc>')），门禁 scripts/verify-preset-isolate.ts 复核 ——
+          # 改源码后必须重跑本脚本。
+          - id: edge-stack
+            name: cordis:group
+            group: true
+            isolate:
+              edgeTools: true
+              functionCallExternal: true
+              httpApi: true
+              inputGuard: true
+              intentRouter: true
+              localStorage: true
+              modelRouter: true
+              privacyPolicy: true
+              promptGuard: true
+              realmSkillBridge: true
+              sanitizer: true
+              tcm: true
+              tdBus: true
             config:
-              # §7.102: root comes from config/edge.json (storage.root), default
-              # ~/.dsh-edge-agent/storage (2026-08-29 unified bundle root).
-              filename: storage.plain.jsonl
-              enablePIIRedaction: true
+              # tcm: prompt-guard injects this; must mount first
+              - id: tcm
+                name: '@deepseek-harness-edge-agent/dsh-edge-agent/tcm'
+                # §7.102: teeType / keyStorePath come from config/edge.json (tee.*).
 
-          # NOTE: `sessions` and `audit-log` are NOT mounted — `dsh-session`
-          # provides `sessions` upstream and nothing provides `auditLog` so
-          # audit-log is mounted below under its own name.
-          #
-          # ── sessions provider ── dsh-base already mounts the same package
-          # under id `session-persistence-jsonl` (root: `dshHomePath('sessions')`),
-          # which exposes `sessionPersistence`. Previously we declared a second
-          # mount under id `sessions` — that caused a duplicate `provide()` call
-          # and a hard boot failure after the loader upgrade in @xmanrui/dsh-im
-          # (commit b42c7db). Keep the upstream mount; our session-root env
-          # override (`DSH_EDGE_SESSION_ROOT`) flows through `dshHomePath()`.
+              # td-bus: http-api injects this; must mount before http-api.
+              # Config schema (`td-bus.ts`):
+              #   - windowSeconds: number             (sliding window in seconds; default 60)
+              #   - thresholds.cloudRequestsPerMinute: number (default 20)
+              #   - blockLevel: 'elevated' | 'high' | 'critical'  (default 'critical')
+              # Block triggers at 4× threshold within windowSeconds.
+              - id: td-bus
+                name: '@deepseek-harness-edge-agent/dsh-edge-agent/td-bus'
+                inject: [auditLog, privacyPolicy]
+                config:
+                  windowSeconds: 60
+                  thresholds:
+                    cloudRequestsPerMinute: 8        # tighter than default 20 — escalate earlier
+                    failedSanitizationStreak: 3
+                    permissionDeniedStreak: 5
+                  blockLevel: critical                # block on critical (4× = 32/min)
 
-          - id: audit-log
-            name: '@deepseek-harness-edge-agent/dsh-edge-agent/audit-log'
-            config:
-              # §7.102: minLevel / flush / root come from config/edge.json
-              # (audit.*; root default = ~/.dsh-edge-agent/audit, 2026-08-29 统一).
-              ringBufferSize: 512
-              filename: audit.plain.jsonl
-              enablePIIRedaction: true
-              maxFileSizeBytes: 10485760  # 10MB
-              maxFileAgeDays: 7
-              maxRotatedFiles: 5
+              # realm-skill-bridge: realm-aware skill catalog filtering + tool gating.
+              # Must mount before http-api (which injects realmSkillBridge).
+              # §7.102: configPath / hot-reload knobs come from config/edge.json
+              # (privacy.realm*). Row carries no config.
+              - id: realm-skill-bridge
+                name: '@deepseek-harness-edge-agent/dsh-edge-agent/realm-skill-bridge'
+                inject: [auditLog, skills, edgeTools, tools]
 
-          # ── A1 端侧隐私安全防护 ─────────────────────────────────────────────────
-          - id: prompt-guard
-            name: '@deepseek-harness-edge-agent/dsh-edge-agent/prompt-guard'
-            inject: [auditLog, llm]
-            config:
-              maxInputLength: 10000
-              maxRequestsPerMinute: 20
-              enablePIIRedaction: true
-              enableInjectionDetection: true
-              enableRateLimit: true
-              # §7.102 (2026-10-21): 模型检测配置迁到 config/edge.json
-              # (stages.guard.*)。patch 不再读 process.env。
+              # §7.102: host/port from config/edge.json http.*, session/body caps
+              # from resources.*, bearer token from secrets.edgeApiKey — all filled
+              # fill-if-unset in http-api.ts apply(). The bare EDGE_API_KEY env stays
+              # a per-process override via edge-config's ENV_OVERRIDES. Row carries
+              # no config.
+              - id: http-api
+                name: '@deepseek-harness-edge-agent/dsh-edge-agent/http-api'
+                inject: [agents, intentRouter, auditLog, tdBus, realmSkillBridge, edgeTools]
 
-          # ── Phase 4: 隐私策略引擎 + 脱敏管线 ──────────────────────────────────
-          - id: privacy-policy
-            name: '@deepseek-harness-edge-agent/dsh-edge-agent/privacy-policy'
-            inject: [auditLog]
-            # §7.102: row carries no config — policyPath / hot-reload 由
-            # config/edge.json (privacy.*) 提供。
-              # 2026-09-03 (§7.36): 默认 policy path 改为单 bundle root `~/.dsh-edge-agent/`。
-              # §7.33 之前：fallback 到 `~/.dsh-edge-agent-web/`（web profile isolated root）。
-              # §7.36：user 决定合并 web + tui → 单 root。DSH CLI 一次只跑一个 profile，
-              # 所有 profile 共用同一份 policy 文件——跟 6 个 channel 数据合并一致。
-              # §7.102: policyPath 默认 ~/.dsh-edge-agent/privacy-policy.json ——
-              # 现由 config/edge.json (privacy.policyPath / policyHotReload /
-              # policyWatchMs) 提供，行内不再保留。
-              # 2026-09-03 (§7.36): 默认 policy path 单 bundle root（见 PROGRESS）。
+              - id: cloud-llm-adapter
+                name: '@deepseek-harness-edge-agent/dsh-edge-agent/cloud-llm-adapter'
+                inject: [llm, auditLog]
+                config:
+                  providers: [cloud-llm]
+                  # §7.100: 兜底链改为 `||`（空串视为未配置，根治 .env.sh export "" +
+                  # §7.102 (2026-10-21): 池配置 + delegate 旋钮迁到 config/edge.json
+                  # (llm.cloud.*)。patch 不再读 process.env —— 桌面 GUI 起进程时没有
+                  # 任何 DSH_EDGE_* 变量，读到的全是 undefined。
+                  #   baseUrl 空 = DELEGATE 模式：cloud-llm 路由转发到宿主 profile 已
+                  #   配置的模型提供商（GUI selection > live 宿主路由），key/凭据归
+                  #   宿主 adapter。显式配置 llm.cloud.baseUrl 才走自研直连。
+                  #   delegate=false → 禁用委托（LOCAL-only 部署；恢复 §7.35
+                  #   "云不可用→降级 LOCAL" 语义）
+                  #   delegateProvider → 显式指定目标路由 id
+                  #   delegateModel   → wire model override（压过 GUI selection.model）
 
-          - id: sanitizer-pipeline
-            name: '@deepseek-harness-edge-agent/dsh-edge-agent/sanitizer-pipeline'
-            inject: [privacyPolicy, auditLog]
-            config:
-              enableAutoDetection: true
-              maxReplacementsPerSession: 1024
-              # 明文 PII 映射表的生命周期兜底（2026-08-30）
-              # §7.102: sessionTtlMs / maxSessions / sweepIntervalMs 迁到
-              # config/edge.json (privacy.*)。patch 不再读 process.env。
+              - id: local-llm-adapter
+                name: '@deepseek-harness-edge-agent/dsh-edge-agent/local-llm-adapter'
+                inject: [llm, auditLog]
+                config:
+                  providers: [local-llm]
+                  # §7.102: baseUrl / model / key / stripTools / enableThinking 全部
+                  # 来自 config/edge.json 的 llm.local.*。baseUrl 留空 = 不注册本地
+                  # LLM 路由（模型列表里不出现 local-llm，意图分类 / prompt-guard
+                  # 自动降级到关键词 / 正则规则档）。
 
-          # ── Phase 5 (§7.82): Tavily → 博查 AI → DeepSeek 三级 web_search 兜底链
-          # 注册一个 aggregator search provider(id='tavily-bocha-fallback')到 ctx.web;
-          # web.searchProvider = 'tavily-bocha-fallback' 即指向它。任一 tier 抛错
-          # (非 2xx / 网络 / JSON 解析) → 下一 tier 接续; 三 tier 都失败 →
-          # WEB_PROVIDER_UNAVAILABLE。配置走裸名 env (§7.75: .env + .env.sh source
-          # chain;避开 DSH 黑名单 DSH_/XDG_/DYLD_/BASH_FUNC_): TAVILY_API_KEY /
-          # BOCHA_API_KEY / DEEPSEEK_API_KEY,都在 repo .env 里跟其他 secret 同地。
-          - id: web-search-tavily-bocha
-            name: '@deepseek-harness-edge-agent/dsh-edge-agent/web-search-tavily-bocha'
-            inject: [web]
-            config:
-              reserved: {}
+              - id: model-router
+                name: '@deepseek-harness-edge-agent/dsh-edge-agent/model-router'
+                inject: [llm]
+                config:
+                  # §7.75: 删 defaultModel（v0.1.x 死字段，model-router.ts:143 构造时
+                  # 只接 localModels/cloudModels）。routing 由 intent 分类 + classificationProvider
+                  # 走 modelRouter.resolve() 决定，不靠"默认目标"变量
+                  localModels: [local-llm]
+                  cloudModels: [cloud-llm]
 
-          # ── Phase 6: input-guard 编排器 ────────────────────────────────────
-          # 端侧隐私安全管线的编排器。把安全/隐私/脱敏逻辑从 transport 层
-          # (http-api) 上移到 Agent Loop 的事件链上 (agent/pre-step + llm/stream)，
-          # 让所有入口（http-api / Web UI / CLI / SDK）自动统一走同一套管线。
-          #
-          # 组合调用：
-          #   promptGuard.checkInput   (攻击检测)
-          #   privacyPolicy.matchRouting (策略 REJECT)
-          #   intentRouter.classify    (LOCAL/CLOUD 路由)
-          #   sanitizer.sanitize       (仅 CLOUD：PII → 占位符)
-          #   sanitizer.desanitize     (输出方向：占位符 → PII)
-          #
-          # 设计详见：docs/input-guard-design.md
+              - id: intent-router
+                name: '@deepseek-harness-edge-agent/dsh-edge-agent/intent-router'
+                inject: [llm, auditLog, privacyPolicy]
+                config:
+                  # 2026-09-02: changed from CLOUD to SANITIZED. Old default failed open
+                  # (ambiguous requests → CLOUD LLM, raw data egress). New default routes
+                  # through input-guard sanitizer first; sanitize failure downgrades to
+                  # LOCAL (fail-closed). See intent-router.ts:60 schema default.
+                  defaultCategory: SANITIZED
+                  # §7.102 (2026-10-21): 分类器 + jev 全部参数迁到 config/edge.json
+                  # (stages.intent.* / jev.*)。patch 不再读 process.env。
 
-          # ── §7.93.1(2026-09-25 通用化):function-call-external 插件
-          # 把 tool-call prefill 抽象成 ExternalToolCaller 接口(healthCheck +
-          # extract);当前实现 = NeedleHttpCaller(cactus-needle 3.0.1,API.md v1.1)。
-          # 后续替换 = 新增 class implements ExternalToolCaller + 改 apply() 一行。
-          # **必须早于 input-guard apply**:本插件是 agent/pre-step waterfall 的最
-          # 外层 listener(await next() 串到 input-guard,等 input-guard 的 classify +
-          # setSessionRealm 完成后才返回,我们才看得到本 turn 的 realm)。
-          # 否则读到 undefined 或上 turn 旧 realm → 触发跳过路径。
-          # cordis waterfall 注册顺序 = 执行顺序(shift 第一个 = 最外层)。
-          - id: function-call-external
-            name: '@deepseek-harness-edge-agent/dsh-edge-agent/function-call-external'
-            inject: [auditLog, realmSkillBridge, tools]
-            # §7.102: row carries no config — 全部旋钮由 config/edge.json
-            # (functionCallExternal.*) 提供。默认关(user 终裁)。
-              # §7.102 (2026-10-21): 全部旋钮迁到 config/edge.json
-              # (functionCallExternal.*)。patch 不再读 process.env。
-              # 当前实现 = cactus-needle 3.0.1:GET /health + POST /extract(stateless 无 /reset;
-              # P1 中文数字归一化服务端内置;client 不做翻译,管什么语种 caller 自带 cn_grounding)。
-              # functionCallExternalEnabled: !!js process.env.DSH_EDGE_FUNCTION_CALL_EXTERNAL_ENABLED === 'true'
-              # functionCallExternalUrl: !!js process.env.DSH_EDGE_FUNCTION_CALL_EXTERNAL_URL ?? 'http://127.0.0.1:8081'
-              # 实测 /extract 在 caller 当前 LAN 引擎下需 4-7s(dry-run #1 标 376-548ms 是
-              # API.md spec 理想值,实际 25-30x degradation);10s 给单请求 1x 余量。
-              # 后续引擎恢复 < 1s 时再调低。
-              # functionCallExternalTimeoutMs: !!js parseInt(process.env.DSH_EDGE_FUNCTION_CALL_EXTERNAL_TIMEOUT_MS ?? '10000', 10)
-              # functionCallExternalConfidenceThreshold: !!js parseFloat(process.env.DSH_EDGE_FUNCTION_CALL_EXTERNAL_CONFIDENCE_THRESHOLD ?? '0.5')
-              # §7.92.6:circuit breaker(单 fetch 模式,open-on-first-failure,jev
-              # all-batches 失败才开的等价位)。dry-run #1 验证 timeout 几乎全中,
-              # breaker 必须计入 timeout。
-              # functionCallExternalBreakerTtlMs: !!js parseInt(process.env.DSH_EDGE_FUNCTION_CALL_EXTERNAL_BREAKER_TTL_MS ?? '30000', 10)
-              # §7.92.7:boot probe + 周期恢复 probe(GET /health)
-              # functionCallExternalBootProbeEnabled: !!js process.env.DSH_EDGE_FUNCTION_CALL_EXTERNAL_BOOT_PROBE_ENABLED !== 'false'
-              # functionCallExternalBootProbeTimeoutMs: !!js parseInt(process.env.DSH_EDGE_FUNCTION_CALL_EXTERNAL_BOOT_PROBE_TIMEOUT_MS ?? '2000', 10)
-              # functionCallExternalBreakerProbeMs: !!js parseInt(process.env.DSH_EDGE_FUNCTION_CALL_EXTERNAL_BREAKER_PROBE_MS ?? '5000', 10)
-              # functionCallExternalProbeTimeoutMs: !!js parseInt(process.env.DSH_EDGE_FUNCTION_CALL_EXTERNAL_PROBE_TIMEOUT_MS ?? '2000', 10)
-          - id: input-guard
-            name: '@deepseek-harness-edge-agent/dsh-edge-agent/input-guard'
-            # §7.123 (2026-10-27): realmSkillBridge was missing here while
-            # input-guard.ts:35-39 declares it MANDATORY ("必须 inject realmSkillBridge，
-            # 否则 this.ctx.realmSkillBridge 永远 undefined"). With it absent,
-            # setSessionRealm() was silently skipped → the session realm was never
-            # registered → the Layer-3 tools/pre-execute gate had no realm to
-            # enforce against (fail-open). The row now matches the plugin's own
-            # inject declaration.
-            inject: [promptGuard, privacyPolicy, intentRouter, sanitizer, auditLog, realmSkillBridge]
-            config:
-              # §7.102 (2026-10-21): 开关 + 降级 model 迁到 config/edge.json
-              # (privacy.* + llm.local.model)。patch 不再读 process.env。
-              #   enableInputGuard          → 全局 hook 开关
-              #   rejectOnPolicyViolation   → 攻击 / privacy-policy REJECT 阻断 step
-              #   downgradeOnSanitizeFailure → sanitize 失败降级 LOCAL（fail-closed）
-              #   localModel                → 降级目标 model，跟随 LOCAL 池
-              sanitizeLocalTraffic: false
+              # NOTE: id renamed from `tools` to avoid colliding with dsh-base.
+              - id: edge-tools-registry
+                name: '@deepseek-harness-edge-agent/dsh-edge-agent/tools'
+                inject: [auditLog, tools]
+                config:
+                  defaultRateLimitPerMinute: 60
+                  enableToolIsolation: true
+                  presentationMode: native
+
+              # §7.98:14 个**只读** etscli 子命令注册进 ctx.tools。
+              #
+              # 注册即安全边界:不在注册表里的工具不会出现在
+              # realm-skill-bridge.getToolSchemasForExternal() 的产物里,needle 物理上选不中,
+              # ctx.tools.execute() 也没法执行它。写/删类工具(auth logout / fs rm /
+              # file delete / chat send / migrate verify …)一律**不注册**,排除依据见
+              # src/dsh-adapter/etscli-tools.ts 模块头。
+              #
+              # 依赖 tools + shell:前者是注册表本体;后者提供子进程执行,白拿超时/中止
+              # 判别、输出截断、凭据擦除 env、进程组 kill 升级 —— 不自己 spawn。
+              # §7.102: etscliBin / timeoutMs come from config/edge.json (etscli.*).
+              - id: etscli-tools
+                name: '@deepseek-harness-edge-agent/dsh-edge-agent/etscli-tools'
+                inject: [tools, shell]
+
+              - id: local-storage
+                name: '@deepseek-harness-edge-agent/dsh-edge-agent/local-storage'
+                config:
+                  # §7.102: root comes from config/edge.json (storage.root), default
+                  # ~/.dsh-edge-agent/storage (2026-08-29 unified bundle root).
+                  filename: storage.plain.jsonl
+                  enablePIIRedaction: true
+
+
+              # ── A1 端侧隐私安全防护 ─────────────────────────────────────────────────
+              - id: prompt-guard
+                name: '@deepseek-harness-edge-agent/dsh-edge-agent/prompt-guard'
+                inject: [auditLog, llm]
+                config:
+                  maxInputLength: 10000
+                  maxRequestsPerMinute: 20
+                  enablePIIRedaction: true
+                  enableInjectionDetection: true
+                  enableRateLimit: true
+                  # §7.102 (2026-10-21): 模型检测配置迁到 config/edge.json
+                  # (stages.guard.*)。patch 不再读 process.env。
+
+              # ── Phase 4: 隐私策略引擎 + 脱敏管线 ──────────────────────────────────
+              - id: privacy-policy
+                name: '@deepseek-harness-edge-agent/dsh-edge-agent/privacy-policy'
+                inject: [auditLog]
+                # §7.102: row carries no config — policyPath / hot-reload 由
+                # config/edge.json (privacy.*) 提供。
+                  # 2026-09-03 (§7.36): 默认 policy path 改为单 bundle root `~/.dsh-edge-agent/`。
+                  # §7.33 之前：fallback 到 `~/.dsh-edge-agent-web/`（web profile isolated root）。
+                  # §7.36：user 决定合并 web + tui → 单 root。DSH CLI 一次只跑一个 profile，
+                  # 所有 profile 共用同一份 policy 文件——跟 6 个 channel 数据合并一致。
+                  # §7.102: policyPath 默认 ~/.dsh-edge-agent/privacy-policy.json ——
+                  # 现由 config/edge.json (privacy.policyPath / policyHotReload /
+                  # policyWatchMs) 提供，行内不再保留。
+                  # 2026-09-03 (§7.36): 默认 policy path 单 bundle root（见 PROGRESS）。
+
+              - id: sanitizer-pipeline
+                name: '@deepseek-harness-edge-agent/dsh-edge-agent/sanitizer-pipeline'
+                inject: [privacyPolicy, auditLog]
+                config:
+                  enableAutoDetection: true
+                  maxReplacementsPerSession: 1024
+                  # 明文 PII 映射表的生命周期兜底（2026-08-30）
+                  # §7.102: sessionTtlMs / maxSessions / sweepIntervalMs 迁到
+                  # config/edge.json (privacy.*)。patch 不再读 process.env。
+
+              # ── Phase 5 (§7.82): Tavily → 博查 AI → DeepSeek 三级 web_search 兜底链
+              # 注册一个 aggregator search provider(id='tavily-bocha-fallback')到 ctx.web;
+              # web.searchProvider = 'tavily-bocha-fallback' 即指向它。任一 tier 抛错
+              # (非 2xx / 网络 / JSON 解析) → 下一 tier 接续; 三 tier 都失败 →
+              # WEB_PROVIDER_UNAVAILABLE。配置走裸名 env (§7.75: .env + .env.sh source
+              # chain;避开 DSH 黑名单 DSH_/XDG_/DYLD_/BASH_FUNC_): TAVILY_API_KEY /
+              # BOCHA_API_KEY / DEEPSEEK_API_KEY,都在 repo .env 里跟其他 secret 同地。
+              - id: web-search-tavily-bocha
+                name: '@deepseek-harness-edge-agent/dsh-edge-agent/web-search-tavily-bocha'
+                inject: [web]
+                config:
+                  reserved: {}
+
+
+              # ── Phase 6: input-guard 编排器 ────────────────────────────────────
+              # 端侧隐私安全管线的编排器。把安全/隐私/脱敏逻辑从 transport 层
+              # (http-api) 上移到 Agent Loop 的事件链上 (agent/pre-step + llm/stream)，
+              # 让所有入口（http-api / Web UI / CLI / SDK）自动统一走同一套管线。
+              #
+              # 组合调用：
+              #   promptGuard.checkInput   (攻击检测)
+              #   privacyPolicy.matchRouting (策略 REJECT)
+              #   intentRouter.classify    (LOCAL/CLOUD 路由)
+              #   sanitizer.sanitize       (仅 CLOUD：PII → 占位符)
+              #   sanitizer.desanitize     (输出方向：占位符 → PII)
+              #
+              # 设计详见：docs/input-guard-design.md
+              # ── §7.93.1(2026-09-25 通用化):function-call-external 插件
+              # 把 tool-call prefill 抽象成 ExternalToolCaller 接口(healthCheck +
+              # extract);当前实现 = NeedleHttpCaller(cactus-needle 3.0.1,API.md v1.1)。
+              # 后续替换 = 新增 class implements ExternalToolCaller + 改 apply() 一行。
+              # **必须早于 input-guard apply**:本插件是 agent/pre-step waterfall 的最
+              # 外层 listener(await next() 串到 input-guard,等 input-guard 的 classify +
+              # setSessionRealm 完成后才返回,我们才看得到本 turn 的 realm)。
+              # 否则读到 undefined 或上 turn 旧 realm → 触发跳过路径。
+              # cordis waterfall 注册顺序 = 执行顺序(shift 第一个 = 最外层)。
+              - id: function-call-external
+                name: '@deepseek-harness-edge-agent/dsh-edge-agent/function-call-external'
+                inject: [auditLog, realmSkillBridge, tools]
+                # §7.102: row carries no config — 全部旋钮由 config/edge.json
+                # (functionCallExternal.*) 提供。默认关(user 终裁)。
+                  # §7.102 (2026-10-21): 全部旋钮迁到 config/edge.json
+                  # (functionCallExternal.*)。patch 不再读 process.env。
+                  # 当前实现 = cactus-needle 3.0.1:GET /health + POST /extract(stateless 无 /reset;
+                  # P1 中文数字归一化服务端内置;client 不做翻译,管什么语种 caller 自带 cn_grounding)。
+                  # functionCallExternalEnabled: !!js process.env.DSH_EDGE_FUNCTION_CALL_EXTERNAL_ENABLED === 'true'
+                  # functionCallExternalUrl: !!js process.env.DSH_EDGE_FUNCTION_CALL_EXTERNAL_URL ?? 'http://127.0.0.1:8081'
+                  # 实测 /extract 在 caller 当前 LAN 引擎下需 4-7s(dry-run #1 标 376-548ms 是
+                  # API.md spec 理想值,实际 25-30x degradation);10s 给单请求 1x 余量。
+                  # 后续引擎恢复 < 1s 时再调低。
+                  # functionCallExternalTimeoutMs: !!js parseInt(process.env.DSH_EDGE_FUNCTION_CALL_EXTERNAL_TIMEOUT_MS ?? '10000', 10)
+                  # functionCallExternalConfidenceThreshold: !!js parseFloat(process.env.DSH_EDGE_FUNCTION_CALL_EXTERNAL_CONFIDENCE_THRESHOLD ?? '0.5')
+                  # §7.92.6:circuit breaker(单 fetch 模式,open-on-first-failure,jev
+                  # all-batches 失败才开的等价位)。dry-run #1 验证 timeout 几乎全中,
+                  # breaker 必须计入 timeout。
+                  # functionCallExternalBreakerTtlMs: !!js parseInt(process.env.DSH_EDGE_FUNCTION_CALL_EXTERNAL_BREAKER_TTL_MS ?? '30000', 10)
+                  # §7.92.7:boot probe + 周期恢复 probe(GET /health)
+                  # functionCallExternalBootProbeEnabled: !!js process.env.DSH_EDGE_FUNCTION_CALL_EXTERNAL_BOOT_PROBE_ENABLED !== 'false'
+                  # functionCallExternalBootProbeTimeoutMs: !!js parseInt(process.env.DSH_EDGE_FUNCTION_CALL_EXTERNAL_BOOT_PROBE_TIMEOUT_MS ?? '2000', 10)
+                  # functionCallExternalBreakerProbeMs: !!js parseInt(process.env.DSH_EDGE_FUNCTION_CALL_EXTERNAL_BREAKER_PROBE_MS ?? '5000', 10)
+                  # functionCallExternalProbeTimeoutMs: !!js parseInt(process.env.DSH_EDGE_FUNCTION_CALL_EXTERNAL_PROBE_TIMEOUT_MS ?? '2000', 10)
+              - id: input-guard
+                name: '@deepseek-harness-edge-agent/dsh-edge-agent/input-guard'
+                # §7.123 (2026-10-27): realmSkillBridge was missing here while
+                # input-guard.ts:35-39 declares it MANDATORY ("必须 inject realmSkillBridge，
+                # 否则 this.ctx.realmSkillBridge 永远 undefined"). With it absent,
+                # setSessionRealm() was silently skipped → the session realm was never
+                # registered → the Layer-3 tools/pre-execute gate had no realm to
+                # enforce against (fail-open). The row now matches the plugin's own
+                # inject declaration.
+                inject: [promptGuard, privacyPolicy, intentRouter, sanitizer, auditLog, realmSkillBridge]
+                config:
+                  # §7.102 (2026-10-21): 开关 + 降级 model 迁到 config/edge.json
+                  # (privacy.* + llm.local.model)。patch 不再读 process.env。
+                  #   enableInputGuard          → 全局 hook 开关
+                  #   rejectOnPolicyViolation   → 攻击 / privacy-policy REJECT 阻断 step
+                  #   downgradeOnSanitizeFailure → sanitize 失败降级 LOCAL（fail-closed）
+                  #   localModel                → 降级目标 model，跟随 LOCAL 池
+                  sanitizeLocalTraffic: false

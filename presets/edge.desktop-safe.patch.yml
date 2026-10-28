@@ -9,17 +9,57 @@
 #               delegation / subagent …
 #   ptc / minimal / cordis —— 另外三种
 #
-# 本文件声明**边缘模式**：标准模式的插件列表 **+ 本项目的全部功能**（隐私
-# 护栏、意图判定、路由决策、PII 脱敏、两个 LLM adapter、Realm 闸门、威胁总线、
-# 审计链、Edge 面板）。主人裁决（2026-10-28）：
+# 本文件声明**边缘模式**：标准模式的插件列表 **+ 本项目的功能**（隐私护栏、
+# 意图判定、路由决策、PII 脱敏、两个 LLM adapter、Realm 闸门、威胁总线、
+# Edge 面板）。主人裁决（2026-10-28）：
 #
 #   「我需要在 dsh 桌面上出一新的 agent 工作时间，叫做边缘模式，功能是在
 #     标准模式之上增加本项目的功能」
 #   「只有选择 边缘模式 才会出现 edge tab」
 #
-# 所以本 bundle 的 **18 行插件全部在这里** —— 连 Edge 面板（edge-context-view）
-# 与它的 webview client 注册（裸包名行）一起。切回标准模式 ⇒ 本 bundle 的
-# 插件一行都不挂载 ⇒ 标准模式是**纯 DSH**，连 Edge tab 都没有。
+# ## 本项目的插件行在哪（§7.136 修正）
+#
+# 行为面（护栏 / 判定 / 路由 / 脱敏 / Realm / Edge 面板）**在这里**，并且整体
+# 关进一个 `cordis:group` + `isolate` 隔离 realm —— 宿主规则（dsh-agent-preset-
+# registry README）：「preset 的服务提供方及其消费方必须共享同一个 cordis:group
+# 隔离 realm」。挂载审计（lib/types/mount.js）会把「挂在 preset 子树里却把服务
+# 存进 root realm」的行判为泄漏 ⇒ 整个 preset 挂载失败 ⇒ 设置页那张卡显示
+# 「加载失败」。这正是 §7.135 那版预设加载失败的原因。
+#
+# **三行必须留在宿主树**（bundle 顶层 insert 段）—— 宿主机制的限制，不是偏好：
+#
+#   dsh-edge-agent（裸包名行）—— 宿主的 client-modules 只扫**宿主 Loader 的
+#     entries**（dsh-client-modules/lib/index.js：「scans the host Loader's
+#     entries」；processOne() 遍历 `this.ctx.loader.entries()`），preset 的插件树
+#     是独立的 EntryTree、不在其中 ⇒ Edge tab 的浏览器半边只有从宿主树里的裸
+#     包名行才能被发现。
+#   audit-log / file-logger —— 裸包名行 inject ['auditLog']，且它 apply() 里的
+#     installFileLogger 会先占住 `fileLogger` 服务名 ⇒ 两者必须在 root realm，
+#     且 file-logger 行必须比裸包名行更早装载（否则桌面 ops log 的文件名会从
+#     `dsh-edge-agent-desktop.log` 退回 `dsh-edge-agent.log`）。
+#
+# ## 「切回标准模式会怎样」（§7.136 实测结论）
+#
+# 宿主的 preset 是**启动即挂载**的（dsh-agent-preset README：「声明会提前加载」）：
+# 声明过的 preset 在启动时都建好插件树，选哪个只决定 **Agent 绑到哪个 scope**
+# （可见的工具 / 提示词 / 服务）。所以：
+#
+#   * 本项目的插件在任何工作方式下都已挂载 —— 切回标准模式**不会**卸载它们；
+#     让标准模式变「纯宿主」的是**事件作用域**，不是卸载：
+#   * 我们的 hook（agent/pre-step / agent/request / system-prompt/assemble /
+#     tools/pre-execute / tools/result）**不再带 `{ global: true }`**。宿主的
+#     事件过滤（cordis EventsService.dispatch：
+#     `hook.global || !filter || filter.call(thisArg, hook.ctx)`）按 scope 链
+#     判定 —— 监听器自己的 scope 必须是派发 scope 或其祖先；Agent 的 scope 父
+#     链接到所选 preset 的代际 scope（dsh-agent-preset-registry 的
+#     `bindScopeParent`），事件沿 scope 链向上流、不向下 ⇒ 标准模式的 Agent
+#     收不到边缘模式 preset 里的 hook ⇒ 标准模式不经过本项目的护栏；
+#   * `llm/stream` 保留 `{ global: true }`：该事件不带 scope 载体（去掉也不
+#     生效），且无 pre-step state 时恒直通；
+#   * Edge tab 的浏览器半边是全局的（客户端只有一张全局 boot 图，tab 类型是
+#     全局注册表），所以「只有边缘模式才有 edge tab」由**客户端按 roster 的
+#     默认 preset 注册/注销 tab 类型**实现（src/client/index.ts，5s 轮询
+#     `agentPresets.list()` 的 `isDefault`）。
 #
 # ## 为什么标准模式的行是抄来的
 #
@@ -45,7 +85,7 @@
         id: edge
         name: 边缘模式
         description: 标准模式 + 本项目的端侧隐私能力（意图判定 / 路由决策 / PII 脱敏 / Realm 闸门）
-        order: 2
+        order: 5
         plugins:
           - id: persona
             name: '@deepseek-ai/dsh-persona'
@@ -134,7 +174,17 @@
                 config:
                   provider: spawn
                   toolName: subagent
-                  modelSelectionSettings: true
+                  # §7.136：**故意不写** `modelSelectionSettings: true`。
+                  # 旧宿主（桌面版 asar 里的 dsh-tool-subagent）的 per-agent 安装
+                  # 路径在 `tools/change` 重投 `tools` 服务时会再次执行 install()
+                  # → 同一 scope 里重复注册 'subagent' ⇒
+                  # `tool "subagent" is already registered in this scope`。
+                  # 不带 modelSelectionSettings 时该行走「挂载时注册一次」的路
+                  # （注册进 preset 自己的 scope 层）⇒ 无重复、无报错。
+                  # 代价：边缘模式没有「子 Agent 选模型」参数（宿主 base 层
+                  # 的全局 tool-subagent 行仍提供 subagent / subagent_fork
+                  # 工具本体，模型可见面不变）。
+                  # 上游新版 tool-subagent 已改为挂载时注册一次，问题消失。
               - id: tool-subagent-fork
                 name: '@deepseek-ai/dsh-tool-subagent'
                 config:
@@ -166,204 +216,199 @@
             name: '@deepseek-ai/dsh-plugin-market/tools'
             disabled: true
 
-          # ── 边缘模式：本项目的功能（从 bundle 顶层 insert 段迁入，§7.135）─────
-          # 迁移的理由：preset 的 plugins 是该工作方式的**完整**列表；留在顶层
-          # insert 段的行对**所有**工作方式生效 —— 那样切回标准模式时 Edge 的
-          # 行为依然在跑，「标准模式 + 本项目功能」就成了空话。
-          # 观测面（dsh-edge-agent / file-logger / audit-log / edge-context-view）
-          # 刻意留在顶层：它们不改行为，主人任何时候都该看得见审计与面板。
-          - id: dsh-edge-agent
-            name: '@deepseek-harness-edge-agent/dsh-edge-agent'
-
-          # Ops log exporter. Mount first so later plugin logs land on disk.
-          - id: file-logger
-            name: '@deepseek-harness-edge-agent/dsh-edge-agent/file-logger'
-            config:
-              # §7.102 "one config file": only profile-specific statics live here.
-              # root / level / rotation come from config/edge.json (audit.*);
-              # no process.env reads — the desktop GUI never had them.
-              filename: dsh-edge-agent-desktop.log
-              flushIntervalMs: 1000
-              queueCapacity: 10000
-              maxFileSizeBytes: 52428800
-
-          # Stub TCM. Real crypto remains future work; keep shape stable.
-          - id: tcm
-            name: '@deepseek-harness-edge-agent/dsh-edge-agent/tcm'
-            # §7.102 "one config file": teeType / keyStorePath come from
-            # config/edge.json (tee.*) inside the plugin — no row config.
-
-          # Security ledger. Default root stays isolated under ~/.dsh-edge-agent.
-          - id: audit-log
-            name: '@deepseek-harness-edge-agent/dsh-edge-agent/audit-log'
-            config:
-              # §7.102 "one config file": minLevel / flush / root come from
-              # config/edge.json (audit.*). Only static wiring stays here.
-              ringBufferSize: 512
-              filename: audit.plain.jsonl
-              enablePIIRedaction: true
-              maxFileSizeBytes: 10485760
-              maxFileAgeDays: 7
-              maxRotatedFiles: 5
-
-          # Privacy policy engine. Missing file falls back to built-in v1.6 policy.
-          - id: privacy-policy
-            name: '@deepseek-harness-edge-agent/dsh-edge-agent/privacy-policy'
-            inject: [auditLog]
-            # §7.102 "one config file": policyPath / hot-reload knobs come from
-            # config/edge.json (privacy.*).
-
-          # Threat bus. Thresholds come from config/edge.json (threat.*) — §7.102.
-          # Desktop-safe keeps the looser default threshold.
-          - id: td-bus
-            name: '@deepseek-harness-edge-agent/dsh-edge-agent/td-bus'
-            inject: [auditLog, privacyPolicy]
-            config:
-              windowSeconds: 60
-              thresholds:
-                failedSanitizationStreak: 3
-                permissionDeniedStreak: 5
-
-          # Edge tool registry. Do not isolate tools by default in desktop mode.
-          - id: edge-tools-registry
-            name: '@deepseek-harness-edge-agent/dsh-edge-agent/tools'
-            inject: [auditLog, tools]
-            config:
-              defaultRateLimitPerMinute: 60
-              enableToolIsolation: false
-              presentationMode: native
-
-          # Realm-aware skill/tool filtering. Uses the shared realm config file.
-          - id: realm-skill-bridge
-            name: '@deepseek-harness-edge-agent/dsh-edge-agent/realm-skill-bridge'
-            inject: [auditLog, skills, edgeTools, tools]
-            # §7.102 "one config file": configPath / hot-reload knobs come from
-            # config/edge.json (privacy.realm*).
-
-          # Input guard. Model-assisted detection config comes from
-          # config/edge.json (stages.guard.*) — §7.102.
-          - id: prompt-guard
-            name: '@deepseek-harness-edge-agent/dsh-edge-agent/prompt-guard'
-            inject: [privacyPolicy, auditLog, llm]
-            config:
-              maxInputLength: 10000
-              maxRequestsPerMinute: 20
-              enablePIIRedaction: true
-              enableInjectionDetection: true
-              enableRateLimit: true
-
-          # Reversible PII sanitizer. Session limits come from
-          # config/edge.json (privacy.*) — §7.102.
-          - id: sanitizer-pipeline
-            name: '@deepseek-harness-edge-agent/dsh-edge-agent/sanitizer-pipeline'
-            inject: [privacyPolicy, auditLog]
-            config:
-              enableAutoDetection: true
-              maxReplacementsPerSession: 1024
-
-          # Intent router. Classifier config comes from config/edge.json
-          # (stages.intent.*) — §7.102. Classifier provider may be absent;
-          # fail-open to keywords.
-          - id: intent-router
-            name: '@deepseek-harness-edge-agent/dsh-edge-agent/intent-router'
-            inject: [llm, auditLog, privacyPolicy]
-
-          # §7.100 cloud-llm = DELEGATE route. baseUrl deliberately absent →
-          # Schema default '' → every CLOUD/SANITIZED turn is forwarded to the
-          # host profile's own configured model provider (GUI picker wins; probe
-          # falls back to live host routes). Credential resolution stays entirely
-          # on the host side — this bundle reads no secrets.
-          # §7.102: the pool + delegate knobs come from config/edge.json
-          # (llm.cloud.*) — the patch row no longer reads process.env.
-          - id: cloud-llm-adapter
-            name: '@deepseek-harness-edge-agent/dsh-edge-agent/cloud-llm-adapter'
-            inject: [llm, auditLog]
-            config:
-              providers: [cloud-llm]
-
-          # §7.102 (2026-10-21): local-LLM configuration moved OUT of the cordis
-          # patch and into config/edge.json (llm.local.*). The patch row no
-          # longer reads process.env — the desktop GUI starts the bundle without
-          # sourcing any .env.sh, so every `process.env.DSH_EDGE_LOCAL_LLM_*`
-          # lookup here resolved to undefined and the adapter fell back to a
-          # hard-coded 127.0.0.1:8080 that collided with unrelated daemons.
+          # ── 边缘模式：本项目的功能（§7.135 + §7.136）──────────────────────
           #
-          # The adapter now reads the pool from config/edge.json itself:
-          #   - baseUrl unset  → the local-LLM route is not registered at all, the
-          #     model registry never offers `local-llm`, and the internal
-          #     intent/guard stages stay on their keyword/regex tier.
-          #   - Internal LLM stages (intent classification / guard model-detect)
-          #     point here EXCLUSIVELY per the 2026-10-18 privacy ruling; they
-          #     never target cloud-llm.
-          - id: local-llm-adapter
-            name: '@deepseek-harness-edge-agent/dsh-edge-agent/local-llm-adapter'
-            inject: [llm, auditLog]
-            config:
-              providers: [local-llm]
-
-          # Route catalog so /v1-style enumeration & intent-router soft-dep see
-          # both routes with registry truth (§7.100 isAvailable).
-          - id: model-router
-            name: '@deepseek-harness-edge-agent/dsh-edge-agent/model-router'
-            inject: [llm]
-            config:
-              localModels: [local-llm]
-              cloudModels: [cloud-llm]
-
-          # Optional external tool caller; disabled by default. Knobs come from
-          # config/edge.json (functionCallExternal.*) — §7.102.
-          - id: function-call-external
-            name: '@deepseek-harness-edge-agent/dsh-edge-agent/function-call-external'
-            inject: [auditLog, realmSkillBridge, tools]
-
-          # Orchestrator. This is the actual global hook installer.
-          - id: input-guard
-            name: '@deepseek-harness-edge-agent/dsh-edge-agent/input-guard'
-            inject: [promptGuard, privacyPolicy, intentRouter, sanitizer, auditLog, realmSkillBridge]
-            config:
-              sanitizeLocalTraffic: false
-
-          # §7.101 Edge tab host half: folds the audit stream into the four panel
-          # row-lists + session summary and serves them on /api/dsh-edge/context.
-          # Hard dep is auditLog only (the sole live data source — see
-          # docs/notes/dsh-context-walkthrough.md ruling E); `connection` arms
-          # deferred, so headless profiles mount the plugin without the route.
+          # 宿主规则（dsh-agent-preset-registry README）：
+          #   「preset 的服务提供方及其消费方必须共享同一个 cordis:group 隔离 realm」
+          # 挂载审计（lib/types/mount.js）：preset 子树里的服务如果存进 root realm
+          # ⇒ 泄漏 ⇒ 整个 preset 挂载失败（设置页那张卡显示「加载失败」）。
+          # 所以本组用 cordis:group + isolate 把组内每一行提供的服务关进组内 realm：
+          # 组内互相可见，组外（宿主）看不见 ⇒ 不泄漏。
           #
-          # §7.101.x (2026-10-20, fix #2, SUPERSEDED by fix #4 below): BARE
-          # package name was tried after v7's ERR_PACKAGE_PATH_NOT_EXPORTED,
-          # but the bare name makes the loader mount the MAIN entry plugin
-          # (`dsh-edge-agent` host half) under this `edge-context-view` entry
-          # id — and the host half's apply() (via plugin.ts) touched the
-          # undeclared `ctx.event` service, so cordis reported:
-          #   "1 entry did not activate edge-context-view:
-          #    Error: cannot get property 'event' without inject"
-          # (live evidence: desktop plugin-manager reload, 2026-10-20).
-          #
-          # §7.101.x (2026-10-20, fix #4): the REAL v7 bug was exports pointing
-          # at the removed dotted layout (lib/types/dsh-adapter/*). With the
-          # flat-layout move (tsconfig outDir -> lib, exports -> lib/dsh-adapter/*,
-          # package.json#main -> lib/index.js matching dsh-context), the subpath
-          # name resolves cleanly through exports['./edge-context-view'] to
-          # lib/dsh-adapter/edge-context-view.js (import-proven on this host).
-          # This row now mounts the ACTUAL view plugin (src declares
-          # inject = ['auditLog'] + deferred `connection` inside apply());
-          # plugin.ts's ctx.event emit is also best-effort-wrapped so the host
-          # half can never again poison this entry.
-          #
-          # §7.101.x (2026-10-20, fix #1, still active): no `inject:` / `config:`
-          # fields — cordis 0.2.1-rc.2 patch loader SILENTLY SKIPS both (Bug 1,
-          # docs/dev-notes/cordis-rc021-patch-loader.md). The plugin declares
-          # its deps in src; runtime knobs come from process.env inside apply().
-          - id: edge-context-view
-            name: '@deepseek-harness-edge-agent/dsh-edge-agent/edge-context-view'
+          # isolate 名单由 scripts/_isolate-edge-group.mjs 从源码推导
+          # （super(ctx,'<svc>')），门禁 scripts/verify-preset-isolate.ts 复核 ——
+          # 改源码后必须重跑本脚本。
+          - id: edge-stack
+            name: cordis:group
+            group: true
+            isolate:
+              edgeContextView: true
+              edgeTools: true
+              functionCallExternal: true
+              inputGuard: true
+              intentRouter: true
+              modelRouter: true
+              privacyPolicy: true
+              promptGuard: true
+              realmSkillBridge: true
+              sanitizer: true
+              tcm: true
+              tdBus: true
+            config:
+              # Stub TCM. Real crypto remains future work; keep shape stable.
+              - id: tcm
+                name: '@deepseek-harness-edge-agent/dsh-edge-agent/tcm'
+                # §7.102 "one config file": teeType / keyStorePath come from
+                # config/edge.json (tee.*) inside the plugin — no row config.
 
-          # §7.107 (2026-10-23): web search aggregator — Tavily → 博查 AI →
-          # DeepSeek（三级链，§7.82）。它的 Tier-3 DeepSeek 用
-          # `web_search_20250305` server tool 打 DeepSeek Messages API，凭据读
-          # config/edge.json 的 secrets.deepseekApiKey —— 不依赖环境变量，所以
-          # CLI 起的 profile（dsh-http）也能用。
-          - id: web-search-tavily-bocha
-            name: '@deepseek-harness-edge-agent/dsh-edge-agent/web-search-tavily-bocha'
+              # Privacy policy engine. Missing file falls back to built-in v1.6 policy.
+              - id: privacy-policy
+                name: '@deepseek-harness-edge-agent/dsh-edge-agent/privacy-policy'
+                inject: [auditLog]
+                # §7.102 "one config file": policyPath / hot-reload knobs come from
+                # config/edge.json (privacy.*).
+
+              # Threat bus. Thresholds come from config/edge.json (threat.*) — §7.102.
+              # Desktop-safe keeps the looser default threshold.
+              - id: td-bus
+                name: '@deepseek-harness-edge-agent/dsh-edge-agent/td-bus'
+                inject: [auditLog, privacyPolicy]
+                config:
+                  windowSeconds: 60
+                  thresholds:
+                    failedSanitizationStreak: 3
+                    permissionDeniedStreak: 5
+
+              # Edge tool registry. Do not isolate tools by default in desktop mode.
+              - id: edge-tools-registry
+                name: '@deepseek-harness-edge-agent/dsh-edge-agent/tools'
+                inject: [auditLog, tools]
+                config:
+                  defaultRateLimitPerMinute: 60
+                  enableToolIsolation: false
+                  presentationMode: native
+
+              # Realm-aware skill/tool filtering. Uses the shared realm config file.
+              - id: realm-skill-bridge
+                name: '@deepseek-harness-edge-agent/dsh-edge-agent/realm-skill-bridge'
+                inject: [auditLog, skills, edgeTools, tools]
+                # §7.102 "one config file": configPath / hot-reload knobs come from
+                # config/edge.json (privacy.realm*).
+
+              # Input guard. Model-assisted detection config comes from
+              # config/edge.json (stages.guard.*) — §7.102.
+              - id: prompt-guard
+                name: '@deepseek-harness-edge-agent/dsh-edge-agent/prompt-guard'
+                inject: [privacyPolicy, auditLog, llm]
+                config:
+                  maxInputLength: 10000
+                  maxRequestsPerMinute: 20
+                  enablePIIRedaction: true
+                  enableInjectionDetection: true
+                  enableRateLimit: true
+
+              # Reversible PII sanitizer. Session limits come from
+              # config/edge.json (privacy.*) — §7.102.
+              - id: sanitizer-pipeline
+                name: '@deepseek-harness-edge-agent/dsh-edge-agent/sanitizer-pipeline'
+                inject: [privacyPolicy, auditLog]
+                config:
+                  enableAutoDetection: true
+                  maxReplacementsPerSession: 1024
+
+              # Intent router. Classifier config comes from config/edge.json
+              # (stages.intent.*) — §7.102. Classifier provider may be absent;
+              # fail-open to keywords.
+              - id: intent-router
+                name: '@deepseek-harness-edge-agent/dsh-edge-agent/intent-router'
+                inject: [llm, auditLog, privacyPolicy]
+
+              # §7.100 cloud-llm = DELEGATE route. baseUrl deliberately absent →
+              # Schema default '' → every CLOUD/SANITIZED turn is forwarded to the
+              # host profile's own configured model provider (GUI picker wins; probe
+              # falls back to live host routes). Credential resolution stays entirely
+              # on the host side — this bundle reads no secrets.
+              # §7.102: the pool + delegate knobs come from config/edge.json
+              # (llm.cloud.*) — the patch row no longer reads process.env.
+              - id: cloud-llm-adapter
+                name: '@deepseek-harness-edge-agent/dsh-edge-agent/cloud-llm-adapter'
+                inject: [llm, auditLog]
+                config:
+                  providers: [cloud-llm]
+
+              # §7.102 (2026-10-21): local-LLM configuration moved OUT of the cordis
+              # patch and into config/edge.json (llm.local.*). The patch row no
+              # longer reads process.env — the desktop GUI starts the bundle without
+              # sourcing any .env.sh, so every `process.env.DSH_EDGE_LOCAL_LLM_*`
+              # lookup here resolved to undefined and the adapter fell back to a
+              # hard-coded 127.0.0.1:8080 that collided with unrelated daemons.
+              #
+              # The adapter now reads the pool from config/edge.json itself:
+              #   - baseUrl unset  → the local-LLM route is not registered at all, the
+              #     model registry never offers `local-llm`, and the internal
+              #     intent/guard stages stay on their keyword/regex tier.
+              #   - Internal LLM stages (intent classification / guard model-detect)
+              #     point here EXCLUSIVELY per the 2026-10-18 privacy ruling; they
+              #     never target cloud-llm.
+              - id: local-llm-adapter
+                name: '@deepseek-harness-edge-agent/dsh-edge-agent/local-llm-adapter'
+                inject: [llm, auditLog]
+                config:
+                  providers: [local-llm]
+
+              # Route catalog so /v1-style enumeration & intent-router soft-dep see
+              # both routes with registry truth (§7.100 isAvailable).
+              - id: model-router
+                name: '@deepseek-harness-edge-agent/dsh-edge-agent/model-router'
+                inject: [llm]
+                config:
+                  localModels: [local-llm]
+                  cloudModels: [cloud-llm]
+
+              # Optional external tool caller; disabled by default. Knobs come from
+              # config/edge.json (functionCallExternal.*) — §7.102.
+              - id: function-call-external
+                name: '@deepseek-harness-edge-agent/dsh-edge-agent/function-call-external'
+                inject: [auditLog, realmSkillBridge, tools]
+
+              # Orchestrator. This is the actual global hook installer.
+              - id: input-guard
+                name: '@deepseek-harness-edge-agent/dsh-edge-agent/input-guard'
+                inject: [promptGuard, privacyPolicy, intentRouter, sanitizer, auditLog, realmSkillBridge]
+                config:
+                  sanitizeLocalTraffic: false
+
+              # §7.101 Edge tab host half: folds the audit stream into the four panel
+              # row-lists + session summary and serves them on /api/dsh-edge/context.
+              # Hard dep is auditLog only (the sole live data source — see
+              # docs/notes/dsh-context-walkthrough.md ruling E); `connection` arms
+              # deferred, so headless profiles mount the plugin without the route.
+              #
+              # §7.101.x (2026-10-20, fix #2, SUPERSEDED by fix #4 below): BARE
+              # package name was tried after v7's ERR_PACKAGE_PATH_NOT_EXPORTED,
+              # but the bare name makes the loader mount the MAIN entry plugin
+              # (`dsh-edge-agent` host half) under this `edge-context-view` entry
+              # id — and the host half's apply() (via plugin.ts) touched the
+              # undeclared `ctx.event` service, so cordis reported:
+              #   "1 entry did not activate edge-context-view:
+              #    Error: cannot get property 'event' without inject"
+              # (live evidence: desktop plugin-manager reload, 2026-10-20).
+              #
+              # §7.101.x (2026-10-20, fix #4): the REAL v7 bug was exports pointing
+              # at the removed dotted layout (lib/types/dsh-adapter/*). With the
+              # flat-layout move (tsconfig outDir -> lib, exports -> lib/dsh-adapter/*,
+              # package.json#main -> lib/index.js matching dsh-context), the subpath
+              # name resolves cleanly through exports['./edge-context-view'] to
+              # lib/dsh-adapter/edge-context-view.js (import-proven on this host).
+              # This row now mounts the ACTUAL view plugin (src declares
+              # inject = ['auditLog'] + deferred `connection` inside apply());
+              # plugin.ts's ctx.event emit is also best-effort-wrapped so the host
+              # half can never again poison this entry.
+              #
+              # §7.101.x (2026-10-20, fix #1, still active): no `inject:` / `config:`
+              # fields — cordis 0.2.1-rc.2 patch loader SILENTLY SKIPS both (Bug 1,
+              # docs/dev-notes/cordis-rc021-patch-loader.md). The plugin declares
+              # its deps in src; runtime knobs come from process.env inside apply().
+              - id: edge-context-view
+                name: '@deepseek-harness-edge-agent/dsh-edge-agent/edge-context-view'
+
+              # §7.107 (2026-10-23): web search aggregator — Tavily → 博查 AI →
+              # DeepSeek（三级链，§7.82）。它的 Tier-3 DeepSeek 用
+              # `web_search_20250305` server tool 打 DeepSeek Messages API，凭据读
+              # config/edge.json 的 secrets.deepseekApiKey —— 不依赖环境变量，所以
+              # CLI 起的 profile（dsh-http）也能用。
+              - id: web-search-tavily-bocha
+                name: '@deepseek-harness-edge-agent/dsh-edge-agent/web-search-tavily-bocha'
 
       # ── web capability: DEEPSEEK Search + Fetch（§7.107）──────────────────────
       #

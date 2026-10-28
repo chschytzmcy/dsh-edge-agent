@@ -6,11 +6,15 @@
 
 ```ts
 // A. 事件钩子 ── 订阅 dsh 流程事件
-ctx.on('agent/pre-step', handler, { global: true })
+// §7.136：agent/* 与 tools/* 的钩子**不再带 `{ global: true }`** —— 它们是
+// scope 绑定的，只在**边缘模式 preset** 的 Agent 上生效（宿主按 scope 链
+// 过滤：监听器自己的 scope 必须是派发 scope 或其祖先）。只有 llm/stream
+// 仍是全局的（该事件不带 scope 载体）。
+ctx.on('agent/pre-step', handler)          // scope 绑定
+ctx.on('agent/request', handler)           // scope 绑定
 ctx.on('llm/stream', handler, { global: true })
-ctx.on('agent/request', handler, { global: true })
-ctx.on('tools/pre-execute', handler, { global: true })
-ctx.on('tools/result', handler)
+ctx.on('tools/pre-execute', handler)       // scope 绑定
+ctx.on('tools/result', handler)            // scope 绑定
 ctx.on('tools/change', handler)
 ctx.on('skills/change', handler)
 ctx.on('session/event', handler)
@@ -43,10 +47,10 @@ const dispose = this.cordisCtx.on('session/event', (session, event) => {
 ### input-guard — 隐私编排中枢(挂 3 钩子)
 
 ```ts
-// src/dsh-adapter/input-guard.ts:1602,1618,1636
-const d1 = on('agent/pre-step', handler, { global: true })  // 正向: 攻击→策略→分类→脱敏
-const d2 = on('llm/stream',    handler, { global: true })  // 反向: 反脱敏 text-delta
-const d3 = on('agent/request', handler, { global: true })  // 路由改写: sanitize失败 CLOUD→LOCAL
+// src/dsh-adapter/input-guard.ts（§7.136：前两个去掉 { global: true }）
+const d1 = on('agent/pre-step', handler)                 // 正向: 攻击→策略→分类→脱敏（scope 绑定）
+const d2 = on('llm/stream',    handler, { global: true }) // 反向: 反脱敏 text-delta（事件无 scope 载体）
+const d3 = on('agent/request', handler)                  // 路由改写: sanitize失败 CLOUD→LOCAL（scope 绑定）
 ```
 
 **softInject 5 个 service**(input-guard.ts:1544-1548):

@@ -301,3 +301,62 @@
 # has none, so it runs before tcm / td-bus / audit-log / http-api.
 # See `src/dsh-adapter/file-logger.ts` for the two-channel discipline
 # (ops log: metadata only; audit JSONL: redacted call content).
+
+# ── 本 bundle 留在宿主树的三行（§7.136）──────────────────────────────────
+# 理由见 scripts/_isolate-edge-group.mjs 的文件头：
+#   dsh-edge-agent（裸包名）—— 宿主 client-modules 只扫宿主 Loader 的 entries，
+#     preset 树不在其中 ⇒ Edge tab 的浏览器半边只能从这里被发现；
+#   audit-log / file-logger —— 裸包名行 inject auditLog，且它的 installFileLogger
+#     会先占住 fileLogger 服务名 ⇒ 两者必须在 root realm，且 file-logger 行要更早装载。
+- insert:
+    # §7.101.x (2026-10-20, fix #5) + §7.136: the BARE-package host-half row.
+    # The webview client-module system (@deepseek-ai/dsh-client-modules) scans
+    # LOADER ENTRY NAMES for a `dsh.client` declaration, and its package
+    # locator only accepts bare package-root specifiers (`exactPackageSpecifier`)
+    # — subpath rows like '@scope/pkg/audit-log' can never surface the bundle's
+    # browser half.
+    #
+    # §7.136: this row must stay in the HOST tree. client-modules scans
+    # `ctx.loader.entries()` — the host Loader's entries — while a preset's
+    # plugin list lives in its own EntryTree, outside that enumeration. A bare
+    # row inside the preset would therefore never surface the browser half and
+    # the Edge tab would vanish in every work mode.
+    - id: dsh-edge-agent
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent'
+
+    - id: file-logger
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/file-logger'
+      config:
+        # §7.102 "one config file": root / level / rotation come from
+        # config/edge.json (audit.*) inside the plugin. Only static wiring
+        # stays in the row. (Rotation semantics unchanged — see PROGRESS
+        # §7.56; the effective values logMaxAgeDays=1 / logMaxRotated=7 /
+        # logLevel=info are in edge.json.)
+        filename: dsh-edge-agent.log
+        flushIntervalMs: 1000
+        queueCapacity: 10000
+        maxFileSizeBytes: 52428800  # 50MB
+
+    # NOTE: `sessions` and `audit-log` are NOT mounted — `dsh-session`
+    # provides `sessions` upstream and nothing provides `auditLog` so
+    # audit-log is mounted below under its own name.
+    #
+    # ── sessions provider ── dsh-base already mounts the same package
+    # under id `session-persistence-jsonl` (root: `dshHomePath('sessions')`),
+    # which exposes `sessionPersistence`. Previously we declared a second
+    # mount under id `sessions` — that caused a duplicate `provide()` call
+    # and a hard boot failure after the loader upgrade in @xmanrui/dsh-im
+    # (commit b42c7db). Keep the upstream mount; our session-root env
+    # override (`DSH_EDGE_SESSION_ROOT`) flows through `dshHomePath()`.
+    - id: audit-log
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/audit-log'
+      config:
+        # §7.102: minLevel / flush / root come from config/edge.json
+        # (audit.*; root default = ~/.dsh-edge-agent/audit, 2026-08-29 统一).
+        ringBufferSize: 512
+        filename: audit.plain.jsonl
+        enablePIIRedaction: true
+        maxFileSizeBytes: 10485760  # 10MB
+        maxFileAgeDays: 7
+        maxRotatedFiles: 5
+
