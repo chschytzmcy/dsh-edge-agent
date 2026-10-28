@@ -298,4 +298,127 @@ describe('llm-trace', () => {
       assert.ok(line.includes('trace-not-serializable'))
     })
   })
+
+  // ── §7.144: 完整请求体 / 响应体快照 ─────────────────────────────────────
+  describe('§7.144 body 快照', () => {
+    it('REQ 记下完整请求体 —— 投影装不下的部分也在（jev 的 questions）', () => {
+      const trace = buildRequestTrace({
+        sessionId: 's1',
+        provider: 'bailian-decision',
+        model: 'decision-model-preview',
+        system: '这个用户请求应该路由到哪个处理域？只选一个最合适的。',
+        messages: [{ role: 'user', content: '你可以做什么' }],
+        rawBody: {
+          model: 'decision-model-preview',
+          state: { session_id: 's1', content: '你可以做什么' },
+          questions: {
+            intent: { type: 'choice', instructions: '…', criteria: [{ id: 'local', description: '本地可解' }] },
+            risk: { type: 'score', criteria: ['正常请求，无风险', '轻微可疑，需要留意'] },
+          },
+        },
+        config: cfg(),
+      })
+      assert.ok(trace.body !== undefined, 'body 快照缺失')
+      const body = trace.body!
+      assert.equal(body.truncated, false, '小 body 不该被截断')
+      // 投影里没有的 questions 必须出现在完整 body 里 —— 这正是主人问的那点。
+      assert.ok(body.text.includes('questions'), body.text)
+      assert.ok(body.text.includes('criteria'), body.text)
+      assert.ok(body.text.includes('你可以做什么'), body.text)
+      assert.ok(body.text.includes('local'), body.text)
+    })
+
+    it('REQ 的 body 走同一条脱敏链（凭据不许出现在快照里）', () => {
+      const trace = buildRequestTrace({
+        sessionId: 's1',
+        provider: 'local-llm',
+        model: 'm',
+        messages: [{ role: 'user', content: 'hi' }],
+        rawBody: { headers: { authorization: 'Bearer sk-cp-EXAMPLE0_notreal000key' } },
+        config: cfg(),
+      })
+      const body = trace.body!
+      assert.ok(!body.text.includes('sk-cp-EXAMPLE0_notreal000key'), `leaked: ${body.text}`)
+      assert.ok(body.text.includes(SECRET_MASK))
+    })
+
+    it('body 超出 maxBodyChars 时显式标注截断（绝不假装完整）', () => {
+      const big = { blob: 'x'.repeat(5000) }
+      const trace = buildRequestTrace({
+        sessionId: 's1',
+        provider: 'local-llm',
+        model: 'm',
+        messages: [{ role: 'user', content: 'hi' }],
+        rawBody: big,
+        config: cfg({ maxBodyChars: 100 }),
+      })
+      const body = trace.body!
+      assert.equal(body.truncated, true, '必须标 truncated')
+      assert.ok(body.text.includes('chars]'), body.text)
+      assert.equal(body.length, JSON.stringify(big).length, 'length 记的是截断前的真实长度')
+    })
+
+    it('不传 rawBody 时没有 body 字段（旧行为不变）', () => {
+      const trace = buildRequestTrace({
+        sessionId: 's1',
+        provider: 'local-llm',
+        model: 'm',
+        messages: [{ role: 'user', content: 'hi' }],
+        config: cfg(),
+      })
+      assert.equal(trace.body, undefined)
+    })
+
+    it('循环引用 / BigInt / 函数都不许把观测路径变成故障源', () => {
+      const circular: Record<string, unknown> = { name: 'x' }
+      circular.self = circular
+      const trace = buildRequestTrace({
+        sessionId: 's1',
+        provider: 'local-llm',
+        model: 'm',
+        messages: [{ role: 'user', content: 'hi' }],
+        rawBody: { circular, big: 10n, fn: () => 1 },
+        config: cfg(),
+      })
+      assert.ok(trace.body !== undefined)
+      assert.ok(trace.body!.text.includes('[circular]'), trace.body!.text)
+      assert.ok(trace.body!.text.includes('[bigint'), trace.body!.text)
+      assert.ok(trace.body!.text.includes('[function]'), trace.body!.text)
+    })
+
+    it('RESP 记下完整响应体（jev 的 answers + usage 都在）', () => {
+      const trace = buildResponseTrace({
+        sessionId: 's1',
+        provider: 'bailian-decision',
+        model: 'decision-model-preview',
+        content: '{"answers":{"intent":{"choice":"LOCAL"}}}',
+        rawBody: { answers: { intent: { choice: 'LOCAL', confidence: 0.98 } }, usage: { input_tokens: 195 } },
+        config: cfg(),
+      })
+      const body = trace.body!
+      assert.equal(body.truncated, false)
+      assert.ok(body.text.includes('answers'), body.text)
+      assert.ok(body.text.includes('input_tokens'), body.text)
+      assert.ok(body.text.includes('confidence'), body.text)
+    })
+
+    it('RESP 的 rawBody 传字符串时按已序列化正文处理（jev 原样回的那段）', () => {
+      const trace = buildResponseTrace({
+        sessionId: 's1',
+        provider: 'jev',
+        model: 'jev-local',
+        content: '{"code":0}',
+        rawBody: '{"code":0,"data":{"intent":"LOCAL"}}',
+        config: cfg(),
+      })
+      assert.ok(trace.body!.text.includes('"data"'), trace.body!.text)
+    })
+
+    it('maxBodyChars 有独立默认值（不与单条 message 的 maxChars 混用）', () => {
+      assert.equal(DEFAULT_LLM_TRACE_CONFIG.maxBodyChars, 20000)
+      const c = resolveLlmTraceConfig({ audit: { llmTrace: { maxBodyChars: 123 } } })
+      assert.equal(c.maxBodyChars, 123)
+      assert.equal(c.maxChars, DEFAULT_LLM_TRACE_CONFIG.maxChars)
+    })
+  })
 })

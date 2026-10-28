@@ -379,6 +379,7 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
     options: GenerateOptions,
     system: string,
     messages: Array<{ role: string; content: unknown; source?: { kind?: string } }>,
+    rawBody?: unknown,
   ): void {
     try {
       const cfg = this.traceConfig()
@@ -391,6 +392,8 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
         system,
         messages,
         tools: options.tools as Array<{ name?: string; function?: { name?: string } }> | undefined,
+        // §7.144: 真正发出去的 wire body（面板上要能核对「发了什么」）。
+        rawBody,
         params: {
           temperature: this.temperature,
           maxTokens: options.maxTokens,
@@ -416,6 +419,7 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
     attempt: number,
     error?: string,
     options?: GenerateOptions,
+    rawBody?: unknown,
   ): void {
     try {
       const cfg = this.traceConfig()
@@ -429,6 +433,8 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
         finishReason: finishKind,
         content,
         toolCalls,
+        // §7.144: 完整响应体快照。
+        rawBody,
         error,
         config: cfg,
       })
@@ -649,6 +655,7 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
       options,
       wireSystem,
       sanitizedMessages as unknown as Array<{ role: string; content: unknown; source?: { kind?: string } }>,
+      body,
     )
     this.audit('info', 'llm.cloud.start', { provider: options.provider, model: options.model, messageCount, promptLen, baseUrl: this.baseUrl, systemInjected, retryBudgetUsed: peekSessionSseRetryCount(options.sessionId), historyDropped: egressDropped, egressReplacements: egressReplacements, egressSanitized, ...egressAuditFields(options) })
     // §7.131: 出网裁剪单独留一行 —— operator grep `llm.cloud.egress` 就能看到
@@ -746,7 +753,9 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
         } catch { /* debug only */ }
         // §7.118: 失败也要有 response trace —— 否则 ops log 里只剩一个
         // fetchError= 字样，看不出到底发了什么出去、为什么失败。
-        this.traceResponse(sessionId, options.provider, options.model ?? this.defaultModel, '', [], undefined, durationMs, attemptIndex, errMsg, options)
+        this.traceResponse(sessionId, options.provider, options.model ?? this.defaultModel, '', [], undefined, durationMs, attemptIndex, errMsg, options,
+          // §7.144: 传输层失败也要有完整响应体（错误原文）。
+          { error: errMsg, attempt: attemptIndex })
         this.audit('info', 'llm.cloud.end', { sessionId: options.sessionId,
           provider: options.provider,
           model: options.model,
@@ -819,6 +828,8 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
           attemptIndex,
           `HTTP ${response.status}: ${respBody.slice(0, 300)}`,
           options,
+          // §7.144: HTTP 失败的上游返回体（主人排查 400 时要看的就是它）。
+          { status: response.status, body: respBody, attempt: attemptIndex },
         )
         this.audit('info', 'llm.cloud.end', { sessionId: options.sessionId,
           provider: options.provider,
@@ -967,6 +978,13 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
           attemptIndex,
           wireError,
           options,
+          // §7.144: 完整响应体（正文 + 工具调用 + 结束原因）。
+          {
+            content: assembledText,
+            tool_calls: [...toolCalls.values()].map((c) => ({ id: c.id, name: c.name, arguments: c.arguments })),
+            finish_reason: finishKind ?? 'unknown',
+            ...(wireError !== undefined ? { wire_error: wireError } : {}),
+          },
         )
       }
     }

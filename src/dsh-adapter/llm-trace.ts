@@ -60,6 +60,18 @@ export interface LlmTraceConfig {
   maxChars: number
   /** request 里最多保留多少条 message。 */
   maxMessages: number
+  /**
+   * §7.144: **完整请求体 / 响应体**快照的字符上限。
+   *
+   * 为什么要单独一个上限：`maxChars` 是给「单条 message 正文」用的（2000 足够看清
+   * 上下文），而 body 快照装的是**真正发出去的那一坨**（system + 全部 message +
+   * 工具表 + 参数；jev 那种还有整份分类体系）。主对话实测 promptLength 22.5 万
+   * 字符，按 2000 截就只剩一句话 —— 面板上看到的与实际发出去的对不上。
+   *
+   * 20000 字符 ≈ 20KB/条，store 的 64 条 / 2MB 双上限仍然成立。超出时**显式标注**
+   * 截断了多少（`truncated: true` + `…[+N chars]`），绝不假装完整。
+   */
+  maxBodyChars: number
   /** 是否做 PII 脱敏（pii-utils 的 10 类规则）。 */
   redactPii: boolean
   /** 是否做凭据掩码（本模块的 SECRET_PATTERNS）。 */
@@ -80,6 +92,7 @@ export const DEFAULT_LLM_TRACE_CONFIG: LlmTraceConfig = {
   includeResponse: true,
   maxChars: 2000,
   maxMessages: 12,
+  maxBodyChars: 20000,
   redactPii: true,
   redactSecrets: true,
 }
@@ -101,6 +114,7 @@ export function resolveLlmTraceConfig(cfg?: EdgeConfig): LlmTraceConfig {
     includeResponse: pick('includeResponse'),
     maxChars: pick('maxChars'),
     maxMessages: pick('maxMessages'),
+    maxBodyChars: pick('maxBodyChars'),
     redactPii: pick('redactPii'),
     redactSecrets: pick('redactSecrets'),
   }
@@ -226,6 +240,51 @@ export function sanitizeTraceText(text: string, cfg: LlmTraceConfig): TraceText 
   return truncateForLog(out, cfg.maxChars)
 }
 
+/* ── body 快照（§7.144）────────────────────────────────────────────────── */
+
+/**
+ * 把任意 body 序列化成**可安全记录**的文本。
+ *
+ * 三个坑：
+ *   - **循环引用** → `JSON.stringify` 直接抛 `TypeError`。body 里出现循环
+ *     （宿主 options 被塞回 body 这类）就会把观测路径变成故障源。
+ *   - **BigInt** → 同样抛。
+ *   - **不可序列化的值**（函数 / Symbol）→ `JSON.stringify` 会静默丢掉，
+ *     让人以为"没发这个字段"。用 replacer 把它们替换成占位符，**显式**告诉
+ *     读日志的人「这里有个记不住的值」，而不是让它凭空消失。
+ */
+export function serializeTraceBody(value: unknown): string {
+  if (typeof value === 'string') return value
+  const seen = new WeakSet<object>()
+  try {
+    return JSON.stringify(value, (_key, v) => {
+      if (typeof v === 'bigint') return `[bigint ${v.toString()}]`
+      if (typeof v === 'function') return '[function]'
+      if (typeof v === 'symbol') return '[symbol]'
+      if (typeof v === 'object' && v !== null) {
+        if (seen.has(v)) return '[circular]'
+        seen.add(v)
+      }
+      return v
+    }) ?? ''
+  } catch {
+    return '[unserializable body]'
+  }
+}
+
+/**
+ * body 快照的脱敏 + 截断。
+ *
+ * 走与正文同一条链（凭据掩码 → PII 脱敏 → 截断），只是上限换成
+ * `maxBodyChars`（body 比单条 message 大得多，按 2000 截就没意义了）。
+ */
+export function buildBodySnapshot(value: unknown, config: LlmTraceConfig): TraceText | undefined {
+  if (value === undefined || value === null) return undefined
+  const text = serializeTraceBody(value)
+  if (text.length === 0) return undefined
+  return sanitizeTraceText(text, { ...config, maxChars: config.maxBodyChars })
+}
+
 /* ── request trace ──────────────────────────────────────────────────────── */
 
 /** 一条 message 的 trace 视图。 */
@@ -261,6 +320,18 @@ export interface LlmRequestTrace {
   messages: LlmMessageTrace[]
   /** 本次请求带的工具名（不含 schema）。 */
   tools?: string[]
+  /**
+   * §7.144: **真正发出去的那一坨**（完整请求体的 JSON 快照）。
+   *
+   * 为什么必须有它：上面的 `system` / `messages` / `tools` 只是请求体的**投影**，
+   * 而实际 body 里还有投影装不下的东西 —— jev 的整份分类体系（questions.*）、
+   * adapter 的 `chat_template_kwargs` / `reasoning_effort` / 工具 schema ……
+   * 主人现场问的就是这个：「request 里只发了那段 system 吗？」（答案：不是，
+   * 但 trace 当时只**记**了那两段，面板上看不出真相）。
+   *
+   * 脱敏 + 截断照旧（凭据 → PII → 截断），上限独立（`maxBodyChars`）。
+   */
+  body?: TraceText
   params?: {
     temperature?: number
     maxTokens?: number
@@ -277,6 +348,13 @@ export interface LlmRequestTraceInput {
   system?: string
   messages: Array<{ role: string; content: unknown; source?: { kind?: string; provider?: string } }>
   tools?: Array<{ name?: string; function?: { name?: string } }>
+  /**
+   * §7.144: **实际发出的请求体**（原样对象）—— 记进 `trace.body`。
+   *
+   * 传字符串时按「已经序列化好的正文」处理（jev 的裸 fetch 直接给 body 对象，
+   * 而某些路径手里只有一段文本）。
+   */
+  rawBody?: unknown
   params?: LlmRequestTrace['params']
   config: LlmTraceConfig
 }
@@ -340,6 +418,9 @@ export function buildRequestTrace(input: LlmRequestTraceInput): LlmRequestTrace 
   if (input.system && input.system.length > 0) {
     trace.system = sanitizeTraceText(input.system, config)
   }
+  // §7.144: 完整请求体快照（真正发出去的那一坨）。
+  const body = buildBodySnapshot(input.rawBody, config)
+  if (body !== undefined) trace.body = body
   const toolNames = (input.tools ?? [])
     .map((t) => t.name ?? t.function?.name)
     .filter((n): n is string => typeof n === 'string' && n.length > 0)
@@ -367,6 +448,14 @@ export interface LlmResponseTrace {
   /** 助手正文（已脱敏 + 截断）。 */
   content?: TraceText
   toolCalls: LlmToolCallTrace[]
+  /**
+   * §7.144: **完整响应体**快照（上游真正回来的东西）。
+   *
+   * `content` + `toolCalls` 是响应体的**投影**；投影装不下的部分（jev 的
+   * `usage` / `answers` 全量结构、上游的原始错误体、SSE 帧里的额外字段）
+   * 只有完整 body 才有。主人要「请求和响应记录完全」，这一栏就是那个"完全"。
+   */
+  body?: TraceText
   usage?: {
     promptTokens?: number
     completionTokens?: number
@@ -385,6 +474,14 @@ export interface LlmResponseTraceInput {
   finishReason?: string
   content?: string
   toolCalls?: Array<{ id?: string; name: string; arguments?: string }>
+  /**
+   * §7.144: **完整响应体**（原样对象或已经序列化好的文本）。
+   *
+   * jev 的响应是一整段 JSON（`answers` / `usage` 都在里面），adapter 的响应
+   * 是「正文 + tool_calls + finish_reason」的组装体 —— 两者都传进来，面板上
+   * 才看得到完整往返。
+   */
+  rawBody?: unknown
   usage?: LlmResponseTrace['usage']
   error?: string
   config: LlmTraceConfig
@@ -414,6 +511,9 @@ export function buildResponseTrace(input: LlmResponseTraceInput): LlmResponseTra
     trace.toolCalls.push(t)
   }
   if (input.usage) trace.usage = input.usage
+  // §7.144: 完整响应体快照。
+  const body = buildBodySnapshot(input.rawBody, config)
+  if (body !== undefined) trace.body = body
   if (input.error) {
     trace.error = truncateForLog(input.error, Math.max(200, config.maxChars)).text
   }

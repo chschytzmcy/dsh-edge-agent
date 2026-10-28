@@ -13476,7 +13476,7 @@ server bundle 部署于 12:04 / 13:34。**部署之后被触发的标准标签�
   ⇒「默认=边缘、标准模式会话里也看见 Edge tab」是机制边界，非 bug。§7.138 记过，
   本轮主人实机口径亦如此。
 
-## 7.141 主人裁决：默认工作方式 = 标准模式（Edge tab 随之全收起）
+## §7.141 主人裁决：默认工作方式 = 标准模式（Edge tab 随之全收起）
 
 ### 裁决与生效
 
@@ -13514,7 +13514,7 @@ Edge tab 门控跟**名册默认 preset**（tab 类型注册表全局，§7.138/
 - README 顶部块补充本裁决口径（平时不开 Edge tab，边缘面板按需临时切默认）。
 - 本节 PROGRESS §7.141 存档。无代码改动（名册默认是运行期/配置态，非代码）。
 
-## 7.142 主人裁决：Edge tab **一直都在**，只有边缘模式才真正生效
+## §7.142 主人裁决：Edge tab **一直都在**，只有边缘模式才真正生效
 
 ### 裁决与由来
 
@@ -13625,6 +13625,112 @@ mock 新增 `sessions` face（`list.getSnapshot().byId[sessionId].projectionValu
   「尚未绑定会话」的提示，留待主人定。
 - 「Edge tab 按会话可见性」的老议题作废：现在页签**对所有会话可见**，按会话分的
   只有「是否自动打开」与「面板有没有数据」。
+
+## §7.143 Edge tab 的 LLM 调用：请求与响应**记录完全**
+
+### 触发（主人现场问句）
+
+主人在看 Edge tab 的 LLM 调用面板（意图判定那一条）时问：
+
+> 「request 里只发了 `system`:『这个用户请求应该路由到哪个处理域？只选一个最合适的。』
+> 这个内容吗？」
+
+**答案：不是**。那一 call 实际发出去的 body 是：
+
+```json
+{ "model": "decision-model-preview",
+  "state": { "session_id": "…", "content": "你可以做什么" },
+  "questions": { "intent": { "type": "choice", "instructions": "…", "criteria": <整份分类体系> },
+                 "risk":   { "type": "score",  "instructions": "…", "criteria": <4 档风险标准> } } }
+```
+
+发给百炼的**用户内容**只有「你可以做什么」这 6 个字 + 一个 session_id（没有别的
+对话历史、没有工具表）；但 body 里还有整份**分类体系与风险标准** —— 这正是
+`usage.input_tokens=195` 与 32 个字符的差额来源。
+
+而**面板当时只记了两段**（`system` + `messages[0]`）：`buildRequestTrace`
+（`llm-trace.ts`）只认 `system` / `messages` / `tools` / `params` 四个槽位，jev
+的 `questions.*` 没有对应位置 ⇒ 被丢掉。主人那句问的是「实际发了什么」，面板
+回答的却是「我记了什么」—— **两者不是一回事**。
+
+### 改法：trace 记下**真正发出去的那一坨**
+
+`LlmRequestTrace` / `LlmResponseTrace` 各加一个 `body?: TraceText`：
+
+| 字段 | 含义 |
+|---|---|
+| `body.text` | 完整 body 的 JSON 快照（脱敏后） |
+| `body.length` | **截断前**的真实长度 |
+| `body.truncated` | 是否溢出上限（`true` 时 text 尾部带 `…[+N chars]`） |
+
+- **独立上限** `LlmTraceConfig.maxBodyChars`（默认 **20000**，可在
+  `config/edge.json` 的 `audit.llmTrace.maxBodyChars` 调）。为什么不复用
+  `maxChars`（2000）：那是给「单条 message 正文」用的，而主对话的 body 实测
+  **22.5 万字符** —— 按 2000 截就只剩一句话，面板与实际发出去的彻底对不上。
+  20000 字符 ≈ 20KB/条，store 的 64 条 / 2MB 双上限仍然成立。
+- **脱敏链照旧**：凭据掩码 → PII 脱敏 → 截断（顺序不变），所以快照里不会有
+  密钥明文。
+- **不抛**：序列化用 `serializeTraceBody`，循环引用 / BigInt / 函数分别落成
+  `[circular]` / `[bigint N]` / `[function]` —— 观测路径永远不能变成故障源
+  （`JSON.stringify` 遇循环引用会直接抛 `TypeError`）。
+
+### 接上调用点（四处）
+
+| 调用点 | REQ 记什么 | RESP 记什么 |
+|---|---|---|
+| `local-llm-adapter` | wire body（`buildChatCompletionsBody` 的结果，含 `chat_template_kwargs` / `reasoning_effort` / 工具表） | `{ content, tool_calls, finish_reason, wire_error? }` |
+| `cloud-llm-adapter` | 同上 | 同上；传输失败记 `{ error, attempt }`，HTTP 失败记 `{ status, body, attempt }`（主人排查 400 时要看的就是它） |
+| jev（百炼决策模型） | 完整 body（**含 questions 的分类体系与风险标准**） | jev 回的整段 JSON（`answers` / `usage` / `request_id`） |
+| jev（本机后端） | 完整 body（query + intents 分类表 + chitchat 标记） | 原始响应文本 |
+
+本机 jev 的 body 顺手**提成了变量**（`jevRequestBody`）：trace 与 fetch 用**同一个
+对象**，杜绝「记的和发的不是同一份」。
+
+### 面板零改动
+
+`tracePanel.tsx:300` 渲染的是**整条 trace 的 JSON 文本**（`h('pre', …, loaded.text)`），
+所以 `body` 字段一进 trace 就自动上屏 —— 面板侧不用改一行。
+
+### 验证
+
+- 单测 **+8 例**（`tests/unit/llm-trace.test.ts`）：questions 进 body / body 走脱敏 /
+  超出上限显式标 truncated / 不传 rawBody 时无 body（旧行为不变）/ 循环引用·BigInt·
+  函数不抛 / RESP 的 answers+usage / rawBody 传字符串按原文 / maxBodyChars 独立默认。
+- 单测全量 **67 文件 1361 passed / 2 skipped**；eslint **0 error**、改动文件零告警；
+  门禁 **15 项全绿**。
+
+### 实机取证（桌面版，端口 54129）
+
+边缘模式会话 `session-557a7577-45a8-4182-a035-4fde413926db`，消息「你好」→ 一轮
+跑完，面板 **LLM 调用 8**（攻击检测 / 意图判定 / 路由决策 / 宿主内部调用 各一组
+REQ+RESP）。点开条目 ⇒ `POST api/dsh-edge/trace` ⇒ `<pre>` 里 **REQ 与 RESP 都带
+`body`**：
+
+| 条目 | `body.length` | `body.truncated` | 面板上看到的 |
+|---|---|---|---|
+| 百炼决策模型 REQ | 487 | false | `model` + `state{session_id, content}` + `questions{intent.criteria 3 档, risk.criteria 4 档}` 全文 |
+| 百炼决策模型 RESP | 447 | false | `answers{intent, risk}` + `usage.input_tokens` + `latency_ms` |
+| local 安检 REQ | — | false | `model` + `messages{system 全文, user}` |
+| local 主对话 REQ | **40969** | **true** | 快照正文 + 尾部 `…[+20969 chars]` |
+
+最后一行是重点：`length` 报的是**截断前**的真实长度，`truncated: true` 显式标注，
+正文末尾带溢出字符数 —— 上限（20000）生效，但**绝不假装完整**。
+
+索引行同时多了 `bodyBytes`，面板 meta 行直接显示大小（5.8 KB / 1.0 KB / 26.8 KB /
+1.8 KB），不必点开就知道哪条是大 body。页面 console **零 error 零 warning**。
+
+> 取证路径的坑：宿主 API 要 cookie，launch token 在 303 时已被换成会话 cookie，
+> 从脚本直接 POST `api/dsh-edge/trace` 会拿到 401 ⇒ 走 UI 点开是唯一能取到正文的
+> 路径（面板自己带 cookie）。
+
+### 遗留
+
+- 主对话 body 实测 22.5 万字符 ⇒ 快照必然截断（`truncated: true` + 溢出字符数）。
+  这是**有意的上限**（面板常驻内存纪律，§7.107 / §7.133），不是"记录完全"没做到
+  —— 小 body（jev / 分类器 / 内部调用）仍是逐字完整的。
+- SSE 的**原始帧文本**没有逐字保留：响应 body 记的是「正文 + tool_calls +
+  finish_reason」的语义全文（传输帧是同一份内容的碎片化形式，对主人没有额外
+  信息量）。要逐帧原文得在 SSE 热路径上累积，成本与收益不匹配。
 
 
 

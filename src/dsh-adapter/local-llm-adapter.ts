@@ -290,6 +290,7 @@ class RealLocalAdapter extends LlmAdapter {
     options: GenerateOptions,
     system: string,
     messages: Array<{ role: string; content: unknown; source?: { kind?: string } }>,
+    rawBody?: unknown,
   ): void {
     try {
       const cfg = this.traceConfig()
@@ -302,6 +303,9 @@ class RealLocalAdapter extends LlmAdapter {
         system,
         messages,
         tools: options.tools as Array<{ name?: string; function?: { name?: string } }> | undefined,
+        // §7.144: 真正发出去的 wire body（含 chat_template_kwargs / reasoning_effort
+        // / 工具 schema …）—— 面板上要能核对「发了什么」，不是只看投影。
+        rawBody,
         params: { stream: true },
         config: cfg,
       })
@@ -322,6 +326,7 @@ class RealLocalAdapter extends LlmAdapter {
     durationMs: number,
     error?: string,
     options?: GenerateOptions,
+    rawBody?: unknown,
   ): void {
     try {
       const cfg = this.traceConfig()
@@ -334,6 +339,8 @@ class RealLocalAdapter extends LlmAdapter {
         finishReason: finishKind,
         content,
         toolCalls,
+        // §7.144: 完整响应体（正文 + 工具调用 + finish_reason 的组装体）。
+        rawBody,
         error,
         config: cfg,
       })
@@ -484,6 +491,7 @@ class RealLocalAdapter extends LlmAdapter {
       options,
       wireSystem,
       sanitizedMessages as unknown as Array<{ role: string; content: unknown; source?: { kind?: string } }>,
+      body,
     )
     audit(this.auditLog, 'info', 'llm.local.start', { provider: options.provider, model: this.defaultModel, route: options.model, messageCount: sanitizedMessages.length, promptLen, baseUrl: this.baseUrl, ...egressAuditFields(options) })
 
@@ -627,6 +635,13 @@ class RealLocalAdapter extends LlmAdapter {
         durationMs,
         wireError,
         options,
+        // §7.144: 完整响应体 —— 上游回来的语义全文（正文 + 工具调用 + 结束原因）。
+        {
+          content: assembledText,
+          tool_calls: [...toolCalls.values()].map((c) => ({ id: c.id, name: c.name, arguments: c.arguments })),
+          finish_reason: finishKind ?? 'unknown',
+          ...(wireError !== undefined ? { wire_error: wireError } : {}),
+        },
       )
     }
 

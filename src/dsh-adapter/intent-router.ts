@@ -757,6 +757,7 @@ export class IntentRouterServiceImpl extends Service {
     text: string,
     system: string,
     callId: string,
+    rawBody?: unknown,
   ): void {
     try {
       const cfg = resolveLlmTraceConfig(loadEdgeConfig())
@@ -768,6 +769,10 @@ export class IntentRouterServiceImpl extends Service {
         baseUrl: url,
         system,
         messages: [{ role: 'user', content: text }],
+        // §7.144: 完整请求体 —— jev 的 body 里最关键的是 `questions`
+        // （分类体系 + 风险标准），那是**投影装不下**的部分：主人的原话
+        // 「request 里只发了那段 system 吗？」—— 不是，但面板当时只记了两段。
+        rawBody,
         config: cfg,
       })
       this.emitJevTrace('REQ', 'intent-router jev LLM_REQUEST', trace, callId)
@@ -782,6 +787,7 @@ export class IntentRouterServiceImpl extends Service {
     durationMs: number,
     error: string | undefined,
     callId: string,
+    rawBody?: unknown,
   ): void {
     try {
       const cfg = resolveLlmTraceConfig(loadEdgeConfig())
@@ -794,6 +800,8 @@ export class IntentRouterServiceImpl extends Service {
         finishReason: error === undefined ? 'stop' : 'error',
         content,
         toolCalls: [],
+        // §7.144: 完整响应体（jev 回的是一整段 JSON：answers + usage + request_id）。
+        rawBody,
         error,
         config: cfg,
       })
@@ -1379,7 +1387,22 @@ export class IntentRouterServiceImpl extends Service {
     // §7.133: 本机 jev 后端同样是「把原文发出去的模型调用」—— 留痕。
     // §7.134: REQ/RESP 共用一个 callId（面板据此配成一对）。
     const jevCallId = nextCallId()
-    this.traceJevRequest('jev', 'jev-local', `${this.jevUrl}/predict`, sessionId, text, '', jevCallId)
+    // §7.144: 请求体先提成变量 —— trace 要记**完整**的那一份（query + 整份
+    // intents 分类表 + chitchat 标记），fetch 与 trace 用同一个对象，
+    // 杜绝「记的和发的不是同一份」。
+    const jevRequestBody = {
+      query: text,
+      lang: 'zh',
+      metadata: sessionId ? { session_id: sessionId } : {},
+      // §7.92.5: jev v0.3.0+ zero-shot taxonomy. Without these
+      // fields jev falls back to its built-in 8-intent default
+      // schema and our `categories[].jevIntents[]` table never
+      // gets used. Each batch carries ≤ 16 intents (chunked by
+      // classifyWithJev).
+      intents,
+      chitchat_intents: chitchatIntents,
+    }
+    this.traceJevRequest('jev', 'jev-local', `${this.jevUrl}/predict`, sessionId, text, '', jevCallId, jevRequestBody)
 
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), this.jevTimeoutMs)
@@ -1391,18 +1414,7 @@ export class IntentRouterServiceImpl extends Service {
       const r = await fetch(`${this.jevUrl}/predict`, {
         method: 'POST',
         headers: this.jevHeaders(),
-        body: JSON.stringify({
-          query: text,
-          lang: 'zh',
-          metadata: sessionId ? { session_id: sessionId } : {},
-          // §7.92.5: jev v0.3.0+ zero-shot taxonomy. Without these
-          // fields jev falls back to its built-in 8-intent default
-          // schema and our `categories[].jevIntents[]` table never
-          // gets used. Each batch carries ≤ 16 intents (chunked by
-          // classifyWithJev).
-          intents,
-          chitchat_intents: chitchatIntents,
-        }),
+        body: JSON.stringify(jevRequestBody),
         signal: controller.signal,
       })
       if (!r.ok) {
@@ -1449,7 +1461,9 @@ export class IntentRouterServiceImpl extends Service {
     } finally {
       clearTimeout(timer)
       // §7.133: jev 本机后端的 response trace（失败也有）。
-      this.traceJevResponse('jev', 'jev-local', sessionId, responseText, Date.now() - batchStart, jevError, jevCallId)
+      this.traceJevResponse('jev', 'jev-local', sessionId, responseText, Date.now() - batchStart, jevError, jevCallId,
+        // §7.144: 完整响应体。
+        responseText)
     }
 
     // Response envelope: {code, message, request_id, data: {...}}
@@ -1720,6 +1734,8 @@ export class IntentRouterServiceImpl extends Service {
       text,
       JEV_INTENT_INSTRUCTIONS,
       jevCallId,
+      // §7.144: 完整请求体（含 questions 的分类体系与风险标准）。
+      body,
     )
 
     const controller = new AbortController()
@@ -1779,6 +1795,8 @@ export class IntentRouterServiceImpl extends Service {
         Date.now() - batchStart,
         jevError,
         jevCallId,
+        // §7.144: 完整响应体（jev 回的整段 JSON：answers / usage / request_id）。
+        jevBody,
       )
     }
 
