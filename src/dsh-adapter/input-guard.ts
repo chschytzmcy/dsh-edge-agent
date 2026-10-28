@@ -36,6 +36,17 @@ import { assistantProviderHistogram } from './cloud-egress.js'
 import { probeCloudTarget } from './cloud-llm-adapter.js'
 import { loadEdgeConfig, localPool } from './edge-config.js'
 import { containsCredential } from './pii-utils.js'
+// §7.144: 宿主 provider 那一跳的 trace（delegate 出去的云池调用不在任何
+// adapter 里，adapter 记不到它 —— 面板里会整条缺失）。
+import { resolveLlmTraceConfig } from './llm-trace.js'
+import type { LlmTraceConfig, TraceSink } from './llm-trace.js'
+import { callIdFor, getTraceStore } from './llm-trace-store.js'
+import {
+  HostCallRecorder,
+  OWN_POOL_PROVIDERS,
+  isOwnPoolProvider,
+} from './host-llm-trace.js'
+import type { HostCallRequest } from './host-llm-trace.js'
 
 export const name = 'input-guard'
 
@@ -312,6 +323,14 @@ export class InputGuardServiceImpl extends Service {
    */
   private readonly turnCategory = new Map<string, string>()
 
+  /**
+   * §7.144: LLM trace 的行为配置（`audit.llmTrace` 段）。
+   *
+   * 构造时读一次 —— 这是**观测**配置，不是路由配置，读一次足够；每次
+   * 读盘会在每个 LLM 往返上多一次 IO。
+   */
+  private readonly traceConfig: LlmTraceConfig
+
   /** §7.35 (2026-09-03): 检查 cloud LLM adapter 的 API key 是否就位。
    *  缺失时不抛异常，而是让 handlePreStep 把 category=CLOUD|SANITIZED
    *  降级到 LOCAL——与"sanitize 失败降级 LOCAL"对称（系统侧故障/配置缺失
@@ -468,6 +487,13 @@ export class InputGuardServiceImpl extends Service {
     this.intentRouter = intentRouter
     this.sanitizer = sanitizer
     this.auditLog = auditLog
+    // §7.144: trace 配置读一次（读盘失败也不该让 input-guard 起不来 ——
+    // 观测配置坏了就退回出厂默认，主链路不受影响）。
+    try {
+      this.traceConfig = resolveLlmTraceConfig(loadEdgeConfig())
+    } catch {
+      this.traceConfig = resolveLlmTraceConfig(undefined)
+    }
   }
 
   private audit(
@@ -1720,18 +1746,116 @@ export class InputGuardServiceImpl extends Service {
     return seedConfig
   }
 
-  /** 反向 hook：llm/stream handler。暴露给测试。*/
+  /**
+   * §7.144: 宿主 provider 的调用要不要记？返回一个记录器，或 undefined。
+   *
+   * **不记**的三种情形：
+   *
+   *   1. provider 属于本项目自管池（`local-llm` / `cloud-llm`）—— adapter
+   *      自己已经记过（REQ + RESP），这里再记一遍面板上就是同一通调用出现
+   *      两条。
+   *   2. `purpose` 非空 —— 宿主的内部用途（compaction / session-title），
+   *      不是主人关心的「这一轮调用」，记了只给面板添噪音。
+   *   3. provider 缺失 / trace 总开关关闭 / 任何异常 ⇒ 不记（观测路径永不
+   *      拖垮主链路）。
+   *
+   * 记的那一类是**宿主自己的 provider**（delegate 出去的云池，如
+   * `qwen-token-plan-cn`）—— 它不经过本项目任何 adapter，是面板里唯一
+   * 「完全看不见」的一跳。
+   */
+  private hostCallRecorder(options: {
+    provider?: unknown
+    model?: unknown
+    sessionId?: unknown
+    messages?: unknown
+    system?: unknown
+    tools?: unknown
+    purpose?: unknown
+    temperature?: unknown
+    maxTokens?: unknown
+  }): HostCallRecorder | undefined {
+    try {
+      if (!this.traceConfig.enabled) return undefined
+      const provider = typeof options?.provider === 'string' ? options.provider : ''
+      if (provider.length === 0) return undefined
+      const own = OWN_POOL_PROVIDERS.includes(this.config.localProvider)
+        ? OWN_POOL_PROVIDERS
+        : [...OWN_POOL_PROVIDERS, this.config.localProvider]
+      if (isOwnPoolProvider(provider, own)) return undefined
+      const purpose = typeof options?.purpose === 'string' ? options.purpose : ''
+      if (purpose.length > 0) return undefined
+      const sessionId = typeof options?.sessionId === 'string' ? options.sessionId : ''
+      if (sessionId.length === 0) return undefined
+
+      const request: HostCallRequest = {
+        provider,
+        model: typeof options?.model === 'string' ? options.model : '?',
+        sessionId,
+        messages: Array.isArray(options?.messages)
+          ? options.messages as HostCallRequest['messages']
+          : [],
+      }
+      if (typeof options?.system === 'string') request.system = options.system
+      if (Array.isArray(options?.tools)) {
+        request.tools = options.tools as HostCallRequest['tools']
+      }
+      const params: { temperature?: number; maxTokens?: number } = {}
+      if (typeof options?.temperature === 'number') params.temperature = options.temperature
+      if (typeof options?.maxTokens === 'number') params.maxTokens = options.maxTokens
+      if (Object.keys(params).length > 0) request.params = params
+
+      const sink: TraceSink = {
+        log: (entry) => this.auditLog?.log(entry) ?? Promise.resolve(),
+        store: getTraceStore(),
+      }
+      // §7.134: REQ 与 RESP 共用一个 callId ⇒ 面板上仍是「上请求、下响应」。
+      // 键取 options 的对象身份：同一次往返拿到的是**同一个**引用。
+      return new HostCallRecorder({
+        sink,
+        config: this.traceConfig,
+        request,
+        callId: callIdFor(options),
+      })
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * 反向 hook：llm/stream handler。暴露给测试。
+   *
+   * `options` 的索引签名是**如实描述**宿主的载荷：`llm/stream` 派发的是
+   * 完整的 `GenerateOptions`（provider / model / messages / tools / …），
+   * §7.144 的宿主调用记录正是从这些字段里取「发出去的那一坨」。
+   */
   handleLlmStream(
-    options: { signal?: AbortSignal; sessionId?: string },
+    options: { signal?: AbortSignal; sessionId?: string; [key: string]: unknown },
     next: () => AsyncIterable<StreamChunkLike>,
   ): AsyncIterable<StreamChunkLike> {
     const requestSessionId = options?.sessionId
     const state = requestSessionId ? this.stepState.get(requestSessionId) : undefined
-    const stream = next()
+    let stream = next()
     if (!this.config.enableInputGuard) return stream
     if (!requestSessionId || !this.sanitizer) return stream
 
-    if (!state || !state.sanitized || state.replacements === 0) return stream
+    // §7.144: 非边缘会话（标准模式等）没有 pre-step 留下的 stepState ⇒
+    // 直接直通、零记录。这条守住 §7.140 的不变式：标准模式会话的审计链
+    // 里一条 edge 事件都不该有。
+    if (!state) return stream
+
+    // §7.144: 宿主 provider 那一跳的记录。必须接在下面「没脱敏就直通」的
+    // 早退**之前** —— CLOUD 轮次常常一条 PII 都没有（sanitized=false），
+    // 放到早退之后就永远记不到，面板里云端模型仍然整条缺失。
+    //
+    // 顺序有讲究：recorder 在**内**（先看到脱敏后的占位符原文），desanitize
+    // 在**外**（把占位符还原给主人看）。于是 trace 记的是「云端真正收到 /
+    // 返回的」—— 与发出去的请求一致，不掺还原后的原文。
+    const hostRecorder = this.hostCallRecorder(options)
+    if (hostRecorder !== undefined) {
+      stream = hostRecorder.wrap(stream) as AsyncIterable<StreamChunkLike>
+    }
+
+    if (!state.sanitized || state.replacements === 0) return stream
 
     const sanitizer = this.sanitizer
     const sessionId = state.sessionId

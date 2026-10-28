@@ -13732,5 +13732,116 @@ REQ+RESP）。点开条目 ⇒ `POST api/dsh-edge/trace` ⇒ `<pre>` 里 **REQ �
   finish_reason」的语义全文（传输帧是同一份内容的碎片化形式，对主人没有额外
   信息量）。要逐帧原文得在 SSE 热路径上累积，成本与收益不匹配。
 
+## §7.144 Edge 面板补记**宿主 provider** 的调用（delegate 云池那一跳）
+
+### 触发（主人现场）
+
+> 「还有问题，本轮走云端了，但 LLM 调用里没有云端模型。」
+
+### 根因（审计链实证）
+
+主人那一轮（18:20:53）**确实**判成了 CLOUD：
+
+```
+intent.jev.response      intent=CLOUD confidence=0.83 riskScore=0.047
+intent.jev.low_confidence  0.83 < threshold 0.85  → jev 裁决不采纳
+intent.classify.end      path=llm category=CLOUD confidence=1
+                             rationale=llm-classified:cloud
+input-guard.routed       category=CLOUD edgeRouteUsed=false routeSource=webui
+```
+
+但**从 18:05 到 18:25 整轮 `llm.cloud.*` 零条**，只有 27 次 `llm.local.*`。
+
+原因不是路由错了，是**观测漏了一跳**：
+
+- `config/edge.json` 的 `llm.cloud` 是 **delegate 模式**（`baseUrl` 空 +
+  `delegate: true`，§7.100）—— CLOUD 请求**转发给宿主 profile 已配置的模型
+  提供商**（桌面 GUI 里选的那个，如 `qwen-token-plan-cn`），凭据全归宿主。
+- 于是主对话的请求**不经过本项目的 cloud adapter** ⇒ 没有 `llm.cloud.*`
+  审计事件，也没有 trace ⇒ 面板里云端模型整条缺席。
+- 面板没编造（它没显示一件没发生的事），但它**漏显示**了一件真发生的事 ——
+  这正是 §7.129 最怕的那种误导。
+
+### 补在哪一跳
+
+宿主的 `llm/stream` 事件带**完整信封**（`GenerateOptions`：provider / model /
+messages / system / tools / 参数），响应侧带**完整 chunk 流**（text-delta /
+block-end / tool-call-delta / usage / finish）。所以宿主 provider 的这一跳
+**本来就完全可观测** —— 只是没人接。
+
+新模块 `src/dsh-adapter/host-llm-trace.ts`，接线在 input-guard 已有的
+`llm/stream` 钩子（那里握有 sessionId → 会话状态的映射，能区分边缘会话与
+标准模式会话）。
+
+### 四条判据
+
+| 情形 | 处理 | 理由 |
+|---|---|---|
+| provider ∈ {`local-llm`, `cloud-llm`} | **跳过** | adapter 自己已经记过（REQ+RESP），记两遍面板上就是同一通调用出现两条 |
+| provider 是宿主的（如 `qwen-token-plan-cn`） | **记** | 这一跳没有任何 adapter 看得见 |
+| `purpose` 非空（compaction / session-title） | 跳过 | 宿主内部用途，不是主人关心的「这一轮」，记了只给面板添噪音 |
+| 没有 stepState（标准模式会话） | 跳过 | §7.140 的不变式：标准模式会话审计链零事件 |
+
+### 顺序：recorder 在内，desanitize 在外
+
+trace 记的是「云端**真正**收到 / 返回的」—— 占位符版本，与发出去的请求一致
+（CLOUD 轮次里 PII 已被换成占位符再发出）；desanitize 在外把占位符还原给主人
+看。两者不能颠倒：颠倒了就等于把「还原后的原文」记成「云端返回的内容」。
+
+### 记什么
+
+| 侧 | 内容 |
+|---|---|
+| REQ | 宿主层信封：provider / model / messages / system / tools / 参数 → `body` 快照 |
+| RESP | 整块正文（`block-end` 优先于逐段 delta）+ 工具调用 + finish reason + usage → `body` 快照 |
+
+`body` 是**宿主层信封**，不是 provider 的 wire body —— 后者在 adapter 内部，
+宿主这一跳看不见（那一侧由 adapter 自己记）。面板上 provider/model 字段会
+显示宿主 provider 名（如 `qwen-token-plan-cn/deepseek-v4.1-flash`），一眼能
+认出「这是云端模型那一条」。
+
+### 实机取证（桌面版，边缘模式）
+
+重建 installable + 重启桌面版（宿主 `127.0.0.1:62633`），边缘模式发
+「今天北京天气怎么样」：
+
+```
+intent.classify.end  category=CLOUD confidence=0.94 jev-intent:CLOUD
+input-guard.routed  category=CLOUD edgeRouteUsed=false routeSource=webui
+llm.trace.index REQ  provider=qwen-token-plan-cn model=deepseek-v4.1-flash callId=c2 bodyBytes=27412
+llm.trace.index RESP provider=qwen-token-plan-cn model=deepseek-v4.1-flash callId=c2
+llm.trace.index REQ/RESP callId=c3 ； llm.trace.index REQ/RESP callId=c4
+```
+
+Edge 面板实测文本：**「LLM 调用 10」**，「路由决策 3」组下 **3 组
+`qwen-token-plan-cn/deepseek-v4.1-flash` 主对话 REQ/RESP**（26.8 KB / 28.1 KB /
+31.2 KB，含工具 32）—— 主人要的那条**云端模型**已经上屏。
+
+### 验证
+
+- 单测 **+18 例**（`tests/unit/host-llm-trace.test.ts`）：自管池判据 / body
+  快照与脱敏 / 累积器（delta、block-end 覆盖、tool-call、usage、finish、畸形
+  chunk）/ 记录器 REQ+RESP 同 callId / 四条接线判据 / finish reason 取 kind。
+- **反向证伪**：临时破坏「自管池跳过」与「无 state 跳过」两处判据 ⇒ **恰好**
+  对应的两条测试变红（其余 15 条仍绿）⇒ 这两条契约真的被钉住了。
+  再单独破坏「finish reason 取 kind」⇒ 恰好 1 条变红（其余 17 条仍绿）。
+- 全量 **68 文件 1379 passed / 2 skipped**；eslint **0 error**；门禁 **15 项全绿**
+  （`verify:plugin-spec` 的豁免表按先例加了 `host-llm-trace` —— 纯库模块，
+  不是 plugin）。
+
+### 一个顺带修掉的面板瑕疵
+
+实机取证时看到面板上的 finish reason 显示成 `{"kind":"stop"}` —— 宿主
+`FinishReason` 是**对象**（`FinishReasonMap`：`{ kind: 'stop' }` /
+`{ kind: 'tool-calls' }` / `{ kind: 'error', failure }` …），被直接
+stringify 了。现在累积器在 `finish` 分支里：**对象且有字符串 `kind` 就取
+`kind`**，否则才回落 `safeStringify`（不丢信息、不抛）。
+
+### 遗留
+
+- `body` 是宿主层信封，不是 provider 的 wire body（那一跳看不见 wire body）。
+- 宿主的 compaction / session-title 调用不记（`purpose` 非空）—— 面板聚焦
+  「这一轮」的调用，不给内部用途添噪音。
+
 
 

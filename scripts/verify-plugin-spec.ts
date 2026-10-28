@@ -102,6 +102,11 @@ for (const file of sources) {
   // edge-context-view; never inserted by a cordis patch row, not in
   // package.json exports.
   if (base === 'llm-trace-store') continue
+  // §7.144: the HOST-PROVIDER call trace (the delegate-mode cloud call that
+  // no adapter ever sees — recorded from the host's llm/stream hook by
+  // input-guard). Imported by input-guard.ts; never inserted by a cordis
+  // patch row, not in package.json exports.
+  if (base === 'host-llm-trace') continue
   if (base === 'plugin' || base === 'index') continue
   const content = readFileSync(file, 'utf8')
 
