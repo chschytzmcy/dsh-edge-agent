@@ -13514,5 +13514,92 @@ Edge tab 门控跟**名册默认 preset**（tab 类型注册表全局，§7.138/
 - README 顶部块补充本裁决口径（平时不开 Edge tab，边缘面板按需临时切默认）。
 - 本节 PROGRESS §7.141 存档。无代码改动（名册默认是运行期/配置态，非代码）。
 
+## 7.142 主人裁决：Edge tab **一直都在**，只有边缘模式才真正生效
+
+### 裁决与由来
+
+主人裁决（2026-10-28 15:40）：「现在选择任何模式都不会出现 edge tab 了，回退到
+之前吧 —— edge tab 一直都在，只有边缘模式才真正生效」。
+
+来由是 §7.141 的连带后果：默认 preset 改回标准模式后，Edge tab 的门控
+（跟**名册默认项**走）把页签整个藏掉了，**连主人手动选边缘模式的会话也看不见**
+—— 而主人要的是「tab 一直在，只有边缘模式才真正生效」。两句裁决合起来才是完整
+口径：**可见性 ≠ 生效性**。
+
+### 口径重排（两件事，各归其位）
+
+| | 之前（§7.136–§7.141） | 现在（§7.142） |
+|---|---|---|
+| Edge tab 是否存在 | 跟**名册默认 preset** 走 ⇒ 默认=标准 ⇒ 任何模式都没有 | **常驻注册** ⇒ 任何工作模式的会话右栏都有这个页签，可随时点开 |
+| 谁自动打开面板 | 默认 preset = 边缘 时 | **该会话本身是边缘模式时**（会话级信号） |
+| 切回标准模式 | 强制关掉已打开的面板、注销 tab 类型 | **不动** —— 只有主人自己关 |
+| 面板内容 | 该会话自己的 edge 历史 | 不变（标准会话 = 空，诚实） |
+| 本项目能力是否生效 | 服务端 scope 隔离（§7.136） | 不变 —— 边缘模式会话才触发（§7.140 实测：标准会话审计链零事件） |
+
+### 会话级判据（§7.140 缺口的正解）
+
+§7.140 记过一个缺口：客户端拿不到「这个会话是不是边缘模式」的可靠信号。**本轮
+找到了宿主自己的读法**：
+
+```
+session.projectionValues.agentPreset
+```
+
+宿主 UI 就是用它判定的（`packages/client/ui-agent-preset/src/client/seat-store.ts:265`
+`presetOf`，被 `AgentPresetSeatController` 反复调用）。它比会话头快照（创建时快照）
+和 projcache（客户端回写）都权威 —— 它是**宿主 session summary 的投影值**，
+随 preset 切换更新。
+
+客户端实现（`src/client/index.ts`）：
+
+- `sessionPresetOf(sessionId)` —— 经 `ctx.get('sessions')` **读**（绝不 `inject`：
+  sessions face 是可选的，pend 会拖垮整个 web boot），读会话摘要的
+  `projectionValues.agentPreset`。
+- `sessionUsesEdge(sessionId)` —— 读得到就按它判（`=== 'edge'`）；**读不到才回落**
+  到名册默认项（宿主连这个会话的 preset 都报不出来时的兜底）。
+- `edgeHealthy` —— 名册里 edge 行没有 `broken`（挂载坏了就没有能填面板的组合，
+  不自动开），`defaultIsEdge` —— 名册默认项（兜底判据）。
+
+roster 轮询的**职责因此收窄**：不再决定页签是否存在，只回答「边缘模式健康吗」
+和「默认是谁」。
+
+### 门禁（`_simulate-client-mount.mjs` 换成新契约）
+
+mock 新增 `sessions` face（`list.getSnapshot().byId[sessionId].projectionValues.agentPreset`），
+断言从「门控双向」改成 §7.142 的五条：
+
+1. 标准模式（默认与会话都是）⇒ tab **类型已注册**，但会话**不自动开**。
+2. 会话切成边缘模式而**默认仍是标准模式** ⇒ 自动打开 ⇒ **这条是本轮的核心**
+   （旧门控下不可能发生：主人的手动选择正是被它挡住的）。
+3. 同一会话再轮询 ⇒ 不重复打开（每会话一次，用户自己关过就不再开）。
+4. 切默认 preset ⇒ 类型仍注册、**已开的 tab 不被关闭**。
+5. 宿主读不到会话 preset ⇒ 回落名册默认项（默认=边缘 ⇒ 照常自动开）。
+
+**反向证伪**：把 `sessionUsesEdge` 临时退回旧实现（忽略会话信号、只看默认项），
+重跑门禁 ⇒ **exit 1**，红点精确命中第 2 条与第 4 条
+（`expected exactly ONE auto-open of the Edge tab in session s1, got 0`），
+证明新断言不是摆设。
+
+### 交付与验证
+
+- `src/client/index.ts`：tab 类型常驻注册（`registerTabType()`，卸载时才注销）；
+  新增 `SessionsFace` / `sessionPresetOf` / `sessionUsesEdge`；删除「切回标准模式
+  强制关面板」的逻辑；`tryAutoOpen` / `scheduleAutoOpen` 改用会话级判据。
+- `scripts/_simulate-client-mount.mjs`：新契约五条断言 + `sessions` face mock。
+- `scripts/probe-desktop-preset-roster.mjs`：文案改成新口径（不再说
+  「Edge tab stays hidden」）。
+- 文档：README 顶部块改写「可见性 ≠ 生效性」；排障手册第 3 节加口径反转提示
+  与 3.5「页签在但不自动打开」判据。
+- 验证：单测 67 文件 1353 passed / 2 skipped；eslint 0 error、两个改动文件零告警；
+  门禁 15 项全绿（含 client-mount 自证）；全量构建后重建 installable 并重启桌面版
+  （宿主端口 64711），运行副本 SHA256 与 dist 一致。
+
+### 遗留
+
+- 桌面版 **UI 层面**未取证：主人窗口正在使用，未做截图操作；本轮的行为契约由
+  门禁（client-mount 模拟）自证，实机以主人目视确认为准。
+- 「Edge tab 按会话可见性」的老议题作废：现在页签**对所有会话可见**，按会话分的
+  只有「是否自动打开」与「面板有没有数据」。
+
 
 

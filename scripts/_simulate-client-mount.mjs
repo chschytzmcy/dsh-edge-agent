@@ -10,20 +10,17 @@
 //   4. mount the materialized plugin against a mock cordis webview context
 //      that provides the services the plugin waits for
 //      (locale / sidebarRightTabs / slots / remote.agentPresets)
-//   5. assert the preset gate in BOTH directions (§7.136):
+//   5. assert the §7.142 contract:
 //
-//        standard preset  → NO Edge tab type registered
-//        edge preset      → the tab type IS registered, body + title seated
-//        back to standard → the tab type is unregistered again
-//
-//   6. assert the §7.139 auto-open contract:
-//
-//        standard preset  → the Edge tab is NOT opened, even with a session
-//                            on screen
-//        edge preset      → the Edge tab IS opened for the session on screen
-//        same session     → opened once only (a poll must not re-open it)
-//        another session  → opened for that session too
-//        back to standard → the Edge tab is CLOSED again (标准模式 = 纯宿主)
+//        any work mode   → the Edge tab TYPE is registered (the chip is
+//                           always there — 主人裁决「edge tab 一直都在」)
+//        标准模式 session→ the tab does NOT open itself
+//        边缘模式 session→ the tab IS opened for that session, even when the
+//                           roster's DEFAULT preset is 标准模式
+//        same session    → opened once only (a poll must not re-open it)
+//        another session → opened for that session too
+//        preset switch   → the type stays registered and an open tab is NOT
+//                           closed (only the user closes the panel)
 //
 // This reproduces the exact contract the host checks:
 //   - registration id === package name (client-modules: `factories.has(id)`)
@@ -228,6 +225,21 @@ const sidebarRight = {
   },
 }
 
+// §7.142: the SESSION-level preset signal, read the way the host reads it
+// (ui-agent-preset/src/client/seat-store.ts:265 `presetOf`):
+// `session.projectionValues.agentPreset`. The mock keeps a mutable table so
+// the script can move a session between 边缘模式 and 标准模式 WITHOUT touching
+// the roster's default — that separation is the whole point of §7.142.
+const sessionSummaries = {
+  s1: { projectionValues: { agentPreset: 'standard' } },
+  s2: { projectionValues: { agentPreset: 'edge' } },
+}
+const sessions = {
+  list: {
+    getSnapshot: () => ({ byId: sessionSummaries }),
+  },
+}
+
 const services = {
   locale,
   slots,
@@ -235,6 +247,7 @@ const services = {
   sidebarRightTabs: tabs,
   remote: { agentPresets },
   'remote.agentPresets': agentPresets,
+  sessions,
 }
 
 // A session is on screen from the start: the auto-open must key off it.
@@ -374,17 +387,20 @@ const report = (phase) => {
 console.log(`  locale namespaces: ${locales.map((l) => l.ns).join(', ') || '(none)'}`)
 console.log(`  slot entries:      ${slotEntries.length}`)
 
-// Phase 1 — 标准模式: no Edge tab type may exist, and the tab must not open
-// itself: 标准模式 is a pure host (主人裁决 2026-10-28).
-await settle()
-await flushTimers()
-report('standard')
-if (registeredTabs.length !== 0) {
-  fail(`the Edge tab type is registered while the active preset is "standard" — the tab must exist only in 边缘模式`)
-}
-if (sidebar.opened.length !== 0) {
-  fail(`the Edge tab opened itself while the active preset is "standard" (opened=${JSON.stringify(sidebar.opened)}) — 标准模式 must stay a pure host`)
-}
+// ── §7.142 contract ────────────────────────────────────────────────────────
+//
+//   1. the Edge tab TYPE is registered in EVERY work mode (the chip is always
+//      there — 主人裁决：「edge tab 一直都在」)
+//   2. a session opens into the panel only when THAT session is 边缘模式
+//      (`session.projectionValues.agentPreset` — the host's own reading),
+//      regardless of what the roster's default preset is
+//   3. one open per session, never re-opened after the user closes it
+//   4. a preset switch never closes an open Edge tab and never unregisters
+//      the type
+//
+// The old §7.136/§7.139 contract was the opposite: the type existed only while
+// 边缘模式 was the DEFAULT preset, and leaving it closed the tab again. That
+// made the chip depend on a global setting — 主人推翻了这个口径.
 
 // The body/title seats are registered unconditionally (the sidebar dispatches
 // them by key, so an unseated body would break the chip), but they must carry
@@ -402,14 +418,13 @@ if (!titleSeat) {
   fail(`title slot key "${titleSeat.entry?.key}" !== registry id "dsh-edge-agent"`)
 }
 
-// Phase 2 — 边缘模式: the tab type must appear.
-roster.presets[0].isDefault = false
-roster.presets[1].isDefault = true
-await poll()
+// Phase 1 — 标准模式 (default AND session): the tab TYPE must exist, and the
+// session must NOT open itself into the panel.
+await settle()
 await flushTimers()
-report('edge')
+report('standard')
 if (registeredTabs.length !== 1) {
-  fail(`the Edge tab type is NOT registered while 边缘模式 is the active preset (registered=${registeredTabs.length})`)
+  fail(`the Edge tab type is NOT registered in 标准模式 (registered=${registeredTabs.length}) — §7.142: the tab is always there`)
 } else {
   const tab = registeredTabs[0]
   if (tab.id !== 'dsh-edge-agent' || tab.kind !== 'dsh-edge-agent') {
@@ -426,20 +441,29 @@ if (registeredTabs.length !== 1) {
     console.log(`  body element type: ${typeof el.type === 'string' ? `<${el.type}>` : (el.type?.name ?? 'component')}`)
   }
 }
+if (sidebar.opened.length !== 0) {
+  fail(`the Edge tab opened itself in a 标准模式 session (opened=${JSON.stringify(sidebar.opened)}) — only 边缘模式 opens itself`)
+}
 
-// §7.139 — the auto-open contract, asserted in both directions.
-//
-// The Edge tab opens itself in 边缘模式 (the host never opens a tab on its
-// own — the guide page is the default), once per session, and it is closed
-// again when the master leaves 边缘模式 (标准模式 = 纯宿主, no dead chip).
+// The roster must still be read: it answers whether 边缘模式 is healthy and
+// supplies the fallback default (§7.142). A tab registered on a guess is the
+// §7.136 failure mode.
+if (agentPresets.reads < 1) {
+  fail(`the roster was never read (reads=${agentPresets.reads}) — the roster watcher must reach \`agentPresets.list()\``)
+}
+
 const openedIn = (sessionId) => sidebar.opened.filter((o) => o.sessionId === sessionId && o.kind === 'dsh-edge-agent')
 
-// Phase 3 — 边缘模式 opens the Edge tab in the session on screen.
-if (agentPresets.reads < 1) {
-  fail(`the roster was never read (reads=${agentPresets.reads}) — the roster watcher must reach \`agentPresets.list()\`, or the tab type is registered on a guess`)
-}
+// Phase 2 — the SESSION becomes 边缘模式 (主人 picks it in the chat chip) while
+// the roster's DEFAULT stays 标准模式: the Edge tab must open for that
+// session. This is the §7.142 core — the old gate (the default preset) made
+// this impossible, and 主人 hit exactly that.
+sessionSummaries.s1.projectionValues.agentPreset = 'edge'
+await poll()
+await flushTimers()
+report('edge session, standard default')
 if (openedIn('s1').length !== 1) {
-  fail(`expected exactly ONE auto-open of the Edge tab in session s1, got ${openedIn('s1').length} (all opens: ${JSON.stringify(sidebar.opened)})`)
+  fail(`expected exactly ONE auto-open of the Edge tab in session s1, got ${openedIn('s1').length} (all opens: ${JSON.stringify(sidebar.opened)}) — a 边缘模式 session must open itself even when the default preset is 标准模式`)
 }
 if (!sidebarRight.tabsIn('s1').some((t) => t.kind === 'dsh-edge-agent')) {
   fail('the Edge tab is not among the session tabs after the auto-open')
@@ -452,28 +476,37 @@ if (openedIn('s1').length !== 1) {
   fail(`the Edge tab was opened ${openedIn('s1').length} times in session s1 — one open per session, and never re-opened after the user closes it`)
 }
 
-// Another session on screen gets its own Edge tab.
+// Phase 3 — another 边缘模式 session gets its own Edge tab.
 sidebar.show('s2')
 await flushTimers()
 if (openedIn('s2').length !== 1) {
   fail(`expected exactly ONE auto-open of the Edge tab in session s2, got ${openedIn('s2').length}`)
 }
 
-// Phase 4 — back to 标准模式: the tab type must be dropped again, and the
-// Edge tab we opened must be closed with it.
-roster.presets[0].isDefault = true
-roster.presets[1].isDefault = false
+// Phase 4 — the default preset flips to 边缘模式: the type stays registered,
+// and the tabs that are open stay open. A preset switch is a settings change,
+// not a reason to close the operator's panel.
+roster.presets[0].isDefault = false
+roster.presets[1].isDefault = true
 await poll()
 await flushTimers()
-report('standard again')
-if (registeredTabs.length !== 0) {
-  fail(`the Edge tab type survived the switch back to "standard" (registered=${registeredTabs.length})`)
+report('edge default')
+if (registeredTabs.length !== 1) {
+  fail(`the Edge tab type count changed with the default preset (registered=${registeredTabs.length}) — the type is registered once, for every work mode`)
 }
-if (sidebarRight.tabsIn('s2').some((t) => t.kind === 'dsh-edge-agent')) {
-  fail('the Edge tab survived the switch back to "standard" — 标准模式 must not keep our tab')
+if (sidebar.closed.length !== 0) {
+  fail(`a preset switch closed an open Edge tab (closed=${JSON.stringify(sidebar.closed)}) — only the user closes the panel`)
 }
-if (sidebar.closed.length === 0) {
-  fail('the Edge tab was not closed when the master left 边缘模式')
+if (!sidebarRight.tabsIn('s1').some((t) => t.kind === 'dsh-edge-agent')) {
+  fail('the Edge tab disappeared from session s1 after a preset switch — it must stay')
+}
+
+// Phase 5 — the fallback: a session the host cannot name (no projection value)
+// follows the roster's default, which is 边缘模式 here.
+sidebar.show('s3')
+await flushTimers()
+if (openedIn('s3').length !== 1) {
+  fail(`expected exactly ONE auto-open of the Edge tab in session s3 (the host cannot name its preset ⇒ the default applies), got ${openedIn('s3').length}`)
 }
 
 if (failed) process.exit(1)

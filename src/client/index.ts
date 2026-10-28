@@ -129,6 +129,21 @@ interface AgentPresetsFace {
   }>
 }
 
+/** The `sessions` face — the host's client-side session directory.
+ *
+ *  §7.142: the SESSION-level preset signal, read exactly the way the host
+ *  reads it (ui-agent-preset/src/client/seat-store.ts:265 `presetOf`:
+ *  `session.projectionValues.agentPreset`). The roster's `isDefault` only
+ *  says what NEW sessions run under; this says what THIS session runs
+ *  under — which is what 「只有边缘模式才真正生效」 actually needs. */
+interface SessionsFace {
+  list: {
+    getSnapshot(): {
+      byId?: Record<string, { projectionValues?: { agentPreset?: unknown } } | undefined> | undefined
+    }
+  }
+}
+
 /** The `sidebarRight` face — the host's right-sidebar controller.
  *
  *  `openTab(kind)` acts on the session **currently on screen** (the host
@@ -309,28 +324,32 @@ export function apply(ctx: CordisCtx): void {
     }
   })
 
-  // ── §7.136: the Edge tab exists only in 边缘模式 ─────────────────────────
+  // ── §7.142: the Edge tab is ALWAYS there; 边缘模式 is what makes it LIVE ──
   //
-  // 主人裁决（2026-10-28）：「只有选择 边缘模式 才会出现 edge tab」。
+  // 主人裁决（2026-10-28 15:40）：「edge tab 一直都在，只有边缘模式才真正生效」
+  // —— 推翻了 §7.136 的「只有边缘模式才出现 tab」。
   //
-  // The webview's module graph is GLOBAL — the host composes ONE boot graph
-  // for the whole app (@deepseek-ai/dsh-client-modules), and the sidebar's tab
-  // registry lists every registered tab type for every session. So the only
-  // way to make the tab appear in one work mode and not in another is to
-  // register / unregister the tab TYPE.
+  // 之前 tab 的可见性跟**名册默认 preset** 走，而默认 preset 归宿主管：主人把
+  // 默认改回标准模式（§7.141）之后，任何工作方式都看不见 Edge tab，连手动
+  // 选了边缘模式的会话也看不见 —— 主人说「回退到之前」。
   //
-  // The signal: `agentPresets.list()` marks the roster row with `isDefault` —
-  // the registry's `defaultId`, i.e. the preset new sessions run under (the
-  // settings page's 「设为默认」 writes exactly that). We poll it and register
-  // the type only while the active preset is ours.
+  // 现在分成两件事，各归其位：
+  //   - **可见性**：tab 类型常驻注册（任何工作方式都有这个 chip，可点开）。
+  //   - **生效性**：只有**边缘模式会话**才自动打开面板、才有本项目能力。
+  //     能力隔离在服务端早已完成（hook 绑 preset 作用域，§7.136；§7.140 实测
+  //     标准模式会话审计链零事件），客户端这边不再重复扮演能力开关。
   //
-  // Known gap (documented in docs/PROGRESS.md §7.136): a per-session pick
-  // (the conversation chip's preset selector) does NOT change the default,
-  // so the tab stays hidden for that session — the SERVER side still behaves
-  // per session (the Edge hooks are scope-bound to the preset, see
-  // src/dsh-adapter/input-guard.ts).
-  let tabVisible = false
+  // 「这个会话是不是边缘模式」按**会话级**信号判定，不再看默认 preset：宿主
+  // 自己就是用 `session.projectionValues.agentPreset` 判的
+  // (ui-agent-preset/src/client/seat-store.ts:265 `presetOf`)。
+  let tabRegistered = false
   let disposeTabType: (() => void) | undefined
+  /** Is 边缘模式 mounted and healthy? A broken preset has no working
+   *  composition, so the tab would promise panels the server cannot fill. */
+  let edgeHealthy = true
+  /** The roster's default preset — only a FALLBACK, for the sessions face
+   *  being unreadable (then the host cannot name this session's preset). */
+  let defaultIsEdge = false
 
   // ── §7.139: 边缘模式 opens its own tab ──────────────────────────────────
   //
@@ -343,6 +362,9 @@ export function apply(ctx: CordisCtx): void {
   // 所以边缘模式自己开：会话上台的那一刻，把 Edge tab 开在它里面。这正是
   // 宿主自己的插件用的导航（`ctx.sidebarRight.openTab(kind)`，
   // dsh-experimental-client-ui-forge/src/client/mount.ts:251）。
+  //
+  // §7.142: 「谁是边缘模式」现在按**会话**判定（见 sessionUsesEdge），不再按
+  // 名册默认 preset 判定 —— 主人手动选边缘模式的会话照样自动开面板。
 
   /** Sessions the Edge tab was auto-opened in — one open per session, and
    *  never re-opened after the user closed it themselves. */
@@ -364,32 +386,53 @@ export function apply(ctx: CordisCtx): void {
     }
   }
 
-  /** Close the Edge tab of one session — 标准模式是纯宿主，我们的 tab 必须走。 */
-  const closeEdgeTabIn = (sessionId: string): void => {
-    if (sidebar === undefined) return
-    const tab = edgeTabIn(sessionId)
-    if (tab === undefined || typeof tab.id !== 'string') return
+  /** The preset THIS session runs under, or undefined when the host cannot say.
+   *
+   *  Read through `ctx.get` — never `inject`: the sessions face is optional
+   *  by contract and this fiber must never pend on it (a pending entry fails
+   *  the whole web boot — dsh-client-web/src/boot-client.ts:66-88). */
+  const sessionPresetOf = (sessionId: string): string | undefined => {
+    let raw: unknown
     try {
-      if (typeof sidebar.closeIn === 'function') {
-        sidebar.closeIn(sessionId, tab.id)
-        return
-      }
-      // The published face closes only the on-screen session's tab.
-      if (typeof sidebar.close === 'function' && sidebar.mounted?.getSnapshot() === sessionId) {
-        sidebar.close(tab.id)
-      }
-    } catch (error) {
-      reportFailure('edge tab close', error)
+      raw = ctx.get?.('sessions')
+    } catch {
+      return undefined
     }
+    const sessions = raw as SessionsFace | undefined
+    if (sessions === undefined || typeof sessions.list?.getSnapshot !== 'function') return undefined
+    try {
+      const byId = sessions.list.getSnapshot()?.byId
+      const value = byId?.[sessionId]?.projectionValues?.agentPreset
+      return typeof value === 'string' ? value : undefined
+    } catch (error) {
+      reportFailure('session preset lookup', error)
+      return undefined
+    }
+  }
+
+  /** Does this session run under 边缘模式?
+   *
+   *  The host's own reading wins — `session.projectionValues.agentPreset`, the
+   *  same source the preset chip reads (ui-agent-preset/src/client/seat-store.ts
+   *  `presetOf`). The roster's default is only the FALLBACK, for a host that
+   *  cannot name this session's preset at all. */
+  const sessionUsesEdge = (sessionId: string): boolean => {
+    const preset = sessionPresetOf(sessionId)
+    if (preset !== undefined) return preset === EDGE_PRESET_ID
+    return defaultIsEdge
   }
 
   /** One rung of the auto-open ladder: open the Edge tab in `sessionId`. */
   const tryAutoOpen = (sessionId: string, attempt: number): void => {
     const timer = setTimeout(() => {
       pendingOpen = undefined
-      if (!tabVisible || sidebar === undefined) return
+      if (!tabRegistered || sidebar === undefined) return
       // The session moved on while we waited — that ladder is not ours.
       if (sidebar.mounted?.getSnapshot() !== sessionId) return
+      // §7.142: only an 边缘模式 session opens itself into the Edge panel.
+      // The panel stays honest in other modes: the chip is there (the type is
+      // registered for every session), the data is simply this session's own.
+      if (!edgeHealthy || !sessionUsesEdge(sessionId)) return
       if (edgeTabIn(sessionId) !== undefined) {
         openedSessions.add(sessionId)
         return
@@ -414,10 +457,13 @@ export function apply(ctx: CordisCtx): void {
 
   /** Start the ladder for the session on screen, unless it is already open. */
   const scheduleAutoOpen = (): void => {
-    if (!tabVisible || sidebar === undefined) return
+    if (!tabRegistered || sidebar === undefined) return
     const sessionId = sidebar.mounted?.getSnapshot()
     if (typeof sessionId !== 'string' || sessionId === '') return
     if (openedSessions.has(sessionId)) return
+    // §7.142: a session that is not 边缘模式 never opens itself into the
+    // Edge panel — the chip is there, the panel is the user's call.
+    if (!edgeHealthy || !sessionUsesEdge(sessionId)) return
     if (pendingOpen !== undefined) {
       if (pendingOpen.sessionId === sessionId) return
       clearTimeout(pendingOpen.timer)
@@ -451,59 +497,54 @@ export function apply(ctx: CordisCtx): void {
     scheduleAutoOpen()
   }
 
-  const setTabVisible = (visible: boolean): void => {
-    const changed = tabVisible !== visible
-    tabVisible = visible
-    if (visible) {
-      if (disposeTabType === undefined) {
-        ctx.inject(['sidebarRightTabs'], (raw) => {
-          // The roster may have flipped back while the face was still pending;
-          // registering then would publish a tab nobody asked for.
-          if (!tabVisible || disposeTabType !== undefined) return
-          const c = raw as unknown as CordisCtx & { sidebarRightTabs?: SidebarTabsFace }
-          const tabs = c.sidebarRightTabs
-          if (tabs === undefined || typeof tabs.register !== 'function') return
-          try {
-            const dispose = tabs.register({
-              id: TAB_ID,
-              kind: TAB_ID,
-              title: () => tr('tab.title'),
-              guide: [{
-                // The registry validates guide entries by `id` uniqueness
-                // (`new Set(entries.map(e => e.id)).size === entries.length`) and
-                // the guide body keys capsules by it — an undefined id would make
-                // one entry look duplicated to a second contributor.
-                id: `${TAB_ID}-guide`,
-                order: 30,
-                title: () => tr('tab.title'),
-                description: () => tr('guide.description'),
-              }],
-            })
-            disposeTabType = dispose
-          } catch (error) {
-            reportFailure('sidebar tab type registration', error)
-          }
+  /** Register the Edge tab TYPE — once, for every work mode (§7.142).
+   *
+   *  The tab registry is global (the host composes ONE boot graph for the
+   *  whole app), so the TYPE is what makes the chip exist at all. §7.136
+   *  registered and un-registered it with the roster, which tied the chip's
+   *  existence to the DEFAULT preset — 主人裁决（2026-10-28）：「edge tab
+   *  一直都在，只有边缘模式才真正生效」⇒ 常驻注册，模式的差别交给
+   *  auto-open 与服务端的能力隔离。 */
+  const registerTabType = (): void => {
+    if (disposeTabType !== undefined) return
+    ctx.inject(['sidebarRightTabs'], (raw) => {
+      if (disposeTabType !== undefined) return
+      const c = raw as unknown as CordisCtx & { sidebarRightTabs?: SidebarTabsFace }
+      const tabs = c.sidebarRightTabs
+      if (tabs === undefined || typeof tabs.register !== 'function') return
+      try {
+        const dispose = tabs.register({
+          id: TAB_ID,
+          kind: TAB_ID,
+          title: () => tr('tab.title'),
+          guide: [{
+            // The registry validates guide entries by `id` uniqueness
+            // (`new Set(entries.map(e => e.id)).size === entries.length`) and
+            // the guide body keys capsules by it — an undefined id would make
+            // one entry look duplicated to a second contributor.
+            id: `${TAB_ID}-guide`,
+            order: 30,
+            title: () => tr('tab.title'),
+            description: () => tr('guide.description'),
+          }],
         })
+        disposeTabType = dispose
+        tabRegistered = true
+      } catch (error) {
+        reportFailure('sidebar tab type registration', error)
       }
-      if (changed) scheduleAutoOpen()
-      return
-    }
-    if (!changed) return
-    // 离开边缘模式 —— 标准模式是纯宿主：把我们的 tab 收掉，别留一个死 chip。
-    if (sidebar !== undefined) {
-      const sessionId = sidebar.mounted?.getSnapshot()
-      if (typeof sessionId === 'string' && sessionId !== '') closeEdgeTabIn(sessionId)
-    }
-    openedSessions.clear()
-    // Hide: drop the type again — the sidebar refreshes on registry change.
-    const dispose = disposeTabType
-    disposeTabType = undefined
-    if (typeof dispose === 'function') dispose()
+      // The session on screen may have arrived before the type existed.
+      scheduleAutoOpen()
+    })
   }
 
   // Roster watcher — deferred: a missing remote must never pend this fiber
   // (the web boot audit THROWS on a pending entry; a missing tab is a small
   // loss, a boot failure is the app).
+  //
+  // §7.142: the roster no longer decides whether the tab EXISTS. It answers
+  // two narrower questions: is 边缘模式 healthy (a broken preset cannot fill
+  // the panels), and — only as a fallback — is it the DEFAULT.
   ctx.inject(['remote', 'remote.agentPresets'], (raw) => {
     const api = pickAgentPresets(raw) ?? remoteFace(ctx)
     if (api === undefined || typeof api.list !== 'function') return
@@ -518,10 +559,10 @@ export function apply(ctx: CordisCtx): void {
         if (!Array.isArray(presets)) return
         const edge = presets.find((p) => p.id === EDGE_PRESET_ID)
         const active = presets.find((p) => p.isDefault === true)
-        // A preset that failed to mount has no working composition: showing
+        // A preset that failed to mount has no working composition: opening
         // the tab would promise panels the server cannot fill.
-        const healthy = edge !== undefined && edge.broken === undefined
-        setTabVisible(healthy && active?.id === EDGE_PRESET_ID)
+        edgeHealthy = edge !== undefined && edge.broken === undefined
+        defaultIsEdge = active?.id === EDGE_PRESET_ID
         // The session on screen may have arrived while the tab type was not
         // registered yet — the ladder retries, and this is the cheap retry.
         scheduleAutoOpen()
@@ -534,9 +575,18 @@ export function apply(ctx: CordisCtx): void {
     const timer = setInterval(() => { void check() }, ROSTER_POLL_MS)
     ctx.effect?.(() => () => {
       clearInterval(timer)
-      setTabVisible(false)
+      // Unload: drop the tab type again (the sidebar refreshes on registry
+      // change). §7.142: this happens on UNLOAD, not on a preset switch.
+      const dispose = disposeTabType
+      disposeTabType = undefined
+      tabRegistered = false
+      if (typeof dispose === 'function') dispose()
     }, 'dsh-edge-agent: preset roster watcher')
   })
+
+  // §7.142: the tab type is registered for EVERY work mode — the chip is
+  // always there, and 边缘模式 is what makes the session open into it.
+  registerTabType()
 
   // Body seat — keyed by the tab kind, painted with the React tree.
   ctx.inject(['slots'], (raw) => {

@@ -129,10 +129,18 @@ node scripts/probe-desktop-preset-roster.mjs "<URL>" --set-default edge
 
 ## 3. Edge tab 不出现（**任何**工作模式都没有）
 
+> **§7.142 起口径反转**：Edge tab 类型是**常驻注册**的 —— 任何工作方式的会话右栏
+> 都应该有这个页签（只是**边缘模式会话会自己打开**，其它模式要手点）。所以
+> **「看不到 Edge 页签」现在一律是故障**，不再是「默认 preset 不是边缘模式」的
+> 正常表现。下面 3.1 的两分法只适用于 §7.139 之前的老版本。
+
 **现象**：会话右侧没有 Edge 页签；guide 里也没有 Edge 入口（只有宿主自带的
 工作区文件 / 上下文 / 新建终端 / 浏览器）。
 
 ### 3.1 先分清「门控为 false」与「门控从未运行」
+
+> 仅适用于 §7.139 及更早（当时 tab 类型按默认 preset 注册 / 注销）。
+> §7.142 之后 tab 常驻 ⇒ 无论名册默认是谁，页签都该在。
 
 两者现象相同，判据不同：
 
@@ -164,7 +172,7 @@ Cordis 的**注入作用域是 context PROXY**：读一个该作用域没有提�
 ### 3.3 动作
 
 ```bash
-# 1) 名册对不对（默认 preset 是谁）
+# 1) 名册对不对（默认 preset 是谁、边缘模式挂上了没有）
 node scripts/probe-desktop-preset-roster.mjs "http://127.0.0.1:<port>/?token=…"
 
 # 2) 客户端 bundle 是不是新版（按 rev 取，看是否含 diag 标记/体积变化）
@@ -180,6 +188,21 @@ node scripts/_simulate-client-mount.mjs
 只有唯一 guide 条目才作默认页，否则默认页是 guide）。
 所以「边缘模式自动打开 Edge tab」是我们自己做的（`ctx.get('sidebarRight').openTab`），
 不是宿主行为 —— 升级宿主后这条要重新验证。
+
+### 3.5 §7.142 新增的判据：页签在，但**不自动打开**
+
+**现象**：Edge 页签在右栏（可点开），但边缘模式会话上台时它没有自动展开。
+
+判据看**会话级**信号，不是名册默认项：
+
+- 宿主自己的读法是 `session.projectionValues.agentPreset`
+  （`ui-agent-preset/src/client/seat-store.ts:265` `presetOf`）—— 客户端用同一个来源。
+- 该会话的 `agentPreset` 不是 `edge` ⇒ 不自动打开（**正常**：只有边缘模式会话
+  才自己开面板；标准模式会话要手点，页签数据是空的）。
+- 宿主读不到该会话的投影值（会话刚建、列表还没同步）⇒ **回落**到名册默认项；
+  这时把默认设成边缘模式就能自动开（`--set-default edge`）。
+
+**切回标准模式不会把已打开的面板关掉**（§7.142）—— 只有主人自己关。
 
 ---
 

@@ -110,10 +110,13 @@ async function main() {
     process.exit(1)
   }
   console.log(`\nedge preset: ${edge.broken === undefined ? 'healthy' : `BROKEN (${edge.broken})`}, isDefault=${edge.isDefault === true}`)
+  // §7.142: the tab type is registered in EVERY work mode; what the default
+  // preset decides is whether a NEW session starts under 边缘模式 (and hence
+  // opens itself into the Edge panel).
   console.log(
     edge.isDefault === true
-      ? 'Edge tab should be registered (client gate: roster.isDefault === edge).'
-      : 'Edge tab stays hidden: the client gate follows the DEFAULT preset. Run with --set-default edge.',
+      ? 'Edge tab: registered in every work mode (§7.142); new sessions start under 边缘模式 ⇒ they open the panel themselves.'
+      : 'Edge tab: registered in every work mode (§7.142). The default is 标准模式 ⇒ new sessions stay standard; pick 边缘模式 in a session to make it open the panel.',
   )
 }
 
