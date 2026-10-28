@@ -62,3 +62,7 @@ dist/
 # ad-hoc screenshot drops at repo root
 /*.png
 /png/
+
+# §7.137 (2026-10-28): 诊断期的临时落盘（宿主 asar 提取物、cookie 库快照、
+# 探针脚本…）。它们含会话凭据或宿主源码，绝不入库；正式工具在 scripts/ 下。
+.tmp-*

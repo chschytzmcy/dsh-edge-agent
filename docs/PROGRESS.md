@@ -13198,3 +13198,130 @@ boot 图，tab 类型是全局注册表（`dsh-client-ui-sidebar-right` 的 `reg
   `modelSelection: true` + `modelDiscovery: true`、少了那一行 ⇒ 宿主升级后
   需要重新对齐。
 
+## §7.137 桌面版启动失败：宿主认证 cookie 累积 ⇒ 请求头超限 ⇒ 431（2026-10-28）
+
+### 主人报的现象
+
+「dsh 桌面版启动失败了」：弹「DeepSeek Harness is unavailable — desktop
+welcome: Web authentication failed」，宿主被外壳拆掉。崩溃报告在
+`%APPDATA%\@deepseek-ai\dsh-desktop\logs\crash-<ts>-host.log`：
+
+```
+phase: startup
+Error: desktop welcome: Web authentication failed
+    at connectDesktopWelcome (…/app.asar/lib/main.js:8886:31)
+```
+
+### 根因（逐环源码实证 + 现场复现）
+
+**不是本项目引起**：A/B 回退到 `a0d9da3` 的产物重建部署 ⇒ 同样失败。
+
+| 环 | 事实 | 出处 |
+|---|---|---|
+| ① 桌面宿主用**随机端口**起 web 服务 | `args: […,'--port','0']` | `apps/desktop-host/src/index.ts:36` |
+| ② 宿主按 **audience = host:port** 签发会话 cookie，名字 = `dsh-auth-` + base64url(sha256(authority))，有效期 30 天 | `cookieName()` / `sessionCookie()` | `dsh-client-connection/lib/index.js` |
+| ③ **端口进了 cookie 名** ⇒ 每次启动一条新名字 ⇒ 旧 cookie 永不命中、永不过期 ⇒ Chromium jar 无上限累积 | Chromium cookie 不按端口匹配 | 同上 |
+| ④ 外壳 welcome 握手用 Electron `net.fetch(url,{credentials:'include'})` —— **带 cookie jar** | `connectDesktopWelcome` | `app.asar/lib/main.js:8883-8887` |
+| ⑤ 宿主 web 服务是裸 `createServer(listener)`，**没设 `maxHeaderSize`** ⇒ Node 默认 **16384 B** | — | `dsh-host-webserver/lib/index.js:412` |
+| ⑥ 头超限 ⇒ 宿主回 **431** ⇒ `!authenticated.ok` ⇒ 抛错 ⇒ 拆宿主 | — | `main.js:8887` |
+
+**为什么「Node 通、Electron 不通」**：外壳第一步 `authenticateWebHost`
+（`main.js:8230`）用的是 **Node 的 `fetch`** —— 没有 cookie jar ⇒ 头很小 ⇒
+303 正常；第二步 `net.fetch` 带 jar ⇒ 头爆 ⇒ 401/431 ⇒ 失败。这条不对称是
+定位的钥匙，也是之前「直连 web 服务一切正常」却无法自证的原因。
+
+### 现场数据
+
+- cookie 库 **71 条**，**全是** `dsh-auth-*` / host `127.0.0.1`（**零其他
+  cookie** ⇒ 清空无副作用）；每条 **227 B**（名 52 + 值 173 + 分隔符），
+  Cookie 头合计 **16,117 B**。
+- 裸 socket 重放真实 cookie 打宿主：
+
+```
+A) token 请求 + 71 条陈旧 cookie (16,186 B) -> HTTP/1.1 431 Request Header Fields Too Large
+B) 重定向 + 陈旧 + 新 cookie   (16,414 B) -> HTTP/1.1 431 Request Header Fields Too Large
+C) 只有新 cookie                        -> HTTP/1.1 200 OK
+```
+
+⇒ **约 70 次启动后必然撞线**（实测 ~7 次/天 ⇒ ~10 天复现一次）。
+
+### 修复与固化
+
+- **修复**：清掉 Electron session 的 `Network/Cookies`（可恢复删除）⇒ 重启，
+  桌面版**实测正常启动**：5 个进程存活、宿主监听 63976、stdout 打出
+  `dsh web: …`、**零新崩溃日志**。
+- **工具** `scripts/reset-desktop-auth-cookies.mjs`：
+  - 报告（默认，不改任何东西）：cookie 总数 / `dsh-auth-*` 数 / 死端口数 /
+    **请求头投影 vs 16384** / 「还能撑几次启动」/ OVER LIMIT 判定；
+  - `--apply`：删掉**端口已死**的 `dsh-auth-*`（保留当前会话那条）；
+  - `--all`：连 live 的一条一起删；
+  - `--selftest`：自证（分类 / 删除 / authority 解析 / 头投影阈值）——
+    接入 `verify:build`（新增 `verify:desktop-auth-cookies`）。
+- **探针** `scripts/probe-desktop-preset-roster.mjs`：读**活着的** roster
+  与 live setting（见 §7.138）。
+
+### 文档
+
+- 新增 `docs/desktop-troubleshooting.md`：桌面壳层故障手册（本节的完整
+  链路、判据、动作、复发预防选项表、通用排查动作表）。
+
+### 复发预防（**待主人裁决，未擅自改主人环境**）
+
+| 方案 | 做法 | 代价 |
+|---|---|---|
+| A（默认） | 定期 `--apply` | ~每 10 天一次 |
+| B | profile patch 钉死桌面 web 端口 ⇒ cookie 名恒定 ⇒ 永远 1 条 | 端口占用 ⇒ 宿主起不来；两个桌面实例不能并存 |
+| C | `connection` 行 `cookieMaxAgeDays` 调成 1 | 开着超过 1 天的桌面会话中途失效 |
+| D | 启动器脚本先清 cookie 再拉起桌面版 | 要改快捷方式 |
+
+B/C 要改 `~/.dsh/profiles/desktop/cordis.patch.yml`（宿主配置，破坏性）。
+
+## §7.138 Edge tab 门控的运行期定性：默认 preset ≠ 会话级选择（2026-10-28）
+
+### 主人报的现象
+
+「边缘模式，也没有 edge tab 了」。
+
+### 活体取证（本轮新增）
+
+preset 的**挂载结果**与 `selectedDefault` 都是运行时状态，磁盘上答不出来。
+所以写了个探针 `scripts/probe-desktop-preset-roster.mjs`，用外壳同款的两步
+握手（token 换 cookie ⇒ `POST /api/<ns>/<method>` + `client-request` 信封）
+直接问宿主：
+
+```
+BEFORE: standard isDefault=true …  edge（边缘模式）isDefault=false
+AFTER : standard isDefault=false … edge（边缘模式）isDefault=true
+```
+
+**结论三件事**：
+
+1. **「加载失败」已修复** —— roster 里 `edge` 行**没有 `broken` 字段** ⇒
+   §7.136 的 isolate 修法在真机上成立，preset 挂载健康。
+2. **Edge tab 的门控跟的是「默认 preset」**（`agentPresets.list()` 的
+   `isDefault` = `row.id === defaultId`，`defaultId = selectedDefault ?? default`，
+   `packages/preset/agent-preset-registry/src/index.ts:212`）。当时
+   `selectedDefault` **是空的** ⇒ 默认 = `standard` ⇒ 门控为 false ⇒ tab 不显示。
+3. 主人在设置里选的「边缘模式」是**会话级**（对话 chip）——它改的是**下一个
+   会话**的组合，不改默认 ⇒ **服务端行为已按会话切换**（我们的 hook 是
+   scope 化的，审计里 `scopedTo: "agent-preset"` 就是证据），**只有 tab 列表
+   不出现**。
+
+### 动作
+
+- 通过 live setting 把「边缘模式」设为默认（= 设置页「设为默认」按钮做的事）：
+  `settings/update` ns `agent-preset-registry`，patch `{selectedDefault: 'edge'}`。
+  写后回读 roster：`edge.isDefault = true` ⇒ 客户端 5s 轮询即注册 tab。
+- 探针支持 `--set-default <id>`，主人可自行切回 `standard`。
+
+### 已知缺口（§7.136 已记，此处补上运行期确认）
+
+**会话级选 preset 时 Edge tab 不出现**，根因现已确认到「门控读的是默认
+preset」这一层。补齐它需要一条**按会话**的可见性判据，而宿主的
+`SidebarRightTabDefinition`（`packages/client/ui-sidebar-right/src/client/tab-registry.ts`）
+**只有静态面**（id / kind / title / guide / patterns / priority），**没有可见性
+谓词**；tab 类型注册表也是全局的。可行的替代是「跟随**当前打开的**会话」，
+但那是全局注册/注销，仍不是真按会话 ⇒ **待主人裁决**：维持现状（边缘模式
+作为默认 ⇒ 有 tab），还是另做一套按会话跟随的门控。
+
+
