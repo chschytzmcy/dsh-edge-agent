@@ -13402,5 +13402,79 @@ preset」这一层。补齐它需要一条**按会话**的可见性判据，而�
 
 门禁：`verify:client-mount`（含新增 auto-open 断言）通过；`verify:build` 14 项全绿。
 
+## §7.140 主人实机验证「标准模式不触发本项目能力」：审计链是唯一判据，preset 标签不是（2026-10-28）
+
+### 主人的问题
+
+主人在**标准模式**会话里发了「你可以做什么」，要求据此验证他的表述：
+「所有的工作模式都有 edge tab，但只有边缘模式可以触发本项目的插件能力，
+其他的工作模式不会触发 —— 现在是否是这样」。
+
+### 结论（逐条）
+
+1. **「只有边缘模式触发本项目插件能力」—— 成立，实机实锤**。
+   主人这次的标准模式会话（`session-8ff22795…`，13:45 应答）在审计链里
+   **零事件**；对照同一台桌面版上 13:41 的边缘模式会话（`session-95b54f8f…`，
+   「HI」）有 **12 条事件**：提示词守卫 → 意图判定 → 意图落地/Realm 登记 →
+   路由改写（宿主 `qwen-token-plan-cn/qwen3.8-flash` → `local-llm/qwen3.8:27b`）
+   → 路由还原。两边的模型轨迹也对上：标准会话全程宿主默认 provider，
+   边缘会话应答与内部判定阶段都走本地池。
+2. **「所有的工作模式都有 edge tab」—— 需要修正口径**：Edge tab 的门控
+   跟的是**名册里的默认 preset**（tab 类型注册表是全局的，§7.138/§7.139），
+   不是逐会话：默认=边缘模式时，**任何**工作模式的会话里 Edge tab 都会出现
+   （并自动打开）；默认=标准模式时，**任何**工作模式都没有 Edge tab。
+   面板内容仍是诚实的 —— 它只显示该会话自己的 edge 历史，没跑过边缘模式的
+   会话面板为空（轮次 0 / 无调用）。
+3. **重要陷阱：preset 标签不能作触发判据**。会话记录里有两个
+   `agentPreset`，而且都可能是过期的：
+   - 会话头（`session.v4.jsonl.zstd` 的 `header.agentPreset`）= **创建时**的
+     快照 —— 主人这个会话 13:44:27 建时默认还是 edge，所以头上写着 `edge`，
+     他切到标准模式再发消息，实际绑定已经是 standard；
+   - projcache（`session_projcache/sessions/*.json`）= 客户端回写的**当前**选择。
+   两者互相打架时（本次会话：头=edge、缓存=standard），谁都不能证明触发与否 ——
+   **唯一判据是审计链有没有带这个 sessionId 的事件**。
+
+### 机制复核（本轮逐条对源码/产物确认，无新 bug）
+
+- **结构性**：本项目行为插件行只出现在 `presets/edge.desktop-safe.patch.yml` 的
+  `preset-edge` → `edge-stack`（cordis:group + isolate）里；宿主自带的
+  standard/ptc/minimal/cordis 四种工作方式的插件列表**不含**这些行。
+- **作用域**：审计链里我们的 hook 记的是 `scopedTo: "agent-preset"`
+  （`input-guard.hook.registered` / `external.hook.registered`），非 global ⇒
+  标准模式 Agent 的 scope 链上没有我们的 scope ⇒ 收不到事件。
+- **`llm/stream` 保留 `{global:true}`**：该事件不带 scope 载体，但
+  `handleLlmStream` 只在 pre-step 已 sanitize（`stepState.sanitized`）时才做事；
+  pre-step 是 scope 化的 ⇒ 标准模式恒直通。`scopedTo agent-preset` +
+  global `llm/stream` 这两个事实都写进了审计链，可机器复核。
+- **ops log 里出现我们的名字 ≠ 拦截**：标准模式会话期间日志里仍有
+  `[edge-tools-registry] tools/change → 4 tools now: …`，读源码确认它只是
+  **观测**（`upstreamTools()` 读宿主可见工具表 + 打日志，从不删改）；
+  且 `enableToolIsolation: false`（桌面档）。看到它别误判为「插件生效」。
+
+### 时间线闭环（排除「标准标签却被触发」的历史反例）
+
+全量对照 78 个会话：44 个 `preset=standard` 标签的会话在审计链里被
+TOUCHED —— 但它们的时间窗**全部早于 §7.136 隔离部署**（当时 hook 还带
+`{global:true}`，护栏对一切会话生效）；最近一条是 11:17，隔离版
+server bundle 部署于 12:04 / 13:34。**部署之后被触发的标准标签会话数 = 0**
+（部署后三条标准会话 `2f9cd23e` / `491aaaa1` / `8ff22795` 全部 clean）。
+
+### 交付
+
+1. `scripts/probe-session-audit.mjs` —— 「某会话有没有走本项目链路」的判定
+   探针：`--session <id>` 单会话取证、全量对照表、`--selftest` 三段自证
+   （审计索引 / 判定 / 渲染）。内部把 `session-<uuid>` 与裸 uuid 归一化
+   （审计链用带前缀的形式，历史上这里错过判）。只读，不回显凭据。
+2. 门禁接入：`verify:session-audit`（跑 `--selftest`）并入 `verify:build`
+   链 ⇒ 15 项。
+3. 文档：排障手册新增第 5 节「判定一个会话有没有走本项目的链路」，
+   通用排查表补一行；README 顶部块加判据一句话。
+
+### 已知缺口（不变，仍待主人裁决）
+
+- Edge tab 按**默认 preset** 门控（宿主 tab 注册表全局、无按会话可见性接口）
+  ⇒「默认=边缘、标准模式会话里也看见 Edge tab」是机制边界，非 bug。§7.138 记过，
+  本轮主人实机口径亦如此。
+
 
 

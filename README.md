@@ -33,6 +33,11 @@
 > 也只在边缘模式出现（客户端按 preset 名册的默认项注册 / 注销 tab 类型）。
 > 唯一保留全局的是 `llm/stream`：该事件不带 scope 载体，去掉也不生效。
 >
+> **判一个会话有没有走本项目链路，唯一判据是审计链**（§7.140）：
+> `node scripts/probe-session-audit.mjs --session <id>`。会话头 / projcache 里的
+> preset 标签都不可作判据 —— 一个是创建时快照、一个是客户端回写，可能与实际
+> 绑定互相打架（2026-10-28 主人实机：标准模式会话「你可以做什么」审计链零事件）。
+>
 > **桌面版启动失败 / preset 状态异常 / Edge tab 不出现** ⇒ 看
 > [docs/desktop-troubleshooting.md](./docs/desktop-troubleshooting.md)
 > （桌面壳层故障手册：宿主认证 cookie 累积导致 431、活体名册探针、

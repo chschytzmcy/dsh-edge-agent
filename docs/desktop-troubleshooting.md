@@ -193,6 +193,7 @@ node scripts/_simulate-client-mount.mjs
 | 我们的 hook 挂在哪个 scope | `~/.dsh-edge-agent/audit/audit.plain.jsonl`（`scopedTo` 字段） |
 | 宿主 web 服务能不能直连 | 启动日志里的 `dsh web:` URL，浏览器打开即可（Node fetch 那条路是好的） |
 | preset roster / live settings | `scripts/probe-desktop-preset-roster.mjs` |
+| 某会话有没有走本项目链路 | `node scripts/probe-session-audit.mjs --session <id>`（判据 = **审计链有没有带这个 sessionId 的事件**；preset 标签不可作判据，§7.140） |
 
 宿主侧源码位置（安装目录）：
 
@@ -207,3 +208,40 @@ app.asar/dsh/node_modules/@deepseek-ai/dsh-host-webserver/lib/index.js       cre
 （`apps/desktop-host/src/index.ts`、`packages/settings/settings/src/index.ts`、
 `packages/preset/agent-preset-registry/src/index.ts`、
 `packages/client/ui-sidebar-right/src/client/tab-registry.ts`）。
+
+---
+
+## 5. 判定一个会话有没有走本项目的链路（§7.140）
+
+**别用 preset 标签判**。会话记录里有两个 `agentPreset`，都可能是过期的：
+
+| 位置 | 语义 | 坑 |
+|---|---|---|
+| 会话头 `session.v4.jsonl.zstd` → `header.agentPreset` | **创建时**的快照 | 建会后再切工作方式，头上还是旧值（实测：头=edge、实际跑 standard） |
+| projcache `session_projcache/sessions/*.json` → `rows.agentPreset.val` | 客户端回写的当前选择 | 历史上大量标 standard 的会话其实跑过本项目链路（§7.136 之前 hook 是 `{global:true}`） |
+
+**唯一判据 = 审计链**：本项目的每个行为插件都往
+`~/.dsh-edge-agent/audit/audit.plain.jsonl` 写带 `sessionId` 的事件；
+没被碰过的会话连一条都没有。
+
+```bash
+# 单会话取证（结论 + 触发的能力清单 + 两处标签对照）
+node scripts/probe-session-audit.mjs --session 8ff22795-c8e0-4777-9b52-cd74d8e816ba
+
+# 全量对照表（TOUCHED / clean + 标签不一致标记）
+node scripts/probe-session-audit.mjs
+
+# 门禁自证（已在 verify:build 链里：verify:session-audit）
+node scripts/probe-session-audit.mjs --selftest
+```
+
+参考实测（2026-10-28，隔离版部署后）：
+
+- 标准模式会话「询问AI助手能力」⇒ `clean`（审计链 0 事件，全程宿主默认
+  `qwen-token-plan-cn/qwen3.8-flash`）；
+- 边缘模式会话「Greeting」⇒ `TOUCHED`（12 事件：守卫 → 意图 → 路由改写 →
+  `local-llm` → 还原）。
+
+另注意 ops log 里 `[edge-tools-registry] tools/change …` 在标准模式也会出现 ——
+它只是**观测**宿主可见工具表（`src/dsh-adapter/tools.ts`，不拦截不删改）；
+看到它 ≠ 插件在生效。

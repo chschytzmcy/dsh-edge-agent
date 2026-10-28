@@ -232,7 +232,7 @@
     "test:coverage": "vitest run tests/unit --coverage",
     "e2e:coverage": "bash scripts/e2e-ops-log-coverage.sh",
     "e2e:benchmark": "bash scripts/e2e-model-quality-bench.sh",
-    "verify:build": "node scripts/run.mjs verify:boundary verify:contract verify:patch-surface verify:preset-isolate verify:patch-row-shape verify:plugin-spec verify:env-bridge verify:bundle-mount verify:installable verify:installable-edge verify:host-mount verify:client-mount verify:desktop-auth-cookies verify:package",
+    "verify:build": "node scripts/run.mjs verify:boundary verify:contract verify:patch-surface verify:preset-isolate verify:patch-row-shape verify:plugin-spec verify:env-bridge verify:bundle-mount verify:installable verify:installable-edge verify:host-mount verify:client-mount verify:desktop-auth-cookies verify:session-audit verify:package",
     "verify:boundary": "node --import tsx/esm scripts/verify-adapter-boundary.ts",
     "verify:contract": "node --import tsx/esm scripts/verify-upstream-contract.ts",
     "verify:patch-surface": "node --import tsx/esm scripts/verify-patch-surface.ts",
@@ -246,6 +246,7 @@
     "verify:host-mount": "node scripts/_simulate-host-mount.mjs",
     "verify:client-mount": "node scripts/_simulate-client-mount.mjs",
     "verify:desktop-auth-cookies": "node --disable-warning=ExperimentalWarning scripts/reset-desktop-auth-cookies.mjs --selftest",
+    "verify:session-audit": "node scripts/probe-session-audit.mjs --selftest",
     "verify:package": "npm pack --dry-run --json --ignore-scripts | node scripts/verify-package.mjs"
   },
   "peerDependencies": {
