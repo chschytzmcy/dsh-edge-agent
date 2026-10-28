@@ -13476,5 +13476,43 @@ server bundle 部署于 12:04 / 13:34。**部署之后被触发的标准标签�
   ⇒「默认=边缘、标准模式会话里也看见 Edge tab」是机制边界，非 bug。§7.138 记过，
   本轮主人实机口径亦如此。
 
+## 7.141 主人裁决：默认工作方式 = 标准模式（Edge tab 随之全收起）
+
+### 裁决与生效
+
+主人明确裁决（2026-10-28 15:30）：**默认应该是标准模式** —— 推翻 §7.139 之后
+「边缘模式为默认」的运行状态。生效与持久化路径：
+
+1. 运行期：`node scripts/probe-desktop-preset-roster.mjs "<宿主URL+token>"
+   --set-default standard` ⇒ roster `selectedDefault := standard`，探针复读确认
+   standard 为默认、edge 仍 healthy 但 `isDefault=false`。
+2. 持久化：**宿主 settings 服务自己回写** `~\.dsh\profiles\desktop\cordis.patch.yml`
+   （`selectedDefault: standard`）⇒ 重启桌面版后默认仍是标准模式。本项目未直接
+   编辑主人 profile，改动全部经由宿主 `settings.update` 落盘。
+
+### 直接后果（机制边界，非 bug）
+
+Edge tab 门控跟**名册默认 preset**（tab 类型注册表全局，§7.138/§7.139/§7.140）
+⇒ 默认=标准之后，**所有**工作方式的会话都不出现 Edge tab —— 包括手动选边缘模式
+的会话也看不到边缘面板。要看面板需临时 `--set-default edge`（或设置页把边缘模式
+设为默认），看完再切回。这与 §7.140 记录的缺口是同一枚硬币的两面：上次是
+「默认=边缘时标准会话也出现 tab」，这次是「默认=标准时边缘会话也不出现 tab」。
+真正的修法仍是宿主给 `SidebarRightTabDefinition` 提供按会话可见性谓词（待裁决）。
+
+顺带一提：默认=标准正是 §7.140 取证所依赖的隔离状态 —— 标准模式会话零审计链
+事件、不触发本项目任何插件能力；主人平时用的就是纯宿主链路。
+
+### 验证口径说明
+
+- roster 探针 live + patch 回写两处一致（默认=standard），此为持久性证据。
+- UI 截图本轮未补：主人窗口处于最小化（PrintWindow 只能拿到 207 B 空图），
+  不便动主人窗口；「默认=standard ⇒ Edge tab 收起」的门控行为在 §7.139 已
+  双向实测过（自动开/自动收/切回复原），机制未变，不再重复实机操作。
+
+### 交付
+
+- README 顶部块补充本裁决口径（平时不开 Edge tab，边缘面板按需临时切默认）。
+- 本节 PROGRESS §7.141 存档。无代码改动（名册默认是运行期/配置态，非代码）。
+
 
 
