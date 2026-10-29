@@ -21,8 +21,8 @@ repo 根 `package.json` 的**逐字节镜像**(install.sh §2.8 diff-then-copy;�
 | 字段 | 内容 | 具体作用 |
 |---|---|---|
 | `name` / `version` | `@deepseek-harness-edge-agent/dsh-edge-agent` / `0.1.0` | bundle 身份证;profile `bundles` 数组按 `name` 找到这个目录 |
-| `exports` | 29 条子路径 → **路径指针**(每条就是 `{'types': '…d.ts', 'import': '…js'}` 两行,不含代码) | Node 标准的子路径路由表,决定 `import '包名/子路径'` 能否解析到文件。**不是插件列表**:29 条 = 插件/适配器子路径 + 非插件共享模块(`./invariant`、`./types` 等)+ 包自身资源(`.`、`./package.json`、`./cordis.patch.yml`)。lib 下共 56 个 `.js`,只有这 29 个入口对外可达,其余是包内私有。新增插件忘加 exports 条目 → Node 抛 `ERR_PACKAGE_PATH_NOT_EXPORTED`(实机核过;整包缺失才是 `ERR_MODULE_NOT_FOUND`);这也是镜像必须跟 repo 同步的原因 |
-| `dsh.bundle.patch` | `"./cordis.patch.yml"` | 整张花名册与派工单的**唯一交点**:告诉 DSH loader 去哪读 ②。实测:已注册 bundle 的 package.json 删掉 `dsh.bundle` 字段 → loadProfile 当场抛 `declares no dsh.bundle in its package.json`(硬失败,并非"②变死文件后照常 boot") |
+| `exports` | **36 条子路径** → **路径指针**(每条就是 `{'types': '…d.ts', 'import': '…js'}` 两行,不含代码) | Node 标准的子路径路由表,决定 `import '包名/子路径'` 能否解析到文件。**不是插件列表**:36 条 = **31 条代码入口**(指向 `lib/**/*.js`)+ 3 条 `.yml` 配置资源(`./cordis.patch.yml` + 两个 `./presets/edge*.patch.yml`)+ 2 条特例(`./package.json`、`./invariant`)。lib 下共 **72 个 `.js`**,只有这 31 个入口对外可达,其余 41 个是包内私有。新增插件忘加 exports 条目 → Node 抛 `ERR_PACKAGE_PATH_NOT_EXPORTED`(实机核过;整包缺失才是 `ERR_MODULE_NOT_FOUND`);这也是镜像必须跟 repo 同步的原因 |
+| `dsh.bundle.patch` | **`["./cordis.desktop-safe.patch.yml", "./presets/edge.desktop-safe.patch.yml"]`**(数组) | 整张花名册与派工单的**唯一交点**:告诉 DSH loader 去哪读 ②。**数组**是 §7.135 起的形态——工作方式的插件列表住在 preset 里,顶层 patch 只留宿主行覆盖(见 ②)。实测:已注册 bundle 的 package.json 删掉 `dsh.bundle` 字段 → loadProfile 当场抛 `declares no dsh.bundle in its package.json`(硬失败,并非"②变死文件后照常 boot") |
 | `peerDependencies` | `@deepseek-ai/* = 0.1.2-rc.1` 等 | **纯声明**:bundle 零自购依赖,运行时一律走 `~/.dsh/profiles/node_modules/` hoist 链解析(所以嵌套目录下没有自己的 node_modules)。peerDeps 漂移不影响运行,只有 `exports` 漂移会炸 |
 | `files` | lib/ scripts/ presets/ + 若干根文件 | `make package` 白名单,决定 release tarball 内容;运行时不读 |
 
@@ -30,9 +30,15 @@ repo 根 `package.json` 的**逐字节镜像**(install.sh §2.8 diff-then-copy;�
 
 注意语义精度:它**不只说"本 bundle 要做什么"**,而是"装了本 bundle 之后,整个 DSH 的组装方案要做哪些改动"——三段里只有 insert 是自家事,config/disable 共 40 处动作的对象是**上游/宿主插件**。只写差量,DSH 启动时按层合并:`dsh-base → 宿主(dsh-web-app/dsh-tui) → 本 patch → ~/.dsh/profiles/<p>/cordis.patch.yml(用户皮肤,最后压顶)`。活例:§7.61 `profiles/dsh-edge/cordis.patch.yml`——无宿主 headless profile 用皮肤层把 audit-log root 分流,其 config 行是**整键替换**(必须全量重述 bundle 层该 id 的所有键,只写增量会丢键;头注释有此坑的完整说明)。
 
-- **16 个 insert(派工)**:把 L2/L1 自己的插件挂进插件图(intent-router、prompt-guard、sanitizer-pipeline、privacy-policy、audit-log、td-bus、tcm、local-storage、file-logger、http-api…)。insert 的 `name` 就是子路径引用本身(如 `@deepseek-harness-edge-agent/dsh-edge-agent/file-logger`)→ 经 ① 的 exports 解析到 lib。其中 **7 个是执法核心**(闭包推导见铁律 3),其余 9 个是执法之外的能力——模型接入(local/cloud-llm-adapter、model-router)、入口会话(http-api、edge-tools-registry、local-storage、sessions)、隐私增强(td-bus、tcm)、运维(file-logger);实机结论:摘掉这 9 个,闸门照常执法。
-- **10 个 config 覆盖(定参数)**:改**已存在插件**的参数——file-logger 轮转(§7.56)、audit-log root、llm provider/模型名、各超时。值多为 `!!js` 表达式(如 `parseInt(process.env.DSH_EDGE_LOG_MAX_AGE_DAYS ?? '1', 10)`),所以 `.env.sh` 不改文件即可覆盖——这也是"改 env 必须重启进程"的机制根源。
-- **30 个 disable(撤编)**:剔除 edge 场景不用的上游/宿主插件(云直连、dsh 原生模块)。
+> **§7.135/§7.136 之后的结构(2026-10-29 §7.146 刷新)**:本项目的**行为插件行已全部迁进 preset**
+> (`presets/edge*.patch.yml`),顶层 patch 只留**宿主行覆盖** + **必须留在宿主树的少数几行**。
+> `dsh.bundle.patch` 因此是**数组**:顶层 patch + preset patch 两份一起加载。
+> 下文三行按当前形态描述;§7.135 之前"顶层 insert 段装着自家全部插件"的形态已成历史。
+
+- **顶层 insert 段:4 行(全是被逼留下的)** —— `dsh-edge-agent`(裸包名行)、`file-logger`、`audit-log`、`desktop-cookie-janitor`。这四行**没有一行是"方便"留下的**:`dsh-edge-agent` 裸包名行是**宿主机制逼的**(宿主的 client-modules 只扫宿主 Loader 的 entries,preset 子树不在其中 ⇒ Edge tab 的浏览器半边只能从这里被发现);`audit-log` / `file-logger` 是**宿主机制逼的**(裸包名行 inject `auditLog`,且 `installFileLogger` 会先占住 `fileLogger` 服务名 ⇒ 必须在 root realm 且 file-logger 更早装载);`desktop-cookie-janitor` 是**时序逼的**(宿主外壳的 welcome 握手发生在**任何工作方式选定之前** ⇒ 修 431 的插件必须在 preset 之外,§7.145-A)。理由类别已写进 `scripts/verify-patch-surface.ts` 的 `HOST_FORCED_ROWS`,防滥用先例。
+- **本项目的插件行在 preset 里** —— `presets/edge.patch.yml`(full/CLI 变体)= **22 行宿主标准插件 + 17 行本项目插件**;`presets/edge.desktop-safe.patch.yml`(桌面变体)= **22 + 15**(桌面版多 `edge-context-view`,少 `http-api` / `etscli-tools` 等)。insert 的 `name` 就是子路径引用本身(如 `@deepseek-harness-edge-agent/dsh-edge-agent/file-logger`)→ 经 ① 的 exports 解析到 lib。
+- **config 覆盖(定参数)**:改**已存在插件**的参数——persona、agent 列表、approval 策略、session 存储根、sandbox 模式、`tool-web` 的 search/fetch provider、`web` 的 provider 链、`dsh-tui-agent-presets` 的默认 preset。值多为 `!!js` 表达式(如 `parseInt(process.env.DSH_EDGE_LOG_MAX_AGE_DAYS ?? '1', 10)`),所以 `.env.sh` 不改文件即可覆盖——这也是"改 env 必须重启进程"的机制根源。**当前数量**:full 变体顶层 **8 行** config 覆盖;desktop-safe 变体 **2 行**。
+- **disable(撤编)**:剔除 edge 场景不用的上游/宿主插件(云直连、dsh 原生模块)。**当前数量**:full 变体顶层 **30 行**;desktop-safe 变体 **1 行**。另有 11 行「裸行」只声明 `- id:` 不带 config/disable —— 那是**重新启用/重新声明**宿主行(如 `tool-bash`、`goal`),不是覆盖。
 
 三条铁律(实证):
 1. **patch 说了算**:bundle 能力在 lib 里写了也不执行,上不上岗、按什么参数,全看这份派工单——聚合 id `dsh-edge-agent` 被 disable(`src/dsh-adapter/index.ts:apply()` 不执行),新增聚合级 wiring 必须另起独立插件 id。
@@ -53,11 +59,13 @@ repo 根 `package.json` 的**逐字节镜像**(install.sh §2.8 diff-then-copy;�
 
    **哪怕派工单只写 input-guard 一个名字,闭包也会逼你点全 7 个**;只点两个能力插件的结果是 boot 硬失败(`2 entries did not activate` + 逐项 `pending (waiting for service…)`,静默 INACTIVE 是 cordis 核心行为,dsh 宿主的 `assertEntriesActivated` 明炸;逐字签名存 PROGRESS §7.59)。想装能力,必须连依赖一起点。
 
+   **这 7 行现在分居两层**(§7.135/§7.136 之后):`input-guard` / `prompt-guard` / `privacy-policy` / `intent-router` / `sanitizer-pipeline` / `realm-skill-bridge` 六行在 **preset** 里(跟着「边缘模式」工作方式走);`audit-log` 一行在**宿主树**顶层 insert 段(它 inject `auditLog` 且要占住 `fileLogger` 服务名 ⇒ 必须 root realm)。**闭包跨层也要点全**——preset 里少一行,`input-guard` 照样 ACTIVE 却一条都不拦。
+
 部署验收推论:"装上"分三层,**mount(挂上)≠ active(活了)≠ enforced(拦得住)**——boot 不报错只证明前两层,依赖闭包不齐时插件可能 ACTIVE 却一条都不拦;执法的真凭据是审计落盘出现 `blocked.attack` / `blocked.policy` 执法行(这也正是 §7.57 把 ④ 未注册改 fail-fast 的原因:缺件链路里唯一静默的就是它,其余缺口全部当场响,行为见 ①② 表格与文末差异速记)。
 
 ## ③ 同目录 `lib/**/*.js` — 插件实现本体(代码真正所在)
 
-`tsc` 编译产物,①的 `exports.import` 指针全部指向这里(除 `./package.json`、`./cordis.patch.yml` 两条资源指针)。**注意目录名误导**:tsconfig 的 `outDir` 是 `"lib/types"`(历史命名),所以运行时 `.js` 实际位于 `lib/types/dsh-adapter/*.js`——`lib/types/` 不是"纯类型目录",每个模块三份产物(`.js` 实现 / `.d.ts` 类型 / `.map` 调试映射),Node 运行时只读 `.js`。另有 ~27 个包内私有 `.js`(src 根级兼容中转 + 内部工具),不在 exports 里、外部 import 不到,但被包内模块互 import——手工部署仍须 `rsync -a lib/` 整目录,不能挑文件。
+`tsc` 编译产物,①的 `exports.import` 指针全部指向这里(除 `./package.json` 与三条 `.yml` 资源指针——`./cordis.patch.yml` + 两个 `./presets/edge*.patch.yml`)。**注意目录名误导**:tsconfig 的 `outDir` 是 `"lib/types"`(历史命名),所以运行时 `.js` 实际位于 `lib/types/dsh-adapter/*.js`——`lib/types/` 不是"纯类型目录",每个模块三份产物(`.js` 实现 / `.d.ts` 类型 / `.map` 调试映射),Node 运行时只读 `.js`。另有 **41 个包内私有 `.js`**(src 根级兼容中转 + 内部工具;lib 下共 72 个 `.js`,只有 31 个对外可达),不在 exports 里、外部 import 不到,但被包内模块互 import——手工部署仍须 `rsync -a lib/` 整目录,不能挑文件。
 
 双向关系别搞反:lib 是 **DSH 调它**(插件被 mount,调用面 = 每模块的 cordis 四件套 `name`/`inject`/`Config`/`apply`);它同时 **调 DSH**(①的 peerDependencies,经 hoist 解析)。
 
@@ -146,10 +154,26 @@ dsh 源码**写死**两个发现根:装机系统根 + `~/.dsh/.agent-presets/`(�
 ## 一图流
 
 ```
-profile package.json ──bundles[]──▶ ①嵌套package.json ──dsh.bundle.patch 指针──▶ ②cordis.patch.yml
-      (④ 开关+顺序)                    │exports 路由(29 入口)                      │insert 17 / config 10 / disable 30
+profile package.json ──bundles[]──▶ ①嵌套package.json ──dsh.bundle.patch 数组──▶ ②顶层 patch + preset patch
+      (④ 开关+顺序)                    │exports 路由(36 条 = 31 代码入口)          │宿主行覆盖 + 边缘模式的插件列表
                                        ▼                                            ▼
                                  ③ lib/**/*.js ◀──────────────── import specifier ── DSH 启动组装插件图
                                   (实现本体, apply/Config)
       ⑤ .agent-presets/{preset.yml, agent.cordis.yml} ──▶ 会话级 agent 组装(与插件图正交)
 ```
+
+> **数的是谁**:顶层 patch(full 变体 `cordis.patch.yml`)= 49 行宿主行(8 config / 30 disable / 11 裸行)+ **insert 段 4 行**;
+> 桌面变体 `cordis.desktop-safe.patch.yml` = 3 行宿主行(2 config / 1 disable)+ **insert 段 4 行**(同样 4 行);
+> `presets/edge.patch.yml` = 1 个 insert 段,内含 1 行 `@deepseek-ai/dsh-agent-preset`,
+> 其 `config.plugins` 是 **22 宿主标准行 + 17 本项目行**(桌面变体 22 + 15)。
+> **极简线另有一张派工单**:`bundle-minimal/cordis.patch.yml` = 1 个 insert 段 **9 行**
+> (file-logger + audit-log + 7 插件执法闭包),它不跟上面几张同构,是 §7.59 的独立 rig。
+
+## 修订
+
+- **§7.146（2026-10-29）**：全量审计时核对现役数字，改正三处过期——①`exports`
+  29→36 条（31 代码入口 + 3 yml + 2 特例）、lib 下 `.js` 56→72 个（私有 27→41）；
+  ②`dsh.bundle.patch` 由字符串变**数组**（§7.135），顶层 insert 段 16→**4 行**、
+  config 覆盖 10→**8 行**（桌面变体 2 行）、disable 30→**30 行**（桌面变体 1 行），
+  并补上「本项目行为插件行已全部迁进 preset」这一结构变化；③铁律 3 的 7 插件闭包
+  补注「现在分居 preset 与宿主树两层」。

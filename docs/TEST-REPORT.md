@@ -20,7 +20,23 @@
 
 ## 最近一次全量结果
 
-**2026-10-29（§7.145，Windows 实机 + 桌面版 r16）**：
+**2026-10-29（§7.146 文档全量审计 + 新增第 16 道门禁，Windows 实机）**：
+
+| 项 | 结果 |
+|---|---|
+| 单元测试 | **70 文件 1424 passed / 2 skipped / 0 failed**（与 §7.145 同一基线，无回归） |
+| eslint | **0 error**（58 个 unused-vars warning 非阻断） |
+| `tsc --noEmit`（`tsconfig.json` + `tsconfig.client.json`） | 均 exit 0 |
+| 构建门禁 `verify:build` | **16 项全过**（boundary / contract / patch-surface / preset-isolate / patch-row-shape / plugin-spec / env-bridge / bundle-mount / installable / installable-edge / host-mount / client-mount / desktop-auth-cookies / session-audit / package / **doc-links**） |
+| 文档门禁 `verify:doc-links` | **PASS** —— `docs/` 44 个文件，断链 0、不可达（孤儿）0；`--selftest` 12 项断言全过 |
+| 文档门禁**实机反向证伪** | ① 向 `docs/README.md` 注入一条断链 ⇒ 门禁 **exit 1**（断链=1）；② 新建一个无人引用的文件 ⇒ 门禁 **exit 1** 并点名该文件；两次均已回滚 |
+
+> §7.146 新增的第 16 道门禁（`verify:doc-links`）检查 `docs/` 的**链接完整性**与
+> **可达性**：任何 `.md` 里的相对链接必须指向真实文件；`docs/` 下每个文件（含
+> `results.json` / `diff.txt` 等数据产物）必须能从某个导航面沿链接链走到。
+> 它把「新增文档忘了登记 ⇒ 变成没人找得到的孤儿」从人工约定变成机器强制。
+
+### 上一轮全量结果（§7.145，Windows 实机 + 桌面版 r16，2026-10-29）
 
 | 项 | 结果 |
 |---|---|
@@ -30,7 +46,7 @@
 | 构建门禁 `verify:build` | **15 项全过**（boundary / contract / patch-surface / preset-isolate / patch-row-shape / plugin-spec / env-bridge / bundle-mount / installable / installable-edge / host-mount / client-mount / desktop-auth-cookies / session-audit / package） |
 | 桌面版实机（宿主 `127.0.0.1:62248`） | ① cookie janitor 两条防线日志在（`maxHeaderSize raised → 65536` / `auth=1 removed=1 projected=600B`）；② Edge 面板在未绑定会话时显示「尚未绑定会话」且**无**「轮次 / 本轮 / 五节点流程 / LLM 调用」 |
 
-### 上一轮全量结果（§7.107 全链路，Windows 实机 + 真实 LLM 端点，2026-10-24）
+### 更上一轮全量结果（§7.107 全链路，Windows 实机 + 真实 LLM 端点，2026-10-24）
 
 | 项 | 结果 |
 |---|---|

@@ -14,9 +14,11 @@ profile(`edge-min-test` TUI 形状 / `edge-min-chat` headless 孪生),绝不进�
 > §7.59 实测段(单一存档点;`deploy-minimal-files.md` 只留最终结论)——
 > 文件可删,实证不可删。
 
-- `package.json` — 极简花名册(exports = 7 插件闭包 + file-logger,`dsh.bundle.patch` 指针)
-- `cordis.patch.yml` — 8 插件实装图 = file-logger(居首)+ 7 插件执法闭包 → 冒烟
-  聊天实弹 BLOCK / REJECT。§7.59.1 全云不变量:
+- `package.json` — 极简花名册(exports = **12 条** = 3 条资源(`.` / `./package.json` /
+  `./cordis.patch.yml`)+ **9 条代码入口**(7 插件执法闭包 + `audit-log` + `file-logger`);
+  `dsh.bundle.patch` 指针 = `"./cordis.patch.yml"`)
+- `cordis.patch.yml` — **9 行**实装图(1 个 insert 段)= file-logger(居首)+ **audit-log**
+  + 7 插件执法闭包 → 冒烟聊天实弹 BLOCK / REJECT。§7.59.1 全云不变量:
   localProvider 指宿主云 provider ⇒ `sanitizeLocalTraffic:true` +
   `downgradeOnSanitizeFailure:false`(LOCAL 轮也脱敏;脱敏失败 REJECT)。全量部署勿抄。
   ⚠️ headless 宿主不可逐字挂:file-logger `inject=['web']`,headless

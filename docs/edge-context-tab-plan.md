@@ -15,13 +15,20 @@
 > **数据源是 `audit-log.ts` 增的 `onEntry` 活体监听**（非可订阅的 plugin 事件流 —— 见裁决 A）。
 > **内容是本仓特有**：4 个独立 stream + session summary seam；严格**不展示原始 PII**。
 
+> **状态（v5，2026-10-29 §7.146 刷新）**：本文是**已落地计划书**，不是待办。
+> 实现完成 2026-10-20；桌面装机闭环 2026-10-22（§7.106）；§7.142 改口径为
+> 「Edge tab 常驻注册，只有边缘模式才真正生效」；§7.145-B 加了「尚未绑定会话」
+> 面板口径；§7.145-C 加了构建链门禁（漏跑 `build:client` ⇒ 直接失败而非静默
+> 消失 Edge tab）。**11 项验收现为 9 ✅ / 2 ⏳**（见 §5，余 2 项是无实机取证，
+> 不拿设计满足冒充实测）。下方 v4 段落保持原样，作为当时的决策留档。
+
 ## 0. 与 §7.x 主线的关系
 
 - 本计划从属于"为 dsh-edge-agent 在桌面内提供原位可视化"。
 - §7.98.1（30% 复测）后续修复由独立 §7.99 计划推进，**不**在本计划观察范围。
 - 本计划引入 1 个 host 端新 plugin（`edge-context-view`）、1 个 audit-log 服务接口增量（`onEntry`）、1 段 esbuild 出 bundle 的步骤、5 个 client panel 文件 + 4 个 client 支撑文件。
 
-## 1. 现状（截至 2026-10-20，已完成）
+## 1. 现状（实现完成 2026-10-20；桌面装机闭环 2026-10-22 §7.106；本表刷新于 2026-10-29 §7.146）
 
 | # | 项 | 状态 | 备注 |
 |---|---|---|---|
@@ -29,12 +36,13 @@
 | 2 | `package.json#exports["./client"]` 指向 `lib/client.js`（esbuild bundle） | ✅ | 同步增 `./edge-context-view` 子路径 |
 | 3 | `src/client/index.ts` —— mount 4 panel + summary，4 道 deferred inject | ✅ | 71 行 skeleton → 168 行实装 |
 | 4 | esbuild bundle `lib/client.js` 落位 + `lib/types/dsh-adapter/edge-context-view.{js,d.ts}` | ✅ | 20 KB（远低于原 50 KB 风险项） |
-| 5 | 桌面右栏看到 "Edge" tab | ⏳ 等桌面 0.2.1-rc.2 装机 | installable bundle smoke 已过 |
+| 5 | 桌面右栏看到 "Edge" tab | ✅ | **已装机实测**（§7.106，2026-10-22 桌面截图为证；§7.142 起 tab **常驻注册**，不再跟默认 preset 走） |
 | 6 | dsh-context v0.73.3 源码 walkthrough | ✅ | `docs/notes/dsh-context-walkthrough.md` |
 | 7 | host 端新 plugin `edge-context-view`（4 panel + session summary，inject `['auditLog']` 硬 + 软延迟） | ✅ | 原计划 8 inject，v4 缩为 1 |
 | 8 | client 组件（Intent / Route / Interception / Threat + Session summary）| ✅ | 5 个 .tsx + 5 个支撑 .ts |
 | 9 | esbuild 出 `lib/client.js` bundle（tsc 排除 `src/client`，独立 `tsconfig.client.json` 类型门）| ✅ | styles 内联，无 `lib/client.css` |
-| 10 | 桌面 0.2.1-rc.2 装机实测 —— 11 项验收 | 8/11 ✅，3/11 ⏳ | 见 §5 |
+| 10 | 桌面装机实测 —— 11 项验收 | **9 ✅ / 2 ⏳** | 见 §5（#9 已由 §7.106 桌面截图闭环；#10、#11 的深浅主题 / en 切换部分仍无实机取证） |
+| 11 | **构建链门禁**：漏跑 `build:client` ⇒ Edge tab 静默消失 | ✅ | §7.145-C：`rebuild-installable.mjs` 自检缺浏览器半边 ⇒ **exit 1**（不再是静默） |
 
 ## 2. 不做的（明确剔除）
 
@@ -118,15 +126,16 @@
 
 | 风险 | 严重度 | 缓解 / 实测 |
 |---|---|---|
-| `sidebarRightTabs.register` 签名在 0.2.1-rc.2 / 0.2.1 stable 不同 | 高 | walkthrough 已 dump 真实签名；本机桌面 0.2.1-rc.2 装机待验 |
+| `sidebarRightTabs.register` 签名在 0.2.1-rc.2 / 0.2.1 stable 不同 | 高 | walkthrough 已 dump 真实签名；**本机桌面 0.2.1-rc.2 已装机验证**（§7.106，桌面截图为证） |
 | tsc 与 esbuild 双产物共存（`lib/types/client` vs `lib/client.js`）| 中 | tsconfig exclude `src/client/`；build-client 前 `rm -rf lib/types/client`；本机实测：lib/client.js 单产物存在 |
 | inject 拓扑影响 seam 事件时序（PROGRESS §7.94 多次踩坑）| **v4 修订**——`['auditLog']` 硬单依赖 + connection 软延迟，时序风险降至低 | inject 拓扑 audit 已做（裁决 D）：auditLog 必须先组成（cordis inject 纪律保证），connection 在 slack 延迟 |
 | bundle 超 50KB | 低 | **实测 20 KB**（远低于阈值）|
 | **v4 增量**：新增 `auditLog.onEntry` 服务接口，担心影响隐私管线 | 中 | listener 故障 try/catch fail-open（与 td-bus 同款纪律）；新增 1 个 audit-log 单测覆盖 fire/unsubscribe/throw 路径；无既有路径变更 |
 
-## 5. 接受标准（11 项 = 8 ✅ + 3 ⏳）
+## 5. 接受标准（11 项 = 9 ✅ + 2 ⏳，2026-10-29 §7.146 刷新）
 
-阶段 3 出口，**11 项**全部满足才算 done；本环境能验 8 项 ✅，3 项 ⏳ 装机目视。
+阶段 3 出口，**11 项**全部满足才算 done。装机目视 3 项原为 ⏳，其中 **#9 已于
+2026-10-22（§7.106，桌面截图为证）闭环**；余 2 项仍无实机取证，如实标 ⏳。
 
 ### 本环境能验（8 ✅）
 
@@ -141,13 +150,13 @@
 | 7 | 桌面 installable bundle smoke（`bash scripts/build-desktop-bundle.sh --emit-dir --no-build`）| ✅ `lib/client.js` 落入 + 新 patch row 进入 `cordis.desktop-safe.patch.yml` |
 | 8 | tab 类型在 deferred 注入下 mount 失败也保持插件健康（client 4 道 deferred ctudei + host softInject） | ✅ |
 
-### 待装机目视（3 ⏳）
+### 装机目视（3 项 → 现 1 ✅ / 2 ⏳）
 
-| # | 项 | 设计满足依据 |
-|---|---|---|
-| 9 | 装机后桌面右栏出现 "Edge" tab（位置与 dsh-context 的 "Context" tab 同高度）+ 切到 Edge tab bundle 加载 0 报错 | `sidebarRightTabs.register({id: 'dsh-edge-agent', kind: 'dsh-edge-agent', …})` 已就位；`lib/client.js` 20 KB 已构建 |
-| 10 | 切到后台再切回 → 数据保留（不重 mount 清空）| client `store.ts` 模块级单例；attach/detach 配对 |
-| 11 | 桌面主题深/浅 + 语言 zh/en 跟随（无白底穿帮 + 文案跟随） | theme `currentColor` + `color-mix`；i18n `locale.register/bind` + zh/en 字典 |
+| # | 项 | 状态 | 依据 |
+|---|---|---|---|
+| 9 | 装机后桌面右栏出现 "Edge" tab（位置与 dsh-context 的 "Context" tab 同高度）+ 切到 Edge tab bundle 加载 0 报错 | ✅ | **§7.106（2026-10-22）桌面截图为证**：右栏 Edge tab 打开、四面板渲染、意图面板收到活体行 `jev.boot_probe`（全链路：audit-log onEntry → edge-context-view fold → `/api/dsh-edge/context` pull → client 轮询 → 渲染）。§7.142 起 tab **常驻注册**，任何工作模式都有这个页签 |
+| 10 | 切到后台再切回 → 数据保留（不重 mount 清空）| ⏳ | 设计满足（client `store.ts` 模块级单例；attach/detach 配对），**未实机取证**——如实标 ⏳，不拿设计满足冒充实测 |
+| 11 | 桌面主题深/浅 + 语言 zh/en 跟随（无白底穿帮 + 文案跟随） | 部分 ✅ / ⏳ | **zh 通道已实机通**：§7.145-B 桌面 r16（`127.0.0.1:62248`）面板显示「尚未绑定会话 / 暂无全局信号」中文文案。**深/浅主题切换与 en 切换仍未实机取证**（设计满足：theme `currentColor` + `color-mix`；i18n `locale.register/bind` + zh/en 字典） |
 
 ## 6. 文件清单
 
@@ -236,3 +245,8 @@
   - **修改文件（9）**：`audit-log.ts`、`cordis.desktop-safe.patch.yml`（`edge-context-view` insert row，`inject: [auditLog]`）、`package.json`（exports `./edge-context-view` 新增、`./client` → `./lib/client.js`、`dsh.client.entry` 改 `./lib/client.js`、devDeps preact + esbuild、`build:client`/`typecheck:client` 接进 `build`）、`pnpm-lock.yaml`、`pnpm-workspace.yaml`（`allowBuilds.esbuild: true`）、`tsconfig.json`（exclude）、`scripts/verify-plugin-spec.ts`（`./client` 跳过源文件存在性检查——bundle 走 `dsh.client.entry`）、`docs/edge-context-tab-plan.md`（本文件 v3→v4 修正）。
   - **11 项验收**（计划 §5）：本环境能验的 8 项全部通过（tsc compile、tsc-client typecheck、esbuild bundle 20 KB、verify:build 5 道门、31 个新单测全过、桌面 installable bundle smoke 含 `lib/client.js` 与新 patch row、PII 5 类在 host 折叠时已 tokenize + 嵌套对象扁平化、tab 类型在 deferred 注入下 mount 失败也保持插件健康）。装机目视验证（11 项中剩 3 组：①右栏 Edge tab 出现 + bundle 加载 0 报错；②切后台再切回数据保留；③主题深/浅跟随 + 语言 zh/en 文案跟随）需在桌面 0.2.1-rc.2 实跑。
   - **本次文档修正**：v3 原始 §3 阶段 2/3 与实现差异较大（inject 表从 8 缩到 1、传输从 AsyncIterable 改 POST route、build 从"jsx 放主 tsconfig"改为"独立 tsconfig.client.json"、文件清单从 5 新增 4 修改改为 15 新增 13 修改——feat commit 11 新增 / 9 修改 + 文档同步 commit 4 修改），原 §1 状态表/§4 风险/§5 验收/§6 文件清单同步按 v4 实际对齐。
+- **v5**（2026-10-29，§7.146 文档审计刷新，**只改状态不改方案**）：
+  - **§1 状态表**：第 5 行「桌面右栏看到 Edge tab」由 ⏳ → ✅（§7.106 桌面截图为证）；第 10 行由「8/11 ✅，3/11 ⏳」→ **9 ✅ / 2 ⏳**；新增第 11 行记 §7.145-C 构建链门禁。
+  - **§4 风险表**：`sidebarRightTabs.register` 签名行由「装机待验」→ 已装机验证。
+  - **§5 验收表**：#9 补实机取证依据；#10 如实标 ⏳（无实机取证，不拿设计满足冒充）；#11 标「zh 通道已实机通 / 深浅主题与 en 切换未验」——**不把 3 项 ⏳ 一次性抹平成全绿**。
+  - **头部**：加 v5 状态段，声明本文是**已落地计划书**而非待办，并串起 §7.106 / §7.142 / §7.145-B / §7.145-C 四条后续主线。

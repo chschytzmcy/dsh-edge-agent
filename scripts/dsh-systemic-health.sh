@@ -24,6 +24,9 @@
 #   bash scripts/dsh-systemic-health.sh --scenario=web-deploy    # Web 部署校验
 #   bash scripts/dsh-systemic-health.sh --scenario=dsh-system    # dsh 系统校验
 #   bash scripts/dsh-systemic-health.sh --fix                    # 自动修可修项
+#
+# 技能定义（触发词、检查项表、已知陷阱备忘、输出解读）：
+#   docs/skills/dsh-systemic-health/SKILL.md
 # ───────────────────────────────────────────────────────────────────
 set -euo pipefail
 

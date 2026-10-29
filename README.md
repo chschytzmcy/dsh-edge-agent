@@ -911,4 +911,6 @@ E2E 实测记录）见 **[docs/TEST-REPORT.md](docs/TEST-REPORT.md)**。
 
 更多文档见 [docs/architecture.md](docs/architecture.md)：[架构](docs/architecture.md) · [上游适配契约](docs/architecture.md) · [威胁模型](docs/architecture.md) · [插件开发](docs/architecture.md) · [实施进度](docs/PROGRESS.md) · [意图与脱敏详细设计](docs/intent-and-sanitization.md) · [三层决策参考手册（正则/决策模型/LLM 全清单）](docs/intent-decision-reference.md) · [测试报告](docs/TEST-REPORT.md)
 
+`docs/` 目录的**总索引**（每份文档一句话说明 + 状态标记 + 处置判据）见 **[docs/README.md](docs/README.md)**。
+
 MIT License. 详见 [LICENSE](LICENSE)。

@@ -14167,3 +14167,164 @@ rebuild-installable: dsh-edge-agent-desktop-safe declares dsh.client but ./lib/c
 | `docs/E2E_HTTP_API_CASES.md` | 记录**当前唯一活跃的 E2E**（`scripts/e2e-ops-log-coverage.sh`）+ 历史脚本的替代关系。 |
 | `docs/bench/**` | 实测数据（报告 + results.json + 快照），不是「文档」。 |
 | `docs/architecture.md` / `intent-and-sanitization.md` / `intent-decision-reference.md` / `plugin-mount-points.md` / `load-into-local-dsh.md` / `deploy-minimal-files.md` / `version-policy.md` | 活的参考文档，README 与源码均引用。 |
+
+
+---
+
+## §7.146 文档全量审计：`docs/` 索引化 + 过期数字刷新（2026-10-29）
+
+主人 2026-10-29 指令：「整理下docs下的所有文档，是否有无用文档」。§7.145-D 是
+**点状**整理（删一份 + 刷两份），本轮是**全量**审计：逐份判定「留 / 刷新 / 删」。
+
+### 方法：引用统计必须按路径匹配
+
+第一版审计脚本按**文件名**匹配引用 ⇒ 统计出 `SKILL.md` 有 8 处引用。重写为
+**按路径**匹配后（排除 `node_modules` / `.git` / `dist` / `coverage` / `lib` /
+`agent-presets` / `.idea` / `.npm-cache`），`SKILL.md` 的真实引用数是 **0**。
+
+**这是本轮最重要的一条方法论**：`SKILL.md` / `report.md` 这类重名文件按名统计
+会**互判成假阳性**——`docs/bench/etscli-tools/` 下三个 `report.md` 按名统计互相
+「引用」对方，按路径统计才是真相。差点据此删掉评测结果的**唯一人类可读载体**。
+
+### 判据（已写进 `docs/README.md`，可复现）
+
+一份文档若**零独有信息** + **没有活着的读者** ⇒ 删；过期但有留存价值 ⇒ **刷新**；
+活的参考 / 唯一证据 / 被代码引用 ⇒ **留**。
+
+### 全量结论
+
+审计范围：`docs/` 下 **44 个文件**（35 份 `.md` + 9 个数据产物
+`results.json` ×6 / `diff.txt` ×2 / `p0.jsonl` ×1），体积 2.29 MB。
+
+| 分类 | 数量 | 处置 |
+|---|---|---|
+| 活的参考（被代码 / 脚本 / 其它文档引用） | 23 | 留 |
+| 唯一证据（实测数据，不可再生） | 10 | 留 + **收进索引** |
+| 过期但有留存价值 | 3 | **刷新** |
+| 零独有信息 + 无读者 | 0 | ——（唯一符合者 `E2E_TUI_CASES.md` 已在 §7.145-D 删） |
+
+**本轮没有新增删除**。剩下 10 份「0 引用」的文档逐一查过：**全部有独有信息**
+（实测数据 / 技能定义），**缺的是入口而不是内容** ⇒ 处置是**补索引**，不是删。
+
+### 10 份「0 引用」文档的逐一定性
+
+| 文档 | 为什么必须留 | 处置 |
+|---|---|---|
+| `bench/etscli-tools/match-d3/report.md` | **新模型验收就看这个**（needle en 31% / cn 3% / 着陆率 en 41%） | 留；`etscli-tools/README.md` 补显式链接 |
+| `bench/etscli-tools/match-d0/report.md` | match 口径无干扰基线（同目录 `results.json` 是机器版） | 同上 |
+| `bench/etscli-tools/inflation-d3/report.md` | 历史口径虚高实测（73% vs 真值） | 同上 |
+| `bench/snapshots/2026-09-20-3model-vertical.md` | §7.87.7/§7.87.8 3 模型纵向对比（「小模型+好 server > 大模型+差 server」复验） | 留；新建 `snapshots/README.md` 索引 |
+| `bench/snapshots/2026-09-20-minicpm5-2b-mlx.md` | §7.87.9 MLX 量化失败取证（C6 tool_call 0/17） | 同上 |
+| `bench/snapshots/2026-09-20-qwen3.8-27b-3runs.md` | §7.87.10 Qwen3.8-27B 3-run median | 同上 |
+| `bench/snapshots/2026-09-20-qwen3-4b-lan-3runs.md` | qwen3-4b 3-run median | 同上 |
+| `bench/snapshots/2026-09-20-qwen3.5-9b-mlx-3runs.md` | qwen3.5-9b 3-run median | 同上 |
+| `bench/snapshots/2026-09-20-v3-c1-c10-4model-report.md` | §7.87.11 Bench v3 4 模型完整分数 | 同上 |
+| `bench/snapshots/2026-09-20-v3-scoring-4model.md` | §7.87.11 评分公式 v3 + 12 hard fixtures | 同上 |
+| `skills/dsh-systemic-health/SKILL.md` | `scripts/dsh-systemic-health.sh`（20 KB，活的）的技能定义 + **已知陷阱备忘**（dsh-scope 双实例 / `Session.events` 移除 / audit-log minLevel 静默 drop / bundle lib 不同步 / `cordis.patch.yml` 双层） | 留；脚本头部加反向链接 |
+
+> bench 快照为何**不可再生**：当时的端点（`67.0.0.5:28000/28001`、
+> `192.168.65.2:8080`、`192.168.1.174:8911`）是当时的内网机器，云端模型
+> `dashscope-qwen3.7-plus` 早已换代；而 `make package` 的一行 `@rm -rf $(DIST_DIR)`
+> 当时把 `dist/bench-*/` 全擦了 —— 快照正是那份擦掉之后的存档。
+
+### 刷新（过期 ≠ 无用 ⇒ 改，不删）
+
+| 文档 | 改了什么 |
+|---|---|
+| `docs/edge-context-tab-plan.md` | §1 状态表：第 5 行「桌面右栏看到 Edge tab」⏳ → **✅**（§7.106 桌面截图为证）；第 10 行「8/11 ✅，3/11 ⏳」→ **9 ✅ / 2 ⏳**；新增第 11 行记 §7.145-C 构建链门禁。§4 风险表「装机待验」→ 已装机验证。§5 验收表：#9 补实机依据；#10 如实标 ⏳（无实机取证，**不拿设计满足冒充实测**）；#11 标「zh 通道已实机通（§7.145-B r16 中文文案）/ 深浅主题与 en 切换未验」。头部加 v5 状态段，声明本文是**已落地计划书**而非待办。修订历史补 v5 条目。 |
+| `docs/deploy-minimal-files.md` | ① `exports` 29 → **36 条**（31 代码入口 + 3 yml 资源 + 2 特例）；lib 下 `.js` 56 → **72 个**（私有 27 → 41）。② `dsh.bundle.patch` 由字符串 → **数组**（§7.135）；顶层 insert 段 16 → **4 行**（全是「被逼留下的」：`dsh-edge-agent` 裸包名行 / `file-logger` / `audit-log` 是宿主机制逼的，`desktop-cookie-janitor` 是**时序**逼的）；config 覆盖 10 → **8 行**（桌面变体 2 行）；disable 30 → **30 行**（桌面变体 1 行）；补「本项目行为插件行已全部迁进 preset」（`presets/edge.patch.yml` = 22 宿主标准行 + **17** 本项目行；桌面变体 22 + **15**）。③ 铁律 3 的 7 插件闭包补注「现在分居 preset 与宿主树两层」。④ 一图流刷新 + 追加「数的是谁」小节。 |
+| `bundle-minimal/README.md` | `exports`「7 插件闭包 + file-logger」→ **12 条**（3 资源 + 9 代码入口）；`cordis.patch.yml`「8 插件实装图」→ **9 行**（file-logger + **audit-log** + 7 闭包）。 |
+
+### 新建（补入口 —— 让「有内容但没读者」的文档有读者）
+
+| 文件 | 作用 |
+|---|---|
+| `docs/README.md` | **`docs/` 总索引**：按用途 + 按目录两套视图，逐份一句话说明 + 状态标记；写进处置判据与两条执行纪律；「已被删除的文档」留档防复发；维护约定（新增文档必须登记，否则会以孤儿形态存在）。 |
+| `docs/bench/snapshots/README.md` | §7.87 模型选型 7 份快照的索引 + 最终口径表 + 三条跨快照教训。 |
+
+### 改动（非文档）
+
+| 文件 | 改了什么 |
+|---|---|
+| `scripts/dsh-systemic-health.sh` | 文件头加一行指向技能定义 `docs/skills/dsh-systemic-health/SKILL.md`（技能定义 ↔ 脚本的**双向**可达）。 |
+| **`scripts/verify-doc-links.mjs`（新，第 16 道门禁）** | 见下节「把审计结论固化成门禁」。 |
+| `package.json` | `verify:build` 链末加 `verify:doc-links`；新增 `scripts.verify:doc-links` 条目。 |
+
+### 把审计结论固化成门禁（`verify:doc-links`）
+
+审计出手的结论如果只停在文档里，下个月就白做了——**新增文档忘了登记**、
+**目录改名漏改引用**这两件事都没有任何人会发现。所以本轮把「docs/ 可达」这条
+不变量变成机器强制：
+
+```
+node scripts/verify-doc-links.mjs            # 查当前树
+node scripts/verify-doc-links.mjs --selftest # 自证 + 反向证伪（12 项断言）
+```
+
+两条不变量：
+
+1. **链接不断** —— 任何 `.md` 里的相对链接，指向的文件必须真实存在。
+2. **可达不孤儿** —— `docs/` 下每个文件（含 `results.json` / `diff.txt` 等数据
+   产物）必须能从某个**导航面**（`docs/` 下任一 `README.md` + 仓库根
+   `README.md`）沿 markdown 链接链走到（**传递闭包**，不是只能一跳）。
+
+判据是**显式链接**而不是「字符串出现过」：`PROGRESS.md` 里提到过一个文件名，
+不等于读者能走到它。这与本轮审计用的判据一致（引用统计必须**按路径**匹配）。
+
+**自证 + 反向证伪（三层，全过）**：
+
+| 层 | 做法 | 结果 |
+|---|---|---|
+| 纯内存自证 | `--selftest`：在 `os.tmpdir()` 造一棵最小文档树，逐条断言「断链被抓 / 孤儿被抓 / 干净树放过 / 修完放过」 | **12 项断言全过**（exit 0） |
+| 实机反向证伪（断链分支） | 向真树 `docs/README.md` 注入一条断链 | 门禁 **exit 1**，输出 `断链 : 1` 并点名来源与目标 ⇒ 已回滚 |
+| 实机反向证伪（孤儿分支） | 在真树新建一个无人引用的文件 | 门禁 **exit 1**，输出点名该文件 ⇒ 已删除 |
+
+门禁第一次跑在真树上就**当场抓出一条真问题**：`docs/bench/needle-cn-en/results.json`
+没有任何导航面能走到它（报告正文里没链接自己的机读产物）⇒ 已补链接。
+这不是演示，是门禁第一次运行就挣回来的。
+
+### 本轮验证（Windows 实机）
+
+| 项 | 结果 |
+|---|---|
+| 单元测试 | **70 文件 1424 passed / 2 skipped / 0 failed**（与 §7.145 同基线，无回归） |
+| eslint | **0 error**（58 个 unused-vars warning 非阻断） |
+| `tsc --noEmit`（`tsconfig.json` + `tsconfig.client.json`） | 均 exit 0 |
+| 构建门禁 `verify:build` | **16 项全过**（新增第 16 项 `verify:doc-links`） |
+| 门禁自证 | `verify:doc-links --selftest` 12 项断言全过 |
+| 门禁实机反向证伪 | 断链 / 孤儿两个分支各一次，均转红且已回滚 |
+
+> 门禁输出顺带**印证了本轮写进文档的数字**：`verify:patch-surface OK (4 inserts,
+> 8 config overrides, 30 disables, 2 presets / 98 plugin rows)` 与
+> `verify:plugin-spec OK (28 adapter plugins scanned, 36 subpath exports)` ——
+> 与 `deploy-minimal-files.md` 里新写的数字逐个对得上。
+
+### 教训固化
+
+1. **引用统计按路径，不按文件名** —— 重名文件按名统计会互判成假阳性（本轮
+   `SKILL.md` 假阳性 8→真值 0，三个 `report.md` 互相假阳性）。
+2. **「0 引用」不等于「0 价值」** —— 引用数只是「读者」的**代理指标**。实测数据 /
+   技能定义 / 被 §7.59 的 `make package` 抹掉后无法再生的快照，全部是「0 引用
+   但必须留」；处置看**独有信息 + 缺的是入口还是内容**。
+3. **补入口优先于删** —— 9 份文档缺的是**入口**（没人知道它们在哪）而不是
+   **内容**（内容是空的）。建两个索引 + 加三个链接就把「孤儿」变成「有读者的
+   证据」，代价远小于删。
+4. **过期文档刷数字，不删** —— `deploy-minimal-files.md` 的 16 insert / 29 exports
+   是 §7.135 之前的真实数字，它记录的**机制**仍然成立；把数字刷到现役、并把
+   「结构变了」这件事写清楚，比删掉它有价值得多。
+5. **历史计划书是资产** —— `edge-context-tab-plan.md` 记的是「为什么这么做」，
+   补上「已落地 + 实机验收回填 + 哪些仍未验」之后，它从「过期待办」变成
+   「决策 + 验收留档」。
+6. **审计结论要落成门禁** —— 「新增文档必须登记」只写成约定，下个月就废了。本轮
+   把它变成 `verify:doc-links`（第 16 道）：断链与孤儿都机器可查，且**第一次
+   跑在真树上就抓出一条真问题**（`needle-cn-en/results.json` 没人能走到）。
+   门禁自己也要有反向证伪——断链分支与孤儿分支各在真树上注入一次、确认转红、
+   再回滚。
+
+### 本轮未做（明确不做的）
+
+- **不删任何文档**。唯一符合删除判据的 `E2E_TUI_CASES.md` 已在 §7.145-D 删掉。
+- **不把 3 项 ⏳ 一次性抹平成全绿** —— `edge-context-tab-plan.md` 的 #10（切后台
+  再切回数据保留）与 #11 的深浅主题 / en 切换部分**没有实机取证**，如实标 ⏳。
+- **不动 `docs/bench/**` 的数据产物** —— 报告 + `results.json` + `diff.txt` 成对
+  保留（人读版 / 机读版 / 差异对照，各有角色）。

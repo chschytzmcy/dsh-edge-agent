@@ -3,7 +3,7 @@
 > 本报告基于**合成场景**(「列出 .md 文件」+ 通用 `bash/glob` 工具描述)。
 >
 > **其中的「English 100% 有效产出」不代表真实能力。** 后续用
-> [etscli 真实场景套件](../etscli-function-call/report.md)复测发现:
+> [etscli 真实场景套件](../etscli-tools/report.md)复测发现:
 > needle 在 etscli 场景下**命令正确率仅 5%**(18 个正例全部不产出调用)。
 >
 > 即:needle 的高分是**过拟合到「列文件 → 调 bash」这一简单模式**的,
@@ -21,6 +21,8 @@
 > **能力评估请以 etscli 套件为准**。
 
 # cactus-needle 中英文能力测试报告
+
+> 机读产物:[`results.json`](results.json)(逐 case 逐次的原始判定)
 
 - **生成时间**: 20260928T045556Z
 - **被测服务**: `http://127.0.0.1:8081/extract` (cactus-needle 3.0.1)
