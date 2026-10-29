@@ -19,11 +19,123 @@
 # (http.host / http.port / secrets.edgeApiKey) — the same file the desktop
 # reads, so both profiles agree on the configuration.
 #
-# §7.101.x note: rows inside `insert:` must NOT carry `inject:` / `config:`
-# — cordis 0.2.1-rc.2's patch loader silently skips both. The plugin
-# declares its own dependencies in src (http-api's inject = agents,
-# intentRouter, auditLog, tdBus, realmSkillBridge, edgeTools).
+# §7.152 (2026-10-29): why the STACK is re-inserted here (the §7.107 version
+# inserted only `http-api`, and the profile stopped booting on 2026-10-29).
+# NOTE: upstream §7.151 (same day) is the cloud-egress-trim fix — a different
+# change that happens to share the discovery session; this overlay rewrite is
+# §7.152.
+#
+#   Symptom (real boot, this profile):
+#     dsh: plugin tree failed to load: dsh: 1 entry did not activate
+#     @deepseek-harness-edge-agent/dsh-edge-agent/http-api: pending
+#     (waiting for services: intentRouter, tdBus, realmSkillBridge, edgeTools)
+#
+#   Root cause — §7.135/§7.136 moved the edge stack OUT of the host tree:
+#     the desktop now mounts it as an **Agent Preset** (presets/edge.*.patch.yml,
+#     a preset subtree = its own cordis scope), and the bundle's own patch
+#     (cordis.desktop-safe.patch.yml) keeps only FOUR rows in the host tree:
+#     dsh-edge-agent / file-logger / audit-log / desktop-cookie-janitor.
+#     A preset subtree's services are NOT visible to host-tree rows (cordis
+#     scope isolation), so a host-tree `http-api` row waits forever for
+#     intentRouter / tdBus / realmSkillBridge / edgeTools ⇒ the boot aborts.
+#
+#   Why the preset path is not an option here: a preset row needs the
+#     `@deepseek-ai/dsh-agent-preset` package, which only exists in the
+#     desktop's Electron-managed profile. A headless CLI profile resolves
+#     `@deepseek-ai/dsh-agent-presets` (plural, the registry lib) — the
+#     preset PLUGIN is not installed ⇒ the preset row cannot mount ⇒ the
+#     stack would never load at all.
+#
+#   Fix: mount the stack in the HOST tree for this profile (the arrangement
+#     that was in force before §7.135 and that §7.107 verified end-to-end:
+#     /v1/health 200 on :21017). A headless profile has no second work mode
+#     to isolate from, so the preset's isolation realm buys nothing here.
+#     The desktop keeps its preset-based arrangement untouched — this file
+#     is a PROFILE overlay and only applies to the dsh-edge-agent profile.
+#
+#   Row list = the host-tree set that shipped before §7.135 (git a80ea47:
+#   cordis.desktop-safe.patch.yml), minus the four rows the bundle patch
+#   already inserts (dsh-edge-agent / file-logger / audit-log /
+#   desktop-cookie-janitor — re-inserting the same id is rejected by the
+#   patch loader), plus `http-api`.
+#
+#   §7.101.x note: rows inside `insert:` must NOT carry `inject:` / `config:`
+#     — cordis 0.2.1-rc.2's patch loader silently skips both. Each plugin
+#     declares its own dependencies in src (http-api's inject = agents,
+#     intentRouter, auditLog, tdBus, realmSkillBridge, edgeTools) and reads
+#     its runtime knobs from config/edge.json.
 
 - insert:
+    # Stub TCM. Real crypto remains future work; keep shape stable.
+    - id: tcm
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/tcm'
+
+    # Privacy policy engine. Missing file falls back to the built-in policy;
+    # the deployed copy lives at ~/.dsh-edge-agent/privacy-policy.json.
+    - id: privacy-policy
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/privacy-policy'
+
+    # Threat bus. Thresholds come from config/edge.json (threat.*).
+    - id: td-bus
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/td-bus'
+
+    # Edge tool registry (provides the `edgeTools` service).
+    - id: edge-tools-registry
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/tools'
+
+    # Realm-aware skill/tool filtering. Uses the shared realm config file
+    # (~/.dsh-edge-agent/skill-realms.json).
+    - id: realm-skill-bridge
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/realm-skill-bridge'
+
+    # Prompt guard (model-assisted detection). Config comes from
+    # config/edge.json (stages.guard.*).
+    - id: prompt-guard
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/prompt-guard'
+
+    # Reversible PII sanitizer. Session limits come from config/edge.json
+    # (privacy.*).
+    - id: sanitizer-pipeline
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/sanitizer-pipeline'
+
+    # Intent router — decides LOCAL / CLOUD / SANITIZED / REJECT per turn.
+    # Classifier config comes from config/edge.json (stages.intent.*);
+    # a dead classifier falls back to the keyword/regex tier.
+    - id: intent-router
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/intent-router'
+
+    # Route catalog so /v1-style enumeration and intent-router's soft
+    # dependency both see local-llm + cloud-llm.
+    - id: model-router
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/model-router'
+
+    # Orchestrator — this is the plugin that installs the global hooks.
+    - id: input-guard
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/input-guard'
+
+    # LLM adapters. Pool configuration comes from config/edge.json (llm.*);
+    # the plugin registers its own provider routes.
+    - id: local-llm-adapter
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/local-llm-adapter'
+
+    - id: cloud-llm-adapter
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/cloud-llm-adapter'
+
+    # Optional external tool caller (needle). Knobs come from
+    # config/edge.json (functionCallExternal.*).
+    - id: function-call-external
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/function-call-external'
+
+    # Edge panel host half — folds the audit stream into the panel rows.
+    # Hard dep is auditLog only.
+    - id: edge-context-view
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/edge-context-view'
+
+    # Web search aggregator — Tavily → 博查 AI → DeepSeek.
+    - id: web-search-tavily-bocha
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/web-search-tavily-bocha'
+
+    # The HTTP listener — the reason this profile exists. Host / port /
+    # bearer token come from config/edge.json (http.* / secrets.edgeApiKey).
     - id: http-api
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/http-api'

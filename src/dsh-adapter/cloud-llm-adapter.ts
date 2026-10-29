@@ -67,7 +67,40 @@ import { getTraceStore, callIdFor } from './llm-trace-store.js'
 
 export const name = 'cloud-llm-adapter'
 
-export const inject = ['llm', 'auditLog', 'inputGuard'] as const
+/**
+ * §7.152 (2026-10-29): 'sanitizer' + 'modelRouter' 加入 inject。
+ *
+ * 原来的类注释（§7.131）认为「apply() 时取不到的服务可以在运行时用
+ * `ctx as unknown as {...}` 取到」——**这是错的**：cordis 的 Context 是
+ * Proxy，`inject` 里没声明的服务在**运行时**访问一样会抛
+ * `cannot get property "X" without inject`。类型断言骗不过 Proxy。
+ *
+ * 实测（独立 HTTP profile，2026-10-29）：CLOUD 直连池（baseUrl + keyRef）
+ * 的首次出网就死在这里：
+ *   cloud-llm-adapter: egress preparation failed
+ *   (cannot get property "modelRouter" without inject)
+ *   —— refusing to send unscrubbed text
+ * 即：出网前准备器**取不到本地 provider 名单**（modelRouter）与**脱敏器**
+ * （sanitizer）⇒ 宁可不发也不发未脱敏的文本 ⇒ CLOUD 轮次全 502。
+ *
+ * 为什么之前没暴露：DELEGATE 模式（cloud 池留空、转交宿主 provider）走的是
+ * 另一条路径，不碰这两个服务；本仓库的默认部署一直是 DELEGATE。一旦把
+ * cloud 池配成**直连**（baseUrl + model + keyRef），这条路径才会走到。
+ *
+ * 无环性：sanitizer-pipeline 的 inject 是 [privacyPolicy, auditLog]、
+ * model-router 的 inject 是 [llm] —— 两个都不依赖本行，硬声明不会成环
+ * （inject 是「服务有没有」，不是「谁先谁后」）。
+ *
+ * ⚠️ 两种布局各取一半（与 §7.151 的关系）：
+ *   - 桌面 preset 布局：patch row 自带 `inject: [llm, auditLog]`，
+ *     row 级声明**覆盖**这里的 TS export ⇒ TS 侧加了也没用，出网读取靠
+ *     §7.151 的 `ctx.get()` 软取 + fallback 兜住（见 localProviders）。
+ *   - 独立 HTTP profile（宿主树）：insert row 不能带 inject（§7.101.x），
+ *     生效的就是**这份 TS 声明** ⇒ 本行是唯一可用的修法；已实机验证
+ *     CLOUD 直连池 /v1/chat 200（sanitizer 直取在 row 覆盖不到的地方仍会炸，
+ *     所以这两项声明在宿主树布局是**必需**的，不是冗余）。
+ */
+export const inject = ['llm', 'auditLog', 'inputGuard', 'sanitizer', 'modelRouter'] as const
 
 /** Minimal interface our adapter needs from the audit-log service. */
 interface AuditLike {
@@ -137,6 +170,13 @@ export interface CloudEgressResult {
  * 运行时调用 —— 那时所有插件都已 apply，ctx 完整。所以这里持有 ctx，在
  * **运行时**再取 sanitizer。
  *
+ * ⚠️ §7.152 修正：运行时取 ≠ 能取到。cordis 的 Context 是 Proxy，
+ * `inject` 未声明的服务在运行时访问照样抛
+ * `cannot get property "X" without inject`（类型断言绕不过 Proxy）。
+ * 宿主树布局里 `sanitizer` / `modelRouter` 已**声明进 inject**（见上方
+ * 注释）；preset 布局里 row 级 inject 会覆盖 TS 声明，那边靠 §7.151 的
+ * `ctx.get()` 软取兜底。这里保留 ctx 是因为取到的必须是**运行时那一份实例**。
+ *
  * 同理 `ctx.inputGuard` 也是运行时才拿得到 —— apply() 时取到的那个
  * `inputGuard` 一直是 undefined（§7.17 的孤儿 tool_call 清洗在当前部署下
  * 因此是**失效**的）。本轮不改那件事，只把脱敏需要的 sanitizer 运行时取到。
@@ -157,11 +197,14 @@ export class CloudEgressGuard {
    * model-router 在 patch 里排在 cloud-llm-adapter 之后，所以同样运行时取。
    *
    * §7.151 (2026-10-29): **必须走 `ctx.get()` 而不是 `ctx.modelRouter` 直取**。
-   * cordis 4.x 的 ctx 是 Proxy：读一个既没 provide、也不在 `inject` 声明里的
-   * 属性会**直接抛** `cannot get property "modelRouter" without inject` ——
-   * 而 cloud-llm-adapter 的 inject 是 `['llm','auditLog','inputGuard']`，没有
-   * modelRouter。直取会让 §7.131 的裁剪在真机上抛错 ⇒ 出网准备失败 ⇒ 整轮
+   * cordis 4.x 的 ctx 是 Proxy：读一个既没 provide、也不在生效 `inject` 里的
+   * 属性会**直接抛** `cannot get property "modelRouter" without inject`。
+   * preset 布局里 row 级 `inject: [llm, auditLog]` 覆盖 TS 声明（不含
+   * modelRouter），直取会让 §7.131 的裁剪在真机上抛错 ⇒ 出网准备失败 ⇒ 整轮
    * 以 `SANITIZE_FAILED` 失败（裁剪从来就没跑起来过）。
+   * §7.152 注：宿主树 profile 的 TS inject 现已声明 modelRouter，直取合法；
+   * 这里的 `ctx.get()` + fallback 仍然保留 —— preset 布局只认它，且两种
+   * 布局共用这一份代码。
    */
   private localProviders(): string[] {
     let router: { listDetailed?: () => Array<{ provider?: string; realm?: string }> } | undefined
