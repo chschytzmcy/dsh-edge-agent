@@ -14580,3 +14580,132 @@ exe → 新 5 进程 14:00:58 启动 → **宿主端口换成了 57160**（端�
 - **旧行不可追认**：本节之前落盘的无 sessionId 行，宿主仍归全局桶。
 - `intent.jev.boot_probe` / `intent.llm.low-confidence` 仍是 0% —— 前者是
   boot 期（无会话，合理），后者所在函数不在 jev 闭包作用域内，待下一轮核。
+
+
+---
+
+## §7.149 「登录的密盒」返回内心独白 —— Goal 族工具误选的三阶段演进与根因修复（2026-10-29）
+
+主人 14:05 在桌面版发「登录的密盒」，界面回来的却是一段英文自白：
+
+> I keep calling `get_goal` with identical arguments and it keeps returning null.
+> I need to stop this loop. Let me try a different approach:
+
+### 一、三阶段演进（每一阶段现象不同，根因相同）
+
+| 阶段 | 时间 | 现象 | 模型动作 | 工具结果 |
+|---|---|---|---|---|
+| ① 首现 | 14:05:13 | 一段自白（138 字符） | 调 `get_goal` | **空**（没有 Goal 的会话里必然空） |
+| ② 复读 | 14:23:59 | **同一句话重复 15 遍**（2013 字符） | **没调任何工具**（`toolCallCount=0`） | — |
+| ③ 换模型后 | 14:28:36 | 正常推理：「我要去列 auth profiles」 | 调 `update_goal` | **报错** `status=error errorKind=unknown` |
+
+**阶段 ② 是关键**：模型一次都没调工具，就把同一句话输出了 15 遍。为什么？
+**因为阶段 ① 的自白已经进了会话历史** —— 14:23 那轮的输入是
+`messageCount=55, promptLen=83707`，历史里躺着 4 轮同样的自白。弱模型看到
+「上一轮 assistant 就是这么回答的」⇒ 学到「这就是答案」⇒ 复读，而且复读得
+更狠。
+
+> **教训（比 bug 本身更值钱）**：一次错误输出会**自我强化**。模型犯错不可怕，
+> 可怕的是错误答案进了历史后变成「范例」。换更强的模型能治本，但**换完模型
+> 必须开新会话** —— 污染的历史对新模型同样有效。
+
+### 二、根因（取证，不是推测）
+
+**不是** edge-agent 的 bug，是**宿主工具集里混进了一族在本场景无意义的工具**。
+
+1. **模型看得见 `get_goal`**：DeepSeek Harness 的标准工具集里带 Goal 族
+   （`get_goal` / `create_goal` / `update_goal`），见
+   `deepseek-harness/apps/cli/tests/web-agent-presets.e2e.ts:303` 与
+   `apps/web/tests/shipped-composition.e2e.ts:481`。主人 14:23 那轮模型实际
+   收到的工具清单（ops log `LLM_REQUEST.tools`）里就有 `get_goal`。
+2. **`get_goal` 在本会话必然返回空**：它的契约是「没设 Goal 就是空」。模型
+   拿到空结果后**没有换工具**，反而把这句自白当正文输出（`toolCalls:[]` +
+   `finishReason=stop` 证明是最终回复，不是工具调用）。
+3. **模型确实知道该用 `ets-auth`**：system prompt 里的 skill catalog 明确写着
+   `ets-auth`: 认证与凭证管理：登录、登出…触发关键词：登录、认证、auth、login、
+   logout、profile、**密盒**、MEOS、ME盒 —— 主人输入的「登录的密盒」**逐字命中**
+   触发词。模型是**知道却选错**。
+4. **闸门没挡住**：`~/.dsh-edge-agent/skill-realms.json` **不存在** ⇒ realm 配置
+   落到 `DEFAULT_CONFIG = { skills:{}, tools:{}, defaultRealm:'hidden' }`
+   ⇒ `toolRealms` 里只有 native seed 的 4 个（`web_search` / `web_fetch` /
+   `working_directory` / `load_workspace_dependencies`）⇒ 其余 23 个工具
+   `toolRealm()` 返回 `undefined` ⇒ **一律 fail-open 放行**（含 Goal 族）。
+   Goal 族工具还在 Harness 侧执行报错（`errorKind=unknown`），说明它们在本场景
+   根本不该被调用。
+
+### 三、换模型这一半
+
+主人 14:03 换了本地池（`api.minimaxi.com`/`MiniMax-M3.1-Flash` →
+`token-plan…maas.aliyuncs.com`/`qwen3.6-flash`），14:29 又换成
+`qwen3.8-flash`。**换模型必须重启桌面版才生效** —— `local-llm-adapter` 的
+`this.defaultModel = config.defaultModel` 在 `apply()` 时读一次，配置**没有**
+热加载路径。重启后 ops log 三处确认：
+
+```
+[prompt-guard]  modelDetectionModel from config/edge.json: qwen3-4b → qwen3.8-flash
+[intent-router] classificationModel from config/edge.json: qwen3-4b → qwen3.8-flash
+[input-guard]   localModel from config/edge.json: qwen3-4b-instruct-2507 → qwen3.8-flash
+```
+
+**但换模型只是缓解**：3.8 在阶段 ③ 依然误选了 `update_goal`。根因（工具集里
+有一族不该被调的工具）不因换模型而消失。
+
+### 四、根因修复：把 Goal 族工具在 realm 层挡掉
+
+新建 `~/.dsh-edge-agent/skill-realms.json`（**运行时文件，不进仓库**）：
+
+```json
+{
+  "skills": {},
+  "tools": {
+    "get_goal": "hidden",
+    "create_goal": "hidden",
+    "update_goal": "hidden"
+  },
+  "defaultRealm": "hidden"
+}
+```
+
+为什么这样就够：
+
+- `tagToolsFromConfig()` 先 seed native 标签、再叠加 config（冲突时 config 赢）
+  ⇒ 新建配置文件**不会**冲掉已有那 4 个 native 标签。
+- config 循环只给**显式列出**的工具打标签，`defaultRealm` **不参与 tools**
+  （只参与 skills）⇒ 只挡这 3 个，其余 24 个工具照常。
+- `'hidden'` 在**两层**都生效：Layer 1.5（assemble，模型**看不见**）+
+  Layer 3（pre-execute，执行闸门即使被硬调也 deny）。
+- `realmHotReload: true` + `realmWatchMs: 5000` ⇒ **写完 5 秒内自动生效，
+  不用重启**。
+
+回滚：删掉那 3 行（或整个文件）即恢复，5 秒内生效。
+
+### 五、实机验证（主人 14:30 开的新会话）
+
+```
+14:30:41  chat received      session-4609197a  reason=initial     ← 新会话，干净
+14:30:43  tool allow         tool=skill skillName=ets-auth realm=LOCAL   ← 选对了！
+14:30:43  tool result        tool=skill status=ok
+14:30:43  assemble filter    removedCount=5 removed=create_goal,get_goal,
+                                       update_goal,web_fetch,web_search  ← Goal 族已挡
+14:30:46  tool allow         tool=pwsh realm=LOCAL  →  status=ok
+```
+
+模型输出（1035 字符）给出了**真实的密盒列表**：密盒0035（当前激活，master）、
+会议助手（master）、亿次网联（member）、新设备，并说明「密盒0035 的 token
+大概率已过期（创建于 2026-10-23，有效期 7 天）」—— **这个需求跑通了**。
+
+> 顺带确认 §7.148 的修复也实机生效：审计链里 `realm-skill-bridge.tools.filtered`
+> **带上了 sessionId**（修前 132 条无一带）。
+
+### 六、遗留（如实记）
+
+- **`ask_user_question` 在 Harness 侧执行报错**（`status=error
+  errorKind=unknown`），模型连调两次。这是**同一类**问题：MiniMax Code 的工具
+  在 Harness 里并非全部可用。当前没挡它 —— 它在「向用户提问」场景下有意义，
+  挡了会让 agent 无法澄清需求。等主人确认它是否真在 Harness 侧不可用再定。
+- **旧会话 `session-484e5f58` 的历史已被污染**（多轮自白），在那里继续问只会
+  复读。必须开新会话。
+- **`skill-realms.json` 不在仓库里** ⇒ 换机器/重装会丢失这个修复。要么主人
+  自己记着，要么把它纳入部署清单。本轮**没有**把它加进仓库（运行时文件不是
+  仓库产物），但 §7.149 落在这里作为出处。
+- 本轮**没有**改任何仓库代码 —— 修复落在运行时配置层。
