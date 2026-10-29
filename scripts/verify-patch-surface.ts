@@ -278,6 +278,39 @@ for (const id of HOST_FORCED_ROWS) {
 if (presets.length === 0) {
   violations.push('no Agent Preset declared — the edge stack has no work mode to live in.')
 }
+
+// §7.153: the SOURCE manifest must declare the Agent Preset layer too.
+//
+// The host reads package.json#dsh.bundle.patch as either a string or a list
+// (@deepseek-ai/dsh-app-boot bundlePatchFiles) and applies every entry. A
+// string "works" — the cordis patch loads, the Edge half mounts, the logs
+// look healthy — while the preset patch is never read, the
+// @deepseek-ai/dsh-agent-preset row never registers, and the 边缘模式 work
+// mode does not exist in the running desktop. Nothing errors; the mode is
+// just missing.
+//
+// This is the source-side twin of the artifact-side check in
+// scripts/verify-installable.mjs.
+{
+  const bundlePkg = JSON.parse(
+    readFileSync(join(root, 'package.json'), 'utf8'),
+  ) as { dsh?: { bundle?: { patch?: unknown } } }
+  const declared = bundlePkg.dsh?.bundle?.patch
+  const declaredList = typeof declared === 'string' ? [declared] : declared
+  if (!Array.isArray(declaredList) || declaredList.length === 0) {
+    violations.push(
+      'package.json#dsh.bundle.patch is missing — the host has no patch to load'
+      + ' and the 边缘模式 work mode would never register.',
+    )
+  } else if (!declaredList.some((p) => typeof p === 'string' && /(^|\/)presets\//.test(p))) {
+    violations.push(
+      `package.json#dsh.bundle.patch declares no Agent Preset layer`
+      + ` (declared: ${declaredList.join(', ')}) — the 边缘模式 work mode would never`
+      + ' register. This field is a LIST of patch files; a single string silently'
+      + ' drops the preset patch.',
+    )
+  }
+}
 for (const p of presets) {
   if (p.presetId === 'edge' || p.presetId === 'edge.desktop-safe') {
     const bundleRows = p.plugins.filter((x) => isBundleRow(x.name))

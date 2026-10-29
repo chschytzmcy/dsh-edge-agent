@@ -15195,3 +15195,139 @@ eslint **0 error**（59 warnings，与基线同数）；`tsc --noEmit` 双配置
   不是遗漏；但也意味着「压缩请求仍带本地历史」这一条尚未收口。
 - **`model-selection` 通知的措辞**按会话日志写，裁剪后会「陈述过时」（九点四）。
   要不要在裁剪时同步改写它，属于宿主语义范围，未动。
+
+## §7.153 桌面版看不到「边缘模式」：preset 层从未上桌 —— `dsh.bundle.patch` 被写成了字符串（2026-10-29）
+
+主人报：「桌面版没有看到边缘模式」。工作方式列表里根本没有这一项。
+
+### 一、现象与定位链（逐环可复现）
+
+1. **产物在位**：`dist/installable/dsh-edge-agent-desktop-safe/presets/` 完整 ——
+   `agent-preset-edge.json`(1427B)、`edge.desktop-safe.patch.yml`(25267B)、`edge.patch.yml`(30708B)；
+2. **preset 内容对**：`presets/edge.desktop-safe.patch.yml` 里确实声明了一行
+   `@deepseek-ai/dsh-agent-preset`，`config` = `{ id: edge, name: 边缘模式, order: 5, plugins: 23 }`，
+   与宿主插件的契约（`id` / `name` / `description` / `order` / `plugins`，plugins 必填）对得上；
+3. **宿主契约**（`@deepseek-ai/dsh-app-boot` `bundlePatchFiles`）：
+
+   ```js
+   const declared = typeof bundle.patch === "string" ? [bundle.patch] : bundle.patch;
+   if (!Array.isArray(declared) || !declared.every(f => typeof f === "string"))
+     throw new Error("dsh.bundle.patch must be a file path or a list of file paths");
+   ```
+
+   **字符串与列表都合法**，宿主会把每一项都加载。宿主自己的 bundle
+   （`@deepseek-ai/dsh-web-app`）用的是列表：
+   `["./cordis.patch.yml", "./presets/standard.patch.yml", "./presets/ptc.patch.yml", …]`；
+4. **产物里写的是什么**：`dist/installable/.../package.json` 的
+   `dsh.bundle.patch` = **`"./cordis.desktop-safe.patch.yml"`（单个字符串）**
+   ⇒ 宿主只加载了 cordis patch，**preset 那一层根本没被读**；
+5. ⇒ `@deepseek-ai/dsh-agent-preset` 行从未注册 ⇒ 名册里没有 `edge` ⇒
+   工作方式列表里没有「边缘模式」。
+
+**关键性质：这个失败是静默的。** 字符串形态宿主照单全收、照常启动，
+Edge 那一半照常挂载，日志里没有任何一行报错。缺的是一个工作方式，不是一个插件。
+
+### 二、根因：四个 writer，三个写错
+
+`package.json#dsh.bundle.patch` 由四个脚本**各自独立**地写：
+
+| 脚本 | 写法 | 谁在用 |
+|---|---|---|
+| `scripts/rebuild-installable.mjs` | **列表** ✅ | `npm run build`；`build-desktop-bundle.sh` 的 installable 步 |
+| `scripts/_pack-core.mjs` | 字符串 ❌ | **`scripts/build-macos.sh`（macOS 桌面构建）**、`build:pack` |
+| `scripts/build-desktop-bundle.sh` | 字符串 ❌ | tarball 暂存；`deploy-profile.sh`（CLI profile） |
+| `scripts/_rebuild-installable.mjs` | 字符串 ❌ | Node 镜像（无 bash 主机） |
+
+§7.135 当时把 `package.json` 源改成了列表形态并写进了 `rebuild-installable.mjs`，
+但**桌面构建实际走的是 `_pack-core.mjs`** —— 那一支一直写着字符串。
+所以：产物在 §7.135 之后由 `npm run build` 出过时是对的（列表），
+由 `build-macos.sh` 出时是错的（字符串），而主人后来每次「重新构建更新桌面版」
+走的都是 `build-macos.sh`。
+
+**一个在 A 处正确、在 B 处错误的字符串，不是能靠评审活下来的 bug，是等着下一个 writer 的 bug。**
+
+### 三、门禁为什么没抓到
+
+`scripts/verify-installable.mjs` 只做了两件事：字段是字符串**或**列表都放行、
+每一项指向的文件必须在盘上。字符串形态两项都满足 ⇒ 绿灯。
+
+更要命的是**顺序**：`npm run build` = `… build:installable → verify:build`，
+`build:installable` 写的是**对的**列表，门禁跑完也是绿的；
+之后 `build-macos.sh` 才用 `_pack-core.mjs` 把它覆盖成字符串。
+**门禁验证的是覆盖之前的那一份。**
+
+### 四、修法
+
+1. **新增 `scripts/_bundle-variants.mjs` —— 唯一真相源**：
+   变体表（`patchField` / `preset` / `versionSuffix` / `description`）与
+   `bundlePatchDeclaration(variant)` 都只写一份，四个 writer 全部改为 import 它。
+   写死的字符串从此不存在，只有「规范声明」这一个概念。
+2. **`scripts/verify-installable.mjs` 加三道断言**（对着**产物**）：
+   - 必须声明至少一层 `presets/` 下的 patch（否则边缘模式永不注册）；
+   - 该 preset 文件必须含一行 `@deepseek-ai/dsh-agent-preset`，且
+     `config.id` / `config.name` 非空、`config.plugins` 非空；
+   - 声明必须**逐项等于**规范声明（`scripts/_bundle-variants.mjs`）——
+     新 writer 不可能再引入漂移。
+3. **`scripts/verify-patch-surface.ts` 加源级断言**：
+   仓库 `package.json#dsh.bundle.patch` 必须含 `presets/` 层
+   （npm 分发包走的是源 manifest，与 installable 产物不是同一份）。
+4. `scripts/_probe-install-chain.mjs` 改为按列表处理，并显式断言 preset 层在位。
+
+### 五、反向验证（把 §7.153 放回旧实现，门禁必须红）
+
+| 注入的缺陷 | 门禁输出 |
+|---|---|
+| 产物改回字符串形态 | `declares no Agent Preset layer (declared: ./cordis.desktop-safe.patch.yml) — the 边缘模式 work mode would never register.` |
+| preset 行改名（模拟 preset 层是空的） | `./presets/edge.desktop-safe.patch.yml declares no @deepseek-ai/dsh-agent-preset row` |
+
+两次都 exit 1。
+
+### 六、实机验证（受控 A/B，不是自证）
+
+探针：`scripts/_probe-host-presets.mjs` —— 直接问**宿主**的
+`agentPresets/list`（typert RPC：`POST /api/agentPresets/list`，
+信封 `{type:"client-request", rpcId, method, payload:{args}}`；
+鉴权用 `dsh-auth-*` cookie，其 `authority` 必须匹配当前宿主端口）。
+
+| 产物形态 | 名册 | 边缘模式 |
+|---|---|---|
+| 字符串（**旧**，§7.153 之前） | 4 项：standard / ptc / minimal / cordis | ❌ **不在册** |
+| 列表（**新**） | 5 项：同上 + `edge（边缘模式）order 5` | ✅ 在册，`broken` 缺席 ⇒ **可组合会话** |
+
+第一行就是主人报的现象，第二行是修好之后的样子 —— 同一台机器、
+同一个宿主、只改这一个字段。
+
+`standard` 仍是 `isDefault=true`（§7.141 主人裁决：默认工作方式 = 标准模式），
+本次只解决「边缘模式**存不存在**」，不动默认。
+
+### 七、连带发现（主人更新 `config/edge.json` 之后）
+
+主人把 `secrets.minimaxApiKey` 换成了 `secrets.aliyuntokenplanApiKey`，
+`llm.local.keyRef` 已同步改到新槽位（新端点
+`token-plan.cn-beijing.maas.aliyuncs.com`，实机已在跑，
+安检与意图判定都走通了），
+**但 `llm.cloud.keyRef` 仍指向 `minimaxApiKey` —— 该槽位已不存在**。
+
+⇒ CLOUD 池拿不到凭据。**未改**（未经主人指示不改 `llm.local` / `jev` 指向），
+记在这里等裁决：是改 `llm.cloud.keyRef`，还是本来就打算让 CLOUD 池停用。
+
+### 八、遗留（如实记）
+
+- **本轮只验证了「边缘模式在名册里且可组合」**，没验证切换到边缘模式后的
+  完整行为（工具集、提示词、Edge 面板随工作方式切换）—— 那要人在 GUI 里点；
+- **`_probe-host-presets.mjs` 需要桌面宿主在跑**，且 cookie 的 `authority`
+  绑定宿主端口（每次重启端口都变）⇒ 脚本每次重新发现，不缓存；
+- **CI 仍必红**（§7.152 之前记过：`ci.yml` 的 build & verify job 从不跑
+  `build:client`，而 `scripts/_simulate-client-mount.mjs` 硬读 `lib/client.js`）——
+  本轮未动 CI。
+
+### 九、验证
+
+- 单元测试 **73 文件 / 1491 passed / 2 skipped / 0 failed**（基线持平）；
+- eslint **0 error**（60 warnings，与基线同数，零新增）；
+- `tsc --noEmit` 双配置（server + client）均 exit 0；
+- 构建门禁 `verify:build` **17 项全过**（EXIT=0）；
+- 桌面版已重建并重启（三次：修复后 → A/B 回退 → 恢复），最终态探针断言通过。
+
+> 本轮 `src/` 未改动 —— 改的全是打包脚本与门禁。
+> 桌面版需要重新构建才能带上修复（主人已重新构建）。

@@ -21,8 +21,11 @@
 // Run via: node scripts/verify-installable.mjs
 
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
-import { dirname, join, relative, resolve } from 'node:path'
+import { basename, dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { parse as parseYaml } from 'yaml'
+
+import { bundlePatchDeclaration, variantByDir } from './_bundle-variants.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const INSTALLABLE = process.env.INSTALLABLE_DIR
@@ -30,6 +33,44 @@ const INSTALLABLE = process.env.INSTALLABLE_DIR
   : join(ROOT, 'dist', 'installable')
 
 const REQUIRED_HOST_ENTRY = 'lib/index.js'
+
+// The host's Agent Preset plugin. A preset patch declares ONE row with this
+// name; the row's config is the work mode (id / name / order / plugins).
+const AGENT_PRESET_PLUGIN = '@deepseek-ai/dsh-agent-preset'
+
+// The preset patches carry "disabled: !!js process.platform === 'win32'".
+// yaml v2 resolves unknown tags to null (with a warning); this tag keeps the
+// raw expression so the parse stays lossless and warning-free.
+const JS_TAG = {
+  identify: () => false,
+  tag: 'tag:yaml.org,2002:js',
+  resolve: (str) => str,
+  stringify: (item) => String(item),
+}
+
+/**
+ * Collect every "insert" row from a cordis patch file.
+ *
+ * A patch file is a list of documents; each document may carry an "insert"
+ * key whose value is the list of plugin rows to add.
+ *
+ * @param {string} text
+ * @returns {Array<{ id?: string, name?: string, config?: Record<string, unknown> }>}
+ */
+function collectInsertRows(text) {
+  const doc = parseYaml(text, { customTags: [JS_TAG] })
+  const docs = Array.isArray(doc) ? doc : [doc]
+  const rows = []
+  for (const d of docs) {
+    if (!d || typeof d !== 'object') continue
+    for (const key of Object.keys(d)) {
+      if (key !== 'insert') continue
+      const value = d[key]
+      if (Array.isArray(value)) rows.push(...value)
+    }
+  }
+  return rows
+}
 
 /** Recursive directory walker. */
 function walk(dir) {
@@ -139,6 +180,65 @@ function verifyBundle(dir) {
       throw new Error(
         `${relative(ROOT, dir)}: dsh.bundle.patch points at ` +
           `${dshBundlePatch} but the file is missing on disk`,
+      )
+    }
+  }
+
+  // 2b. §7.153: the bundle MUST declare the Agent Preset layer, and that
+  //     layer MUST contain the work-mode row.
+  //
+  //     This is the gate that would have caught the desktop losing 边缘模式.
+  //     The host reads package.json#dsh.bundle.patch as EITHER a string OR a
+  //     list (@deepseek-ai/dsh-app-boot bundlePatchFiles) and applies every
+  //     entry. A single string therefore "works" — the cordis patch loads,
+  //     the Edge half mounts, the logs look healthy — while the preset patch
+  //     is never read, the @deepseek-ai/dsh-agent-preset row never registers,
+  //     and the work mode simply does not exist in the running desktop.
+  //     Nothing errors; the mode is just missing.
+  const presetLayers = bundlePatches.filter((p) => /(^|\/)presets\//.test(p))
+  if (presetLayers.length === 0) {
+    throw new Error(
+      `${relative(ROOT, dir)}: package.json#dsh.bundle.patch declares no Agent Preset layer ` +
+        `(declared: ${bundlePatches.join(', ')}) — the 边缘模式 work mode would never register. ` +
+        'The host reads this field as a LIST of patch files; a single string silently drops the preset patch.',
+    )
+  }
+  for (const layer of presetLayers) {
+    const rows = collectInsertRows(readFileSync(join(dir, layer), 'utf-8'))
+    const preset = rows.find((r) => r?.name === AGENT_PRESET_PLUGIN)
+    if (!preset) {
+      throw new Error(
+        `${relative(ROOT, dir)}: ${layer} declares no ${AGENT_PRESET_PLUGIN} row — ` +
+          'the Agent Preset layer is empty, so no work mode would register',
+      )
+    }
+    const cfg = preset.config ?? {}
+    if (!cfg.id || !cfg.name) {
+      throw new Error(
+        `${relative(ROOT, dir)}: ${layer} has an ${AGENT_PRESET_PLUGIN} row without ` +
+          `config.id/config.name (got id=${JSON.stringify(cfg.id)}, name=${JSON.stringify(cfg.name)})`,
+      )
+    }
+    if (!Array.isArray(cfg.plugins) || cfg.plugins.length === 0) {
+      throw new Error(
+        `${relative(ROOT, dir)}: ${layer} has an ${AGENT_PRESET_PLUGIN} row whose config.plugins is empty`,
+      )
+    }
+  }
+
+  // 2c. The declared list MUST equal the canonical declaration for this
+  //     variant (scripts/_bundle-variants.mjs). Four scripts used to write
+  //     this field independently and three of them wrote the string form; the
+  //     gate now compares against the single source of truth so a new writer
+  //     cannot reintroduce the drift.
+  const variant = variantByDir(basename(dir))
+  if (variant) {
+    const expected = bundlePatchDeclaration(variant)
+    if (bundlePatches.length !== expected.length || bundlePatches.some((p, i) => p !== expected[i])) {
+      throw new Error(
+        `${relative(ROOT, dir)}: package.json#dsh.bundle.patch is [${bundlePatches.join(', ')}] ` +
+          `but the canonical declaration for ${variant.dir} is [${expected.join(', ')}] ` +
+          '(scripts/_bundle-variants.mjs) — the packaging scripts and the canonical table have drifted',
       )
     }
   }

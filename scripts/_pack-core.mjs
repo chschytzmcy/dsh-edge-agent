@@ -44,6 +44,8 @@ import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { BUNDLE_VARIANTS, bundlePatchDeclaration } from './_bundle-variants.mjs'
+
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const DIST = join(ROOT, 'dist')
 
@@ -211,24 +213,13 @@ function quoteArg(arg) {
 
 /* ── Variant definitions ────────────────────────────────────────────── */
 
-export const VARIANTS = [
-  {
-    dir: 'dsh-edge-agent-desktop-safe',
-    patch: 'cordis.desktop-safe.patch.yml',
-    patchField: 'cordis.desktop-safe.patch.yml',
-    versionSuffix: '-desktop-safe',
-    description:
-      'dsh-edge-agent bundle — desktop-safe overlay (inserts the privacy stack, does NOT rewrite host defaults: model / persona / approval / sandbox / session root / http-api)',
-  },
-  {
-    dir: 'dsh-edge-agent-full',
-    patch: 'cordis.patch.yml',
-    patchField: 'cordis.patch.yml',
-    versionSuffix: '-full',
-    description:
-      'dsh-edge-agent bundle — full production patch (same behaviour as the standalone dsh-edge profile; rewrites host defaults)',
-  },
-]
+// §7.153: the variant table lives in _bundle-variants.mjs — the single
+// source of truth. Four scripts used to declare it (and the `dsh.bundle.patch`
+// value derived from it) independently, and three of them wrote the STRING
+// form, which silently drops the Agent Preset layer ⇒ the 边缘模式 work mode
+// was never registered in the desktop. `patch` is kept as an alias for
+// `patchField` so the legacy readers below keep working.
+export const VARIANTS = BUNDLE_VARIANTS.map((v) => ({ ...v, patch: v.patchField }))
 
 /* ── Staging ────────────────────────────────────────────────────────── */
 
@@ -264,7 +255,21 @@ export function stageVariant(variant, destDir, { keepSecretConfig = false } = {}
   delete pkg.scripts
   delete pkg.devDependencies
   pkg.files = ['lib', 'config', 'cordis.patch.yml', 'cordis.desktop-safe.patch.yml', 'cordis.yml', 'presets']
-  pkg.dsh = { ...(pkg.dsh ?? {}), bundle: { ...(pkg.dsh?.bundle ?? {}), patch: `./${variant.patchField}` } }
+  // §7.153: the bundle carries TWO patch layers — the host-row overrides
+  // (cordis patch) and the **Agent Preset** declaration (the 边缘模式 work
+  // mode). The host's own dsh-web-app bundle uses the same list shape
+  // (`"patch": ["./cordis.patch.yml", "./presets/standard.patch.yml", …]`).
+  //
+  // This line used to write the STRING form (`./cordis.desktop-safe.patch.yml`),
+  // which the host accepts — and which silently drops the preset layer: the
+  // `@deepseek-ai/dsh-agent-preset` row never loads, the 边缘模式 work mode is
+  // never registered, and the desktop's work-mode selector shows nothing new
+  // with no error anywhere. That is why the desktop build produced an
+  // artifact without the 边缘模式 work mode at all.
+  pkg.dsh = {
+    ...(pkg.dsh ?? {}),
+    bundle: { ...(pkg.dsh?.bundle ?? {}), patch: bundlePatchDeclaration(variant) },
+  }
 
   writeFileSync(join(destDir, 'package.json'), `${JSON.stringify(pkg, null, 2)}\n`, 'utf8')
   cpSync(join(ROOT, 'lib'), join(destDir, 'lib'), { recursive: true })

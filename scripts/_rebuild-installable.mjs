@@ -15,25 +15,23 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { BUNDLE_VARIANTS, bundlePatchDeclaration } from './_bundle-variants.mjs'
+
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const DIST = join(ROOT, 'dist')
 
 const base = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
 
-const variants = [
-  {
-    name: 'dsh-edge-agent-desktop-safe',
-    version: `${base.version}-desktop-safe`,
-    patch: './cordis.desktop-safe.patch.yml',
-    description: 'dsh-edge-agent bundle — desktop-safe overlay (inserts the privacy stack, does NOT rewrite host defaults: model / persona / approval / sandbox / session root / http-api)',
-  },
-  {
-    name: 'dsh-edge-agent-full',
-    version: `${base.version}-full`,
-    patch: './cordis.patch.yml',
-    description: 'dsh-edge-agent bundle — full production patch (same behaviour as the standalone dsh-edge profile; rewrites host defaults)',
-  },
-]
+// §7.153: the variant table + the `dsh.bundle.patch` declaration come from
+// the shared module. This script used to write the STRING form, which
+// silently drops the Agent Preset layer ⇒ the 边缘模式 work mode was never
+// registered in the desktop.
+const variants = BUNDLE_VARIANTS.map((v) => ({
+  name: v.dir,
+  version: `${base.version}${v.versionSuffix}`,
+  description: v.description,
+  patch: bundlePatchDeclaration(v),
+}))
 
 const stageRoot = mkdtempSync(join(tmpdir(), 'dsh-edge-bundle-'))
 
@@ -56,7 +54,7 @@ for (const v of variants) {
   for (const f of ['cordis.yml', 'cordis.patch.yml', 'cordis.desktop-safe.patch.yml']) {
     await copyFile(join(ROOT, f), join(dir, f))
   }
-  console.log(`staged ${v.name} -> ${v.patch}`)
+  console.log(`staged ${v.name} -> ${v.patch.join(' + ')}`)
 }
 
 mkdirSync(join(DIST, 'installable'), { recursive: true })

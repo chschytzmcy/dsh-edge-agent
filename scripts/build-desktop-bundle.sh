@@ -205,20 +205,18 @@ const repo = process.argv[2]
 const stageRoot = process.argv[3]
 const base = JSON.parse(fs.readFileSync(path.join(repo, 'package.json'), 'utf8'))
 
-const variants = [
-  {
-    name: 'dsh-edge-agent-desktop-safe',
-    version: `${base.version}-desktop-safe`,
-    patch: './cordis.desktop-safe.patch.yml',
-    description: 'dsh-edge-agent bundle — desktop-safe overlay (inserts the privacy stack, does NOT rewrite host defaults: model / persona / approval / sandbox / session root / http-api)',
-  },
-  {
-    name: 'dsh-edge-agent-full',
-    version: `${base.version}-full`,
-    patch: './cordis.patch.yml',
-    description: 'dsh-edge-agent bundle — full production patch (same behaviour as the standalone dsh-edge profile; rewrites host defaults)',
-  },
-]
+// §7.153: the variant table + the `dsh.bundle.patch` declaration come from
+// the shared module (require() of an ESM module — Node ≥22.12). This block
+// used to write the STRING form, which silently drops the Agent Preset layer
+// ⇒ the 边缘模式 work mode was never registered in the desktop.
+const { BUNDLE_VARIANTS, bundlePatchDeclaration } = require(path.join(repo, 'scripts', '_bundle-variants.mjs'))
+
+const variants = BUNDLE_VARIANTS.map((v) => ({
+  name: v.dir,
+  version: `${base.version}${v.versionSuffix}`,
+  description: v.description,
+  patch: bundlePatchDeclaration(v),
+}))
 
 const copyTree = (src, dest) => {
   fs.cpSync(src, dest, { recursive: true })
@@ -259,7 +257,7 @@ for (const v of variants) {
       fs.cpSync(path.join(configSrc, f), path.join(dir, 'config', f), { recursive: true })
     }
   }
-  console.log(`staged ${v.name} -> ${v.patch}`)
+  console.log(`staged ${v.name} -> ${v.patch.join(' + ')}`)
 }
 NODEEOF
 

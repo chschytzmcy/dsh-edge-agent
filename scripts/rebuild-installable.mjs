@@ -27,6 +27,8 @@ import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { BUNDLE_VARIANTS, bundlePatchDeclaration } from './_bundle-variants.mjs'
+
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const DIST = join(ROOT, 'dist', 'installable')
 
@@ -78,32 +80,11 @@ function syncEntriesInPlace(staging, target) {
   }
 }
 
-const VARIANTS = [
-  {
-    dir: 'dsh-edge-agent-desktop-safe',
-    patch: 'cordis.desktop-safe.patch.yml',
-    // §7.135: the edge stack ships as an **Agent Preset** patch — the host's
-    // "work mode" mechanism. The desktop-safe bundle must point at the
-    // desktop-safe preset (its plugin set differs: it carries the Edge
-    // panel's host half, the full one carries http-api / etscli-tools).
-    preset: 'presets/edge.desktop-safe.patch.yml',
-    // The desktop-safe bundle must point its cordis patch at the safe
-    // variant — the full patch ships host rewrites the desktop profile
-    // must not apply.
-    patchField: 'cordis.desktop-safe.patch.yml',
-    // Version suffix matches build-desktop-bundle.sh's tarballs, so the
-    // same bundle reports the same version whether the desktop installed
-    // it from the tarball or from this directory.
-    versionSuffix: '-desktop-safe',
-  },
-  {
-    dir: 'dsh-edge-agent-full',
-    patch: 'cordis.patch.yml',
-    preset: 'presets/edge.patch.yml',
-    patchField: 'cordis.patch.yml',
-    versionSuffix: '-full',
-  },
-]
+// §7.153: the variant table moved to _bundle-variants.mjs — the single source
+// of truth. It used to be duplicated here and in two other scripts, and the
+// copies drifted: the ones that wrote `dsh.bundle.patch` as a STRING dropped
+// the Agent Preset layer, so the 边缘模式 work mode was never shipped.
+const VARIANTS = BUNDLE_VARIANTS.map((v) => ({ ...v, patch: v.patchField }))
 
 function readJson(path) {
   return JSON.parse(readFileSync(path, 'utf-8'))
@@ -180,10 +161,13 @@ for (const variant of VARIANTS) {
   // (cordis patch) and the **Agent Preset** declaration (the 边缘模式 work
   // mode). The host's own dsh-web-app bundle uses the same array shape
   // (`"patch": ["./cordis.patch.yml", "./presets/standard.patch.yml", …]`).
-  variantPkg.dsh.bundle.patch = [
-    `./${variant.patchField}`,
-    `./${variant.preset}`,
-  ]
+  //
+  // §7.153: the value now comes from the shared helper, so every writer
+  // (this one, _pack-core.mjs, build-desktop-bundle.sh, _rebuild-installable.mjs)
+  // produces the SAME declaration. The string form silently drops the preset
+  // layer ⇒ the 边缘模式 work mode is never registered ⇒ the desktop shows no
+  // such work mode, with no error anywhere.
+  variantPkg.dsh.bundle.patch = bundlePatchDeclaration(variant)
 
   // §7.145: the browser half must exist BEFORE the bundle is published.
   //

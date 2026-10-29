@@ -37,6 +37,10 @@ for (const variant of ['dsh-edge-agent-desktop-safe', 'dsh-edge-agent-full']) {
   const has = (f) => existsSync(join(dir, f))
   const pkg = has('package.json') ? JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) : {}
   const patchField = pkg?.dsh?.bundle?.patch
+  // §7.153: the field is a LIST of patch files (cordis patch + Agent Preset
+  // patch). A single string drops the preset layer ⇒ the 边缘模式 work mode
+  // would never register.
+  const patchList = typeof patchField === 'string' ? [patchField] : (patchField ?? [])
   say(has('package.json'), `${variant}: package.json ${has('package.json') ? 'present' : 'MISSING'}`)
   say(has('cordis.desktop-safe.patch.yml') || has('cordis.patch.yml'),
     `${variant}: cordis patch file present`)
@@ -44,9 +48,13 @@ for (const variant of ['dsh-edge-agent-desktop-safe', 'dsh-edge-agent-full']) {
   say(has('lib/index.js'), `${variant}: lib/index.js ${has('lib/index.js') ? 'present' : 'MISSING'}`)
   say(has('config/edge.json') || has('config/edge.example.json'),
     `${variant}: config/ present`)
-  if (patchField) {
-    say(existsSync(join(dir, patchField.replace(/^\.\//, ''))),
-      `${variant}: dsh.bundle.patch → ${patchField} resolves`)
+  if (patchList.length > 0) {
+    for (const p of patchList) {
+      say(existsSync(join(dir, String(p).replace(/^\.\//, ''))),
+        `${variant}: dsh.bundle.patch → ${p} resolves`)
+    }
+    say(patchList.some((p) => /(^|\/)presets\//.test(String(p))),
+      `${variant}: dsh.bundle.patch declares an Agent Preset layer (边缘模式)`)
   } else {
     say(false, `${variant}: package.json#dsh.bundle.patch missing`)
   }
