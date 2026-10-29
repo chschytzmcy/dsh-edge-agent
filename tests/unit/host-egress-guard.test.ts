@@ -174,3 +174,163 @@ describe('§7.151 — 守卫的判定', () => {
     assert.deepEqual(guard.localProviders(), ['local-llm'])
   })
 })
+
+/**
+ * §7.151 —— 实机形状回归（主人 2026-10-29 16:04 那一轮真实会话）
+ *
+ * ## 为什么要有这条
+ *
+ * 规则层的用例（`cloud-egress.test.ts`）证明的是「**某一条规则**成立」。但主人
+ * 真正要问的是「**整段真实会话**裁完之后，发出去的那份到底是不是只有云段历史」。
+ *
+ * 这一条把实机那一轮的**消息构成**原样搬进来，钉死三个数字：
+ *
+ * - `kept = 43` / `dropped = 7` —— 与审计链 `llm.cloud.egress` 行的
+ *   `keptMessages=43 droppedLocalHistory=7` **逐位一致**；
+ * - `providerHistogram = { local-llm: 2, qwen-token-plan-cn: 12 }` —— 与审计行
+ *   的 `providerHistogram` 一致（直方图统计的是**裁剪前**的整份请求）；
+ * - model-selection 通知落在第 **32** 位 —— 与主人在 Edge 面板截图里看到的
+ *   `index 32` 一致（**独立第三方证据**：不是我们自证，是主人眼里的那条）。
+ *
+ * 任何一次对 `planCloudEgress` / `planHostEgress` 的改动，只要动了口径，这三个
+ * 数字就会对不上 ⇒ 立刻红。
+ *
+ * ## 这条会话的形状（取自 `~/.dsh/sessions/.../session.v4.jsonl.zstd`）
+ *
+ * | 轮次 | 意图 | provider | 消息数 |
+ * |---|---|---|---|
+ * | 1「你好」 | LOCAL | local-llm | 5（用户输入 + runtime-context + skill-catalog + time-context + 本地回答）|
+ * | 2「查询最新的英国新闻」 | CLOUD（首次尝试失败）| qwen-token-plan-cn | 3 |
+ * | 3「查询最新的英国新闻」重试 | CLOUD | qwen-token-plan-cn | 26（9 条云回答 + 13 条工具结果 + 3 条上下文）|
+ * | 4「你可以做什么」 | LOCAL | local-llm | 2（用户输入 + 本地回答）|
+ * | 5「查询下AI新闻」（当前轮）| CLOUD | qwen-token-plan-cn | 13 |
+ *
+ * 另有 1 条 system 提示（轮次起点之前 ⇒ 不属于任何轮次 ⇒ 保留）。
+ * 合计 50 = 43（出网）+ 7（本地段，被拦下）。
+ */
+describe('§7.151 — 实机形状回归（2026-10-29 16:04 那一轮）', () => {
+  const CLOUD = 'qwen-token-plan-cn'
+  const LOCAL = 'local-llm'
+
+  function sys(text: string): EgressMessage {
+    return { role: 'system', content: [{ type: 'text', text }], source: { kind: 'system-prompt' } }
+  }
+  function user(text: string, kind = 'user'): EgressMessage {
+    return { role: 'user', content: [{ type: 'text', text }], source: { kind } }
+  }
+  function dev(text: string): EgressMessage {
+    return { role: 'developer', content: [{ type: 'text', text }], source: { kind: 'developer' } }
+  }
+  function asst(provider: string, text: string): EgressMessage {
+    return { role: 'assistant', content: [{ type: 'text', text }], source: { kind: 'model', provider, model: 'm' } }
+  }
+  function tool(text: string): EgressMessage {
+    return { role: 'tool', content: [{ type: 'text', text }], source: { kind: 'tool-result' } }
+  }
+
+  /** 真实会话的 50 条消息（顺序与宿主会话日志一致）。 */
+  function realSession(): EgressMessage[] {
+    const m: EgressMessage[] = []
+    // 轮次起点之前的运行时上下文 —— 不属于任何轮次 ⇒ 保留
+    m.push(sys('system prompt'))
+
+    // ── 第 1 轮（本地）：你好 ───────────────────────────────
+    m.push(user('你好'))
+    m.push(user('Current runtime context.', 'runtime-context'))
+    m.push(user('<system-reminder> skills', 'skill-catalog'))
+    m.push(user('Time sampled while preparing turn 1', 'time-context'))
+    m.push(asst(LOCAL, '本地模型的回答（轮 1）'))
+
+    // ── 第 2 轮（云）：首次尝试，失败 ────────────────────────
+    m.push(user('查询最新的英国新闻'))
+    m.push(user('[model changed: 轮 2]', 'model-selection'))
+    m.push(dev('developer context'))
+
+    // ── 第 3 轮（云）：同一问题重试 + 工具链 ─────────────────
+    m.push(user('查询最新的英国新闻'))
+    m.push(user('Current runtime context.', 'runtime-context'))
+    m.push(dev('developer context'))
+    m.push(asst(CLOUD, '云回答 1'))
+    m.push(tool('工具结果 1'))
+    m.push(dev('developer context'))
+    m.push(asst(CLOUD, '云回答 2'))
+    m.push(tool('工具结果 2'))
+    m.push(tool('工具结果 3'))
+    m.push(asst(CLOUD, '云回答 3'))
+    m.push(tool('工具结果 4'))
+    m.push(asst(CLOUD, '云回答 4'))
+    m.push(tool('工具结果 5'))
+    m.push(tool('工具结果 6'))
+    m.push(asst(CLOUD, '云回答 5'))
+    m.push(tool('工具结果 7'))
+    m.push(asst(CLOUD, '云回答 6'))
+    m.push(tool('工具结果 8'))
+    m.push(tool('工具结果 9'))
+    m.push(asst(CLOUD, '云回答 7'))
+    m.push(tool('工具结果 10'))
+    m.push(tool('工具结果 11'))
+    m.push(asst(CLOUD, '云回答 8'))
+    m.push(tool('工具结果 12'))
+    m.push(tool('工具结果 13'))
+    m.push(asst(CLOUD, '云回答 9'))
+
+    // ── 第 4 轮（本地）：你可以做什么 ───────────────────────
+    m.push(user('你可以做什么'))
+    m.push(asst(LOCAL, '本地模型的回答（轮 4）'))
+
+    // ── 第 5 轮（云，当前轮）：查询下AI新闻 ─────────────────
+    m.push(user('查询下AI新闻'))
+    m.push(user('Time sampled while preparing turn 5', 'time-context'))
+    m.push(user('[model changed: 轮 5]', 'model-selection'))
+    m.push(dev('developer context'))
+    m.push(asst(CLOUD, '云回答 10'))
+    m.push(tool('工具结果 14'))
+    m.push(dev('developer context'))
+    m.push(asst(CLOUD, '云回答 11'))
+    m.push(tool('工具结果 15'))
+    m.push(tool('工具结果 16'))
+    m.push(asst(CLOUD, '云回答 12'))
+    m.push(tool('工具结果 17'))
+    m.push(tool('工具结果 18'))
+    return m
+  }
+
+  it('出网的条数 = 43，被拦下的本地段 = 7（与审计链逐位一致）', () => {
+    const plan = planHostEgress(realSession(), [LOCAL])
+    assert.ok(plan, '有本地段 ⇒ 必须给出裁剪结果')
+    assert.equal(plan!.messages.length, 43)
+    assert.equal(plan!.droppedCount, 7)
+    assert.equal(realSession().length, 50, '原始请求应是 50 条（43 + 7）')
+  })
+
+  it('provider 直方图：local-llm 2 条、云端 12 条（与审计行一致；统计的是裁剪前）', () => {
+    const plan = planHostEgress(realSession(), [LOCAL])
+    assert.deepEqual(plan!.histogram, { [LOCAL]: 2, [CLOUD]: 12 })
+  })
+
+  it('出网的那 43 条里，一条本地池的回答都没有', () => {
+    const plan = planHostEgress(realSession(), [LOCAL])
+    const kept = texts(plan!.messages)
+    // 两个本地轮次的 assistant 回答 + 它们各自的用户输入，全部被拦下
+    assert.equal(kept.filter(t => t.startsWith('本地模型的回答')).length, 0)
+    assert.equal(kept.includes('你好'), false)
+    assert.equal(kept.includes('你可以做什么'), false)
+    // 直方图里的 2 条 local-llm 就是那两条本地回答 ⇒ 它们必须都不在 kept 里
+    const localAssistants = plan!.messages.filter(m => m.role === 'assistant' && m.source?.provider === LOCAL)
+    assert.equal(localAssistants.length, 0)
+    // 云段历史一条不少
+    assert.equal(kept.filter(t => t.startsWith('云回答')).length, 12)
+    assert.equal(kept.filter(t => t.startsWith('工具结果')).length, 18)
+  })
+
+  it('model-selection 通知落在第 32 位（与主人在 Edge 面板看到的 index 32 一致）', () => {
+    const plan = planHostEgress(realSession(), [LOCAL])
+    const idx = plan!.messages.findIndex(m => texts([m]).join('').includes('[model changed: 轮 5]'))
+    assert.equal(idx, 32)
+  })
+
+  it('当前轮的用户输入必须保留 —— 它是「当前内容」，本来就该出网', () => {
+    const plan = planHostEgress(realSession(), [LOCAL])
+    assert.ok(texts(plan!.messages).includes('查询下AI新闻'))
+  })
+})
