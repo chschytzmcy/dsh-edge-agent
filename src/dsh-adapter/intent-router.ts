@@ -13,7 +13,13 @@ import type { Context } from '@deepseek-ai/cordis'
 import { Service } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import { jevPool, loadEdgeConfig, localPool } from './edge-config.js'
+import {
+  danglingSecretRefs,
+  formatDanglingSecretRefs,
+  jevPool,
+  loadEdgeConfig,
+  localPool,
+} from './edge-config.js'
 import { withInternalCaller } from './llm-internal-caller.js'
 import {
   buildRequestTrace,
@@ -3120,6 +3126,18 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
     fill('jevPath', jev.path)
     const jpoolApiKey = jevPool().apiKey
     if (jpoolApiKey !== undefined) fill('jevApiKey', jpoolApiKey)
+    // §7.154: a jev.apiKeyRef naming a slot that is not there leaves the
+    // decision model without a credential — the stage then silently falls
+    // back to the rule tier. Say it at boot, not at the first fallback.
+    {
+      const dangling = danglingSecretRefs().filter((r) => r.field.startsWith('jev.'))
+      if (dangling.length > 0) {
+        ctx.logger?.error?.(
+          `[intent-router] 配置里的密钥引用指向不存在的槽位：${formatDanglingSecretRefs(dangling)}`
+          + ' —— 判定模型没有凭据，jev 路径会静默退回规则档',
+        )
+      }
+    }
     fill('jevTimeoutMs', jev.timeoutMs)
     fill('jevConfidenceThreshold', jev.confidenceThreshold)
     fill('jevRiskThreshold', jev.riskThreshold)

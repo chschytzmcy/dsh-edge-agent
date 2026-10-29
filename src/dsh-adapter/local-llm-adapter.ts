@@ -36,7 +36,12 @@ import {
   sseFinishReason,
   terminalChunks,
 } from './openai-sse.js'
-import { localPool, loadEdgeConfig } from './edge-config.js'
+import {
+  danglingSecretRefs,
+  formatDanglingSecretRefs,
+  localPool,
+  loadEdgeConfig,
+} from './edge-config.js'
 import {
   buildRequestTrace,
   buildResponseTrace,
@@ -794,6 +799,20 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
       + 'Set llm.local.baseUrl in config/edge.json to enable it.',
     )
     return async () => {}
+  }
+  // §7.154: a keyRef that names a slot that is not there leaves the pool
+  // with NO credential. The local pool always uses its key, so this is
+  // always worth saying — and it must be said AT BOOT: otherwise the
+  // operator finds out at the first request, long after the edit that
+  // broke it.
+  {
+    const dangling = danglingSecretRefs().filter((r) => r.field.startsWith('llm.local'))
+    if (dangling.length > 0) {
+      ctx.logger?.error?.(
+        `[local-llm-adapter] 配置里的密钥引用指向不存在的槽位：${formatDanglingSecretRefs(dangling)}`
+        + ` —— 本地池没有凭据，请求会以 MISSING_CREDENTIAL 失败`,
+      )
+    }
   }
   // Fold the file-derived pool into the config the adapter actually uses.
   //

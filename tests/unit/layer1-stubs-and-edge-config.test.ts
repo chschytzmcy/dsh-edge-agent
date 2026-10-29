@@ -39,6 +39,8 @@ import {
   resetEdgeConfigCache,
   mergeEdgeConfig,
   resolveSecret,
+  danglingSecretRefs,
+  formatDanglingSecretRefs,
   localPool,
   cloudPool,
   jevPool,
@@ -278,6 +280,59 @@ describe('edge-config loader', () => {
     assert.equal(resolveSecret(cfg, 'nope'), undefined)
     assert.equal(resolveSecret(cfg, undefined), undefined)
     assert.equal(resolveSecret({ secrets: { edgeApiKey: '' } } as any, 'edgeApiKey'), undefined)
+  })
+
+  // §7.154: a keyRef naming a slot that is not there leaves the pool with no
+  // credential. resolveSecret returns undefined for it — correct as a lookup,
+  // but as a CONFIG outcome it used to stay invisible until the first call.
+  describe('danglingSecretRefs (§7.154)', () => {
+    it('names every reference whose slot is absent or empty', () => {
+      const cfg = {
+        ...DEFAULT_EDGE_CONFIG,
+        secrets: { aliyuntokenplanApiKey: 'operator-key' },
+        llm: {
+          local: { keyRef: 'aliyuntokenplanApiKey' },
+          cloud: { keyRef: 'minimaxApiKey' },
+        },
+        jev: { apiKeyRef: 'bailianApiKey' },
+      } as any
+      const dangling = danglingSecretRefs(cfg)
+      assert.deepEqual(
+        dangling.map((d) => d.field).sort(),
+        ['jev.apiKeyRef', 'llm.cloud.keyRef'],
+        '只报真正悬空的引用；local 的槽位存在，不该出现',
+      )
+      assert.equal(dangling.find((d) => d.field === 'llm.cloud.keyRef')?.ref, 'minimaxApiKey')
+    })
+
+    it('treats an EMPTY slot as dangling too', () => {
+      const cfg = {
+        ...DEFAULT_EDGE_CONFIG,
+        secrets: { edgeApiKey: '' },
+        llm: { local: { keyRef: 'edgeApiKey' } },
+      } as any
+      const dangling = danglingSecretRefs(cfg)
+      assert.equal(dangling.length, 1)
+      assert.equal(dangling[0]?.field, 'llm.local.keyRef')
+    })
+
+    it('reports nothing when every reference resolves', () => {
+      const cfg = {
+        ...DEFAULT_EDGE_CONFIG,
+        secrets: { edgeApiKey: 'k' },
+        llm: { local: { keyRef: 'edgeApiKey' }, cloud: { keyRef: 'edgeApiKey' } },
+      } as any
+      assert.deepEqual(danglingSecretRefs(cfg), [])
+    })
+
+    it('formats field + slot NAME only — never a value', () => {
+      const text = formatDanglingSecretRefs([
+        { field: 'llm.cloud.keyRef', ref: 'minimaxApiKey' },
+      ])
+      assert.match(text, /llm\.cloud\.keyRef/)
+      assert.match(text, /minimaxApiKey/)
+      assert.ok(!text.includes('sk-'), '不得出现任何密钥值')
+    })
   })
 
   it('localPool resolves the keyRef into a literal api key', () => {

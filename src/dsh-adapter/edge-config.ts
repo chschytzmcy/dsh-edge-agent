@@ -755,8 +755,19 @@ function deepCopyDefaults(): EdgeConfig {
   }
 }
 
-/** Apply the env override layer on top of a freshly loaded config. */
-function applyEnvOverrides(cfg: EdgeConfig): EdgeConfig {
+/**
+ * Apply the env override layer on top of a freshly loaded config.
+ *
+ * §7.154: exported so scripts/edge-config-from-env.ts can apply the SAME
+ * mapping the runtime uses without writing the template to the target file
+ * first. That script used to copy the template over the operator's live
+ * config (destroying every secret that only existed in the real file) even
+ * under --dry-run — it needed this layer, and the file round-trip was the
+ * only way it could reach it.
+ *
+ * Mutates and returns `cfg`.
+ */
+export function applyEnvOverrides(cfg: EdgeConfig): EdgeConfig {
   if (typeof process === 'undefined' || !process.env) return cfg
   for (const { env, apply } of ENV_OVERRIDES) {
     const value = process.env[env]
@@ -907,12 +918,62 @@ export function mergeEdgeConfig<T extends Record<string, unknown>>(
 }
 
 /** Resolve a key reference (e.g. 'dashscopeApiKey') to its literal value. */
-
-/** Resolve a key reference (e.g. 'dashscopeApiKey') to its literal value. */
 export function resolveSecret(cfg: EdgeConfig, ref: string | undefined): string | undefined {
   if (!ref) return undefined
   const value = (cfg.secrets as Record<string, unknown> | undefined)?.[ref]
   return typeof value === 'string' && value.length > 0 ? value : undefined
+}
+
+/**
+ * §7.154: secret references that name a slot that is not there.
+ *
+ * `resolveSecret` returns undefined for a missing slot — correct as a
+ * lookup, dangerous as a CONFIG outcome. Rename or delete a secrets slot
+ * and the pool silently ends up with no credential; the failure surfaces
+ * only at the first call (loudly, as MISSING_CREDENTIAL), which can be a
+ * long way from the edit that caused it.
+ *
+ * Observed 2026-10-29: the operator replaced `secrets.minimaxApiKey` with
+ * `secrets.aliyuntokenplanApiKey` and repointed `llm.local.keyRef` — but
+ * `llm.cloud.keyRef` kept naming the removed slot. The cloud pool was in
+ * DIRECT mode with no credential, and nothing said so at boot.
+ *
+ * Reports FIELD and SLOT NAMES only — never a value.
+ */
+export interface DanglingSecretRef {
+  /** Config path of the reference, e.g. 'llm.cloud.keyRef'. */
+  field: string
+  /** The slot that was named but is absent (or empty), e.g. 'minimaxApiKey'. */
+  ref: string
+}
+
+/**
+ * Every secret reference in the config that points at a slot which is not
+ * there (or is empty).
+ *
+ * @param cfg   the config to inspect; defaults to the effective one
+ */
+export function danglingSecretRefs(cfg: EdgeConfig = loadEdgeConfig()): DanglingSecretRef[] {
+  const secrets = (cfg.secrets ?? {}) as Record<string, unknown>
+  const out: DanglingSecretRef[] = []
+  const check = (field: string, ref: string | undefined): void => {
+    if (!ref) return
+    const value = secrets[ref]
+    if (typeof value === 'string' && value.length > 0) return
+    out.push({ field, ref })
+  }
+  check('llm.local.keyRef', cfg.llm?.local?.keyRef)
+  check('llm.cloud.keyRef', cfg.llm?.cloud?.keyRef)
+  // jev carries the Bailian MaaS decision-model key (§7.112).
+  check('jev.apiKeyRef', cfg.jev?.apiKeyRef)
+  return out
+}
+
+/**
+ * One-line human summary of dangling references, for an operator-facing log.
+ */
+export function formatDanglingSecretRefs(refs: DanglingSecretRef[]): string {
+  return refs.map((r) => `${r.field} → secrets.${r.ref}（该槽位不存在或为空）`).join('; ')
 }
 
 /** The local-LLM pool with its secret resolved into an api key. */

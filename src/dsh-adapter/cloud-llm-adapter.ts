@@ -39,7 +39,12 @@ import {
   sseFinishReason,
   terminalChunks,
 } from './openai-sse.js'
-import { cloudPool, loadEdgeConfig } from './edge-config.js'
+import {
+  cloudPool,
+  danglingSecretRefs,
+  formatDanglingSecretRefs,
+  loadEdgeConfig,
+} from './edge-config.js'
 import {
   buildRequestTrace,
   buildResponseTrace,
@@ -1550,6 +1555,21 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
   // §7.100: baseUrl 空（Schema 默认）= delegate 模式；显式配置 = 直连不变。
   const baseUrl = typeof config.baseUrl === 'string' ? config.baseUrl.trim() : ''
   const delegateMode = baseUrl.length === 0
+
+  // §7.154: a keyRef that names a slot that is not there leaves the pool
+  // with NO credential. In DELEGATE mode the cloud key is not used at all,
+  // so only DIRECT mode is worth complaining about — and it must be said
+  // AT BOOT: otherwise the operator finds out at the first CLOUD turn,
+  // long after the edit that broke it.
+  if (!delegateMode) {
+    const dangling = danglingSecretRefs().filter((r) => r.field.startsWith('llm.cloud'))
+    if (dangling.length > 0) {
+      logger?.error?.(
+        `[cloud-llm-adapter] 配置里的密钥引用指向不存在的槽位：${formatDanglingSecretRefs(dangling)}`
+        + ` —— 直连模式（baseUrl=${baseUrl}）没有凭据，CLOUD 轮次会以 MISSING_CREDENTIAL 失败`,
+      )
+    }
+  }
 
   const llm = (ctx as unknown as {
     llm: {

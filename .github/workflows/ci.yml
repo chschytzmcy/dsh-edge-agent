@@ -2,11 +2,15 @@
 #
 # Triggered on every push to main and every PR. The full sequence is:
 #   1. install (pnpm install --frozen-lockfile)
-#   2. compile (tsc -p tsconfig.json → lib/)
+#   2. build   (compile → typecheck:client → build:client → build:installable;
+#               §7.154 —— the gates verify ARTIFACTS, so all four steps are
+#               required; compile alone leaves lib/client.js and
+#               dist/installable/ missing and CI reads ENOENT)
 #   3. verify  (verify:build = boundary + contract + patch-surface +
 #               patch-row-shape + plugin-spec + env-bridge + bundle-mount +
 #               installable + installable-edge + host-mount + client-mount +
-#               package)
+#               desktop-auth-cookies + session-audit + package + doc-links +
+#               ci-build-chain)
 #   4. unit    (vitest unit tests; asserts exact count via JSON reporter)
 #   5. coverage (vitest --coverage; per-directory thresholds in
 #               vitest.config.ts — §7.123)
@@ -58,8 +62,28 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Compile
-        run: pnpm run compile
+      # §7.154 (2026-10-29): the gates verify ARTIFACTS, not sources.
+      #
+      # `compile` alone is NOT enough. `compile` = clean-lib + tsc, and
+      # clean-lib wipes lib/ ENTIRELY — tsc only rebuilds the server half.
+      # The other two artifacts the gates read come from two SEPARATE steps:
+      #
+      #   lib/client.js          ← build:client     (esbuild, browser half)
+      #   dist/installable/…     ← build:installable (the shipped bundle)
+      #
+      # verify:client-mount hard-reads lib/client.js and verify:installable /
+      # verify:installable-edge read dist/installable/ ⇒ CI hit ENOENT and
+      # every push to main has been RED since §7.106 (2026-10-20).
+      #
+      # This chain must stay identical to package.json#scripts.build
+      # ("compile typecheck:client build:client build:installable verify:build").
+      # The order matters: build:installable refuses to ship a bundle whose
+      # exports["./client"] does not resolve (§7.145) ⇒ build:client first.
+      #
+      # scripts/verify-ci-build-chain.mjs gates this file — without it, a
+      # dropped step here is invisible until CI goes red again.
+      - name: Build (compile → browser half → installable bundle)
+        run: node scripts/run.mjs compile typecheck:client build:client build:installable
 
       - name: Verify (boundary / contract / patch-surface / plugin-spec / package)
         run: pnpm run verify:build

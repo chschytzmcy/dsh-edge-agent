@@ -15331,3 +15331,136 @@ Edge 那一半照常挂载，日志里没有任何一行报错。缺的是一个
 
 > 本轮 `src/` 未改动 —— 改的全是打包脚本与门禁。
 > 桌面版需要重新构建才能带上修复（主人已重新构建）。
+
+## §7.154 CI 必红的根因 + 配置冻结脚本会摧毁真配置 + 悬空 keyRef 开机就说（2026-10-29）
+
+主人裁「修正」。本轮修三件事，每件都有**可复现的失败**和**反向验证**。
+
+### 一、CI 从 §7.106 起就没绿过 —— 根因是门禁读的是**产物**，CI 只产了源码
+
+`verify:build` 里的两道门禁读的是**构建产物**，不是源码：
+
+| 门禁 | 读什么 | 谁产 |
+|---|---|---|
+| `scripts/_simulate-client-mount.mjs` | `lib/client.js`（浏览器半边） | `build:client`（esbuild） |
+| `scripts/verify-installable.mjs` | `dist/installable/<variant>/`（出货 bundle） | `build:installable` |
+
+而 CI 的 build job 只跑 `pnpm run compile` = `clean-lib + tsc`：
+
+- `scripts/clean-lib.mjs` **整个删掉 `lib/`**（含 `lib/client.js`）；
+- `tsc -p tsconfig.json` 只重建服务端半边（`tsconfig.json` 排除 `src/client`）；
+- `build:client` / `build:installable` 是**另外两步**，CI 从来没跑过。
+
+⇒ 本地复现（CI 同序列）：`compile` 后 `lib/client.js` 不存在 ⇒
+`verify:client-mount` 抛 `ENOENT … lib/client.js` ⇒ exit 1。
+在**全新 checkout** 上还会更早死在 `verify:installable`（`dist/installable/` 根本不存在）。
+
+**而且顺序还反着**：`npm run build` = `… build:installable → verify:build`，
+`build:installable` 写的是**对的**那一版产物，门禁验的是**覆盖之前**的那一份；
+之后 `build-macos.sh` 才用 `_pack-core.mjs` 把它盖掉（§7.153 同一族）。
+
+**修法**
+
+1. `.github/workflows/ci.yml` 的 build job 改成与 `package.json#scripts.build` **逐字一致**的链：
+
+   ```yaml
+   - name: Build (compile → browser half → installable bundle)
+     run: node scripts/run.mjs compile typecheck:client build:client build:installable
+   ```
+
+   顺序有依赖：`build:installable` 拒绝出货 `exports["./client"]` 解析不了的 bundle（§7.145），
+   所以 `build:client` 必须在前面。
+
+2. **新增 `scripts/verify-ci-build-chain.mjs`（门禁的门禁）**：它读 ci.yml，断言
+   build job 真的产出了 compile / build:client / build:installable 三样，并断言
+   `package.json#scripts.build` 与 ci.yml 的链**不漂移**，且引用的脚本都存在。
+   接进 `verify:build`（`verify:ci-build-chain`）。
+   没有这道门禁，下次再少一步还是「推上去才发现」。
+
+**反向验证**：把 ci.yml 改回只有 `compile` ⇒ 门禁红，列出两条具体缺失项；改回 ⇒ 绿。
+
+### 二、`scripts/edge-config-from-env.ts` 会**摧毁**运行员的真配置
+
+这个脚本把当前环境冻结进 `config/edge.json`。它原来的第一件事是
+`copyFileSync(template, opts.out)` —— **把示例模板盖到目标文件上**，
+然后才决定要不要写。于是：
+
+| # | 缺陷 | 后果 |
+|---|---|---|
+| ① | `--dry-run` 照样覆盖目标（copy 在 dry-run 判断**之前**） | 打印「未写入」，但主机的真配置已被模板替换：自定义键消失、仅存于原文件的密钥被清空、`http.port` 复位 |
+| ② | secrets 段只从环境重建 | 不在环境里的槽位（运行员的 `aliyuntokenplanApiKey`）**直接消失**，且**无备份** |
+| ③ | `SECRET_SLOTS` 是第二份真相且已漂移 | 列了 `bailianApiKey` 却漏了 `minimaxApiKey` ⇒ 环境里的 MiniMax key 永远进不了文件 |
+| ④ | `--out=<path>` 与 env 层不同源 | env 层仍取自**规范的** `config/edge.json`（脚本依赖 `loadEdgeConfig()` 的固定候选表），写出来的文件与产生它的 env 对不上 |
+
+**修法**（形状变了）：
+
+```
+template  ┐
+          ├─ 深度合并（运行员的文件逐叶优先）─→ applyEnvOverrides ─→ 备份 ─→ 写(0600)
+existing  ┘
+```
+
+- **磁盘在最后一步之前不被碰** ⇒ `--dry-run` 真正只读（实测：目标文件 sha256 前后一致）；
+- `applyEnvOverrides` 从 `edge-config.ts` **导出**（§7.154）⇒ env 层与运行时是**同一个函数**，
+  不再需要「先写模板再读回来」这个把戏；
+- env 槽位名改为**从槽位名派生**（camelCase → SNAKE_CASE：`aliyuntokenplanApiKey` →
+  `ALIYUNTOKENPLAN_API_KEY`）⇒ 缺陷 ③ 那一类**永久消失**，运行员自造槽位也能用；
+- 写之前**备份**成 `edge.json.bak-<时间戳>`（0600）；
+- 新增 `--selftest`（14 条断言）并接进门禁 `verify:edge-config-tool`。
+
+### 三、悬空的 `keyRef` 被**静默接受** —— 开机就该说
+
+主人更新 `config/edge.json`：把 `secrets.minimaxApiKey` 换成了 `secrets.aliyuntokenplanApiKey`，
+`llm.local.keyRef` 同步改到新槽位（新端点 `token-plan.cn-beijing.maas.aliyuncs.com`，
+实机已在跑，安检与意图判定都走通了），**但 `llm.cloud.keyRef` 仍指向已删除的槽位**。
+
+查证：`resolveSecret()` 对不存在的槽位**返回 undefined**（作为查表是对的，作为**配置结果**是危险的）；
+而 `llm.cloud.baseUrl` 非空 ⇒ **直连模式**（不是 delegate —— delegate 由 `baseUrl` 为空决定，
+不是 `delegate` 布尔）⇒ 实机日志明写 `Registering DIRECT adapter` ⇒
+**CLOUD 池没有凭据**，每个 CLOUD 轮次都会以 `MISSING_CREDENTIAL` 失败。
+
+失败是响亮的，但**发现得太晚**：要等到第一个 CLOUD 轮次才知道，而那可能离那次编辑很远。
+
+**修法**：`edge-config.ts` 新增 `danglingSecretRefs()` / `formatDanglingSecretRefs()`
+（只报**字段名与槽位名**，绝不报值），三个消费方在 `apply()` 里开机就说：
+
+- `cloud-llm-adapter`：仅**直连**模式才报（delegate 模式压根不用这个 key，报了是噪音）；
+- `local-llm-adapter`：本地池一直要用它的 key，报；
+- `intent-router`：`jev.apiKeyRef` 悬空 ⇒ 判定模型没凭据、jev 路径静默退回规则档，报。
+
+**实机验证**（桌面版重建重启后，ops log 第 294 行）：
+
+```
+ERROR [cloud-llm-adapter] 配置里的密钥引用指向不存在的槽位：
+llm.cloud.keyRef → secrets.minimaxApiKey（该槽位不存在或为空） ——
+直连模式（baseUrl=https://api.minimaxi.com/v1）没有凭据，CLOUD 轮次会以 MISSING_CREDENTIAL 失败
+```
+
+### 四、顺带核清的两件事（如实记，都**不是**缺陷）
+
+1. **切 delegate 模式不会丢出网裁剪**。§7.131 的裁剪在 `cloud-llm-adapter` 里（直连/ delegate 各一份），
+   但**桌面部署的 CLOUD 轮次压根不进那个 adapter**（webui 入口没有 `_edgeRoute`，
+   seed 的 provider 是宿主自己的 `qwen-token-plan-cn`）⇒ §7.151 的 `HostEgressGuard`
+   补在 `llm/stream` waterfall 上，**delegate/宿主 provider 那一跳同样被裁**。
+   两条路径都有裁剪 ⇒ 切 delegate 不是隐私回退。
+2. `localModel: MiniMax-M3.1-Flash` 那个改写不是 bug —— 实机 6 通 `MiniMax-M3.1-Flash`
+   打本地端点**全部成功**（resultLen 122 / 8 / 569）：token-plan 端点确实供这个模型名。
+
+### 五、遗留（如实记）
+
+- **`llm.cloud` 该指向哪里，仍等主人裁决**（本轮只把「它坏了」变成「开机就说得清清楚楚」，
+  没有擅自改指向）。事实：桌面部署的 CLOUD 轮次走宿主 provider（`qwen-token-plan-cn`），
+  `llm.cloud` 池只在显式路由到 `cloud-llm` provider 时才真正用得上（CLI/HTTP profile）。
+- `config/edge.example.json` 的 secrets 仍列着 `minimaxApiKey`（示例模板，未跟进主人这次的槽位改名）；
+  `EdgeSecrets` 接口也还没声明 `aliyuntokenplanApiKey`（运行时靠 `Record<string, unknown>` 兜住，
+  能用，但类型层不诚实）。**未改** —— 示例模板是发布面的一部分，等主人定了云池走向一起收。
+- CI 本轮只改 build job；`test` / `test-windows` / `e2e-opslog` 三个 job 不读产物，未动。
+
+### 六、验证
+
+- 单元测试 **73 文件 / 1495 passed / 2 skipped / 0 failed**（基线 1491，+4）；
+- eslint **0 error**（59 warnings，比基线少 1，无新增）；
+- `tsc --noEmit` 双配置（server + client）均 exit 0；
+- 构建门禁 `verify:build` **18 项全过**（EXIT=0，含新增的 `verify:ci-build-chain` 与
+  `verify:edge-config-tool`）；
+- 桌面版已重建重启，开机告警实机可见（见三）。
