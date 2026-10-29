@@ -15448,15 +15448,86 @@ llm.cloud.keyRef → secrets.minimaxApiKey（该槽位不存在或为空） —�
 
 ### 五、遗留（如实记）
 
-- **`llm.cloud` 该指向哪里，仍等主人裁决**（本轮只把「它坏了」变成「开机就说得清清楚楚」，
-  没有擅自改指向）。事实：桌面部署的 CLOUD 轮次走宿主 provider（`qwen-token-plan-cn`），
-  `llm.cloud` 池只在显式路由到 `cloud-llm` provider 时才真正用得上（CLI/HTTP profile）。
-- `config/edge.example.json` 的 secrets 仍列着 `minimaxApiKey`（示例模板，未跟进主人这次的槽位改名）；
-  `EdgeSecrets` 接口也还没声明 `aliyuntokenplanApiKey`（运行时靠 `Record<string, unknown>` 兜住，
-  能用，但类型层不诚实）。**未改** —— 示例模板是发布面的一部分，等主人定了云池走向一起收。
+- **`llm.cloud` 该指向哪里** —— 本轮先把「它坏了」变成「开机就说得清清楚楚」，
+  没有擅自改指向；主人随后裁决（见 §7.154 之六）。
 - CI 本轮只改 build job；`test` / `test-windows` / `e2e-opslog` 三个 job 不读产物，未动。
 
-### 六、验证
+### 六、主人裁决：云池指向阿里云 token-plan（22:03），以及一处**必须更正**的判断
+
+主人裁「A」：云池指向阿里云 token-plan，`keyRef` 改 `aliyuntokenplanApiKey`，
+model 保持 `MiniMax-M3.1-Flash`。落地时撞上一件事，必须如实记：
+
+**token-plan 不供 MiniMax。** 端点的 `/v1/models` 实测清单（21 个）里没有它：
+
+```
+qwen3.7-max / qwen3.7-plus / qwen3.6-flash / glm-5.2 / glm-5.3 / qwen3.8-max /
+qwen3.8-flash / deepseek-v4-pro / deepseek-v4-pro-0813 / deepseek-v4.1-flash /
+deepseek-v4.1-flash-1017 / deepseek-v4-flash-0731 / decision-model-preview / auto /
+qwen-audio-3.0-* / qwen-image-3.0-pro / wan2.7-image* / wan3.0-video
+```
+
+`MiniMax-M3.1-Flash` 打过去 = **HTTP 404 `Model not exist`**。
+
+⇒ **更正 §7.154 四·2 的那句话**：「token-plan 端点确实供这个模型名，6 通全成」是**错的**。
+那 6 通成功发生在 **21:27**，而主人改配置是 **21:30** —— 21:27 时本地池还指着
+**旧的 minimaxi 端点**、用的是 `minimaxApiKey`，所以 MiniMax 模型当然通。
+换成 token-plan 之后同一个模型名立刻 404。是这一轮的**实机探针**把它抓出来的，
+不是推理。
+
+**于是云池模型必须换。** 用**适配器的真实 wire 形状**
+（`buildChatCompletionsBody` 默认发 `chat_template_kwargs:{enable_thinking:false}`）
+实测三个候选：
+
+| 模型 | HTTP | content | reasoning | 结论 |
+|---|---|---|---|---|
+| `deepseek-v4.1-flash` | 200 | `"ok"` | 无 | ✅ **采用** |
+| `qwen3.8-max` | 200 | `"ok"` | 无 | 可用，但与本地池 `qwen3.8-flash` 同族 |
+| `glm-5.3` | **400** | — | — | 该端点字段严格，`chat_template_kwargs` 直接被拒 |
+
+选 `deepseek-v4.1-flash` 的理由是**它就是主人自己在用的云模型**：桌面 GUI 选的那条
+`qwen-token-plan-cn/deepseek-v4.1-flash`（§7.151 的证据链里到处是它）。
+它还是推理模型，但适配器默认就关思考（`enableThinking` 默认 false ⇒ 发
+`chat_template_kwargs.enable_thinking=false`），所以 reasoning 不吃预算、
+`delta.content` 直接给答案 —— 实测 `reasoning=无`、`finish=stop`。
+
+**最终落地**（`config/edge.json`，运行时配置，不入 git）：
+
+```
+llm.cloud.baseUrl : https://api.minimaxi.com/v1
+                 → https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
+llm.cloud.keyRef  : minimaxApiKey → aliyuntokenplanApiKey
+llm.cloud.model   : MiniMax-M3.1-Flash → deepseek-v4.1-flash
+llm.cloud.delegate: true（不变；delegate 由 baseUrl 为空决定，不是这个布尔）
+```
+
+**实机验证**：桌面版重建重启 ⇒ 开机日志
+`baseUrl from config/edge.json: → https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1`
++ `Registering DIRECT adapter`，**且 §7.154 三 新增的那条「指向不存在的槽位」ERROR 消失了**；
+配置解析自检：凭据已解析、无悬空引用。
+
+#### 六·1 顺带发现并修掉的一个**真泄漏风险**
+
+改 `config/edge.json` 前先备份 ⇒ `config/edge.json.bak-<时间戳>` —— 而
+`.gitignore` 只忽略了 `config/edge.json` **本体**：
+
+```
+$ git status --porcelain config/
+?? config/edge.json.bak-20261029-220133      ← 含明文密钥，git 看得见
+```
+
+`git add .` 一次就进 history。**`.gitignore` 已补 `config/edge.json.bak-*`**
+（`config/edge.example.json` 仍然 tracked）。核实：备份现在被忽略、
+`git log --all --diff-filter=A -- 'config/edge.json*'` 为空（从未入库）。
+同一条规则也覆盖 `scripts/edge-config-from-env.ts` 写出的备份（命名一致）。
+
+#### 六·2 类型层与模板补齐
+
+`EdgeSecrets` 接口早就落后于模板（`minimaxApiKey`、`bailianApiKey` 都没声明），
+且运行员的槽位是**开放的**（`resolveSecret` 按名字查表）⇒ 接口补上三个缺失槽位
+并加索引签名 `[slot: string]: string | undefined`；
+`config/edge.example.json` 补上 `aliyuntokenplanApiKey` 槽位（空值）。
+
+### 七、验证
 
 - 单元测试 **73 文件 / 1495 passed / 2 skipped / 0 failed**（基线 1491，+4）；
 - eslint **0 error**（59 warnings，比基线少 1，无新增）；

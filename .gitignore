@@ -15,6 +15,11 @@ AGENTS.md
 # API key —— 与 .env 同样规则，绝不入 git history。模板见
 # config/edge.example.json（tracked）。
 config/edge.json
+# §7.154 (2026-10-29): 同一条规则必须覆盖**备份**。config/edge.json 的备份
+# （edge-config-from-env.ts 写出的 edge.json.bak-<时间戳>）装的是同一份明文
+# 密钥 —— 只忽略主文件而放过备份，等于把密钥留在 git 的可见范围里，
+# `git add .` 一次就进 history。config/edge.example.json 仍然 tracked。
+config/edge.json.bak-*
 *.swp
 # §7.76 Phase 1.7 backup: .env.uninstall-backup.<ts>/ 可能含 live API key,
 # 跟 .env 同样规则——绝不入 git history。

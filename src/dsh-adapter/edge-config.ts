@@ -49,6 +49,18 @@ export interface EdgeSecrets {
   dashscopeApiKey?: string
   tavilyApiKey?: string
   bochaApiKey?: string
+  /** §7.154: MiniMax 直连凭据（llm.cloud 的旧指向）。 */
+  minimaxApiKey?: string
+  /** §7.112: 百炼 MaaS（jev 判定模型）。 */
+  bailianApiKey?: string
+  /** §7.154: 阿里云 token-plan（当前 local/cloud 两池的凭据）。 */
+  aliyuntokenplanApiKey?: string
+  /**
+   * §7.154: 运行员的槽位是**开放的** —— `resolveSecret` 按名字查表，
+   * 声明式接口不该把新槽位挡在门外（运行时的 env 槽位名就是从槽位名派生的，
+   * 见 scripts/edge-config-from-env.ts 的 fieldToEnvSlot）。
+   */
+  [slot: string]: string | undefined
 }
 
 export interface EdgeLlmPool {
