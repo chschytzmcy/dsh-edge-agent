@@ -81,13 +81,39 @@ function textsOf(options: any): string[] {
   return (options.messages ?? []).map((m: any) => m.content?.[0]?.text ?? '')
 }
 
-/** 真 cordis Context + 真 LlmRuntime。 */
+/**
+ * 模拟「插件跑在边缘模式 preset 的 scope 里」的 cordis ctx。
+ *
+ * cordis 4.x 的 ctx 是 Proxy：读一个**既没 provide、也没在 `inject` 声明里**的
+ * 属性会**直接抛** `cannot get property "x" without inject`。input-guard 的
+ * inject 里**没有 'llm'**，而它跑在 preset scope 里 ⇒ `ctx.llm` 直取必炸
+ * （15:54 实机：整轮处理失败，报的就是这句）。
+ *
+ * 而 `ctx.get('x')` 是安全读法（cordis 把 `get` mixin 到 ctx 上；读不到返回
+ * undefined，不抛）—— 同文件的 `cloudAvailable()` 早就在用它。
+ *
+ * 这个代理把「直取未声明服务」复现成抛错，让回归测试能钉死这条。
+ */
+function scopedCtxLike(root: Context): Context {
+  const UNDECLARED = new Set(['llm', 'modelRouter', 'auditLog', 'sanitizer', 'agentDefaultModel'])
+  return new Proxy(root as any, {
+    get(target, prop, recv) {
+      if (typeof prop === 'symbol') return Reflect.get(target, prop, recv)
+      if (UNDECLARED.has(prop)) {
+        throw new Error(`cannot get property "${String(prop)}" without inject`)
+      }
+      return Reflect.get(target, prop, recv)
+    },
+  })
+}
+
+/** 真 cordis Context + 真 LlmRuntime（服务跑在 scope 型 ctx 上）。 */
 function harness(provider = 'qwen-token-plan-cn') {
   const ctx = new Context()
   void new LlmRuntime(ctx)
   const adapter = new RecordingAdapter()
   ctx.llm.registerAdapter([provider], adapter)
-  const svc = new InputGuardServiceImpl(ctx as any, config())
+  const svc = new InputGuardServiceImpl(scopedCtxLike(ctx) as any, config())
   // 边缘会话的 pre-step 状态（真实链路里由 handlePreStep 写入）。
   ;(svc as any).stepState.set('s1', {
     sanitized: false, replacements: 0, sessionId: 's1', timestamp: Date.now(),
@@ -100,6 +126,16 @@ async function drain(stream: AsyncIterable<unknown>): Promise<void> {
 }
 
 describe('§7.151 — 真运行时：出网请求只带云段历史', () => {
+  it('scope 型 ctx：直取 ctx.llm 会抛，安全读法 ctx.get("llm") 正常', () => {
+    // 这就是 15:54 实机失败的形态：插件跑在 preset scope 里，inject 里没有
+    // 'llm' ⇒ 直取抛错。守卫必须走 ctx.get()。
+    const ctx = new Context()
+    void new LlmRuntime(ctx)
+    const scoped = scopedCtxLike(ctx)
+    assert.throws(() => (scoped as any).llm, /cannot get property "llm" without inject/)
+    assert.equal(typeof (scoped as any).get('llm').stream, 'function')
+  })
+
   it('宿主 provider 的出网请求里，本地历史被裁掉，当前轮留下', async () => {
     const { ctx, svc, adapter } = harness()
     ctx.on('llm/stream', (options: any, next: any) => svc.handleLlmStream(options, next), { global: true } as any)

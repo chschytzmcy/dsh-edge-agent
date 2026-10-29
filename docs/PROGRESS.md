@@ -15002,11 +15002,55 @@ LlmRuntime**）：
 现在守卫排在 sanitizer 检查**之前**：裁剪是**隐私不变量**，脱敏是**内容保护**，
 两者不能互相依赖。
 
-### 六、测试（新增 29 例，全绿）
+### 五点七、15:54 实机翻车：「修了 `ctx.modelRouter`，自己在 `ctx.llm` 上踩了同一个坑」
+
+主人 15:54 跑「查询最新的英国新闻」（CLOUD 意图），面板直接红：
+
+```
+处理失败
+  本轮运行失败  cannot get property "llm" without inject
+```
+
+**这是本节自己引入的 bug**，而且形态和五点五刚修的那个**一模一样**：
+
+| | 取法 | 结果 |
+|---|---|---|
+| `CloudEgressGuard.localProviders()` | `this.ctx.modelRouter` 直取 | cordis Proxy 抛错 |
+| `host-egress-guard` 的 `localProviders()` | `this.ctx.modelRouter` 直取 | cordis Proxy 抛错 |
+| **`input-guard.dispatchTrimmed()`** | **`this.ctx.llm` 直取** | **cordis Proxy 抛错（15:54 实机）** |
+
+根因一样：input-guard 的 `inject` 是
+`['promptGuard','privacyPolicy','intentRouter','sanitizer','auditLog','realmSkillBridge']`
+—— **没有 `'llm'`**（注释里明写「刻意不 inject llm」），而它跑在**边缘模式 preset 的
+scope** 里 ⇒ 直取一个没声明的服务属性，cordis 4.x 的 Proxy 直接抛。
+
+**同文件里早就有正确写法**：§7.100 的 `cloudAvailable()` 取 runtime 用的就是
+`this.ctx.get?.('llm')`（`input-guard.ts:424`）—— 我写新代码时没照抄。
+
+**修法**：`dispatchTrimmed()` 改走 `this.ctx.get?.('llm')`（带 try/catch + 取不到就
+fail-closed：落 `llm.cloud.egress.blocked` 并抛明确错误）。
+
+**这一节真正的教训**：同一个坑在同一个 PR 里犯了**两次**（`ctx.modelRouter` 一次、
+`ctx.llm` 一次），而两次都是**修一个、补一个**的节奏 —— 修一处时没有回头把同族写法
+全部扫一遍。所以补了两件事：
+
+1. **同族盘点**：全仓扫 `this.ctx.<服务名>` 直取 —— 剩下的只有 `ctx.logger`
+   （核心服务，每个 ctx 都有）与 `ctx.skills`（realm-skill-bridge 的 inject 声明了），
+   **无第二处同族雷**；
+2. **回归测试钉死**：集成测试的 harness 改成用 **scope 型 ctx**（一个代理，把「直取
+   未声明服务」复现成抛错）⇒ 守卫必须走安全读法才能跑通。
+   **反向证伪**：把 `dispatchTrimmed` 临时退回 `this.ctx.llm` 直取 ⇒ 集成测试立刻红，
+   报错与实机**一字不差**：`cannot get property "llm" without inject`。
+   （这条如果早就在，第一次实机就不会翻车。）
+
+同理，本仓库里 fake ctx 提供的服务也改成了 cordis 的读法（`get('llm')`）——
+**测试桩不该反过来保护错误的写法**。
+
+### 六、测试（新增 30 例，全绿）
 
 | 文件 | 例数 | 钉死什么 |
 |---|---|---|
-| `tests/unit/host-egress-integration.test.ts`（新增，**真运行时**） | 4 | 真 cordis + 真 LlmRuntime + 冻结请求体：裁掉本地历史；**反向证伪**（无守卫 ⇒ 全量历史上云）；本地池不裁；cordis Proxy 陷阱 |
+| `tests/unit/host-egress-integration.test.ts`（新增，**真运行时**） | 5 | 真 cordis + 真 LlmRuntime + 冻结请求体：裁掉本地历史；**反向证伪**（无守卫 ⇒ 全量历史上云）；本地池不裁；cordis Proxy 陷阱（`ctx.llm` 直取抛、`ctx.get('llm')` 正常 —— 15:54 翻车的形态） |
 | `tests/unit/host-egress-guard.test.ts`（新增） | 15 | provider 判据（自有池/本地池/`local-` 前缀/宿主 provider/空 provider）；purpose 非空不裁；已裁过的放行（防递归）；本地名单取自 model-router，取不到 / `ctx.get` 抛错 ⇒ 退回 `['local-llm']` |
 | `tests/unit/cloud-egress.test.ts` | 5 | 当前轮里混进本地产出 ⇒ 本地产出拦下、当前用户输入保留；**反向证伪**：整轮丢会把当前输入一起丢；当前轮全云段 / 无 assistant ⇒ 不误伤；历史轮与当前轮互不干扰 |
 | `tests/unit/input-guard.test.ts` | 5 | 接线：裁掉后换请求体重新派发（原链不再走、provider/model 不被改写、主人看到的仍是云端回答）；本地池不裁；没有本地历史不裁；**防递归**：裁过的请求再进来直接放行；非边缘会话直通不记 |
@@ -15015,7 +15059,7 @@ LlmRuntime**）：
 
 | 项 | 结果 |
 |---|---|
-| 单元测试 | **73 文件 1485 passed / 2 skipped / 0 failed**（基线 1456，+29） |
+| 单元测试 | **73 文件 1486 passed / 2 skipped / 0 failed**（基线 1456，+30） |
 | eslint | **0 error**（59 warnings，与基线同数） |
 | `tsc --noEmit`（双配置） | 均 exit 0 |
 | 构建门禁 `verify:build` | **16 项全过** |
@@ -15048,10 +15092,11 @@ null/undefined ⇒ `'unknown'`。Layer 3.5 的日志改为
 
 ### 九、遗留（如实记）
 
-- **实机验证待做**：需要主人在桌面版跑一轮 CLOUD 意图的对话，确认
-  (a) 审计链出现 `llm.cloud.egress`（`via=host-provider`，`droppedLocalHistory > 0`），
-  (b) `llm.trace.index` 的 REQ `messageCount` 变成裁剪后的条数，
-  (c) 云端回答正常（没有把当前问题丢掉）。
+- **实机验证仍未完成**：15:54 主人跑的那一轮**翻车了**（五点七），所以「出网裁剪在
+  真机上生效」这件事**还没有实机证据**。需要主人在新代码上再跑一轮 CLOUD 意图的
+  对话，确认 (a) 审计链出现 `llm.cloud.egress`（`via=host-provider`，
+  `droppedLocalHistory > 0`），(b) `llm.trace.index` 的 REQ `messageCount` 变成裁剪后
+  的条数，(c) 云端回答正常（没有把当前问题丢掉）。
 - **只覆盖主对话出网**：`purpose` 非空的宿主内部调用（compaction / session-title）
   不裁 —— compaction 要总结整段历史，裁它会改变压缩语义。这是**有意的取舍**，
   不是遗漏；但也意味着「压缩请求仍带本地历史」这一条尚未收口。

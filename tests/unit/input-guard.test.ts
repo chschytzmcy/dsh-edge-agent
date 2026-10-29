@@ -2343,17 +2343,24 @@ describe('§7.128 — REJECT 绝不走 CLOUD', () => {
 // 守卫补在 llm/stream waterfall（真正的出网那一跳）：裁掉本地段后换掉请求体
 // **重新派发**（宿主把 LOOP 请求 deep-frozen 送来，监听器不能就地改写）。
 
-/** 带 llm runtime 的 fake ctx —— 重新派发要走 ctx.llm.stream。 */
+/** 带 llm runtime 的 fake ctx —— 重新派发要走 ctx.llm.stream。
+ *
+ *  §7.151 (2026-10-29) 15:54 实机翻车的教训：cordis 4.x 的 ctx 是 Proxy，
+ *  直取一个**未在 inject 声明里**的服务属性会**直接抛**
+ *  `cannot get property "llm" without inject`（input-guard 的 inject 里没有
+ *  'llm'，而它跑在 preset scope 里）。所以取 runtime 只能走 `ctx.get()` ——
+ *  这个 fake ctx 也按 cordis 的读法提供，避免测试反过来保护错误的写法。 */
 function fakeCtxWithLlm(captured: any[]) {
+  const llm = {
+    stream(options: any) {
+      captured.push(options)
+      return streamFrom([{ type: 'text-delta', text: 'cloud answer' }])
+    },
+  }
   return {
     reflect: { provide(_n: string, _v: unknown) { return () => {} } },
     provide(_n: string, _v: unknown) { return () => {} },
-    llm: {
-      stream(options: any) {
-        captured.push(options)
-        return streamFrom([{ type: 'text-delta', text: 'cloud answer' }])
-      },
-    },
+    get: (name: string) => (name === 'llm' ? llm : undefined),
   }
 }
 

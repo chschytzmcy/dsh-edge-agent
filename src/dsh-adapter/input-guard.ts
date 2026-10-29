@@ -1878,11 +1878,26 @@ export class InputGuardServiceImpl extends Service {
       providerHistogram: egress.histogram,
     })
 
-    const llm = (this.ctx as unknown as {
-      llm?: {
-        stream?: (o: unknown) => AsyncIterable<unknown> | Promise<AsyncIterable<unknown>>
+    // §7.151 (2026-10-29): 取 LLM runtime **必须走 `ctx.get()`**，不能直取
+    // `ctx.llm` —— cordis 4.x 的 ctx 是 Proxy：input-guard 的 inject 是
+    // `['promptGuard','privacyPolicy','intentRouter','sanitizer','auditLog',
+    // 'realmSkillBridge']`，**没有 'llm'**，而本插件跑在边缘模式 preset 的
+    // scope 里 ⇒ 直取 `ctx.llm` 会**直接抛**
+    // `cannot get property "llm" without inject`（15:54 实机：整轮处理失败）。
+    //
+    // 同文件的 `cloudAvailable()` 早就是用 `this.ctx.get?.('llm')` 取 runtime
+    // 的（§7.100 的 delegate 探针靠它跑通）—— 这里跟它同款。
+    const llm = (() => {
+      try {
+        return (this.ctx as unknown as {
+          get?: (name: string) => unknown
+        }).get?.('llm') as {
+          stream?: (o: unknown) => AsyncIterable<unknown> | Promise<AsyncIterable<unknown>>
+        } | undefined
+      } catch {
+        return undefined
       }
-    }).llm
+    })()
     if (typeof llm?.stream !== 'function') {
       this.audit('security', 'llm.cloud.egress.blocked', {
         ...sessionIdField(state.sessionId),
