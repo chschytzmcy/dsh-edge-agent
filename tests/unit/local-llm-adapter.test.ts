@@ -931,4 +931,81 @@ describe('local-llm-adapter (M4, real-only)', () => {
       assert.equal(end.payload.sessionId, 's-half')
     })
   })
+
+  // §7.148 (2026-10-29): §7.147 只补了「开始行」；同一次调用的**失败行**
+  // （http_error / network_error / network_retry）走的是模块级 `audit()`
+  // 辅助函数，绕开了 `this.audit` 的改动 —— 实测本仓 43 条 `llm.local.http_error`
+  // / 22 条 `llm.local.network_error` / 4 条 `llm.local.network_retry`
+  // **无一带** sessionId。
+  //
+  // 后果与开始行相同：失败行落全局桶 ⇒ Edge 面板看不到「哪一轮失败了」。
+  // 开始行带、失败行不带 ⇒ 同一个调用两半归属不一致。
+  describe('§7.148 — 失败行也带会话归属', () => {
+    async function rowsFor(options: Record<string, unknown>, responder: (init: FetchInit) => Response): Promise<any[]> {
+      installFetchMock(responder)
+      const entries: any[] = []
+      const auditLog = { log: async (e: any) => { entries.push(e) } }
+      const adapter = new LocalLlmAdapterImpl(
+        { providers: ['local-llm'], baseUrl: 'http://127.0.0.1:11434/v1', defaultModel: 'qwen3-4b' },
+        auditLog as any,
+      )
+      try {
+        for await (const _ of adapter.stream({
+          provider: 'local-llm',
+          model: 'qwen3-4b',
+          messages: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
+          ...options,
+        } as any)) { /* drain */ }
+      } catch { /* 失败路径是本组的被测对象 */ }
+      restoreFetch()
+      return entries
+    }
+
+    const http500 = () => new Response('boom', { status: 500 })
+    const abortError = () => { const e: any = new Error('aborted'); e.name = 'AbortError'; throw e }
+    const plainError = () => { throw new Error('socket hang up') }
+
+    it('HTTP 失败行带 sessionId', async () => {
+      const rows = await rowsFor({ sessionId: 's-http' }, http500)
+      const row = rows.find(e => e.kind === 'llm.local.http_error')
+      assert.ok(row, 'llm.local.http_error 必须落盘')
+      assert.equal(row.payload.sessionId, 's-http')
+    })
+
+    it('中止型网络失败行带 sessionId', async () => {
+      const rows = await rowsFor({ sessionId: 's-net' }, abortError)
+      const row = rows.find(e => e.kind === 'llm.local.network_error')
+      assert.ok(row, 'llm.local.network_error 必须落盘')
+      assert.equal(row.payload.sessionId, 's-net')
+    })
+
+    it('重试行带 sessionId', async () => {
+      let call = 0
+      const rows = await rowsFor({ sessionId: 's-retry' }, (init) => {
+        call += 1
+        if (call === 1) plainError()
+        return sseResponse([
+          { choices: [{ delta: { content: 'pong' }, finish_reason: null }] },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] },
+        ])
+      })
+      const row = rows.find(e => e.kind === 'llm.local.network_retry')
+      assert.ok(row, 'llm.local.network_retry 必须落盘')
+      assert.equal(row.payload.sessionId, 's-retry')
+    })
+
+    it('没有会话 → 失败行**不带** sessionId 键（反向证伪：不能造假桶）', async () => {
+      const rows = await rowsFor({}, http500)
+      const row = rows.find(e => e.kind === 'llm.local.http_error')
+      assert.ok(row, 'llm.local.http_error 必须落盘')
+      assert.equal('sessionId' in row.payload, false)
+    })
+
+    it('哨兵 sessionId → 失败行**不带** sessionId 键（哨兵不是会话 id）', async () => {
+      const rows = await rowsFor({ sessionId: '<pre-session>' }, http500)
+      const row = rows.find(e => e.kind === 'llm.local.http_error')
+      assert.ok(row, 'llm.local.http_error 必须落盘')
+      assert.equal('sessionId' in row.payload, false)
+    })
+  })
 })

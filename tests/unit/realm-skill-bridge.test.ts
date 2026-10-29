@@ -1453,4 +1453,77 @@ ${allSkillLines.join('\n')}
       )
     })
   })
+
+  // §7.148 (2026-10-29): 工具过滤行 / 工具拒绝行也要带 sessionId ——
+  //
+  // §7.147 补了「开始行」，但 realm-skill-bridge 的审计行**从来没有**带过
+  // sessionId：实测本仓 `realm-skill-bridge.tools.filtered` 132 条无一带，
+  // `tool.realm.denied` 1 条同样没有 ⇒ 全落全局桶 ⇒ Edge 面板的工具/拦截
+  // 面板说不清「哪一轮的工具被过滤 / 被拒」。
+  describe('§7.148 — 工具侧审计行也带会话归属', () => {
+    const TOOL_CONFIG = {
+      skills: {},
+      tools: { web_search: 'CLOUD', web_fetch: 'CLOUD', sys_info: 'LOCAL', bash: 'LOCAL' },
+      defaultRealm: 'hidden',
+      intentDefaultRealm: 'hidden',
+      sessionRealmHeader: 'x-edge-realm',
+    }
+
+    function makeService(entries: any[]) {
+      const configPath = writeConfig('skill-realms-7148.json', TOOL_CONFIG)
+      const auditLog = { log: async (e: any) => { entries.push(e) } }
+      const service = new RealmSkillBridgeService(
+        fakeCtx() as never,
+        { configPath, hotReload: false, watchIntervalMs: 5000 },
+        auditLog as any,
+      )
+      return service
+    }
+
+    const TOOLS = [{ name: 'web_search' }, { name: 'web_fetch' }, { name: 'sys_info' }]
+
+    it('工具过滤行带 sessionId', async () => {
+      const entries: any[] = []
+      const service = makeService(entries)
+      await service.start()
+      service.filterToolsField(TOOLS, 'LOCAL', { sessionId: 'sess-tools' })
+      service.stop()
+      const row = entries.find(e => e.kind === 'realm-skill-bridge.tools.filtered')
+      assert.ok(row, 'realm-skill-bridge.tools.filtered 必须落盘')
+      assert.equal(row.payload.sessionId, 'sess-tools')
+    })
+
+    it('没有会话 → 工具过滤行**不带** sessionId 键（反向证伪：不能造假桶）', async () => {
+      const entries: any[] = []
+      const service = makeService(entries)
+      await service.start()
+      service.filterToolsField(TOOLS, 'LOCAL')
+      service.stop()
+      const row = entries.find(e => e.kind === 'realm-skill-bridge.tools.filtered')
+      assert.ok(row, 'realm-skill-bridge.tools.filtered 必须落盘')
+      assert.equal('sessionId' in row.payload, false)
+    })
+
+    it('工具拒绝行带 sessionId', async () => {
+      const entries: any[] = []
+      const service = makeService(entries)
+      await service.start()
+      ;(service as any)['auditDeny']('web_search', new Set(['CLOUD']), 'LOCAL', 'sess-deny')
+      service.stop()
+      const row = entries.find(e => e.kind === 'tool.realm.denied')
+      assert.ok(row, 'tool.realm.denied 必须落盘')
+      assert.equal(row.payload.sessionId, 'sess-deny')
+    })
+
+    it('没有会话 → 工具拒绝行**不带** sessionId 键', async () => {
+      const entries: any[] = []
+      const service = makeService(entries)
+      await service.start()
+      ;(service as any)['auditDeny']('web_search', new Set(['CLOUD']), 'LOCAL')
+      service.stop()
+      const row = entries.find(e => e.kind === 'tool.realm.denied')
+      assert.ok(row, 'tool.realm.denied 必须落盘')
+      assert.equal('sessionId' in row.payload, false)
+    })
+  })
 })

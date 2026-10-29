@@ -92,6 +92,19 @@ describe('§7.125 entry-layer device-command regex tier', () => {
       assert.ok(audit.entries.some(e => e.kind === 'guard.model-detect.skip' && e.payload?.reason === 'pure-device-command'))
     })
 
+    // §7.148 (2026-10-29): 跳过行也必须带 sessionId ——
+    //
+    // §7.147 只补了「开始行」，同函数里**兄弟 kind** 漏了。实测本仓
+    // `guard.model-detect.skip` 12 条**无一带** sessionId ⇒ 全落全局桶 ⇒
+    // Edge 面板的拦截面板说不清「哪一轮被跳过了」。
+    it('§7.148: the skip row carries the sessionId', async () => {
+      const { service, audit } = makeGuard()
+      await service.checkInput('开灯', 'sess-abc')
+      const skip = audit.entries.find(e => e.kind === 'guard.model-detect.skip')
+      assert.ok(skip, 'the skip row must be emitted')
+      assert.equal(skip.payload?.sessionId, 'sess-abc')
+    })
+
     it('skips the LLM for every common device command', async () => {
       for (const text of ['开灯', '关灯', '打开空调', '把灯打开', '请把空调打开', '帮我关一下空调', '空调调到26度']) {
         const { service, llm } = makeGuard()

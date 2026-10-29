@@ -523,15 +523,19 @@ class RealLocalAdapter extends LlmAdapter {
     } catch (err: any) {
       const aborted = options.signal?.aborted === true || err?.name === 'AbortError'
       if (aborted) {
-        audit(this.auditLog, 'error', 'llm.local.network_error', { provider: options.provider, model: this.defaultModel, route: options.model, durationMs: Date.now() - start, error: err?.message ?? String(err), ...egressAuditFields(options) })
+        // §7.148: 错误行同样要带 sessionId —— 它们与 `llm.local.start` 是同一次
+        // 调用的两半（实测：本仓 43 条 `llm.local.http_error` / 22 条
+        // `llm.local.network_error` / 4 条 `llm.local.network_retry` 无一带
+        // sessionId）。失败行落全局桶 ⇒ Edge 面板看不到「哪一轮失败了」。
+        audit(this.auditLog, 'error', 'llm.local.network_error', { ...sessionIdField(options.sessionId), provider: options.provider, model: this.defaultModel, route: options.model, durationMs: Date.now() - start, error: err?.message ?? String(err), ...egressAuditFields(options) })
         throw err
       }
-      audit(this.auditLog, 'warn', 'llm.local.network_retry', { provider: options.provider, model: this.defaultModel, route: options.model, error: String(err?.message ?? err), afterMs: Date.now() - start })
+      audit(this.auditLog, 'warn', 'llm.local.network_retry', { ...sessionIdField(options.sessionId), provider: options.provider, model: this.defaultModel, route: options.model, error: String(err?.message ?? err), afterMs: Date.now() - start })
       await new Promise<void>(resolve => setTimeout(resolve, 800))
       try {
         response = await attempt()
       } catch (err2: any) {
-        audit(this.auditLog, 'error', 'llm.local.network_error', { provider: options.provider, model: this.defaultModel, route: options.model, durationMs: Date.now() - start, error: err2?.message ?? String(err2), afterRetry: true, ...egressAuditFields(options) })
+        audit(this.auditLog, 'error', 'llm.local.network_error', { ...sessionIdField(options.sessionId), provider: options.provider, model: this.defaultModel, route: options.model, durationMs: Date.now() - start, error: err2?.message ?? String(err2), afterRetry: true, ...egressAuditFields(options) })
         throw err2
       }
     }
@@ -540,7 +544,7 @@ class RealLocalAdapter extends LlmAdapter {
       const durationMs = Date.now() - start
       let respBody = ''
       try { respBody = await response.text() } catch { /* ignore */ }
-      audit(this.auditLog, 'error', 'llm.local.http_error', { provider: options.provider, model: this.defaultModel, route: options.model, status: response.status, durationMs, respBody: respBody.slice(0, 500), ...egressAuditFields(options) })
+      audit(this.auditLog, 'error', 'llm.local.http_error', { ...sessionIdField(options.sessionId), provider: options.provider, model: this.defaultModel, route: options.model, status: response.status, durationMs, respBody: respBody.slice(0, 500), ...egressAuditFields(options) })
       // 2026-10-21: 401/403 almost always means "this endpoint wants a
       // bearer" (or "the port belongs to something else entirely"). Name the
       // knob so the operator does not have to reverse-engineer the envelope.

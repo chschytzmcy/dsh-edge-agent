@@ -14447,3 +14447,136 @@ JSON.stringify 丢掉（结果一样），若写成 `sessionId: '<pre-session>'`
   历史行仍会显示为全局信号。**新行才有归属**。
 - `llm.local.end` 里 86/569 仍不带 sessionId —— 那些是**会话建立之前**的调用
   （prompt-guard 安检 / 隐私策略分类器），本来就该归全局，不是缺口。
+
+
+---
+
+## §7.148 实机复验 + 同根因缺口补齐 + 「登录的密盒」返回自白的诊断（2026-10-29）
+
+§7.147 修完、提交（`f401c40`）、推送后，主人授权代劳重启桌面版，让新归属生效。
+
+### 一、实机复验：§7.147 生效（重启后 14:01–14:06 的审计链）
+
+桌面版重启：旧 5 进程（10:11:38 启动）全部结束 → 端口 62248 释放 → 拉起同一
+exe → 新 5 进程 14:00:58 启动 → **宿主端口换成了 57160**（端口是动态分配的，
+不是固定的 62248 —— 盯死旧端口会误判成「没起来」）。
+
+重启后审计链新增 63 行（主人 14:03 那轮「查询下最新的AI新闻」，会话
+`session-484e5f58-…`）：
+
+| kind | 新代码下带 sessionId |
+|---|---|
+| `llm.local.start` | **19 / 19** |
+| `llm.trace.index` | **62 / 62** |
+| `intent.jev.adopt` / `response` / `low_confidence` | **4 / 4** |
+| `guard.model-detect.start` / `end` | 6 / 6 |
+| `llm.local.end` | 19 / 19 |
+
+修前是 `llm.local.start` **0/643**、`llm.trace.index` **0/203**、
+`intent.jev.*` **0/70**。⇒ §7.147 的修法在真机上成立。
+
+无 sessionId 的只剩启动期事件（`config.loaded` / `policy.loaded` /
+`input-guard.boot.probe` / `*.hook.registered`）—— 它们本来就没有会话。
+
+### 二、全量 kind 盘点发现：§7.147 只覆盖了主人报的那几个 kind
+
+把审计链**所有** kind 逐个统计（66 个），发现同一根因还有几处漏网：
+
+| kind | 修前 | 判定 |
+|---|---|---|
+| `llm.local.http_error` / `network_error` / `network_retry` | 0/43 / 0/22 / 0/4 | **真缺口**：走模块级 `audit()` 辅助函数，绕开了 `this.audit` 的改动 |
+| `guard.model-detect.skip` | 0/12 | **真缺口**：同函数内 `sessionId` 已在作用域，兄弟 kind 却没传 |
+| `realm-skill-bridge.tools.filtered` | 0/132 | **真缺口**：`filterToolsField` 签名里根本没有 sessionId |
+| `tool.realm.denied` | 0/1 | **真缺口**：`auditDeny` 私有方法没有 sessionId 参数 |
+| `intent.jev.error` / `timeout` / `circuit_open` | 0/21 | **已覆盖**：§7.147 的 jev 局部闭包把它们一起带上了（只是新样本没踩到） |
+| `llm.cloud.start` | 0/13 | **修复正确**：新样本没走上云路径（那轮被降级到本地） |
+
+**教训**：只按「主人报的面板」取证会漏。同一个函数里的**兄弟 kind** 是
+同一个 bug 的不同表现 —— 开始行带、失败行不带 ⇒ 同一个调用两半归属不一致。
+
+### 三、补齐（3 个文件）
+
+| 文件 | 改了什么 |
+|---|---|
+| `src/dsh-adapter/local-llm-adapter.ts` | 4 条失败/重试行（`http_error` / `network_error` ×2 / `network_retry`）加 `...sessionIdField(options.sessionId)` |
+| `src/dsh-adapter/prompt-guard.ts` | 2 条 `guard.model-detect.skip` 加 `sessionId` |
+| `src/dsh-adapter/realm-skill-bridge.ts` | `filterToolsField` 的 `options` 加 `sessionId?`，载荷加 `...sessionIdField(options?.sessionId)`；`auditDeny` 加 `sessionId?` 参数；assemble 调用点传 `sessionId`；Layer 3 的 `?? 'unknown'` 拆成 `rawSessionId`（ops log 仍显示 `unknown`，审计载荷拿真值） |
+
+> 为什么 Layer 3 的 `'unknown'` 要拆：ops log 的 `'unknown'` 是**显示约定**，
+> 但写进审计载荷会造出**不存在的桶**（§7.147 口径）—— 那些行从此只在
+> 「有人请求那个假 id」时可见。
+
+### 四、测试（新增 10 例，全绿）
+
+| 文件 | 例数 | 钉死什么 |
+|---|---|---|
+| `tests/unit/local-llm-adapter.test.ts` | 5 | 三种失败行带 sessionId；没有会话 / 哨兵 ⇒ **不带这个键** |
+| `tests/unit/prompt-guard-device-command.test.ts` | 1 | `guard.model-detect.skip` 带 sessionId |
+| `tests/unit/realm-skill-bridge.test.ts` | 4 | `tools.filtered` / `tool.realm.denied` 带 sessionId；没有 ⇒ **不带这个键** |
+
+**反向证伪点**统一钉 `'sessionId' in payload === false`（不是 `=== undefined`）。
+
+### 五、验证
+
+| 项 | 结果 |
+|---|---|
+| 单元测试 | **71 文件 1452 passed / 2 skipped / 0 failed**（基线 1442，+10） |
+| eslint | **0 error**（58 warnings 与基线一致） |
+| `tsc --noEmit` | exit 0 |
+| 构建门禁 `verify:build` | **16 项全过**（整链 exit 0） |
+| 桌面 bundle | `dist/installable/dsh-edge-agent-desktop-safe` 重建于 14:14:53；junction 已指向它；编译产物里三处新归属逻辑逐条核过 |
+
+### 六、另一件事：主人 14:05 发「登录的密盒」，界面回了一段英文自白
+
+主人报：桌面版里发「登录的密盒」，回来的回复是
+
+> I keep calling `get_goal` with identical arguments and it keeps returning null.
+> I need to stop this loop. Let me try a different approach:
+
+**取证（ops log 逐行）**：
+
+```
+14:05:13  preflight intent  category=LOCAL confidence=0.98
+           rationale=jev-intent:LOCAL intentSource=llm-classified
+14:05:13  LLM call done     model=qwen3.6-flash resultLen=37 toolCallCount=1
+14:05:13  tool allow        tool=get_goal realm=LOCAL
+14:05:13  tool result       tool=get_goal status=ok
+14:05:14  LLM call done     model=qwen3.6-flash resultLen=138 toolCallCount=0
+                                finishKind=stop
+14:05:14  LLM_RESPONSE      content.text = "I keep calling `get_goal` with
+                                identical arguments and it keeps returning null. …"
+                                finishReason=stop   ← 是**正文**，不是工具调用
+```
+
+**结论**：那段英文是**本地模型的思考过程被当成最终回复输出**了。
+
+机制三步：
+
+1. 本地模型（`qwen3.6-flash`）被唤起，面对 27 个工具，**选错了 `get_goal`** ——
+   没选 `ets-auth` / `ets-cli` 那条路。`get_goal` 是 DeepSeek Harness
+   **自带的标准工具**（配套 `create_goal` / `update_goal`，见
+   `deepseek-harness/apps/cli/tests/web-agent-presets.e2e.ts`），模型看到的
+   工具清单里确实有它。
+2. `get_goal` 在没有 Goal 的会话里**必然返回空** —— 它的契约就是「没设
+   Goal 就是空」。realm 闸门也放行了它（无 realm 标签 ⇒ fail-open）。
+3. 模型拿到空结果后**没有换工具**，而是把这句自白当正文输出（`toolCalls:[]`
+   + `finishReason:stop` 证明是最终回复，不是工具调用）。
+
+**归因**：这不是 edge-agent 插件的 bug，是**本地模型工具选择 + 空结果处理**
+的行为缺陷。诱因是主人 14:03 更新 `config/edge.json` 后换了本地池 ——
+13:41 那轮还是 `api.minimaxi.com` / `MiniMax-M3.1-Flash`，14:03 起变成
+`token-plan.cn-beijing.maas.aliyuncs.com` / `qwen3.6-flash`。小模型在 27 个
+工具里选「登录密盒」该用哪个，误选概率高得多。
+
+**未做**：没有替主人改本地池配置（运行配置由主人拍板）。可选的修法有两条
+（换回更强的本地模型 / 在 edge-agent 侧把 Goal 族工具在 LOCAL realm 下挡
+掉），都等主人定。
+
+### 七、遗留（如实记）
+
+- **运行中的桌面进程仍是 §7.147 的代码**（14:00:58 启动）。§7.148 的 bundle
+  已在磁盘（14:14:53 重建，junction 生效），但 Electron 不热替换 ⇒ **再重启
+  一次桌面版**才生效。本次不擅自重启（主人正在用）。
+- **旧行不可追认**：本节之前落盘的无 sessionId 行，宿主仍归全局桶。
+- `intent.jev.boot_probe` / `intent.llm.low-confidence` 仍是 0% —— 前者是
+  boot 期（无会话，合理），后者所在函数不在 jev 闭包作用域内，待下一轮核。

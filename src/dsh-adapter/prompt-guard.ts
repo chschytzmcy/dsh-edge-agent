@@ -479,6 +479,9 @@ export class PromptGuardServiceImpl extends Service implements PromptGuardServic
         if (routing?.realm === 'REJECT') {
           skipModelDetection = true
           await this.audit('info', 'guard.model-detect.skip', {
+            // §7.148: 跳过行也要带 sessionId —— 否则它落全局桶，Edge 面板的
+            // 拦截面板说不清「哪一轮被跳过了」（实测 12 条全无 sessionId）。
+            sessionId,
             reason: 'privacy-policy-reject-match',
             confidence: routing.confidence,
             rationale: routing.rationale,
@@ -531,6 +534,7 @@ export class PromptGuardServiceImpl extends Service implements PromptGuardServic
           if (pure) {
             skipModelDetection = true
             await this.audit('info', 'guard.model-detect.skip', {
+              sessionId,
               reason: 'pure-device-command',
               device: match.device,
               action: match.action,

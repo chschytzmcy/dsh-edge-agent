@@ -38,6 +38,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { Service } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
 import { edgeHome, loadEdgeConfig } from './edge-config.js'
+import { sessionIdField } from './session-attribution.js'
 
 export const name = 'realm-skill-bridge'
 // §7.92.2 (2026-09-22): 必须声明全部 soft deps — `edgeTools` + `tools` 是
@@ -716,7 +717,7 @@ export class RealmSkillBridgeService extends Service {
   filterToolsField(
     tools: ReadonlyArray<unknown>,
     agentRealm: RealmTag,
-    options?: { audit?: boolean },
+    options?: { audit?: boolean; sessionId?: string },
   ): { tools: unknown[]; changed: boolean; removed: string[] } {
     const kept: unknown[] = []
     const removed: string[] = []
@@ -755,11 +756,13 @@ export class RealmSkillBridgeService extends Service {
     }
     if (removed.length > 0 && options?.audit !== false) {
       try {
+        // §7.148: 工具过滤行也要带 sessionId —— 实测本仓 132 条
+        // `realm-skill-bridge.tools.filtered` 无一带 sessionId，全落全局桶。
         this.auditLog?.log({
           level: 'info',
           kind: 'realm-skill-bridge.tools.filtered',
           source: 'realm-skill-bridge',
-          payload: { agentRealm, removedCount: removed.length, removed },
+          payload: { ...sessionIdField(options?.sessionId), agentRealm, removedCount: removed.length, removed },
         })
       }
       catch { /* debug only */ }
@@ -837,12 +840,14 @@ export class RealmSkillBridgeService extends Service {
   }
 
   /** Log a realm denial to the audit log (security level). */
-  private auditDeny(toolName: string, toolRealms: Set<RealmTag>, agentRealm: RealmTag): void {
+  private auditDeny(toolName: string, toolRealms: Set<RealmTag>, agentRealm: RealmTag, sessionId?: string): void {
     this.auditLog?.log({
       level: 'security',
       kind: 'tool.realm.denied',
       source: 'realm-skill-bridge',
-      payload: { tool: toolName, toolRealms: [...toolRealms], agentRealm },
+      // §7.148: 拒绝行也要带 sessionId —— 否则它落全局桶，Edge 面板的拦截
+      // 面板说不清「哪一轮的哪个工具被拒」。
+      payload: { ...sessionIdField(sessionId), tool: toolName, toolRealms: [...toolRealms], agentRealm },
     })
   }
 }
@@ -1081,7 +1086,7 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
     // lifecycle, so undefined should not happen in production. Layer 3
     // (tools/pre-execute) catches anything that slips through.
     if (agentRealm === undefined) return result
-    const filter = service.filterToolsField(result.tools, agentRealm)
+    const filter = service.filterToolsField(result.tools, agentRealm, { sessionId })
     if (!filter.changed) return result
     ctx.logger?.info?.(
       `[realm-skill-bridge] assemble filter sessionId=${sessionId ?? 'unknown'} realm=${agentRealm} removedCount=${filter.removed.length} removed=${filter.removed.join(',')}`,
@@ -1099,7 +1104,10 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
   }).on?.('tools/pre-execute', async (exec: unknown, next: () => Promise<unknown>) => {
     const e = exec as { name: string; agent?: AgentLike; input?: Record<string, unknown>; args?: Record<string, unknown>; arguments?: Record<string, unknown> }
     const agentRealm = service.getAgentRealm(e.agent)
-    const sessionId = (e.agent as { session?: { id?: string } } | undefined)?.session?.id ?? 'unknown'
+    const rawSessionId = (e.agent as { session?: { id?: string } } | undefined)?.session?.id
+    // §7.148: ops log 的显示约定保留 `'unknown'`；但**审计载荷**要拿真值 ——
+    // `'unknown'` 不是会话 id，写进载荷会造出一个不存在的桶（§7.147 口径）。
+    const sessionId = rawSessionId ?? 'unknown'
     const denyReason = service.checkToolRealm(e.name, agentRealm)
     // §7.46.7 (2026-09-12): 尝试从 exec.args/input/arguments 抽出 skill name —
     // 当 tool=skill 时，ops log 应该报具体 skill 名（ets-auth 等），而不是只报 tool=skill。
@@ -1130,7 +1138,7 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
     } catch { /* debug only */ }
     if (denyReason !== undefined) {
       const toolRealms = service.toolRealm(e.name) ?? new Set<RealmTag>(['hidden' as RealmTag])
-      service['auditDeny'](e.name, toolRealms, agentRealm ?? 'hidden')
+      service['auditDeny'](e.name, toolRealms, agentRealm ?? 'hidden', rawSessionId)
       return { kind: 'deny', reason: denyReason }
     }
     return next()
