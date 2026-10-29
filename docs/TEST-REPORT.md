@@ -5,7 +5,7 @@
 >
 > ```bash
 > pnpm test                    # 单元测试（vitest）
-> pnpm run verify:build        # 11 项构建门禁
+> pnpm run verify:build        # 15 项构建门禁
 > pnpm run lint                # eslint（0 error 基线）
 > bash scripts/e2e-ops-log-coverage.sh   # E2E：ops log 4 用例（需 profile 已起）
 > ```
@@ -20,7 +20,17 @@
 
 ## 最近一次全量结果
 
-**2026-10-24（§7.107 全链路，Windows 实机 + 真实 LLM 端点）**：
+**2026-10-29（§7.145，Windows 实机 + 桌面版 r16）**：
+
+| 项 | 结果 |
+|---|---|
+| 单元测试 | **70 文件 1424 passed / 2 skipped / 0 failed**（含 §7.145 新增：cookie janitor 23 例 + 未绑定会话口径 22 例） |
+| eslint | **0 error**（58 个 unused-vars warning 非阻断） |
+| `tsc --noEmit`（`tsconfig.json` + `tsconfig.client.json`） | 均 exit 0 |
+| 构建门禁 `verify:build` | **15 项全过**（boundary / contract / patch-surface / preset-isolate / patch-row-shape / plugin-spec / env-bridge / bundle-mount / installable / installable-edge / host-mount / client-mount / desktop-auth-cookies / session-audit / package） |
+| 桌面版实机（宿主 `127.0.0.1:62248`） | ① cookie janitor 两条防线日志在（`maxHeaderSize raised → 65536` / `auth=1 removed=1 projected=600B`）；② Edge 面板在未绑定会话时显示「尚未绑定会话」且**无**「轮次 / 本轮 / 五节点流程 / LLM 调用」 |
+
+### 上一轮全量结果（§7.107 全链路，Windows 实机 + 真实 LLM 端点，2026-10-24）
 
 | 项 | 结果 |
 |---|---|

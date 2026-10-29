@@ -1,6 +1,10 @@
 # E2E HTTP API 用例清单
 
-> **§7.86（2026-09-18）归档说明**: 本文档历史版本记录了 M1-M6 smoke、e2e-tui-live.sh、e2e-llm-classification.sh、e2e-model-detection.sh、e2e-privacy-precheck.sh、e2e-lark-skill.sh、e2e-web-search.sh 共 7 套 E2E 脚本的用例矩阵。这些脚本全部依赖已废除的 `edge-m1` / `dsh-tui` 独立 rig 或 M5 webui 阶段入口(详见 `docs/E2E_TUI_CASES.md` 同节),全部已 `git rm`(commit 含本批)。**单 profile 架构(§7.69)+ M5+ work 没收尾**后,这些 E2E 无可执行宿主。
+> **§7.86（2026-09-18）归档说明**: 本文档历史版本记录了 M1-M6 smoke、e2e-tui-live.sh、e2e-llm-classification.sh、e2e-model-detection.sh、e2e-privacy-precheck.sh、e2e-lark-skill.sh、e2e-web-search.sh 共 7 套 E2E 脚本的用例矩阵。这些脚本全部依赖已废除的 `edge-m1` / `dsh-tui` 独立 rig 或 M5 webui 阶段入口,全部已 `git rm`(commit 含本批)。**单 profile 架构(§7.69)+ M5+ work 没收尾**后,这些 E2E 无可执行宿主。
+>
+> **§7.145-D（2026-10-29）整理**: 原 `docs/E2E_TUI_CASES.md` 已删除 —— 它的正文只有一句
+> 「详见本文档」+ 一张比本文档 §3 更小的历史脚本表,零独有信息。TUI 路径的历史脚本
+> （`e2e-tui-live.sh` / `m1`~`m6-smoke` / `smoke.ts` 等）全部在下面 §3 这张表里。
 >
 > **当前唯一活跃 E2E** = `scripts/e2e-ops-log-coverage.sh`(3 重点用例 mibao/news/local-ip,21 节点 ops log 全链路覆盖)。
 

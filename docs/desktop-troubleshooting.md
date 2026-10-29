@@ -55,6 +55,20 @@ C) 只有新 cookie                        -> HTTP/1.1 200 OK
 
 ### 1.3 动作
 
+> **§7.145-A 起（2026-10-29）不用手动跑了**：本仓的 `desktop-cookie-janitor` 插件
+> 在**宿主启动的同一进程里**（握手之前）自动做两件事 ——
+> ① 把宿主 web 服务的 `server.maxHeaderSize` 抬到 64 KB；
+> ② 删掉**死端口**的 `dsh-auth-*` cookie（只留当前端口那一条）。
+> **不改宿主、不改主人的 profile、不改启动习惯。**
+> 现场日志（`~/.dsh-edge-agent/log/dsh-edge-agent-desktop.log`）：
+>
+> ```
+> INFO [desktop-cookie-janitor] maxHeaderSize raised → 65536
+> INFO [desktop-cookie-janitor] jar=…\dsh-desktop\Network\Cookies opened=true auth=1 removed=1 projected=600B launchesLeft=69
+> ```
+>
+> 下面两条命令是**手工兜底 / 排障取证**（插件没挂上、或想先看现状时用）：
+
 ```bash
 # 1) 先退出桌面版（cookie 库被 Electron 独占锁，运行时改不了）
 # 2) 报告现状（不改任何东西）
@@ -79,13 +93,18 @@ node scripts/reset-desktop-auth-cookies.mjs --apply
 
 | 方案 | 做法 | 代价 |
 |---|---|---|
-| A（默认） | 定期跑 `--apply` | 约每 10 天一次（每次启动 +227 B） |
+| **E（默认，§7.145-A）** | **本仓插件自动**：开机抬 `maxHeaderSize` 64 KB + 清死端口 cookie | 无（不改宿主 / profile / 启动习惯） |
+| A | 定期跑 `--apply` | 约每 10 天一次（每次启动 +227 B） |
 | B | profile patch 里把桌面 web 端口**钉死**（`webserver` 行 `port` 不再取 `ctx.webStartup.port`）⇒ cookie 名恒定 ⇒ 永远只有 1 条 | 端口占用时宿主起不来；两个桌面实例不能并存 |
 | C | 把 `connection` 行的 `cookieMaxAgeDays` 调到 1 | 每天过期 ⇒ jar 只留当天的；但**开着超过 1 天的桌面会话会在中途失效** |
 | D | 启动器脚本先清 cookie 再拉起桌面版 | 需要改主人的快捷方式 |
 
-> B/C 都要改主人的 `~/.dsh/profiles/desktop/cordis.patch.yml`（改宿主配置），
-> 属**破坏性操作**，动手前必须先问过主人。
+> B/C/D 都要改主人的 `~/.dsh/profiles/desktop/cordis.patch.yml`（改宿主配置），
+> 属**破坏性操作**，动手前必须先问过主人。**E 不需要** —— 它在插件里，且自带
+> `process.versions.electron` 判据，headless profile（web / tui）直接跳过。
+>
+> E 与 C 互斥：C 把 cookie 寿命压到 1 天 ⇒ **开着超过 1 天的桌面会话会中途 401**，
+> 所以本仓**不动** `cookieMaxAgeDays`。
 
 ### 1.5 别浪费时间的方向（本轮已排除）
 
@@ -204,6 +223,39 @@ node scripts/_simulate-client-mount.mjs
 
 **切回标准模式不会把已打开的面板关掉**（§7.142）—— 只有主人自己关。
 
+### 3.6 §7.145-C 新增的判据：Edge tab **整个不见了**（连 guide 卡片都没有）
+
+**现象**：guide 的卡片列表里**没有「Edge」**，右栏 tab strip 里也**没有 chip** ——
+点开右栏只有宿主的「开始」页。而**宿主半边的日志完全正常**
+（ops log 里 `[edge-context-view] apply() called — Edge tab host half mounting`）。
+
+> **这不是 §7.139 那个门控问题**（那次的判据是「名册轮询没有 5s 间隔」），
+> 也不是 §7.142 的「页签在但不自动打开」。这一条是**浏览器半边根本没装进 bundle**。
+
+**根因**：`compile` = `clean-lib` + `tsc` ⇒ **清空整个 `lib/`**；浏览器半边
+`lib/client.js` 由**另一步** `build:client`（esbuild）产出。重建时若只跑了
+`compile` + `build:installable`（漏掉 `build:client`），installable 里就没有
+`lib/client.js` ⇒ 宿主半边照常挂载、浏览器半边**从未注册** ⇒ **完全静默**。
+
+**判据（一条就够）**：
+
+```bash
+# 桌面 profile 的 bundle 是 junction 指向 dist/installable/<variant>
+ls -l "$HOME/.dsh/profiles/desktop/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/lib/client.js"
+# 没有这个文件 ⇒ 就是这一类
+```
+
+**动作**：
+
+```bash
+npm run build:client        # 只补浏览器半边
+npm run build:installable   # 重新发布（桌面 profile 是 junction ⇒ 重建即生效，不用重装插件）
+```
+
+> §7.145-C 起 `scripts/rebuild-installable.mjs` **自己会拦**：声明了 `dsh.client`
+> 却找不到 `exports['./client']` ⇒ 直接 exit 1 并提示去跑 `build:client`。
+> 所以「发布出去才发现缺半边」这条路已经封死；这一节留给**旧版本 installable** 的现场。
+
 ---
 
 ## 4. 通用排查动作
@@ -268,3 +320,38 @@ node scripts/probe-session-audit.mjs --selftest
 另注意 ops log 里 `[edge-tools-registry] tools/change …` 在标准模式也会出现 ——
 它只是**观测**宿主可见工具表（`src/dsh-adapter/tools.ts`，不拦截不删改）；
 看到它 ≠ 插件在生效。
+
+---
+
+## 6. Edge 面板显示「尚未绑定会话」—— **不是故障**（§7.145-B）
+
+**现象**：打开 Edge 面板，看到的是
+
+```
+尚未绑定会话
+这一页还没有属于这个会话的一轮 —— 下面是全局信号，不是某一轮。开始一轮对话后，这里会变成该会话的记录。
+暂无全局信号
+```
+
+**这是设计，不是坏了。** 判据是**行**不是 id：
+
+- 宿主把「没有 sessionId 的审计行」放进兜底桶 `_global`，并且对**任何**会话的快照
+  都把 `_global` **合并进来**；
+- 行上带 `turn`：会话自己的行 `turn >= 0`，全局行 `turn === -1`；
+- ⇒ **面板里没有一条属于本会话的行 ⇒ 面板没有「这一轮」可显示**。
+
+桌面版开机就会建一个**草稿会话**（`POST /api/session/create`），所以 guide 页 /
+新建会话页拿到的是**真实且非空**的 `sessionId` —— 光看 id 判断不出来，这也正是
+修复前「轮次 0 / 本轮：等待意图判定 / 五节点流程 / LLM 调用 0」那套误导壳
+还能出现的原因。
+
+| 场景 | 面板显示 |
+|---|---|
+| 新建会话页 / guide 页 / 还没发第一条消息 | **尚未绑定会话** + 全局信号（一条不藏，只是标成全局） |
+| 会话已经跑过一轮（或已有属于它的行） | 正常面板：轮次 / verdict / 五节点流程 / LLM 调用 |
+
+**全局信号一条都不藏**（§7.129 的原则：不隐藏真发生的事，只是把它标对）。
+
+> 若要确认「已绑定」那一支：发一条消息即可（`turn/start` 一落，轮次计数就起来了）。
+> 注意宿主重启后轮次计数是**内存态**，老会话在宿主的 edge 面板里暂时没有数据 ——
+> 这时面板会显示「尚未绑定会话」，发一条消息后就变成该会话的记录。

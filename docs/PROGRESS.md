@@ -13876,3 +13876,294 @@ finish reason 现在是干净的 `stop` / `tool-calls`；页面 console 零 erro
 
 
 
+## §7.145 桌面版三件事：cookie 累积防复发 + 未绑定会话口径 + 构建链门禁（2026-10-29）
+
+主人 2026-10-29 指令「全部修正」的两件遗留（§7.143 收尾时挂着的「仍待主人裁决」两条），
+外加本轮实机取证时撞出来的第三件 —— 一条会**静默**吃掉 Edge tab 的构建链缺口。
+
+---
+
+### §7.145-A 桌面版「起不来」的根因修复：宿主认证 cookie 累积 ⇒ 431
+
+#### 现象
+
+桌面版偶发起不来，外壳报 **「DeepSeek Harness is unavailable」**。起不来之前它自己
+已经把宿主拆了。
+
+#### 根因（全链实证，不是推测）
+
+1. **审计链里数出来的**：2026-10-28 当天有 **18 次**「插件加载完 0.1 秒就死」的启动 ——
+   每次都恰好停在第 8 条事件后戛然而止。**18 次 431 失败启动**。
+2. **桌面版端口是随机的**：宿主 desktop-host 硬编码 `--port 0`
+   （`deepseek-harness/apps/desktop-host/src/index.ts:36`）⇒ 每次启动一个随机端口。
+3. **cookie 名里带端口**：宿主认证 cookie 叫 `dsh-auth-<port>` ⇒ 端口一变就是**一条新的**，
+   旧的**永不回收**。
+4. **Chromium 把同一 host 的所有 cookie 塞进 Cookie 头** ⇒ 每次启动，握手请求头都在变大。
+5. **宿主的 web 服务是裸 `createServer`**（`packages/host/webserver/src/index.ts:566`），
+   **16 KB 头上限** ⇒ 头一超就是 **431** ⇒ Electron 外壳判定宿主不可用 ⇒ 拆宿主。
+
+#### 三条不可行路线（都试过/推演过）
+
+| 方案 | 为什么不行 |
+|---|---|
+| 钉死端口 | `--port 0` 是硬编码的，宿主没有 env 覆盖点 |
+| 改宿主 `maxHeaderSize` | 宿主 webserver 没有这个配置项；改宿主不属于本仓 |
+| 缩短 `cookieMaxAgeDays`（宿主默认 30 天） | 与「桌面版长驻、不重新握手」直接冲突：cookie 过期 ⇒ 长驻会话 401 |
+
+⇒ 只能在**宿主自己的启动路径上**修，且**不改主人的 profile、不改宿主**。
+
+#### 关键实测：只有约 3 秒的窗口能清库
+
+- **锁时间线**：插件加载 `01:08:23.030` → Electron 锁 cookie 库 `01:08:25.979`
+  ⇒ **约 3 秒窗口**。
+- cookie 库被 Electron **文件级独占**（连 `copyFileSync` 都是 EBUSY）⇒
+  **只能在插件加载的那个窗口里清**，事后谁也动不了。
+- `node:sqlite` 在宿主运行时可用（Electron 44.7.0，`ELECTRON_RUN_AS_NODE=1` 下
+  `require('node:sqlite')` OK）⇒ 读 cookie 库不依赖外部工具。
+
+#### 修法：两条防线，都在本插件内
+
+新插件 `src/dsh-adapter/desktop-cookie-janitor.ts`（约 18 KB）：
+
+| 防线 | 作用 | 性质 |
+|---|---|---|
+| ① 把宿主 web 服务的 `server.maxHeaderSize` 从 16 KB 抬到 **64 KB** | 一个已经攒胖的 cookie jar 也不会打死启动 | **兜底** |
+| ② 开机把**死端口**的 `dsh-auth-*` cookie 删掉 | jar 恒定只剩当前端口那一条 | **治本** |
+
+- **只在桌面版生效**：判据是 `process.versions.electron` ⇒ headless profile
+  （web / tui）直接跳过，不会去动无关 profile 的宿主 web 服务行为。
+- **落点必须是宿主树**（cordis patch 顶层 insert 段）：宿主外壳的 welcome 握手发生在
+  **任何工作方式选定之前** ⇒ 修它的插件也必须在 preset 之外。
+  这条与 §7.136 的三行不同类：那三行是「宿主机制逼的」，这一行是「**时序**逼的」——
+  理由已写进 `scripts/verify-patch-surface.ts` 的 `HOST_FORCED_ROWS`，防滥用先例。
+- cookie 名/端口/authority 的解析全是**纯函数**（`authorityOf` / `portOf` /
+  `projectHeaderBytes` / `remainingLaunches` / `classifyCookies`）⇒ 可单测。
+
+#### 实机验证（桌面版 r14 / r15 / r16）
+
+```
+INFO [desktop-cookie-janitor] maxHeaderSize raised → 65536
+INFO [desktop-cookie-janitor] jar=C:\Users\cheng\AppData\Roaming\@deepseek-ai\dsh-desktop\Network\Cookies
+                              opened=true auth=1 removed=1 projected=600B launchesLeft=69
+```
+
+首次启动（jar 里还堆着 19 条历史）时是 `auth=19 removed=19`，投影请求头
+**4913 B → 600 B**；之后每次启动都是 `auth=1 removed=1`（只清上一轮那条死的）。
+
+#### 单测与反向证伪
+
+- `tests/unit/desktop-cookie-janitor.test.ts` —— **23 例**（authority 解析 / 端口解析 /
+  头字节投影 / 剩余启动次数 / 活端口 cookie 必须留着 / 死端口必须删 / 只在桌面版生效 /
+  抬头上限的判据 / 清库的幂等与安全边界……）。
+- **反向证伪**：同时破坏「活端口留着」「抬头上限」「只在桌面版生效」⇒ **4 条变红 / 13 条仍绿**
+  （其中 1 条是连带损伤：活着的 cookie 被误删）。
+
+#### 实机踩坑留档（每条都被单测钉住）
+
+1. cordis 的 `ctx.inject(deps, cb)` 给的是 **ctx 代理**，服务要按名字取 `raw.webServer`；
+   直接读 `.server` 抛 `cannot get property "server" without inject`。
+2. 宿主 webserver 的 `server` 字段在 `listen` 的 **effect 里**才创建 ⇒ inject 回调时
+   还是 `undefined` ⇒ 需要短轮询（40×50 ms）等待。
+3. **`http.createServer()` 的 `server.maxHeaderSize` 初值是 `undefined`（不是 16384）**
+   ⇒ 「不是数字就不动」的判据会让这道防线**永远抬不上**（实机日志 `maxHeaderSize unchanged`）。
+   判据改成「像不像 http server（有 listen/close）」。
+4. `node:sqlite` 在 vite/vitest 的解析器里加载不了 ⇒ 改用
+   `createRequire(import.meta.url)('node:sqlite')`。
+
+---
+
+### §7.145-B 未绑定会话的面板口径：不说「本轮」
+
+#### 原始问题（§7.143 收尾时挂着的遗留）
+
+> 「空白草稿会话落 `_global` 显示全局 edge 汇总 ⇒ 是否改成『尚未绑定会话』提示」
+
+主人 2026-10-29 裁决：**全部修正**。
+
+#### 机理（宿主侧，`src/dsh-adapter/edge-context-view.ts`）
+
+- `GLOBAL_BUCKET = '_global'` 是「所有**没有 sessionId** 的审计行」的兜底桶
+  （开机探针、限流信号、宿主答案步……）。
+- `snapshot(sessionId)` 对**任何**会话都把 `_global` 桶**合并进来**：
+  ```ts
+  const buckets = sessionId === GLOBAL_BUCKET
+    ? [this.buckets.get(GLOBAL_BUCKET)]
+    : [this.buckets.get(sessionId), this.buckets.get(GLOBAL_BUCKET)]
+  ```
+- 行上带 `turn`：**会话自己的行 `turn >= 0`，全局行 `turn === -1`**（哨兵）。
+
+#### 实机复验把判据的落点改了（这是本节的关键）
+
+最初的判据是「宿主给的 `sessionId` 为空 ⇒ 未绑定」。**实机证明它覆盖不到真正触发的场景**：
+
+- 桌面版开机就会 `POST /api/session/create` 建一个**草稿会话**
+  ⇒ guide / 新建会话页拿到的 `sessionId` 是**真实且非空**的；
+- 于是判据判成「已绑定」，旧壳照旧显示。实机抓到的就是它：
+
+  ```
+  Edge
+  轮次 0
+  token 未上报用量
+  时长 —
+  本轮：等待意图判定
+  攻击检测 等待 │ 意图判定 等待 │ PII 脱敏 等待 │ 路由决策 等待 │ 答案出口 路由未定
+  威胁监控 本轮窗口无异常 已检信号 0
+  LLM 调用 0
+  本轮没有记录到 LLM 调用
+  ```
+
+  「本轮 / 轮次 / 五节点流程 / LLM 调用」全是「某一轮」的概念，可此时**根本没有哪一轮** ——
+  面板里能看到的其实是宿主合并进来的**全局行**。这是 §7.129 最怕的那种误导。
+
+#### 改成什么
+
+**判据从「id 级」改成「行级」**：
+
+> **面板里没有一条属于本会话的行 ⇒ 面板没有「这一轮」可显示。**
+
+具体（`src/client/unbound.tsx`）：
+
+| 条件 | 判定 |
+|---|---|
+| 宿主没给会话（空 / `_global`） | 未绑定 |
+| 给了会话，但它**一轮都没跑过**（`turns === 0`）**且**面板里没有一条属于它的行 | 未绑定（空白草稿会话的形态） |
+| 给了会话，且 `turns > 0`（已经跑过一轮） | 已绑定 |
+| 给了会话，且已经有属于它的行（哪怕行上的 turn 计数还是 0 —— §7.106 首轮竞态里行先于 `turn/start` 落库） | 已绑定 |
+
+未绑定时面板只说两件事：
+
+1. **尚未绑定会话**（明说现在没有可显示的会话轮次，不假装有）；
+2. 下面是**全局信号**（与会话无关的那些行），按面板分组列出。
+
+「本轮」语义的东西（轮次计数 / verdict / 五节点流程 / LLM 调用列表）**一律不显示** ——
+没有会话就没有「这一轮」。全局信号**一条都不藏**：§7.129 的原则是不隐藏真发生的事，
+只是把它标对。
+
+文案（zh / en）：
+
+> **尚未绑定会话**
+> 这一页还没有属于这个会话的一轮 —— 下面是全局信号，不是某一轮。开始一轮对话后，
+> 这里会变成该会话的记录。
+
+#### 单测与反向证伪
+
+`tests/unit/edge-unbound.test.ts` —— **12 例 → 22 例**：
+
+- 纯函数：`isBoundSession` / `isGlobalRow` / `isUnboundPanel` / `globalSignalGroups`。
+- **接线契约必须直接测**：导出 `EdgeView`，用 `renderToStaticMarkup` 渲染不同
+  sessionId / 不同行的组合，断言两支各是什么。store 是模块级单例没有播种口 ⇒
+  测试用 `vi.mock` 提供可控替身，**生产代码不为此开洞**。
+- **反向证伪（三组，各 2 红）**：
+  1. 丢掉「会话自己的行」这条证据 ⇒ 2 红（纯函数 + 接线）；
+  2. 丢掉「已经跑过一轮」这条证据 ⇒ 2 红；
+  3. 接线永远走已绑定分支 ⇒ 2 红（两条未绑定断言同时变红）。
+
+#### 实机取证（桌面版 r16，宿主 `127.0.0.1:62248`）
+
+guide 页 → 右侧边栏 → 点 **Edge** 卡片 → 面板实测文本：
+
+```
+Edge
+尚未绑定会话
+这一页还没有属于这个会话的一轮 —— 下面是全局信号，不是某一轮。开始一轮对话后，这里会变成该会话的记录。
+暂无全局信号
+```
+
+**「轮次」「本轮」「LLM 调用」「五节点流程」一个都不在**（修复前它们全在）。
+
+> 已绑定那一支由**契约测试 + 反向证伪**覆盖（22 例里有两条接线用例钉住「跑过一轮 ⇒
+> 走正常分支」）；没有为此消耗主人的会话/额度去跑一条真实轮次。
+
+---
+
+### §7.145-C 构建链：漏跑 `build:client` ⇒ Edge tab **静默**消失
+
+#### 现象
+
+桌面版里 **Edge tab 整个不见了**：guide 的卡片列表里没有「Edge」，tab strip 里也没有 chip，
+右侧边栏打开只有宿主的「开始」页。而宿主半边的日志**完全正常**
+（`[edge-context-view] apply() called — Edge tab host half mounting`）。
+
+#### 根因
+
+- `compile` = `clean-lib.mjs` + `tsc` ⇒ **清空整个 `lib/`**；
+- 浏览器半边 `lib/client.js` 由**另一步** `build:client`（esbuild）产出；
+- 本轮有一次重建只跑了 `compile` + `build:installable`，**没跑 `build:client`**
+  ⇒ installable 里根本没有 `lib/client.js` ⇒ 桌面 profile（junction 指向
+  `dist/installable/dsh-edge-agent-desktop-safe`）拿到的 bundle **没有浏览器半边**
+  ⇒ 宿主半边照常挂载，浏览器半边**从来没注册** ⇒ Edge tab 静默消失。
+
+#### 为什么难发现
+
+`verify:installable` **本来就能抓到**（它校验 `exports["./client"]` 指向的文件存在）——
+但门禁要人记得跑；而症状本身**完全静默**，日志里一行线索都没有。
+
+#### 修法：让构建自己拦
+
+`scripts/rebuild-installable.mjs`：发布前自检 —— 声明了 `dsh.client` 却找不到
+`exports['./client']` ⇒ **直接 exit 1**，并把「去跑 `npm run build:client`」写在错误里：
+
+```
+rebuild-installable: dsh-edge-agent-desktop-safe declares dsh.client but ./lib/client.js does not exist.
+  The browser half is built by a separate step — run `npm run build:client`
+  (or `npm run build`, which runs compile → build:client → build:installable).
+  Shipping without it makes the Edge tab vanish silently in the desktop.
+```
+
+实测：把 `lib/client.js` 挪走 ⇒ 脚本报错 exit 1；还原 ⇒ 正常发布。
+
+> 顺带记一条运维事实：桌面 profile 的 bundle 是 **junction** 指向
+> `dist/installable/dsh-edge-agent-desktop-safe` ⇒ **重建即生效**，不用重装插件。
+
+---
+
+### 验证（最终态）
+
+| 项 | 结果 |
+|---|---|
+| 单元测试 | **70 文件 1424 passed / 2 skipped**（§7.145 新增：janitor 23 例 + unbound 22 例） |
+| `tsc --noEmit`（`tsconfig.json` / `tsconfig.client.json`） | 均 exit 0 |
+| eslint（`src tests scripts`） | **0 error** |
+| 构建门禁 `verify:build` | **15 项全绿** |
+| 实机（桌面版 r16，宿主 `127.0.0.1:62248`） | janitor 两条防线日志在；Edge 面板「尚未绑定会话」取证成功 |
+
+### 遗留
+
+- janitor 只清**本项目认得出的**那类 cookie（`dsh-auth-*`），不动别的应用的 cookie；
+  宿主 web 服务的 16 KB 上限本身没变（抬到 64 KB 是本插件做的兜底）。
+- 「已绑定」那一支的实机取证留待主人自己跑一轮时看（本轮刻意不消耗主人的会话/额度）。
+- `build:installable` 现在会因缺 `lib/client.js` 而**拒绝发布** —— 若有人故意要发一个
+  没有浏览器半边的 bundle，需要显式改脚本（这是有意的摩擦）。
+---
+
+### §7.145-D 文档整理（2026-10-29）
+
+主人 2026-10-29 指令：「完成后整理文档，可以删除没有必要的文档」。本轮整理的**判据**：
+一份文档若**零独有信息**、且**没有活着的读者**，就是「不必要的」；历史上仍然有效的
+结论（ADR / 排障手册 / 实测记录）**一律保留**。
+
+### 删除
+
+| 文档 | 为什么删 |
+|---|---|
+| `docs/E2E_TUI_CASES.md` | 正文只有一句「详见 `E2E_HTTP_API_CASES.md`」+ 一张**比对方更小**的历史脚本表（对方 §3 已覆盖全部脚本 + 更细的替代关系）⇒ **零独有信息**。指向它的引用已改写为「§7.145-D 整理说明」。 |
+
+### 刷新（不是删 —— 是过期了）
+
+| 文档 | 改了什么 |
+|---|---|
+| `docs/TEST-REPORT.md` | 「最近一次全量结果」原本停在 §7.107（2026-10-24：52 文件 1042 passed / **11 项**门禁）。现补上 §7.145 的最新一轮（**70 文件 1424 passed / 15 项**门禁 / eslint 0 error / 桌面版 r16 实机两条取证），旧的 §7.107 那轮降为「上一轮全量结果」，**历史不丢**。 |
+| `docs/desktop-troubleshooting.md` | §1.3/§1.4 补上 §7.145-A 的**自动解法**（插件自清 cookie + 抬头上限，不用再手动跑 `--apply`、不用改主人的 profile）；新增 §3.6「Edge tab 整个不见了 ⇒ 漏跑 `build:client`」；新增 §6「面板显示『尚未绑定会话』不是故障」。 |
+| `docs/PROGRESS.md` | 追加本节（§7.145）。 |
+
+### 保留（查过引用与独有内容，确认不该删）
+
+| 文档 | 保留理由 |
+|---|---|
+| `docs/edge-context-tab-plan.md` | §7.101 的**「做什么」**文档；ADR 0008 明确把「为什么」抽走、让计划文档回归「做什么」——删它会与一份 **Accepted 的 ADR** 冲突。 |
+| `docs/decisions/0008-edge-context-view.md` | ADR（决策记录），是历史的一部分。 |
+| `docs/notes/dsh-context-walkthrough.md` | 源码注释里被直接引用（`src/client/index.ts` 等）。 |
+| `docs/dev-notes/git-core-editor-trap.md` | **活着的陷阱**：解释了本环境里 `git commit` 偶发报 `core.editor` 的来龙去脉与 workaround。 |
+| `docs/E2E_HTTP_API_CASES.md` | 记录**当前唯一活跃的 E2E**（`scripts/e2e-ops-log-coverage.sh`）+ 历史脚本的替代关系。 |
+| `docs/bench/**` | 实测数据（报告 + results.json + 快照），不是「文档」。 |
+| `docs/architecture.md` / `intent-and-sanitization.md` / `intent-decision-reference.md` / `plugin-mount-points.md` / `load-into-local-dsh.md` / `deploy-minimal-files.md` / `version-policy.md` | 活的参考文档，README 与源码均引用。 |
