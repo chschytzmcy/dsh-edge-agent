@@ -40,6 +40,11 @@ const CSS = `
 .dsh-edge-verdict--local { color: #16a34a; }
 .dsh-edge-verdict--cloud { color: inherit; }
 .dsh-edge-verdict--wait { opacity: 0.55; font-weight: 400; }
+/* §7.145: 未绑定会话 —— 明说「现在没有会话」，全局信号另起一组。 */
+.dsh-edge-unbound { display: flex; flex-direction: column; gap: 3px; padding: 6px 8px; border-radius: 6px; border-left: 2px solid color-mix(in srgb, currentColor 35%, transparent); background: color-mix(in srgb, currentColor 5%, transparent); }
+.dsh-edge-unbound b { font-weight: 600; }
+.dsh-edge-unbound span { opacity: 0.7; font-size: 11px; line-height: 1.5; }
+.dsh-edge-groups { display: flex; flex-direction: column; gap: 8px; }
 .dsh-edge-summary { display: flex; flex-wrap: wrap; gap: 10px; padding: 6px 8px; border-radius: 6px; background: color-mix(in srgb, currentColor 6%, transparent); }
 .dsh-edge-summary b { font-weight: 600; }
 .dsh-edge-panel h4 { margin: 0 0 4px 0; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.65; font-weight: 600; }

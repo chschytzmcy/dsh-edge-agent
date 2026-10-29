@@ -50,6 +50,12 @@
       "require": "./lib/dsh-adapter/edge-context-view.js",
       "default": "./lib/dsh-adapter/edge-context-view.js"
     },
+    "./desktop-cookie-janitor": {
+      "types": "./lib/dsh-adapter/desktop-cookie-janitor.d.ts",
+      "import": "./lib/dsh-adapter/desktop-cookie-janitor.js",
+      "require": "./lib/dsh-adapter/desktop-cookie-janitor.js",
+      "default": "./lib/dsh-adapter/desktop-cookie-janitor.js"
+    },
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./presets/edge.patch.yml": "./presets/edge.patch.yml",
     "./presets/edge.desktop-safe.patch.yml": "./presets/edge.desktop-safe.patch.yml",

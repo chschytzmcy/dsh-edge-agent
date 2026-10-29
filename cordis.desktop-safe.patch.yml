@@ -104,3 +104,20 @@
         maxFileAgeDays: 7
         maxRotatedFiles: 5
 
+    # §7.145: 桌面版「起不来」的根因修复（431）。
+    #
+    # 这一行**必须**留在宿主树（不是 preset）—— 它修的不是 Edge 行为，而是
+    # **宿主自己的启动**：Electron 外壳的 welcome 握手带着 Chromium cookie jar
+    # 出发，cookie 越攒越多 ⇒ 请求头爆 16 KB ⇒ 431 ⇒ 外壳拆宿主 ⇒
+    # 「DeepSeek Harness is unavailable」。握手发生在**任何工作方式选定之前**
+    # ⇒ 修它的插件也必须在 preset 之外。
+    #
+    # 它自带 `process.versions.electron` 判据 ⇒ headless profile 里直接跳过。
+    - id: desktop-cookie-janitor
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/desktop-cookie-janitor'
+      config:
+        enabled: true
+        # 宿主 web 服务是裸 createServer（16 KB 头上限）；抬到 64 KB 让
+        # 一个已经攒胖的 cookie jar 也不会打死启动。
+        maxHeaderBytes: 65536
+

@@ -31,6 +31,7 @@ import { EDGE_DICTIONARIES, EDGE_LOCALE_NS, setTranslator, tr } from './i18n'
 import { SessionSummaryBar } from './sessionSummary'
 import { FlowPanel } from './flowPanel'
 import { TracePanel } from './tracePanel'
+import { GLOBAL_BUCKET, UnboundView, isBoundSession, isGlobalRow, isUnboundPanel } from './unbound'
 import type { EdgeRow, EdgeSummary } from './types'
 
 /* ── Identity ──────────────────────────────────────────────────────────── */
@@ -262,8 +263,25 @@ interface CordisCtx {
  */
 import { verdictLine } from './verdict'
 
-function EdgeView(props: SessionProps) {
-  const sessionId = props.sessionId ?? '_global'
+/**
+ * Edge tab 的正文组件。
+ *
+ * 导出（而不是只在本文件里用）：§7.145 的「未绑定会话 ⇒ 不显示本轮语义」
+ * 是一条**接线**契约 —— 光测纯函数不够，还得测这里真的分了支。导出后单测
+ * 可以直接渲染不同 sessionId / 不同行的组合，断言「会话跑过轮次 ⇒ 本轮语义
+ * 在」「没绑定或只有全局行 ⇒ 「尚未绑定会话」且一个「本轮」都不许有」。
+ */
+export function EdgeView(props: SessionProps) {
+  // §7.145: 还没绑定到任何一轮时，不要把全局桶当成「这一轮」显示。
+  //
+  // 此前是 `props.sessionId ?? '_global'` —— 于是全局汇总顶着「轮次 0 /
+  // 本轮：等待意图判定 / 五节点流程」的壳出现，看着像一个真的在跑的会话。
+  //
+  // 实机复验（2026-10-29）后判据从「sessionId 为空」改成**行**：桌面版开机
+  // 就建了草稿会话，sessionId 真实且非空，光看 id 判不出来；而面板能不能说
+  // 「这一轮」，看的是**有没有一条属于本会话的行**（全局行带 turn = -1 哨兵）。
+  const bound = isBoundSession(props.sessionId)
+  const sessionId = bound ? props.sessionId as string : GLOBAL_BUCKET
   const [, setTick] = useState(0)
   useEffect(() => {
     ensureStyles()
@@ -275,6 +293,11 @@ function EdgeView(props: SessionProps) {
   // the flow view carries the evidence lines; rows stay in the store for
   // anything that later wants them back.
   const allRows: EdgeRow[] = edgeStore.currentRows(sessionId, summary.turns, summary.turnStartTs)
+  if (isUnboundPanel(props.sessionId, allRows, summary.turns)) {
+    // 只收全局行：会话自己的行在绑定视图里才有意义，这里列出来会重新把
+    // 「全局」和「这一轮」混成一锅。
+    return h(UnboundView, { rows: allRows.filter(isGlobalRow), failing: edgeStore.failing(sessionId) })
+  }
   const verdict = verdictLine(allRows)
   return h('div', { class: 'dsh-edge-view' },
     h(SessionSummaryBar, { summary }),

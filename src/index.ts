@@ -55,3 +55,4 @@ export { name as httpApiName, inject as httpApiInject, Config as HttpApiConfig, 
 export type { HttpApiService } from './dsh-adapter/http-api.js'
 export * from './dsh-adapter/llm-adapters.js'
 export * from './dsh-adapter/edge-context-view.js'
+export * from './dsh-adapter/desktop-cookie-janitor.js'

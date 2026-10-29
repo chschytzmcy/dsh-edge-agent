@@ -157,6 +157,10 @@ const EN: Dict = {
   'trace.body.gone': 'body no longer in memory (only the latest calls are kept)',
   'trace.body.error': 'could not load body',
   'trace.group.other': 'other calls',
+  'unbound.title': 'not bound to a session yet',
+  'unbound.hint': 'No turn of this session is on the page yet — what follows are global signals, not one round. Start a turn and this becomes that session\'s record.',
+  'unbound.globalTitle': 'global signals',
+  'unbound.empty': 'no global signals right now',
 }
 
 const ZH: Dict = {
@@ -309,6 +313,10 @@ const ZH: Dict = {
   'trace.body.gone': '正文已不在内存（只保留最近的调用）',
   'trace.body.error': '取正文失败',
   'trace.group.other': '其他调用',
+  'unbound.title': '尚未绑定会话',
+  'unbound.hint': '这一页还没有属于这个会话的一轮 —— 下面是全局信号，不是某一轮。开始一轮对话后，这里会变成该会话的记录。',
+  'unbound.globalTitle': '全局信号',
+  'unbound.empty': '暂无全局信号',
 }
 
 // Built-in fallback is the Chinese table (operator ruling 2026-10-23

@@ -219,6 +219,22 @@ const isBundleRow = (name: string): boolean =>
 /** Rows the host mechanism forces onto the host tree (§7.136). */
 const HOST_FORCED_ROWS = new Set(['dsh-edge-agent', 'file-logger', 'audit-log'])
 
+/**
+ * §7.145: `desktop-cookie-janitor` 也必须留在宿主树 —— 但理由与上面三行
+ * **不同类**，说清楚免得以后被当成先例滥用：
+ *
+ *   上面三行是**宿主机制**逼的（client-modules 只扫宿主 Loader 的 entries；
+ *   file-logger 会先占住服务名 ⇒ 必须在 root realm）。
+ *   这一行是**时序**逼的：它修的是**宿主自己的启动**（Electron 的 welcome
+ *   握手 431 ⇒ 桌面版起不来），而握手发生在**任何工作方式选定之前** ⇒
+ *   放进 preset 就等于「标准模式下桌面版照样可能起不来」。
+ *
+ * 它也不是 Edge 行为的一部分：自带 `process.versions.electron` 判据，
+ * headless profile 直接跳过；它只动宿主 web 服务的请求头上限（防 431），
+ * 不碰任何 Edge 数据流。
+ */
+HOST_FORCED_ROWS.add('desktop-cookie-janitor')
+
 const bundleRowsInPreset = new Set<string>()
 for (const p of presets) {
   for (const row of p.plugins) {

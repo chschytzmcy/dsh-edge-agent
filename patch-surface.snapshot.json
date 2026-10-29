@@ -2,7 +2,8 @@
   "inserts": [
     "dsh-edge-agent",
     "file-logger",
-    "audit-log"
+    "audit-log",
+    "desktop-cookie-janitor"
   ],
   "configOverrides": [
     "system-prompt",

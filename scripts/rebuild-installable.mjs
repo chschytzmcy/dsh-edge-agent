@@ -184,6 +184,32 @@ for (const variant of VARIANTS) {
     `./${variant.patchField}`,
     `./${variant.preset}`,
   ]
+
+  // §7.145: the browser half must exist BEFORE the bundle is published.
+  //
+  // `compile` (= clean-lib + tsc) wipes lib/ entirely, and the browser half
+  // (`lib/client.js`) is produced by a SEPARATE step (`build:client`). A
+  // build that runs `compile` without `build:client` therefore yields a
+  // bundle with NO browser half — and the desktop's symptom is silent: the
+  // host half mounts fine, the Edge tab simply never appears (not in the
+  // guide, not in the tab strip), with nothing in the logs saying why.
+  //
+  // `verify:installable` already catches this, but only if it is run; this
+  // check fails the BUILD, where the cause is still visible.
+  const clientExport = variantPkg.exports?.['./client']
+  if (variantPkg.dsh.client !== undefined && typeof clientExport === 'string') {
+    const clientPath = join(ROOT, clientExport.replace(/^\.\//u, ''))
+    if (!existsSync(clientPath)) {
+      console.error(
+        `rebuild-installable: ${variant.dir} declares dsh.client but ${clientExport} does not exist.`,
+      )
+      console.error('  The browser half is built by a separate step — run `npm run build:client`')
+      console.error('  (or `npm run build`, which runs compile → build:client → build:installable).')
+      console.error('  Shipping without it makes the Edge tab vanish silently in the desktop.')
+      process.exit(1)
+    }
+  }
+
   // The installable directory is installed as a `file:` DIRECTORY dependency.
   // npm/pnpm run a directory dependency's `prepare` script after install —
   // and this repo's `prepare` compiles TypeScript, which needs the dev
