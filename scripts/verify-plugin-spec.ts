@@ -107,6 +107,12 @@ for (const file of sources) {
   // input-guard). Imported by input-guard.ts; never inserted by a cordis
   // patch row, not in package.json exports.
   if (base === 'host-llm-trace') continue
+  // §7.147: 会话归属的唯一口径（哨兵 `'<pre-session>'` 不是会话 id；没有会话
+  // 就不写 sessionId 键 —— 宁可归全局桶，也不要造一个不存在的桶把行藏掉）。
+  // Imported by local-llm-adapter / cloud-llm-adapter / llm-trace /
+  // intent-router / edge-context-view; never inserted by a cordis patch row,
+  // not in package.json exports.
+  if (base === 'session-attribution') continue
   if (base === 'plugin' || base === 'index') continue
   const content = readFileSync(file, 'utf8')
 

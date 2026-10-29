@@ -849,4 +849,86 @@ describe('local-llm-adapter (M4, real-only)', () => {
       assert.equal(row.payload.internal, undefined)
     })
   })
+
+  // §7.147 (2026-10-29): 这条**开始**行必须带 sessionId ——
+  //
+  // Edge 面板按**行**判断「这一轮」（§7.145-B）：会话自己的行 `turn >= 0`，
+  // 全局行 `turn === -1`。归属由宿主 `edge-context-view.ts` 的
+  // `extractSessionId()` 决定 —— 载荷里没有 sessionId 就是全局行，而全局桶
+  // 会被合并进**任何一个**会话的快照。
+  //
+  // 实机取证（本机审计链 4962 行逐 kind 统计）：`llm.local.start` 640 条
+  // **无一带** sessionId；而**同一次调用**的 `llm.local.end` 带了 483/569 ——
+  // 同一个 LLM 往返，两半归属不一致。后果：路由面板结构上不可能归属任何一轮，
+  // 面板只能显示「尚未绑定会话 + 全局信号」。
+  describe('§7.147 — 开始行带会话归属', () => {
+    async function startRowFor(options: Record<string, unknown>): Promise<any> {
+      installFetchMock(() => sseResponse([
+        { choices: [{ delta: { content: 'pong' }, finish_reason: null }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] },
+      ]))
+      const entries: any[] = []
+      const auditLog = { log: async (e: any) => { entries.push(e) } }
+      const adapter = new LocalLlmAdapterImpl(
+        { providers: ['local-llm'], baseUrl: 'http://127.0.0.1:11434/v1', defaultModel: 'qwen3-4b' },
+        auditLog as any,
+      )
+      for await (const _ of adapter.stream({
+        provider: 'local-llm',
+        model: 'qwen3-4b',
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
+        ...options,
+      } as any)) { /* drain */ }
+      restoreFetch()
+      return entries.find(e => e.kind === 'llm.local.start')
+    }
+
+    it('宿主给了 sessionId → 开始行带它（这行才是「这一轮」的证据）', async () => {
+      const row = await startRowFor({ sessionId: 'session-8c67f7ca-1db4-4714-b89f-8f8ecb99d7c8' })
+      assert.ok(row, 'llm.local.start 必须落盘')
+      assert.equal(row.payload.sessionId, 'session-8c67f7ca-1db4-4714-b89f-8f8ecb99d7c8')
+    })
+
+    it('没有 sessionId → **不带** sessionId 键（反向证伪：不能造假桶）', async () => {
+      // 反向证伪点：若无会话时写进一个假 id（例如 'unknown'），宿主会造出
+      // 一个不存在的桶 —— 那几行从此只在「有人请求那个假 id」时可见，等于从
+      // 所有真实会话的视图里消失。宁可归全局（全局桶合并进每个会话），
+      // 不要无处可见。
+      const row = await startRowFor({})
+      assert.ok(row, 'llm.local.start 必须落盘')
+      assert.equal('sessionId' in row.payload, false)
+    })
+
+    it('哨兵 sessionId → **不带** sessionId 键（哨兵不是会话 id）', async () => {
+      const row = await startRowFor({ sessionId: '<pre-session>' })
+      assert.ok(row, 'llm.local.start 必须落盘')
+      assert.equal('sessionId' in row.payload, false)
+    })
+
+    it('开始行与结束行的归属一致（同一 id 两半都带）', async () => {
+      installFetchMock(() => sseResponse([
+        { choices: [{ delta: { content: 'pong' }, finish_reason: null }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] },
+      ]))
+      const entries: any[] = []
+      const auditLog = { log: async (e: any) => { entries.push(e) } }
+      const adapter = new LocalLlmAdapterImpl(
+        { providers: ['local-llm'], baseUrl: 'http://127.0.0.1:11434/v1', defaultModel: 'qwen3-4b' },
+        auditLog as any,
+      )
+      for await (const _ of adapter.stream({
+        provider: 'local-llm',
+        model: 'qwen3-4b',
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
+        sessionId: 's-half',
+      } as any)) { /* drain */ }
+      restoreFetch()
+      const start = entries.find(e => e.kind === 'llm.local.start')
+      const end = entries.find(e => e.kind === 'llm.local.end')
+      assert.ok(start, 'llm.local.start 必须落盘')
+      assert.ok(end, 'llm.local.end 必须落盘')
+      assert.equal(start.payload.sessionId, 's-half')
+      assert.equal(end.payload.sessionId, 's-half')
+    })
+  })
 })

@@ -62,6 +62,7 @@ import {
 } from './cloud-egress.js'
 import { PII_ORDER, PII_PATTERNS } from './pii-utils.js'
 import { egressAuditFields, internalCallerOf } from './llm-internal-caller.js'
+import { sessionIdField } from './session-attribution.js'
 import { getTraceStore, callIdFor } from './llm-trace-store.js'
 
 export const name = 'cloud-llm-adapter'
@@ -573,7 +574,10 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
         this.audit('security', 'llm.cloud.egress.blocked', {
           provider: options.provider,
           model: options.model,
-          sessionId: egressSessionId ?? 'unknown',
+          // §7.147: 原来写 `egressSessionId ?? 'unknown'` —— 那是**假会话 id**
+          // （面板会造出一个叫 'unknown' 的桶，把这行从所有真实会话的视图里
+          // 藏掉）。没有会话就不写这个键 ⇒ 归全局桶。
+          ...sessionIdField(egressSessionId),
           reason: err?.message ?? String(err),
         })
         throw new LlmError(
@@ -657,14 +661,17 @@ export class CloudLlmAdapterImpl extends LlmAdapter {
       sanitizedMessages as unknown as Array<{ role: string; content: unknown; source?: { kind?: string } }>,
       body,
     )
-    this.audit('info', 'llm.cloud.start', { provider: options.provider, model: options.model, messageCount, promptLen, baseUrl: this.baseUrl, systemInjected, retryBudgetUsed: peekSessionSseRetryCount(options.sessionId), historyDropped: egressDropped, egressReplacements: egressReplacements, egressSanitized, ...egressAuditFields(options) })
+    // §7.147: 同 `llm.local.start` —— 这条**开始**行必须带 sessionId，
+    // 否则它落全局桶，Edge 面板的路由面板永远说不清「这一轮」。
+    this.audit('info', 'llm.cloud.start', { ...sessionIdField(options.sessionId), provider: options.provider, model: options.model, messageCount, promptLen, baseUrl: this.baseUrl, systemInjected, retryBudgetUsed: peekSessionSseRetryCount(options.sessionId), historyDropped: egressDropped, egressReplacements: egressReplacements, egressSanitized, ...egressAuditFields(options) })
     // §7.131: 出网裁剪单独留一行 —— operator grep `llm.cloud.egress` 就能看到
     // 「这一轮带了多少历史上去 / 丢了多少本地段 / 脱敏替换了几处」。
     if (egressDropped > 0 || egressReplacements > 0 || !egressSanitized) {
       this.audit('info', 'llm.cloud.egress', {
         provider: options.provider,
         model: options.model,
-        sessionId: egressSessionId ?? 'unknown',
+        // §7.147: 同上 —— `'unknown'` 是假会话 id，改成「没有就不写」。
+        ...sessionIdField(egressSessionId),
         keptMessages: messageCount,
         droppedLocalHistory: egressDropped,
         replacements: egressReplacements,

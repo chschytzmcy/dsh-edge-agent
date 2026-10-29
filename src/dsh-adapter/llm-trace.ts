@@ -42,6 +42,7 @@ import { redactString } from './pii-utils.js'
 import type { EdgeConfig } from './edge-config.js'
 import { nextTraceId } from './llm-trace-store.js'
 import type { StoredTrace, TraceCaller } from './llm-trace-store.js'
+import { realSessionId } from './session-attribution.js'
 
 /* ── 配置 ───────────────────────────────────────────────────────────────── */
 
@@ -570,6 +571,15 @@ export interface TraceIndexPayload {
   kind: 'REQ' | 'RESP'
   provider: string
   model: string
+  /**
+   * §7.147：这次调用属于哪个会话。
+   *
+   * 没有就是**没有这个键** —— 索引行于是落全局桶（面板标它「全局信号」）。
+   * 载荷里带 sessionId 才是会话行（`turn >= 0`），路由面板才能说「这一轮」。
+   * 实测：本仓 195 条 `llm.trace.index` **无一带** sessionId ⇒ 路由面板此前
+   * 结构上不可能归属任何一轮。
+   */
+  sessionId?: string
   /** §7.132：内部调用标记；undefined = 主对话出网。 */
   caller?: string
   /** 请求：实际发出的 message 条数 / 正文总长 / 因 maxMessages 丢掉几条。 */
@@ -620,6 +630,7 @@ export function buildTraceIndex(
   const t = (trace ?? {}) as {
     provider?: unknown
     model?: unknown
+    sessionId?: unknown
     baseUrl?: unknown
     messageCount?: unknown
     droppedMessages?: unknown
@@ -638,6 +649,15 @@ export function buildTraceIndex(
     model: typeof t.model === 'string' ? t.model : '?',
   }
   if (caller !== undefined) out.caller = caller
+  // §7.147: 索引行带上会话归属。trace 对象里本来就有 sessionId
+  // （`LlmRequestTrace.sessionId` / `LlmResponseTrace.sessionId`），只是没被
+  // 抄进索引行 —— 于是 195 条索引行全部落全局桶。
+  //
+  // 用 `sessionIdField()` 而不是直接抄：trace 里的 sessionId 在「会话建立
+  // 之前」的调用上是 `'<pre-session>'` **哨兵**（ops log 的显示约定，§7.52），
+  // 抄进载荷会造出一个不存在的桶。哨兵 ⇒ 不写这个键 ⇒ 归全局桶。
+  const sessionId = realSessionId(t.sessionId)
+  if (sessionId !== undefined) out.sessionId = sessionId
   if (typeof t.baseUrl === 'string') out.baseUrl = t.baseUrl
   if (typeof t.messageCount === 'number') out.messageCount = t.messageCount
   if (typeof t.droppedMessages === 'number') out.droppedMessages = t.droppedMessages

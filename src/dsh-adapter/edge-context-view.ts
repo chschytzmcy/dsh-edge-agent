@@ -38,6 +38,7 @@ import { redactObject } from './pii-utils.js'
 import { provideTraceStore } from './llm-trace-store.js'
 import type { LlmTraceStoreService } from './llm-trace-store.js'
 import type { AuditEntry } from './audit-log.js'
+import { realSessionId } from './session-attribution.js'
 
 export const name = 'edge-context-view'
 
@@ -199,8 +200,12 @@ export function panelForKind(kind: string): EdgePanel | undefined {
 export const GLOBAL_BUCKET = '_global'
 
 function extractSessionId(payload: Record<string, unknown>): string {
-  const sid = payload.sessionId ?? payload.session
-  return typeof sid === 'string' && sid.length > 0 ? sid : GLOBAL_BUCKET
+  // §7.147: 哨兵 `'<pre-session>'`（ops log 的「无会话」显示约定，§7.52）
+  // **不是**会话 id。它若被当成 id，会造出一个不存在的桶 —— 那几行从此只在
+  // 「有人请求那个假 id」时可见，等于从所有真实会话的视图里消失（比归全局
+  // 更糟：宁可全局可见，不要无处可见）。所以这里也判成「没有会话」。
+  const sid = realSessionId(payload.sessionId ?? payload.session)
+  return sid ?? GLOBAL_BUCKET
 }
 
 /** §7.121: how many elements of a string array survive into the panel.

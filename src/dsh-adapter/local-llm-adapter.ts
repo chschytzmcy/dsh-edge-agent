@@ -52,6 +52,7 @@ import {
   resetSessionToolCallCount,
 } from './llm-max-turns.js'
 import { egressAuditFields, internalCallerOf } from './llm-internal-caller.js'
+import { PRE_SESSION_SENTINEL, sessionIdField } from './session-attribution.js'
 
 export const name = 'local-llm-adapter'
 
@@ -465,7 +466,7 @@ class RealLocalAdapter extends LlmAdapter {
     // §7.46.1 (2026-09-11): ops log 让 TUI 路径调哪个 local LLM / 多久 / 多少
     // token 在 ops log 里可见。配合 realm-skill-bridge pre-step + tool allow
     // 形成完整 trace。
-    const sessionId = (options as { sessionId?: string }).sessionId ?? '<pre-session>'
+    const sessionId = (options as { sessionId?: string }).sessionId ?? PRE_SESSION_SENTINEL
     try {
       // §7.54 (2026-09-14): show the wire body model (`this.defaultModel`,
       // which buildChatCompletionsBody uses) instead of `options.model` (which
@@ -493,7 +494,16 @@ class RealLocalAdapter extends LlmAdapter {
       sanitizedMessages as unknown as Array<{ role: string; content: unknown; source?: { kind?: string } }>,
       body,
     )
-    audit(this.auditLog, 'info', 'llm.local.start', { provider: options.provider, model: this.defaultModel, route: options.model, messageCount: sanitizedMessages.length, promptLen, baseUrl: this.baseUrl, ...egressAuditFields(options) })
+    // §7.147: 这条**开始**行必须带 sessionId —— 否则它落全局桶，Edge 面板的
+    // 路由面板永远说不清「这一轮」（实测：本仓 640 条 `llm.local.start` 无一带
+    // sessionId，而同一调用的 `llm.local.end` 带了 483/569 —— 同一个调用，两半
+    // 归属不一致）。
+    //
+    // 用 `options.sessionId`（原始值）而不是上面那个 `sessionId` 变量：后者在
+    // 无会话时是 `'<pre-session>'` **哨兵**，写进载荷会造出一个不存在的桶，
+    // 把这些行从所有真实会话的视图里藏掉（比全局可见更糟）。哨兵在这里被判
+    // 成「没有会话」⇒ 不写这个键 ⇒ 归全局桶。
+    audit(this.auditLog, 'info', 'llm.local.start', { ...sessionIdField(options.sessionId), provider: options.provider, model: this.defaultModel, route: options.model, messageCount: sanitizedMessages.length, promptLen, baseUrl: this.baseUrl, ...egressAuditFields(options) })
 
     // §7.106 (2026-10-23): ONE retry on transport-level failure with a short
     // backoff. The LAN ollama blips (observed 11:35:09: `fetch failed` mid

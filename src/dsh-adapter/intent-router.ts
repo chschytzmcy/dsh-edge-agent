@@ -23,6 +23,7 @@ import {
   type TraceSink,
 } from './llm-trace.js'
 import { getTraceStore, nextCallId } from './llm-trace-store.js'
+import { sessionIdField } from './session-attribution.js'
 
 export const name = 'intent-router'
 
@@ -1378,8 +1379,15 @@ export class IntentRouterServiceImpl extends Service {
     latencyMs: number
     skipReason?: string
   }> {
+    // §7.147：这一路的审计行必须带 sessionId —— 否则行归不了属，Edge 面板
+    // 的意图面板永远说不清「这一轮」（实测：jev 的 62 条 adopt/response 无一带
+    // sessionId，全部落全局桶）。闭包一次带上，本函数内的 audit 都走它。
+    //
+    // sessionId 为空时**不写**这个键 ⇒ 归全局桶（而不是造一个假会话桶）。
+    const audit = (level: 'debug' | 'info' | 'warn' | 'error' | 'security', kind: string, payload: Record<string, unknown>): void =>
+      this.audit(level, kind, { ...sessionIdField(sessionId), ...payload })
     const batchStart = Date.now()
-    this.audit('debug', 'intent.jev.batch.start', {
+    audit('debug', 'intent.jev.batch.start', {
       textLen: text.length,
       batchSize: intents.length,
       batchLatencyBudgetMs: this.jevTimeoutMs,
@@ -1419,7 +1427,7 @@ export class IntentRouterServiceImpl extends Service {
       })
       if (!r.ok) {
         this.stats.jevError++
-        this.audit('warn', 'intent.jev.error', {
+        audit('warn', 'intent.jev.error', {
           httpStatus: r.status,
           batchLatencyMs: Date.now() - batchStart,
         })
@@ -1431,7 +1439,7 @@ export class IntentRouterServiceImpl extends Service {
         parsed = JSON.parse(responseText)
       } catch (parseErr: any) {
         this.stats.jevError++
-        this.audit('warn', 'intent.jev.error', {
+        audit('warn', 'intent.jev.error', {
           reason: 'parse-failure',
           error: parseErr?.message ?? String(parseErr),
           batchLatencyMs: Date.now() - batchStart,
@@ -1444,7 +1452,7 @@ export class IntentRouterServiceImpl extends Service {
       const latencyMs = Date.now() - jevStart
       if (isAbort) this.stats.jevTimeout++
       else this.stats.jevError++
-      this.audit('warn', isAbort ? 'intent.jev.timeout' : 'intent.jev.error', {
+      audit('warn', isAbort ? 'intent.jev.timeout' : 'intent.jev.error', {
         latencyMs,
         timeoutMs: this.jevTimeoutMs,
         batchLatencyMs: Date.now() - batchStart,
@@ -1476,7 +1484,7 @@ export class IntentRouterServiceImpl extends Service {
     const latencyMs = (typeof data.latency_ms === 'number' ? data.latency_ms : Date.now() - jevStart)
 
     this.stats.jevLatencyMsTotal += latencyMs
-    this.audit('debug', 'intent.jev.response', {
+    audit('debug', 'intent.jev.response', {
       code: parsed?.code,
       intent: intentStr,
       confidence,
@@ -1489,7 +1497,7 @@ export class IntentRouterServiceImpl extends Service {
     // Risk gate: high-risk queries short-circuit to REJECT before any
     // LLM call (security-first; user explicitly chose this in plan Q2).
     if (riskScore >= this.jevRiskThreshold) {
-      this.audit('security', 'intent.rules.rejected', {
+      audit('security', 'intent.rules.rejected', {
         source: 'jev',
         intent: intentStr,
         riskScore,
@@ -1509,7 +1517,7 @@ export class IntentRouterServiceImpl extends Service {
     // thresholds aren't met, OR the intent string isn't recognized.
     const FALLBACK_INTENTS = new Set(['闲聊', '其他', 'chat', 'other', 'fallback', 'null'])
     if (dataAction === 'fallback_llm') {
-      this.audit('info', 'intent.jev.fallback_intent', {
+      audit('info', 'intent.jev.fallback_intent', {
         intent: intentStr,
         confidence,
         latencyMs,
@@ -1524,7 +1532,7 @@ export class IntentRouterServiceImpl extends Service {
       }
     }
     if (confidence < this.jevConfidenceThreshold) {
-      this.audit('info', 'intent.jev.low_confidence', {
+      audit('info', 'intent.jev.low_confidence', {
         intent: intentStr,
         confidence,
         threshold: this.jevConfidenceThreshold,
@@ -1540,7 +1548,7 @@ export class IntentRouterServiceImpl extends Service {
       }
     }
     if (!intentStr || FALLBACK_INTENTS.has(intentStr)) {
-      this.audit('info', 'intent.jev.fallback_intent', {
+      audit('info', 'intent.jev.fallback_intent', {
         intent: intentStr,
         confidence,
         latencyMs,
@@ -1559,7 +1567,7 @@ export class IntentRouterServiceImpl extends Service {
     // Map intent string → realm. Missing → skip (defensive).
     const mapped = this.jevIntentMap[intentStr]
     if (!mapped) {
-      this.audit('info', 'intent.jev.unmapped_intent', {
+      audit('info', 'intent.jev.unmapped_intent', {
         intent: intentStr,
         confidence,
         latencyMs,
@@ -1583,7 +1591,7 @@ export class IntentRouterServiceImpl extends Service {
       : mapped === 'REJECT' ? 'rejected'
       : 'sanitized'
     if (mapped === 'REJECT') {
-      this.audit('security', 'intent.rules.rejected', {
+      audit('security', 'intent.rules.rejected', {
         source: 'jev',
         intent: intentStr,
         confidence,
@@ -1610,7 +1618,7 @@ export class IntentRouterServiceImpl extends Service {
       targetRealm,
       rationale: `jev-intent:${intentStr}`,
     }
-    this.audit('info', 'intent.jev.adopt', {
+    audit('info', 'intent.jev.adopt', {
       intent: intentStr,
       realm: mapped,
       confidence,
@@ -1695,6 +1703,13 @@ export class IntentRouterServiceImpl extends Service {
     latencyMs: number
     skipReason?: string
   }> {
+    // §7.147：这一路的审计行必须带 sessionId —— 否则行归不了属，Edge 面板
+    // 的意图面板永远说不清「这一轮」（实测：jev 的 62 条 adopt/response 无一带
+    // sessionId，全部落全局桶）。闭包一次带上，本函数内的 audit 都走它。
+    //
+    // sessionId 为空时**不写**这个键 ⇒ 归全局桶（而不是造一个假会话桶）。
+    const audit = (level: 'debug' | 'info' | 'warn' | 'error' | 'security', kind: string, payload: Record<string, unknown>): void =>
+      this.audit(level, kind, { ...sessionIdField(sessionId), ...payload })
     const criteria = buildJevIntentCriteria(this.categories)
     const body = {
       model: this.jevModel,
@@ -1716,7 +1731,7 @@ export class IntentRouterServiceImpl extends Service {
       },
     }
     const batchStart = Date.now()
-    this.audit('debug', 'intent.jev.batch.start', {
+    audit('debug', 'intent.jev.batch.start', {
       textLen: text.length,
       provider: 'bailian-decision',
       model: this.jevModel,
@@ -1752,7 +1767,7 @@ export class IntentRouterServiceImpl extends Service {
       })
       if (!r.ok) {
         this.stats.jevError++
-        this.audit('warn', 'intent.jev.error', {
+        audit('warn', 'intent.jev.error', {
           provider: 'bailian-decision',
           httpStatus: r.status,
           batchLatencyMs: Date.now() - batchStart,
@@ -1768,7 +1783,7 @@ export class IntentRouterServiceImpl extends Service {
       const latencyMs = Date.now() - jevStart
       if (isAbort) this.stats.jevTimeout++
       else this.stats.jevError++
-      this.audit('warn', isAbort ? 'intent.jev.timeout' : 'intent.jev.error', {
+      audit('warn', isAbort ? 'intent.jev.timeout' : 'intent.jev.error', {
         provider: 'bailian-decision',
         latencyMs,
         timeoutMs: this.jevTimeoutMs,
@@ -1835,7 +1850,7 @@ export class IntentRouterServiceImpl extends Service {
     const riskScore = Math.max(0, Math.min(1, rawRisk / 3))
     const latencyMs = typeof parsed?.latency_ms === 'number' ? parsed.latency_ms : Date.now() - jevStart
     this.stats.jevLatencyMsTotal += latencyMs
-    this.audit('info', 'intent.jev.response', {
+    audit('info', 'intent.jev.response', {
       provider: 'bailian-decision',
       model: this.jevModel,
       intent: intentStr,
@@ -1846,7 +1861,7 @@ export class IntentRouterServiceImpl extends Service {
 
     // Risk gate — same semantics as the local flow's risk_score gate.
     if (riskScore >= this.jevRiskThreshold) {
-      this.audit('security', 'intent.rules.rejected', {
+      audit('security', 'intent.rules.rejected', {
         source: 'jev-bailian-decision',
         intent: intentStr,
         riskScore,
@@ -1875,7 +1890,7 @@ export class IntentRouterServiceImpl extends Service {
       ? 'LOCAL'
       : this.categories.find((c) => c.id === intentStr)?.id
     if (!intentStr || !mapped) {
-      this.audit('info', 'intent.jev.unmapped_intent', {
+      audit('info', 'intent.jev.unmapped_intent', {
         provider: 'bailian-decision',
         intent: intentStr,
         confidence,
@@ -1892,7 +1907,7 @@ export class IntentRouterServiceImpl extends Service {
     }
     const adoptFloor = mapped === 'LOCAL' ? this.jevLocalAdoptFloor : this.jevConfidenceThreshold
     if (confidence < adoptFloor) {
-      this.audit('info', 'intent.jev.low_confidence', {
+      audit('info', 'intent.jev.low_confidence', {
         provider: 'bailian-decision',
         intent: intentStr,
         confidence,
@@ -1914,7 +1929,7 @@ export class IntentRouterServiceImpl extends Service {
       : mapped === 'REJECT' ? 'rejected'
       : 'sanitized'
     if (mapped === 'REJECT') {
-      this.audit('security', 'intent.rules.rejected', {
+      audit('security', 'intent.rules.rejected', {
         source: 'jev-bailian-decision',
         intent: intentStr,
         confidence,
@@ -1935,7 +1950,7 @@ export class IntentRouterServiceImpl extends Service {
         latencyMs,
       }
     }
-    this.audit('info', 'intent.jev.adopt', {
+    audit('info', 'intent.jev.adopt', {
       provider: 'bailian-decision',
       intent: intentStr,
       realm: mapped,
@@ -1970,6 +1985,13 @@ export class IntentRouterServiceImpl extends Service {
     latencyMs: number
     skipReason?: string
   }> {
+    // §7.147：这一路的审计行必须带 sessionId —— 否则行归不了属，Edge 面板
+    // 的意图面板永远说不清「这一轮」（实测：jev 的 62 条 adopt/response 无一带
+    // sessionId，全部落全局桶）。闭包一次带上，本函数内的 audit 都走它。
+    //
+    // sessionId 为空时**不写**这个键 ⇒ 归全局桶（而不是造一个假会话桶）。
+    const audit = (level: 'debug' | 'info' | 'warn' | 'error' | 'security', kind: string, payload: Record<string, unknown>): void =>
+      this.audit(level, kind, { ...sessionIdField(sessionId), ...payload })
     // §7.92.6 (2026-09-24): circuit breaker — short-circuit if a
     // previous classify() within the TTL window saw all 3 batches
     // fail. Saves up to ~3 × jevTimeoutMs = 7500ms wall-clock on every
@@ -1977,7 +1999,7 @@ export class IntentRouterServiceImpl extends Service {
     // audit, then this debug-level skip per call until recovery.
     if (Date.now() < this.jevBreakerOpenUntil) {
       this.stats.jevCircuitSkip++
-      this.audit('debug', 'intent.jev.circuit_open_skip', {
+      audit('debug', 'intent.jev.circuit_open_skip', {
         textLen: text.length,
         jevUrl: this.jevUrl,
         openUntilMs: this.jevBreakerOpenUntil,
@@ -2003,7 +2025,7 @@ export class IntentRouterServiceImpl extends Service {
     const allIntents = this.buildJevIntentsPayload()
     const chitchatIntents = ['闲聊', '其他'] // §7.92.5: defensive marker for jev v0.3.0+
     const batches = chunkIntents(allIntents, JEV_MAX_INTENTS)
-    this.audit('debug', 'intent.jev.start', {
+    audit('debug', 'intent.jev.start', {
       textLen: text.length,
       jevUrl: this.jevUrl,
       timeoutMs: this.jevTimeoutMs,
@@ -2029,7 +2051,7 @@ export class IntentRouterServiceImpl extends Service {
     if (allBatchesFailed) {
       this.jevBreakerOpenUntil = Date.now() + this.jevBreakerTtlMs
       this.stats.jevCircuitOpen++
-      this.audit('warn', 'intent.jev.circuit_open', {
+      audit('warn', 'intent.jev.circuit_open', {
         openUntilMs: this.jevBreakerOpenUntil,
         ttlMs: this.jevBreakerTtlMs,
         jevUrl: this.jevUrl,

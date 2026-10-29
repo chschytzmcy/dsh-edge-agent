@@ -14328,3 +14328,122 @@ node scripts/verify-doc-links.mjs --selftest # 自证 + 反向证伪（12 项断
   再切回数据保留）与 #11 的深浅主题 / en 切换部分**没有实机取证**，如实标 ⏳。
 - **不动 `docs/bench/**` 的数据产物** —— 报告 + `results.json` + `diff.txt` 成对
   保留（人读版 / 机读版 / 差异对照，各有角色）。
+
+
+---
+
+## §7.147 会话归属：审计行为什么「不属于任何一轮」——面板说真话，但说的是半个真话（2026-10-29）
+
+主人报的现象：**新打开 Edge tab 显示「尚未绑定会话」**，下面是「全局信号」
+（路由：`trace.index` / `local.start`；意图：`jev.adopt` / `jev.response`），而
+那些行**就是他自己 10:57 那轮对话的调用**。
+
+### 取证（本机审计链 4962 行，逐 kind 统计「带不带 sessionId」）
+
+| kind | 条数 | 带 sessionId | 归哪个面板 |
+|---|---|---|---|
+| `llm.local.start` | 640 | **0 / 640** | 路由 |
+| `llm.trace.index` | 195 | **0 / 195** | 路由 |
+| `intent.jev.adopt` | 28 | **0 / 28** | 意图 |
+| `intent.jev.response` | 34 | **0 / 34** | 意图 |
+| `llm.cloud.start` | 13 | **0 / 13** | 路由 |
+| `llm.local.end` | 569 | **483 / 569** | 路由 |
+| `input-guard.routed` | 181 | **181 / 181** | 拦截 |
+| `input-guard.route.overridden` | 391 | **391 / 391** | 拦截 |
+| `guard.model-detect.*` | 全带 | — | 拦截 |
+
+**最扎眼的一行**：同一次 LLM 往返，`llm.local.start` **不带** sessionId，
+`llm.local.end` **带** —— 两半归属不一致。
+
+### 机理（三段）
+
+1. **宿主归档**（`edge-context-view.ts`）：`extractSessionId(payload)` 只看
+   `payload.sessionId ?? payload.session`；没有 ⇒ `_global` 兜底桶 ⇒ 行打
+   `turn = -1` 哨兵 ⇒ `snapshot()` 把全局桶**合并进任何一个会话**的快照。
+2. **客户端判据**（§7.145-B 的行级判据 `isUnboundPanel`）：面板里**没有一条
+   属于本会话的行** ⇒ 未绑定 ⇒ 走「尚未绑定会话」壳。
+3. **为什么路由/意图面板结构上不能说「这一轮」**：这两组的行**全部**因为第 1 段
+   落进了全局桶 —— 补任何别的字段都改不了这件事，必须补 sessionId。
+
+**为什么整个面板是「未绑定」而不是「已绑定 + 混排」**：主人那个 Edge tab 绑的
+会话**一条自己的行都没有**（轮次 0）。主人 10:57 的聊天会话
+（`session-8c67f7ca-…`）其实**跑了 6 轮**（ops log：`chat finished … turn=6`），
+它的会话自有行在**拦截**面板（`input-guard.routed` 181/181 带 sessionId）与
+`llm.local.end`（483/569 带）—— 主人面板上**一条都没出现** ⇒ tab 拉的不是那个
+会话。
+
+**排除的另外两条假设**（都查过源码，不是猜）：
+
+- 「组件拿不到 sessionId」⇒ 排除：宿主 `SessionStandardProps` 明确把
+  `sessionId` 作为**直接 prop** 下发（`ui-session/src/client/index.ts:273`
+  `props: { sessionId: binding.sessionId }`），`PropsRuntime` 含
+  `ScopeStandardProps`。
+- 「行被客户端切片截掉」⇒ 排除：`CLIENT_CAP = 200`，远大于可见行数。
+
+### 修法：产出侧补 sessionId + 消费侧判哨兵
+
+**新模块 `src/dsh-adapter/session-attribution.ts`** —— 归属的唯一口径：
+
+- `PRE_SESSION_SENTINEL = '<pre-session>'`：ops log 的「无会话」**显示约定**
+  （§7.52），**不是**会话 id。
+- `realSessionId(v)`：非字符串 / 空串 / 哨兵 ⇒ `undefined`。
+- `sessionIdField(v)`：真会话 ⇒ `{ sessionId }`；否则 ⇒ `{}`（**不写这个键**）。
+
+**为什么哨兵不能当 id**：它会造出一个不存在的桶 —— 那些行从此只在「有人请求那个
+假 id」时可见，等于**从所有真实会话的视图里消失**。那比不写更糟：
+**宁可全局可见，不要无处可见**。
+
+改动清单：
+
+| 文件 | 改了什么 |
+|---|---|
+| `src/dsh-adapter/session-attribution.ts`（新） | 归属口径（哨兵 / 空串 ⇒ 没有会话） |
+| `src/dsh-adapter/local-llm-adapter.ts` | ① `llm.local.start` 载荷加 `...sessionIdField(options.sessionId)`（用**原始** `options.sessionId`，不用哨兵化的局部变量）；② 哨兵字面量换成共享常量 |
+| `src/dsh-adapter/cloud-llm-adapter.ts` | ① `llm.cloud.start` 载荷加 sessionId；② **两处假会话 id**：`sessionId: egressSessionId ?? 'unknown'` → `...sessionIdField(egressSessionId)`（`'unknown'` 同样会造出假桶） |
+| `src/dsh-adapter/llm-trace.ts` | `buildTraceIndex` 把 trace 里**本来就有的** `sessionId` 抄进索引行（`TraceIndexPayload` 加 `sessionId?`）；哨兵判成「没有」⇒ 不写这个键 |
+| `src/dsh-adapter/intent-router.ts` | jev 三条路径（`fetchJevBatch` / `classifyWithBailianDecision` / `classifyWithJev`）各插入一个**局部 audit 闭包**，一次带上 sessionId，函数内 **24 处** `this.audit(` → `audit(` |
+| `src/dsh-adapter/edge-context-view.ts` | 消费侧防御：`extractSessionId()` 用 `realSessionId()` —— 哨兵 ⇒ 归全局（防旧行与旁路） |
+| `scripts/verify-plugin-spec.ts` | 新模块进**非插件 helper 白名单**（与 `llm-internal-caller` / `llm-trace-store` / `host-llm-trace` 同款：只被 import，不进 patch row，不在 exports） |
+
+> 为什么 jev 用「局部闭包」而不是逐处加字段：24 处手改极易漏一处，而漏一处的
+> 后果是**那一种 kind 继续污染全局桶**（别人的面板照样被串行）。闭包把「这一路
+> 的审计行都带 sessionId」变成一条不可绕过的规则。
+
+### 测试（新增 18 例，全绿）
+
+| 文件 | 例数 | 钉死什么 |
+|---|---|---|
+| `tests/unit/session-attribution.test.ts`（新） | 8 | 口径本身 + 消费侧防御（哨兵 ⇒ 全局桶、**不**造假桶） |
+| `tests/unit/local-llm-adapter.test.ts` | 4 | `llm.local.start` 带 sessionId；**没有会话 ⇒ 不带这个键**；哨兵 ⇒ 不带；开始行与结束行归属一致 |
+| `tests/unit/llm-trace.test.ts` | 4 | 索引行带 sessionId（REQ/RESP）；哨兵 ⇒ 不带；trace 无 sessionId ⇒ 不带 |
+| `tests/unit/intent-router.test.ts` | 2 | jev `adopt` / `response` 带 sessionId；没有 ⇒ 不带 |
+
+**反向证伪点**（每处都钉了「反向」的那一半）：没有会话 / 哨兵时，
+载荷里**必须没有** `sessionId` 键 —— 若写成 `sessionId: undefined` 会被
+JSON.stringify 丢掉（结果一样），若写成 `sessionId: '<pre-session>'` 或
+`'unknown'` 则会**造出假桶**、把行从所有真实会话的视图里藏掉。测试断言的是
+`'sessionId' in payload === false`，不是 `payload.sessionId === undefined`。
+
+### 验证
+
+| 项 | 结果 |
+|---|---|
+| 单元测试 | **71 文件 1442 passed / 2 skipped / 0 failed**（+18 例，基线 1424） |
+| eslint | **0 error**（58 warnings 非阻断，与基线一致） |
+| `tsc --noEmit`（双配置） | 均 exit 0 |
+| 构建门禁 `verify:build` | **16 项全过**（`verify:plugin-spec` 白名单加了一行后复跑整链 exit 0） |
+| 产物 | `dist/installable/dsh-edge-agent-desktop-safe` 重建完成；编译后产物里三处 `const audit = (level, kind, payload) => this.audit(level, kind, { ...sessionIdField(sessionId), ...payload })` 与 `extractSessionId` 的哨兵判定**逐行核过** |
+| 桌面 profile | bundle 是 **junction** → `dist/installable/dsh-edge-agent-desktop-safe` ⇒ 重建即落盘；`lib/dsh-adapter/session-attribution.js`（3396 B）在位 |
+
+### 遗留（如实记）
+
+- **运行中的桌面进程仍是旧代码**：junction 让**文件**已更新，但 Electron 进程
+  里已加载的旧模块不会热替换 ⇒ **需要重启桌面版**新归属才生效。
+- **重启后仍需在「Edge tab 当前所在的会话」里跑一轮**才能看到「已绑定」视图：
+  判据是「至少一条会话自有行」（`input-guard.routed` / `llm.local.end` /
+  `guard.model-detect.*` 都带 sessionId，一轮就有）。
+- **旧行不可追认**：本节之前落盘的 `llm.local.start` / `llm.trace.index` /
+  `intent.jev.*` 行**没有** sessionId，宿主只能继续把它们归全局 —— 面板里的
+  历史行仍会显示为全局信号。**新行才有归属**。
+- `llm.local.end` 里 86/569 仍不带 sessionId —— 那些是**会话建立之前**的调用
+  （prompt-guard 安检 / 隐私策略分类器），本来就该归全局，不是缺口。

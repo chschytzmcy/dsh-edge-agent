@@ -2642,6 +2642,56 @@ describe('intent-router', () => {
     }
   })
 
+  // §7.147 (2026-10-29): jev 这一路的审计行必须带 sessionId ——
+  //
+  // Edge 面板的意图面板显示的就是这些行。载荷里没有 sessionId ⇒ 行归全局桶
+  // ⇒ 面板的意图节点**结构上**不可能归属任何一轮。实测：本机 `intent.jev.adopt`
+  // 28 条 / `intent.jev.response` 34 条 **全部**没有 sessionId。
+  //
+  // jev 的 sessionId 本来就在作用域里（`classifyWithJev(text, sessionId?)` →
+  // `fetchJevBatch(text, sessionId, …)` / `classifyWithBailianDecision(text,
+  // sessionId, …)`），只是写审计行时没带。
+  describe('§7.147 — jev 审计行带会话归属', () => {
+    async function classifyWithJevSession(context?: { sessionId?: string }): Promise<any[]> {
+      const mock = mockFetchOk(jevResp({ intent: '订单查询', confidence: 0.9, risk_score: 0.1, action: 'execute' }))
+      try {
+        const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+        const mockCtx = { reflect: { provide: () => {} }, llm: null } as any
+        const service = new IntentRouterServiceImpl(mockCtx, {
+          defaultCategory: 'CLOUD',
+          classificationProvider: 'local-llm',
+          confidenceThreshold: 0.6,
+          jevEnabled: true,
+          jevConfidenceThreshold: 0.85,
+        }, audit as any)
+        await service.classify('查一下密盒的订单', context)
+        return audit.entries
+      } finally {
+        mock.restore()
+      }
+    }
+
+    it('给了 sessionId → adopt / response 行都带它', async () => {
+      const entries = await classifyWithJevSession({ sessionId: 'session-8c67f7ca-1db4-4714-b89f-8f8ecb99d7c8' })
+      const adopt = entries.find((e: any) => e.kind === 'intent.jev.adopt')
+      assert.ok(adopt, 'intent.jev.adopt 必须落盘')
+      assert.equal(adopt.payload.sessionId, 'session-8c67f7ca-1db4-4714-b89f-8f8ecb99d7c8')
+      // 风险闸门那条（rules.rejected）同属这一路，也要带。
+      const response = entries.find((e: any) => e.kind === 'intent.jev.response')
+      assert.ok(response, 'intent.jev.response 必须落盘')
+      assert.equal(response.payload.sessionId, 'session-8c67f7ca-1db4-4714-b89f-8f8ecb99d7c8')
+    })
+
+    it('没有 sessionId → **不带** sessionId 键（反向证伪：不能造假桶）', async () => {
+      // 反向证伪点：无会话时若写进一个假 id，宿主会造出一个不存在的桶 ——
+      // 那几行从此在所有真实会话的视图里消失。宁可归全局，不要无处可见。
+      const entries = await classifyWithJevSession(undefined)
+      const adopt = entries.find((e: any) => e.kind === 'intent.jev.adopt')
+      assert.ok(adopt, 'intent.jev.adopt 必须落盘')
+      assert.equal('sessionId' in adopt.payload, false)
+    })
+  })
+
   it('§7.92.3: jev enabled + action=fallback_llm → fall through to LLM', async () => {
     const mock = mockFetchOk(jevResp({ intent: '闲聊', confidence: 0.4, risk_score: 0.05, action: 'fallback_llm' }))
     try {

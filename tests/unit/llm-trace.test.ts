@@ -13,6 +13,7 @@ import {
   SECRET_MASK,
   buildRequestTrace,
   buildResponseTrace,
+  buildTraceIndex,
   formatTraceLine,
   maskSecrets,
   messageContentToText,
@@ -419,6 +420,58 @@ describe('llm-trace', () => {
       const c = resolveLlmTraceConfig({ audit: { llmTrace: { maxBodyChars: 123 } } })
       assert.equal(c.maxBodyChars, 123)
       assert.equal(c.maxChars, DEFAULT_LLM_TRACE_CONFIG.maxChars)
+    })
+  })
+
+  // §7.147 (2026-10-29): 索引行（`llm.trace.index`）必须带会话归属。
+  //
+  // Edge 面板的路由面板列的就是这些索引行；载荷里没有 sessionId ⇒ 行归全局
+  // 桶 ⇒ 面板说不清「这一轮调了哪几次 LLM」是哪一轮的。实测：本机 195 条
+  // 索引行**无一带** sessionId —— trace 对象里本来就有（`LlmRequestTrace.
+  // sessionId`），只是没被抄进索引行。
+  describe('§7.147 — 索引行带会话归属', () => {
+    it('trace 带真 sessionId → 索引行带上它', () => {
+      const trace = buildRequestTrace({
+        sessionId: 'session-8c67f7ca-1db4-4714-b89f-8f8ecb99d7c8',
+        provider: 'local-llm',
+        model: 'MiniMax-M3.1-Flash',
+        messages: [{ role: 'user', content: 'hi' }],
+        config: cfg(),
+      })
+      const index = buildTraceIndex('trace-1', 'REQ', trace)
+      assert.equal(index.sessionId, 'session-8c67f7ca-1db4-4714-b89f-8f8ecb99d7c8')
+    })
+
+    it('响应侧同样带（REQ / RESP 两半同源）', () => {
+      const trace = buildResponseTrace({
+        sessionId: 's-resp',
+        provider: 'local-llm',
+        model: 'm',
+        content: 'ok',
+        config: cfg(),
+      })
+      const index = buildTraceIndex('trace-2', 'RESP', trace)
+      assert.equal(index.sessionId, 's-resp')
+    })
+
+    it('哨兵 sessionId → 索引行**不带** sessionId 键（反向证伪：不能造假桶）', () => {
+      // 反向证伪点：哨兵是 ops log 的「无会话」显示约定（§7.52），不是会话 id。
+      // 抄进载荷会造出一个叫 '<pre-session>' 的桶 —— 那几行从此在所有真实会话
+      // 的视图里消失。宁可归全局（全局桶合并进每个会话），不要无处可见。
+      const trace = buildRequestTrace({
+        sessionId: '<pre-session>',
+        provider: 'local-llm',
+        model: 'm',
+        messages: [{ role: 'user', content: 'hi' }],
+        config: cfg(),
+      })
+      const index = buildTraceIndex('trace-3', 'REQ', trace)
+      assert.equal('sessionId' in index, false)
+    })
+
+    it('trace 没有 sessionId → 索引行不带这个键', () => {
+      const index = buildTraceIndex('trace-4', 'REQ', { provider: 'p', model: 'm' })
+      assert.equal('sessionId' in index, false)
     })
   })
 })
