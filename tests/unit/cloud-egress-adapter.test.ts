@@ -49,13 +49,18 @@ function restoreFetch(): void {
 
 /** 极简 sanitizer 桩：手机号 → 占位符。 */
 function stubCtx(options: { withSanitizer?: boolean } = {}) {
+  // §7.151: 可选服务只能走 ctx.get() 读 —— cordis 4.x 的 ctx 是 Proxy，直取
+  // 一个没 provide、也没在 inject 声明里的属性会**抛错**。adapter 的 inject
+  // 是 ['llm','auditLog','inputGuard']，没有 modelRouter ⇒ 只能这样拿。
+  const modelRouter = {
+    listDetailed: () => [
+      { provider: 'local-llm', realm: 'LOCAL' },
+      { provider: 'cloud-llm', realm: 'CLOUD' },
+    ],
+  }
   const ctx: Record<string, unknown> = {
-    modelRouter: {
-      listDetailed: () => [
-        { provider: 'local-llm', realm: 'LOCAL' },
-        { provider: 'cloud-llm', realm: 'CLOUD' },
-      ],
-    },
+    modelRouter,
+    get: (name: string) => (name === 'modelRouter' ? modelRouter : undefined),
   }
   if (options.withSanitizer !== false) {
     ctx.sanitizer = {

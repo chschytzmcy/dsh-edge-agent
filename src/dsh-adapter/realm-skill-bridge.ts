@@ -152,6 +152,35 @@ export function globMatch(pattern: string, value: string): boolean {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
+ * 把工具返回的 error message 变成一行可读的摘要。
+ *
+ * §7.151（2026-10-29）修：原来只有 `typeof message === 'string'` 才记内容，
+ * 否则一律打 `'unknown'`。但宿主的工具失败**大多数不是字符串** ——
+ * `deepseek-harness/docs/subsystems/user-questions.md:212` 明确写着
+ * `UserQuestionError` 继承 `HarnessError`，`ctx.tools.execute()` 保留
+ * `{ name, code }`（`NO_PROVIDER` / `BAD_INTENT` / `EMPTY_QUESTIONS` /
+ * `ASK_ABORTED`）。这些是**对象**，于是每一次这类失败在 ops log 里都只留下
+ * `errorKind=unknown` —— 真实错误码被吞掉，排查时无从下手
+ * （本轮就是这样误判了 ask_user_question 的失败原因）。
+ *
+ * 现在：字符串直接截断；对象/数组 JSON 序列化后截断；取不到就退回
+ * `String(message)`。**信息不能因为形态不是字符串就丢。**
+ */
+export function describeToolError(message: unknown): string {
+  if (typeof message === 'string') return message.slice(0, 100)
+  if (message === undefined || message === null) return 'unknown'
+  try {
+    const json = JSON.stringify(message)
+    if (typeof json === 'string' && json.length > 0) return json.slice(0, 100)
+  } catch { /* 循环引用 / 不可序列化 → 退回 String() */ }
+  try {
+    return String(message).slice(0, 100)
+  } catch {
+    return 'unknown'
+  }
+}
+
+/**
  * 默认屏蔽清单（§7.150, 2026-10-29）。
  *
  * 这些是**宿主自带、但在 dsh 会话里要么无意义、要么必然失败**的工具。
@@ -161,7 +190,7 @@ export function globMatch(pattern: string, value: string): boolean {
  * |---|---|---|
  * | `get_goal` | 14:05 主人发「登录的密盒」，模型调它 → **返回空** → 模型把「我在循环调它拿到 null」的自白当最终回复输出 | Goal 族的契约是「没设 Goal 就是空」。dsh 的普通会话没有 Goal ⇒ 必然空。模型在 27 个工具里挑「查状态」时误选它 |
  * | `create_goal` / `update_goal` | 14:28 换 qwen3.8-flash 后仍误选 `update_goal` → **执行报错** `status=error errorKind=unknown` | 同族。dsh 会话不建 Goal，这两个要么无意义要么报错 |
- * | `ask_user_question` | 14:30 模型调它两次 → **执行报错** `errorKind=unknown` | 宿主的 schema 是 `{questions:[{...}]}`（见 `deepseek-harness/packages/interaction/user-questions/` 与 `apps/web/tests/question-composer.e2e.ts:125`），**没有 `text` 字段**；模型传的是 `{"text":"<JSON 字符串>"}` ⇒ 参数不匹配。本插件无权改写宿主工具参数（Layer 3 只做 allow/deny），所以只能挡 |
+ * | `ask_user_question` | 14:30 模型调它两次 → **执行报错** `status=error errorKind=unknown` | §7.150 初稿把这条归因为「模型传了 `{"text":...}`、参数不匹配」—— **那是误判**：`{text:…}` 是 `TraceText` 的**字段名**（装的是 arguments 字符串），模型实际传的是 `{"questions":[…]}`，**格式正确**。真因是宿主侧 `UserQuestionError`（带 `{name, code}`）⇒ 工具在桌面版执行失败；而 `errorKind=unknown` 是**本插件日志自己打的占位符**（只认字符串 message），真实错误码被吞（§7.151 修）。**屏蔽本身仍然成立**：工具确实连败两次，挡住比让它反复重试干净 |
  *
  * 挡掉之后 agent 改用**纯文本**提问 —— 实测可行：14:30 那轮模型直接输出了
  * 完整的密盒列表 + 「或者告诉我要登录哪台设备」。
@@ -1222,7 +1251,7 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
       const status = signalAborted ? 'aborted' : isError ? 'error' : 'ok'
       try {
         ctx.logger?.info?.(
-          `[realm-skill-bridge] tool result sessionId=${sessionId} tool=${toolName} status=${status}${isError ? ` errorKind=${typeof r?.message === 'string' ? r.message.slice(0, 100) : 'unknown'}` : ''}`,
+          `[realm-skill-bridge] tool result sessionId=${sessionId} tool=${toolName} status=${status}${isError ? ` errorKind=${describeToolError(r?.message)}` : ''}`,
         )
       } catch { /* debug only */ }
     } catch { /* debug only */ }

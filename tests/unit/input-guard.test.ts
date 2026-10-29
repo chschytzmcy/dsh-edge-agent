@@ -2333,3 +2333,171 @@ describe('§7.128 — REJECT 绝不走 CLOUD', () => {
     assert.equal(realms[0][1], 'LOCAL', '注册的必须是 LOCAL（REJECT 永不注册）')
   })
 })
+
+// ── §7.151 出网裁剪（宿主原生 provider 路径） ─────────────────────────────────
+//
+// 主人现场（2026-10-29）：桌面部署的 CLOUD 轮次直接派发给宿主原生 provider
+// （桌面 GUI 选的 qwen-token-plan-cn），不进 cloud-llm-adapter ⇒ adapter 里的
+// §7.131 裁剪一次都没跑过。本地历史整段上云。
+//
+// 守卫补在 llm/stream waterfall（真正的出网那一跳）：裁掉本地段后换掉请求体
+// **重新派发**（宿主把 LOOP 请求 deep-frozen 送来，监听器不能就地改写）。
+
+/** 带 llm runtime 的 fake ctx —— 重新派发要走 ctx.llm.stream。 */
+function fakeCtxWithLlm(captured: any[]) {
+  return {
+    reflect: { provide(_n: string, _v: unknown) { return () => {} } },
+    provide(_n: string, _v: unknown) { return () => {} },
+    llm: {
+      stream(options: any) {
+        captured.push(options)
+        return streamFrom([{ type: 'text-delta', text: 'cloud answer' }])
+      },
+    },
+  }
+}
+
+/** 一段「本地轮 + 当前云轮」的请求体。 */
+function hostCloudRequest(sessionId = 's1') {
+  return {
+    sessionId,
+    provider: 'qwen-token-plan-cn',
+    model: 'deepseek-v4.1-flash',
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: '本地轮输入' }], source: { kind: 'user' } },
+      {
+        role: 'assistant',
+        content: [{ type: 'text', text: '本地轮回答' }],
+        source: { kind: 'model', provider: 'local-llm', model: 'qwen3.8-flash' },
+      },
+      { role: 'user', content: [{ type: 'text', text: '当前轮输入' }], source: { kind: 'user' } },
+    ],
+  }
+}
+
+describe('§7.151 — 出网裁剪（宿主原生 provider 路径）', () => {
+  it('本地历史随请求上云 ⇒ 裁掉后换请求体重新派发', async () => {
+    const captured: any[] = []
+    const san = fakeSanitizer()
+    const audit = fakeAuditLog()
+    const svc = new InputGuardServiceImpl(
+      fakeCtxWithLlm(captured) as any, defaultConfig(),
+      undefined, undefined, undefined, san.api as any, audit.api as any,
+    )
+    ;(svc as any).stepState.set('s1', { sanitized: false, replacements: 0, sessionId: 's1', timestamp: Date.now() })
+
+    let nextCalled = false
+    const result = await collect(svc.handleLlmStream(hostCloudRequest() as any, () => {
+      nextCalled = true
+      return streamFrom([{ type: 'text-delta', text: 'untrimmed' }])
+    }))
+
+    assert.equal(nextCalled, false, '被裁掉的请求不该再走原链（原链会把未裁剪的请求体发出去）')
+    assert.equal(captured.length, 1, '必须重新派发一次')
+    const sent = captured[0]!.messages as any[]
+    assert.equal(sent.length, 1, '出网请求里只剩当前轮')
+    assert.equal((sent[0]!.content[0] as any).text, '当前轮输入')
+    assert.equal(captured[0]!.provider, 'qwen-token-plan-cn', 'provider 不得被改写')
+    assert.equal(captured[0]!.model, 'deepseek-v4.1-flash', 'model 不得被改写')
+    assert.deepEqual(result, [{ type: 'text-delta', text: 'cloud answer' }], '主人看到的仍是云端回答')
+
+    const egress = audit.entries.find(e => e.kind === 'llm.cloud.egress')
+    assert.ok(egress, '必须落一行 llm.cloud.egress 审计')
+    assert.equal(egress!.payload.via, 'host-provider')
+    assert.equal(egress!.payload.droppedLocalHistory, 2)
+    assert.equal(egress!.payload.keptMessages, 1)
+    assert.equal(egress!.payload.sessionId, 's1')
+  })
+
+  it('本地池调用不裁 —— 本地池按裁决带全部历史', async () => {
+    const captured: any[] = []
+    const san = fakeSanitizer()
+    const svc = new InputGuardServiceImpl(
+      fakeCtxWithLlm(captured) as any, defaultConfig(),
+      undefined, undefined, undefined, san.api as any,
+    )
+    ;(svc as any).stepState.set('s1', { sanitized: false, replacements: 0, sessionId: 's1', timestamp: Date.now() })
+
+    let nextCalled = false
+    await collect(svc.handleLlmStream({
+      ...hostCloudRequest(),
+      provider: 'local-llm',
+    } as any, () => {
+      nextCalled = true
+      return streamFrom([{ type: 'text-delta', text: 'local answer' }])
+    }))
+
+    assert.equal(nextCalled, true, '本地池走原链')
+    assert.equal(captured.length, 0, '本地池不重新派发')
+  })
+
+  it('请求里没有本地历史 ⇒ 不裁、不重新派发', async () => {
+    const captured: any[] = []
+    const san = fakeSanitizer()
+    const svc = new InputGuardServiceImpl(
+      fakeCtxWithLlm(captured) as any, defaultConfig(),
+      undefined, undefined, undefined, san.api as any,
+    )
+    ;(svc as any).stepState.set('s1', { sanitized: false, replacements: 0, sessionId: 's1', timestamp: Date.now() })
+
+    let nextCalled = false
+    await collect(svc.handleLlmStream({
+      sessionId: 's1',
+      provider: 'qwen-token-plan-cn',
+      model: 'deepseek-v4.1-flash',
+      messages: [
+        { role: 'user', content: [{ type: 'text', text: '云轮输入' }], source: { kind: 'user' } },
+        {
+          role: 'assistant',
+          content: [{ type: 'text', text: '云轮回答' }],
+          source: { kind: 'model', provider: 'qwen-token-plan-cn', model: 'deepseek-v4.1-flash' },
+        },
+      ],
+    } as any, () => {
+      nextCalled = true
+      return streamFrom([{ type: 'text-delta', text: 'ok' }])
+    }))
+
+    assert.equal(nextCalled, true)
+    assert.equal(captured.length, 0, '没有本地段就不该多走一跳')
+  })
+
+  it('裁过的请求再进来 ⇒ 放行，不再派发（防无限递归）', async () => {
+    const captured: any[] = []
+    const san = fakeSanitizer()
+    const svc = new InputGuardServiceImpl(
+      fakeCtxWithLlm(captured) as any, defaultConfig(),
+      undefined, undefined, undefined, san.api as any,
+    )
+    ;(svc as any).stepState.set('s1', { sanitized: false, replacements: 0, sessionId: 's1', timestamp: Date.now() })
+
+    await collect(svc.handleLlmStream(hostCloudRequest() as any, () => streamFrom([])))
+    assert.equal(captured.length, 1, '第一趟重新派发了一次')
+
+    // 把裁过的请求体再喂回去（模拟重新派发进 waterfall 的那一趟）
+    let nextCalled = false
+    await collect(svc.handleLlmStream(captured[0] as any, () => {
+      nextCalled = true
+      return streamFrom([{ type: 'text-delta', text: 'ok' }])
+    }))
+    assert.equal(nextCalled, true, '已裁过的请求必须直通')
+    assert.equal(captured.length, 1, '不能再派发一次，否则无限递归')
+  })
+
+  it('非边缘会话（无 step state）⇒ 直通，不裁不记', async () => {
+    const captured: any[] = []
+    const san = fakeSanitizer()
+    const svc = new InputGuardServiceImpl(
+      fakeCtxWithLlm(captured) as any, defaultConfig(),
+      undefined, undefined, undefined, san.api as any,
+    )
+
+    let nextCalled = false
+    await collect(svc.handleLlmStream(hostCloudRequest('unknown-session') as any, () => {
+      nextCalled = true
+      return streamFrom([{ type: 'text-delta', text: 'ok' }])
+    }))
+    assert.equal(nextCalled, true)
+    assert.equal(captured.length, 0)
+  })
+})

@@ -113,6 +113,10 @@ for (const file of sources) {
   // intent-router / edge-context-view; never inserted by a cordis patch row,
   // not in package.json exports.
   if (base === 'session-attribution') continue
+  // §7.151: 出网那一跳的「只带云段历史」守卫（宿主原生 provider 路径的 §7.131
+  // 裁剪）。Imported by input-guard; never inserted by a cordis patch row, not in
+  // package.json exports.
+  if (base === 'host-egress-guard') continue
   if (base === 'plugin' || base === 'index') continue
   const content = readFileSync(file, 'utf8')
 

@@ -14818,3 +14818,241 @@ allow/deny 决策，不碰 `exec.args`。所以唯一在本插件权限内的修
   （14:30 那轮的输出质量没问题），但如果要「结构化选项卡片」那种交互，
   需要在 Harness 侧修好模型的参数（属宿主仓，本插件改不了）。
 - `intent.llm.low-confidence` 仍是 0%（不在 jev 闭包作用域内），待下一轮核。
+
+## §7.151 出网裁剪的真实缺口：CLOUD 轮次压根没进 cloud-llm adapter（2026-10-29）
+
+### 一、主人现场
+
+主人先问「local-llm 请求里的历史会话信息，是只带请求、不带响应的吗？」——
+按 §7.131 的口径，**本地池带全部历史（请求 + 响应）**，只带请求的是云端那一侧
+（云端请求里不带本地段的响应，因为本地段整个不上云）。主人的直觉是对的。
+
+紧接着主人指出真正的那个问题：
+
+> 「发到 cloud-llm 的请求，只能携带之前 cloud-llm 的请求和响应，但从 edge tab
+> 里看，是携带了全部的历史会话信息。」
+
+附件是云侧 REQ trace：`provider: qwen-token-plan-cn` / `model: deepseek-v4.1-flash`
+/ `messageCount: 31`，messages 从 index 19 起，index 20 / 24 / 28 三条
+**`provider: local-llm`** 的 assistant 回复原样上云 ⇒ 违反 §7.131 裁决
+（2026-10-27）。
+
+### 二、取证：审计链里那条 CLOUD 轮次说明了一切
+
+本机审计链 `~/.dsh-edge-agent/audit/audit.plain.jsonl`，主人今天那轮
+（session `4609197a-187d-4228-8524-db84fd6189b9`，15:36:33 起）：
+
+```
+intent.classify.end  category=CLOUD confidence=0.95 path=jev-adopt
+input-guard.routed   category=CLOUD edgeRouteUsed=False routeSource=webui
+input-guard.session-realm.registered category=CLOUD
+llm.trace.index REQ  provider=qwen-token-plan-cn model=deepseek-v4.1-flash callId=c9 messageCount=31 bodyBytes=24565
+llm.trace.index RESP provider=qwen-token-plan-cn model=deepseek-v4.1-flash callId=c9
+```
+
+**这一轮没有任何 `llm.cloud.*` 事件** —— 没有 `llm.cloud.start`、没有
+`llm.cloud.delegate.resolved`、没有 `llm.cloud.egress`。而 `llm.cloud.delegate.resolved`
+在 adapter 的 delegate 路径里是**无条件**落的（`cloud-llm-adapter.ts:1340`）⇒
+**这一轮根本没经过 `cloud-llm` adapter**。
+
+全量统计印证：`llm.cloud.egress` = 0 条、`llm.cloud.egress.blocked` = 0 条、
+`llm.cloud.delegate.resolved` = 3 条且全是 10-26 的旧数据（payload 里没有
+`historyDropped` 字段 ⇒ §7.131 之前）。**§7.131 的裁剪在这个部署上一次都没跑过。**
+
+### 三、根因：桌面部署的 CLOUD 轮次走的是**宿主原生 provider**
+
+§7.131 的裁剪一直住在 `cloud-llm-adapter` 里（直连路径 + delegate 路径各一份）。
+但桌面 GUI 的 CLOUD 轮次**不进那个 adapter**：
+
+| 环节 | 事实 | 出处 |
+|---|---|---|
+| 入口 | `routeSource=webui` ⇒ 没有 `_edgeRoute` | `input-guard.routed` 载荷 |
+| 路由 | `edgeRouteUsed=False` ⇒ edge **不改写**路由 | 同上 |
+| 分类 | 判成 CLOUD ⇒ `handleAgentRequest` **不**降级 ⇒ seed 的 provider 原样保留 | `input-guard.ts:1592` |
+| 派发 | seed 的 provider 是**宿主自己的** `qwen-token-plan-cn`（桌面 GUI 选的模型）⇒ agent-loop 直接派发给宿主原生 provider | `agent-loop/src/agent.ts:735` |
+
+⇒ **架构性缺口**：主人手动把会话模型切成宿主云模型时，宿主直接出网，edge 的
+裁剪不在链路上。这不是「裁剪逻辑写错了」，是**裁剪挂错了跳**。
+
+### 四、修法：守卫落在**出网那一跳**
+
+宿主原生 provider 的那一跳只有一个必经之地：`llm/stream` waterfall
+（`ctx.llm.stream()` 的实现就是 `ctx.waterfall(this, 'llm/stream', options, …)`，
+`packages/llm/llm/src/index.ts:1174`）。守卫补在那里：
+
+```
+src/dsh-adapter/host-egress-guard.ts（新增）
+  ├─ isCloudBoundProvider()  哪些 provider 算出网
+  ├─ planHostEgress()        纯裁剪（与 adapter 同源）
+  └─ HostEgressGuard         运行时取本地名单 + 「已裁过」标记
+src/dsh-adapter/input-guard.ts
+  ├─ handleLlmStream()       在 trace 记录**之前**先问守卫
+  └─ dispatchTrimmed()       裁完 → 换请求体重新派发
+```
+
+判据（每一项都有理由，缺一条就是一条漏）：
+
+| 判据 | 处置 | 理由 |
+|---|---|---|
+| provider 在自有池（`local-llm` / `cloud-llm`） | **不归守卫管** | local 按裁决带全部历史；cloud-llm 由 adapter 自己裁（直连 + delegate 都接了 §7.131）—— 守卫再裁一遍会把 adapter 的 `historyDropped` 洗成 0，**把证据抹掉** |
+| provider 在本地池名单（model-router 的 LOCAL 名单）或 `local-` 前缀 | 不裁 | 同上 |
+| `purpose` 非空 | 不裁 | 宿主的内部用途（`purpose?: 'compaction' \| 'session-title'`，见 `GenerateOptions`）：compaction 要总结历史，裁它会破坏子系统语义 |
+| 裁完一条不丢 | 不裁 | 没有本地段，不做无谓的重新派发 |
+| 其余 | **裁 + 重新派发** | 这才是真正出网的调用 |
+
+#### 为什么必须「重新派发」而不是就地改写
+
+宿主契约（`@deepseek-ai/dsh-llm` 的 api-catalog 明写）：
+
+> A LOOP-built request carries the process-local `markAgentLoopRequest` identity
+> and arrives **deep-frozen (mutation throws)**: its content is a pure function of
+> the session log … so listeners **read it, never rewrite it**.
+
+实码印证（`packages/core/agent-loop/src/agent.ts:728-742`）：
+
+```js
+const boundaryMessages = session.deriveMessages()
+for (const message of boundaryMessages) { deepFreeze(message); … }
+Object.freeze(boundaryMessages)
+const request = markAgentLoopRequest(Object.freeze({ …, messages: boundaryMessages, … }))
+```
+
+⇒ 请求体与每条消息都是冻结的，监听器**只能读不能改**。唯一能换掉请求体的姿势就是
+换一个请求对象再派发一次 —— 与 `cloud-llm-adapter` 的 delegate 路径**同一个姿势**
+（它也用 `{...options, messages: forwardMessages}` 重新派发），宿主侧已验证可行。
+
+#### 防递归
+
+重新派发会**再进一次 waterfall**。守卫给裁过的请求对象打标记
+（`HostEgressGuard.markTrimmed`，WeakSet），下一次看到它直接放行 ⇒ 不递归、
+不二次裁剪；那一趟里 trace 记录的是**真正发出去的那一份**。
+
+#### 顺序：守卫在 trace 记录**之前**
+
+被换掉的那通请求**根本没出网**，记它等于把「未裁剪的请求体」挂到面板上 ——
+主人 10-29 看到的就是那个。裁完的那通重新进 waterfall 时才轮到 trace 记录 ⇒
+面板上显示的是真正发出去的那一份（只带云段历史）。
+
+#### fail-closed
+
+裁不动（宿主 LLM runtime 不可用）就不许出网：落 `llm.cloud.egress.blocked` 审计行
+并抛错。放行等于把本地历史原样送上去。
+
+#### 审计
+
+新落一行 `llm.cloud.egress`（面板的路由面板认 `llm.cloud.*`），带
+`via: 'host-provider'` 区分是哪一跳裁的（adapter 自己出的行没有这个字段）：
+
+```
+llm.cloud.egress  sessionId=… provider=qwen-token-plan-cn model=deepseek-v4.1-flash
+                  via=host-provider keptMessages=N droppedLocalHistory=M
+                  replacements=R sanitized=true providerHistogram={local-llm: 3}
+```
+
+`providerHistogram` 是 assistant 消息的 provider 分布 —— 一眼看出这段历史是谁产的
+（复用 `assistantProviderHistogram`，只读 `source.provider`，不读正文）。
+
+### 五、顺带修掉 `planCloudEgress` 的一个真缺口
+
+裁剪口径本身有一个洞：**当前轮里混进了本地产出的消息**（同一轮内路由从 LOCAL
+翻到 CLOUD —— pre-step 每个 step 都重新分类，所以一轮内可以先本地后云端）。
+
+旧逻辑按「轮的第一条 assistant 消息」定整轮归属 ⇒ 本轮的第一条 assistant 是本地
+产出的 ⇒ **整轮被丢**，连**当前用户输入**一起丢 ⇒ 云端模型收到一个没有问题的请求
+（答非所问）。现在改成：当前轮里出现本地/未知池产出的 assistant 消息 ⇒ 从它起
+（含其后的工具结果）全部拦下，**本轮前缀（当前用户输入）保留**。
+
+「当前用户输入保留」的理由就是裁决本身：它是**当前内容**，本来就该出网
+（裁决：当前内容出网前脱敏），丢它等于把这一轮的问题也弄丢了。
+
+### 五点五、真运行时集成验证（唯一能抓到 cordis Proxy 陷阱的地方）
+
+单位测试用的是 fake ctx —— 读一个不存在的属性只会返回 undefined。**真 cordis 的 ctx
+是 Proxy**：读一个既没 provide、也不在 `inject` 声明里的属性会**直接抛**
+`cannot get property "modelRouter" without inject`（cordis 4.0.5
+`ReflectService.handler.get`）。
+
+⇒ 本仓库有**两处**踩在这个雷上，而它们恰好是 §7.131 裁剪的实现：
+
+| 位置 | 原写法 | 后果 |
+|---|---|---|
+| `cloud-llm-adapter.ts` 的 `CloudEgressGuard.localProviders()` | `this.ctx.modelRouter`（直取） | adapter 的 inject 是 `['llm','auditLog','inputGuard']`，**没有** modelRouter ⇒ 真机上抛错 ⇒ 出网准备失败 ⇒ 整轮以 `SANITIZE_FAILED` 失败 ⇒ **§7.131 的 adapter 侧裁剪从来就没跑起来过** |
+| `host-egress-guard.ts`（本节新增） | 同上 | 守卫会在真机上抛错 ⇒ 裁剪失效 |
+
+两处都改成 **`ctx.get('modelRouter')`**（cordis 把 `get` mixin 到 ctx 上，读不到就
+返回 undefined，不抛）—— 这也是本仓库既有的可选服务读法（`input-guard.localAvailable()`
+就是这么写的）。
+
+新增 `tests/unit/host-egress-integration.test.ts`（**真 cordis Context + 真
+LlmRuntime**）：
+
+| 用例 | 钉死什么 |
+|---|---|
+| 宿主 provider 的出网请求里，本地历史被裁掉 | 真瀑布（`ctx.llm.stream` → `ctx.waterfall('llm/stream')` → adapter dispatch）+ **deep-frozen + markAgentLoopRequest** 的请求体 ⇒ adapter 只收到 `['当前轮输入']`，且只派发一次 |
+| **反向证伪**：没有守卫时，宿主 provider 收到的是**全部**历史 | 同样的真运行时，只是不注册守卫 ⇒ adapter 收到 3 条（本地输入 + 本地回答 + 当前输入）⇒ 证明裁剪确实是守卫做的，宿主自己不会裁 |
+| 本地池的请求带全部历史 | provider=`local-llm` ⇒ 不裁（裁决：本地池带全部历史） |
+| 守卫取本地名单时**不能**因 cordis Proxy 抛错 | 真 ctx 不 provide model-router 时 `localProviders()` 返回 `['local-llm']` 而不是抛错；provide 之后用它的 LOCAL 名单 |
+
+### 五点六、裁剪不能依赖脱敏器
+
+第一版把守卫挂在 `if (!requestSessionId || !this.sanitizer) return next()` **之后** ——
+于是「脱敏栈没就绪 ⇒ 整条链路直通 ⇒ 裁剪跟着失效」。真运行时集成测试第一轮就抓到
+（fake ctx 不会暴露，因为它的 sanitizer 是构造参数、测试里总是传了）。
+
+现在守卫排在 sanitizer 检查**之前**：裁剪是**隐私不变量**，脱敏是**内容保护**，
+两者不能互相依赖。
+
+### 六、测试（新增 29 例，全绿）
+
+| 文件 | 例数 | 钉死什么 |
+|---|---|---|
+| `tests/unit/host-egress-integration.test.ts`（新增，**真运行时**） | 4 | 真 cordis + 真 LlmRuntime + 冻结请求体：裁掉本地历史；**反向证伪**（无守卫 ⇒ 全量历史上云）；本地池不裁；cordis Proxy 陷阱 |
+| `tests/unit/host-egress-guard.test.ts`（新增） | 15 | provider 判据（自有池/本地池/`local-` 前缀/宿主 provider/空 provider）；purpose 非空不裁；已裁过的放行（防递归）；本地名单取自 model-router，取不到 / `ctx.get` 抛错 ⇒ 退回 `['local-llm']` |
+| `tests/unit/cloud-egress.test.ts` | 5 | 当前轮里混进本地产出 ⇒ 本地产出拦下、当前用户输入保留；**反向证伪**：整轮丢会把当前输入一起丢；当前轮全云段 / 无 assistant ⇒ 不误伤；历史轮与当前轮互不干扰 |
+| `tests/unit/input-guard.test.ts` | 5 | 接线：裁掉后换请求体重新派发（原链不再走、provider/model 不被改写、主人看到的仍是云端回答）；本地池不裁；没有本地历史不裁；**防递归**：裁过的请求再进来直接放行；非边缘会话直通不记 |
+
+### 七、验证
+
+| 项 | 结果 |
+|---|---|
+| 单元测试 | **73 文件 1485 passed / 2 skipped / 0 failed**（基线 1456，+29） |
+| eslint | **0 error**（59 warnings，与基线同数） |
+| `tsc --noEmit`（双配置） | 均 exit 0 |
+| 构建门禁 `verify:build` | **16 项全过** |
+| 门禁补丁 | `scripts/verify-plugin-spec.ts` 的非插件 helper 白名单加 `host-egress-guard`（与 §7.147 的 `session-attribution` 同款处理） |
+
+### 八、§7.150 归因纠正：`ask_user_question` 的失败码被**本插件自己的日志占位符**吞掉了
+
+§7.150 的初稿归因写的是「模型传了 `{text:…}` 参数，与 schema 不匹配」。**错了**：
+
+- `{text: …}` 是 `TraceText` 的**字段名**（装的是 arguments 字符串），不是参数名；
+- 模型实际传的是 `{"questions":[…]}` —— **格式正确**；
+- 真因在宿主侧：`UserQuestionError` 带 `{name, code}`，code ∈
+  `NO_PROVIDER` / `BAD_INTENT` / `EMPTY_QUESTIONS` / `ASK_ABORTED`
+  （`deepseek-harness/docs/subsystems/user-questions.md:212`）；
+- 而我们看到的 `errorKind=unknown` 是**本插件日志自己打的占位符**：原写法
+  `typeof r?.message === 'string' ? … : 'unknown'` 只认字符串 message，宿主抛的是
+  对象 ⇒ 真实错误码被吞。
+
+修法（`src/dsh-adapter/realm-skill-bridge.ts`）：新增导出 `describeToolError(message)`
+—— 字符串直接截断 100；对象/数组 JSON 序列化后截断；取不到退回 `String(message)`；
+null/undefined ⇒ `'unknown'`。Layer 3.5 的日志改为
+`errorKind=${describeToolError(r?.message)}`。
+
+**屏蔽动作本身仍成立**（该工具确实连败两次，挡住比反复重试干净）—— 纠正的是
+**归因**，不是结论。
+
+**真实失败码仍未知**：修好日志要下一次真实调用才取得到，而该工具已被 §7.150 默认
+屏蔽 ⇒ 需要主人决定是否临时放开（放开办法：`~/.dsh-edge-agent/skill-realms.json`
+里把 `"ask_user_question"` 去掉或改成别的标签，5 秒热生效）。
+
+### 九、遗留（如实记）
+
+- **实机验证待做**：需要主人在桌面版跑一轮 CLOUD 意图的对话，确认
+  (a) 审计链出现 `llm.cloud.egress`（`via=host-provider`，`droppedLocalHistory > 0`），
+  (b) `llm.trace.index` 的 REQ `messageCount` 变成裁剪后的条数，
+  (c) 云端回答正常（没有把当前问题丢掉）。
+- **只覆盖主对话出网**：`purpose` 非空的宿主内部调用（compaction / session-title）
+  不裁 —— compaction 要总结整段历史，裁它会改变压缩语义。这是**有意的取舍**，
+  不是遗漏；但也意味着「压缩请求仍带本地历史」这一条尚未收口。
+- `intent.llm.low-confidence` 仍是 0%（不在 jev 闭包作用域内），待下一轮核。

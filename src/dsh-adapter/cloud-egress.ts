@@ -144,13 +144,33 @@ export function planCloudEgress(
   for (let t = 0; t < turnStarts.length; t++) {
     const start = turnStarts[t]!
     const end = t + 1 < turnStarts.length ? turnStarts[t + 1]! : list.length
+    const isCurrent = t === turnStarts.length - 1
     let segment: EgressSegment | undefined
+    let cut = -1
     for (let i = start; i < end; i++) {
       const m = list[i]!
       if (m.role === 'assistant' && m.source?.kind === 'model') {
-        segment = providerSegment(m.source.provider, localProviders)
-        break
+        const seg = providerSegment(m.source.provider, localProviders)
+        // §7.151 (2026-10-29): 本轮里出现**本地/未知池产出**的 assistant 消息
+        // （同一轮内路由从 LOCAL 翻到 CLOUD 的那一步）⇒ 从它起（含其后的工具
+        // 结果）全部拦下：本地产出的内容不上云。
+        //
+        // 为什么不能整轮丢：整轮丢会把本轮的**当前用户输入**一起丢掉 —— 那是
+        // 「当前内容」，本来就该出网（裁决：当前内容出网前脱敏）。丢了它，云端
+        // 模型收到的是一个没有问题的请求。
+        if (isCurrent && (seg === 'local' || seg === 'unknown')) {
+          cut = i
+          break
+        }
+        if (segment === undefined) segment = seg
       }
+    }
+    if (cut >= 0) {
+      // 本轮前缀（当前用户输入 + 之前的云段内容）→ 按出网目标的段归属。
+      for (let i = start; i < cut; i++) segments[i] = options.currentSegment
+      // 本地产出的部分 → 拦下。
+      for (let i = cut; i < end; i++) segments[i] = 'local'
+      continue
     }
     // 本轮尚未产生 assistant 消息 → 归属由出网目标决定。
     if (segment === undefined) segment = options.currentSegment

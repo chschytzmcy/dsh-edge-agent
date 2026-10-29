@@ -231,6 +231,64 @@ describe('§7.131 — 本地 provider 名单可配', () => {
   })
 })
 
+describe('§7.151 — 当前轮里混进了本地产出的消息', () => {
+  // 场景：同一轮内路由从 LOCAL 翻到 CLOUD（pre-step 每个 step 都重新分类）。
+  // 那一轮里已经有本地池产出的 assistant 消息 —— 它是本地资产，不该上云；
+  // 但**当前用户输入**是「当前内容」，本来就该出网（裁决：当前内容出网前脱敏）。
+  it('本地产出的内容拦下，当前用户输入保留', () => {
+    const messages = [
+      userMsg('当前轮的用户输入'),
+      assistantMsg('local-llm', '本地模型在这一步的回答'),
+      toolMsg('本地工具的结果'),
+    ]
+    const plan = planCloudEgress(messages, { currentSegment: 'cloud' })
+    assert.deepEqual(texts(plan.kept), ['当前轮的用户输入'])
+    assert.equal(plan.droppedCount, 2)
+  })
+
+  it('反向证伪：不能整轮丢 —— 整轮丢会把当前用户输入一起丢掉', () => {
+    const messages = [
+      userMsg('当前轮的用户输入'),
+      assistantMsg('local-llm', '本地回答'),
+    ]
+    const plan = planCloudEgress(messages, { currentSegment: 'cloud' })
+    assert.ok(
+      texts(plan.kept).includes('当前轮的用户输入'),
+      '云端模型必须收到当前这一轮的问题，否则整轮答非所问',
+    )
+  })
+
+  it('当前轮全是云段产出 → 全部保留（不误伤）', () => {
+    const messages = [
+      userMsg('当前轮的用户输入'),
+      assistantMsg('qwen-token-plan-cn', '云端回答'),
+      toolMsg('云端工具的结果'),
+    ]
+    const plan = planCloudEgress(messages, { currentSegment: 'cloud' })
+    assert.deepEqual(texts(plan.kept), ['当前轮的用户输入', '云端回答', '云端工具的结果'])
+    assert.equal(plan.droppedCount, 0)
+  })
+
+  it('当前轮没有 assistant 消息 → 全部保留', () => {
+    const messages = [userMsg('当前轮的用户输入')]
+    const plan = planCloudEgress(messages, { currentSegment: 'cloud' })
+    assert.deepEqual(texts(plan.kept), ['当前轮的用户输入'])
+    assert.equal(plan.droppedCount, 0)
+  })
+
+  it('历史轮的本地段照丢，当前轮的本地产出照拦（两件事互不干扰）', () => {
+    const messages = [
+      userMsg('本地轮输入'),
+      assistantMsg('local-llm', '本地轮回答'),
+      userMsg('当前轮输入'),
+      assistantMsg('local-llm', '当前轮里的本地回答'),
+    ]
+    const plan = planCloudEgress(messages, { currentSegment: 'cloud' })
+    assert.deepEqual(texts(plan.kept), ['当前轮输入'])
+    assert.equal(plan.droppedCount, 3)
+  })
+})
+
 describe('§7.131 — provider 分布观测（审计用）', () => {
   it('统计 assistant 消息的 provider 分布', () => {
     const messages = [

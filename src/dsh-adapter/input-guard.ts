@@ -47,6 +47,12 @@ import {
   isOwnPoolProvider,
 } from './host-llm-trace.js'
 import type { HostCallRequest } from './host-llm-trace.js'
+// §7.151 (2026-10-29): 出网那一跳的「只带云段历史」守卫。桌面部署的 CLOUD
+// 轮次走的是**宿主原生 provider**（桌面 GUI 选的模型），压根不进
+// cloud-llm-adapter ⇒ adapter 里的 §7.131 裁剪一次都没跑过。守卫补在
+// `llm/stream` waterfall 上 —— 真正的出网那一跳。
+import { HostEgressGuard, type HostEgressPlan } from './host-egress-guard.js'
+import { sessionIdField } from './session-attribution.js'
 
 export const name = 'input-guard'
 
@@ -331,6 +337,15 @@ export class InputGuardServiceImpl extends Service {
    */
   private readonly traceConfig: LlmTraceConfig
 
+  /**
+   * §7.151: 出网守卫（宿主原生 provider 路径的 §7.131 裁剪）。
+   *
+   * 必须在**请求派发之前**裁 —— 而宿主把 LOOP 构建的请求 deep-frozen
+   * 送来（监听器只读不改），所以裁完要**换掉请求体重新派发**。守卫自己
+   * 持有「已裁过」的标记集合，避免重新派发时无限递归。
+   */
+  private readonly hostEgressGuard: HostEgressGuard
+
   /** §7.35 (2026-09-03): 检查 cloud LLM adapter 的 API key 是否就位。
    *  缺失时不抛异常，而是让 handlePreStep 把 category=CLOUD|SANITIZED
    *  降级到 LOCAL——与"sanitize 失败降级 LOCAL"对称（系统侧故障/配置缺失
@@ -487,6 +502,8 @@ export class InputGuardServiceImpl extends Service {
     this.intentRouter = intentRouter
     this.sanitizer = sanitizer
     this.auditLog = auditLog
+    // §7.151: 出网守卫（纯逻辑，无外部依赖 —— 构造失败不该拖垮插件）。
+    this.hostEgressGuard = new HostEgressGuard(ctx)
     // §7.144: trace 配置读一次（读盘失败也不该让 input-guard 起不来 ——
     // 观测配置坏了就退回出厂默认，主链路不受影响）。
     try {
@@ -1822,6 +1839,71 @@ export class InputGuardServiceImpl extends Service {
   }
 
   /**
+   * §7.151 (2026-10-29): 换掉请求体**重新派发**这一通出网调用。
+   *
+   * 为什么不能就地改写：宿主契约明写 LOOP 构建的请求是 **deep-frozen**
+   * （`markAgentLoopRequest` + `deepFreeze`），"listeners read it, never rewrite
+   * it"。所以唯一能换掉请求体的姿势就是换一个请求对象再派发一次 ——
+   * 与 `cloud-llm-adapter` 的 delegate 路径同一个姿势，宿主侧已验证可行。
+   *
+   * 重新派发会**再进一次 waterfall**：本方法给裁过的请求对象打标记
+   * （`HostEgressGuard.markTrimmed`），守卫下一次看到它直接放行 ⇒ 不递归、
+   * 不二次裁剪；那一趟里 trace 记录的是**真正发出去的那一份**。
+   *
+   * fail-closed：裁不动就不许出网 —— 放行等于把本地历史原样送上去。
+   */
+  private async * dispatchTrimmed(
+    options: { signal?: AbortSignal; sessionId?: string; [key: string]: unknown },
+    egress: HostEgressPlan,
+    state: StepSanitizationState,
+  ): AsyncIterable<StreamChunkLike> {
+    const provider = typeof options.provider === 'string' ? options.provider : ''
+    const model = typeof options.model === 'string' ? options.model : ''
+    const trimmed = { ...options, messages: egress.messages }
+    this.hostEgressGuard.markTrimmed(trimmed)
+
+    this.audit('info', 'llm.cloud.egress', {
+      ...sessionIdField(state.sessionId),
+      provider,
+      model,
+      // via 字段区分是哪一跳裁的：'host-provider' = 宿主原生 provider（桌面
+      // GUI 选的模型，本部署的常态）；cloud-llm-adapter 自己出的行没有此字段。
+      via: 'host-provider',
+      keptMessages: egress.messages.length,
+      droppedLocalHistory: egress.droppedCount,
+      replacements: state.replacements,
+      // 本轮 pre-step 是否做过脱敏（脱敏在 pre-step 就完成了 —— 那里改的是
+      // 会话日志里的用户消息，出网请求带的就是脱敏后的文本）。
+      sanitized: state.sanitized,
+      providerHistogram: egress.histogram,
+    })
+
+    const llm = (this.ctx as unknown as {
+      llm?: {
+        stream?: (o: unknown) => AsyncIterable<unknown> | Promise<AsyncIterable<unknown>>
+      }
+    }).llm
+    if (typeof llm?.stream !== 'function') {
+      this.audit('security', 'llm.cloud.egress.blocked', {
+        ...sessionIdField(state.sessionId),
+        provider,
+        model,
+        reason: 'llm-runtime-unavailable',
+        droppedLocalHistory: egress.droppedCount,
+      })
+      throw new Error(
+        'input-guard: 出网裁剪无法重新派发（宿主 LLM runtime 不可用）—— 已阻止本轮出网',
+      )
+    }
+
+    const raw = llm.stream.call(llm, trimmed)
+    const resolved = (raw != null && typeof (raw as { then?: unknown }).then === 'function')
+      ? await (raw as Promise<AsyncIterable<unknown>>)
+      : raw as AsyncIterable<unknown>
+    yield* resolved as AsyncIterable<StreamChunkLike>
+  }
+
+  /**
    * 反向 hook：llm/stream handler。暴露给测试。
    *
    * `options` 的索引签名是**如实描述**宿主的载荷：`llm/stream` 派发的是
@@ -1834,14 +1916,31 @@ export class InputGuardServiceImpl extends Service {
   ): AsyncIterable<StreamChunkLike> {
     const requestSessionId = options?.sessionId
     const state = requestSessionId ? this.stepState.get(requestSessionId) : undefined
-    let stream = next()
-    if (!this.config.enableInputGuard) return stream
-    if (!requestSessionId || !this.sanitizer) return stream
+    if (!this.config.enableInputGuard) return next()
+    if (!requestSessionId) return next()
 
     // §7.144: 非边缘会话（标准模式等）没有 pre-step 留下的 stepState ⇒
     // 直接直通、零记录。这条守住 §7.140 的不变式：标准模式会话的审计链
     // 里一条 edge 事件都不该有。
-    if (!state) return stream
+    if (!state) return next()
+
+    // §7.151 (2026-10-29): 出网裁剪（§7.131 口径：只带云段历史）。
+    //
+    // 这一跳在 **trace 记录之前**：被换掉的那通请求根本没出网，记它等于把
+    // 「未裁剪的请求体」挂到面板上 —— 主人 10-29 看到的就是那个。
+    // 裁完的那通会**重新进一次 waterfall**，那时才轮到 trace 记录 ⇒ 面板上
+    // 显示的是真正发出去的那一份（只带云段历史）。
+    //
+    // 位置要紧：裁剪**不依赖 sanitizer**（脱敏栈关掉不等于可以带本地历史
+    // 出网）—— 所以它排在 sanitizer 检查**之前**。
+    const egress = this.hostEgressGuard.plan(options)
+    if (egress !== undefined) {
+      return this.dispatchTrimmed(options, egress, state)
+    }
+
+    if (!this.sanitizer) return next()
+
+    let stream = next()
 
     // §7.144: 宿主 provider 那一跳的记录。必须接在下面「没脱敏就直通」的
     // 早退**之前** —— CLOUD 轮次常常一条 PII 都没有（sanitized=false），

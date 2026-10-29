@@ -155,11 +155,23 @@ export class CloudEgressGuard {
    * 用 model-router 的 `listDetailed()`（带 realm 标注）—— 与路由判定同一份
    * 事实源，避免「出网裁剪认为它是本地、路由认为它是云」这种口径漂移。
    * model-router 在 patch 里排在 cloud-llm-adapter 之后，所以同样运行时取。
+   *
+   * §7.151 (2026-10-29): **必须走 `ctx.get()` 而不是 `ctx.modelRouter` 直取**。
+   * cordis 4.x 的 ctx 是 Proxy：读一个既没 provide、也不在 `inject` 声明里的
+   * 属性会**直接抛** `cannot get property "modelRouter" without inject` ——
+   * 而 cloud-llm-adapter 的 inject 是 `['llm','auditLog','inputGuard']`，没有
+   * modelRouter。直取会让 §7.131 的裁剪在真机上抛错 ⇒ 出网准备失败 ⇒ 整轮
+   * 以 `SANITIZE_FAILED` 失败（裁剪从来就没跑起来过）。
    */
   private localProviders(): string[] {
-    const router = (this.ctx as unknown as {
-      modelRouter?: { listDetailed?: () => Array<{ provider?: string; realm?: string }> }
-    }).modelRouter
+    let router: { listDetailed?: () => Array<{ provider?: string; realm?: string }> } | undefined
+    try {
+      router = (this.ctx as unknown as {
+        get?: (name: string) => unknown
+      }).get?.('modelRouter') as typeof router
+    } catch {
+      router = undefined
+    }
     try {
       const detailed = router?.listDetailed?.() ?? []
       const locals = detailed
