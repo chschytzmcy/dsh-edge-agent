@@ -14709,3 +14709,112 @@ exe → 新 5 进程 14:00:58 启动 → **宿主端口换成了 57160**（端�
   自己记着，要么把它纳入部署清单。本轮**没有**把它加进仓库（运行时文件不是
   仓库产物），但 §7.149 落在这里作为出处。
 - 本轮**没有**改任何仓库代码 —— 修复落在运行时配置层。
+
+
+---
+
+## §7.150 默认屏蔽清单：把「宿主自带但本场景必然失败」的工具挡在模型可见层之外（2026-10-29）
+
+§7.149 留了一个小坑：`ask_user_question` 在 Harness 侧执行报错
+（`status=error errorKind=unknown`），模型连调两次。主人指令「修正，完成后
+commit + push main」⇒ 本节。
+
+### 一、取证：报错不是「工具不可用」，是**参数格式不匹配**
+
+宿主的 schema（`deepseek-harness/apps/web/tests/question-composer.e2e.ts:125`
+与 `packages/interaction/user-questions/tests/user-questions.spec.ts:613`）：
+
+```js
+{ name: 'ask_user_question',
+  parameters: { type: 'object',
+                properties: { questions: { type: 'array', items: { type: 'object' } },
+                              [TIMED_WAIT_PARAMETER]: { type: 'integer' } } } }
+```
+
+**没有 `text` 字段。** 而模型两次传的都是：
+
+```json
+{"text": "{\"questions\": \n[{\"header\": \"登录目标\", \"options\": [{\"label\": \"密盒0035 …\", …}]}]"}
+```
+
+⇒ 参数不匹配 ⇒ 工具报错。工具本身在 Harness 侧是**完整可用**的
+（`packages/interaction/user-questions/` + 客户端 UI
+`packages/client/ui-tool/src/client/tool/toolviews/ask-question-row.tsx`）。
+
+**本插件无权改写宿主工具参数** —— Layer 3（`tools/pre-execute`）只做
+allow/deny 决策，不碰 `exec.args`。所以唯一在本插件权限内的修法是**挡掉它**，
+让 agent 改用纯文本提问（实测可行：§7.149 的 14:30 那轮模型直接输出了完整
+的密盒列表 + 「或者告诉我要登录哪台设备」）。
+
+### 二、修法：默认屏蔽清单 + 配置文件可逐个放开
+
+**为什么放进代码而不是只留运行时文件**：§7.149 的修复只落在
+`~/.dsh-edge-agent/skill-realms.json`，而那是**运行时文件、不在仓库** ⇒
+换机器 / 重装就丢。本节把它变成**代码默认值**（任何部署都生效），运行时文件
+退化成「显式覆盖」。
+
+改动四处（`src/dsh-adapter/realm-skill-bridge.ts`）：
+
+| # | 改了什么 | 为什么 |
+|---|---|---|
+| 1 | `RealmConfig.tools` 的类型：`Record<string, Exclude<RealmTag,'hidden'>>` → `Record<string, RealmTag>` | **类型比实际用法窄**。运行时一直支持 'hidden'（`loadConfig` 不校验取值），既有测试就写着 `tools: { secret_admin: 'hidden' }` —— 但类型把 'hidden' 排除掉，于是任何想屏蔽一个工具的写法都编译不过。类型跟实际对齐，而不是让调用方绕道 |
+| 2 | `DEFAULT_CONFIG.tools` 加 4 个默认屏蔽：`get_goal` / `create_goal` / `update_goal` / `ask_user_question` | 修一次，全机器生效。§7.149 的取证表逐条写清了每个工具的失败现象与挡它的理由 |
+| 3 | `loadConfig` 合并 default + 文件（**文件覆盖 default**） | 两件事同时成立：没写文件的机器拿到默认屏蔽；写了文件的机器能逐个放开（`"get_goal": "LOCAL"`） |
+| 4 | config 循环里 `existing.delete('hidden')` 再 `add(realm)` | **否则放不开**：default 的 'hidden' 与文件的 'LOCAL' 会并存成 `Set{hidden, LOCAL}`，而 hidden 在 `filterToolsField` / `checkToolRealm` 里都是**优先判定**（`toolRealms.has('hidden')`）⇒ 文件写了 LOCAL 也照样被挡。顺带把「config wins on conflict」这条注释（见 native seed 段）从**名不副实**变成**真的成立** |
+
+屏蔽在**两层**同时生效：
+- Layer 1.5（`system-prompt/assemble`）⇒ 模型**看不见**这些工具
+  （ops log：`assemble filter … removed=create_goal,get_goal,update_goal,web_fetch,web_search`）
+- Layer 3（`tools/pre-execute`）⇒ `checkToolRealm` 返回 `Tool "x" is hidden`
+  ⇒ 即使模型硬调也 deny，并落 `tool.realm.denied` 审计行（带 sessionId，§7.148）
+
+### 三、测试（新增 4 例，全绿）
+
+`tests/unit/realm-skill-bridge.test.ts` 的 §7.150 组：
+
+| 用例 | 钉死什么 |
+|---|---|
+| 默认屏蔽四个宿主工具 | 文件**不列**它们 ⇒ 走 `DEFAULT_CONFIG.tools` 的默认值 ⇒ LOCAL agent 看不见 |
+| 默认屏蔽不影响正常工具 | `bash` / `sys_info` 照常可见（不搞一刀切） |
+| 执行闸门同样拒绝 | Layer 3 对四个工具都返回含 `hidden` 的拒绝理由 |
+| 配置文件能逐个放开 | `"get_goal": "LOCAL"` ⇒ 可见且 Layer 3 放行；没写进配置的工具仍保持默认屏蔽 |
+
+**反向证伪点**：第 4 例专门钉「放得开」—— 若 config 循环漏了
+`delete('hidden')`，这例会红（`get_goal` 仍被挡）。
+
+### 四、验证
+
+| 项 | 结果 |
+|---|---|
+| 单元测试 | **71 文件 1456 passed / 2 skipped / 0 failed**（基线 1452，+4） |
+| eslint | **0 error**（59 warnings。本轮改动的两个文件单独 lint 只有 1 条 `fn` unused，且 HEAD 与改动后该段代码**逐行一致**（已核对）⇒ 不是本轮引入） |
+| `tsc --noEmit`（双配置） | 均 exit 0 |
+| 构建门禁 `verify:build` | **16 项全过**（整链 exit 0） |
+| 桌面 bundle | 重建于 14:41:36；编译产物里 `DEFAULT_CONFIG` 的 4 个 hidden、`loadConfig` 的合并、`delete('hidden')` 逐条核过 |
+| 桌面版 | 已重启（14:41:58 起，宿主端口 **54923**） |
+
+### 五、运行时配置同步
+
+`~/.dsh-edge-agent/skill-realms.json` 补全为：
+
+```json
+{ "skills": {},
+  "tools": { "web_search": "CLOUD", "web_fetch": "CLOUD",
+             "get_goal": "hidden", "create_goal": "hidden",
+             "update_goal": "hidden", "ask_user_question": "hidden" },
+  "defaultRealm": "hidden" }
+```
+
+（`web_search` / `web_fetch` 是模板 `templates/skill-realms.default.json` 里
+原有的 CLOUD 标签 —— 上一版手写文件漏了它们，虽然 native seed 会兜住，但显式
+配置应当完整。）
+
+### 六、遗留（如实记）
+
+- **实机最后一跳未取证**：需要在新会话里跑一轮，看 `assemble filter` 的
+  `removed=` 列表是否含 4 个工具（代码默认路径）。§7.149 的 14:30 那轮走的是
+  运行时文件路径，已验证；代码默认路径由单测覆盖，实机待主人跑一轮确认。
+- **代价**：`ask_user_question` 被挡后 agent 只能纯文本提问。实测可接受
+  （14:30 那轮的输出质量没问题），但如果要「结构化选项卡片」那种交互，
+  需要在 Harness 侧修好模型的参数（属宿主仓，本插件改不了）。
+- `intent.llm.low-confidence` 仍是 0%（不在 jev 闭包作用域内），待下一轮核。

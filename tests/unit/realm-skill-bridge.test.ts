@@ -1526,4 +1526,86 @@ ${allSkillLines.join('\n')}
       assert.equal('sessionId' in row.payload, false)
     })
   })
+
+  // ── §7.150 默认屏蔽清单 ────────────────────────────────────────────────────
+  //
+  // 宿主自带、但在 dsh 会话里要么无意义、要么必然失败的四个工具：
+  //
+  //   get_goal / create_goal / update_goal
+  //     Goal 族的契约是「没设 Goal 就是空」；dsh 的普通会话没有 Goal ⇒
+  //     get_goal 必然返回空、update_goal 执行报错（errorKind=unknown）。
+  //     实机：14:05 模型调 get_goal → 拿到空 → 把「我在循环调它拿到 null」的
+  //     自白当最终回复输出；14:28 换 qwen3.8-flash 后改调 update_goal → 报错。
+  //
+  //   ask_user_question
+  //     宿主 schema 是 `{questions:[{...}]}`（没有 text 字段），模型传的是
+  //     `{"text":"<JSON 字符串>"}` ⇒ 参数不匹配 ⇒ 执行报错。
+  //
+  // 挡掉之后 agent 改用纯文本提问 —— 实测可行。
+  describe('§7.150 — 默认屏蔽清单', () => {
+    /** 宿主工具 + 两个正常工具（应当照常可见）。 */
+    const TOOLS = [
+      { name: 'get_goal' }, { name: 'create_goal' }, { name: 'update_goal' },
+      { name: 'ask_user_question' },
+      { name: 'bash' }, { name: 'sys_info' },
+    ]
+
+    async function serviceWith(config: Partial<RealmConfig>) {
+      const entries: any[] = []
+      const auditLog = { log: async (e: any) => { entries.push(e) } }
+      const configPath = writeConfig('skill-realms-7150.json', config)
+      const service = new RealmSkillBridgeService(
+        fakeCtx() as never,
+        { configPath, hotReload: false, watchIntervalMs: 5000 },
+        auditLog as any,
+      )
+      await service.start()
+      return { service, entries }
+    }
+
+    it('默认屏蔽四个宿主工具（LOCAL agent 看不见）', async () => {
+      // 文件里**不列**这四个 ⇒ 走 DEFAULT_CONFIG.tools 的默认值。
+      const { service } = await serviceWith({ skills: {}, tools: {}, defaultRealm: 'hidden' })
+      const filter = service.filterToolsField(TOOLS, 'LOCAL')
+      const names = filter.tools.map((t: any) => t.name)
+      assert.ok(!names.includes('get_goal'), 'get_goal 必须对 LOCAL agent 不可见')
+      assert.ok(!names.includes('create_goal'), 'create_goal 必须对 LOCAL agent 不可见')
+      assert.ok(!names.includes('update_goal'), 'update_goal 必须对 LOCAL agent 不可见')
+      assert.ok(!names.includes('ask_user_question'), 'ask_user_question 必须对 LOCAL agent 不可见')
+      service.stop()
+    })
+
+    it('默认屏蔽不影响正常工具（bash / sys_info 照常可见）', async () => {
+      const { service } = await serviceWith({ skills: {}, tools: {}, defaultRealm: 'hidden' })
+      const names = service.filterToolsField(TOOLS, 'LOCAL').tools.map((t: any) => t.name)
+      assert.ok(names.includes('bash'), 'bash 仍可见')
+      assert.ok(names.includes('sys_info'), 'sys_info 仍可见')
+      service.stop()
+    })
+
+    it('执行闸门同样拒绝被屏蔽的工具（Layer 3）', async () => {
+      const { service } = await serviceWith({ skills: {}, tools: {}, defaultRealm: 'hidden' })
+      for (const name of ['get_goal', 'create_goal', 'update_goal', 'ask_user_question']) {
+        const reason = service.checkToolRealm(name, 'LOCAL')
+        assert.ok(reason !== undefined, `${name} 必须被 Layer 3 拒绝`)
+        assert.match(String(reason), /hidden/)
+      }
+      service.stop()
+    })
+
+    it('配置文件能**逐个放开**（config 覆盖 default）', async () => {
+      // 「放开」的关键：config 循环必须把 default 的 'hidden' 移除，
+      // 否则 Set{hidden, LOCAL} 里 hidden 仍在 ⇒ 照样被挡。
+      const { service } = await serviceWith({
+        skills: {},
+        tools: { get_goal: 'LOCAL' },
+        defaultRealm: 'hidden',
+      })
+      const names = service.filterToolsField(TOOLS, 'LOCAL').tools.map((t: any) => t.name)
+      assert.ok(names.includes('get_goal'), '配置文件显式放开 get_goal ⇒ 可见')
+      assert.ok(!names.includes('update_goal'), '没写进配置的工具仍保持默认屏蔽')
+      assert.equal(service.checkToolRealm('get_goal', 'LOCAL'), undefined, '放开的工具 Layer 3 也放行')
+      service.stop()
+    })
+  })
 })

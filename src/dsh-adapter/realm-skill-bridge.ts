@@ -101,10 +101,15 @@ export const Config: Schema<Config> = Schema.object({
  * `skills` maps skill name or glob pattern (e.g. "lark-*") to a realm.
  * `tools` maps tool name to a realm (overrides hard-coded DSH_NATIVE_REALM_MAP).
  * `defaultRealm` applies to anything not explicitly matched. "hidden" = invisible.
+ *
+ * §7.150: `tools` 的值**允许** 'hidden'。运行时一直支持（既有测试就写着
+ * `tools: { secret_admin: 'hidden' }`，`loadConfig` 也不校验取值），只是这里
+ * 的类型比实际用法窄 —— 于是任何想屏蔽一个工具的写法都编译不过。类型跟实际
+ * 对齐，而不是让调用方绕道。
  */
 export interface RealmConfig {
   skills: Record<string, RealmTag>
-  tools: Record<string, Exclude<RealmTag, 'hidden'>>
+  tools: Record<string, RealmTag>
   defaultRealm: RealmTag
 }
 
@@ -146,9 +151,33 @@ export function globMatch(pattern: string, value: string): boolean {
 // Config loading
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * 默认屏蔽清单（§7.150, 2026-10-29）。
+ *
+ * 这些是**宿主自带、但在 dsh 会话里要么无意义、要么必然失败**的工具。
+ * 实机取证（本机审计链 + ops log）：
+ *
+ * | 工具 | 现象 | 为什么挡 |
+ * |---|---|---|
+ * | `get_goal` | 14:05 主人发「登录的密盒」，模型调它 → **返回空** → 模型把「我在循环调它拿到 null」的自白当最终回复输出 | Goal 族的契约是「没设 Goal 就是空」。dsh 的普通会话没有 Goal ⇒ 必然空。模型在 27 个工具里挑「查状态」时误选它 |
+ * | `create_goal` / `update_goal` | 14:28 换 qwen3.8-flash 后仍误选 `update_goal` → **执行报错** `status=error errorKind=unknown` | 同族。dsh 会话不建 Goal，这两个要么无意义要么报错 |
+ * | `ask_user_question` | 14:30 模型调它两次 → **执行报错** `errorKind=unknown` | 宿主的 schema 是 `{questions:[{...}]}`（见 `deepseek-harness/packages/interaction/user-questions/` 与 `apps/web/tests/question-composer.e2e.ts:125`），**没有 `text` 字段**；模型传的是 `{"text":"<JSON 字符串>"}` ⇒ 参数不匹配。本插件无权改写宿主工具参数（Layer 3 只做 allow/deny），所以只能挡 |
+ *
+ * 挡掉之后 agent 改用**纯文本**提问 —— 实测可行：14:30 那轮模型直接输出了
+ * 完整的密盒列表 + 「或者告诉我要登录哪台设备」。
+ *
+ * **这份清单是默认值，不是不可改的**：`skill-realms.json` 里显式写
+ * `"get_goal": "LOCAL"` 就能放开（config 覆盖 default，见 `loadConfig` 与
+ * `tagToolsFromConfig` 的 config 循环）。
+ */
 const DEFAULT_CONFIG: RealmConfig = {
   skills: {},
-  tools: {},
+  tools: {
+    get_goal: 'hidden',
+    create_goal: 'hidden',
+    update_goal: 'hidden',
+    ask_user_question: 'hidden',
+  },
   defaultRealm: 'hidden',
 }
 
@@ -163,7 +192,18 @@ async function loadConfig(configPath: string): Promise<RealmConfig> {
     const parsed = JSON.parse(raw) as Partial<RealmConfig>
     return {
       skills: parsed.skills && typeof parsed.skills === 'object' ? parsed.skills : {},
-      tools: parsed.tools && typeof parsed.tools === 'object' ? parsed.tools : {},
+      tools: {
+        // §7.150: 默认屏蔽清单与文件**合并**，文件优先。
+        //
+        // 合并而不是替换，是为了两件事同时成立：
+        //   1. 没写 skill-realms.json 的机器也能拿到默认屏蔽（修一次，全机器生效）；
+        //   2. 写了文件的机器能**逐个放开** —— `"get_goal": "LOCAL"` 即可。
+        //
+        // 「放开」还需要 config 循环把 default 的 'hidden' 移除，否则
+        // Set{hidden, LOCAL} 里 hidden 仍在 ⇒ 照样被挡（见 tagToolsFromConfig）。
+        ...DEFAULT_CONFIG.tools,
+        ...(parsed.tools && typeof parsed.tools === 'object' ? parsed.tools : {}),
+      },
       defaultRealm: isValidRealm(parsed.defaultRealm) ? parsed.defaultRealm : 'hidden',
     }
   } catch {
@@ -542,6 +582,15 @@ export class RealmSkillBridgeService extends Service {
     for (const [toolName, realm] of Object.entries(this.realmConfig.tools)) {
       // Store realm tag in a Set (supports multi-realm if configured multiple times)
       const existing = this.toolRealms.get(toolName) ?? new Set<RealmTag>()
+      // §7.150: config 覆盖 default —— 先移除 'hidden'。
+      //
+      // 不移除的话，DEFAULT_CONFIG 的 'hidden' 与文件里的 'LOCAL' 会并存成
+      // Set{hidden, LOCAL}，而 hidden 在 filterToolsField / checkToolRealm 里
+      // 都是**优先判定**（`toolRealms.has('hidden')`）⇒ 文件根本放不开。
+      //
+      // 「config wins on conflict」这条注释（见上面 native seed 段）在这里才
+      // 真正成立：native seed 的 hidden 同样会被 config 覆盖。
+      existing.delete('hidden')
       existing.add(realm as RealmTag)
       this.toolRealms.set(toolName, existing)
       // Only push non-hidden realms to edgeTools (which doesn't understand 'hidden').
