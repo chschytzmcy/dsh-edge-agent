@@ -58,8 +58,8 @@ npm install -g pnpm                # 或：corepack enable pnpm
 ### 桌面版（主路径）
 
 DSH 桌面 App（DeepSeek Harness）的侧边栏 **Plugins → Add plugin** 支持
-**npm 包名 / GitHub 地址 / 本地目录** 三个通道。装完**必须点「立即启用」**
-（GUI 不会自动启用），否则启动时不加载。
+**npm 包名 / tarball 路径 / GitHub 地址 / 本地目录** 四个通道。装完**必须点
+「立即启用」**（GUI 不会自动启用），否则启动时不加载。
 
 #### 通道 A：本地目录（本机开发调试用）
 
@@ -111,6 +111,26 @@ git+ssh://git@github.com/chschytzmcy/dsh-edge-agent.git
 
 装的是**预构建**的包，不需要构建授权。包尚未发布到 registry；发布条件见
 [`docs/deploy-npm.md`](docs/deploy-npm.md)。
+
+#### 通道 D：tarball 路径（离线分发给别人）
+
+```bash
+node scripts/_pack-core.mjs tarball     # → dist/dsh-edge-agent-desktop-safe.tar.gz
+```
+
+在同一个对话框里填 tarball 的**绝对路径**：
+
+```
+Windows  C:\Users\<你>\GolandProjects\gitlab\dsh-edge-agent\dist\dsh-edge-agent-desktop-safe.tar.gz
+```
+
+- **不需要构建授权、不需要 PATH 上有 pnpm**；
+- tarball **不含 `config/edge.json`**（没有真密钥）⇒ 目标机器要自己写
+  `~/.dsh-edge-agent/edge.json`；
+- 装出来是 **pnpm store 里的冻结副本** ⇒ 改了 tarball **不会**自动生效，
+  要卸载重装。
+
+细节见 [`docs/deploy-tarball.md`](docs/deploy-tarball.md)。
 
 ### 独立 HTTP profile（macOS / Linux）
 
@@ -187,6 +207,7 @@ dsh --profile <profile> --dump-config | grep -E 'input-guard|file-logger|intent-
 | [`docs/README.md`](docs/README.md) | **文档总索引**（每份一句说明 + 状态） |
 | [`docs/deploy-github.md`](docs/deploy-github.md) | 从 GitHub 仓库地址安装 |
 | [`docs/deploy-npm.md`](docs/deploy-npm.md) | 从 npm 包名安装 + 发布链排障 |
+| [`docs/deploy-tarball.md`](docs/deploy-tarball.md) | 从 tarball 路径安装（离线分发） |
 | [`docs/load-into-local-dsh.md`](docs/load-into-local-dsh.md) | 装进本地 DSH（三条路 + 宿主契约） |
 | [`docs/config-reference.md`](docs/config-reference.md) | 完整配置清单 |
 | [`docs/architecture.md`](docs/architecture.md) | 架构主文档：四层模型 / Realm / 插件开发 / 威胁模型 |

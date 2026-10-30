@@ -16244,5 +16244,127 @@ config/edge.json` **含全部 7 个真 key**。`dist/` 被 gitignore、`files` +
 - **私有仓库 ⇒ 没有 provenance 徽章**（主人已知并接受）。将来若转公开，
   workflow 会自动带上 `--provenance`，无需改代码。
 - **本地目录通道的目录含明文 `config/edge.json`** ⇒ 不能外发；要分发走
-  npm / git 通道。
+  **tarball 通道**（§7.157，不含密钥）或 npm / git 通道。
+
+## §7.157 tarball 加载方式：第四条通道打通，并抓住一个没人看过的陈旧产物（2026-10-30）
+
+> 主人 2026-10-30 12:33：「增加tar包的加载插件方式」。
+> §7.155 打通 GitHub 地址通道、§7.156 读透 npm 包名与本地目录通道 —— 这一轮把
+> 宿主支持的**第四种形态**（tarball）也做掉。**结果比预期好：在补门禁的过程中
+> 发现 `dist/*.tar.gz` 是个从 §7.153 修复之前就再没重打过的陈旧产物。**
+
+### 一、宿主侧：tarball 形态怎么被认出来
+
+`parseInstallSpec`（`install-spec.ts:69-92`）：
+
+```
+TARBALL_SPEC = /\.(?:tgz|tar\.gz)(?:#.*)?$/i
+```
+
+- 剥掉**一个** `file:` / `link:` 前缀，或路径本身是绝对路径 ⇒ 进 path 分支；
+- 之后**以 `.tgz` / `.tar.gz` 结尾 ⇒ `kind: 'tarball'`**；
+- **相对路径一律被拒**（`a local path must be absolute`）；
+- **`.zip` 不支持** —— 整个 plugin-manager 里没有任何 zip 处理。
+
+与其它三种形态的关键差别：
+
+| | tarball | registry | path | git |
+|---|---|---|---|---|
+| 预检做什么 | **只查文件存在**（`index.ts:620-622`） | 两次 registry 查询 + 兼容预检 | 读目录的 package.json | 连通性预检 + 传输探测 |
+| 要构建授权吗 | **否**（包里没有 `scripts`） | 否 | 否（除非目录里有构建脚本） | **是** |
+| PATH 要有 pnpm 吗 | 否 | 否 | 否 | **是** |
+| 装出来是什么 | **pnpm store 的冻结副本** | 冻结的 tarball | **符号链接 → 源目录** | 现场编译的目录 |
+| 改了会生效吗 | **否**（要卸载重装） | 升级走 `updateBundle` | **会** | 重装 |
+| 能原地升级吗 | **不能**（`updateRefusal` 只认 registry spec） | 能 | 不能 | 不能 |
+
+### 二、实测（2026-10-30，隔离临时 profile，未碰主人桌面 profile）
+
+```
+pnpm add C:\…\dist\dsh-edge-agent-desktop-safe.tar.gz
+  → dependencies = { "@deepseek-harness-edge-agent/dsh-edge-agent":
+                      "file:C:/…/dist/dsh-edge-agent-desktop-safe.tar.gz" }
+  → node_modules 条目是符号链接 → .pnpm/@deepseek-harness-edge-agen_<hash>/…
+     （**解包副本** ⇒ 冻结）
+  → 包里：lib/index.js ✓  lib/client.js ✓  cordis.desktop-safe.patch.yml ✓
+          presets/edge.desktop-safe.patch.yml ✓  config/edge.example.json ✓
+          config/edge.json ✗（**不含真密钥**）✓
+```
+
+`file:` 前缀写法结果完全相同。客户端侧也查了：**没有目录选择器**
+（无 `showDirectoryPicker` / `<input type="file">`）⇒ 输入框是纯文本 ⇒
+手打 `.tar.gz` 绝对路径可行。
+
+### 三、★ 发现的真缺陷：tarball 从来没被任何门禁看过，而且它是陈旧的
+
+**两个问题叠在一起**：
+
+1. **`verify-installable.mjs` 只走 `dist/installable/`，tarball 一次都没被检查过**
+   ⇒ 它可以悄悄变旧、丢文件、甚至混进密钥，而整条 `verify:build` 链依然全绿。
+2. **重建前的 `dist/*.tar.gz` 确实是陈旧产物**：`dsh.bundle.patch` 写的是
+   **字符串** `"./cordis.desktop-safe.patch.yml"`（不是列表）、`engines` 里
+   **没有 `dsh`** ⇒ 装出来的东西：
+   - **不会**注册「边缘模式」这个 Agent Preset（preset 层根本没被声明）⇒
+     设置页的工作方式选择器里看不到它 —— **正是 §7.153 记过的同一个坑**；
+   - 兼容性只能靠 peer 范围兜底。
+
+⇒ 而 `dist/installable/` 目录（本地目录通道用）**一直是对的** ⇒
+**同一台机器上两条通道装出来的东西不一样**，而且从来没人发现。
+
+### 四、修法：新增 `verify:tarball`（§7.157）
+
+新建 [`scripts/verify-tarball.mjs`](../scripts/verify-tarball.mjs)，查 7 组：
+
+1. tarball 存在，且**顶层目录是且只能是 `package`**（npm/pnpm 的期望）；
+2. `dsh.bundle.patch` 是**列表**，每个声明的文件都在包里，且**含 presets 层**
+   （§7.153 回归守卫）；
+3. `engines.dsh` 已声明；
+4. `lib/index.js` **和 `lib/client.js`** 都在包里（§7.145 守卫：缺 client.js ⇒
+   Edge tab 静默消失）；
+5. **不含 `config/edge.json`**（明文密钥）；
+6. `scripts` / `devDependencies` 已删（否则安装时触发 `prepare` 并要构建授权）；
+7. **与 `dist/installable/<variant>/package.json` 的关键字段一致** ——
+   这条就是**防陈旧**的。
+
+**自证 + 反向证伪**：`--selftest` 造 11 个真实 tar.gz fixture（每个缺陷一个），
+逐条断言门禁会红；正确的形状必须放行。
+
+**对真实产物也做了一轮反向证伪**：
+
+| 造出来的缺陷 | 门禁的反应 |
+|---|---|
+| 换成 §7.153 之前的旧形态（patch 写成字符串） | 🔴 2 项：字符串形式 + 「陈旧产物，重新构建」 |
+| 塞进 `config/edge.json` | 🔴 1 项：含明文 API key |
+| 恢复好产物 | 🟢 绿 |
+
+已接进 `verify:build`（**19 → 20 项**）。
+
+### 五、文档
+
+- **新建** [`docs/deploy-tarball.md`](deploy-tarball.md) —— tarball 通道完整指南：
+  宿主链路 / 四通道对比表 / 冻结副本语义 / 产物字段 / 实测 / 门禁 / 排障。
+- [`docs/load-into-local-dsh.md`](load-into-local-dsh.md) §8 通道表加 tarball 一行
+  + 新增 **§8.9**（与「本地目录」通道的本质差别对照）。
+- 根 README：桌面版通道从 3 条 → **4 条**（新增「通道 D：tarball 路径」）。
+- [`docs/README.md`](README.md) 登记 `deploy-tarball.md`。
+
+### 六、验证
+
+- `node scripts/verify-tarball.mjs --selftest` → **11 项断言全过**（exit 0）；
+- `node scripts/verify-tarball.mjs` → 两个 tarball **OK**（patch 层 2 个 / 条目 229 个）；
+- 对真实产物的反向证伪两轮 → 门禁按预期变红、恢复后变绿；
+- `verify:build` **20 项** exit 0；`verify-doc-links` 断链 0 / 孤儿 0；
+- eslint 0 error / 59 warnings；vitest 73 文件 / 1495 passed / 2 skipped / 0 failed。
+
+### 七、遗留（如实记）
+
+- **tarball 通道尚未在桌面版实机点过**：pnpm 那一跳已实测（隔离 profile），
+  但宿主 GUI 里的完整流程（填路径 → 装 → 点「立即启用」→ 重启 → 右栏出现
+  Edge tab **且** 设置页出现「边缘模式」）**还没在主人正在用的桌面 profile 上
+  跑过** —— 那会替换掉当前的 git 版 0.1.1 ⇒ 等主人点头再动。
+- **`dist/` 是 gitignored** ⇒ tarball 不会进 git、不会进 npm 包
+  （`files` + `.npmignore` 双重排除 `config/edge.json`）⇒ **分发只能靠
+  产物文件本身**（或者走 npm / git 通道）。
+- **tarball 的 `files` 白名单里没有 `!config/edge.json`**（tarball 不用 npm pack
+  的 files 规则）⇒ 这条防线靠 `stageVariant()` 的 `keepSecretConfig` 分支
+  + 新增的 `verify:tarball` 第 5 条，两处都在。
 

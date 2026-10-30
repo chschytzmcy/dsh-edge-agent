@@ -172,12 +172,13 @@ rm -rf /tmp/dsh-edge-probe
 ## 8. 加载到当前桌面版（Plugins 页）
 
 如果目标就是“像 dsh-cli / web profile 一样，把 bundle 装进当前 Desktop”。
-桌面插件管理器支持 **npm / Git / 本地目录** 三个通道，本仓现状：
+桌面插件管理器支持 **npm / Git / 本地目录 / tarball** 四个通道，本仓现状：
 
 | 通道 | 现状 |
 |---|---|
 | npm 包名 | 发布流水线就绪（`publish.yml`），但包尚未发布（registry 404）；推 `v*` tag 后可用。**2026-10-30（§7.156）发现发布链有个洞：build 步只跑 `compile` ⇒ `verify:build` 必红 ⇒ 从来没走到过 `pnpm publish`，已修**。完整指南见 [`deploy-npm.md`](deploy-npm.md) |
 | Git 仓库 | **2026-10-30（§7.155）起可用**：见 [`deploy-github.md`](deploy-github.md)。此前不成立的根因是 `prepare` 只跑 `compile`、产不出浏览器半侧 `lib/client.js`（Edge tab 会静默消失），且桌面环境无 npm；现在 `prepare` 走 `run.mjs compile build:client`（不依赖 npm），并有 `verify:git-install` 门禁守着。代价：pnpm ≥10 要求用户点一次「允许这些脚本并重试」 |
+| tarball 路径 | **2026-10-30（§7.157）起有门禁守着**：见 [`deploy-tarball.md`](deploy-tarball.md)。此前 `dist/*.tar.gz` **从来没被任何门禁检查过**，且实测发现它是 §7.153 修复**之前**的陈旧产物（`dsh.bundle.patch` 写成字符串 ⇒ preset 层缺席 ⇒ 「边缘模式」工作方式不会注册）⇒ 新增 `verify:tarball` 并接进 `verify:build` |
 | **本地目录（推荐）** | 指 `--emit-dir` 产出的可安装目录：预置 `lib/`、已删 `scripts`/`devDependencies`，安装即用。宿主侧的完整契约见 **§8.8**（2026-10-30 读透） |
 
 不要用**源码目录**直接安装：源码 package.json 的 `prepare` 脚本会触发构建，
@@ -515,6 +516,34 @@ path spec 的 manifest **直接从目录里的 `package.json` 读**
 | 能原地升级吗 | 不能（卸了重装） | 不能（卸了重装） | 能（`updateBundle`） |
 | 目录/包里有真密钥吗 | **有**（符号链接） | 无（不入库） | 无（`files` 排除） |
 | 安装耗时（实测） | **447 ms** | ~41 s | 取决于 registry |
+
+### 8.9 §7.157：tarball 通道（离线分发给别人）
+
+宿主把**绝对路径**且以 `.tgz` / `.tar.gz` 结尾的输入认成 `kind: 'tarball'`
+（`install-spec.ts:30` 的 `TARBALL_SPEC`），随后原样交给 `pnpm add`。
+**`.zip` 不支持。**
+
+```bash
+node scripts/_pack-core.mjs tarball     # → dist/dsh-edge-agent-desktop-safe.tar.gz
+```
+
+在桌面 App 里填 tarball 的绝对路径（客户端是**纯文本框**，没有目录选择器，
+所以 `.tar.gz` 路径可以手打）。
+
+**与「本地目录」通道的本质差别**：
+
+| | 本地目录 | tarball |
+|---|---|---|
+| node_modules 里 | 符号链接 → **源目录** | 符号链接 → **pnpm store 的解包副本** |
+| 改了会生效吗 | **会**（同步文件 + 重启） | **不会** ⇒ 卸载重装（§8.6 坑 1） |
+| 含真密钥吗 | **有**（`config/edge.json`） | **没有** ⇒ 目标机器自己写 `~/.dsh-edge-agent/edge.json` |
+| 要构建授权吗 | 否 | 否（包里没有 `scripts`） |
+
+**装完仍要点「立即启用」**；tarball 装的包**永远不会被标成可更新**
+（`updateRefusal` 只认 registry spec）⇒ 升级只能卸载重装。
+
+完整指南（含宿主链路、产物字段、门禁与排障）见
+[`deploy-tarball.md`](deploy-tarball.md)。
 
 ## 9. 验证安装
 
