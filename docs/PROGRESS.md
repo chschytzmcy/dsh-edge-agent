@@ -15535,3 +15535,141 @@ $ git status --porcelain config/
 - 构建门禁 `verify:build` **18 项全过**（EXIT=0，含新增的 `verify:ci-build-chain` 与
   `verify:edge-config-tool`）；
 - 桌面版已重建重启，开机告警实机可见（见三）。
+
+## §7.155 发布到桌面版：从 GitHub 仓库地址安装（通道打通 + 门禁）
+
+> 主人 2026-10-30 08:55：「如果我要发布这个插件，应该怎么发布，添加插件里有
+> 『输入插件的包名、GitHub 仓库地址或本地目录路径』，先实现输入github仓库部署」。
+
+### 一、先把宿主那条链路读透（只读参考仓 deepseek-harness）
+
+宿主的对话框文案就在 `packages/client/ui-plugin-manager/src/client/locales.ts:75`：
+
+> installDescription: '输入插件的包名、GitHub 仓库地址或本地目录路径。'
+
+**这条通道宿主早就做完了**，本仓要做的是「作者侧」那份义务。端到端链路：
+
+| 环节 | 宿主位置 |
+|---|---|
+| spec 解析（git / tarball / 绝对路径 / npm 包名）| `boot/plugin-manager/src/install-spec.ts:69-92` |
+| GitHub 连通性预检（`git ls-remote`，**禁用凭据助手**）| `boot/plugin-manager/src/github-connection.ts:44` |
+| 传输选择（自建主机 HTTPS→SSH 回退；github.com 不探测）| `boot/plugin-manager/src/git-transport.ts:65-71` |
+| 真正安装：`pnpm add <spec>`，cwd = profile 目录 | `boot/plugin-manager/src/index.ts:930` |
+| 装后校验：必须是 bundle（无 `dsh.bundle` ⇒ `not-bundle`）| `boot/plugin-manager/src/index.ts:971-972` |
+| 装后校验：DSH 版本兼容（`engines.dsh` 独断，否则逐个 peer 判）| `boot/plugin-manager/src/index.ts:973-974` + `app-boot/src/plugin-compatibility.ts:77-78` |
+| 装后：加载 bundle patch 文件（缺文件即失败并回滚）| `boot/plugin-manager/src/index.ts:975` |
+| 启用：写 `dsh.profile.bundles` | `boot/plugin-manager/src/index.ts:1173-1176` |
+
+宿主自己的说明（`docs/user/develop/basic/publish.md:161-186`）把作者侧义务讲得很直白：
+
+> a git install fetches **sources, not built artifacts**: nothing runs your
+> `build` script, so a TypeScript package arrives without its `lib/` output and
+> fails to load.
+>
+> The **author** ships a `prepare` script — pnpm runs it after a git install —
+> that builds the published entry points from source, **self-contained**.
+>
+> The **user** allowlists the build. pnpm ≥10 refuses to run a git dependency's
+> `prepare` script until it is explicitly allowed.
+
+### 二、根因：git 装只跑 `prepare`，而我们的 `prepare` 产不出浏览器半侧
+
+本仓此前的 `prepare` 是 `node scripts/run.mjs compile`——只有 `tsc`。但：
+
+- Node 半侧 `lib/**` ⇒ tsc 产出 ✓
+- 浏览器半侧 `lib/client.js` ⇒ **esbuild 产出**（`scripts/build-client.mjs`），tsc 产不出来 ✗
+
+§7.145 记过这个坑的症状：**宿主半侧正常挂载、Edge tab 静默不出现**，日志里什么都不说。
+git 装**只跑 `prepare`、不跑 `build`** ⇒ 走 GitHub 通道装出来的插件**必然没有 Edge tab**。
+这就是「Git 仓库通道不建议」（`docs/load-into-local-dsh.md:180` 那句的真正根因）。
+
+### 三、实测（不靠推断）
+
+用**桌面 runtime 自带的那支 pnpm**（`~/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/pnpm/bin/pnpm.mjs`，
+v11.28.5——插件管理器跑的就是它）实测三条：
+
+**（1）pnpm 会为 git 依赖跑 `prepare` 吗？会——但先卡一道授权闸门。**
+
+```
+[ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED] Failed to prepare git-hosted package ...
+  is not in the "allowBuilds" allowlist.
+```
+
+把 pnpm 打印的键抄进安装方的 `pnpm-workspace.yaml`（宿主 `build-approval.ts` 就是这么做的，
+GUI 上表现为「允许这些脚本并重试」）后，`prepare` 正常执行。
+
+**（2）pnpm 装 git 依赖时会先装该包的 devDependencies。** 在 clone 里写的探针输出：
+
+```
+node_modules listing = [".package-lock.json","left-pad"]   ← devDep 在
+left-pad import = OK (function)
+```
+
+⇒ `tsc` / `esbuild` 在 git 安装时**可用** ⇒ 「克隆源码 → 编译 → 打包」这条路走得通。
+
+**（3）本仓全部 devDeps 在公网 npm 上都能按 `>=0.2.1-rc.2` 解析**（逐个核对，落到 `0.2.1-rc.5`；
+`@deepseek-ai/cordis` 4.0.5、`@deepseek-ai/schemastery` 3.18.5）——clone 里的 `pnpm install` 不会缺件。
+
+### 四、改动
+
+| # | 改动 | 为什么 |
+|---|---|---|
+| 1 | `package.json#scripts.prepare`：`node scripts/run.mjs compile` → `node scripts/run.mjs compile build:client` | git 装只跑 prepare ⇒ 浏览器半侧必须在这里产出。顺序是 compile 先（它会清空 lib/）、build:client 后 |
+| 2 | `package.json#engines.dsh`：`">=0.2.1-rc.2"` | 宿主强烈建议声明；有它则版本判定独断，否则退回逐个 peer 判 |
+| 3 | 新增 `scripts/verify-git-install.mjs` + 两条 script，接进 `verify:build` | 把宿主那几条契约变成可自动检查的断言 |
+| 4 | 新增 `docs/deploy-github.md`，挂进 `docs/README.md` 导航；修正 `docs/load-into-local-dsh.md` §8 那句过时的「不建议」 | 操作指南 + 事实纠正 |
+
+> `run.mjs` 是包管理器无关的运行器（桌面 runtime 只有 node + pnpm，**没有 npm**），
+> 所以 `prepare` 不依赖 npm——这是 §7.102 之前就定下的，本轮正好用上。
+
+### 五、门禁：`verify:git-install`
+
+把宿主对 git 安装的契约逐条变成断言：
+
+- **身份**：`name` / `version` 非空（宿主靠 dependencies 的键 = 包名认出装了什么）；
+- **bundle 声明**：`dsh.bundle.patch` 必须声明，否则宿主判 `not-bundle`；
+- **patch 文件真实存在**且是合法 YAML 数组（缺文件 ⇒ 宿主装到那一步抛错回滚）；
+- **prepare 链必须覆盖 `compile` 与 `build:client`**（本次修复的核心）；
+- **`engines.dsh` 已声明**；
+- **`files` 白名单**覆盖 lib / patch / presets / config，且排除 `config/edge.json`（明文密钥）；
+- **prepare 自包含**：不得出现 `workspace:` 协议（publish.md:171 的原文要求）。
+
+**反向证伪**（两处，都红）：
+
+1. 把 `prepare` 退回只有 `compile` ⇒ 门禁报「prepare 链没有覆盖 build:client —— lib/client.js
+   （浏览器半侧）由 esbuild 产出，tsc 产不出来；缺它的症状是『宿主半侧正常、Edge tab 静默不出现』」；
+2. 去掉 `engines.dsh` ⇒ 门禁报「未声明 —— 版本兼容会退回逐个 peer 判定」。
+
+另有一道 `--real` 端到端模式：**克隆本仓的已提交状态**（= GitHub 给用户的那份：只有 tracked
+文件、没有 `lib/`），在临时 profile 目录里用桌面 runtime 那支 pnpm 装它，再检查装出来的包里
+真的有 `lib/index.js`、`lib/client.js` 与两个 bundle patch 文件，且 profile 的 `dependencies`
+记下了它。pnpm 的构建授权那一步按宿主 `build-approval.ts` 的做法处理。
+> `--real` 要求工作区**已提交**（它克隆 HEAD，脏着跑会测到旧代码、给出假通过）——脚本自己会拒绝。
+
+### 六、操作要点（写进 `docs/deploy-github.md`）
+
+- **构建授权要点一次**：pnpm ≥10 拒绝为 git 依赖跑 prepare，宿主 GUI 给「允许这些脚本并重试」。
+  这一步等于允许在本机执行该仓库的代码（宿主自己也这么写）；要更稳就钉 commit（`#<sha>`）。
+- **装完不会自动启用**：GUI 传 `enabled: false`（`manager-store.ts:1250`），宿主只在
+  `enabled !== false` 时才 `selectBundle`（`index.ts:990`）⇒ **必须点「立即启用」**，
+  否则包在 `dependencies` 里却不在 `dsh.profile.bundles` 里 ⇒ 启动不加载 ⇒ Edge tab 不出现。
+- **私有仓库**：预检禁用凭据助手（`credential.helper=`）且不交互 ⇒ 私有库会预检失败，
+  但**不阻断**（只拦 network/timeout，401/403 交给 pnpm）。本机实测 `git ls-remote` 会弹用户名
+  ⇒ 本机没有非交互可用凭据 ⇒ 要让别人装上，仓库得是**匿名可读**的。
+- **配置落位**：`config/edge.json` 含明文密钥、不入库 ⇒ git 装出来的包里没有它；运行时查找顺序
+  是 `<bundle>/config/edge.json` → `~/.dsh-edge-agent/edge.json` → `<bundle>/config/edge.example.json`
+  （`src/dsh-adapter/edge-config.ts:391-408`）⇒ git 装完把密钥写进 `~/.dsh-edge-agent/edge.json`。
+
+### 七、验证
+
+- 单元测试 **73 文件 / 1495 passed / 2 skipped / 0 failed**（基线 1491，+4，来自上游合并）；
+- eslint **0 error**（59 warnings，与基线同数）；
+- `tsc --noEmit` 双配置均 exit 0；
+- 构建门禁 `verify:build` **19 项全过**（EXIT=0，新增 `verify:git-install`）。
+
+### 八、遗留（如实记）
+
+- **`--real` 端到端尚未跑**：它要求工作区已提交，本节落档时尚未提交 ⇒ 实测结果在下一次提交后补。
+- **私有仓库的凭据链未打通**：宿主预检不注入 token（`scrubbedParentEnv` 连 `GITHUB_TOKEN` 都剔），
+  认证只能靠本机 git 配置。本机目前没有非交互可用凭据。
+- **npm 通道仍未发布**：`publish.yml` 就绪但包未上 registry（404）⇒ 「填包名」那条路还不可用。

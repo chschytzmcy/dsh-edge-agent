@@ -177,11 +177,12 @@ rm -rf /tmp/dsh-edge-probe
 | 通道 | 现状 |
 |---|---|
 | npm 包名 | 发布流水线就绪（`publish.yml`），但包尚未发布（registry 404）；推 `v*` tag 后可用 |
-| Git 仓库 | 从 git 安装会触发源码 `prepare: npm run compile`（`lib/` 不入库），桌面环境不一定有构建链，不建议 |
+| Git 仓库 | **2026-10-30（§7.155）起可用**：见 [`deploy-github.md`](deploy-github.md)。此前不成立的根因是 `prepare` 只跑 `compile`、产不出浏览器半侧 `lib/client.js`（Edge tab 会静默消失），且桌面环境无 npm；现在 `prepare` 走 `run.mjs compile build:client`（不依赖 npm），并有 `verify:git-install` 门禁守着。代价：pnpm ≥10 要求用户点一次「允许这些脚本并重试」 |
 | **本地目录（推荐）** | 指 `--emit-dir` 产出的可安装目录：预置 `lib/`、已删 `scripts`/`devDependencies`，安装即用 |
 
-不要用源码目录直接安装：源码 package.json 的 `prepare` 脚本会触发
-`npm run compile`，而桌面 App 环境不一定有 npm。
+不要用**源码目录**直接安装：源码 package.json 的 `prepare` 脚本会触发构建，
+而桌面 App 环境不一定有 npm（用 `run.mjs` 就没有这个依赖）——要走源码通道请用
+上面的 Git 仓库通道，它有专门的准备与门禁。
 
 ### 8.1 生成可安装产物
 

@@ -39,6 +39,7 @@
 | [`TEST-REPORT.md`](TEST-REPORT.md) | 测试报告：单元测试 / 门禁 / eslint / 实机取证 | 活（2 引用） |
 | [`deploy-minimal-files.md`](deploy-minimal-files.md) | 最小部署清单：每个文件装了什么、起什么作用 | 活（4 引用） |
 | [`load-into-local-dsh.md`](load-into-local-dsh.md) | 装进本地 DSH 的部署指南（Linux / macOS / Windows 三条路） | 活（8 引用） |
+| [`deploy-github.md`](deploy-github.md) | 从 GitHub 仓库地址安装到桌面版（Plugins → Add plugin）：前置条件、构建授权、启用、配置落位 | 活（§7.155 新增） |
 | [`plugin-mount-points.md`](plugin-mount-points.md) | 插件挂载点清单（哪个插件挂在哪棵树） | 活（2 引用） |
 | [`function-call-external-http-contract.md`](function-call-external-http-contract.md) | 外部 HTTP function call 的 wire 契约 | 活（4 引用） |
 | [`version-policy.md`](version-policy.md) | 版本策略（宿主版本约束） | 活（2 引用） |
