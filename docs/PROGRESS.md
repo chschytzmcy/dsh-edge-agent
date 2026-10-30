@@ -16710,3 +16710,73 @@ const mentionsBuildScript = /(?:^|[\s;&|(])(?:npm|pnpm) run build(?![\w:-])/mu.t
 
 - **装 DEMO 包前必须先卸载**同一个包名的旧版本（宿主按包名判重）；
 - 演示结束请删掉 `dist/*-DEMO.tar.gz`（`dist/` 不进 git，但文件还在盘上）。
+
+---
+
+## §7.161 五种部署形态的配置契约：给 link 通道加活配置硬断言（2026-10-30）
+
+### 一、主人的裁决
+
+主人 2026-10-30 定下五种部署形态各自的配置契约：
+
+> 主要保证 npm 和 git 仓库部署的时候没有 edge.json 即可，目录采用 link 方式、
+> 实时更新，tar 包方式包括真实 edge.json，可以用于演示。
+
+| 形态 | `config/edge.json` | 生效顺位 | 实时性 |
+|---|---|---|---|
+| npm 包 | ❌ 不含 | 2 | 冻结 |
+| GitHub 仓库 | ❌ 不含 | 2 | 冻结（装的是 HEAD） |
+| 本地目录（link） | ✅ **含（活配置）** | **1** | **实时** |
+| tarball（可分发） | ❌ 不含 | 2 | 冻结 |
+| tarball（DEMO 演示） | ✅ 含真实凭据 | 1 | 冻结 |
+
+⇒ **只有「本地目录（link）」与「DEMO tarball」带活配置**；其余三种形态一律不含，
+目标机器自己写 `~/.dsh-edge-agent/edge.json`（顺位 2）。
+
+### 二、实现
+
+1. **`scripts/verify-installable.mjs` 新增 §1c 条件硬断言**：
+   **本仓有 `config/edge.json` 时，installable 目录里必须有它。**
+   原来只要求「`config/` 里有 `edge.json` **或** `edge.example.json`」
+   ⇒ installable 目录**丢了活配置它照样绿** ⇒ link 模式的 profile 悄悄退到空模板
+   （顺位 1 落空），运维的真端点不再是生效的那份 —— 正是 §7.102 记过的坑。
+   条件化（依本仓是否有活配置）⇒ 干净 checkout / CI 仍绿。
+2. **`docs/config-reference.md` 新增 §19**「五种部署形态 × 配置存在性 × 实时性」
+   —— 五形态表 + link 通道实时性的**精确边界** + 加断言的理由；
+   原 §19「相关文档」顺延为 §20。
+
+### 三、link 通道的「实时更新」实时到什么程度
+
+| 改什么 | 生效方式 |
+|---|---|
+| `dist/installable/<变体>/config/edge.json` | **不用重启**（配置读取带 mtime+size 指纹） |
+| 同一文件里**从「无端点」改成「有端点」** | **要重启**（`local-llm` 路由注册在启动时的 `apply()`） |
+| `dist/installable/<变体>/lib/*.js`（代码） | **重启 App**（bundle 是符号链接，文件直接变） |
+| 装出来的 tarball 内容 | **不生效**（冻结副本 ⇒ 卸载重装） |
+
+### 四、验证
+
+- `verify:build` **21 项** exit 0；
+- **反向证伪（对真实产物）**：把两个变体的 installable `config/edge.json` 移开
+  ⇒ 门禁**红**并点名 link 通道/顺位 1；放回 ⇒ 绿（4 项全过）；
+- **`verify-git-install.mjs --real` 端到端通过**（此前一直因「工作区有未提交改动」
+  被自己的前置检查拦下 ⇒ 测的是旧代码；**必须先提交再跑**）：
+  克隆 → `pnpm add git+file://` → 装出来的 payload 完整
+  （`lib/index.js` / `lib/client.js` / bundle patch / **不含 `config/edge.json`**）；
+- **反向证伪 git 通道的「不含 edge.json」不是恒真**：造一个「故意泄漏」的仓库副本
+  （clone tracked-only ⇒ 塞假的 `config/edge.json` ⇒ 去掉 `files` 白名单里的
+  `!config/edge.json` 排除项 ⇒ commit）⇒ 走同一条真实安装路径
+  ⇒ **装出来的包里 `config/edge.json` 确实在**（`edge.example.json` 也在）
+  ⇒ 证明 `verify-git-install.mjs:409-412` 那道断言真能抓住泄漏。
+  ⇒ **推论**：git 通道「不含明文凭据」这一条**完全押在 `files` 白名单那一行上**，
+  删掉它就真的漏 —— 静态断言（`verify-package` 的 `FORBIDDEN_IN_PACKAGE`）
+  与端到端断言（`--real`）必须**同时**在。
+- vitest 73 文件 / 1495 passed / 2 skipped / 0 failed；tsc 双配置 0；
+  eslint 0 error / 59 warnings；doc-links 断链 0 / 孤儿 0。
+
+### 五、遗留
+
+- `verify:no-secrets`（**git 索引层**的门禁：防止有人 `git add -f config/edge.json`
+  把明文凭据提交进历史）尚未做 ⇒ 待主人定；
+- `dist/edge.json.template` 与 `dist/check-edge-config.mjs`（两个不含密钥的工具）
+  是否提交进仓库 ⇒ 待主人定。
