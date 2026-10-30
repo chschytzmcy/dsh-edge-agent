@@ -15610,6 +15610,49 @@ left-pad import = OK (function)
 **（3）本仓全部 devDeps 在公网 npm 上都能按 `>=0.2.1-rc.2` 解析**（逐个核对，落到 `0.2.1-rc.5`；
 `@deepseek-ai/cordis` 4.0.5、`@deepseek-ai/schemastery` 3.18.5）——clone 里的 `pnpm install` 不会缺件。
 
+**（4）⚠️ 宿主侧缺口：PATH 上没有 `pnpm`，这条通道在桌面版上装不了需要构建的插件。**
+
+第一趟 `--real` 端到端失败在这一步：
+
+```
+pnpm-install$ pnpm install
+'pnpm' is not recognized as an internal or external command
+[ERR_PNPM_PREPARE_PACKAGE] Failed to prepare git-hosted package fetched from "file:///..."
+```
+
+根因在 pnpm 自己的源码（`dist/pnpm.mjs`）：
+
+```js
+// :130133  按 clone 根目录里的锁文件决定包管理器名
+const pm = (await preferredPM(gitRootDir))?.name ?? "npm";
+// :130157  往 clone 的 manifest 里注入一条脚本
+manifest.scripts[`${pm}-install`] = `${pm} install`;
+// :130158  用 shell 跑它
+await runLifecycleHook(installScriptName, manifest, execOpts);
+```
+
+`prepare` 非空 ⇒ **一定**走构建路径（`:130185` 的 `packageShouldBeBuilt`）⇒ 一定注入
+`pnpm install` ⇒ **shell 必须在 PATH 上找到 `pnpm`**。
+
+**`<pm>` 为什么是 pnpm**（`preferredPM` 的判定顺序，`:130053`）：`package-lock.json`
+→ `yarn.lock` → `pnpm-lock.yaml` → `shrinkwrap.yaml` → `bun.lock*` → 向上找
+`pnpm-lock.yaml` / `pnpm-workspace.yaml` → yarn workspace 根 → 按装机的包管理器猜。
+本仓的 `package-lock.json` **在 `.gitignore` 里**（clone 里没有）、`pnpm-lock.yaml`
+与 `pnpm-workspace.yaml` 都被跟踪 ⇒ 判定 **pnpm** ⇒ 注入的确实是 `pnpm install`。
+（`preferredPM` **不看** `packageManager` 字段 —— 改那个字段不改变结论。）
+
+而桌面 runtime 的 `bin/` 里**只有 `node` / `node.cmd`**（宿主
+`apps/desktop-host/src/index.ts:44` 把 `runtime\bin` 前置到 PATH），本机用户 PATH 里
+也没有 pnpm（`C:\Program Files\nodejs` 与 `C:\Users\cheng\AppData\Roaming\npm` 都没有 shim）
+⇒ **桌面上从 Git 装任何需要构建的插件都会卡在这里**。
+
+宿主自己那条 e2e 测试（`boot/plugin-manager/tests/manager.spec.ts:1460`，
+「installs and removes with the bundled pnpm when PATH contains no pnpm」）用的包
+**没有构建脚本** ⇒ 压根不触发这一步 ⇒ 这条缺口没被覆盖到。
+
+**本仓无法绕过**（`preferredPM` 无论怎么判定，注入的 `<pm> install` 都要那个 pm 在 PATH 上；
+仓侧改 `packageManager` 只会把它换成同样不在 PATH 上的 `npm`）。
+
 ### 四、改动
 
 | # | 改动 | 为什么 |

@@ -18,6 +18,8 @@ https://github.com/chschytzmcy/dsh-edge-agent
 宿主负责预检、构建授权、装后校验、启用；**本仓负责让「克隆源码 → prepare → 打包」
 产出宿主要的全部东西**（Node 半侧 + 浏览器半侧 + bundle patch 层）。
 
+**两个前置条件**（详见 §2）：仓库要能被读（§2.1）、**PATH 上要有 `pnpm`**（§2.5）。
+
 ## 1. 三条通道怎么选
 
 | 通道 | 输入 | 要构建授权吗 | 产物形态 | 适合谁 |
@@ -92,6 +94,58 @@ left-pad import = OK (function)
 
 ⇒ `tsc` / `esbuild` 在 git 安装时可用。本仓的 devDeps 在公网 npm 上都能按
 `>=0.2.1-rc.2` 解析到 `0.2.1-rc.5`（已逐个核对）。
+
+### 2.5 ⚠️ PATH 上必须有一个 `pnpm`（桌面版当前**不满足**）
+
+这是**宿主侧**的条件，本仓无法绕过。链条是这样的（pnpm 自己的源码，
+`dist/pnpm.mjs`）：
+
+```js
+// :130133  按 clone 根目录里的锁文件决定包管理器名
+const pm = (await preferredPM(gitRootDir))?.name ?? "npm";
+// :130157  往 clone 的 manifest 里注入一条脚本
+manifest.scripts[`${pm}-install`] = `${pm} install`;
+// :130158  用 shell 跑它
+await runLifecycleHook(installScriptName, manifest, execOpts);
+```
+
+`prepare` 非空 ⇒ pnpm **一定**走构建路径（`:130185`）⇒ 一定注入 `pnpm install` ⇒
+**shell 必须在 PATH 上找到 `pnpm`**。
+
+**`<pm>` 为什么是 pnpm**（`preferredPM` 的判定顺序，`:130053`）：
+`package-lock.json` → `yarn.lock` → `pnpm-lock.yaml` → `shrinkwrap.yaml` → `bun.lock*`
+→ 向上找 `pnpm-lock.yaml` / `pnpm-workspace.yaml` → yarn workspace 根 → 最后按装机的
+包管理器猜。本仓的 `package-lock.json` **在 `.gitignore` 里**（clone 里没有），
+`pnpm-lock.yaml` 被跟踪 ⇒ 判定 **pnpm** ⇒ 注入的就是 `pnpm install`。
+
+> 顺带说明为什么「改 `packageManager` 字段」不是出路：那只影响 `preferredPM`
+> 的兜底分支，而本仓的 `pnpm-lock.yaml` 与 `pnpm-workspace.yaml` 都在跟踪列表里，
+> 前两个判定分支已经把它钉死成 pnpm。
+
+而桌面 runtime 的 `bin/` 里**只有 `node` / `node.cmd`，没有 pnpm**——宿主把
+`runtime\bin` 前置到 PATH（`apps/desktop-host/src/index.ts:44`）后，用户 PATH 里
+也得有 pnpm 才找得到。实测本机：**PATH 上没有 pnpm**（`C:\Program Files\nodejs`
+与 `C:\Users\cheng\AppData\Roaming\npm` 里都没有 shim）。
+
+⇒ 症状是 pnpm 抛这一句，卡住的人完全看不出该做什么：
+
+```
+pnpm-install$ pnpm install
+'pnpm' is not recognized as an internal or external command
+[ERR_PNPM_PREPARE_PACKAGE] Failed to prepare git-hosted package
+```
+
+**补救**（二选一）：
+
+1. **装一个全局 pnpm**：`npm i -g pnpm` ⇒ 落到 `C:\Users\cheng\AppData\Roaming\npm`，
+   该目录**本来就在用户 PATH 上** ⇒ 桌面 app 的 PATH 里就有了 pnpm ⇒ 通道通。
+   （实测：用等价 shim 验证过整条链跑通。）**注意桌面 app 要重启**才拿到新 PATH。
+2. **改走 npm / tarball 通道**（宿主 `publish.md:183-186` 的建议）：分发**预构建
+   产物**，安装时不需要任何构建权限，也就不需要 PATH 上有 pnpm。
+
+> 宿主自己那条 e2e 测试（`boot/plugin-manager/tests/manager.spec.ts:1460`，
+> 「installs and removes with the bundled pnpm when PATH contains no pnpm」）
+> 用的包**没有构建脚本** ⇒ 压根不触发这一步 ⇒ 这条缺口没被那条测试覆盖到。
 
 ## 3. 桌面上的操作步骤
 
