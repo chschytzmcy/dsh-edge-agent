@@ -369,6 +369,29 @@ allowBuilds:
 
 ⇒ 把真实端点与密钥写进 `~/.dsh-edge-agent/edge.json`（该文件本身同样不入库）。
 
+> ⚠️ **换成 git 装法后，配置读取位置整体后移了一档**（`edge-config.ts:391-409` 的
+> `edgeConfigCandidates()`）：
+>
+> | 顺位 | 路径 | link 装法 | git 装法 |
+> |---|---|---|---|
+> | 1 | `<bundle root>/config/edge.json` | ✅ 有（`dist/installable/.../config/edge.json`，**含真 key**） | ❌ **没有**（包里只有 `edge.example.json`） |
+> | 2 | `~/.dsh-edge-agent/edge.json` | 用不上 | ✅ **这里** |
+> | 3 | `<bundle root>/config/edge.example.json` | 兜底 | 兜底（空密钥） |
+>
+> ⇒ 以前靠 link 装法能用的那份配置（主人最新裁决都在仓库那份里）**必须搬到
+> `~/.dsh-edge-agent/edge.json`**，否则 git 装完会退回到**空密钥模板**（云端调用
+> 401）或旧配置。
+>
+> 本机 2026-10-30 实测：`~/.dsh-edge-agent/edge.json` 是旧配置（DeepSeek 端点、
+> `deepseek-flash`、缺 `alitokenplanApiKey`、jev 指向本机 127.0.0.1:8001、
+> webSearch 开着），而仓库那份已是最新裁决（本地池 → 阿里云 token-plan +
+> `qwen3.8-flash`、云轮次 `delegate: true`、jev → 百炼 decision 模型、
+> webSearch 关掉）⇒ 已用仓库那份覆盖 home 那份，旧版备份在
+> `~/.dsh-edge-agent/edge.json.bak-20261030T025751`。
+>
+> **仓库里的 `config/edge.json` 不用改** —— 它不入库、不会跟着 git 走，
+> 也不该进 git（明文密钥）。它只是**本机开发时的源**。
+
 **装出来的包长什么样**（实测，2026-10-30）：
 
 ```
