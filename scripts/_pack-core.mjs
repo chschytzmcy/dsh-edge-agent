@@ -137,8 +137,29 @@ export function findPnpm(nodeBin) {
     }
     return [slash(explicit)]
   }
+
   const onPath = which('pnpm')
-  if (onPath) return [slash(onPath)]
+  if (onPath) {
+    // Windows: `where pnpm` lists EVERY match, and npm writes an
+    // extension-less POSIX shim (`…\npm\pnpm`) NEXT to `pnpm.cmd`. The shim
+    // is not a PE binary, so CreateProcess cannot exec it — and the cmd.exe
+    // route is unreliable under Node's own argument quoting (four different
+    // quoting forms were measured failing on 2026-10-30).
+    //
+    // So on Windows, go straight for the REAL executable instead of the shim:
+    //   · npm's global layout ships a native `pnpm.exe` under node_modules/pnpm/
+    //   · older layouts ship a `bin/pnpm.mjs` we can run with node
+    // Both are exec'able without cmd.exe, which is the whole point.
+    if (process.platform === 'win32') {
+      const dir = dirname(slash(onPath))
+      const nativeExe = join(dir, 'node_modules', 'pnpm', 'pnpm.exe')
+      if (isFile(nativeExe)) return [slash(nativeExe)]
+      const mjs = join(dir, 'node_modules', 'pnpm', 'bin', 'pnpm.mjs')
+      if (isFile(mjs) && nodeBin) return [nodeBin, slash(mjs)]
+    } else {
+      return [slash(onPath)]
+    }
+  }
 
   const localAppData = slash(process.env.LOCALAPPDATA ?? '')
   const candidates = [
@@ -176,11 +197,22 @@ export function run(argv, opts = {}) {
   let file = cmd
   let args = rawArgs
   let shell = false
+  let windowsVerbatimArguments = false
   if (isCmdShim) {
     file = process.env.ComSpec ?? 'cmd.exe'
     const inner = [cmd, ...rawArgs].map(quoteArg).join(' ')
-    args = ['/d', '/s', '/c', `"${inner}"`]
+    // cmd.exe's `/c` strips ONE pair of outer quotes before executing the
+    // rest, so the command line has to carry a SECOND outer pair on top of
+    // the per-argument quotes: `""C:\a b\x.cmd" "arg""`.
+    //
+    // `windowsVerbatimArguments: true` is what makes that possible: without
+    // it Node re-quotes every argument that contains a space, and the two
+    // layers of quoting no longer line up — measured on 2026-10-30, all four
+    // quoting shapes failed with "is not recognized as an internal or
+    // external command".
+    args = ['/d', '/s', '/c', `""${inner}""`]
     shell = false
+    windowsVerbatimArguments = true
   }
 
   const r = spawnSync(file, args, {
@@ -189,6 +221,7 @@ export function run(argv, opts = {}) {
     stdio: opts.quiet ? ['ignore', 'pipe', 'pipe'] : 'inherit',
     env: { ...process.env, ...(opts.env ?? {}) },
     shell,
+    windowsVerbatimArguments,
   })
   return {
     status: r.status ?? 1,

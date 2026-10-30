@@ -76,14 +76,19 @@ jobs:
       # every push to main has been RED since §7.106 (2026-10-20).
       #
       # This chain must stay identical to package.json#scripts.build
-      # ("compile typecheck:client build:client build:installable verify:build").
+      # ("compile typecheck:client build:client build:installable pack:tarball verify:build").
       # The order matters: build:installable refuses to ship a bundle whose
       # exports["./client"] does not resolve (§7.145) ⇒ build:client first.
       #
+      # §7.158: pack:tarball is in the chain because verify:build now also
+      # audits dist/*.tar.gz (verify:tarball, §7.157). Without the artifacts
+      # the gate reads ENOENT-ish failures and the job goes red — the same
+      # shape §7.154 fixed for lib/client.js and dist/installable/.
+      #
       # scripts/verify-ci-build-chain.mjs gates this file — without it, a
       # dropped step here is invisible until CI goes red again.
-      - name: Build (compile → browser half → installable bundle)
-        run: node scripts/run.mjs compile typecheck:client build:client build:installable
+      - name: Build (compile → browser half → installable bundle → tarballs)
+        run: node scripts/run.mjs compile typecheck:client build:client build:installable pack:tarball
 
       - name: Verify (boundary / contract / patch-surface / plugin-spec / package)
         run: pnpm run verify:build

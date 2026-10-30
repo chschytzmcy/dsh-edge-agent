@@ -16368,3 +16368,178 @@ pnpm add C:\…\dist\dsh-edge-agent-desktop-safe.tar.gz
   的 files 规则）⇒ 这条防线靠 `stageVariant()` 的 `keepSecretConfig` 分支
   + 新增的 `verify:tarball` 第 5 条，两处都在。
 
+
+## §7.158 生成 tar 包：修两个真 bug，并发现自己上一轮把 CI 弄红了（2026-10-30）
+
+> 起因：主人问「**如何生成 tar 包**」。回答这个问题的时候，顺手把整条产线
+> 读了一遍 —— 读出 **三个真问题**（其中两个是我自己造的）。
+
+### 一、答案（先给结论）
+
+```bash
+npm run build:tarball
+```
+
+一条命令，串三步：
+
+| 步 | 做什么 | 少了会怎样 |
+|---|---|---|
+| `compile:pack` | tsc → `lib/`（宿主半侧）+ esbuild → `lib/client.js`（浏览器半侧） | `lib/client.js` 缺失 ⇒ 装完 **Edge tab 静默不出现**（§7.145） |
+| `pack:all` | `dist/installable/<变体>/` + `dist/*.tar.gz` + `.sha256` | 没有产物可装 |
+| `verify:tarball` | 7 组门禁（§7.157） | 陈旧 / 漏文件 / 混密钥的包照发不误 |
+
+产物：`dist/dsh-edge-agent-desktop-safe.tar.gz`（本通道的标的）、`dist/dsh-edge-agent-full.tar.gz`，各带 `.sha256`。
+
+**装法**：桌面 App → Plugins → Add plugin → 填 tarball 的**绝对路径** →
+安装 → **点「立即启用」**（§2.7）→ 重启；配置写 `~/.dsh-edge-agent/edge.json`。
+
+### 二、★ Bug A：`_pack-core.mjs` 在 Windows 上根本调不动 pnpm
+
+`node scripts/_pack-core.mjs compile` 失败（`pnpm run compile 失败（exit 1）`），
+而**同一条命令在 PowerShell 里是成功的**（exit 0）。
+
+**根因**：`findPnpm()` 用 `where pnpm` 取**第一行** ⇒ 拿到的是 npm 生成的
+**无扩展名 POSIX shim**（`…\npm\pnpm`）—— 那不是 PE binary，CreateProcess
+执行不了；而 `run()` 的 `.cmd` 分支要求扩展名存在 ⇒ 永远不触发。
+
+**决定性实测**：`$env:PNPM='…\pnpm.cmd'` 仍然失败；再用脚本把 cmd.exe 的
+**4 种引号形式**（`/s /c`+外层引号 / `/c`+外层引号 / `/c`+无外层 / `/s /c`+无外层）
+全试了一遍 —— **全败**（Node 的参数转义与 cmd 的 `/c` 剥引号规则叠加，
+引号数永远对不上）。⇒ **Windows 上就不该走 cmd.exe**。
+
+**修法**：
+
+1. `findPnpm()` 在 Windows 上绕开 shim，直接找
+   `dirname(which('pnpm'))/node_modules/pnpm/pnpm.exe`（真 exe）⇒ 返回 `[exe]`；
+   找不到就退到 `node_modules/pnpm/bin/pnpm.mjs` ⇒ 返回 `[nodeBin, mjs]`。
+   非 Windows 行为不变。
+2. `run()` 的 `.cmd` 分支加 `windowsVerbatimArguments: true` + **双层外引号**
+   `""${inner}""`（cmd 的 `/c` 只剥一对外引号）。
+
+实测：`==> pnpm: C:/Users/cheng/AppData/Roaming/npm/node_modules/pnpm/pnpm.exe`
+⇒ clean-lib + tsc + `[build-client] lib/client.js = 52 KB` ⇒ **exit 0**。
+
+### 三、★ Bug B：`build:tarball` 漏跑 `build:client`
+
+新加的 `build:tarball` 第一次跑**被门禁当场抓住** —— 报「tarball 里没有
+`lib/client.js`」。
+
+**根因**：`scripts/run.mjs compile` = `package.json#scripts.compile` =
+`clean-lib + tsc`，**不跑 `build:client`**；而 `_pack-core.mjs compile` 两个都跑。
+⇒ 浏览器半侧根本没进包 ⇒ 装出来 Edge tab 会静默不出现。
+
+**修法**：`package.json` 加
+
+```json
+"compile:pack": "node scripts/_pack-core.mjs compile",
+"pack:all":    "node scripts/_pack-core.mjs all",
+"pack:tarball":"node scripts/_pack-core.mjs tarball",
+"build:tarball":"node scripts/run.mjs compile:pack pack:all verify:tarball"
+```
+
+> 命名约定：**`build:*` = 造产物**（`build:client` / `build:installable` / `build:tarball`），
+> **`pack:*` = `_pack-core.mjs` 的子命令**，`compile:pack` = 它的 compile 模式。
+
+### 四、★★ 我上一轮引入的真回归：CI 必红
+
+§7.157 把 `verify:tarball` 接进了 `verify:build`，**但没配套的构建步**：
+
+```
+CI/publish 的 build 链： compile → typecheck:client → build:client → build:installable
+                                                                              ↑ 不产 tarball
+verify:build 链：       … verify:installable → verify:tarball
+                                           ↑ 读 dist/installable/  ✓
+                                                        ↑ 读 dist/*.tar.gz  ✗ 不存在 ⇒ 判失败
+```
+
+`verify-tarball.mjs` 对缺失产物**判失败、不跳过** ⇒ **CI 必红**。
+这与 §7.154（`lib/client.js`）、§7.156（`dist/installable/`）**是同一个形状**：
+门禁读的是产物，产物得有人造。
+
+**修法**：
+
+1. `package.json#scripts.build` 与 `ci.yml` / `publish.yml` 的 build 链都加
+   **`pack:tarball`**（只出 tarball，不重复构建 installable）；
+2. `verify-ci-build-chain.mjs` 的 `REQUIRED_BUILD_STEPS` 加 `pack:tarball`
+   ⇒ 以后再掉这一步，**提交前**就红，不用等 CI。
+
+### 五、★★★ 门禁自身的洞：豁免逻辑把全部逐项检查短路了
+
+修完 §四 去加断言，发现**新加的断言自己就红了** —— 把 `ci.yml` 的
+`pack:tarball` 删掉，门禁**不报**。
+
+**根因**：`verify-ci-build-chain.mjs` 的豁免分支
+
+```js
+const mentionsBuildScript = /\bnpm run build\b/.test(runText)
+  || /\bnode scripts\/run\.mjs\b[^\n]*\bbuild\b/.test(runText)
+```
+
+第二个正则在 `build:client` 上就成立（`:` 是非单词字符，`\bbuild\b` 的边界
+成立）⇒ **任何提到 `build:client` 的链都豁免掉全部逐项检查**。
+
+⇒ 也就是说：**§7.154 / §7.156 修对了 workflow，但那个门禁从来没真正钉住
+它们** —— 它当时防回归的能力是 0。
+
+**修法**：豁免只认**显式的脚本名**：
+
+```js
+const mentionsBuildScript = /(?:^|[\s;&|(])(?:npm|pnpm) run build(?![\w:-])/mu.test(runText)
+```
+
+`(?![\w:-])` 保证 `npm run build:client` / `npm run build-installable`
+不误匹配。
+
+> **方法论教训（记下来）**：反向证伪脚本自己先骗了我一次 ——
+> `String.replace` **只替换首次命中**，而 build 步**上方的注释**里恰好也写着
+> `build:installable pack:tarball` ⇒ 首次命中落在注释上，真正的 `run:` 行
+> **根本没被改坏** ⇒ 门禁绿 ⇒ 我一度以为门禁有洞。改成 `replaceAll` +
+> **断言 run 行确实被改坏**之后才是真结论。**证伪脚本本身也要自证。**
+
+### 六、门禁接线：三条产线都要跑 `verify:tarball`
+
+**门禁写出来不等于有人跑。** §7.157 只把 `verify-tarball` 接进了
+`verify:build`（CI 那条链），**本机的两条产线都没跑它**：
+
+| 产线 | §7.157 时跑的门禁 | 现在 |
+|---|---|---|
+| `build-windows/macos/linux.sh`（经 `_platform-common.sh` 的 `dsh_package()`） | 只有 `verify-installable` | **+ `verify-tarball`** |
+| `build-desktop-bundle.sh`（老产线，自己实现打包） | 只有 `verify-installable` | **+ `verify-tarball`** |
+| `npm run build` / CI | `verify:build`（含 `verify-tarball`） | 不变 |
+
+### 七、文档
+
+- [`docs/deploy-tarball.md`](deploy-tarball.md) **§3.1 重写**：一条命令 +
+  三步职责表 + **「底层命令都不编译」的语义表** + 装法四步。
+  （原文只教 `node scripts/_pack-core.mjs tarball` —— **那正是会打出陈旧产物的路**。）
+- 同文档新增 **§5.3**（三条产线的门禁接线）与 **§5.4**（§7.158 的 CI 回归 + 门禁自身的洞 + 反向证伪表）。
+- 根 README「通道 D」：`node scripts/_pack-core.mjs tarball` ⇒ `npm run build:tarball`。
+- [`docs/load-into-local-dsh.md`](load-into-local-dsh.md) 两处同上；
+  Git Bash 工具链那段补上 `npm run build:tarball`（Windows/PowerShell 也能跑，不必绕 bash）。
+
+### 八、验证
+
+- `npm run build:tarball` → **exit 0**（compile 两半 + 两个 tarball + 门禁绿）；
+- `node scripts/run.mjs verify:build` → **20 项 exit 0**；
+- `node scripts/verify-ci-build-chain.mjs --selftest` → **15 项断言全过**（原 11 项，新增 §四/§五 的 4 项）；
+- `node scripts/verify-ci-build-chain.mjs` → OK（audited: ci.yml(build), publish.yml(npm)）；
+- **反向证伪（对真实 workflow / 真实产物做的，10 项全过）**：
+  `ci.yml` 删 `pack:tarball` ⇒ 🔴；`publish.yml` 删 `pack:tarball` ⇒ 🔴；
+  还原 ⇒ 🟢；把 `dist/*.tar.gz` 移走 ⇒ `verify-tarball` 🔴；放回 ⇒ 🟢；
+- `npx tsc --noEmit -p tsconfig.json` / `-p tsconfig.client.json` → 双 0；
+- eslint → 0 error / 59 warnings；
+- vitest → **73 文件 / 1495 passed / 2 skipped / 0 failed**；
+- `verify-doc-links` → 断链 0 / 孤儿 0。
+
+### 九、遗留（如实记）
+
+- **CI 的真实状态仍然查不到**：`gh` CLI 本机没装，私有仓库的匿名 GitHub API
+  返回 404 ⇒ 本次关于「CI 会红」是**代码级推演 + 本地复现**（把 tarball
+  移走 ⇒ `verify-tarball` 确实判失败），**没有看到红色流水线实况**。
+  ⇒ 但 §四 的修法无论如何都是对的：构建链补齐后，产物就在，门禁就查得到。
+- **tarball 通道尚未在主人正在用的桌面 profile 上实机点过**（同 §7.157 的遗留）：
+  宿主 GUI 那一跳（填路径 → 装 → 立即启用 → 重启 → Edge tab + 边缘模式）
+  还没跑过 —— 那会替换掉当前的 git 版 0.1.1 ⇒ 等主人点头。
+- **npm 通道仍差最后一步**：主人手上的 npm 账号 + granular access token
+  （publish 权限、Bypass 2FA、≤90 天、scope 限定本包）存成 GitHub secret
+  `NPM_TOKEN`；推第一个 `v*` tag 即触发发布。

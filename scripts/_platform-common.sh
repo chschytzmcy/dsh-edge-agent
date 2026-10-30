@@ -64,10 +64,17 @@ dsh_compile() {
 
 # Package: installable dirs (link mode) + tarballs (file mode), from ONE
 # staging tree so the two artifacts can never drift. Then run the gate.
+#
+# §7.157: verify-installable walks dist/installable/ ONLY — the tarball was
+# never checked by it, so a stale/broken tarball shipped with the whole chain
+# green (that is exactly how the pre-§7.153 artifact survived: the preset
+# layer was silently missing). verify-tarball is the gate for the OTHER
+# artifact, so both are mandatory here.
 dsh_package() {
   dsh_log "package (installable dirs + tarballs)"
   "$NODE_BIN" "$REPO/scripts/_pack-core.mjs" all
   "$NODE_BIN" "$REPO/scripts/verify-installable.mjs"
+  "$NODE_BIN" "$REPO/scripts/verify-tarball.mjs"
 }
 
 # Artifact paths in the form the CONSUMER can paste.
@@ -91,7 +98,7 @@ dsh_summary() {
   dsh_load_paths
   cat <<EOF
 
-产物（两种模式同源，均通过 verify-installable 门禁）：
+产物（两种模式同源，均通过 verify-installable + verify-tarball 门禁）：
   tar（分发）  $TARBALL (+ .sha256)
                 $TARBALL_FULL (+ .sha256)
   link（开发） $INSTALLABLE_DIR

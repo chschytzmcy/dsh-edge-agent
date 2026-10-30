@@ -115,7 +115,8 @@ git+ssh://git@github.com/chschytzmcy/dsh-edge-agent.git
 #### 通道 D：tarball 路径（离线分发给别人）
 
 ```bash
-node scripts/_pack-core.mjs tarball     # → dist/dsh-edge-agent-desktop-safe.tar.gz
+npm run build:tarball                   # 编译 + 打包 + 门禁
+                                       # → dist/dsh-edge-agent-desktop-safe.tar.gz
 ```
 
 在同一个对话框里填 tarball 的**绝对路径**：

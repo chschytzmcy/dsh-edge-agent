@@ -251,8 +251,9 @@ Git Bash 自带 GNU tar 1.35（`--no-xattrs` 能跑）+ `shasum` ✓；
 不可用。Windows 的实际构建打包对是：
 
 ```bash
+npm run build:tarball                            # 编译 + 打包 + 门禁（Windows/PowerShell 也能跑）
 npm run compile                                  # pnpm 不在 PATH 时用 npm run
-bash scripts/build-desktop-bundle.sh --no-build  # 只出 tarball
+bash scripts/build-desktop-bundle.sh --no-build  # 复用现有 lib/，只重打包
 bash scripts/build-desktop-bundle.sh --emit-dir  # 出 installable 目录（App 开着也行，锁住自动 in-place）
 bash scripts/build-desktop-bundle.sh --install-desktop=link   # 构建 + 把桌面 profile 切 link（开发）模式
 bash scripts/build-desktop-bundle.sh --install-desktop=tar    # 构建 + 切 tar（分发）模式
@@ -524,7 +525,7 @@ path spec 的 manifest **直接从目录里的 `package.json` 读**
 **`.zip` 不支持。**
 
 ```bash
-node scripts/_pack-core.mjs tarball     # → dist/dsh-edge-agent-desktop-safe.tar.gz
+npm run build:tarball                   # 编译 + 打包 + 门禁 → dist/dsh-edge-agent-desktop-safe.tar.gz
 ```
 
 在桌面 App 里填 tarball 的绝对路径（客户端是**纯文本框**，没有目录选择器，

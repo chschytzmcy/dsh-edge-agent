@@ -119,10 +119,19 @@ tarball 里没有 `install` / `postinstall` / `prepare` 脚本（`stageVariant()
 
 ### 3.1 本仓怎么产出
 
+**一条命令（推荐）**：
+
 ```bash
-node scripts/_pack-core.mjs tarball     # 只出 tarball
-node scripts/_pack-core.mjs all         # installable 目录 + tarball
+npm run build:tarball
 ```
+
+它串三步，**一步都不能少**：
+
+| 步 | 做什么 | 少了会怎样 |
+|---|---|---|
+| `compile:pack` | tsc → `lib/`（宿主半侧）+ esbuild → `lib/client.js`（浏览器半侧） | `lib/client.js` 缺失 ⇒ 装完 **Edge tab 静默不出现**（§7.145） |
+| `pack:all` | `dist/installable/<变体>/` + `dist/*.tar.gz` + `.sha256` | 没有产物可装 |
+| `verify:tarball` | 7 组门禁（见 §5） | 陈旧/漏文件/混密钥的包照发不误 |
 
 产物：
 
@@ -133,6 +142,40 @@ dist/<name>.tar.gz.sha256                  ← 校验和
 ```
 
 tarball 的**顶层目录必须叫 `package`**（npm/pnpm 的期望，`_pack-core.mjs` §B）。
+
+#### ⚠️ 底层命令**都不编译**
+
+这是本节最容易踩的坑 —— 打包命令**只打包，不编译**：
+
+| 命令 | 编译？ | 产物 |
+|---|---|---|
+| `node scripts/_pack-core.mjs compile` | ✅ 两半都编 | `lib/` |
+| `node scripts/_pack-core.mjs tarball` | ❌ | 只出 tarball |
+| `node scripts/_pack-core.mjs all` | ❌ | installable 目录 + tarball |
+
+⇒ **「不编译就打包」= 打出陈旧产物**。§7.157 抓到的那对陈旧 tarball 就是这么
+来的（`dsh.bundle.patch` 写成字符串、`engines` 里没有 `dsh` ⇒ 装出来**不注册
+「边缘模式」**）。所以：**要么用 `npm run build:tarball`，要么自己按
+`compile` → `all` 的顺序来**。
+
+跨平台脚本（`build-windows.sh` / `build-macos.sh` / `build-linux.sh` /
+`build-desktop-bundle.sh`）走的是 `compile` → 打包 → **两个门禁**
+（`verify-installable` + `verify-tarball`），结果与上面一致。
+
+#### 装进桌面版
+
+1. 桌面 App → 侧边栏 **Plugins → Add plugin → Install a third-party plugin**
+2. 填 tarball 的**绝对路径**（Windows 形式 `C:\…`，不是 MSYS2 的 `/c/…`）
+3. 安装 → **点「立即启用」**（§2.7）→ 重启 App
+4. 配置写 `~/.dsh-edge-agent/edge.json`（tarball 里没有 `config/edge.json`，§3.3）
+
+CLI 装法（另建 profile，不碰 desktop）：
+
+```bash
+export DSH_BIN="$LOCALAPPDATA\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd"
+export DSH_HOME=/tmp/dsh-edge-load
+"$DSH_BIN" plugin --profile edge add "file:C:/…/dist/dsh-edge-agent-desktop-safe.tar.gz"
+```
 
 ### 3.2 关键 manifest 字段
 
@@ -216,6 +259,59 @@ node scripts/verify-tarball.mjs --selftest  # 自证 + 反向证伪（11 项断�
 
 ⇒ 而 `dist/installable/` 目录（本地目录通道用）**一直是对的** ⇒
 **同一台机器上两条通道装出来的东西不一样**，而且没人发现。
+
+### 5.3 门禁接线：三条产线都要跑它（§7.158）
+
+**门禁写出来不等于有人跑。** §7.157 把 `verify-tarball` 接进了 `verify:build`
+（CI 用的那条链），但**本机的两条产线都没跑它**：
+
+| 产线 | 产物 | §7.157 时跑的门禁 | 现在 |
+|---|---|---|---|
+| `build-windows/macos/linux.sh`（经 `_platform-common.sh`） | installable + tarball | 只有 `verify-installable` | **`verify-installable` + `verify-tarball`** |
+| `build-desktop-bundle.sh`（老产线，自己实现打包） | installable + tarball | 只有 `verify-installable` | **同上** |
+| `npm run build` / CI | installable + tarball | `verify:build`（含 `verify-tarball`） | 不变 |
+
+⇒ 现在改的三处：`scripts/_platform-common.sh` 的 `dsh_package()`、
+`scripts/build-desktop-bundle.sh` 的打包步之后。
+
+### 5.4 §7.158：`verify:build` 含 `verify:tarball` ⇒ CI 必须产 tarball
+
+§7.157 把 `verify:tarball` 接进 `verify:build` 时**漏了配套的构建步**：
+
+```
+CI/publish 的 build 链： compile → typecheck:client → build:client → build:installable
+                                                                              ↑ 不产 tarball
+verify:build 链：       … verify:installable → verify:tarball
+                                           ↑ 读 dist/installable/  ✓
+                                                        ↑ 读 dist/*.tar.gz  ✗ 不存在 ⇒ 判失败
+```
+
+⇒ **CI 必红**（`verify-tarball` 对缺失的产物判失败，不跳过）。
+这与 §7.154（`lib/client.js`）、§7.156（`dist/installable/`）**是同一个形状**：
+门禁读的是产物，产物得有人造。
+
+修法：
+
+1. `package.json#scripts.build` 与两个 workflow 的 build 链都加上 **`pack:tarball`**
+   （= `node scripts/_pack-core.mjs tarball`，只出 tarball，不重复构建 installable）；
+2. `verify-ci-build-chain.mjs` 的 `REQUIRED_BUILD_STEPS` 加上 `pack:tarball`
+   ⇒ 以后再掉这一步，**提交前**就红，不用等 CI；
+3. 顺带修掉那个门禁**自身的洞**（§7.158）：
+   `mentionsBuildScript` 的旧正则是
+   `/\bnode scripts\/run\.mjs\b[^\n]*\bbuild\b/`，而 `build:client` 里的
+   `build` 满足 `\bbuild\b` ⇒ **任何提到 `build:client` 的链都豁免掉全部
+   逐项检查**。也就是说 §7.154/§7.156 修对了 workflow，但**门禁从来没真正
+   钉住它们**。现在豁免只认显式的 `npm run build` / `pnpm run build`
+   （`(?![\w:-])` 保证 `npm run build:client` 不误匹配）。
+
+反向证伪（对真实 workflow 做的）：
+
+| 造出来的缺陷 | 门禁的反应 |
+|---|---|
+| `ci.yml` 的 build 链删掉 `pack:tarball` | 🔴 红：`the \`build\` job does not run "pack:tarball"` |
+| `publish.yml` 的 build 链删掉 `pack:tarball` | 🔴 同上 |
+| 把 `dist/*.tar.gz` 移走 | 🔴 `verify-tarball` 红：`tarball 不存在` |
+| 全部还原 | 🟢 绿 |
 
 ## 6. 排障
 

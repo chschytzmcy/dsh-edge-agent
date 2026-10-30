@@ -19,6 +19,8 @@
 #                                            Windows 撞活句柄锁自动降级就地同步）
 #   4. node scripts/verify-installable.mjs   门禁：manifest 引用的文件必须都在盘上
 #   5. tarball 打包（bsdtar / GNU tar 自动识别 + sha256）
+#   6. node scripts/verify-tarball.mjs       门禁：tarball 本体（verify-installable 不管它，
+#                                            §7.157：门禁没接线 == 没有门禁）
 #
 # 用法：
 #   bash scripts/build-desktop-bundle.sh                          # 全量构建两种产物
@@ -273,6 +275,15 @@ for v in dsh-edge-agent-desktop-safe dsh-edge-agent-full; do
   echo "==> $OUT ($(du -h "$OUT" | cut -f1 | tr -d ' '))"
 done
 
+# ── 3.1 tarball 门禁（§7.157）─────────────────────────────────────────
+#
+# verify-installable 只走 dist/installable/，**不管 tarball**。上面这段又
+# 是本脚本自己实现的打包（跟 _pack-core.mjs 是两份实现），所以产物必须
+# 单独验一遍：顶层目录名、patch 列表形态、presets 层、engines.dsh、
+# lib/index.js + lib/client.js、不含 config/edge.json、与 installable 目录
+# 不陈旧。
+"$NODE_BIN" "$REPO/scripts/verify-tarball.mjs"
+
 # ── 4. --install-desktop：构建后直接把桌面 profile 切到 link / tar 模式 ──
 #
 # dsh plugin 是 pnpm 转发器（help 原文：forwarding the remaining arguments to
@@ -330,7 +341,7 @@ fi
 
 cat <<EOF
 
-产物（两种模式同源，均通过 verify-installable 门禁）：
+产物（两种模式同源，均通过 verify-installable + verify-tarball 门禁）：
   tar（分发）  $DIST/dsh-edge-agent-desktop-safe.tar.gz (+ .sha256)
   link（开发） $DIST/installable/dsh-edge-agent-desktop-safe/
 EOF

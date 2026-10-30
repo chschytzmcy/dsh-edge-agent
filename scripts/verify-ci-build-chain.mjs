@@ -7,6 +7,7 @@
 //
 //   scripts/_simulate-client-mount.mjs  hard-reads lib/client.js
 //   scripts/verify-installable.mjs      reads dist/installable/<variant>/
+//   scripts/verify-tarball.mjs           reads dist/<variant>.tar.gz
 //
 // Those two artifacts come from steps that `pnpm run compile` does NOT
 // perform: `compile` = clean-lib + tsc, and clean-lib wipes lib/ entirely,
@@ -28,6 +29,12 @@
 //
 // The gate therefore covers BOTH workflows now. A workflow that builds
 // artifacts for the gates must run the whole chain.
+//
+// §7.158: the same shape reappeared one step further along. §7.157 added
+// verify-tarball to verify:build — the gate audits dist/<variant>.tar.gz —
+// but neither workflow produced the tarballs, so the job would have died at
+// the Verify step with "tarball 不存在". `pack:tarball` joined the chain and
+// REQUIRED_BUILD_STEPS grew to match.
 //
 // ## What this script checks
 //
@@ -60,7 +67,7 @@ import { fileURLToPath } from 'node:url'
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
 /** Steps whose products the gates read. Missing one ⇒ the gate reads ENOENT. */
-const REQUIRED_BUILD_STEPS = ['compile', 'build:client', 'build:installable']
+const REQUIRED_BUILD_STEPS = ['compile', 'build:client', 'build:installable', 'pack:tarball']
 
 /**
  * The workflows that build artifacts for the gates, and the job in each that
@@ -115,22 +122,35 @@ export function auditJob(workflowText, jobName, scripts) {
   // ── the job must produce every artifact the gates read ──────────────────
   //
   // Collect the shell text of every `run:` line in the job, then look for
-  // each required step name. `node scripts/run.mjs a b c` and
-  // `npm run build` are both accepted: the former names the steps directly,
-  // the latter reaches them through package.json#scripts.build.
+  // each required step name. `node scripts/run.mjs a b c` names the steps
+  // directly; `npm run build` reaches them through package.json#scripts.build
+  // (which is audited separately below — it must contain every required step,
+  // so reaching the chain that way is sound).
   const runLines = [...body.matchAll(/^[ \t]*(?:-[ \t]+)?run:[ \t]*(.+)$/gm)].map((m) => m[1])
   const runText = runLines.join('\n')
 
-  const mentionsBuildScript = /\bnpm run build\b/.test(runText)
-    || /\bnode scripts\/run\.mjs\b[^\n]*\bbuild\b/.test(runText)
+  // §7.158: the escape hatch used to be
+  //   /\bnode scripts\/run\.mjs\b[^\n]*\bbuild\b/
+  // and `build:client` satisfies `\bbuild\b` (`:` is a non-word character, so
+  // the boundary holds). EVERY chain that mentioned build:client therefore
+  // short-circuited the whole per-step check — the gate went green with
+  // `build:installable` deleted from the workflow. In other words the
+  // §7.154/§7.156 fixes were right about the WORKFLOWS but the gate never
+  // actually pinned them; the regression they were supposed to prevent was
+  // still open.
+  //
+  // The only sound exemption is an explicit `npm run build` / `pnpm run
+  // build` — a script name, not a prefix. `(?![\w:-])` keeps `npm run
+  // build:client` and `npm run build-installable` from matching.
+  const mentionsBuildScript = /(?:^|[\s;&|(])(?:npm|pnpm) run build(?![\w:-])/mu.test(runText)
 
   for (const step of REQUIRED_BUILD_STEPS) {
     const mentioned = runText.includes(step)
     if (!mentioned && !mentionsBuildScript) {
       failures.push(
         `the \`${jobName}\` job does not run "${step}" — verify:build reads the artifact it`
-        + ' produces (lib/client.js / dist/installable/), so the gate would fail with'
-        + ' ENOENT instead of with a useful message.',
+        + ' produces (lib/client.js / dist/installable/ / dist/*.tar.gz), so the gate'
+        + ' would fail with ENOENT instead of with a useful message.',
       )
     }
   }
@@ -195,11 +215,12 @@ function selftest() {
 
   // package.json#scripts as the real one has it: the full chain.
   const scripts = {
-    build: 'node scripts/run.mjs compile typecheck:client build:client build:installable verify:build',
+    build: 'node scripts/run.mjs compile typecheck:client build:client build:installable pack:tarball verify:build',
     compile: 'node scripts/clean-lib.mjs && tsc -p tsconfig.json',
     'typecheck:client': 'tsc -p tsconfig.client.json',
     'build:client': 'node scripts/build-client.mjs',
     'build:installable': 'node scripts/rebuild-installable.mjs',
+    'pack:tarball': 'node scripts/_pack-core.mjs tarball',
     'verify:build': 'node scripts/run.mjs verify:boundary',
   }
 
@@ -213,7 +234,7 @@ function selftest() {
 
   // 1. the sound chain passes.
   {
-    const r = auditJob(wrap('      - run: node scripts/run.mjs compile typecheck:client build:client build:installable'), 'build', scripts)
+    const r = auditJob(wrap('      - run: node scripts/run.mjs compile typecheck:client build:client build:installable pack:tarball'), 'build', scripts)
     expect('完整链 ⇒ 无失败', r.failures.length, 0)
   }
 
@@ -222,9 +243,10 @@ function selftest() {
   //    §7.106 and that reddened publish.yml until §7.156).
   {
     const r = auditJob(wrap('      - run: pnpm run compile'), 'build', scripts)
-    expect('只跑 compile ⇒ 报 2 项失败', r.failures.length, 2)
+    expect('只跑 compile ⇒ 报 3 项失败', r.failures.length, 3)
     expect('失败信息点名 build:client', r.failures.some((f) => f.includes('build:client')), true)
     expect('失败信息点名 build:installable', r.failures.some((f) => f.includes('build:installable')), true)
+    expect('失败信息点名 pack:tarball', r.failures.some((f) => f.includes('pack:tarball')), true)
   }
 
   // 3. reaching the chain through `npm run build` is accepted.
@@ -235,7 +257,7 @@ function selftest() {
 
   // 4. a workflow naming a script that does not exist is caught.
   {
-    const r = auditJob(wrap('      - run: node scripts/run.mjs compile build:client build:installable build:nope'), 'build', scripts)
+    const r = auditJob(wrap('      - run: node scripts/run.mjs compile build:client build:installable pack:tarball build:nope'), 'build', scripts)
     expect('引用不存在的脚本 ⇒ 报 1 项失败', r.failures.length, 1)
     expect('失败信息点名 build:nope', r.failures.some((f) => f.includes('build:nope')), true)
   }
@@ -243,8 +265,8 @@ function selftest() {
   // 5. package.json#scripts.build losing a step is caught.
   {
     const thin = { ...scripts, build: 'node scripts/run.mjs compile' }
-    const r = auditJob(wrap('      - run: node scripts/run.mjs compile typecheck:client build:client build:installable'), 'build', thin)
-    expect('本地 build 少了步骤 ⇒ 报 2 项失败', r.failures.length, 2)
+    const r = auditJob(wrap('      - run: node scripts/run.mjs compile typecheck:client build:client build:installable pack:tarball'), 'build', thin)
+    expect('本地 build 少了步骤 ⇒ 报 3 项失败', r.failures.length, 3)
     expect('失败信息点名 build:client', r.failures.some((f) => f.includes('build:client')), true)
   }
 
@@ -273,6 +295,16 @@ function selftest() {
     ].join('\n')
     const body = extractJob(nested, 'build') ?? ''
     expect('嵌套的 build: 键不截断 job 体', body.includes('pnpm run compile'), true)
+  }
+
+  // 8. §7.158 regression: a chain that produces everything EXCEPT the
+  //    tarballs. §7.157 put verify:tarball into verify:build, and both
+  //    workflows ran the gates without producing dist/*.tar.gz ⇒ the job
+  //    died at the Verify step. This assertion pins that shape.
+  {
+    const r = auditJob(wrap('      - run: node scripts/run.mjs compile typecheck:client build:client build:installable'), 'build', scripts)
+    expect('少了 pack:tarball ⇒ 报 1 项失败', r.failures.length, 1)
+    expect('失败信息点名 pack:tarball', r.failures.some((f) => f.includes('pack:tarball')), true)
   }
 
   if (failures > 0) {

@@ -69,8 +69,13 @@ jobs:
       # package.json#scripts.build. scripts/verify-ci-build-chain.mjs gates
       # BOTH workflows now — without it, a dropped step here is invisible
       # until someone pushes a v* tag and watches it fail.
-      - name: Build (compile → browser half → installable bundle)
-        run: node scripts/run.mjs compile typecheck:client build:client build:installable
+      #
+      # §7.158: pack:tarball joined the chain because verify:build audits
+      # dist/*.tar.gz as well (verify:tarball, §7.157) — a workflow that runs
+      # the gates without producing the artifact they read dies at the Verify
+      # step, exactly like the lib/client.js hole of §7.154.
+      - name: Build (compile → browser half → installable bundle → tarballs)
+        run: node scripts/run.mjs compile typecheck:client build:client build:installable pack:tarball
 
       - name: Verify (boundary / contract / patch-surface / plugin-spec / package)
         run: pnpm run verify:build
