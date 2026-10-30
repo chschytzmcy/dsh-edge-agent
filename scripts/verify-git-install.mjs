@@ -328,10 +328,13 @@ function resolveOnPath(name) {
 // 「'pnpm' is not recognized」把人卡住。
 {
   const found = resolveOnPath('pnpm')
-  // 用 shell 跑：`.cmd` 只有经 cmd.exe 才能执行 —— pnpm 自己的 lifecycle 也是这么跑的。
-  const probe = found === undefined ? { code: -1, out: '' } : run(found, ['--version'], ROOT, { shell: true })
+  // 按**裸名**走 shell 跑 —— 这正是 pnpm 的 lifecycle 跑注入脚本的方式
+  // （注入的脚本体是 `pnpm install`，由 cmd.exe 按 PATHEXT 找 pnpm.cmd）。
+  // 不用绝对路径：cmd 在 `/d /s /c` 下的引号规则极易踩坑；
+  // 也不传 args：Node 20+ 对「shell + args」会打 DEP0190 警告（参数不转义只拼接）。
+  const probe = run('pnpm --version', [], ROOT, { shell: true })
   check(
-    probe.code === 0,
+    found !== undefined && probe.code === 0,
     'PATH 上没有可用的 `pnpm`（含 pnpm.cmd / pnpm.exe）—— pnpm 为 git 依赖注入的 `pnpm install` '
     + '步骤需要它。补救：`npm i -g pnpm`（装到用户 PATH 上的 npm 全局目录，Windows 上是 '
     + '`C:\\Users\\<用户>\\AppData\\Roaming\\npm`），装完**重启桌面版**让它继承新 PATH；'
