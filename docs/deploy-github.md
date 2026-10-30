@@ -324,6 +324,26 @@ Done in 50.3s using pnpm v11.28.5
 ⇒ **稳定键 + PATH 上有 pnpm ⇒ 整条链一次跑通**（50s 里有两次匿名 HEAD 探测的
 超时在等）。
 
+#### ⚠️ 两种形态的键都要写（pnpm 选哪种取决于当次网络）
+
+pnpm 选出来的 `fetchSpec` **会随网络状态变**，于是 allowBuilds 的键形态也跟着变：
+
+| 当次网络 | pnpm 的 fetchSpec | 键的形态 |
+|---|---|---|
+| `git ls-remote https://…` 成功（GCM 的 token 可用） | https | `git+https://<owner>/<repo>.git` |
+| https 读不到、回退 SSH 成功 | ssh | `git+ssh://git@<host>/<owner>/<repo>.git` |
+
+⇒ **两种稳定键都写**（都不带 `#commit`）：
+
+```yaml
+allowBuilds:
+  "@deepseek-harness-edge-agent/dsh-edge-agent@git+https://github.com/chschytzmcy/dsh-edge-agent.git": true
+  "@deepseek-harness-edge-agent/dsh-edge-agent@git+ssh://git@github.com/chschytzmcy/dsh-edge-agent.git": true
+```
+
+> 只写一种的话，网络一变形态就变 ⇒ 放行失效 ⇒ 又撞上
+> `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`。
+
 ### 3.3 装完要点「立即启用」
 
 **GUI 装完不会自动启用**（客户端传 `enabled: false`，`manager-store.ts:1250`；

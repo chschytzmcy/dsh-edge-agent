@@ -15824,6 +15824,41 @@ Done in 50.3s using pnpm v11.28.5
 `~/.dsh/profiles/desktop/pnpm-workspace.yaml`（等于提前做了宿主 GUI 上那次
 「允许这些脚本并重试」）。
 
+**（10）主人在 GUI 里再点一次 ⇒ 键的形态会变 ⇒ 两种稳定键都要写。**
+
+主人第二次点安装（此时桌面 App 已在 10:27 重启 ⇒ **新 PATH 生效，pnpm 在 PATH
+上了**），宿主日志：
+
+```
+[ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED] Failed to prepare git-hosted package fetched from
+  "https://github.com/chschytzmcy/dsh-edge-agent.git"
+allowBuilds:
+  @deepseek-harness-edge-agent/dsh-edge-agent@git+https://github.com/chschytzmcy/dsh-edge-agent.git#5a1418796986dc3d0ce2aa326b31f420bc888857: true
+```
+
+⇒ 这次 pnpm 的 `fetchSpec` 是 **https**（上一次是 ssh）⇒ **键的形态随当次网络
+而变**：
+
+| 当次网络 | pnpm 的 fetchSpec | 键的形态 |
+|---|---|---|
+| `git ls-remote https://…` 成功（GCM 的 token 可用） | https | `git+https://<owner>/<repo>.git` |
+| https 读不到、回退 SSH 成功 | ssh | `git+ssh://git@<host>/<owner>/<repo>.git` |
+
+⇒ **只写一种键是不够的**：网络一变形态就变 ⇒ 放行失效 ⇒ 又撞同一个错。
+已在 profile 里写成**两个稳定键**（都不带 `#commit`）：
+
+```yaml
+allowBuilds:
+  "@deepseek-harness-edge-agent/dsh-edge-agent@git+https://github.com/chschytzmcy/dsh-edge-agent.git": true
+  "@deepseek-harness-edge-agent/dsh-edge-agent@git+ssh://git@github.com/chschytzmcy/dsh-edge-agent.git": true
+```
+
+> 这次失败**分类是对的**（GUI 弹「插件安装失败」并给出完整输出 + 重试按钮，
+> 不再是上次那个误导的「无法访问 GitHub」）—— 因为这回输出里**没有**
+> `ETIMEDOUT` 那行 WARN（网络当时没超时）⇒ `classifyInstallFailure` 判成
+> `build-blocked` ⇒ 宿主弹的是构建授权该弹的东西。
+> ⇒ 印证了（8）的结论：**那个「无法访问 GitHub」是 WARN 污染分类造成的假象**。
+
 
 ### 四、改动
 
