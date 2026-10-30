@@ -41,13 +41,68 @@ https://github.com/chschytzmcy/dsh-edge-agent
 git -c credential.helper= ls-remote -- <repo> HEAD
 ```
 
-**凭据助手被显式禁用、终端交互被禁用**。所以：
+**凭据助手被显式禁用、终端交互被禁用**。预检失败只有 `network` / `timeout` 会
+阻断安装（`index.ts:908-912`），401/403 与认证失败一律**不阻断**，交给 pnpm 再试。
 
-- **公开仓库** ⇒ 预检直接通过；
-- **私有仓库** ⇒ 预检失败，但**不阻断安装**（宿主只拦 `network` / `timeout`，
-  401/403 交给 pnpm，`index.ts:908-912`）⇒ 最终能不能装上，取决于本机的 git
-  有没有**非交互可用**的凭据（credential helper 里存的 token、或 SSH key）。
-  本机实测 `git ls-remote` 会弹用户名对话框 ⇒ 这条路上**没有可用凭据**。
+> 但**预检能过 ≠ 装得上** —— 预检走 git，pnpm 那一跳未必走 git。
+
+#### ⚠️ 私有仓库：地址写法决定走 clone 还是走 tarball
+
+pnpm 解析 git spec 后会决定「下载 tarball」还是「git clone」
+（`dist/pnpm.mjs:139492` 的 `fromHostedGit` + `:139691` 的 `createResolutionObject`）：
+
+```js
+// :139547  先匿名探一次：https://github.com/<owner>/<repo> 发 HEAD
+const repoIsPublic = httpsUrl != null && await isRepoPublic(httpsUrl, ...)
+// :139504  私有库 ⇒ 先试 ls-remote（用本机 git 的凭据）
+if (!fetchSpec && httpsUrl) {
+  if ((hosted.auth || !repoIsPublic) && await accessRepository(httpsUrl)) {
+    return { fetchSpec: httpsUrl, hosted: { ...hosted, tarball: void 0 }, ... }   // ★ tarball 置空 ⇒ 走 clone
+  }
+}
+// :139537  兜底处的注释（pnpm 原话）：
+//   without proof that the repo is public, the host's anonymous archive endpoint
+//   cannot be assumed to work, so the resolution must stay `type: git`.
+tarball: repoIsPublic ? hosted.tarball : void 0
+```
+
+⇒ **pnpm 自己有防护**：只有确认仓库公开才用 codeload tarball，否则强制 `type: git`
+（走系统 git clone）。于是：
+
+| 填的地址 | pnpm 怎么下 | 私有库能装吗 |
+|---|---|---|
+| `https://github.com/<owner>/<repo>` | 匿名 HEAD 探到是私有 ⇒ **走 git clone**（系统 git） | ✅ **但要求本机 git 有非交互可用凭据**（credential helper / GCM 里的 token）。换一台没配凭据的机器就装不上 |
+| `git@github.com:<owner>/<repo>.git` | git clone（系统 git + SSH key） | ✅ **只依赖 SSH key，最稳** |
+| `git+ssh://git@github.com/<owner>/<repo>.git` | git clone | ✅ |
+| `ssh://git@github.com/...`（漏了 `git+`） | ⚠️ `isSsh`（`:139886`）不认这个开头 | 别这么写 |
+
+clone 那条路 pnpm 会自己设 `GIT_TERMINAL_PROMPT=0` 与
+`GIT_SSH_COMMAND=ssh -o BatchMode=yes`（`:138278-138281`）⇒ **非交互**；
+pnpm 用的是**系统 git CLI**（自带 `@npmcli/git` 7.0.2，不是纯 JS 实现）。
+
+⇒ **私有库填 SSH 形式**最稳（只依赖 SSH key）；**公开库填 https** 最省事
+（别人不用配 key，且走 tarball 更快）。
+
+> 宿主那一侧对 github.com **不会自动**从 HTTPS 回退到 SSH
+> （`git-transport.ts:65-71`：`hosted-git-info` 认识 github.com ⇒ 不探测），
+> 所以 SSH 形式必须**手填**。
+
+**实测（2026-10-30，对本仓真实跑 `pnpm add`）**：
+
+| 写法 | 结果 |
+|---|---|
+| `https://github.com/chschytzmcy/dsh-edge-agent` | ✅ 装成功（私有库 ⇒ 走 clone，用的是本机 GCM 里的 token） |
+| `git+ssh://git@github.com/chschytzmcy/dsh-edge-agent.git` | ✅ 装成功（用本机 SSH key） |
+
+两者解析出的 commit 都是 `552a6e7`（**默认分支的 HEAD**，不是 tag），
+装出来的包内容完全一致。
+
+> 构建授权那一步，pnpm 打印的键长这样（scoped 包名要加引号）：
+> ```
+> allowBuilds:
+>   "@deepseek-harness-edge-agent/dsh-edge-agent@git+https://github.com/chschytzmcy/dsh-edge-agent.git#552a6e7f…": true
+> ```
+> 键 = `<包名>@<pkgResolutionId>`，而 `pkgResolutionId` = `git+<地址>#<commit>`。
 
 > 若要让别人无凭据装上，只能把仓库公开；发布前请先确认仓里没有密钥
 > （`config/edge.json` 已被 `.gitignore` 排除，`config/edge.json.bak-*` 同样）。
@@ -207,6 +262,24 @@ https://github.com/chschytzmcy/dsh-edge-agent#<sha>
 3. `<bundle root>/config/edge.example.json` — 空密钥的模板，最后兜底。
 
 ⇒ 把真实端点与密钥写进 `~/.dsh-edge-agent/edge.json`（该文件本身同样不入库）。
+
+**装出来的包长什么样**（实测，2026-10-30）：
+
+```
+node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/
+├── lib/          ← prepare 现场编译出来的（Node 半侧 + 浏览器半侧 client.js）
+├── config/       ← edge.example.json + privacy-policy.json（**没有 edge.json**）
+├── presets/
+├── cordis.desktop-safe.patch.yml
+├── cordis.patch.yml
+├── cordis.yml
+├── package.json / README.md / LICENSE
+└── （231 个文件 / 1.69 MB）
+```
+
+⇒ `files` 白名单在 git 通道**同样生效**：`src/`、`scripts/`、`tests/`、`.git/`
+都没跟进来 ⇒ 装出来的东西与 `npm pack` 出来的**内容一致**
+（`verify:package` 报的也是 231 files / 67 entry targets）。
 
 ## 5. 升级 / 回退
 

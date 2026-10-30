@@ -217,16 +217,18 @@ cp -r lib/. "dist/installable/dsh-edge-agent-desktop-safe/lib/"
 
 ```
 1. 桌面 App 侧边栏 Plugins → Add plugin → 填
-   https://github.com/chschytzmcy/dsh-edge-agent
+   git+ssh://git@github.com/chschytzmcy/dsh-edge-agent.git
+   （公开仓库可填 https://github.com/chschytzmcy/dsh-edge-agent）
 2. 首次会失败并提示「允许这些脚本并重试」——点它放行本仓的构建脚本
 3. 装完点「立即启用」（GUI 不会自动启用）
 4. 重启桌面 App
 5. 配置写进 ~/.dsh-edge-agent/edge.json（git 装出来的包里不含明文密钥）
 ```
 
-两个前置条件：**仓库要匿名可读**（私有库需要本机 git 有非交互凭据）、
-**PATH 上要有 `pnpm`**（宿主 runtime 的 `bin/` 里只有 node；`npm i -g pnpm`
-可解，装完要重启桌面 App）。细节见
+两个前置条件：**仓库要能读**（私有库建议填 SSH 形式——只依赖 SSH key；填 https
+也能装，但要求那台机器的 git 有非交互可用凭据，credential helper / GCM 里存过
+token 才行）、**PATH 上要有 `pnpm`**（宿主 runtime 的
+`bin/` 里只有 node；`npm i -g pnpm` 可解，装完要重启桌面 App）。细节见
 [`docs/deploy-github.md`](docs/deploy-github.md)。
 
 ### 方式三：部署独立 HTTP profile（macOS / Linux）

@@ -15653,6 +15653,85 @@ await runLifecycleHook(installScriptName, manifest, execOpts);
 **本仓无法绕过**（`preferredPM` 无论怎么判定，注入的 `<pm> install` 都要那个 pm 在 PATH 上；
 仓侧改 `packageManager` 只会把它换成同样不在 PATH 上的 `npm`）。
 
+**（5）⚠️ 私有仓库：填 https 还是 SSH —— pnpm 自己有防护，结论与直觉相反。**
+
+主人的仓库 `chschytzmcy/dsh-edge-agent` 是**私有**的（匿名 GitHub API 与
+codeload 都返 404）。先按源码推断「https ⇒ codeload tarball ⇒ 私有库 404」，
+**实测把这个推断推翻了**：https 地址**装成功了**。真机制在 pnpm 的
+`fromHostedGit`（`dist/pnpm.mjs:139492`）：
+
+```js
+// :139547  先匿名探一次：HEAD https://github.com/<owner>/<repo>
+const repoIsPublic = httpsUrl != null && await isRepoPublic(httpsUrl, ...)
+// :139504  私有库 ⇒ 先 accessRepository(httpsUrl)（git ls-remote，用本机凭据）
+if (!fetchSpec && httpsUrl) {
+  if ((hosted.auth || !repoIsPublic) && await accessRepository(httpsUrl)) {
+    return { fetchSpec: httpsUrl, hosted: { ...hosted, tarball: void 0 }, ... }   // ★ tarball 置空
+  }
+}
+// :139534  pnpm 原注释：
+//   without proof that the repo is public, the host's anonymous archive endpoint
+//   cannot be assumed to work, so the resolution must stay `type: git`.
+tarball: repoIsPublic ? hosted.tarball : void 0
+```
+
+⇒ **pnpm 只有确认仓库公开才用 codeload tarball，否则强制 `type: git`（clone）**。
+于是：
+
+| 填的地址 | pnpm 怎么下 | 私有库 |
+|---|---|---|
+| `https://github.com/<owner>/<repo>` | 匿名 HEAD 探到私有 ⇒ 走 **git clone** | ✅ 能装，但**要求本机 git 有非交互凭据** |
+| `git@github.com:<owner>/<repo>.git` | git clone（SSH key） | ✅ 只依赖 SSH key，最稳 |
+| `git+ssh://git@github.com/<owner>/<repo>.git` | git clone | ✅ |
+| `ssh://git@github.com/...`（漏 `git+`） | `isSsh`（`:139886`）不认这个开头 | 别这么写 |
+
+本机凭据现状（实测）：SSH key 已挂在 GitHub 上
+（`ssh -o BatchMode=yes -T git@github.com` → `Hi chschytzmcy!`，无需 ssh-agent）；
+**系统级 git 配了 `credential.helper=manager`（GCM，缓存了 GitHub token）**
+⇒ 三种写法的 `git ls-remote` 都过；https 那条能装成，靠的就是这个 GCM token。
+
+宿主那一侧对 github.com **不会自动** HTTPS→SSH 回退（`git-transport.ts:65-71`：
+`hosted-git-info` 认识 github.com ⇒ 不探测）⇒ SSH 形式必须**手填**。
+
+**实测（2026-10-30，对本仓真实跑 `pnpm add`）**：两种写法**都装成功** ——
+`https://github.com/chschytzmcy/dsh-edge-agent`（私有 ⇒ 走 clone，靠本机 GCM 的
+token）与 `git+ssh://git@github.com/chschytzmcy/dsh-edge-agent.git`（靠 SSH key），
+解析出的 commit 都是 `552a6e7`（**默认分支的 HEAD，不是 tag**），装出来的包内容一致。
+
+构建授权那一步 pnpm 打印的键（scoped 包名要加引号，否则 YAML 非法）：
+
+```
+allowBuilds:
+  "@deepseek-harness-edge-agent/dsh-edge-agent@git+https://github.com/chschytzmcy/dsh-edge-agent.git#552a6e7f…": true
+```
+
+键 = `<包名>@<pkgResolutionId>`，而 `pkgResolutionId` = `git+<地址>#<commit>`。
+
+**装出来的包**（实测）：231 个文件 / 1.69 MB —— `lib/`（含浏览器半侧 `client.js`）、
+`config/`（只有 `edge.example.json` + `privacy-policy.json`，**没有 edge.json**）、
+`presets/`、两个 patch yml、`cordis.yml`、`package.json`/`README.md`/`LICENSE`。
+`src/`、`scripts/`、`tests/`、`.git/` **都没跟进来** ⇒ `files` 白名单在 git 通道
+**同样生效**，装出来的东西与 `npm pack` 出来的内容一致（`verify:package` 报的
+也是 231 files / 67 entry targets）。
+
+**（6）三个被问到的问题，落成可执行的结论。**
+
+| 问题 | 结论 |
+|---|---|
+| git 仓库上只要源码吗？ | **是**。git 通道拿到的就是源码（tracked 文件），构建产物不在库里 |
+| 会自己下载下来构建吗？ | **会**。pnpm clone（或取 tarball）→ 在解包/克隆目录里跑 `prepare` → 现场产出 `lib/`。实测装出来的 `lib/client.js` 就是当场的 esbuild 产物 |
+| 要把构建好的上传到 git 吗？ | **不用，也不该**（宿主 `publish.md:161-171` 原话：git install fetches sources, not built artifacts） |
+| 下载的是 main 还是最新 tag？ | **默认分支的 HEAD**。pnpm `resolveGitCommit`（`:139672`）：`gitCommittish` 为空 ⇒ 用 `"HEAD"` ⇒ 远端默认分支的最新提交，**不是最新 tag**。本仓 `origin/HEAD → main` 且**一个 tag 都没有** ⇒ 装的就是 main 的 HEAD（实测解析出 `552a6e7`）。要钉住就写 `#main` / `#<tag>` / `#<40 位 sha>` |
+
+**还有第三条路（能消掉「用户机器要有 pnpm」这条前置条件）**：把 `lib/` 也提交进
+git（解除 `.gitignore` 里的 `/lib/`）⇒ `prepare` 可以留空 ⇒ pnpm 的
+`packageShouldBeBuilt`（`:130181`）判定为「不需要构建」⇒ **不注入
+`<pm> install`** ⇒ 用户机器 PATH 上没有 pnpm 也能装，而且**连「允许这些脚本并
+重试」都不用点**（不用在本机执行仓库代码，安全性也更好）。
+代价：仓库里带构建产物（体积、产物与源码可能不同步、需要 CI 保证一致、
+每次改代码要记得重新提交 `lib/`）。宿主文档给的两条路是「git + prepare（源码）」
+与「npm / tarball（预构建产物）」，这条是介于两者之间的第三种。
+
 ### 四、改动
 
 | # | 改动 | 为什么 |
