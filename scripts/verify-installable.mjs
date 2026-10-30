@@ -156,6 +156,46 @@ function verifyBundle(dir) {
       + 'installable 目录必须带上活配置（stageVariant 的 keepSecretConfig 分支）。',
     )
   }
+  // 1d. §7.162 (2026-10-30): the manifest's `files` whitelist must be the
+  //     repo root's own list, verbatim.
+  //
+  //     Why this is load-bearing rather than cosmetic: `files` decides what a
+  //     PACK of this directory contains, and `pnpm add file:<dir>` packs the
+  //     directory. So:
+  //       · WITH "!config/edge.json" ⇒ the packed copy carries no plaintext
+  //         API key into node_modules;
+  //       · WITHOUT it ⇒ the operator's real key is copied into node_modules.
+  //
+  //     The `link:` channel is unaffected either way (a symlink exposes the
+  //     whole directory; `files` never applies), so the live config still
+  //     reaches the profile through candidate #1 — which is exactly why the
+  //     negation is safe to keep in the installable manifest.
+  //
+  //     Two producers write this very directory —
+  //     `scripts/rebuild-installable.mjs` and `scripts/_pack-core.mjs`
+  //     (stageVariant) — and they used to disagree: the first carried the
+  //     root list verbatim, the second hard-coded a list of its own that was
+  //     missing the negation. Whichever ran last decided whether a
+  //     `file:<dir>` install leaked the key. One list, both producers.
+  const rootManifest = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
+  const expectedFiles = rootManifest.files
+  const actualFiles = pkg.files
+  if (JSON.stringify(actualFiles) !== JSON.stringify(expectedFiles)) {
+    throw new Error(
+      `${relative(ROOT, dir)}: package.json#files 是 ${JSON.stringify(actualFiles)} `
+      + `但仓库根 package.json#files 是 ${JSON.stringify(expectedFiles)} `
+      + '⇒ 两条产出路径（rebuild-installable.mjs / _pack-core.mjs）的白名单漂移了。'
+      + 'installable 目录必须原样沿用根的白名单（含 "!config/edge.json"）：'
+      + '它决定 `pnpm add file:<目录>` 打出来的副本里会不会夹带明文 API key。',
+    )
+  }
+  if (!Array.isArray(actualFiles) || !actualFiles.includes('!config/edge.json')) {
+    throw new Error(
+      `${relative(ROOT, dir)}: package.json#files 缺少 "!config/edge.json" 排除项 `
+      + `（当前：${JSON.stringify(actualFiles)}）⇒ \`pnpm add file:<目录>\` 走 pack 路径时`
+      + '会把本机 config/edge.json 里的明文 API key 拷进 node_modules。',
+    )
+  }
   // Whichever config is present must be valid JSON with the expected shape.
   for (const candidate of [edgeConfig, edgeExample]) {
     if (!existsSync(candidate)) continue

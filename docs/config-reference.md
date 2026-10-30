@@ -409,6 +409,34 @@ response 写进 ops log（`info` 级别，默认可见）：
 | `dist/installable/<变体>/lib/*.js`（代码） | **重启 App** —— bundle 是符号链接，文件直接变，重启即生效 |
 | 装出来的 tarball 内容 | **不生效** —— 冻结副本 ⇒ 卸载重装 |
 
+### ⚠️ 目录通道**必须**写成 `link:` 或裸路径 —— `file:<目录>` 是静默陷阱（2026-10-30 实测）
+
+三种写法装同一个目录，**结果完全不同**（隔离临时 profile 里真装三次）：
+
+| 写法 | profile 里记成 | `node_modules` 里是 | 实时？ | 带活配置？ |
+|---|---|---|---|---|
+| **裸绝对路径** | `link:<绝对路径>` | 符号链接 | ✅ | ✅ |
+| **`link:<绝对路径>`** | `link:<绝对路径>` | 符号链接 | ✅ | ✅ |
+| **`file:<绝对路径>`** | `file:<绝对路径>` | **真实副本（冻结）** | ❌ | ❌ **丢** |
+
+⇒ **`file:` 指向目录会同时坏掉裁决的两半**：① pnpm 把目录 **pack** 进 store 而不是链接 ⇒
+「改文件重启即生效」不成立；② pack 会尊重 manifest 的 `files` 白名单，而白名单里写着
+`"!config/edge.json"` ⇒ **装出来那份没有活配置** ⇒ 宿主的配置**顺位 1**
+（`<bundle>/config/edge.json`）落空 ⇒ 悄悄退到 `~/.dsh-edge-agent/edge.json` 或空模板
+⇒ 本地路由可能压根不注册 ⇒ 每一轮 LOCAL 都被隐私裁决拦下。
+
+**宿主不会拦你**：`install-spec.ts:69-92` 只剥**一个** `file:`/`link:` 前缀，
+**按扩展名**分类（目录一律 `kind: 'path'`，跟前缀无关），然后把 spec **原样**交给 pnpm
+（`index.ts:930` 的 `pnpm add <spec>`）。⇒ `file:<目录>` 被无声接受，问题要到
+「配置不见了 / 不实时了」才显形。
+
+⇒ **目录通道照着这两条写**：桌面 GUI 的「添加插件」输入框填
+`C:\…\dist\installable\dsh-edge-agent-desktop-safe`（**裸路径**即可），
+或显式 `link:C:\…\dist\installable\dsh-edge-agent-desktop-safe`。
+**不要填 `file:` + 目录**（`file:` 只对 **tarball** 是对的）。
+
+门禁：`scripts/verify-local-channel.mjs`（`verify:local-channel`，已接进 `verify:build`）
+
 ### 为什么要给 link 通道加硬断言（§7.161）
 
 `verify-installable.mjs` 原来只要求「`config/` 里有 `edge.json` **或**

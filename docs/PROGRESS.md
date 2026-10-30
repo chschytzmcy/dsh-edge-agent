@@ -16780,3 +16780,113 @@ const mentionsBuildScript = /(?:^|[\s;&|(])(?:npm|pnpm) run build(?![\w:-])/mu.t
   把明文凭据提交进历史）尚未做 ⇒ 待主人定；
 - `dist/edge.json.template` 与 `dist/check-edge-config.mjs`（两个不含密钥的工具）
   是否提交进仓库 ⇒ 待主人定。
+
+---
+
+## §7.162 目录通道的真相：`file:` + 目录是静默陷阱，而两条产出路径的白名单在漂移（2026-10-30）
+
+### 一、起点：主人的裁决里有一个没人验证过的承诺
+
+主人 2026-10-30 裁决：
+
+> 主要保证 npm 和 git 仓库部署的时候没有 edge.json 即可，目录采用 link 方式、
+> 实时更新，tar 包方式包括真实 edge.json，可以用于演示
+
+「目录采用 link 方式、实时更新」这句话，此前**没有任何一处验证过**——§7.161 只把
+它写进了文档和门禁白名单，而**门禁管的是产物内容，管不了主人用什么写法去装**。
+
+本轮就在真实安装路径上把它测了一遍（隔离临时 profile，三种写法各真装一次）。
+
+### 二、实测结果：`file:` 指向目录，同时坏掉裁决的两半
+
+源目录 = `dist/installable/dsh-edge-agent-desktop-safe`（真实产物）：
+
+| 写法 | profile 里记成 | `node_modules` 里是 | 实时？ | 带活配置？ |
+|---|---|---|---|---|
+| 裸绝对路径 | `link:<绝对路径>` | 符号链接 | ✅ | ✅ |
+| `link:` + 绝对路径 | `link:<绝对路径>` | 符号链接 | ✅ | ✅ |
+| **`file:` + 绝对路径** | `file:<绝对路径>` | **真实副本（冻结）** | ❌ | ❌ **丢** |
+
+⇒ **`file:` 指向目录会同时坏掉两件事**：
+
+1. **不实时** —— pnpm 把目录 **pack** 进 store 而不是链接 ⇒「改文件重启即生效」不成立；
+2. **丢活配置** —— pack 尊重 manifest 的 `files` 白名单，而白名单写着
+   `"!config/edge.json"` ⇒ 装出来那份**没有** `config/edge.json`
+   ⇒ 宿主的配置**顺位 1**（`<bundle>/config/edge.json`）落空
+   ⇒ 悄悄退到 `~/.dsh-edge-agent/edge.json` 或空模板
+   ⇒ 本地路由可能压根不注册 ⇒ 每轮 LOCAL 都被隐私裁决拦下
+   —— **和 §7.159 那个干净设备上的故障一模一样，但成因完全不同**。
+
+**宿主不会拦**：`install-spec.ts:69-92` 只剥**一个** `file:`/`link:` 前缀，
+**按扩展名**分类（目录一律 `kind: 'path'`，与前缀无关），再把 spec **原样**交给
+pnpm（`index.ts:930` 的 `pnpm add <spec>`）⇒ `file:<目录>` 被无声接受，
+问题要到「配置不见了 / 不实时了」才显形。
+
+### 三、顺带查出的第二处真漂移（更危险）
+
+installable 目录的 `package.json#files` 白名单由**两条产出路径**分别写入：
+
+| 产出路径 | `files` 里有没有 `!config/edge.json` |
+|---|---|
+| `scripts/rebuild-installable.mjs`（根 list 原样带走） | ✅ 有 |
+| `scripts/_pack-core.mjs` `stageVariant()`（覆盖写死） | ❌ **没有** |
+
+而 `files` 决定的正是「**pack 这个目录时带什么**」⇒ 缺了排除项，
+`pnpm add file:<目录>` 就会把本机 `config/edge.json` 里的**明文 API key**
+拷进 `node_modules`。⇒ **谁最后跑，谁决定要不要泄漏**。
+
+⇒ 修法：两条路径都**原样沿用仓库根的白名单**（`pkg.files = base.files`），
+一份 list 两种产出方式按构造一致；并用门禁钉住。
+
+### 四、实现
+
+1. **`scripts/_pack-core.mjs`**：`stageVariant()` 不再自己写死 `files`，
+   改为 `pkg.files = base.files`（根白名单原样带走）。
+2. **`scripts/verify-installable.mjs`** 新增 **§1d**：
+   - installable manifest 的 `files` 必须**逐项等于**仓库根的 `files`（防漂移）；
+   - 且必须含 `"!config/edge.json"`（防 pack 路径夹带明文）。
+3. **新门禁 `scripts/verify-local-channel.mjs`**（接入 `verify:build`，21 → **22 项**）：
+   - installable manifest 的白名单同 §1d（独立第二道，两个门禁互为交叉验证）；
+   - 文档必须给出 `link:` / 裸路径的写法，并**把「`file:` 指向目录」与「目录」
+     写在同一段**（否则主人看不出差别）；
+   - 四个构建脚本（`build-desktop-bundle.sh` / `build-windows.sh` /
+     `build-linux.sh` / `build-macos.sh`）的 link 模式必须指向 installable **目录**、
+     tar 模式必须指向 **tarball**。
+   - `--selftest` **16 项**（自证 + 反向证伪）。
+4. **文档**：
+   - `docs/config-reference.md` §19 新增「⚠️ 目录通道**必须**写成 `link:` 或裸路径」
+     （三写法实测对照表 + 宿主为什么不拦 + 门禁名）；
+   - `docs/load-into-local-dsh.md` §8.5 写法表拆出「`file:` + 目录 / `file:` + tarball」
+     两行（原表「`file:` / `link:` 前缀 → 剥掉前缀再判」会让人以为两者对目录等价）；
+     新增 **§8.8.2.1** 记实测结论与代价。
+
+### 五、反向证伪（对真实产物做的）
+
+| 变异 | 期望 | 结果 |
+|---|---|---|
+| 基线 | 两道门禁都绿 | ✅ |
+| installable manifest 的 `files` 抹掉排除项 | verify-installable **红** + verify-local-channel **红** | ✅ |
+| installable manifest 的 `files` 与根漂移 | 两个门禁都**红** | ✅ |
+| `build-windows.sh` 的 tar 模式改成 `file:` + **目录** | verify-local-channel **红** | ✅ |
+| 全部还原 | 两个门禁都绿 | ✅ |
+
+⇒ **10 项全过**。门禁不是装饰。
+
+### 六、验证
+
+- `verify:build` **22 项** exit 0（新门禁在链里被调用，已核对输出行）；
+- `verify-local-channel --selftest` **16 项**全过；
+- `verify-tarball` **4 个 tarball 全绿**（正规 229 条目 / DEMO 230 条目）；
+- 重装产物后复测：`rebuild-installable` 与 `_pack-core` 的白名单**已一致**；
+- vitest 73 文件 / 1495 passed / 2 skipped / 0 failed；tsc 双配置 0；
+  eslint 0 error / 59 warnings；doc-links 断链 0 / 孤儿 0。
+
+### 七、遗留
+
+- **本机桌面 profile 现在装的是 DEMO tarball**（冻结副本 + 含活配置），
+  17:51 那轮边缘模式实测跑通（`route override … toProvider=local-llm`，本地模型
+  1.5s / 1.8s 出结果）。按主人的裁决，本机开发形态应是**目录 link 通道**
+  ⇒ 下一步可切（`build-desktop-bundle.sh --install-desktop=link`），切完即实时；
+- 宿主侧无法拦截 `file:<目录>`（`install-spec.ts` 只按扩展名分类）——
+  这条只能靠**文档 + 我们自己的门禁**守住，宿主是只读参考仓，改不了。
+

@@ -333,7 +333,26 @@ export function stageVariant(variant, destDir, { keepSecretConfig = false } = {}
   pkg.description = variant.description
   delete pkg.scripts
   delete pkg.devDependencies
-  pkg.files = ['lib', 'config', 'cordis.patch.yml', 'cordis.desktop-safe.patch.yml', 'cordis.yml', 'presets']
+  // §7.162 (2026-10-30): `files` is the SINGLE source of truth — the repo
+  // root's own list. This line used to hard-code a list of its own that was
+  // missing the "!config/edge.json" negation, while
+  // `scripts/rebuild-installable.mjs` (the other producer of the very same
+  // installable directory) carried the root list verbatim. Two producers,
+  // two different whitelists — and the difference is not cosmetic:
+  //
+  // `files` decides what a PACK of this directory contains. `pnpm add
+  // file:<dir>` packs the directory, so:
+  //   · WITH the negation ⇒ the packed copy has no config/edge.json ⇒ the
+  //     operator's plaintext API keys do not travel into node_modules.
+  //   · WITHOUT it ⇒ the plaintext key is copied into node_modules.
+  //
+  // The `link:` channel is unaffected either way (a symlink exposes the whole
+  // directory, `files` never applies) — so the live config still reaches the
+  // profile through candidate #1. That is why the negation is safe to keep
+  // here: it only ever governs the *pack* path, never the link path.
+  //
+  // ⇒ take the root's list verbatim, so both producers agree by construction.
+  pkg.files = base.files
   // §7.153: the bundle carries TWO patch layers — the host-row overrides
   // (cordis patch) and the **Agent Preset** declaration (the 边缘模式 work
   // mode). The host's own dsh-web-app bundle uses the same list shape

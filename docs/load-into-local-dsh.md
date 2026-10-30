@@ -321,7 +321,9 @@ if (path !== spec || isAbsolute(path)) {
 | 绝对路径 `…/xxx.tar.gz` / `.tgz` | `tarball` | `file:<path>` | 分发模式：解包成冻结副本，更新走 §8.6 坑 1 流程 |
 | 绝对路径 `…/dsh-edge-agent-desktop-safe/` | `path` | `link:<绝对路径>` | **开发模式**：符号引用目录，改文件重启即生效（实测形态见 §8.8.2） |
 | 相对路径 `./x` | 拒绝 | — | "a local path must be absolute" |
-| `file:` / `link:` 前缀 | 剥掉前缀再判 | — | |
+| `link:` + 目录 | `path` | `link:<绝对路径>` | ✅ 与裸路径等价（实测），开发模式 |
+| `file:` + **目录** | `path` | `file:<绝对路径>` | ⚠️ **静默陷阱**：见 §8.8.4 —— 冻结 **且丢活配置** |
+| `file:` + **tarball** | `tarball` | `file:<绝对路径>` | ✅ 正确用法：tarball 是文件，`file:` 才对 |
 
 ### 8.6 §7.107：迭代一次桌面 bundle 的完整步骤（两个坑）
 
@@ -454,6 +456,32 @@ spec.replace(/^(?:file:|link:)/, '')   ← 只剥一个前缀
 
 ⇒ 好处：改目录里的文件 + 重启桌面 App 即生效，不用重装（这正是 §8.6
 `link:` 模式「坑 1 不存在」的原因）。
+
+#### 8.8.2.1 ⚠️ 前缀决定一切：`file:` + **目录**是静默陷阱（2026-10-30 实测）
+
+§8.8.2 测的是**裸路径**。同一目录换三种写法真装三次（隔离临时 profile）：
+
+| 写法 | profile 里记成 | `node_modules` 里是 | 实时？ | 带活配置？ |
+|---|---|---|---|---|
+| 裸绝对路径 | `link:<绝对路径>` | 符号链接 | ✅ | ✅ |
+| `link:` + 绝对路径 | `link:<绝对路径>` | 符号链接 | ✅ | ✅ |
+| **`file:` + 绝对路径** | `file:<绝对路径>` | **真实副本（冻结）** | ❌ | ❌ **丢** |
+
+⇒ **`file:` 指向目录，同时坏掉两件事**：
+
+1. **不实时** —— pnpm 把目录 **pack** 进 store（不是链接）⇒ 改文件不再生效；
+2. **丢活配置** —— pack 尊重 manifest 的 `files` 白名单，而白名单写着
+   `"!config/edge.json"` ⇒ 装出来那份**没有** `config/edge.json`
+   ⇒ 宿主的配置**顺位 1**（`<bundle>/config/edge.json`）落空
+   ⇒ 悄悄退到 `~/.dsh-edge-agent/edge.json` 或空模板
+   ⇒ 本地路由可能不注册 ⇒ 每轮 LOCAL 被隐私裁决拦下。
+
+**宿主不会提醒你**：`install-spec.ts:69-92` 只剥**一个** `file:`/`link:` 前缀，
+**按扩展名**分类（目录一律 `kind: 'path'`，与前缀无关），然后把 spec **原样**交给
+pnpm（`index.ts:930` `pnpm add <spec>`）。⇒ `file:<目录>` 被无声接受。
+
+⇒ **目录就填裸路径**（或 `link:`），**`file:` 只留给 tarball**。
+门禁：`scripts/verify-local-channel.mjs`（已接进 `verify:build`）。
 
 #### 8.8.3 宿主**不会**构建这个目录
 
