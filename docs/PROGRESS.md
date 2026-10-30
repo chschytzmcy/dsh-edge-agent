@@ -16185,6 +16185,52 @@ SSH 串（只有文档把它当「GitHub 通道的 SSH 装法」引用，那是�
   publish.yml(npm)）** exit 0；
 - 本地目录通道实测：裸绝对路径 ⇒ `link:<绝对路径>` + 符号链接（447 ms）。
 
+### 七·2 凭据泄漏审计（2026-10-30，主人追问「edge 配置文件里没泄漏真实 API key 吧」）
+
+审计方法：拿本机 `config/edge.json` 的 `secrets` 段当**指纹**（只报键名 + 长度 +
+sha256 前 8 位，**不回显值**），扫 ① git 索引 ② 全部被跟踪文件 ③ 全部 git 历史
+④ 本机 live 文件（审计链 / ops log / home 配置）。**初判 16 处命中，逐条甄别后
+12 处是假阳性**：
+
+| 键 | 形态 | 判定 |
+|---|---|---|
+| `deepseekApiKey` | `sk-1…9e`（35，高熵） | **真凭据 —— 干净**：不在任何被跟踪文件里；全部历史**从未出现** |
+| `dashscopeApiKey` | `sk-ws-…`（116，高熵） | **真凭据 —— 干净**：同上 |
+| `alitokenplanApiKey` | `sk-s…lQ`（114，高熵） | **真凭据 —— 干净**：同上 |
+| `edgeApiKey` | `test…ey`（15，熵 2.79） | 假阳性 = `test-secret-key` 测试占位符 |
+| `tavilyApiKey` | `tvly…ME`（27） | 假阳性 = `tvly-PLACEHOLDER_REPLACE_ME` |
+| `bochaApiKey` | `sk-P…ME`（25） | 假阳性 = `sk-PLACEHOLDER_REPLACE_ME` |
+| `_comment` | 中文注释（51） | 假阳性 = 配置注释文本 |
+
+⇒ **仓库与 git 历史零真凭据泄漏。**
+
+**历史里的 `sk-*` 形态串 25 处**（8 个不同值）也逐个看了上下文，**全是夹具**：
+`tests/unit/llm-trace.test.ts` 的脱敏断言夹具、`edge-hardening-7123.test.ts` /
+`input-guard-http-api-integration.test.ts` / `prompt-guard.test.ts` /
+`pii-utils.test.ts` 的测试输入、`.env.example` 与 README 的 `sk-xxx` 模板、
+`docs/PROGRESS.md` 的 PII 脱敏规则示例表。
+
+**`.env.sh` 历史 20 个 blob / 38 个赋值行** —— 值形态全是 `${VAR}` **变量引用**
+（如 `${CLOUD_LLM_API_KEY}`），不是凭据。**`.env`（真身）从未被提交过**
+（历史里只有 `.env.example` 与 `.env.sh`）。
+
+**live 面**：审计链 `audit.plain.jsonl`（1.5 MB）+ ops log 8 个轮转文件
+（合计 3.4 MB）**全部扫过，零真 key 落盘** ⇒ §7.118 的 `redactSecrets` 与
+PII 脱敏在真实运行中生效。唯一命中在 `~/.dsh-edge-agent/edge.json` 与其备份
+—— 那**就是配置文件本身**，在 home 目录、不在仓库。
+
+**⚠️ 唯一真实的分发风险**：`dist/installable/dsh-edge-agent-{desktop-safe,full}/
+config/edge.json` **含全部 7 个真 key**。`dist/` 被 gitignore、`files` + `.npmignore`
+双重排除 ⇒ **不会进 git、不会进 npm 包**；但「本地目录」通道装出来是**符号链接**
+⇒ 装到别人机器上时 `node_modules/…/config/edge.json` 就是这份活配置
+⇒ **别把 `dist/` 整个目录发给别人**（README 与
+[`deploy-npm.md`](deploy-npm.md) 都已写警告）。
+
+**尚未被门禁覆盖的一层**：`verify:package` 只管 tarball（禁 `config/edge.json`
+进包），**git 索引这一层没有门禁**（谁 `git add -f config/edge.json` 就进去了）。
+可加 `verify:no-secrets` 把「`config/edge.json` 不在索引 + `.gitignore`/
+`.npmignore`/`files` 三处都排除它」变成自动断言 —— **待主人定**。
+
 ### 七、遗留（如实记）
 
 - **npm 通道仍差最后一步：token**。16 条发布前提逐条核对（见
