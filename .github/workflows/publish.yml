@@ -92,10 +92,33 @@ jobs:
           fi
           echo "tag $GITHUB_REF_NAME matches package.json#version $VER"
 
+      # npm 的 provenance（溯源徽章）**只接受公共来源仓库**。pnpm 自己的判定
+      # （releasing/commands/lib/publish/oidc/provenance.js）：
+      #
+      #   if ((!GITHUB_ACTIONS || payload.repository_visibility !== "public") && ...)
+      #     throw new ProvenanceInsufficientInformationError()
+      #
+      # 也就是说：**仓库是私有的 ⇒ 这一步本地就抛错，整个发布失败**。
+      # 而本仓当前是私有仓库（GitHub API 匿名查返回 404）。
+      #
+      # 所以按仓库可见性决定要不要带 --provenance：
+      #   私有 → 不带（发得出去，只是没有 "Built and signed on GitHub Actions" 徽章）
+      #   公开 → 自动带上（转公开后这一段不用改，发布自动升级成带徽章的）
+      #
+      # 取不到可见性时（表达式为空）默认走「不带」那一支 —— 宁可少一个徽章，
+      # 也不要让整个发布因为一个 provenance 失败。
       - name: Publish
-        run: pnpm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          VISIBILITY="${{ github.event.repository.visibility }}"
+          if [ "$VISIBILITY" = "public" ]; then
+            echo "仓库可见性 = public ⇒ 带 --provenance 发布（会有溯源徽章）"
+            pnpm publish --provenance --access public
+          else
+            echo "::warning::仓库可见性 = ${VISIBILITY:-unknown} ⇒ npm 不接受私有来源仓库的 provenance（ProvenanceInsufficientInformationError / E422）。本次不带 --provenance 发布。"
+            pnpm publish --access public
+          fi
 
   release:
     name: github release

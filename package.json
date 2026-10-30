@@ -5,7 +5,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git@github.com:chschytzmcy/dsh-edge-agent.git"
+    "url": "https://github.com/chschytzmcy/dsh-edge-agent.git"
   },
   "bugs": {
     "url": "https://github.com/chschytzmcy/dsh-edge-agent/issues"

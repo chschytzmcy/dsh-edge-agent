@@ -16116,6 +16116,55 @@ installable dir not found: dist/installable
    （11 项断言，自证 + **反向证伪**：把 §7.104 那个「只跑 compile」的缺陷造出来，
    门禁必须点名 `build:client` 与 `build:installable` 两项；造回完整链必须放过）。
 
+#### 四·1 随后又挖出第二个硬阻断：provenance 要求**仓库公开**
+
+修完构建链再往下查，发现 `publish.yml` 原本写的是
+`pnpm publish --provenance --access public` —— 而 **`--provenance` 要求来源仓库
+是公开的**。pnpm 自己的判定（`releasing/commands/lib/publish/oidc/provenance.js`）：
+
+```js
+// ① 解 OIDC token 的 payload
+if ((!GITHUB_ACTIONS || payload.repository_visibility !== "public") && ...)
+  throw new ProvenanceInsufficientInformationError()
+//    "The environment does not provide enough information to determine visibility"
+// ② 再问 registry：/-/package/<name>/visibility ⇒ 包本身必须是 public
+```
+
+⇒ **仓库私有 ⇒ 第①步本地就抛错 ⇒ 整个发布失败**，不是 registry 那边的事。
+
+**本仓确实是私有的**（硬证据）：GitHub API 匿名查
+`https://api.github.com/repos/chschytzmcy/dsh-edge-agent` 返回 **404**
+（公开仓库匿名一定返回 200 + JSON）。
+
+**主人裁决（2026-10-30 11:50）**：「先不公开 git 仓库」。
+
+⇒ **公开只跟溯源徽章有关，跟能不能发布无关**：私有仓库完全可以发**公共的
+npm 包**（别人照样 `npm i` 得到），只是没有 "Built and signed on GitHub Actions"
+徽章、看不到源码。
+
+**处理**：不写死 `--provenance`，改成**按仓库可见性自动决定**：
+
+```yaml
+VISIBILITY="${{ github.event.repository.visibility }}"
+if [ "$VISIBILITY" = "public" ]; then
+  pnpm publish --provenance --access public
+else
+  echo "::warning::仓库可见性 = ${VISIBILITY:-unknown} ⇒ …本次不带 --provenance 发布。"
+  pnpm publish --access public
+fi
+```
+
+- 现在（私有）⇒ 走「不带」那支 ⇒ **发得出去**；
+- 将来转公开 ⇒ **同一份 workflow 自动升级**成带徽章的，一行都不用改；
+- 取不到可见性时默认走「不带」那支 ⇒ 宁可少一个徽章，也不要让整个发布因
+  provenance 失败。
+
+**另改一处**：`package.json#repository.url` 从 SSH 形式
+（`git@github.com:chschytzmcy/dsh-edge-agent.git`）改成 npm 规范要求的
+**https 形式**（`https://github.com/chschytzmcy/dsh-edge-agent.git`）——
+npm 要求该字段与发布位置**精确匹配（含大小写）**。仓库内无其它地方引用那个
+SSH 串（只有文档把它当「GitHub 通道的 SSH 装法」引用，那是另一回事）。
+
 ### 五、文档
 
 - **新建** [`docs/deploy-npm.md`](deploy-npm.md) —— npm 包名通道完整指南：
@@ -16138,11 +16187,16 @@ installable dir not found: dist/installable
 
 ### 七、遗留（如实记）
 
-- **npm 通道仍不可用**：包未上 registry（404），且**需要主人配 `NPM_TOKEN`
-  secret**（仓库侧无从得知是否已配）。推 `v*` tag 即可触发首次发布。
-  ⇒ 两条待裁决：**① 仓库要不要转公开**（决定别人能否免凭据从 GitHub 通道装）；
-  **② npm 通道要不要一并发布**。
-- **仓库至今 0 个 tag**：推第一个 tag 就会真的触发 `publish.yml`。
+- **npm 通道仍差最后一步：token**。16 条发布前提逐条核对（见
+  [`docs/deploy-npm.md`](deploy-npm.md) §8.5），**14 条已满足**，剩下的是：
+  ① **npm 账号 + granular access token**（classic token 已于 2025-12 被 npm
+  全部撤销；CI 用的 Node 22.20 ⇒ npm 10.x ⇒ OIDC Trusted Publishing 用不了），
+  ② **仓库可见性** —— 主人已裁决「先不公开」，已用按可见性自动分支解决，
+  **不再构成阻断**。
+- **仓库至今 0 个 tag**：配好 token 后推第一个 tag 就会真的触发 `publish.yml`
+  ⇒ 首次发布到 npmjs.org。
+- **私有仓库 ⇒ 没有 provenance 徽章**（主人已知并接受）。将来若转公开，
+  workflow 会自动带上 `--provenance`，无需改代码。
 - **本地目录通道的目录含明文 `config/edge.json`** ⇒ 不能外发；要分发走
   npm / git 通道。
 

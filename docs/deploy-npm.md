@@ -326,6 +326,86 @@ node scripts/verify-ci-build-chain.mjs --selftest  # 自证 + 反向证伪（11 
 自证里包含**反向证伪**：把「只跑 `compile`」这个 §7.104 的缺陷造出来，
 门禁必须报出 `build:client` 与 `build:installable` 两项；造回完整链，门禁必须放过。
 
+### 8.5 真正发布成功需要哪些条件（逐条核对，2026-10-30 核实）
+
+| # | 条件 | 状态 | 备注 |
+|---|---|---|---|
+| 1 | npmjs.com 账号 | ❓ | 需要主人在 registry 上有账号 |
+| 2 | scope `@deepseek-harness-edge-agent` 可用 | ✅ | 查得 404 ⇒ 该 scope 未被占用；首次发布会创建它 |
+| 3 | 认证：`NPM_TOKEN`（**granular access token**，publish 权限、Bypass 2FA、≤90 天） | ❓ | **classic token 已于 2025-12 被 npm 撤销**，只能用 granular |
+| 3′ | 或 OIDC **Trusted Publishing**（不要 token） | ⚠️ | 需 **npm CLI ≥ 11.5.1**（⇒ Node 24）；CI 现在 Node 22.20 ⇒ npm 10.x ⇒ **用不了** |
+| 4 | `publishConfig.access: "public"` | ✅ | scoped 包默认 restricted，必须显式 public |
+| 5 | `repository.url` 与发布位置**精确匹配**（大小写敏感） | ✅ | **§7.156 已从 SSH 形式改成 `https://github.com/chschytzmcy/dsh-edge-agent.git`** |
+| 6 | `permissions: id-token: write` | ✅ | workflow 里已有 |
+| 7 | 云托管 runner | ✅ | `ubuntu-latest`（自托管 runner 不满足 provenance 要求） |
+| 8 | **仓库公开**（provenance 的前提） | ❌ **当前是私有** | GitHub API 匿名查本仓返回 **404** ⇒ 私有。⇒ §8.5.1 |
+| 9 | 包本身 public | ✅ | `--access public` |
+| 10 | `lib/` 预构建 | ✅ | §8.3 修的就是这个 |
+| 11 | `files` 白名单 | ✅ | 231 文件 / 67 入口 |
+| 12 | `dsh.bundle.patch` 列出的文件在包里 | ✅ | 两个 patch 都在白名单里 |
+| 13 | `engines.dsh` 声明 | ✅ | `>=0.2.1-rc.2` |
+| 14 | 版本未被占用 | ✅ | `0.1.1` 未发过（registry 404） |
+| 15 | tag ↔ `package.json#version` 一致 | ✅ | §7.156 加了断言 |
+| 16 | 真密钥不在包里 | ✅ | `.npmignore` + `files` **双重**排除 `config/edge.json` |
+
+⇒ **剩下的只有两件是主人手上的**：① npm 账号 + token（③）；② 要不要转公开（⑧）。
+
+#### 8.5.1 provenance 的那条硬约束（最容易踩的一脚）
+
+npm 的溯源徽章（`Built and signed on GitHub Actions`）**只接受公共来源仓库**。
+pnpm 自己的判定（`releasing/commands/lib/publish/oidc/provenance.js`）：
+
+```js
+// ① 先解 OIDC token 的 payload
+if ((!GITHUB_ACTIONS || payload.repository_visibility !== "public") && ...)
+  throw new ProvenanceInsufficientInformationError()
+//    "The environment does not provide enough information to determine visibility"
+
+// ② 再问 registry：这个包本身是不是 public
+GET /-/package/<name>/visibility   →  必须是 { public: true }
+```
+
+⇒ **仓库是私有的 ⇒ 第①步就抛错 ⇒ 整个发布失败**，报的是
+`ProvenanceInsufficientInformationError`；npm 侧的对应错误是
+`npm error 422 Unprocessable Entity / Error verifying sigstore provenance bundle:
+Unsupported GitHub Actions source repository visibility: "private"`。
+
+**§7.156 的处理**：不写死 `--provenance`，而是**按仓库可见性自动决定**：
+
+```yaml
+- name: Publish
+  env:
+    NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+  run: |
+    VISIBILITY="${{ github.event.repository.visibility }}"
+    if [ "$VISIBILITY" = "public" ]; then
+      pnpm publish --provenance --access public
+    else
+      echo "::warning::仓库是 private ⇒ npm 不接受私有来源仓库的 provenance。本次不带 --provenance 发布。"
+      pnpm publish --access public
+    fi
+```
+
+- **现在是私有** ⇒ 走「不带」那支 ⇒ **发得出去**（只是没有溯源徽章）；
+- **将来转公开** ⇒ 同一份 workflow 自动升级成带徽章的，**不用再改**；
+- 取不到可见性时默认走「不带」那支 ⇒ 宁可少一个徽章，也不要让整个发布因 provenance 失败。
+
+> ⚠️ **首次发布的额外不确定点**：pnpm 第②步要问 registry「这个包是不是 public」，
+> 而首次发布时包**还不存在**。若那个端点在包不存在时返回 404，会变成
+> `ProvenanceFailedToFetchVisibilityError`。这只会影响**公开仓库**的首次发布；
+> 私有仓库走的是「不带 `--provenance`」那支，不经过这一步。
+
+#### 8.5.2 认证方式怎么选
+
+| 方式 | 需要什么 | 代价 |
+|---|---|---|
+| **granular access token** | npmjs.com → Settings → Access Tokens → 新建，勾 publish、勾 Bypass 2FA、有效期 ≤90 天、scope 限定到本包 ⇒ 存成 GitHub secret `NPM_TOKEN` | 要定期轮换（90 天） |
+| **OIDC Trusted Publishing** | npmjs.com 上给本包登记 trusted publisher（Owner / Repository / Workflow 文件名 `publish.yml`，**大小写敏感**）⇒ **完全不需要 token** | 需 **npm CLI ≥ 11.5.1** ⇒ Node 24。本仓 CI 用 Node 22.20 ⇒ **现在用不了**，要升 Node |
+
+⇒ **当前建议走 granular token**：CI 已是 Node 22.20，升 Node 属于额外改动。
+
+> npm 2025-12 起撤销了全部 classic token。旧的 `NPM_TOKEN`（classic）现在一律无效。
+
 ## 9. 排障
 
 | 症状 | 看哪里 | 常见原因 |
