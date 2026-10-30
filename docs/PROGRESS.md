@@ -15732,6 +15732,65 @@ git（解除 `.gitignore` 里的 `/lib/`）⇒ `prepare` 可以留空 ⇒ pnpm �
 每次改代码要记得重新提交 `lib/`）。宿主文档给的两条路是「git + prepare（源码）」
 与「npm / tarball（预构建产物）」，这条是介于两者之间的第三种。
 
+**（7）桌面版实机：主人点了一次安装，宿主日志把整条链路记下来了。**
+
+| 阶段 | 宿主日志（`~/.dsh/profiles/desktop/.plugin-manager/logs/`） | 结论 |
+|---|---|---|
+| 连通性预检 | `fatal: could not read Username for 'https://github.com': terminal prompts disabled` | 预检用 `credential.helper=`（**显式禁用凭据助手**）+ `GIT_TERMINAL_PROMPT=0` ⇒ **本机 GCM 里的 token 在这一关用不上** ⇒ 私有库 + https ⇒ 预检必失败；**SSH 形式不受影响**（`credential.helper=` 对 SSH 无意义） |
+| 真正安装 | `[ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED] ... fetched from "git@github.com:chschytzmcy/dsh-edge-agent.git"` | `fetched from` 是 **SSH** ⇒ **pnpm 自己从 https 回退到了 SSH**（`fromHostedGit` 的 `:139522`：`!preferSsh && sshUrl && accessRepository(sshUrl)`）⇒ SSH key 生效、clone 成功。**真正的阻断点是构建授权** |
+
+**⚠️ 宿主有个文案误导（实机发现）**：客户端弹的是「**无法访问 GitHub** /
+改用国内镜像」，但既不是网络不通也不是 GitHub 不可达。根因是失败分类
+（`install-failure.ts:21-30`）的 network 模式含 `\bETIMEDOUT\b`，而 pnpm 输出里
+有一行**非致命**的 WARN：
+
+```
+[WARN] HEAD https://github.com/chschytzmcy/dsh-edge-agent error (ETIMEDOUT). Will retry in 500 milliseconds.
+```
+
+（那是 pnpm 匿名探测「仓库是否公开」那一步，超时了但被重试兜住，clone 照样成功）
+⇒ 整段输出被判成 `network` ⇒ `failedAt='spec-host'` ⇒ 客户端弹 GitHub 失败框。
+宿主只读输出文本、不区分 WARN 与致命错误 ⇒ **分类被带偏**，主人看到的提示指向了
+错误的 remedies。
+
+**本轮据此做的两件事**：
+
+1. **装了全局 pnpm**：`npm i -g pnpm` ⇒ `C:\Users\cheng\AppData\Roaming\npm\pnpm.cmd`
+   （v11.7.0，与 `package.json#packageManager` 一致）；该目录**本来就在用户 PATH 上**
+   ⇒ 桌面 App **重启后**就能在 PATH 上找到 pnpm（当前那个进程是 10-29 15:58 启动的，
+   继承的是旧 PATH）。
+2. **把 allowBuilds 键写进 profile 的 `pnpm-workspace.yaml`**（等价于宿主 GUI 上那次
+   「允许这些脚本并重试」，手工先做掉）：
+   ```yaml
+   allowBuilds:
+     "@deepseek-harness-edge-agent/dsh-edge-agent@git+ssh://git@github.com/chschytzmcy/dsh-edge-agent.git#c2b01fc…": true
+   ```
+
+⇒ 实操结论：**填 SSH 形式**（预检这关才能过）+ **allowBuilds 提前放行**（不必指望
+GUI 把正确的按钮弹出来）+ **桌面 App 重启**（拿到新 PATH）。
+
+**（8）补测：SSH 形式同样会做匿名 HEAD 探测 ⇒ 主人这台机器匿名 HTTPS 到 github.com 不通。**
+
+实测 pnpm 装 `git+ssh://git@github.com/chschytzmcy/dsh-edge-agent.git`：
+
+```
+[WARN] HEAD https://github.com/chschytzmcy/dsh-edge-agent error (ETIMEDOUT). Will retry in 500 milliseconds.
+[WARN] HEAD https://github.com/chschytzmcy/dsh-edge-agent error (ECONNRESET). Will retry in 1 second.
+[ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED] ... fetched from "git@github.com:chschytzmcy/dsh-edge-agent.git"
+```
+
+⇒ `hosted-git-info` 认得 `git+ssh://` 形式 ⇒ 仍走 `fromHostedGit` ⇒ 仍做
+`isRepoPublic` 的**匿名 HEAD** 探测。两个结论：
+
+1. **这台机器 SSH 通、匿名 HTTPS 到 github.com 不通**（探测 ETIMEDOUT/ECONNRESET，
+   被重试兜住，clone 照样成功）⇒ 安装会**多等两次超时**，看起来像卡住；
+2. **https 形式彻底双输**：预检过不了（`credential.helper=` 禁掉了 GCM 的 token），
+   clone 走的匿名 HTTPS 也不通 ⇒ **SSH 是唯一可行的写法**。
+
+只要 pnpm 最终成功，那两行 WARN 不参与失败分类（分类只在失败时生效）⇒ GUI 不会
+弹「无法访问 GitHub」。
+
+
 ### 四、改动
 
 | # | 改动 | 为什么 |

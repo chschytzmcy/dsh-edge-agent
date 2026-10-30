@@ -104,6 +104,47 @@ pnpm 用的是**系统 git CLI**（自带 `@npmcli/git` 7.0.2，不是纯 JS 实
 > ```
 > 键 = `<包名>@<pkgResolutionId>`，而 `pkgResolutionId` = `git+<地址>#<commit>`。
 
+#### 桌面版实机记录（2026-10-30）
+
+主人实际在桌面 App 里点了一次，宿主写的日志把整条链路记下来了：
+
+| 阶段 | 宿主日志 | 结论 |
+|---|---|---|
+| 连通性预检 | `fatal: could not read Username for 'https://github.com': terminal prompts disabled` | 预检用 `credential.helper=`（**显式禁用凭据助手**）+ `GIT_TERMINAL_PROMPT=0` ⇒ **本机 GCM 里的 token 在这一关用不上** ⇒ 私有库 + https ⇒ 预检必失败。**SSH 形式不受影响**（`credential.helper=` 对 SSH 无意义） |
+| 真正安装 | `[ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED] ... fetched from "git@github.com:chschytzmcy/dsh-edge-agent.git"` | 注意 `fetched from` 是 **SSH** ⇒ **pnpm 自己从 https 回退到了 SSH**（`fromHostedGit` 的 `:139522`）⇒ 主机的 SSH key 生效、clone 成功。真正的阻断点是**构建授权** |
+
+> ⚠️ **宿主有个文案误导**：客户端弹的是「无法访问 GitHub / 改用国内镜像」，
+> 但**既不是网络不通，也不是 GitHub 不可达**。原因是失败分类
+> （`install-failure.ts:21-30`）的 network 模式含 `\bETIMEDOUT\b`，而 pnpm 输出里
+> 有一行**非致命**的 WARN：
+> ```
+> [WARN] HEAD https://github.com/chschytzmcy/dsh-edge-agent error (ETIMEDOUT). Will retry in 500 milliseconds.
+> ```
+> （那是 pnpm 匿名探测「仓库是否公开」那一步，超时了但被重试兜住）
+> ⇒ 整段输出被判成 `network` ⇒ `failedAt='spec-host'` ⇒ 弹「无法访问 GitHub」。
+> 宿主只看输出文本、不区分 WARN 与致命错误 ⇒ 分类被带偏。
+
+⇒ 实操结论：**填 SSH 形式**（预检这关才能过）+ **提前把 allowBuilds 键写进
+profile 的 `pnpm-workspace.yaml`**（等价于宿主 GUI 上那次「允许这些脚本并重试」），
+就不必指望 GUI 把正确的按钮弹出来。
+
+**⚠️ 但 SSH 形式也一样会做匿名 HEAD 探测**（实测：`hosted-git-info` 认得
+`git+ssh://git@github.com/...` ⇒ 仍走 `fromHostedGit` ⇒ 仍做 `isRepoPublic`）：
+
+```
+[WARN] HEAD https://github.com/chschytzmcy/dsh-edge-agent error (ETIMEDOUT). Will retry in 500 milliseconds.
+[WARN] HEAD https://github.com/chschytzmcy/dsh-edge-agent error (ECONNRESET). Will retry in 1 second.
+```
+
+⇒ **这台机器的匿名 HTTPS 到 github.com 是不通的**（SSH 通、匿名 HTTPS 不通）。
+两个后果：
+
+1. 安装会**多等两次超时**（看起来像卡住，其实是在重试）；
+2. **https 形式彻底双输** —— 预检过不了（`credential.helper=` 禁掉了 GCM），
+   clone 走的匿名 HTTPS 也不通 ⇒ **SSH 是唯一可行的写法**。
+
+只要最终 pnpm 成功，那两行 WARN 不会触发失败分类 ⇒ GUI 不会弹「无法访问 GitHub」。
+
 > 若要让别人无凭据装上，只能把仓库公开；发布前请先确认仓里没有密钥
 > （`config/edge.json` 已被 `.gitignore` 排除，`config/edge.json.bak-*` 同样）。
 
