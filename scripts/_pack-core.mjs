@@ -254,6 +254,52 @@ function quoteArg(arg) {
 // `patchField` so the legacy readers below keep working.
 export const VARIANTS = BUNDLE_VARIANTS.map((v) => ({ ...v, patch: v.patchField }))
 
+/* ── DEMO artifacts (§7.160) ─────────────────────────────────────────────── */
+
+/**
+ * The warning that ships next to the DEMO tarballs.
+ *
+ * The DEMO build differs from the distributable one by exactly ONE file:
+ * `config/edge.json` — the operator's plaintext endpoints and API keys. It
+ * is staged in so the artifact works on a machine that was never
+ * configured (the file lands on lookup candidate #1, `<bundle>/config/edge.json`).
+ *
+ * The operator's ruling (2026-10-30): DEMO use only, never leaves their own
+ * machine. The name carries `-DEMO`, the distributable tarball keeps its own
+ * gate (verify-tarball #5 rejects any archive carrying config/edge.json), and
+ * `dist/` is gitignored — so this file never reaches git or npm.
+ */
+const DEMO_README = `dsh-edge-agent — DEMO 产物（内含明文凭据，勿分发）
+================================================================
+
+这两个包是 **演示用** 的，与正规可分发包只有**一个文件**的差别：
+
+  dist/dsh-edge-agent-desktop-safe-DEMO.tar.gz
+  dist/dsh-edge-agent-full-DEMO.tar.gz
+
+差别 = 多了 package/config/edge.json —— 那是运维配置里的**明文端点与
+API key**。正因为它在内，产物装到**任何一台没配置过的机器**上都能直接用：
+配置候选顺位 1（<bundle>/config/edge.json）命中 ⇒ local-llm 路由会注册 ⇒
+边缘模式不会被隐私裁决 fail-closed 拦下。
+
+正规包（dsh-edge-agent-*.tar.gz，不带 -DEMO）**不含**这个文件：
+可分发产物绝不能带明文凭据（门禁 verify-tarball 第 5 条会红）。
+那种包要用，机器上必须自己写 ~/.dsh-edge-agent/edge.json（顺位 2）。
+
+⚠️ 演示包含着真实凭据：
+  · 不要提交进 git（dist/ 已 gitignore）
+  · 不要发布到 npm（files 白名单不含 dist/）
+  · 不要发给任何人、任何机器
+  · 演示结束请删掉这两个 *-DEMO.tar.gz
+
+用法（桌面 App → Plugins → Add plugin）：
+  填绝对路径，例如
+  C:\\Users\\<你>\\...\\dist\\dsh-edge-agent-desktop-safe-DEMO.tar.gz
+  装完记得点「立即启用」，然后重启 App。
+
+（若之前装过同一个包名的其它版本，宿主按包名判重 ⇒ 先卸载再装。）
+`
+
 /* ── Staging ────────────────────────────────────────────────────────── */
 
 /**
@@ -438,11 +484,32 @@ export function buildInstallable() {
  * staging dir and a relative operand, then move the result with Node
  * (which handles Windows paths correctly).
  */
-export function makeTarball(variant, outFile) {
+/**
+ * Create a .tar.gz whose single top-level entry is named `package`.
+ *
+ * Uses the system `tar` (GNU tar / bsdtar / Git Bash tar all accept this
+ * form). `--no-xattrs` is a GNU-only flag — bsdtar rejects it — so it is
+ * probed rather than assumed.
+ *
+ * §C: tar must NOT see an absolute Windows path.
+ * GNU tar's host:path syntax makes a leading "C:" a REMOTE HOST name — it
+ * then tries to reach a host called "C" ("Cannot connect to C: resolve
+ * failed", exit 128). Git Bash's tar hits this on every absolute path.
+ * The fix: give tar NO absolute paths at all — run it with cwd = the
+ * staging dir and a relative operand, then move the result with Node
+ * (which handles Windows paths correctly).
+ *
+ * `keepSecretConfig` (§7.160) stages `config/edge.json` — the operator's
+ * PLAINTEXT endpoints and API keys — into the archive. That is OFF for the
+ * distributable artifacts (the whole point of the tarball channel) and ON
+ * only for the explicitly-named DEMO build, whose operator has decided the
+ * artifact never leaves their own machine.
+ */
+export function makeTarball(variant, outFile, { keepSecretConfig = false } = {}) {
   const stageRoot = mkdtempSync(join(tmpdir(), 'dsh-edge-pack-'))
   try {
     const staged = join(stageRoot, variant.dir)
-    stageVariant(variant, staged)
+    stageVariant(variant, staged, { keepSecretConfig })
 
     // §B: npm/pnpm expect the tarball's top-level directory to be `package`.
     renameSync(staged, join(stageRoot, 'package'))
@@ -463,7 +530,7 @@ export function makeTarball(variant, outFile) {
     moveFile(join(stageRoot, localTar), outFile)
 
     writeChecksum(outFile)
-    console.log(`  built ${outFile}`)
+    console.log(`  built ${outFile}${keepSecretConfig ? '  ← DEMO: 内含 config/edge.json（明文凭据，勿分发）' : ''}`)
   } finally {
     rmSync(stageRoot, { recursive: true, force: true })
   }
@@ -567,6 +634,10 @@ export function artifactPaths() {
     installableDirFull: join(DIST, 'installable', 'dsh-edge-agent-full'),
     tarball: join(DIST, 'dsh-edge-agent-desktop-safe.tar.gz'),
     tarballFull: join(DIST, 'dsh-edge-agent-full.tar.gz'),
+    // §7.160: the DEMO artifacts carry config/edge.json (plaintext
+    // credentials) — same package, one file difference.
+    tarballDemo: join(DIST, 'dsh-edge-agent-desktop-safe-DEMO.tar.gz'),
+    tarballDemoFull: join(DIST, 'dsh-edge-agent-full-DEMO.tar.gz'),
   }
   return out
 }
@@ -593,6 +664,26 @@ if (isEntryPoint) {
     } else if (MODE === 'tarball') {
       mkdirSync(DIST, { recursive: true })
       for (const v of VARIANTS) makeTarball(v, join(DIST, `${v.dir}.tar.gz`))
+    } else if (MODE === 'demo') {
+      // §7.160 (2026-10-30): DEMO artifacts. Identical to the distributable
+      // tarball EXCEPT that config/edge.json — the operator's plaintext
+      // endpoints and API keys — is staged in as well, so the artifact works
+      // on a machine that has never been configured (the config lands on
+      // lookup candidate #1, `<bundle>/config/edge.json`).
+      //
+      // The operator's ruling (2026-10-30): this build is for DEMO use and
+      // never leaves their own machine. Hence:
+      //   · the file name carries a `-DEMO` suffix so it can never be
+      //     mistaken for the distributable artifact;
+      //   · the distributable tarball keeps its gate (verify-tarball #5
+      //     rejects any archive carrying config/edge.json);
+      //   · a warning file lands next to it.
+      mkdirSync(DIST, { recursive: true })
+      for (const v of VARIANTS) {
+        makeTarball(v, join(DIST, `${v.dir}-DEMO.tar.gz`), { keepSecretConfig: true })
+      }
+      writeFileSync(join(DIST, 'README-DEMO.txt'), DEMO_README, 'utf8')
+      console.log('  wrote dist/README-DEMO.txt')
     } else if (MODE === 'all') {
       buildInstallable()
       mkdirSync(DIST, { recursive: true })

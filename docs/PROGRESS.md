@@ -16643,3 +16643,70 @@ const mentionsBuildScript = /(?:^|[\s;&|(])(?:npm|pnpm) run build(?![\w:-])/mu.t
   在 GUI 里选好 provider + key。
 - 主人本机的桌面 App 自 14:30 起没重启过（tarball 14:34 装 ⇒ 靠热重载），
   下次测建议**完全退出再启动**。
+
+## §7.160 DEMO 产物：把活配置打进包里的演示版 tarball（2026-10-30）
+
+> 主人裁决（2026-10-30）：要一个**演示用**的 tarball，把项目里的
+> `config/edge.json`（含明文端点与 API key）**直接打进去**，用于装到**没配置过
+> 的机器**上开箱即用；「这个 tar 也是演示用的，没有问题」。
+
+### 一、为什么这个需求成立
+
+§3.4 那道门槛的根因是「干净设备上顺位 1/2 全落空」⇒ `local-llm` 路由不注册
+⇒ 边缘模式被隐私裁决 fail-closed 拦下。
+
+⇒ **把 `config/edge.json` 打进包里，顺位 1 就直接命中** ⇒ 端点现成 ⇒ 路由注册
+⇒ **门槛消失**。这比让每台机器手写 `~/.dsh-edge-agent/edge.json` 干净得多。
+
+⇒ 而这个包**正是正规 tarball 排除掉的那一个文件**（`stageVariant()` 的
+`keepSecretConfig` 分支）⇒ 复用现成机制，不新增路径。
+
+### 二、实现
+
+1. **`scripts/_pack-core.mjs`**
+   - `makeTarball(variant, outFile, { keepSecretConfig = false })` ⇒ 默认仍**排除**
+     `config/edge.json`；DEMO 走 `keepSecretConfig: true`。
+   - 新 CLI 模式 **`demo`** ⇒ 产出 `dist/<变体>-DEMO.tar.gz`（**文件名带 DEMO**）
+     + `dist/README-DEMO.txt`（醒目警告：含明文凭据 / 不进 git / 不进 npm / 勿分发）。
+   - `artifactPaths()` 增加两个 DEMO 路径。
+2. **`package.json`**：新增 `pack:demo` 与 `build:tarball:demo`
+   （= `compile:pack` → `pack:demo` → `verify:tarball`）。
+3. **`scripts/verify-tarball.mjs`**：第 5 条参数化为 `expectSecretConfig`
+   - 正规包：含 `config/edge.json` ⇒ **红**（原有行为不变）
+   - DEMO 包：**必须含** `config/edge.json`，否则**红**（新规则）
+   - entry 段：对**存在的** DEMO 包自动追加审计（不存在不报 —— 正规构建不产它）
+   - `--selftest` 11 → **14 项断言**（新增 3 项覆盖 DEMO 的反向规则）
+4. **文档**：`docs/deploy-tarball.md` 新增 **§3.5**（五道防线表 + 卸载提醒），
+   §3.1 加一行指向它。
+
+### 三、五道防线（为什么它不可能被误当可分发产物）
+
+| 防线 | 机制 |
+|---|---|
+| 不进 git | `dist/` 已 gitignore |
+| 不进 npm | `files` 白名单不含 `dist/`；`verify-package` 守 npm tarball |
+| 不会被误认 | 文件名带 `-DEMO`；旁边有 `README-DEMO.txt` 写明来龙去脉 |
+| **改名也过不去** | `verify-tarball` 第 5 条对正规包判「含 `config/edge.json` ⇒ 红」 |
+| DEMO 自身也受检 | 反向规则：必须**含** `config/edge.json`，否则红 |
+
+⇒ **反向证伪（对真实产物做的）**：把 `dsh-edge-agent-desktop-safe-DEMO.tar.gz`
+的内容复制成 `dsh-edge-agent-desktop-safe.tar.gz` ⇒ 门禁 **红**，报错点名
+`config/edge.json`；还原 ⇒ 绿。
+
+### 四、验证
+
+- `npm run build:tarball:demo` → exit 0，产出 2 个 DEMO 包 + `README-DEMO.txt`；
+- `verify-tarball` → **4 个 tarball 全绿**（正规 229 条目 / DEMO 230 条目，
+  DEMO 行标注「含 config/edge.json（明文凭据，勿分发）」）；
+- `verify-tarball --selftest` → **14 项断言全过**；
+- 反向证伪 4 项全过（改名 ⇒ 红 ⇒ 还原 ⇒ 绿）；
+- DEMO 包内 `config/edge.json` 实测：`llm.local.baseUrl` / `model` / `keyRef`
+  齐全、3 个真凭据槽位有值（**值不回显**）；
+- `npm run build`（含 `verify:build` **21 项**）→ exit 0；
+- vitest 73 文件 / 1495 passed / 2 skipped / 0 failed；tsc 双配置 0；
+  eslint 0 error / 59 warnings；doc-links 断链 0 / 孤儿 0。
+
+### 五、遗留
+
+- **装 DEMO 包前必须先卸载**同一个包名的旧版本（宿主按包名判重）；
+- 演示结束请删掉 `dist/*-DEMO.tar.gz`（`dist/` 不进 git，但文件还在盘上）。

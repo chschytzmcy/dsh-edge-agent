@@ -125,6 +125,9 @@ tarball 里没有 `install` / `postinstall` / `prepare` 脚本（`stageVariant()
 npm run build:tarball
 ```
 
+> 演示用、要「装到没配置过的机器上直接能跑」的包 ⇒ `npm run build:tarball:demo`
+> （多打一个 `config/edge.json` 进去，**内含明文凭据，勿分发** —— 见 §3.5）。
+
 它串三步，**一步都不能少**：
 
 | 步 | 做什么 | 少了会怎样 |
@@ -261,6 +264,38 @@ input-guard: 本轮 intent 判定为 LOCAL，按隐私裁决必须使用本地�
 把 `llm.cloud` 配成**直连云池**（`baseUrl` + `model` + `keyRef`，不 delegate）
 **并不能**绕开：隐私裁决是按 intent 走的，LOCAL 意图照样不许上云。
 ⇒ 想让边缘模式真正可用，**必须**配 `llm.local`。
+
+### 3.5 DEMO 包（演示用：把活配置直接打进包里）
+
+`npm run build:tarball:demo` 额外产出两个**演示用**的包：
+
+```
+dist/dsh-edge-agent-desktop-safe-DEMO.tar.gz
+dist/dsh-edge-agent-full-DEMO.tar.gz
+dist/README-DEMO.txt            ← 醒目警告，随包一起生成
+```
+
+它们与正规包**只差一个文件**：多了 `package/config/edge.json`（运维的明文
+端点与 API key）。
+
+⇒ 好处：装到**任何一台没配置过的机器**上都能直接用 —— 配置候选**顺位 1**
+（`<bundle>/config/edge.json`）命中 ⇒ `local-llm` 路由会注册 ⇒ 边缘模式
+不会被隐私裁决 fail-closed 拦下（§3.4 那道门槛直接消失）。
+
+⚠️ **主人裁决（2026-10-30）：演示用，不外传。** 因此这份产物有五道防线：
+
+| 防线 | 机制 |
+|---|---|
+| 不进 git | `dist/` 已 gitignore |
+| 不进 npm | `files` 白名单不含 `dist/`；`verify-package` 守 npm tarball |
+| 不会被误当正规包 | 文件名带 `-DEMO`；`dist/README-DEMO.txt` 写明来龙去脉 |
+| **改名也过不去** | `verify-tarball` 第 5 条对**正规包**判「含 `config/edge.json` ⇒ 红」（实测反向证伪：把 DEMO 包改名成正规包名字 ⇒ 门禁红） |
+| DEMO 包自身也受检 | `verify-tarball` 对存在的 DEMO 包用**反向规则**审：必须**含** `config/edge.json`，否则红 |
+
+⇒ 演示结束请删掉 `dist/*-DEMO.tar.gz`。
+
+> ⚠️ 装 DEMO 包前注意：宿主按**包名**判重，同一个包名已经装过就装不上
+> ⇒ **先卸载**再装。装完仍要点「立即启用」、重启 App。
 
 ## 4. 实测（2026-10-30，隔离临时 profile）
 

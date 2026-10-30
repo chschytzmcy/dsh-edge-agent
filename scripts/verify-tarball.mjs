@@ -86,9 +86,14 @@ function readTarball(path) {
  *
  * @param {string} tarballPath
  * @param {string} installableDir the sibling installable directory
+ * @param {{ expectSecretConfig?: boolean }} [opts]
+ *   `expectSecretConfig: true` audits a DEMO artifact (§7.160) — one that is
+ *   SUPPOSED to carry config/edge.json, because the operator decided the
+ *   artifact is for demo on their own machine and carries the live
+ *   configuration. The distributable artifact must never carry it.
  * @returns {{ failures: string[], notes: string[] }}
  */
-export function auditTarball(tarballPath, installableDir) {
+export function auditTarball(tarballPath, installableDir, { expectSecretConfig = false } = {}) {
   const failures = []
   const notes = []
 
@@ -165,8 +170,19 @@ export function auditTarball(tarballPath, installableDir) {
     }
   }
 
-  // ── 5. the plaintext credential file must NOT be inside ──────────────────
-  if (tarball.files.includes('config/edge.json')) {
+  // ── 5. the plaintext credential file: excluded from the DISTRIBUTABLE
+  //      artifact, REQUIRED in the DEMO one (§7.160) ────────────────────────
+  if (expectSecretConfig) {
+    if (!tarball.files.includes('config/edge.json')) {
+      failures.push(
+        'DEMO 包里没有 config/edge.json —— 它存在的意义就是带上活配置，'
+        + '好让没配置过的机器装上就能用（否则顺位 1 落空 → 本地路由不注册 → '
+        + '边缘模式被隐私裁决拦下）',
+      )
+    } else {
+      notes.push('DEMO：含 config/edge.json（明文凭据，勿分发）')
+    }
+  } else if (tarball.files.includes('config/edge.json')) {
     failures.push('tarball 里含 config/edge.json —— 那是运维的明文 API key，绝不能进可分发产物')
   }
   if (!tarball.files.includes('config/edge.example.json')) {
@@ -300,6 +316,23 @@ function selftest() {
     expect('含 config/edge.json ⇒ 报失败', r.failures.some((f) => f.includes('config/edge.json')), true)
   }
 
+  // 6b. §7.160: the DEMO artifact inverts that rule — it MUST carry the
+  //     live configuration, otherwise it is just a copy of the distributable
+  //     one and buys the operator nothing.
+  {
+    const t = mk('demo', { ...GOOD_FILES, 'config/edge.json': '{"secrets":{}}' }, GOOD_MANIFEST)
+    const r = auditTarball(t, join(ROOT_TMP, 'nonexistent'), { expectSecretConfig: true })
+    expect('DEMO 包含 config/edge.json ⇒ 无失败', r.failures.length, 0)
+    expect('DEMO 包被标注含明文凭据', r.notes.some((n) => n.includes('DEMO')), true)
+  }
+
+  // 6c. a DEMO artifact WITHOUT the config is caught.
+  {
+    const t = mk('demo-missing', GOOD_FILES, GOOD_MANIFEST)
+    const r = auditTarball(t, join(ROOT_TMP, 'nonexistent'), { expectSecretConfig: true })
+    expect('DEMO 包缺 config/edge.json ⇒ 报失败', r.failures.some((f) => f.includes('DEMO')), true)
+  }
+
   // 7. missing engines.dsh is caught.
   {
     const t = mk('noengines', GOOD_FILES, { ...GOOD_MANIFEST, engines: { node: '^22.19' } })
@@ -366,6 +399,24 @@ if (args.includes('--selftest')) {
       console.error(`verify-tarball: ${rel} 不合格：`)
       for (const f of result.failures) console.error(`  - ${f}`)
       failures.push(...result.failures)
+    }
+
+    // §7.160: the DEMO artifact, when it exists, is audited with the INVERTED
+    // credential rule (it MUST carry config/edge.json). It is optional — the
+    // distributable build never produces it — but if it is there, it has to be
+    // the thing it claims to be.
+    const demoPath = join(DIST, variant.tarball.replace(/\.tar\.gz$/u, '-DEMO.tar.gz'))
+    if (existsSync(demoPath)) {
+      const demo = auditTarball(demoPath, installableDir, { expectSecretConfig: true })
+      audited++
+      const demoRel = relative(ROOT, demoPath)
+      if (demo.failures.length === 0) {
+        console.log(`verify-tarball: ${demoRel} OK（DEMO；${demo.notes.join('；')}）`)
+      } else {
+        console.error(`verify-tarball: ${demoRel} 不合格：`)
+        for (const f of demo.failures) console.error(`  - ${f}`)
+        failures.push(...demo.failures)
+      }
     }
   }
   if (failures.length > 0) {
