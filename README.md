@@ -210,6 +210,25 @@ cp -r lib/. "dist/installable/dsh-edge-agent-desktop-safe/lib/"
 > 靠它找到活配置）。别把 `dist/` 整个目录发给别人——tarball 那份是干净的
 > （已排除 `edge.json`）。
 
+**方式二之二：填 GitHub 仓库地址（现场编译，适合分发给别人）**
+
+桌面 App 的同一个对话框也接受仓库地址；宿主会克隆源码、在本地跑 `prepare`
+编译出 `lib/`，再装成 bundle：
+
+```
+1. 桌面 App 侧边栏 Plugins → Add plugin → 填
+   https://github.com/chschytzmcy/dsh-edge-agent
+2. 首次会失败并提示「允许这些脚本并重试」——点它放行本仓的构建脚本
+3. 装完点「立即启用」（GUI 不会自动启用）
+4. 重启桌面 App
+5. 配置写进 ~/.dsh-edge-agent/edge.json（git 装出来的包里不含明文密钥）
+```
+
+两个前置条件：**仓库要匿名可读**（私有库需要本机 git 有非交互凭据）、
+**PATH 上要有 `pnpm`**（宿主 runtime 的 `bin/` 里只有 node；`npm i -g pnpm`
+可解，装完要重启桌面 App）。细节见
+[`docs/deploy-github.md`](docs/deploy-github.md)。
+
 ### 方式三：部署独立 HTTP profile（macOS / Linux）
 
 `dsh-edge-agent` profile = **桌面那套 edge 逻辑 + 一层 HTTP overlay**

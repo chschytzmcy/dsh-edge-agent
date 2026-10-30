@@ -15710,9 +15710,40 @@ await runLifecycleHook(installScriptName, manifest, execOpts);
 - `tsc --noEmit` 双配置均 exit 0；
 - 构建门禁 `verify:build` **19 项全过**（EXIT=0，新增 `verify:git-install`）。
 
+**`--real` 端到端实测**（本节落档前补跑，正反两轮）：
+
+| 轮次 | PATH 上有没有 pnpm | 结果 |
+|---|---|---|
+| A | ❌ 没有 | 前置条件检查拦下，报「PATH 上没有可用的 `pnpm`」并给出可执行补救；探测输出里是 cmd.exe 的原话：`'pnpm' is not recognized as an internal or external command`（**这正是使用者会撞到的那句**，只是现在附带了解法） |
+| B | ✅ 有（等价 shim：`pnpm.cmd` → 桌面 runtime 那支 `pnpm.mjs`） | ✅ `端到端 OK（克隆 → pnpm add → payload 完整）`，exit 0 |
+
+B 轮装出来的东西正是宿主装完要的那四样，一样不缺：`lib/index.js`（Node 半侧）、
+**`lib/client.js`（浏览器半侧 —— §7.145 记过「缺它 ⇒ Edge tab 静默不出现」）**、
+两个 bundle patch 文件、profile `dependencies` 里的包名。
+
+**门禁自己也被证伪了一次**（这轮修的 bug）：A 轮一开始报的是「PATH 上没有 pnpm」，
+但那台机器的 `pnpm.cmd` **明明在 PATH 上**——探测用的是
+`execFileSync('pnpm', ...)`，而 Node 在 Windows 上**不给裸命令名补 `.cmd`/`.bat`**
+（Node 20.12+ 出于 CVE-2024-27980 直接拒绝 spawn .cmd/.bat），`npm i -g pnpm`
+装出来的恰恰是 `pnpm.cmd` ⇒ **有 pnpm 被误判成没有**。改成按 Windows 的规矩解析
+（PATH 逐目录 × PATHEXT 逐扩展名，与 cmd.exe / cross-spawn 一致）+ 走 shell 跑之后，
+A 轮才正确地报「没有」、B 轮才正确地报「通过」。
+
 ### 八、遗留（如实记）
 
-- **`--real` 端到端尚未跑**：它要求工作区已提交，本节落档时尚未提交 ⇒ 实测结果在下一次提交后补。
-- **私有仓库的凭据链未打通**：宿主预检不注入 token（`scrubbedParentEnv` 连 `GITHUB_TOKEN` 都剔），
-  认证只能靠本机 git 配置。本机目前没有非交互可用凭据。
-- **npm 通道仍未发布**：`publish.yml` 就绪但包未上 registry（404）⇒ 「填包名」那条路还不可用。
+- **PATH 上必须有 `pnpm`（宿主侧缺口，本仓绕不过）**：pnpm 为 git 依赖注入的
+  `pnpm install` 由 shell 跑 ⇒ 需要 PATH 上有 pnpm；桌面 runtime 的 `bin/` 里只有
+  `node`/`node.cmd`（宿主 `apps/desktop-host/src/index.ts:44` 前置它到 PATH），
+  本机用户 PATH 里也没有 pnpm ⇒ 桌面上从 Git 装**任何需要构建的插件**都会卡在
+  `'pnpm' is not recognized`。补救三选一（详见 `docs/deploy-github.md` §2.5）：
+  ① `npm i -g pnpm`（落到 `C:\Users\cheng\AppData\Roaming\npm`，该目录已在用户
+  PATH 上，装完**重启桌面版**）；② 改走 npm / tarball 通道（宿主 `publish.md`
+  的建议，分发预构建产物，不需要任何构建权限）；③ 给宿主提 issue（runtime bin
+  补一个 pnpm shim）。
+  **本轮已用等价 shim 实测整条链跑通**，所以 A 轮是「条件不满足」而不是「路走不通」。
+- **私有仓库的凭据链未打通**：宿主预检不注入 token（`scrubbedParentEnv` 连
+  `GITHUB_TOKEN` 都剔），认证只能靠本机 git 配置。本机目前没有非交互可用凭据
+  ⇒ 要让别人装上，仓库得是**匿名可读**的。
+- **npm 通道仍未发布**：`publish.yml` 就绪（tag `v*` 触发，带 `NPM_TOKEN`），
+  但包未上 registry（404）⇒ 「填包名」那条路还不可用。
+

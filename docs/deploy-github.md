@@ -234,6 +234,22 @@ npm run verify:git-install:real   # 端到端：克隆已提交状态 → 桌面
 > `--real` 要求工作区**已提交**——它克隆的是 HEAD，工作区脏着跑会测到旧代码、
 > 给出假通过。脚本会自己检查并拒绝。
 
+**实测结果（2026-10-30）**：
+
+| 轮次 | PATH 上有没有 pnpm | 结果 |
+|---|---|---|
+| A | ❌ 没有 | 被前置条件拦下，报「PATH 上没有可用的 `pnpm`」并附补救；探测输出是 cmd.exe 的原话 `'pnpm' is not recognized as an internal or external command` |
+| B | ✅ 有（等价 shim：`pnpm.cmd` → 桌面 runtime 那支 `pnpm.mjs`） | ✅ `端到端 OK（克隆 → pnpm add → payload 完整）` |
+
+B 轮装出来的包里四样齐全：`lib/index.js`、`lib/client.js`、两个 bundle patch 文件、
+profile `dependencies` 里的包名。
+
+> 门禁自身也被证伪过一次（已修）：探测原本用 `execFileSync('pnpm', ...)`，而 Node
+> 在 Windows 上**不给裸命令名补 `.cmd`/`.bat`**（Node 20.12+ 出于 CVE-2024-27980
+> 拒绝 spawn .cmd/.bat），`npm i -g pnpm` 装出来的恰恰是 `pnpm.cmd` ⇒ **有 pnpm
+> 被误判成没有**。现在按 Windows 的规矩解析（PATH 逐目录 × PATHEXT 逐扩展名，
+> 与 cmd.exe / cross-spawn 一致）。
+
 ## 7. 相关文档
 
 - [`load-into-local-dsh.md`](load-into-local-dsh.md) — 装进本地 DSH（三条路）
