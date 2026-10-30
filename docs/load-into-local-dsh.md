@@ -176,9 +176,9 @@ rm -rf /tmp/dsh-edge-probe
 
 | 通道 | 现状 |
 |---|---|
-| npm 包名 | 发布流水线就绪（`publish.yml`），但包尚未发布（registry 404）；推 `v*` tag 后可用 |
+| npm 包名 | 发布流水线就绪（`publish.yml`），但包尚未发布（registry 404）；推 `v*` tag 后可用。**2026-10-30（§7.156）发现发布链有个洞：build 步只跑 `compile` ⇒ `verify:build` 必红 ⇒ 从来没走到过 `pnpm publish`，已修**。完整指南见 [`deploy-npm.md`](deploy-npm.md) |
 | Git 仓库 | **2026-10-30（§7.155）起可用**：见 [`deploy-github.md`](deploy-github.md)。此前不成立的根因是 `prepare` 只跑 `compile`、产不出浏览器半侧 `lib/client.js`（Edge tab 会静默消失），且桌面环境无 npm；现在 `prepare` 走 `run.mjs compile build:client`（不依赖 npm），并有 `verify:git-install` 门禁守着。代价：pnpm ≥10 要求用户点一次「允许这些脚本并重试」 |
-| **本地目录（推荐）** | 指 `--emit-dir` 产出的可安装目录：预置 `lib/`、已删 `scripts`/`devDependencies`，安装即用 |
+| **本地目录（推荐）** | 指 `--emit-dir` 产出的可安装目录：预置 `lib/`、已删 `scripts`/`devDependencies`，安装即用。宿主侧的完整契约见 **§8.8**（2026-10-30 读透） |
 
 不要用**源码目录**直接安装：源码 package.json 的 `prepare` 脚本会触发构建，
 而桌面 App 环境不一定有 npm（用 `run.mjs` 就没有这个依赖）——要走源码通道请用
@@ -317,7 +317,7 @@ if (path !== spec || isAbsolute(path)) {
 | 填入 | 桌面认成 | profile 里记成 | 备注 |
 |---|---|---|---|
 | 绝对路径 `…/xxx.tar.gz` / `.tgz` | `tarball` | `file:<path>` | 分发模式：解包成冻结副本，更新走 §8.6 坑 1 流程 |
-| 绝对路径 `…/dsh-edge-agent-desktop-safe/` | `path` | `link:<path>` | **开发模式**（桌面 profile 当前用的就是这条）：符号引用目录，改文件重启即生效 |
+| 绝对路径 `…/dsh-edge-agent-desktop-safe/` | `path` | `link:<绝对路径>` | **开发模式**：符号引用目录，改文件重启即生效（实测形态见 §8.8.2） |
 | 相对路径 `./x` | 拒绝 | — | "a local path must be absolute" |
 | `file:` / `link:` 前缀 | 剥掉前缀再判 | — | |
 
@@ -408,4 +408,111 @@ grep -o '"kind":"config.loaded".\{0,240\}' ~/.dsh-edge-agent/audit/audit.plain.j
 
 npm 包与桌面 bundle 都带 `config/`（去掉 `config/edge.json`），所以装完
 就能找到 shipped 模板；`config/edge.json` 只留在 operator 自己的机器上。
+
+### 8.8 §7.156：本地目录通道的宿主契约（2026-10-30 读透 + 实测）
+
+> 前面 §8.5–§8.7 记的是**怎么用**。这一节记的是**宿主到底怎么对待这个目录**
+> —— 几条结论会直接影响「这个目录该放什么」和「出问题该查哪」。
+
+宿主侧出处：`deepseek-harness`（只读参考仓）
+`packages/boot/plugin-manager/src/install-spec.ts`、`operations.ts`、
+`index.ts`、`packages/boot/app-boot/src/{profile,index,plugin-compatibility}.ts`。
+
+#### 8.8.1 输入怎么被分类
+
+```
+spec.replace(/^(?:file:|link:)/, '')   ← 只剥一个前缀
+若剥掉了前缀 或 isAbsolute(path)  ⇒ 进 path/tarball 分支
+  · 不是绝对路径 ⇒ 拒绝「a local path must be absolute」
+  · 以 .tgz / .tar.gz 结尾 ⇒ kind = tarball
+  · 其余 ⇒ kind = path
+```
+
+- **必须是绝对路径**。Windows 上 `C:\x`、`C:/x`、`\x`、`/x` 都算；
+  `C:x`（驱动器相对）**不算** ⇒ 落到 registry 分支 ⇒ 被拒成「不是合法包名」。
+- `file:` / `link:` 前缀可选，**剥掉后分类，原样带前缀交给 pnpm**。
+- 客户端**几乎不做校验**（只 `trim()`），所有判定都在宿主侧。
+
+#### 8.8.2 pnpm 实际记录成什么样（2026-10-30 实测）
+
+在隔离临时 profile 里真装一次 `dist/installable/dsh-edge-agent-desktop-safe`：
+
+```json
+"dependencies": {
+  "@deepseek-harness-edge-agent/dsh-edge-agent":
+    "link:C:/Users/cheng/GolandProjects/gitlab/dsh-edge-agent/dist/installable/dsh-edge-agent-desktop-safe"
+}
+```
+
+`node_modules/@deepseek-harness-edge-agent/dsh-edge-agent` 是个**符号链接**
+（`lstat` → `isSymbolicLink() === true`），指向那个目录。
+
+⇒ **裸绝对路径 ⇒ 记成 `link:<绝对路径>`、装出来是符号链接**（不是 `file:`）。
+源码推演说「记成 `file:`」——**以实测为准**。
+
+⇒ 好处：改目录里的文件 + 重启桌面 App 即生效，不用重装（这正是 §8.6
+`link:` 模式「坑 1 不存在」的原因）。
+
+#### 8.8.3 宿主**不会**构建这个目录
+
+- 宿主的「有没有构建过」检查**只对官方目录（Official）生效**
+  （`official-install-target.ts:48-51`）；用户手输的路径**没有这一步**；
+- 入口（`exports` / `main`）**只在加载时**由 Node 解析器解析
+  （`app-boot/src/package-meta.ts:73-80`）；
+- ⇒ **目录里必须已经带着可用的 `lib/`**。`--emit-dir` 产物满足这一点；
+  **源码目录不满足** ⇒ 所以 §8 开头才说「不要用源码目录直接安装」。
+
+#### 8.8.4 但目录里的构建脚本仍会被 pnpm 拦
+
+pnpm 11 对**任何**来源的依赖脚本都要求放行（`allowBuilds`）。`--emit-dir`
+产物里没有构建脚本 ⇒ 不会触发；但**源码目录**有 `prepare` ⇒ 会撞上
+`build-blocked`（宿主给「允许这些脚本并重试」，`manager.spec.ts:786-808`）。
+
+放行键里嵌的是 `file:` spec 原文（路径带空格也照抄）。
+
+#### 8.8.5 兼容性在装**之前**就查了
+
+path spec 的 manifest **直接从目录里的 `package.json` 读**
+（`operations.ts:180-184`），不查 registry。`engines.dsh` 不满足 ⇒
+**在 pnpm 跑之前就拒绝**，一个字节都不下载。
+
+#### 8.8.6 没有 in-place 升级
+
+`updateRefusal` 只认 registry spec ⇒ 本地目录装的包**永远不会被标成可更新**
+⇒ 升级的唯一途径是**卸载 + 重装**。客户端会明说
+（`installProblemInstalled`：「要升级请卸载后重装」）。
+
+而且**重装到同一个目录也会被拒**（`already-installed`，按包名判定）。
+
+#### 8.8.7 装完仍要点「立即启用」
+
+与 git / npm 通道一样：客户端对用户手输的 spec 传 `enabled: false`
+⇒ 宿主不自动 `selectBundle` ⇒ 必须点「立即启用」。
+
+#### 8.8.8 卸载不会删你的源目录
+
+宿主只把**包名**交给 `pnpm remove`（`index.ts:1060`）⇒ 只动 profile 里的
+`package.json` 与 `node_modules`。**你填的那个目录宿主一行代码都不会删**
+（宿主唯一会删的是 profile 内的文件：`restoreFiles` / 运行记录）。
+
+#### 8.8.9 ⚠️ 目录里的一切都会进包（含真密钥）
+
+本地目录是**符号链接** ⇒ `node_modules` 里那个包**就是那个目录本身**
+⇒ 目录里有什么就有什么。本仓 `dist/installable/dsh-edge-agent-desktop-safe/`
+里**含 `config/edge.json`（明文 API key）**。
+
+⇒ **这个目录不能外发、不能打包分享**。要分发请走 npm 通道（`files` 白名单
+排除了 `config/edge.json`）或 git 通道（`config/edge.json` 不入库）。
+
+#### 8.8.10 一句话对照表
+
+| 问题 | 本地目录 | GitHub 地址 | npm 包名 |
+|---|---|---|---|
+| 要构建授权 | 否（产物无脚本）/ 是（源码目录有 `prepare`） | **是** | 否 |
+| PATH 要有 pnpm | 否 | **是** | 否 |
+| 装出来是 | 符号链接 | clone 后现场编译 | 冻结的 tarball |
+| 能钉版本吗 | 不能（跟着目录变） | `#<sha>` | `pkg@0.1.1` |
+| 能原地升级吗 | 不能（卸了重装） | 不能（卸了重装） | 能（`updateBundle`） |
+| 目录/包里有真密钥吗 | **有**（符号链接） | 无（不入库） | 无（`files` 排除） |
+| 安装耗时（实测） | **447 ms** | ~41 s | 取决于 registry |
 

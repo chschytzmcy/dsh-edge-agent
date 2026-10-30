@@ -16002,3 +16002,147 @@ A 轮才正确地报「没有」、B 轮才正确地报「通过」。
 - **npm 通道仍未发布**：`publish.yml` 就绪（tag `v*` 触发，带 `NPM_TOKEN`），
   但包未上 registry（404）⇒ 「填包名」那条路还不可用。
 
+## §7.156 其他插件加载方式：npm 包名通道 + 本地目录通道读透，并修掉发布链上那个从没走通过的洞（2026-10-30）
+
+> 主人 2026-10-30 11:04：「接下来探讨其他的插件加载方式」。
+> §7.155 把 GitHub 仓库地址那条通道打通了；这一轮把剩下的两条（**npm 包名**、
+> **本地目录路径**）也读透，并且——**在读的过程中发现发布链有个洞，
+> 导致 npm 通道从来就没能真正发布过**。
+
+### 一、三条通道的完整对比（本轮结论）
+
+| 通道 | 输入 | 要构建授权吗 | PATH 要有 pnpm 吗 | 产物形态 | 能钉版本吗 | 能原地升级吗 | 里有真密钥吗 |
+|---|---|---|---|---|---|---|---|
+| **npm 包名** | `@作者/插件名` | 否 | 否 | 冻结的 tarball | 能（`pkg@0.1.1`） | 能 | 无（`files` 排除） |
+| **GitHub 地址** | `https://github.com/o/r` | **是** | **是** | clone 后现场编译 | `#<sha>` | 不能 | 无（不入库） |
+| **本地目录** | `C:\path\to\dir` | 否 | 否 | **符号链接** | 不能（跟着目录变） | 不能 | **有** ⚠️ |
+
+**为什么只有 git 通道要 PATH 上有 pnpm**（本轮新读到的关键机制）：
+pnpm 给 git 依赖注入的 `pnpm install` 是**用 shell 跑**的 ⇒ 要在 PATH 上找到
+`pnpm`；而宿主自己调 pnpm 用的是 App 自带的那支
+（`app-boot/src/profile-context.ts:17` 原文："Packaged applications supply
+their bundled runtime instead of a PATH executable."）。
+npm / 本地目录通道**不触发那次注入** ⇒ **用户机器上没装 pnpm 也能装**。
+
+### 二、npm 通道：宿主读透（要点）
+
+- **包名规则比 npm 自己还严**：`/^(?:@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/`
+  （`install-spec.ts:32-33`）——**只允许小写**、≤214 字符。宿主对「像不像包名」
+  的判断就是分类顺序的第 5 条兜底：不是前四种（path/tarball/git/url）就当包名试。
+- **装之前问 registry 两次**：
+  ① 用户可见预检 `pnpm view <spec> name version description dsh --json`
+  （20s 超时、**禁 pnpm 重试**，理由是「不响的源在超时内报出来，后面的源就是重试」）；
+  ② 装前兼容预检 `pnpm view <spec> name version engines peerDependencies --json`
+  ⇒ **版本不兼容在下载之前就被拒**。
+- **`dsh.bundle` 必须带 `patch` 才算 bundle**（`operations.ts:75-79`）⇒ 只声明
+  `dsh.bundle` 而没 `patch` ⇒ 判 `not-bundle` ⇒ 拒绝安装。
+- **版本解析宿主根本不做**，原样交给 pnpm（`pkg` → latest；range → 原样传）。
+- **registry 计划**：默认 `[pnpm 自己的, npmmirror]`；**私有或未知的源单独问、
+  不回退到公网**（`registry.ts:73-74`）；只有 network/timeout/not-found/
+  no-matching-version 四种信号才换下一个源。
+- ⚠️ **「改用国内镜像」是 GitHub 失败路径专有的**，填 npm 包名时**没有**这个按钮
+  （`manager-store.ts:304-312`）。
+- **作者侧义务**：宿主自己的 `publish.md` 是**教程不是清单**；文档里**没有**提
+  exports / publishConfig / provenance / prepack 的要求（这些是本仓自己加的）。
+  真正被要求的只有：`name`/`version`/`type`/`main`/`files`/`dsh.bundle.patch`、
+  `engines.dsh`、共享 dsh 包同时进 peer+dev、**npm 发布时必须预构建 `lib/`**、
+  **`prepare` 只对 git 安装有意义**。
+
+### 三、本地目录通道：读透 + **实测纠正了一处源码推演**
+
+**纠正**：源码推演说「裸绝对路径 ⇒ 记成 `file:`」。**实测不是**。在隔离临时
+profile 里真装一次 `dist/installable/dsh-edge-agent-desktop-safe`：
+
+```json
+"dependencies": {
+  "@deepseek-harness-edge-agent/dsh-edge-agent":
+    "link:C:/Users/cheng/GolandProjects/gitlab/dsh-edge-agent/dist/installable/dsh-edge-agent-desktop-safe"
+}
+```
+
+`node_modules/…/dsh-edge-agent` 的 `lstat` → `isSymbolicLink() === true`
+⇒ **裸绝对路径 ⇒ 记成 `link:<绝对路径>`、装出来是符号链接**。以实测为准。
+
+**其余宿主契约**（全部写进 `docs/load-into-local-dsh.md` §8.8）：
+
+- 必须是**绝对路径**（`C:x` 这种驱动器相对的不算 ⇒ 落到 registry 分支被拒）；
+- **宿主不会构建这个目录**——「有没有构建过」的检查只对官方目录生效
+  （`official-install-target.ts:48-51`），入口只在加载时解析
+  ⇒ **目录里必须已经带着可用的 `lib/`** ⇒ 这就是「不要用源码目录直接安装」的根因；
+- 但目录里**有**构建脚本仍会被 pnpm 拦（`build-blocked` + `allowBuilds`）；
+- 兼容性从**目录自己的 `package.json`** 读（`operations.ts:180-184`）⇒ 不查 registry；
+- **没有 in-place 升级**（`updateRefusal` 只认 registry spec）⇒ 只能卸载重装，
+  且**重装到同一目录也按包名被拒**（`already-installed`）；
+- 装完**仍要点「立即启用」**（客户端对用户手输的 spec 传 `enabled: false`）；
+- **卸载不会删源目录**——宿主只把包名交给 `pnpm remove`；
+- ⚠️ **符号链接 ⇒ 目录里的一切都在包里**，本仓那个 installable 目录**含明文
+  `config/edge.json`** ⇒ **不能外发**。
+
+### 四、发现并修复：发布链从来没走通过（**本轮最重要的产出**）
+
+`publish.yml` 的 build 步写的是 `pnpm run compile`。而 `compile` =
+`clean-lib` + `tsc`，`clean-lib` 把**整个 `lib/` 删掉**重建服务端那一半 ⇒
+浏览器半侧 `lib/client.js`（esbuild 产物）没了；全新 checkout 里也**没有
+`dist/`** ⇒ `dist/installable/` 也没了。
+
+而 `verify:build` 里 `verify:package` 硬读 `lib/client.js`、
+`verify:installable` 硬读 `dist/installable/` ⇒ **必红**。**实测复现**：
+
+```
+Error: package exports missing from tarball: lib/client.js
+installable dir not found: dist/installable
+```
+
+⇒ **发布 job 死在 Verify 步，从来没走到过 `pnpm publish`** ⇒ 「填包名」那条路
+今天还不可用的根因，**不在「包没发」，而在「发了也发不出去」**。
+
+**为什么没人发现**：§7.154 已经发现并修好了 `ci.yml` 里**同一个形状**的洞，
+但当时的门禁 `verify-ci-build-chain.mjs` **只盯 `ci.yml`** ⇒ `publish.yml`
+里的同一个洞一直没人管；而这个仓库**从来没推过 `v*` tag**（本轮实测：本仓
+至今 **0 个 tag**）⇒ 那条流水线一次都没被触发过。
+
+**修法**（两处）：
+
+1. `publish.yml` 的 build 步改成与 `ci.yml`、与 `package.json#scripts.build`
+   **一字不差**的链：
+   ```yaml
+   - name: Build (compile → browser half → installable bundle)
+     run: node scripts/run.mjs compile typecheck:client build:client build:installable
+   ```
+   另加一条 **tag ↔ `package.json#version` 一致性断言**（推了 `v0.1.2` 而
+   manifest 还写 `0.1.1` ⇒ 发布出去一个仓库不承认的版本）。
+2. **门禁扩到 `publish.yml`**：`verify-ci-build-chain.mjs` 现在同时审
+   `ci.yml(build)` 与 `publish.yml(npm)` 两个 job，并新增 `--selftest`
+   （11 项断言，自证 + **反向证伪**：把 §7.104 那个「只跑 compile」的缺陷造出来，
+   门禁必须点名 `build:client` 与 `build:installable` 两项；造回完整链必须放过）。
+
+### 五、文档
+
+- **新建** [`docs/deploy-npm.md`](deploy-npm.md) —— npm 包名通道完整指南：
+  分类规则 → 两次 registry 查询 → registry 计划与回退 → 版本解析 →
+  装后校验 → 「装完必须点立即启用」→ **为什么 npm 通道不需要构建授权也不需要
+  PATH 上有 pnpm** → 作者侧义务逐条对照 → **发布链环节与报错对照表** →
+  排障 → **版本语义（npm 通道 vs git 通道不一样）**。
+- **扩写** [`docs/load-into-local-dsh.md`](load-into-local-dsh.md) §8.8（本地目录
+  通道宿主契约十条）+ §8 现状表更新。
+- **更新** [`docs/deploy-github.md`](deploy-github.md) §1 三通道表（加「PATH 要有
+  pnpm 吗」一列 + 各通道指南链接）与 §7 相关文档。
+- `docs/README.md` 登记 `deploy-npm.md`。
+
+### 六、验证
+
+- `node scripts/verify-ci-build-chain.mjs --selftest` → **11 项断言全过**（exit 0）；
+- `node scripts/verify-ci-build-chain.mjs` → **OK（audited: ci.yml(build),
+  publish.yml(npm)）** exit 0；
+- 本地目录通道实测：裸绝对路径 ⇒ `link:<绝对路径>` + 符号链接（447 ms）。
+
+### 七、遗留（如实记）
+
+- **npm 通道仍不可用**：包未上 registry（404），且**需要主人配 `NPM_TOKEN`
+  secret**（仓库侧无从得知是否已配）。推 `v*` tag 即可触发首次发布。
+  ⇒ 两条待裁决：**① 仓库要不要转公开**（决定别人能否免凭据从 GitHub 通道装）；
+  **② npm 通道要不要一并发布**。
+- **仓库至今 0 个 tag**：推第一个 tag 就会真的触发 `publish.yml`。
+- **本地目录通道的目录含明文 `config/edge.json`** ⇒ 不能外发；要分发走
+  npm / git 通道。
+

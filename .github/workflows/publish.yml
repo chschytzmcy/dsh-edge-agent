@@ -49,14 +49,48 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Compile
-        run: pnpm run compile
+      # §7.156 (2026-10-30): the gates verify ARTIFACTS, not sources.
+      #
+      # This is the same trap ci.yml fell into on §7.154 — and §7.154 fixed
+      # it THERE ONLY. publish.yml kept the old shape, so the npm channel
+      # could never ship:
+      #
+      #   lib/client.js        ← build:client      (esbuild, browser half)
+      #   dist/installable/…   ← build:installable (the shipped bundle)
+      #
+      # `pnpm run compile` alone = clean-lib + tsc, and clean-lib wipes lib/
+      # ENTIRELY ⇒ lib/client.js is gone ⇒ verify:package reports
+      #   "package exports missing from tarball: lib/client.js"
+      # and a fresh checkout has no dist/ at all ⇒ verify:installable reports
+      #   "installable dir not found"
+      # ⇒ the publish job died at the Verify step, long before `pnpm publish`.
+      #
+      # This chain must stay identical to ci.yml's build job and to
+      # package.json#scripts.build. scripts/verify-ci-build-chain.mjs gates
+      # BOTH workflows now — without it, a dropped step here is invisible
+      # until someone pushes a v* tag and watches it fail.
+      - name: Build (compile → browser half → installable bundle)
+        run: node scripts/run.mjs compile typecheck:client build:client build:installable
 
-      - name: Verify (boundary / contract / patch-surface / plugin-spec)
+      - name: Verify (boundary / contract / patch-surface / plugin-spec / package)
         run: pnpm run verify:build
 
       - name: Run tests
         run: pnpm test -- --run
+
+      # A tag that does not match the manifest version publishes a version
+      # nobody can find. Cheap to check, and the failure is otherwise silent:
+      # the package lands on the registry under a version the repository does
+      # not claim to be.
+      - name: Assert the tag matches package.json#version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          VER="$(node -p "require('./package.json').version")"
+          if [ "$TAG" != "$VER" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match package.json#version $VER"
+            exit 1
+          fi
+          echo "tag $GITHUB_REF_NAME matches package.json#version $VER"
 
       - name: Publish
         run: pnpm publish --provenance --access public

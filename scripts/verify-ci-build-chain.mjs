@@ -1,4 +1,5 @@
 // scripts/verify-ci-build-chain.mjs — §7.154: the gate that gates the gate.
+// §7.156: extended from ci.yml to ci.yml AND publish.yml.
 //
 // ## The failure it exists to prevent
 //
@@ -18,127 +19,308 @@
 // silent from the repo's side: nothing in the tree said which build steps
 // the gates depend on, so nothing noticed the workflow was missing them.
 //
+// §7.154 fixed ci.yml. §7.156 found the SAME shape still alive in
+// publish.yml — the npm publishing job ran `pnpm run compile` and then
+// `pnpm run verify:build`, so it died at the Verify step with
+//   "package exports missing from tarball: lib/client.js"
+// and never reached `pnpm publish` at all. Nobody noticed because the
+// repository had never pushed a `v*` tag.
+//
+// The gate therefore covers BOTH workflows now. A workflow that builds
+// artifacts for the gates must run the whole chain.
+//
 // ## What this script checks
 //
-// 1. `.github/workflows/ci.yml` exists and parses as text we can inspect;
-// 2. the `build` job runs the artifact-producing chain — every one of
-//    compile / build:client / build:installable must appear in the job's
-//    `run:` lines (either spelled out or reached through `npm run build` /
-//    `node scripts/run.mjs <chain>`);
-// 3. that chain matches package.json#scripts.build — the local build and
-//    the CI build must not drift apart;
-// 4. every script name the chain references actually exists in
-//    package.json#scripts.
+// For each workflow below:
+//   1. the file exists (required ones must);
+//   2. the named job runs the artifact-producing chain — every one of
+//      compile / build:client / build:installable must appear in the job's
+//      `run:` lines (either spelled out or reached through `npm run build` /
+//      `node scripts/run.mjs <chain>`);
+//   3. that chain matches package.json#scripts.build — the local build and
+//      the CI build must not drift apart;
+//   4. every script name the chain references actually exists in
+//      package.json#scripts.
 //
-// A dropped step in ci.yml turns this script red BEFORE the push, instead
-// of after.
+// A dropped step in a workflow turns this script red BEFORE the push,
+// instead of after.
 //
-// Run via: node scripts/verify-ci-build-chain.mjs
+// Run via:
+//   node scripts/verify-ci-build-chain.mjs            # audit the real tree
+//   node scripts/verify-ci-build-chain.mjs --selftest # self-proof + refutation
+//
+// Exit codes: 0 = pass; 1 = the chain is not sound; 2 = selftest failed.
+//
+// Read-only: writes nothing inside the repository.
 
 import { existsSync, readFileSync } from 'node:fs'
-import { dirname, join, relative, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const WORKFLOW = join(ROOT, '.github', 'workflows', 'ci.yml')
 
 /** Steps whose products the gates read. Missing one ⇒ the gate reads ENOENT. */
 const REQUIRED_BUILD_STEPS = ['compile', 'build:client', 'build:installable']
 
-const failures = []
+/**
+ * The workflows that build artifacts for the gates, and the job in each that
+ * does the building.
+ *
+ * `required: true` — the file must exist; a missing one is a failure.
+ * `required: false` — the file may legitimately be absent (a repo that does
+ * not publish to npm); but when it IS present its build job must satisfy the
+ * chain.
+ */
+const WORKFLOWS = [
+  { file: 'ci.yml', job: 'build', required: true },
+  { file: 'publish.yml', job: 'npm', required: false },
+]
 
-if (!existsSync(WORKFLOW)) {
-  console.error(`verify-ci-build-chain: missing ${relative(ROOT, WORKFLOW)}`)
-  process.exit(1)
+/**
+ * Isolate one job's body from a workflow's text.
+ *
+ * The job header is a two-space-indented `name:` line; the body runs until
+ * the next job header at the same indent. `[ \t]` rather than `\s` on
+ * purpose: `\s` matches a newline, so `^\s{2}` could straddle a line break
+ * and match something that is not a job header at all.
+ *
+ * @param {string} workflow
+ * @param {string} jobName
+ * @returns {string | null} the job body, or null when the job is absent
+ */
+export function extractJob(workflow, jobName) {
+  const header = new RegExp(`^[ \\t]{2}${jobName}:[ \\t]*$`, 'm')
+  const match = header.exec(workflow)
+  if (!match) return null
+  const after = workflow.slice(match.index + match[0].length)
+  const next = /^[ \t]{2}[A-Za-z][\w-]*:[ \t]*$/m.exec(after)
+  return next ? after.slice(0, next.index) : after
 }
 
-const workflow = readFileSync(WORKFLOW, 'utf8')
-const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
-const scripts = pkg.scripts ?? {}
-
-// ── 1. isolate the `build` job ────────────────────────────────────────────
-//
-// The workflow has three jobs (build / test / e2e-opslog). Only the
-// `build` job runs the gates, so only it has to produce the artifacts.
-// Everything between the job header and the next top-level job header is
-// that job's body.
-const jobHeader = /^\s{2}build:\s*$/m.exec(workflow)
-if (!jobHeader) {
-  console.error('verify-ci-build-chain: no `build:` job found in ci.yml')
-  process.exit(1)
-}
-const afterHeader = workflow.slice(jobHeader.index + jobHeader[0].length)
-const nextJob = /^\s{2}[A-Za-z][\w-]*:\s*$/m.exec(afterHeader)
-const buildJob = nextJob ? afterHeader.slice(0, nextJob.index) : afterHeader
-
-// ── 2. the build job must produce every artifact the gates read ──────────
-//
-// Collect the shell text of every `run:` line in the job, then look for
-// each required step name. `node scripts/run.mjs a b c` and
-// `npm run build` are both accepted: the former names the steps directly,
-// the latter reaches them through package.json#scripts.build.
-const runLines = [...buildJob.matchAll(/^\s*run:\s*(.+)$/gm)].map((m) => m[1])
-const runText = runLines.join('\n')
-
-const mentionsBuildScript = /\bnpm run build\b/.test(runText)
-  || /\bnode scripts\/run\.mjs\b[^\n]*\bbuild\b/.test(runText)
-
-for (const step of REQUIRED_BUILD_STEPS) {
-  const mentioned = runText.includes(step)
-  if (!mentioned && !mentionsBuildScript) {
-    failures.push(
-      `ci.yml's build job does not run "${step}" — verify:build reads the artifact it`
-      + ' produces (lib/client.js / dist/installable/), so the gate would fail with'
-      + ' ENOENT instead of with a useful message.',
-    )
+/**
+ * Audit one workflow's build job against the required chain.
+ *
+ * @param {string} workflowText
+ * @param {string} jobName
+ * @param {Record<string, string>} scripts package.json#scripts
+ * @returns {{ failures: string[], runText: string, foundJob: boolean }}
+ */
+export function auditJob(workflowText, jobName, scripts) {
+  const failures = []
+  const body = extractJob(workflowText, jobName)
+  if (body === null) {
+    return { failures: [`no \`${jobName}:\` job found`], runText: '', foundJob: false }
   }
-}
 
-// ── 3. the CI chain must match package.json#scripts.build ────────────────
-//
-// The local build (npm run build) and the CI build must produce the same
-// artifacts. If the local chain grows a step (or loses one) and ci.yml is
-// not updated, the two drift — and the drift is invisible until a gate
-// breaks somewhere else.
-const localBuild = (scripts.build ?? '').trim()
-if (!localBuild) {
-  failures.push('package.json has no "build" script to compare ci.yml against.')
-} else {
-  const localSteps = localBuild
-    .replace(/^node scripts\/run\.mjs\s+/u, '')
-    .split(/\s+/u)
-    .filter(Boolean)
+  // ── the job must produce every artifact the gates read ──────────────────
+  //
+  // Collect the shell text of every `run:` line in the job, then look for
+  // each required step name. `node scripts/run.mjs a b c` and
+  // `npm run build` are both accepted: the former names the steps directly,
+  // the latter reaches them through package.json#scripts.build.
+  const runLines = [...body.matchAll(/^[ \t]*(?:-[ \t]+)?run:[ \t]*(.+)$/gm)].map((m) => m[1])
+  const runText = runLines.join('\n')
+
+  const mentionsBuildScript = /\bnpm run build\b/.test(runText)
+    || /\bnode scripts\/run\.mjs\b[^\n]*\bbuild\b/.test(runText)
+
   for (const step of REQUIRED_BUILD_STEPS) {
-    if (!localSteps.includes(step)) {
+    const mentioned = runText.includes(step)
+    if (!mentioned && !mentionsBuildScript) {
       failures.push(
-        `package.json#scripts.build does not include "${step}" — the gates need its`
-        + ' artifact. Add the step to the build script (and to ci.yml).',
+        `the \`${jobName}\` job does not run "${step}" — verify:build reads the artifact it`
+        + ' produces (lib/client.js / dist/installable/), so the gate would fail with'
+        + ' ENOENT instead of with a useful message.',
       )
     }
   }
-}
 
-// ── 4. every referenced script must exist ─────────────────────────────────
-const referenced = new Set()
-for (const line of runLines) {
-  const m = /node scripts\/run\.mjs\s+(.+)$/u.exec(line.trim())
-  if (!m) continue
-  for (const name of m[1].split(/\s+/u)) referenced.add(name)
-}
-for (const name of referenced) {
-  if (name === 'build' || name === 'verify:build') continue
-  if (scripts[name] === undefined) {
-    failures.push(`ci.yml runs "${name}" but package.json#scripts has no such script.`)
+  // ── the CI chain must match package.json#scripts.build ──────────────────
+  //
+  // The local build (npm run build) and the CI build must produce the same
+  // artifacts. If the local chain grows a step (or loses one) and the
+  // workflow is not updated, the two drift — and the drift is invisible
+  // until a gate breaks somewhere else.
+  const localBuild = (scripts.build ?? '').trim()
+  if (!localBuild) {
+    failures.push('package.json has no "build" script to compare the workflow against.')
+  } else {
+    const localSteps = localBuild
+      .replace(/^node scripts\/run\.mjs\s+/u, '')
+      .split(/\s+/u)
+      .filter(Boolean)
+    for (const step of REQUIRED_BUILD_STEPS) {
+      if (!localSteps.includes(step)) {
+        failures.push(
+          `package.json#scripts.build does not include "${step}" — the gates need its`
+          + ' artifact. Add the step to the build script (and to the workflow).',
+        )
+      }
+    }
   }
+
+  // ── every referenced script must exist ─────────────────────────────────
+  const referenced = new Set()
+  for (const line of runLines) {
+    const m = /node scripts\/run\.mjs\s+(.+)$/u.exec(line.trim())
+    if (!m) continue
+    for (const name of m[1].split(/\s+/u)) referenced.add(name)
+  }
+  for (const name of referenced) {
+    if (name === 'build' || name === 'verify:build') continue
+    if (scripts[name] === undefined) {
+      failures.push(`the workflow runs "${name}" but package.json#scripts has no such script.`)
+    }
+  }
+
+  return { failures, runText, foundJob: true }
 }
 
-if (failures.length > 0) {
-  console.error('verify-ci-build-chain: CI build chain is not sound:')
-  for (const f of failures) console.error(`  - ${f}`)
-  process.exit(1)
+/* ── self-proof + refutation ───────────────────────────────────────────── */
+
+/**
+ * Build minimal workflow fixtures in memory and assert the auditor turns red
+ * for a broken chain and green for a sound one.
+ *
+ * Refutation: manufacture the defect, the gate MUST report it; repair it,
+ * the gate MUST let it through.
+ */
+function selftest() {
+  let failures = 0
+  const expect = (label, actual, wanted) => {
+    const ok = actual === wanted
+    if (!ok) failures++
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${label} — expected ${wanted}, got ${actual}`)
+  }
+
+  // package.json#scripts as the real one has it: the full chain.
+  const scripts = {
+    build: 'node scripts/run.mjs compile typecheck:client build:client build:installable verify:build',
+    compile: 'node scripts/clean-lib.mjs && tsc -p tsconfig.json',
+    'typecheck:client': 'tsc -p tsconfig.client.json',
+    'build:client': 'node scripts/build-client.mjs',
+    'build:installable': 'node scripts/rebuild-installable.mjs',
+    'verify:build': 'node scripts/run.mjs verify:boundary',
+  }
+
+  // A fixture in the shape a real workflow uses: block-style `run:` on its
+  // own line under a step. (The auditor also accepts the flow-style
+  // `- run: …` one-liner; the fixture uses the block form because that is
+  // what actions/checkout-era workflows actually contain.)
+  const wrap = (runBody) => `name: fixture\non: push\njobs:\n  build:\n    steps:\n      - name: a step\n        run: ${runBody}\n`
+
+  console.log('verify-ci-build-chain --selftest')
+
+  // 1. the sound chain passes.
+  {
+    const r = auditJob(wrap('      - run: node scripts/run.mjs compile typecheck:client build:client build:installable'), 'build', scripts)
+    expect('完整链 ⇒ 无失败', r.failures.length, 0)
+  }
+
+  // 2. the §7.104 defect — compile only — is caught, and the message names
+  //    the missing step (this is the exact shape that reddened CI since
+  //    §7.106 and that reddened publish.yml until §7.156).
+  {
+    const r = auditJob(wrap('      - run: pnpm run compile'), 'build', scripts)
+    expect('只跑 compile ⇒ 报 2 项失败', r.failures.length, 2)
+    expect('失败信息点名 build:client', r.failures.some((f) => f.includes('build:client')), true)
+    expect('失败信息点名 build:installable', r.failures.some((f) => f.includes('build:installable')), true)
+  }
+
+  // 3. reaching the chain through `npm run build` is accepted.
+  {
+    const r = auditJob(wrap('      - run: npm run build'), 'build', scripts)
+    expect('npm run build ⇒ 无失败', r.failures.length, 0)
+  }
+
+  // 4. a workflow naming a script that does not exist is caught.
+  {
+    const r = auditJob(wrap('      - run: node scripts/run.mjs compile build:client build:installable build:nope'), 'build', scripts)
+    expect('引用不存在的脚本 ⇒ 报 1 项失败', r.failures.length, 1)
+    expect('失败信息点名 build:nope', r.failures.some((f) => f.includes('build:nope')), true)
+  }
+
+  // 5. package.json#scripts.build losing a step is caught.
+  {
+    const thin = { ...scripts, build: 'node scripts/run.mjs compile' }
+    const r = auditJob(wrap('      - run: node scripts/run.mjs compile typecheck:client build:client build:installable'), 'build', thin)
+    expect('本地 build 少了步骤 ⇒ 报 2 项失败', r.failures.length, 2)
+    expect('失败信息点名 build:client', r.failures.some((f) => f.includes('build:client')), true)
+  }
+
+  // 6. a missing job is caught.
+  {
+    const r = auditJob(wrap('      - run: pnpm run compile'), 'npm', scripts)
+    expect('job 不存在 ⇒ 报 1 项失败', r.failures.length, 1)
+    expect('失败信息点名 job 名', r.failures[0].includes('`npm:`'), true)
+  }
+
+  // 7. the job extractor must not be fooled by a same-named key nested deeper
+  //    (a step's own `build:` key would otherwise truncate the body).
+  {
+    const nested = [
+      'name: fixture',
+      'on: push',
+      'jobs:',
+      '  build:',
+      '    steps:',
+      '      - name: a step',
+      '        with:',
+      '          build: something',
+      '      - name: another step',
+      '        run: pnpm run compile',
+      '',
+    ].join('\n')
+    const body = extractJob(nested, 'build') ?? ''
+    expect('嵌套的 build: 键不截断 job 体', body.includes('pnpm run compile'), true)
+  }
+
+  if (failures > 0) {
+    console.error(`\nselftest FAILED: ${failures} assertion(s)`)
+    process.exit(2)
+  }
+  console.log('\nselftest OK — 门禁能抓住缺步骤的构建链，也能放过完整的链')
 }
 
-console.log(
-  'verify-ci-build-chain OK '
-  + `(ci.yml build job produces: ${REQUIRED_BUILD_STEPS.join(', ')})`,
-)
+/* ── entry ──────────────────────────────────────────────────────────────── */
+
+const args = process.argv.slice(2)
+if (args.includes('--selftest')) {
+  selftest()
+} else if (args.length > 0) {
+  console.error('usage: node scripts/verify-ci-build-chain.mjs [--selftest]')
+  process.exit(2)
+} else {
+  const scripts = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).scripts ?? {}
+  const failures = []
+  const audited = []
+
+  for (const target of WORKFLOWS) {
+    const path = join(ROOT, '.github', 'workflows', target.file)
+    if (!existsSync(path)) {
+      if (target.required) {
+        failures.push(`missing .github/workflows/${target.file}`)
+      } else {
+        console.log(`verify-ci-build-chain: ${target.file} not present — skipped`)
+        continue
+      }
+    }
+    const workflow = readFileSync(path, 'utf8')
+    const result = auditJob(workflow, target.job, scripts)
+    for (const f of result.failures) {
+      failures.push(`${target.file}: ${f}`)
+    }
+    audited.push(`${target.file}(${target.job})`)
+  }
+
+  if (failures.length > 0) {
+    console.error('verify-ci-build-chain: CI build chain is not sound:')
+    for (const f of failures) console.error(`  - ${f}`)
+    process.exit(1)
+  }
+
+  console.log(
+    'verify-ci-build-chain OK '
+    + `(audited: ${audited.join(', ')}; required steps: ${REQUIRED_BUILD_STEPS.join(', ')})`,
+  )
+}

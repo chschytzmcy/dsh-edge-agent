@@ -22,14 +22,21 @@ https://github.com/chschytzmcy/dsh-edge-agent
 
 ## 1. 三条通道怎么选
 
-| 通道 | 输入 | 要构建授权吗 | 产物形态 | 适合谁 |
-|---|---|---|---|---|
-| npm 包名 | `@作者/插件名` | 否 | 预构建 | 要发布给公众 |
-| **GitHub 地址** | `https://github.com/<owner>/<repo>` | **是**（一次点击放行） | 现场编译 | 自己/小范围分发、持续迭代 |
-| 本地目录 | `C:\path\to\dir` | 否 | 预构建 | 本机开发调试 |
+| 通道 | 输入 | 要构建授权吗 | PATH 要有 pnpm 吗 | 产物形态 | 适合谁 | 指南 |
+|---|---|---|---|---|---|---|
+| npm 包名 | `@作者/插件名` | 否 | 否 | 预构建 | 要发布给公众 | [`deploy-npm.md`](deploy-npm.md) |
+| **GitHub 地址** | `https://github.com/<owner>/<repo>` | **是**（一次点击放行） | **是** | 现场编译 | 自己/小范围分发、持续迭代 | 本文件 |
+| 本地目录 | `C:\path\to\dir` | 否 | 否 | 预构建（符号链接） | 本机开发调试 | [`load-into-local-dsh.md` §8](load-into-local-dsh.md) |
 
 三条通道在宿主里是**同一段代码**（`install-spec.ts:69-92` 解析出四种形态，
 `index.ts:930` 一律 `pnpm add <spec>`，cwd = profile 目录）。
+
+> **为什么只有 git 通道要 PATH 上有 pnpm**：pnpm 给 git 依赖注入的
+> `pnpm install` 是**用 shell 跑**的 ⇒ 要在 PATH 上找到 `pnpm`；而宿主自己调
+> pnpm 用的是 App 自带的那支（`app-boot/src/profile-context.ts:17`：
+> "Packaged applications supply their bundled runtime instead of a PATH
+> executable."）。npm / 本地目录通道不触发那次注入 ⇒ **用户机器上没装 pnpm
+> 也能装**。
 
 ## 2. 作者侧的前置条件（本仓已全部满足）
 
@@ -454,6 +461,7 @@ profile `dependencies` 里的包名。
 
 ## 7. 相关文档
 
+- [`deploy-npm.md`](deploy-npm.md) — 从 npm 包名安装（另一条通道）
 - [`load-into-local-dsh.md`](load-into-local-dsh.md) — 装进本地 DSH（三条路）
 - [`desktop-troubleshooting.md`](desktop-troubleshooting.md) — 装完起不来 / Edge tab 不见了
 - [`deploy-minimal-files.md`](deploy-minimal-files.md) — 最小部署清单
