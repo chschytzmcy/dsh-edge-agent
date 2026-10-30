@@ -132,6 +132,30 @@ function verifyBundle(dir) {
   if (!existsSync(edgeExample)) {
     throw new Error(`${relative(ROOT, dir)}: missing config/edge.example.json (template)`)
   }
+  // 1c. §7.161 (2026-10-30): the LOCAL-DIRECTORY channel (link:) is the
+  //     operator's LIVE one — the desktop profile mounts this directory
+  //     through a symlink, so the live config has to travel with it. The
+  //     operator's ruling for the four deployment shapes:
+  //
+  //       npm / git / distributable tarball → NO config/edge.json
+  //       local directory (link:)            → config/edge.json PRESENT
+  //       demo tarball                       → config/edge.json PRESENT
+  //
+  //     ⇒ If this repo HAS a live config, the installable directory MUST
+  //     carry it. Otherwise the link-mode profile silently falls back to the
+  //     blank template on candidate #1 and the operator's real endpoints stop
+  //     being the ones in use — the exact failure §7.102 recorded.
+  //
+  //     Conditional on the repo having one: a clean checkout (CI, a fresh
+  //     clone) has no `config/edge.json` at all — there is nothing to carry,
+  //     and the example template is the correct last-resort fallback.
+  if (existsSync(join(ROOT, 'config', 'edge.json')) && !existsSync(edgeConfig)) {
+    throw new Error(
+      `${relative(ROOT, dir)}: 本仓有 config/edge.json（活配置），但 installable 目录里没有 `
+      + '⇒ link 通道会把宿主的顺位 1 落空、悄悄退到空模板。'
+      + 'installable 目录必须带上活配置（stageVariant 的 keepSecretConfig 分支）。',
+    )
+  }
   // Whichever config is present must be valid JSON with the expected shape.
   for (const candidate of [edgeConfig, edgeExample]) {
     if (!existsSync(candidate)) continue

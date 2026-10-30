@@ -381,7 +381,48 @@ response 写进 ops log（`info` 级别，默认可见）：
 > 见 [`architecture.md` §7.107 章](architecture.md) 与
 > [`intent-and-sanitization.md`](intent-and-sanitization.md)。
 
-## 19. 相关文档
+## 19. 五种部署形态 × 配置存在性 × 实时性（2026-10-30 裁决）
+
+**主人裁决**：
+
+- **npm 与 git 仓库部署 ⇒ 不得带 `config/edge.json`**（明文凭据绝不出网）；
+- **目录通道 ⇒ 走 link 方式、实时更新**；
+- **tar 包方式 ⇒ 可以带真实 `config/edge.json`**（演示用，不外传）。
+
+| 形态 | 产物 | `config/edge.json` | 生效顺位 | 实时性 | 门禁 |
+|---|---|---|---|---|---|
+| **npm 包** | `npm pack` 的 tarball | ❌ 不含 | 2 | 冻结 | `verify-package`（`FORBIDDEN_IN_PACKAGE`） |
+| **GitHub 仓库** | `pnpm add git+…` 现场编译 | ❌ 不含 | 2 | 冻结（装的是 HEAD） | `verify-git-install`：静态断言 + `--real` **真装一遍**后检查包里没有它 |
+| **本地目录（link）** | `dist/installable/<变体>/` 的**符号链接** | ✅ **含（活配置）** | **1** | **实时**（见下） | `verify-installable` §1c（本轮新增） |
+| **tarball（可分发）** | `dist/<变体>.tar.gz` | ❌ 不含 | 2 | 冻结（pnpm store 的副本） | `verify-tarball` 第 5 条 |
+| **tarball（DEMO 演示）** | `dist/<变体>-DEMO.tar.gz` | ✅ **含真实凭据** | **1** | 冻结 | `verify-tarball` **反向规则**（必须含）+ 文件名带 `-DEMO` |
+
+⇒ **只有「本地目录（link）」与「DEMO tarball」带活配置**；其余三种形态一律不含
+⇒ 目标机器自己写 `~/.dsh-edge-agent/edge.json`（顺位 2）。
+
+### link 通道的「实时更新」到底实时到什么程度
+
+| 改什么 | 生效方式 |
+|---|---|
+| `dist/installable/<变体>/config/edge.json` | **不用重启** —— 配置读取带文件指纹（mtime+size），变了就重读 |
+| 同一文件里**从「无端点」改成「有端点」** | **要重启** —— `local-llm` 路由的注册发生在启动时的插件 `apply()` 里 |
+| `dist/installable/<变体>/lib/*.js`（代码） | **重启 App** —— bundle 是符号链接，文件直接变，重启即生效 |
+| 装出来的 tarball 内容 | **不生效** —— 冻结副本 ⇒ 卸载重装 |
+
+### 为什么要给 link 通道加硬断言（§7.161）
+
+`verify-installable.mjs` 原来只要求「`config/` 里有 `edge.json` **或**
+`edge.example.json`」⇒ **installable 目录若丢了活配置，它照样绿** ⇒ link
+模式的 profile 会悄悄退到空模板（顺位 1 落空），运维的真端点不再是生效的那份
+—— 正是 §7.102 记过的那个坑。
+
+⇒ 现在：**本仓有 `config/edge.json` 时，installable 目录里必须有它**
+（条件断言 —— 干净 checkout / CI 没有活配置可带，空模板仍是正确的兜底）。
+
+反向证伪（对真实产物做的）：把两个变体的 `config/edge.json` 移开 ⇒ 门禁红；
+放回 ⇒ 绿。
+
+## 20. 相关文档
 
 - [`deploy-github.md`](deploy-github.md) — 从 GitHub 仓库地址安装（配置落位见 §4）
 - [`deploy-npm.md`](deploy-npm.md) — 从 npm 包名安装（配置落位见 §9.1）
