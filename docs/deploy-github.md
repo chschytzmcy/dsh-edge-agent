@@ -236,6 +236,8 @@ pnpm-install$ pnpm install
 1. **装一个全局 pnpm**：`npm i -g pnpm` ⇒ 落到 `C:\Users\cheng\AppData\Roaming\npm`，
    该目录**本来就在用户 PATH 上** ⇒ 桌面 app 的 PATH 里就有了 pnpm ⇒ 通道通。
    （实测：用等价 shim 验证过整条链跑通。）**注意桌面 app 要重启**才拿到新 PATH。
+   > **本机已于 2026-10-30 装好**：`C:\Users\cheng\AppData\Roaming\npm\pnpm.cmd`
+   > （v11.7.0，与 `package.json#packageManager` 一致）。桌面 app 重启后生效。
 2. **改走 npm / tarball 通道**（宿主 `publish.md:183-186` 的建议）：分发**预构建
    产物**，安装时不需要任何构建权限，也就不需要 PATH 上有 pnpm。
 
@@ -254,10 +256,12 @@ pnpm-install$ pnpm install
 
 | 写法 | 结果 |
 |---|---|
-| `https://github.com/owner/repo` | ✅ |
-| `https://github.com/owner/repo.git` | ✅ |
+| `https://github.com/owner/repo` | ✅（**私有库会卡在预检**：宿主预检禁掉凭据助手 ⇒ 要用户名） |
+| `https://github.com/owner/repo.git` | ✅ 同上 |
 | `https://github.com/owner/repo#main` | ✅（钉分支） |
 | `github:owner/repo` | ✅（shorthand） |
+| `git+ssh://git@github.com/owner/repo.git` | ✅ **私有库用这个**（预检走 SSH，不吃凭据助手那一套） |
+| `git@github.com:owner/repo.git` | ✅ 同上（scp 形式） |
 | `https://github.com/owner/repo/subdir` | ❌ 被拒：`HOSTED_REPOSITORY_URL` 只接受**两段**路径（`install-spec.ts:24`）。要子目录必须写 `git+https://github.com/owner/repo#<sha>&path:/<dir>` |
 
 ### 3.2 构建授权（会弹一次）
@@ -279,6 +283,46 @@ pnpm ≥10 拒绝为 git 依赖跑 `prepare`，除非**安装方**放行。宿�
 ```
 https://github.com/chschytzmcy/dsh-edge-agent#<sha>
 ```
+
+#### 手动放行：写**稳定键**，别写带 commit 的键
+
+pnpm 打印的键长这样（键 = `<包名>@<pkgResolutionId>`，而 `pkgResolutionId` =
+`git+<地址>#<commit>`）：
+
+```yaml
+allowBuilds:
+  "@deepseek-harness-edge-agent/dsh-edge-agent@git+ssh://git@github.com/chschytzmcy/dsh-edge-agent.git#c2b01fc…": true
+```
+
+**带 `#<commit>` 的键只对那一个 commit 有效**——仓库一更新就失效。而 pnpm 的匹配
+逻辑（`dist/pnpm.mjs:197370` 的 `getGitRepoAllowBuildKeyFromDepPath`）在比对时
+**会把 `#` 之后截掉**，所以**去掉 `#<commit>` 的写法对仓库的任意 commit 都放行**：
+
+```yaml
+allowBuilds:
+  "@deepseek-harness-edge-agent/dsh-edge-agent@git+ssh://git@github.com/chschytzmcy/dsh-edge-agent.git": true
+```
+
+> 键必须**不含 `#`**（`isGitRepoAllowBuildKey`：`:197367`），否则会被当成精确
+> depPath 匹配。手动放行时写进 profile 的
+> `~/.dsh/profiles/desktop/pnpm-workspace.yaml` 即可（宿主 GUI 点按钮写的也是
+> 同一个文件，只是它写的是带 commit 的那一条）。
+
+**实测（2026-10-30，桌面 runtime 那支 pnpm + 稳定键 + PATH 上有 pnpm）**：
+
+```
+exit = 0
+  不再被构建授权拦下 : true
+  prepare 真的跑了   : true
+  lib/index.js       : true
+  lib/client.js      : true
+dependencies:
++ @deepseek-harness-edge-agent/dsh-edge-agent 0.1.1
+Done in 50.3s using pnpm v11.28.5
+```
+
+⇒ **稳定键 + PATH 上有 pnpm ⇒ 整条链一次跑通**（50s 里有两次匿名 HEAD 探测的
+超时在等）。
 
 ### 3.3 装完要点「立即启用」
 

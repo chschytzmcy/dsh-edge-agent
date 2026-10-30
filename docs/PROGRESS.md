@@ -15790,6 +15790,40 @@ GUI 把正确的按钮弹出来）+ **桌面 App 重启**（拿到新 PATH）。
 只要 pnpm 最终成功，那两行 WARN 不参与失败分类（分类只在失败时生效）⇒ GUI 不会
 弹「无法访问 GitHub」。
 
+**（9）allowBuilds 的键要写成**稳定形式**：去掉 `#<commit>`。**
+
+pnpm 打印的键是 `<包名>@<pkgResolutionId>`，而 `pkgResolutionId` =
+`git+<地址>#<commit>` ⇒ **带 commit 的键只对那一个 commit 有效**，仓库一更新就失效
+（而宿主 GUI 每次点按钮写的正是带 commit 的那一条）。但 pnpm 的匹配逻辑
+（`dist/pnpm.mjs:197370` 的 `getGitRepoAllowBuildKeyFromDepPath`）在比对时会
+**把 `#` 之后截掉** ⇒ 键写成「包名@git+<地址>」（**不含 `#`**）就对仓库的任意
+commit 都放行：
+
+```yaml
+allowBuilds:
+  "@deepseek-harness-edge-agent/dsh-edge-agent@git+ssh://git@github.com/chschytzmcy/dsh-edge-agent.git": true
+```
+
+（键必须不含 `#`，否则 `isGitRepoAllowBuildKey`（`:197367`）会把它当成精确
+depPath 匹配。）
+
+**实测（稳定键 + PATH 上有 pnpm + 桌面 runtime 那支 pnpm）**：
+
+```
+exit = 0
+  不再被构建授权拦下 : true
+  prepare 真的跑了   : true
+  lib/index.js       : true
+  lib/client.js      : true
+dependencies:
++ @deepseek-harness-edge-agent/dsh-edge-agent 0.1.1
+Done in 50.3s using pnpm v11.28.5
+```
+
+⇒ **稳定键 + PATH 上有 pnpm ⇒ 整条链一次跑通**。已把这条写进桌面 profile 的
+`~/.dsh/profiles/desktop/pnpm-workspace.yaml`（等于提前做了宿主 GUI 上那次
+「允许这些脚本并重试」）。
+
 
 ### 四、改动
 
