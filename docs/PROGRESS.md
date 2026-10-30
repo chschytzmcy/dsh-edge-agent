@@ -15859,6 +15859,54 @@ allowBuilds:
 > `build-blocked` ⇒ 宿主弹的是构建授权该弹的东西。
 > ⇒ 印证了（8）的结论：**那个「无法访问 GitHub」是 WARN 污染分类造成的假象**。
 
+**（11）✅ 真机装成：桌面版 Plugins → Add plugin → 填 GitHub 地址 → 全链路成功。**
+
+主人点「重试」后的宿主日志（`operation-jpIXjP`，10:52:39）：
+
+```
+... pnpm-install$ pnpm install
+... pnpm-install: ✓ Lockfile passes supply-chain policies
+... pnpm-install: Lockfile is up to date, resolution step is skipped
+... pnpm-install: Packages: +236
+... pnpm-install: . prepare$ node scripts/run.mjs compile build:client
+... pnpm-install: . prepare: > compile: node scripts/clean-lib.mjs && tsc -p tsconfig.json
+... pnpm-install: . prepare: cleaned C:\...\store\v11\tmp\_tmp_quaR1D\lib\
+... pnpm-install: . prepare: > build:client: node scripts/build-client.mjs
+... pnpm-install: . prepare: [build-client] lib/client.js = 52 KB (module-loader format)
+... pnpm-install: . prepare: Done
+... pnpm-install: Done in 23.6s using pnpm v11.7.0        ← 注入的 pnpm 用的是【全局那支】
+Progress: resolved 3, reused 1, downloaded 1, added 2, done
+dependencies:
++ @deepseek-harness-edge-agent/dsh-edge-agent 0.1.1
+Done in 41.7s using pnpm v11.28.5
+```
+
+GUI 显示「**已安装**（Git 仓库 · 版本 0.1.1）」，并给出「立即启用」按钮。
+
+**独立核验装出来的东西**（`~/.dsh/profiles/desktop/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/`）：
+
+| 项 | 结果 |
+|---|---|
+| `lib/index.js`（Node 半侧） | ✅ |
+| `lib/client.js`（**浏览器半侧**） | ✅ |
+| `cordis.desktop-safe.patch.yml` / `presets/edge.desktop-safe.patch.yml` | ✅ |
+| `config/edge.example.json` | ✅ |
+| **`config/edge.json`（明文密钥）** | ❌ **没跟进来** ✓ |
+| 整个仓库（`src/`、`scripts/`、`tests/`） | ❌ 没跟进来（`files` 白名单生效） |
+
+profile 的 `package.json` 里记的是 git 依赖：
+`"@deepseek-harness-edge-agent/dsh-edge-agent": "git+https://github.com/chschytzmcy/dsh-edge-agent.git"`。
+
+⚠️ **但 `dsh.profile.bundles` 里还没有它** ⇒ GUI 装完**不会自动启用**
+（客户端传 `enabled: false`，`manager-store.ts:1250`）⇒ **必须点「立即启用」**，
+否则包在 `dependencies` 里却不被加载 ⇒ 桌面右栏不出现 Edge tab。
+
+**这条通道至此全线打通**：填 GitHub 地址 → 预检 → 放行构建 → 现场编译 →
+装成 bundle → 启用。三处必要条件全部实测过：① PATH 上有 pnpm（全局那支）、
+② allowBuilds 放行（**两个稳定键**，网络形态变了也放行）、③ 仓库可读
+（https 靠 GCM token，SSH 靠 key）。
+
+
 
 ### 四、改动
 

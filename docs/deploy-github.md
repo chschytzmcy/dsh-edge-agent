@@ -112,6 +112,7 @@ pnpm 用的是**系统 git CLI**（自带 `@npmcli/git` 7.0.2，不是纯 JS 实
 |---|---|---|
 | 连通性预检 | `fatal: could not read Username for 'https://github.com': terminal prompts disabled` | 预检用 `credential.helper=`（**显式禁用凭据助手**）+ `GIT_TERMINAL_PROMPT=0` ⇒ **本机 GCM 里的 token 在这一关用不上** ⇒ 私有库 + https ⇒ 预检必失败。**SSH 形式不受影响**（`credential.helper=` 对 SSH 无意义） |
 | 真正安装 | `[ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED] ... fetched from "git@github.com:chschytzmcy/dsh-edge-agent.git"` | 注意 `fetched from` 是 **SSH** ⇒ **pnpm 自己从 https 回退到了 SSH**（`fromHostedGit` 的 `:139522`）⇒ 主机的 SSH key 生效、clone 成功。真正的阻断点是**构建授权** |
+| 放行后重试 | `pnpm-install$ pnpm install` → `Packages: +236` → `prepare$ node scripts/run.mjs compile build:client` → `[build-client] lib/client.js = 52 KB` → `Done in 41.7s` | ✅ **装成 0.1.1**（GUI 显示「已安装」） |
 
 > ⚠️ **宿主有个文案误导**：客户端弹的是「无法访问 GitHub / 改用国内镜像」，
 > 但**既不是网络不通，也不是 GitHub 不可达**。原因是失败分类
