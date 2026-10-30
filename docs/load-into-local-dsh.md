@@ -516,3 +516,62 @@ path spec 的 manifest **直接从目录里的 `package.json` 读**
 | 目录/包里有真密钥吗 | **有**（符号链接） | 无（不入库） | 无（`files` 排除） |
 | 安装耗时（实测） | **447 ms** | ~41 s | 取决于 registry |
 
+## 9. 验证安装
+
+```bash
+# 1. bundle 已注册到 target profile？
+grep '@deepseek-harness-edge-agent/dsh-edge-agent' ~/.dsh/profiles/<profile>/package.json
+
+# 2. 隐私栈全部挂载？（desktop-safe 是 18 个 row，full 19 个）
+dsh --profile <profile> --dump-config | grep -E 'input-guard|file-logger|intent-router|sanitizer' | wc -l
+# 期望：≥4
+
+# 3. 单 profile 运行(§7.69)?只一个 dsh 进程 + :21017 在听
+pgrep -af 'dsh --profile' | grep -v pgrep
+ss -tlnp | grep -E '21017'
+
+# 4. http-api 健康检查（带 bearer）
+TOKEN=$(node -p "require('fs').readFileSync(process.env.HOME+'/.dsh-edge-agent/edge.json','utf8').secrets.edgeApiKey")
+curl -s --max-time 3 -H "Authorization: Bearer $TOKEN" http://127.0.0.1:21017/v1/health
+```
+
+> **桌面版**的验证：右栏出现 **Edge** tab → 发一条本地 query → Intent panel
+> 出现一行；审计里确认配置来源：
+> ```bash
+> grep -o '"kind":"config.loaded".\{0,240\}' ~/.dsh-edge-agent/audit/audit.plain.jsonl | tail -1
+> ```
+
+> **判一个会话有没有真的走本项目链路，唯一判据是审计链**（§7.140）：
+> ```bash
+> node scripts/probe-session-audit.mjs --session <id>
+> ```
+> 会话头 / projcache 里的 preset 标签都不可作判据。详见
+> [`desktop-troubleshooting.md` §5](desktop-troubleshooting.md)。
+
+## 10. 卸载
+
+```bash
+# 1. 停所有 dsh profile
+pkill -f 'node.*dsh --profile dsh-tui' || true
+pkill -f 'node.*dsh --profile web' || true
+
+# 2. 从 profile bundles 列表移除 bundle
+# （CLI：dsh plugin --profile dsh-tui remove <bundle> — 如 dsh CLI 提供）
+# 或手动编辑 ~/.dsh/profiles/dsh-tui/package.json 删除 bundles + dependencies 中的 dsh-edge-agent
+# §7.43: dsh-tui + web 都要处理（如果都装过）
+
+# 3. 移除嵌套包
+rm -rf ~/.dsh/profiles/dsh-tui/node_modules/@deepseek-harness-edge-agent/
+rm -rf ~/.dsh/profiles/web/node_modules/@deepseek-harness-edge-agent/   # 若 web 装过
+
+# 4. 移除 bundle 数据（注意：会删除所有会话和加密数据！）
+rm -rf ~/.dsh-edge-agent-web/
+
+# 5. 移除全局包（如适用）
+npm uninstall -g @deepseek-harness-edge-agent/dsh-edge-agent
+```
+
+> **桌面版走宿主 GUI 的卸载**（Plugins → 已安装 → 移除）：宿主会做
+> `pnpm remove` + 撤掉 `dsh.profile.bundles` 里的条目。**你填的那个源目录
+> 宿主一行代码都不会删**（§8.8.8）。
+

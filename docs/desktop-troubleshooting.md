@@ -355,3 +355,37 @@ node scripts/probe-session-audit.mjs --selftest
 > 若要确认「已绑定」那一支：发一条消息即可（`turn/start` 一落，轮次计数就起来了）。
 > 注意宿主重启后轮次计数是**内存态**，老会话在宿主的 edge 面板里暂时没有数据 ——
 > 这时面板会显示「尚未绑定会话」，发一条消息后就变成该会话的记录。
+
+---
+
+## 7. 安装期常见报错速查
+
+> 2026-10-30 从根 README 迁入（README 只留最基本的介绍与部署信息）。
+> 与 §1–§6 的区别：那一节排的是**运行期**故障，这一节排的是**装的时候**报错。
+
+| 现象 | 排查 |
+|---|---|
+| `未检测到 dsh CLI` | `npm install -g @deepseek-ai/dsh` 后 `hash -r` |
+| `未检测到 pnpm` | `npm install -g pnpm` 或 `corepack enable pnpm`（桌面版另见 [`deploy-github.md` §2.5](deploy-github.md)） |
+| dsh-tui 启动失败 | `tail -50 ~/.dsh/profiles/dsh-tui/run.log` 看 `intentRouter: found` 行 |
+| web profile 启动后 `:3080` 不 listen | `tail -50 ~/.dsh/profiles/web/run.log` 看 `dsh web:` 行；可能是 webui 包未装，跑 `dsh plugin --profile web add @deepseek-ai/dsh-web @deepseek-ai/dsh-web-ui-all` |
+| 19 个 plugin 只挂载 dsh-base 的 30 个（bundle 没生效） | `dsh plugin --profile dsh-tui add @deepseek-harness-edge-agent/dsh-edge-agent` 重装；或者 `install.sh §2.6 + §2.7` 没跑，手动 cp `cordis.patch.yml` 到嵌套包根 |
+| `adapter boundary violated` | 把 `@deepseek-ai/*` 的 import 移到 `src/dsh-adapter/` 内（或经 `src/dsh-adapter/types.ts` 重新导出） |
+| `upstream contract violated` | 上游 DSH 包低于最低兼容版本（当前 `0.2.1-rc.2`），或各 `@deepseek-ai/dsh-*` 包版本不一致；运行 `pnpm install` 或 `pnpm update @deepseek-ai/dsh-agent @deepseek-ai/dsh-llm ...` |
+| Windows：`a local path must be absolute` | 填的是 Git Bash 的 `/c/Users/...`（MSYS2 虚拟路径），桌面 App 只认原生 `C:\Users\...`。用构建脚本输出的路径 |
+| Windows：`Cannot connect to C: resolve failed` | tar 把 `C:` 当成远程主机名（GNU tar 的 `host:path` 语法）。当前脚本已规避（tar 只收相对路径）；若仍遇到，检查是否有旧版 `build-desktop-bundle.sh` |
+| Windows：`/c/Program: No such file or directory` | 旧版 `build-desktop-bundle.sh` 把 node+pnpm 拼成字符串再未加引号展开，路径含空格被切开。用 `npm run build:windows` |
+| Windows：`rename still locked (EPERM)` → `in-place` | **不是错误**——桌面 App 开着并持有 `dist/installable/` 句柄，脚本降级为逐条覆盖，`link:` 目标持续有效，重启 App 即生效。想要干净原子换目录就退出 App 再跑 |
+| `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED` | git 通道要放行构建脚本；键要写**稳定键**（去掉 `#commit`），且 https / ssh **两种形态都要写**。见 [`deploy-github.md` §3.2](deploy-github.md) |
+| `'pnpm' is not recognized` | git 通道：PATH 上要有 pnpm（`npm i -g pnpm`，装完**重启桌面 App**）。见 [`deploy-github.md` §2.5](deploy-github.md) |
+| `package exports missing from tarball: lib/client.js` | `prepare` 缺 `build:client` ⇒ 浏览器半侧没产出。见 [`deploy-github.md` §2.2](deploy-github.md) |
+| 装完右栏没有 Edge tab | ① 忘了点「立即启用」（GUI 不会自动启用）；② 目录里没有 `lib/client.js`（源码目录直接装的典型症状）；③ 见 §3 |
+
+## 8. 相关文档
+
+- [`load-into-local-dsh.md`](load-into-local-dsh.md) — 装进本地 DSH（三条路）
+- [`deploy-github.md`](deploy-github.md) — 从 GitHub 仓库地址安装
+- [`deploy-npm.md`](deploy-npm.md) — 从 npm 包名安装
+- [`config-reference.md`](config-reference.md) — 完整配置清单
+- [`architecture.md`](architecture.md) — 架构与插件开发
+

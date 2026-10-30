@@ -5,8 +5,9 @@
 > 处于「文件存在但没有任何读者」的孤儿态（引用数 = 0），只能靠全库 grep
 > 猜它们是否有用。
 >
-> **根 README 的「更多文档」行仍指向 `architecture.md`**（那是设计主文档）；
-> 本索引面向「进 `docs/` 目录找东西」的读者。
+> **根 README 的「文档」表把本文件列为总索引**；根 README 本身只保留
+> 「最基本的介绍与部署信息」（2026-10-30 §7.156 起；此前 README 有 937 行，
+> 配置参考与安装细节都堆在里面）。本索引面向「进 `docs/` 目录找东西」的读者。
 
 ## 文档处置判据（§7.146 确立）
 
@@ -38,7 +39,8 @@
 | [`desktop-troubleshooting.md`](desktop-troubleshooting.md) | 桌面版排障手册（起不来 / Edge tab 不见了 / 面板口径） | 活（3 引用） |
 | [`TEST-REPORT.md`](TEST-REPORT.md) | 测试报告：单元测试 / 门禁 / eslint / 实机取证 | 活（2 引用） |
 | [`deploy-minimal-files.md`](deploy-minimal-files.md) | 最小部署清单：每个文件装了什么、起什么作用 | 活（4 引用） |
-| [`load-into-local-dsh.md`](load-into-local-dsh.md) | 装进本地 DSH 的部署指南（Linux / macOS / Windows 三条路） | 活（8 引用） |
+| [`load-into-local-dsh.md`](load-into-local-dsh.md) | 装进本地 DSH 的部署指南（Linux / macOS / Windows 三条路）+ 本地目录通道的宿主契约 | 活（8 引用） |
+| [`config-reference.md`](config-reference.md) | **完整配置清单**（16 类配置项 + 路由行为约定）——2026-10-30 从根 README 迁出 | 活（§7.156 新增） |
 | [`deploy-github.md`](deploy-github.md) | 从 GitHub 仓库地址安装到桌面版（Plugins → Add plugin）：前置条件、构建授权、启用、配置落位 | 活（§7.155 新增） |
 | [`deploy-npm.md`](deploy-npm.md) | 从 npm 包名安装到桌面版：宿主读 registry 的两次查询、版本语义、发布链环节与报错对照 | 活（§7.156 新增） |
 | [`plugin-mount-points.md`](plugin-mount-points.md) | 插件挂载点清单（哪个插件挂在哪棵树） | 活（2 引用） |
