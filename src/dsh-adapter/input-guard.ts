@@ -1649,8 +1649,26 @@ export class InputGuardServiceImpl extends Service {
           `input-guard: 本轮 intent 判定为 LOCAL，按隐私裁决必须使用本地模型，`
           + `但本地路由 "${this.config.localProvider}" 不可用（${local.reason}）。`
           + `为避免本地数据/PII 出境，已阻止本轮上云。`
-          + `请配置本地 LLM 端点（设置 DSH_EDGE_LOCAL_LLM_BASEURL；若端点需要鉴权，`
-          + `再用 DSH_EDGE_LOCAL_LLM_KEY_ENV 指定存放密钥的环境变量名）后重试。`,
+          // §7.159 (2026-10-30): the old hint pointed at DSH_EDGE_LOCAL_LLM_BASEURL
+          // and called keyRef "an env-slot name". Both were wrong for the person
+          // who actually hits this:
+          //
+          //   · the desktop GUI starts the host WITHOUT sourcing any .env, so
+          //     process.env has no DSH_EDGE_* — the hint was unfollowable
+          //     (measured on a clean Windows device: the operator set the env
+          //     var and the route still did not register);
+          //   · since §7.102 the pool lives in config/edge.json and `keyRef`
+          //     is the LITERAL key under that file's `secrets` section, not the
+          //     name of an environment variable.
+          //
+          // So: point at the file first, keep the env vars as the fallback
+          // for headless profiles that CAN set them.
+          + `请配置本地 LLM 端点：编辑 ~/.dsh-edge-agent/edge.json 的 llm.local 段，`
+          + `填 baseUrl（OpenAI 兼容端点，必须含 /v1）与 model；`
+          + `端点需要鉴权时，把密钥写进同一文件的 secrets 段，`
+          + `并把 llm.local.keyRef 指向那个键名（keyRef 是 secrets 里的键名，不是环境变量名）。`
+          + `若能设置进程环境变量，也可用 DSH_EDGE_LOCAL_LLM_BASEURL / DSH_EDGE_LOCAL_LLM_MODEL / `
+          + `DSH_EDGE_LOCAL_LLM_KEY_ENV 覆盖，但桌面 GUI 启动的宿主读不到它们。`,
         )
       }
       // 改写 route 到 LOCAL。maxTokens 等其他字段保留，但 §7.106 (2026-10-22)

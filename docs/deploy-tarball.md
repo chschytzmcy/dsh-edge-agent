@@ -198,6 +198,65 @@ export DSH_HOME=/tmp/dsh-edge-load
 ⇒ **tarball 里没有 `config/edge.json`**（实测确认）⇒ 装完配置要写
 `~/.dsh-edge-agent/edge.json`（第 2 顺位）。
 
+### 3.4 ⚠️ 拿到 tarball 的机器：没配过本地 LLM，边缘模式跑不起来
+
+**这是 §7.159 在一台干净 Windows 设备上实测出来的硬门槛。**
+
+tarball 不含 `config/edge.json`（§3.3）⇒ 一台**全新的机器**上只有
+`config/edge.example.json`，而它的 `llm.local.baseUrl` 是**空**。
+
+而 `local-llm` 路由**只有端点配了才注册**（`local-llm-adapter.ts:796-802`）：
+baseUrl 为空 ⇒ adapter 不注册任何 provider ⇒ 模型注册表里**根本没有
+`local-llm` 这条路** ⇒ 意图分类器（按 §7.100 裁决只准打 local-llm）报
+`NO_ADAPTER` ⇒ 退化到正则档 ⇒ 判定 LOCAL ⇒ 隐私裁决要求必须走本地 ⇒
+本地没有 ⇒ **fail-closed 拦下本轮**：
+
+```
+input-guard: 本轮 intent 判定为 LOCAL，按隐私裁决必须使用本地模型，
+但本地路由 "local-llm" 不可用（local-route-missing:local-llm）。
+为避免本地数据/PII 出境，已阻止本轮上云。
+```
+
+⇒ 这是**设计上的正确行为**（LOCAL 意图不许上云，而本地没有端点就只能停住），
+**不是** tarball 通道的问题，也不是 bug。
+
+#### 目标机器要自己写一份 `~/.dsh-edge-agent/edge.json`
+
+```json
+{
+  "llm": {
+    "local": {
+      "baseUrl": "https://<你的 OpenAI 兼容端点>/v1",
+      "model": "<模型名>",
+      "keyRef": "myLocalKey"
+    }
+  },
+  "secrets": {
+    "myLocalKey": "<端点密钥>"
+  }
+}
+```
+
+三个要点：
+
+1. `baseUrl` **必须含 `/v1`** —— adapter 只追加 `/chat/completions`；
+2. `keyRef` 是**同一文件 `secrets` 段里的键名**（§7.102 起），**不是**环境变量名；
+3. 端点不需要鉴权时，`keyRef` 可以留空、`secrets` 段也不必写。
+
+写完**重启 App**（配置在启动时读；改文件要重启才生效）。
+
+> ⚠️ 报错文案曾经把用户指向 `DSH_EDGE_LOCAL_LLM_BASEURL` /
+> `DSH_EDGE_LOCAL_LLM_KEY_ENV` 这两个**进程环境变量** —— 但桌面 GUI 启动宿主时
+> 根本不读 .env，照着设了也没用（§7.159 实测）。§7.159 已把文案改成指向
+> `edge.json`，并加门禁 [`verify-config-hints`](../scripts/verify-config-hints.mjs)
+> 钉住「用户可见的配置提示必须指向真实配置入口」。
+
+#### 想在这台机器上先看效果、不接本地模型
+
+把 `llm.cloud` 配成**直连云池**（`baseUrl` + `model` + `keyRef`，不 delegate）
+**并不能**绕开：隐私裁决是按 intent 走的，LOCAL 意图照样不许上云。
+⇒ 想让边缘模式真正可用，**必须**配 `llm.local`。
+
 ## 4. 实测（2026-10-30，隔离临时 profile）
 
 ```
@@ -322,6 +381,8 @@ verify:build 链：       … verify:installable → verify:tarball
 | 装完提示 `failed to read overlay <file>` | tarball 里缺 `dsh.bundle.patch` 声明的文件 ⇒ 门禁 `verify:tarball` 能提前抓住 |
 | 装完没有 Edge tab | ① 忘了点「立即启用」；② 缺 `lib/client.js`（`verify:tarball` 查得到）；③ preset 层缺席（工作方式选择器里没有「边缘模式」） |
 | 改了 tarball 没变化 | **冻结副本** ⇒ 卸载重装（§2.5） |
+| 装完一发言就报 `local-route-missing:local-llm` | 目标机器**没配本地 LLM** ⇒ 隐私裁决 fail-closed（**设计如此**）⇒ 按 **§3.4** 写 `~/.dsh-edge-agent/edge.json` 的 `llm.local` 后重启 |
+| 照着报错设了 `DSH_EDGE_LOCAL_LLM_BASEURL` 还是不通 | 桌面 GUI 启动的宿主**读不到进程 env** ⇒ 必须写 `edge.json`（§3.4；§7.159 已改文案） |
 | 想在别的机器上装 | tarball **不含** `config/edge.json` ⇒ 目标机器要自己写 `~/.dsh-edge-agent/edge.json` |
 
 ## 7. 相关文档

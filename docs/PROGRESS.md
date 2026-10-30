@@ -16543,3 +16543,103 @@ const mentionsBuildScript = /(?:^|[\s;&|(])(?:npm|pnpm) run build(?![\w:-])/mu.t
 - **npm 通道仍差最后一步**：主人手上的 npm 账号 + granular access token
   （publish 权限、Bypass 2FA、≤90 天、scope 限定本包）存成 GitHub secret
   `NPM_TOKEN`；推第一个 `v*` tag 即触发发布。
+
+## §7.159 干净设备实测：一发言就被隐私裁决拦下，并修掉那段把人指向死路的报错文案（2026-10-30）
+
+> 起因：主人用 tarball 通道在**另一台干净的 Windows 设备**上测，
+> 右栏 Edge 面板正常出来了（隐私流水线七段全在跑），但对话每一轮都报
+> `input-guard: 本轮 intent 判定为 LOCAL … 但本地路由 "local-llm" 不可用
+> （local-route-missing:local-llm）`。
+
+### 一、根因：**不是 tarball 的问题，是那台机器没配本地 LLM**
+
+链条（每一环都实测过）：
+
+1. tarball **不含** `config/edge.json`（§7.153 起的可分发约定）⇒ 干净设备上
+   只有 `config/edge.example.json`，而它的 `llm.local.baseUrl` 是**空**；
+2. `local-llm` 路由**只有端点配了才注册**（`local-llm-adapter.ts:796-802`：
+   baseUrl 为空 ⇒ adapter 不注册任何 provider）⇒ 模型注册表里**根本没有**
+   `local-llm` 这条路；
+3. 意图分类器按 §7.100 裁决**只准打 local-llm**（内部 LLM 调用绝不借宿主云模型）
+   ⇒ 报 `NO_ADAPTER` ⇒ 退化到正则档 ⇒ 判定 LOCAL；
+4. intent=LOCAL ⇒ 按隐私裁决**必须走本地** ⇒ 本地没有 ⇒ **fail-closed 拦下**。
+
+⇒ **这是设计上的正确行为**，与通道无关（git / 本地目录通道同样如此）。
+
+> 顺带把主人的第一次误判纠正掉：主人先报的是「桌面 App 装了 tarball 后
+> 失败」，我先按「热重载后 realm 漂移」查了一轮（桌面 App 进程启动于
+> 14:30:35，tarball 14:34 才装进 profile，靠热重载 ⇒ 确实可疑），
+> 但主人补充「**另一台干净的 Windows 设备**」之后，根因一步到位。
+> ⇒ **取证时环境信息比推理更重要。**
+
+### 二、★ 那段报错文案是错的（两处）
+
+原文案（`input-guard.ts:1648-1654`）：
+
+```
+请配置本地 LLM 端点（设置 DSH_EDGE_LOCAL_LLM_BASEURL；若端点需要鉴权，
+再用 DSH_EDGE_LOCAL_LLM_KEY_ENV 指定存放密钥的环境变量名）后重试。
+```
+
+| # | 错在哪 | 为什么 |
+|---|---|---|
+| 1 | 指向**进程环境变量** | §7.102 起配置在 `config/edge.json`；桌面 GUI 启动宿主**不读 .env** ⇒ `process.env` 里根本没有 `DSH_EDGE_*`。**照着设了也没用**（主人的干净设备实测：设了 env，路由照样不注册） |
+| 2 | 把 `keyRef` 说成「存放密钥的**环境变量名**」 | §7.102 起 `keyRef` 是**同一文件 `secrets` 段的键名**（字面量）。照文案设 `DSH_EDGE_LOCAL_LLM_KEY_ENV=<name>` 会指向一个不存在的 secrets 槽位 |
+
+⇒ 这段文案是**照着做也做不对**的那种最坏的错 —— 它把主人带去一条死路，
+还让人以为是自己操作错了。
+
+### 三、修法
+
+1. **改文案**：先指向 `~/.dsh-edge-agent/edge.json` 的 `llm.local` 段
+   （`baseUrl` 须含 `/v1`、`model`），再说 `secrets` 段与 `keyRef` 的真实语义；
+   env 变量降级为「**若能设置进程环境变量时**」的备选，并明确写出
+   「桌面 GUI 启动的宿主读不到它们」。
+2. **新增门禁 `scripts/verify-config-hints.mjs`**（接入 `verify:build`，20 → **21 项**）：
+   - fail-closed 文案必须含 `~/.dsh-edge-agent/edge.json` / `llm.local` / `secrets`；
+   - 不得再出现「存放密钥的环境变量名」这类 §7.102 之前的语义；
+   - `src/` 里任何**用户可见**（模板字符串）提到旧 env 名的行，同段必须给出
+     文件入口（注释与内部 `ENV_OVERRIDES` 表豁免）；
+   - 文档必须给出「拿到 tarball 的机器怎么配」；
+   - `--selftest` **9 项断言**（自证 + 反向证伪）。
+3. **文档**：
+   - `docs/deploy-tarball.md` 新增 **§3.4「拿到 tarball 的机器：没配过本地 LLM，
+     边缘模式跑不起来」**（含可直接复制的 `edge.json` 最小配置 + 三个要点），
+     §6 排障表加 2 行；
+   - 报错文案里那句「后重试」被删掉时，门禁的 `extractHint` 立刻抓到
+     （结束标记失效）⇒ 改成**括号配平**提取，不再依赖文案里的任何字样。
+
+### 四、给干净设备的配置模板（已生成）
+
+`dist/edge.json.template`（**gitignored，不进仓库；零真密钥残留，已校验**）
+—— 从本机 `~/.dsh-edge-agent/edge.json` 派生：保留 `llm.local` 的
+`baseUrl` / `model` / `keyRef`，把 `secrets` 全部槽位**值清空**只留键名。
+主人拷到目标机 `~/.dsh-edge-agent/edge.json`，填真密钥，重启 App。
+
+### 五、验证
+
+- `npm run build`（含 `pack:tarball` + `verify:build` **21 项**）→ exit 0；
+- `node scripts/verify-config-hints.mjs --selftest` → **9 项断言全过**；
+- `node scripts/verify-config-hints.mjs` → OK（src 扫 79 个文件 / docs 扫 39 个）；
+- 反向证伪：把文案换成 §7.159 之前的旧形态 ⇒ 门禁红 3 项；把 env 写成
+  「设置」步骤 ⇒ 红；`src/` 里孤立 env 提示 ⇒ 红；内部实现表 ⇒ 不报；
+- vitest 73 文件 / 1495 passed / 2 skipped / 0 failed；tsc 双配置 0；
+  eslint 0 error / 59 warnings；doc-links 断链 0 / 孤儿 0。
+
+### 六、遗留 / 待主人裁决
+
+- **★ 产品张力（需要主人拍板）**：tarball 的卖点之一是「拿到别的机器上就能用」，
+  但**只要那台机器没配本地 LLM，边缘模式就 100% 被隐私裁决拦下** ——
+  因为 LOCAL 意图不许上云，而本地没有端点。三条路：
+  - **(a) 保持现状**（fail-closed）：隐私最严；分发出去的包在干净机器上
+    边缘模式不可用，必须先配 `llm.local`（文档已写清，模板已给）；
+  - **(b) 本地路由缺失时显式允许回退云端**（要 opt-in + 显著警告）：
+    体验好，但**把本地数据送出设备**，与 §7.131 / 2026-10-18 裁决直接冲突；
+  - **(c) 本地路由缺失时把 LOCAL 意图改判 CLOUD**：同上，更隐蔽。
+  ⇒ **我按 (a) 实现并写进了文档**（不擅自放宽主人已裁决的隐私边界）；
+  主人若要 (b)，需要明确的 opt-in 开关设计。
+- 干净设备的**宿主侧模型**也要单独配（截图里「云不可用」=
+  `cloud-unavailable:no-host-route-selected-or-live`）：delegate 模式要宿主
+  在 GUI 里选好 provider + key。
+- 主人本机的桌面 App 自 14:30 起没重启过（tarball 14:34 装 ⇒ 靠热重载），
+  下次测建议**完全退出再启动**。
