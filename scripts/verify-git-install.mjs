@@ -79,7 +79,7 @@
  */
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { delimiter, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
 import { parse as parseYaml, parseDocument } from 'yaml'
@@ -266,12 +266,45 @@ const profile = join(tmp, 'profile')
 rmSync(tmp, { recursive: true, force: true })
 mkdirSync(profile, { recursive: true })
 
-const run = (command, args, cwd) => {
+const run = (command, args, cwd, options = {}) => {
   try {
-    return { code: 0, out: execFileSync(command, args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } }) }
+    return { code: 0, out: execFileSync(command, args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], shell: options.shell === true, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } }) }
   } catch (error) {
     return { code: error.status ?? -1, out: `${error.stdout ?? ''}\n${error.stderr ?? ''}` }
   }
+}
+
+/**
+ * 在 PATH 上找可执行文件，**按 Windows 的规矩补扩展名**。
+ *
+ * 为什么不能直接 `execFileSync('pnpm', ...)` 探：Node 在 Windows 上不会给无扩展名的
+ * 命令名补 `.cmd`/`.bat`（Node 20.12+ 出于 CVE-2024-27980 直接拒绝 spawn .cmd/.bat），
+ * 而 `npm i -g pnpm` 装出来的恰恰是 `pnpm.cmd`。用 execFileSync 探测会**误报**
+ * 「PATH 上没有 pnpm」—— 本机实测 `pnpm.cmd` 明明在 PATH 上，仍报 ENOENT。
+ *
+ * 这里的规则与 cmd.exe / cross-spawn 一致：PATH 逐目录 × PATHEXT 逐扩展名。
+ *
+ * @param name 命令名（不带扩展名）。
+ * @returns 命中的绝对路径；没找到返回 undefined。
+ */
+function resolveOnPath(name) {
+  const directories = (process.env.PATH ?? '').split(delimiter).filter((entry) => entry !== '')
+  const extensions = process.platform === 'win32'
+    ? (process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD').split(';').filter((entry) => entry !== '')
+    : ['']
+  for (const directory of directories) {
+    for (const extension of extensions) {
+      // Windows 文件名大小写不敏感，但这里两种写法都试，避免在大小写敏感的盘上漏掉。
+      for (const suffix of extension === '' ? [''] : [extension.toLowerCase(), extension]) {
+        const candidate = join(directory, name + suffix)
+        if (existsSync(candidate)) return candidate
+      }
+    }
+    // PATH 上也可能直接放了一个无扩展名的可执行文件（POSIX 习惯）。
+    const bare = join(directory, name)
+    if (existsSync(bare)) return bare
+  }
+  return undefined
 }
 
 // **前置条件**：PATH 上必须有 `pnpm` 可执行文件。
@@ -281,6 +314,11 @@ const run = (command, args, cwd) => {
 // `dist/pnpm.mjs:130133` 决定 pm 名、`:130157` 注入脚本、`:130158` 用 shell 跑它）。
 // `prepare` 非空 ⇒ 一定走这条路（`:130185`）⇒ shell 必须能在 PATH 上找到 `pnpm`。
 //
+// `<pm>` 为什么是 pnpm：pnpm 用 `preferredPM(clone 根目录)` 决定（`:130053`）——
+// **先看 package-lock.json，再看 yarn.lock，再看 pnpm-lock.yaml**。本仓的
+// `package-lock.json` 在 `.gitignore` 里（clone 里没有），`pnpm-lock.yaml` 被跟踪
+// ⇒ 判定为 pnpm ⇒ 注入 `pnpm install`。
+//
 // 桌面 runtime 的 `bin/` 里**只有 node/node.cmd，没有 pnpm**（宿主
 // `apps/desktop-host/src/index.ts:44` 把 runtime\bin 前置到 PATH）⇒ 这条通道
 // 在桌面版上要求机器上另有一个 `pnpm`（例如 `npm i -g pnpm` 装到
@@ -289,11 +327,16 @@ const run = (command, args, cwd) => {
 // 这里显式检查并给出可执行的补救，而不是让 pnpm 抛一句
 // 「'pnpm' is not recognized」把人卡住。
 {
-  const probe = run('pnpm', ['--version'], ROOT)
+  const found = resolveOnPath('pnpm')
+  // 用 shell 跑：`.cmd` 只有经 cmd.exe 才能执行 —— pnpm 自己的 lifecycle 也是这么跑的。
+  const probe = found === undefined ? { code: -1, out: '' } : run(found, ['--version'], ROOT, { shell: true })
   check(
     probe.code === 0,
-    'PATH 上没有 `pnpm` 可执行文件 —— pnpm 为 git 依赖注入的 `pnpm install` 步骤需要它。'
-    + '补救：`npm i -g pnpm`（装到用户 PATH 上的 npm 全局目录），或改走 npm / tarball 通道。',
+    'PATH 上没有可用的 `pnpm`（含 pnpm.cmd / pnpm.exe）—— pnpm 为 git 依赖注入的 `pnpm install` '
+    + '步骤需要它。补救：`npm i -g pnpm`（装到用户 PATH 上的 npm 全局目录，Windows 上是 '
+    + '`C:\\Users\\<用户>\\AppData\\Roaming\\npm`），装完**重启桌面版**让它继承新 PATH；'
+    + '或改走 npm / tarball 通道（宿主 publish.md 的建议）。'
+    + (probe.out ? `\n探测输出：${probe.out.trim().slice(0, 500)}` : ''),
   )
 }
 
