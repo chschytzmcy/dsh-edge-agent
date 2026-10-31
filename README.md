@@ -183,7 +183,7 @@ $EDITOR config/edge.json    # 填 secrets.* 的真实 key、llm.local.baseUrl �
 > ⚠️ `config/edge.json` 含**明文 API key**，绝不能提交到 git（已在
 > `.gitignore` 里，`.npmignore` 也排除了它 ⇒ 不会进 npm 包）。
 > 完整配置清单（16 类配置项 + 路由行为约定）见
-> [`docs/config-reference.md`](docs/config-reference.md)。
+> [`docs/privacy-policy.md`](docs/privacy-policy.md#配置清单)。
 
 ---
 
@@ -210,11 +210,9 @@ dsh --profile <profile> --dump-config | grep -E 'input-guard|file-logger|intent-
 | [`docs/deploy-npm.md`](docs/deploy-npm.md) | 从 npm 包名安装 + 发布链排障 |
 | [`docs/deploy-tarball.md`](docs/deploy-tarball.md) | 从 tarball 路径安装（离线分发） |
 | [`docs/load-into-local-dsh.md`](docs/load-into-local-dsh.md) | 装进本地 DSH（三条路 + 宿主契约） |
-| [`docs/config-reference.md`](docs/config-reference.md) | 完整配置清单 |
+| [`docs/privacy-policy.md`](docs/privacy-policy.md) | 隐私链路单一权威文档：策略 + 判定表 + 配置清单 + 审计 + 行为契约 |
 | [`docs/architecture.md`](docs/architecture.md) | 架构主文档：四层模型 / Realm / 插件开发 / 威胁模型 |
 | [`docs/desktop-troubleshooting.md`](docs/desktop-troubleshooting.md) | 桌面版排障手册 |
-| [`docs/intent-and-sanitization.md`](docs/intent-and-sanitization.md) | 输入防御 / 意图识别 / 脱敏的当前策略 |
-| [`docs/intent-decision-reference.md`](docs/intent-decision-reference.md) | 判定表附录（正则原文 / prompt 全文） |
 | [`docs/version-policy.md`](docs/version-policy.md) | 上游版本策略 |
 | [`docs/TEST-REPORT.md`](docs/TEST-REPORT.md) | 测试报告与实测记录 |
 | [`docs/PROGRESS.md`](docs/PROGRESS.md) | 实施进度档案（§7.x 全量历史） |

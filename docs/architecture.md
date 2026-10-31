@@ -1169,7 +1169,7 @@ sequenceDiagram
 
 **版本**：v1.1 (2026-08-29)
 **适用范围**：dsh-edge-agent v0.1.0+
-**关联文档**：[`input-guard-design.md`](./intent-and-sanitization.md)、[`architecture.md`](architecture.md)、[`#第2章--221-插件职责依赖关系启动顺序`](#第2章--221-插件职责依赖关系启动顺序)、[`#第9章--设计基线完整设计方案235-kb-主基线`](#第9章--设计基线完整设计方案235-kb-主基线)
+**关联文档**：[`input-guard-design.md`](./privacy-policy.md)、[`architecture.md`](architecture.md)、[`#第2章--221-插件职责依赖关系启动顺序`](#第2章--221-插件职责依赖关系启动顺序)、[`#第9章--设计基线完整设计方案235-kb-主基线`](#第9章--设计基线完整设计方案235-kb-主基线)
 
 ---
 
@@ -1548,7 +1548,7 @@ DSH 上游 SPA 的 chat RPC（`sessions.prompt` / `sessions.list` / `sessions.ca
 
 ## 12. 引用
 
-- [input-guard-design.md](./intent-and-sanitization.md) — input-guard 编排器设计（多入口统一防护的依赖）
+- [input-guard-design.md](./privacy-policy.md) — input-guard 编排器设计（多入口统一防护的依赖）
 - [architecture.md](architecture.md) — 整体架构
 - [#第2章--221-插件职责依赖关系启动顺序](#第2章--221-插件职责依赖关系启动顺序) — Cordis 插件机制
 - [#第9章--设计基线完整设计方案235-kb-主基线](#第9章--设计基线完整设计方案235-kb-主基线) — v6 设计文档
@@ -3151,7 +3151,7 @@ export DSH_EDGE_PLUGINS_THIRD_PARTY=true
 - ✅ 注入检测拦截（≥3 种模式，规则可配置 `action: block | warn | sanitize`）
 - ✅ PII 脱敏（手机号、邮箱、身份证、银行卡、API Key）
 - ✅ `intent-router` REJECT 命中 → http-api 403 短路（`intent.rules.rejected` 安全级审计）
-- ✅ **隐私预检三层防御 e2e 验证**（2026-08-24）：12 个恶意请求全拦截（3 个 prompt-guard 正则 HTTP 400 + 9 个 privacy-policy HTTP 403），5 个正常请求不误拦（HTTP 200，正确分类 LOCAL/CLOUD）。prompt-guard 模型辅助检测默认开启（local-llm，fail-open）。详见 [intent-recognition-routing.md](./intent-and-sanitization.md) "真实环境 e2e 验证" 章节
+- ✅ **隐私预检三层防御 e2e 验证**（2026-08-24）：12 个恶意请求全拦截（3 个 prompt-guard 正则 HTTP 400 + 9 个 privacy-policy HTTP 403），5 个正常请求不误拦（HTTP 200，正确分类 LOCAL/CLOUD）。prompt-guard 模型辅助检测默认开启（local-llm，fail-open）。详见 [intent-recognition-routing.md](./privacy-policy.md) "真实环境 e2e 验证" 章节
 - ✅ `td-bus.shouldBlock()` 命中 → http-api 503 短路（`http.chat.threat-blocked` 审计）
 - ✅ CLOUD 路径 sanitize → LLM → desanitize（或流式 `desanitizeSync`）端到端
 - ✅ Privacy-policy `matchRouting` 命中走规则，未命中走 LLM，再 fallback 关键词 → `defaultCategory`
@@ -5902,7 +5902,7 @@ intent-router:
 > - **shipped privacy-policy.json v1.x 修复历史**(v1.0.0 → v1.4.0,含 P0 api-key + P1 phone 截断 id-card 修复)
 > - **部署注意事项** + **后续优化项**
 >
-> —— 详见 **[intent-recognition-routing.md](./intent-and-sanitization.md)**。
+> —— 详见 **[intent-recognition-routing.md](./privacy-policy.md)**。
 
 ---
 
@@ -9620,7 +9620,7 @@ intent-router `defaultCategory`、http-api 无分类器兜底）都是 `LOCAL`�
 （审计 `intent.cloud.blocked-no-web-need`）。所以"解释/什么是/知识问答"
 这类普通问句走本地模型，只有真正要查公网的请求才出网。
 出网必脱敏：脱敏失败 fail-closed 降级回本地，绝不带原文上云。
-详见 [intent-and-sanitization.md](intent-and-sanitization.md)。
+详见 [privacy-policy.md](privacy-policy.md)。
 
 ### §7.100 云池可选（DELEGATE 模式）
 

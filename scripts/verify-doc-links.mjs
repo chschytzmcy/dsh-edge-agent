@@ -55,6 +55,9 @@ export function collectDocFiles(root = ROOT) {
   if (!existsSync(base)) return out
   const walk = (dir) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      // 跳过点开头的隐藏文件（.DS_Store 等系统产物，.gitignore 已排除）。
+      // 它们不是文档，被当成「孤儿」会让门禁在 macOS 本地误报。
+      if (entry.name.startsWith('.')) continue
       const abs = join(dir, entry.name)
       if (entry.isDirectory()) walk(abs)
       else out.push(relative(root, abs).split(sep).join('/'))

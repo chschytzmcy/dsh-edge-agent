@@ -34,13 +34,11 @@
 |---|---|---|
 | [`architecture.md`](architecture.md) | 架构主文档：四层模型 / realm / cordis 插件机制 + 上游适配契约 + 威胁模型 + 插件开发 | 活（9 引用） |
 | [`PROGRESS.md`](PROGRESS.md) | 实施进度档案（§7.x 全量历史）——**唯一存档点**，测试过程与 boot 签名逐字存这里 | 活（13 引用） |
-| [`intent-and-sanitization.md`](intent-and-sanitization.md) | **当前策略说明书**：输入防御 / 意图识别 / 脱敏三块的分层、判据、阈值、配置与审计 | 活（4 引用） |
-| [`intent-decision-reference.md`](intent-decision-reference.md) | 判定表附录：逐条正则原文、决策模型题目、prompt 全文 | 活（2 引用） |
+| [`privacy-policy.md`](privacy-policy.md) | **隐私链路单一权威文档**：输入防御 / 意图识别 / 脱敏的策略 + 判定表 + 完整配置清单 + 审计事件 + 行为契约 | 活（§7.155 合并） |
 | [`desktop-troubleshooting.md`](desktop-troubleshooting.md) | 桌面版排障手册（起不来 / Edge tab 不见了 / 面板口径） | 活（3 引用） |
 | [`TEST-REPORT.md`](TEST-REPORT.md) | 测试报告：单元测试 / 门禁 / eslint / 实机取证 | 活（2 引用） |
 | [`deploy-minimal-files.md`](deploy-minimal-files.md) | 最小部署清单：每个文件装了什么、起什么作用 | 活（4 引用） |
 | [`load-into-local-dsh.md`](load-into-local-dsh.md) | 装进本地 DSH 的部署指南（Linux / macOS / Windows 三条路）+ 本地目录通道的宿主契约 | 活（8 引用） |
-| [`config-reference.md`](config-reference.md) | **完整配置清单**（16 类配置项 + 路由行为约定）——2026-10-30 从根 README 迁出 | 活（§7.156 新增） |
 | [`deploy-github.md`](deploy-github.md) | 从 GitHub 仓库地址安装到桌面版（Plugins → Add plugin）：前置条件、构建授权、启用、配置落位 | 活（§7.155 新增） |
 | [`deploy-tarball.md`](deploy-tarball.md) | 从 tarball 路径安装（离线分发）：冻结副本语义、更新须重装、产物门禁 | 活（§7.157 新增） |
 | [`deploy-npm.md`](deploy-npm.md) | 从 npm 包名安装到桌面版：宿主读 registry 的两次查询、版本语义、发布链环节与报错对照 | 活（§7.156 新增） |

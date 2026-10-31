@@ -73,14 +73,16 @@ const SECRET_NEGATION = '!config/edge.json'
  * Each entry is [file, required fragments]. A fragment is a plain substring;
  * the Chinese text carries the meaning, the ASCII fragments keep the check
  * stable across wording changes.
+ *
+ * §7.155: the second entry (docs/config-reference.md) was removed when the
+ * three strategy/config documents were merged into docs/privacy-policy.md.
+ * Its required fragments were a duplicate of load-into-local-dsh.md's — that
+ * document is where the local-channel install rules actually live, so the
+ * assertion stays pointed there instead of at a file that no longer exists.
  */
 const DOC_REQUIREMENTS = [
   {
     file: 'docs/load-into-local-dsh.md',
-    required: ['link:', 'file:', 'config/edge.json'],
-  },
-  {
-    file: 'docs/config-reference.md',
     required: ['link:', 'file:', 'config/edge.json'],
   },
 ]

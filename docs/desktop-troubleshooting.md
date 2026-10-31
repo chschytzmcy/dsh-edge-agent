@@ -386,6 +386,6 @@ node scripts/probe-session-audit.mjs --selftest
 - [`load-into-local-dsh.md`](load-into-local-dsh.md) — 装进本地 DSH（三条路）
 - [`deploy-github.md`](deploy-github.md) — 从 GitHub 仓库地址安装
 - [`deploy-npm.md`](deploy-npm.md) — 从 npm 包名安装
-- [`config-reference.md`](config-reference.md) — 完整配置清单
+- [`privacy-policy.md`](privacy-policy.md) — 隐私策略 + 完整配置清单
 - [`architecture.md`](architecture.md) — 架构与插件开发
 
