@@ -17208,3 +17208,68 @@ interface RequestUserInput {
 vitest **1516 passed**（含新增 6 例）· eslint **0 error**（59 warning 既有）·
 双侧 `tsc` OK · `verify:build` **23 项 exit=0** · `verify-doc-links` 0 断链
 0 孤儿 · 重建重部署后 E2E **4 用例全绿**。
+
+---
+
+## §7.166 出网裁剪守卫的独立审查结论：PARTIAL + 两条新边界入档（2026-10-31）
+
+> §7.164/§7.165 之外，另请了一个 verifier 子代理对整条出网链路做**只读代码审查**
+> （真 cordis Context + 真 LlmRuntime + 记录型 adapter 的端到端探针 + 真实会话日志
+> 与审计链的离线取证；未启动 DSH、未发真实网络请求、未碰 `config/edge.json`）。
+
+### 一、审查结论（VERDICT: PARTIAL）
+
+**确认了本轮三条修复都是对的**：
+
+- §7.164「历史轮先云后本地」的泄漏：子代理独立复现，结论一致；
+- §7.165 裁剪判断抛错 ⇒ fail-closed 且**有审计留证**：实测 adapter 收到 **0 次**调用
+  （请求根本没到 provider）+ `llm.cloud.egress.blocked` 行存在；
+- §7.165「当前轮输入无 source ⇒ 归属颠倒」：新版实测 `kept=["CURRENT INPUT (no source)"]`
+  —— 当前问题保住了，上一轮本地段的输入没上云。
+
+**PARTIAL 的理由**（不是 PASS）：守卫生效的**前提**失败时是**静默**的，且有几处需要
+实机才能确认。
+
+### 二、审查带出的两条新边界（已入 `docs/privacy-policy.md` 已知边界）
+
+1. **标准模式下出网裁剪不生效**（严重度：高）。守卫挂在 `llm/stream` 上，但只在
+   **边缘模式**会话里执行 —— 没有 pre-step 留下的会话状态就整条跳过
+   （`input-guard.ts` 的 `if (!state) return next()`），而 pre-step 绑在边缘模式
+   preset 的 scope 上（§7.136 去掉了 `{ global: true }`）。
+   ⇒ 标准模式会话的出网请求**不做**「只带云段历史」的裁剪；且按 §7.140「标准模式
+   零 edge 事件」的不变式，**也不会有**「裁剪没跑」的提示行 —— 面板上区分不出
+   「裁剪没跑」与「裁剪跑了但没东西可裁」。
+   当前部署的会话都在边缘模式（审计链可见 `llm.cloud.egress` 行）；标准模式是否真会
+   出现本地与云 provider 混用的会话，**未实测**。
+2. **`llm.cloud.egress` 两条路径口径不统一**（严重度：低，观测性）。守卫路径带
+   `via: 'host-provider'`，`droppedLocalHistory` 是被拦下的本地段条数；自有池
+   `cloud-llm` 那条（adapter 路径）**没有 `via` 字段**且 `droppedLocalHistory`
+   **恒为 0**（实测审计链里 4 条 `provider:"cloud-llm"` 全是 0）——
+   容易被误读成「adapter 侧裁剪没生效」。已在审计速查里写明：**区分靠 `via`**。
+
+### 三、审查确认已达成的几条（存档）
+
+- **fail-closed 成立**：裁剪计算抛错 → 出网请求根本到不了 provider（cordis 的
+  `waterfall` 不 catch 监听器异常，异常沿 `ctx.llm.stream()` 抛出）；
+- **判据基于真实宿主协议而非猜测**：逐条 assistant 消息的 `source.provider` 归属 +
+  轮次起点 = 真实用户输入；
+- **`tool` 消息归属它所在的那一轮**：在第一条本地产出之前 → 随云段留；之后 → 随本地段丢；
+- **宿主追加的四类 user-role 消息**（`runtime-context` / `skill-catalog` /
+  `time-context` / `model-selection`）全部带 source ⇒ 都不是轮次起点，随轮次归属；
+  它们是运行时上下文不是本地对话内容，不构成新增泄漏。
+
+### 四、仍未证实、需要实机的一批（不猜）
+
+1. 标准模式会话是否真会发生本地→云 provider 混用（决定上面第 1 条的真实影响面）；
+2. `purpose='compaction'` 的请求在本部署是否真会触发（宿主调用点不在依赖里）；
+3. 重新派发的请求体是否仍满足宿主 `markAgentLoopRequest` 契约（守卫派发的是**新
+   对象**，不带该标记；在 `node_modules/@deepseek-ai/` 内找不到消费方，消费方可能在
+   宿主应用层）；
+4. `llm.cloud.egress` 审计行与实际 wire body 的逐条对账（只核了口径与量级自洽）；
+5. 宿主为何拒绝「assistant 消息没有 source」（与守卫无关，但会掩盖同类问题）。
+
+### 五、门禁
+
+vitest **1516 passed** · eslint **0 error**（59 warning 既有）· 双侧 `tsc` OK ·
+`verify:build` **23 项 exit=0** · `verify-doc-links` 0 断链 0 孤儿 ·
+重建重部署后 E2E **4 用例全绿**（两轮）。

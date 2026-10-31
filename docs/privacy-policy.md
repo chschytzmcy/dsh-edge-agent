@@ -1257,8 +1257,18 @@ ops log 默认只记 LLM 调用的**长度**。要看「到底发了什么、回
 | `intent.llm.sanitize-error` / `intent.llm.sanitize-unavailable` | 分类前脱敏失败（fail-closed） |
 | `input-guard.sanitize.failed` / `input-guard.sanitize.downgraded` | 出网前脱敏失败 / 降级 |
 | `input-guard.blocked.policy` / `.attack` / `.intent` | 拦截 |
-| `llm.cloud.egress.blocked` | 出网前脱敏失败，不出网 |
+| `llm.cloud.egress.blocked` | 出网前脱敏失败，不出网；`reason: 'plan-error'` 表示裁剪判断本身出错（同样不出网，见行为契约） |
 | `policy.tamper-detected` | 策略文件签名校验失败 |
+
+**`llm.cloud.egress` 有两条路径，`via` 字段是唯一的区分依据**（§7.165）：
+
+| `via` | 出网的那一跳 | `droppedLocalHistory` 的含义 |
+|---|---|---|
+| `host-provider` | 宿主原生 provider（桌面 GUI 选的模型）—— 由**出网守卫**裁 | 被守卫拦下的本地段条数（可能 > 0）|
+| 缺省 | 自有池 `cloud-llm` —— 由 **cloud-llm-adapter** 裁 | 实测**恒为 0**（adapter 侧只记自己那条路径的裁剪统计），**不代表裁剪没生效** |
+
+⇒ 读审计行时不能只看 `droppedLocalHistory`：自有池那一条恒为 0 是**口径问题**，
+不是「裁剪失效」。区分办法是看 `via`。
 
 **计数（`getStats()`）**：意图识别 30 个计数器 + 10 桶置信度直方图，
 覆盖各判定路径、失败归因、脱敏结果与决策模型健康度。
@@ -1326,6 +1336,7 @@ ops log 默认只记 LLM 调用的**长度**。要看「到底发了什么、回
 | 宿主内部用途的调用（`purpose` 非空：compaction / session-title）| **不裁** —— compaction 要总结整段历史，裁它会改变压缩语义。这是**有意的取舍**（§7.151 记过），代价是这类请求可能带着本地段出网。未在本部署观察到实际触发 |
 | 整段请求里**没有任何轮次起点**时 | 裁剪走退化路径：**全部保留**（不裁）。这是出网裁剪唯一的 fail-open。实测语料（5274 个真实请求前缀）里**从未触及**（0 次）—— 宿主每轮至少有一条持久化用户输入，或一条 `RequestUserInput`（§7.165 已把它算作轮次起点） |
 | 本地 provider 的**命名** | 归属判定认两种本地 provider：model-router 的 LOCAL 名单，或名字以 `local-` 开头。若将来注册一个**既不在名单、名字也不带 `local-` 前缀**的本地 provider，它的产出会被当成云段带上云。当前部署的本地池是 `local-llm`（两种判据都命中），实测语料里出现过的 provider 只有 `local-llm` / `cloud-llm` / `qwen-token-plan-cn` / `deepseek-account` / `aliyun` / `minimax-cn` ⇒ 属潜在风险，未发生 |
+| **标准模式下出网裁剪不生效** | 裁剪守卫挂在 `llm/stream` 上，但它只在**边缘模式**会话里执行：没有 pre-step 留下的会话状态就整条跳过（`input-guard.ts` 的 `if (!state) return next()`），而 pre-step 绑在边缘模式 preset 的 scope 上。⇒ 标准模式会话的出网请求**不做**「只带云段历史」的裁剪。这是 §7.140「标准模式零 edge 事件」不变式的直接后果（标准模式的审计链里一条 edge 事件都不该有，因此也**没有**「裁剪没跑」的提示行）。当前部署的会话都在边缘模式（审计链可见 `llm.cloud.egress` 行）；标准模式是否会出现本地与云 provider 混用的会话，**未实测** |
 
 ---
 
