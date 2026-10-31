@@ -67,15 +67,41 @@
  * 绕过** ⇒ 它不是能力层的等价物。真正封死「模型按名字够到那个二进制」仍要靠
  * 摘 PATH（主人本轮裁决不做）。两条是**纵深防御**关系。
  *
+ * ## 依赖方向
+ *
+ * 本模块**不 import** `etscli-tools.ts`：白名单由调用方以 `allowlist` 参数传入
+ * （单一事实源仍是 `etscli-tools.ts` 从注册表派生的那份）。
+ * 否则 `etscli-tools → etscli-shell-guard → etscli-tools` 会成环 —— 环在这里
+ * 恰好不炸（两边都在函数体里用对方），但那是**求值顺序的运气**，不是设计。
+ *
  * @module dsh-edge-agent/etscli-shell-guard
  */
 
 import type { Context } from '@deepseek-ai/cordis'
 
-import { ETSCLI_READONLY_ARGV } from './etscli-tools.js'
-
 /** 能执行任意命令的工具名（小写比较）。 */
 export const SHELL_TOOL_NAMES: readonly string[] = ['bash', 'pwsh']
+
+/**
+ * 只读子命令白名单：每项是一段 argv 前缀（`['fs','ls']` 匹配
+ * `fs ls --path /tmp`）。
+ *
+ * **由调用方传入**（单一事实源 = `etscli-tools.ts` 从注册表派生的那份），
+ * 本模块**不 import** 它 —— 否则 `etscli-tools → etscli-shell-guard →
+ * etscli-tools` 会成环：模块求值顺序一变就是 TDZ 崩，而崩点还是「运行期
+> 才炸」的那种。
+ */
+export type EtscliReadonlyAllowlist = readonly (readonly string[])[]
+
+/** 守卫的选项（白名单必填 —— 少传就是「白名单为空 ⇒ 全拒」的 fail-closed）。 */
+export interface EtscliGuardOptions {
+  /** 只读子命令白名单（argv 前缀）。 */
+  allowlist: EtscliReadonlyAllowlist
+  /** etscli 二进制路径（用于识别绝对路径调用）。 */
+  bin?: string
+  /** 拒绝时的回调（证据要落盘）。 */
+  onDeny?: (denial: EtscliGuardDenial) => void
+}
 
 /** 命令里出现的 shell 分隔符 / 重定向符 —— 遇到它就算「上一条命令结束」。 */
 const SEPARATORS = new Set([';', '|', '&', '>', '<', '`', '(', ')'])
@@ -169,8 +195,11 @@ function baseName(token: string): string {
  * 判据用**前缀匹配**：白名单项 `['fs','ls']` 匹配 `fs ls --path /tmp`。
  * 精确到 token，不会把 `fs lsx` 误判成 `fs ls`。
  */
-export function isReadOnlyEtscliArgv(argv: readonly string[]): boolean {
-  return ETSCLI_READONLY_ARGV.some(prefix =>
+export function isReadOnlyEtscliArgv(
+  argv: readonly string[],
+  allowlist: EtscliReadonlyAllowlist,
+): boolean {
+  return allowlist.some(prefix =>
     prefix.every((token, index) => argv[index] === token),
   )
 }
@@ -186,14 +215,15 @@ export function isReadOnlyEtscliArgv(argv: readonly string[]): boolean {
  * `etscli-tools.ts` 里（注册什么就放行什么），两者天然同步。
  *
  * @param command - shell 命令文本
+ * @param options.allowlist - 只读子命令白名单（argv 前缀）
  * @param options.bin - 配置里的 etscli 二进制路径（用于识别绝对路径调用）
  */
 export function evaluateEtscliShellCommand(
   command: string,
-  options?: { bin?: string },
+  options: { allowlist: EtscliReadonlyAllowlist; bin?: string },
 ): EtscliShellVerdict {
   if (typeof command !== 'string' || command.length === 0) return ALLOW
-  const binBase = options?.bin ? baseName(options.bin) : 'etscli'
+  const binBase = options.bin ? baseName(options.bin) : 'etscli'
   const tokens = tokenizeShell(command)
 
   for (let i = 0; i < tokens.length; i++) {
@@ -220,7 +250,7 @@ export function evaluateEtscliShellCommand(
       sub.push(arg)
       if (sub.length >= 3) break
     }
-    if (isReadOnlyEtscliArgv(sub)) continue
+    if (isReadOnlyEtscliArgv(sub, options.allowlist)) continue
 
     // 给模型看的标签只取**前两段命令词**（`file upload` / `fs rm` / `chat send`…），
     // 位置参数（本地路径 / 文件名）一律不进标签 —— 拒绝理由会回到模型的上下文里，
@@ -233,8 +263,8 @@ export function evaluateEtscliShellCommand(
     const shown = label.length > 0 ? label : '(未指定子命令)'
     const reason =
       `etscli-shell-guard: \`etscli ${shown}\` 不是只读子命令，已拒绝执行。` +
-      `shell 里只允许这 ${ETSCLI_READONLY_ARGV.length} 个只读子命令：` +
-      `${ETSCLI_READONLY_ARGV.map(p => p.join(' ')).join('、')}；` +
+      `shell 里只允许这 ${options.allowlist.length} 个只读子命令：` +
+      `${options.allowlist.map(p => p.join(' ')).join('、')}；` +
       `需要别的 etscli 能力请走对应的 skill 或已注册的 etscli_* 工具。`
     return { denied: true, subcommand: shown, reason }
   }
@@ -285,7 +315,7 @@ function collectStrings(value: unknown, out: string[], depth: number): void {
  */
 export function evaluateEtscliToolCall(
   exec: unknown,
-  options?: { bin?: string },
+  options: { allowlist: EtscliReadonlyAllowlist; bin?: string },
 ): EtscliShellVerdict {
   const typed = (exec ?? {}) as ToolExecLike
   const name = typeof typed.name === 'string' ? typed.name.toLowerCase() : ''
@@ -296,7 +326,10 @@ export function evaluateEtscliToolCall(
   const texts: string[] = []
   collectStrings(args, texts, 0)
   for (const text of texts) {
-    const verdict = evaluateEtscliShellCommand(text, { bin: options?.bin })
+    const verdict = evaluateEtscliShellCommand(text, {
+      allowlist: options.allowlist,
+      bin: options.bin,
+    })
     if (verdict.denied) return verdict
   }
   return ALLOW
@@ -341,10 +374,7 @@ type OnLike = (
  */
 export function registerEtscliShellGuard(
   ctx: Context,
-  options: {
-    bin?: string
-    onDeny?: (denial: EtscliGuardDenial) => void
-  },
+  options: EtscliGuardOptions,
 ): () => void {
   const on = (ctx as unknown as { on?: OnLike }).on
   if (typeof on !== 'function') {
@@ -356,7 +386,10 @@ export function registerEtscliShellGuard(
     )
   }
   const disposer = on.call(ctx, 'tools/pre-execute', async (exec: unknown, next: () => Promise<unknown>) => {
-    const verdict = evaluateEtscliToolCall(exec, { bin: options.bin })
+    const verdict = evaluateEtscliToolCall(exec, {
+      allowlist: options.allowlist,
+      bin: options.bin,
+    })
     if (!verdict.denied) return next()
     const typed = (exec ?? {}) as ToolExecLike
     const tool = typeof typed.name === 'string' ? typed.name.toLowerCase() : 'unknown'

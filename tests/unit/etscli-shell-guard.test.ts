@@ -40,7 +40,7 @@ import { ETSCLI_READONLY_ARGV } from '../../src/dsh-adapter/etscli-tools'
 
 /** 主调用的判定：是否被拒 + 子命令。 */
 function verdict(command: string): { denied: boolean; subcommand?: string } {
-  const v = evaluateEtscliShellCommand(command)
+  const v = evaluateEtscliShellCommand(command, { allowlist: ETSCLI_READONLY_ARGV })
   return { denied: v.denied, subcommand: v.subcommand }
 }
 
@@ -52,10 +52,10 @@ describe('§7.120 — 只读白名单是单一事实源', () => {
   })
 
   it('前缀匹配精确到 token（fs ls ≠ fs lsx）', () => {
-    assert.equal(isReadOnlyEtscliArgv(['fs', 'ls']), true)
-    assert.equal(isReadOnlyEtscliArgv(['fs', 'ls', '--parent', '/tmp']), true)
-    assert.equal(isReadOnlyEtscliArgv(['fs', 'lsx']), false)
-    assert.equal(isReadOnlyEtscliArgv(['file', 'upload']), false)
+    assert.equal(isReadOnlyEtscliArgv(['fs', 'ls'], ETSCLI_READONLY_ARGV, ETSCLI_READONLY_ARGV), true)
+    assert.equal(isReadOnlyEtscliArgv(['fs', 'ls', '--parent', '/tmp'], ETSCLI_READONLY_ARGV, ETSCLI_READONLY_ARGV), true)
+    assert.equal(isReadOnlyEtscliArgv(['fs', 'lsx'], ETSCLI_READONLY_ARGV, ETSCLI_READONLY_ARGV), false)
+    assert.equal(isReadOnlyEtscliArgv(['file', 'upload'], ETSCLI_READONLY_ARGV, ETSCLI_READONLY_ARGV), false)
   })
 })
 
@@ -104,7 +104,7 @@ describe('§7.120 — 写子命令被拦下', () => {
   })
 
   it('拒绝理由里点名了子命令与可用清单（模型看得懂怎么改）', () => {
-    const v = evaluateEtscliShellCommand('etscli file upload /tmp/x')
+    const v = evaluateEtscliShellCommand('etscli file upload /tmp/x', { allowlist: ETSCLI_READONLY_ARGV })
     assert.ok(v.reason?.includes('file upload'))
     assert.ok(v.reason?.includes('auth list'))
   })
@@ -154,36 +154,36 @@ describe('§7.120 — 分词器', () => {
 
 describe('§7.120 — 工具执行判定（tools/pre-execute 监听器用）', () => {
   it('bash 里调写子命令 → 判拒', () => {
-    const v = evaluateEtscliToolCall({ name: 'bash', arguments: { command: 'etscli file upload /tmp/x' } })
+    const v = evaluateEtscliToolCall({ name: 'bash', arguments: { command: 'etscli file upload /tmp/x' } }, { allowlist: ETSCLI_READONLY_ARGV })
     assert.equal(v.denied, true)
     assert.ok(typeof v.reason === 'string' && v.reason.length > 0)
   })
 
   it('bash 里调只读子命令 → 不拦', () => {
-    const v = evaluateEtscliToolCall({ name: 'bash', arguments: { command: 'etscli fs ls --parent /tmp' } })
+    const v = evaluateEtscliToolCall({ name: 'bash', arguments: { command: 'etscli fs ls --parent /tmp' } }, { allowlist: ETSCLI_READONLY_ARGV })
     assert.equal(v.denied, false)
   })
 
   it('不依赖参数名：所有字符串值都过一遍', () => {
-    assert.equal(evaluateEtscliToolCall({ name: 'bash', arguments: { cmd: 'etscli file upload /tmp/x' } }).denied, true)
-    assert.equal(evaluateEtscliToolCall({ name: 'bash', arguments: { script: ['etscli file upload /tmp/x'] } }).denied, true)
+    assert.equal(evaluateEtscliToolCall({ name: 'bash', arguments: { cmd: 'etscli file upload /tmp/x' } }, { allowlist: ETSCLI_READONLY_ARGV }).denied, true)
+    assert.equal(evaluateEtscliToolCall({ name: 'bash', arguments: { script: ['etscli file upload /tmp/x'] } }, { allowlist: ETSCLI_READONLY_ARGV }).denied, true)
     // 宿主版本的参数字段名会变（arguments / args / input）—— 三个都得认。
-    assert.equal(evaluateEtscliToolCall({ name: 'bash', args: { command: 'etscli fs rm --file-id a' } }).denied, true)
-    assert.equal(evaluateEtscliToolCall({ name: 'bash', input: { command: 'etscli fs rm --file-id a' } }).denied, true)
+    assert.equal(evaluateEtscliToolCall({ name: 'bash', args: { command: 'etscli fs rm --file-id a' } }, { allowlist: ETSCLI_READONLY_ARGV }).denied, true)
+    assert.equal(evaluateEtscliToolCall({ name: 'bash', input: { command: 'etscli fs rm --file-id a' } }, { allowlist: ETSCLI_READONLY_ARGV }).denied, true)
   })
 
   it('技能路径不受影响：skill 工具里的 etscli 文本不拦', () => {
     // 技能走宿主 skill 工具（参数 skillName），脚本内容不在 arguments 里；
     // 即使模型把命令塞进参数，也不该由「shell 逃逸口守卫」来拦。
-    assert.equal(evaluateEtscliToolCall({ name: 'skill', arguments: { skillName: 'ets-file' } }).denied, false)
+    assert.equal(evaluateEtscliToolCall({ name: 'skill', arguments: { skillName: 'ets-file' } }, { allowlist: ETSCLI_READONLY_ARGV }).denied, false)
   })
 
   it('非 shell 工具不拦', () => {
-    assert.equal(evaluateEtscliToolCall({ name: 'read', arguments: { path: '/tmp/etscli file upload' } }).denied, false)
+    assert.equal(evaluateEtscliToolCall({ name: 'read', arguments: { path: '/tmp/etscli file upload' } }, { allowlist: ETSCLI_READONLY_ARGV }).denied, false)
   })
 
   it('拒绝理由与子命令标签不带本地路径', () => {
-    const v = evaluateEtscliToolCall({ name: 'bash', arguments: { command: 'etscli file upload /Users/me/备忘/联系方式.txt' } })
+    const v = evaluateEtscliToolCall({ name: 'bash', arguments: { command: 'etscli file upload /Users/me/备忘/联系方式.txt' } }, { allowlist: ETSCLI_READONLY_ARGV })
     assert.equal(v.denied, true)
     assert.equal(v.subcommand, 'file upload')
     assert.ok(!(v.reason ?? '').includes('联系方式'))
@@ -210,21 +210,21 @@ describe('§7.120 — 注册到宿主（tools/pre-execute waterfall）', () => {
   it('ctx.on 缺失 ⇒ 拒绝启动（逃逸口不能静默敞开）', () => {
     const ctx = { tools: { register() { return () => {} } } } as any
     assert.throws(
-      () => registerEtscliShellGuard(ctx, {}),
+      () => registerEtscliShellGuard(ctx, { allowlist: ETSCLI_READONLY_ARGV }),
       /etscli-shell-guard/,
     )
   })
 
   it('注册成功 ⇒ 返回宿主给的 disposer', () => {
     const { ctx, listeners, disposer } = fakeCtx()
-    const out = registerEtscliShellGuard(ctx, {})
+    const out = registerEtscliShellGuard(ctx, { allowlist: ETSCLI_READONLY_ARGV })
     assert.equal(out, disposer)
     assert.equal(listeners.length, 1)
   })
 
   it('写子命令 ⇒ deny + 拒绝理由（工具不派发）', async () => {
     const { ctx, listeners } = fakeCtx()
-    registerEtscliShellGuard(ctx, {})
+    registerEtscliShellGuard(ctx, { allowlist: ETSCLI_READONLY_ARGV })
     let nextCalled = false
     const decision = await listeners[0]!(
       { name: 'bash', arguments: { command: 'etscli file upload /tmp/x' } },
@@ -237,7 +237,7 @@ describe('§7.120 — 注册到宿主（tools/pre-execute waterfall）', () => {
 
   it('只读子命令 ⇒ 放行且必须调用 next（不能截断宿主链条）', async () => {
     const { ctx, listeners } = fakeCtx()
-    registerEtscliShellGuard(ctx, {})
+    registerEtscliShellGuard(ctx, { allowlist: ETSCLI_READONLY_ARGV })
     let nextCalled = false
     const decision = await listeners[0]!(
       { name: 'bash', arguments: { command: 'etscli fs ls --parent /tmp' } },
@@ -250,7 +250,7 @@ describe('§7.120 — 注册到宿主（tools/pre-execute waterfall）', () => {
   it('被拒时回调带出工具名与子命令（证据要落）', async () => {
     const { ctx, listeners } = fakeCtx()
     const seen: Array<{ tool: string; subcommand: string }> = []
-    registerEtscliShellGuard(ctx, { onDeny: d => seen.push({ tool: d.tool, subcommand: d.subcommand }) })
+    registerEtscliShellGuard(ctx, { allowlist: ETSCLI_READONLY_ARGV, onDeny: d => seen.push({ tool: d.tool, subcommand: d.subcommand }) })
     await listeners[0]!(
       { name: 'bash', arguments: { command: 'etscli file upload /tmp/x' } },
       async () => ({ kind: 'allow' }),

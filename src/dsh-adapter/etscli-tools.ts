@@ -52,7 +52,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
 import { loadEdgeConfig } from './edge-config.js'
-import { registerEtscliShellGuard } from './etscli-shell-guard.js'
+import { registerEtscliShellGuard, SHELL_TOOL_NAMES } from './etscli-shell-guard.js'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Structural types (loose coupling — see module header)
@@ -412,6 +412,9 @@ export async function apply(ctx: Context, config: Config): Promise<() => void> {
   })()
 
   const guardDisposer = registerEtscliShellGuard(ctx, {
+    // 白名单由本模块提供 —— 它是从注册表派生的那份，守卫只拿到它、不自己
+    // 造一份（单一事实源）。守卫模块**不 import** 本模块（否则成环）。
+    allowlist: ETSCLI_READONLY_ARGV,
     bin: config.etscliBin,
     onDeny: denial => {
       // 证据必须留：ops log 里「tool allow」是 realm 过滤那一层的放行，
@@ -432,6 +435,18 @@ export async function apply(ctx: Context, config: Config): Promise<() => void> {
       })?.catch?.(() => {})
     },
   })
+
+  // 「闸门上膛了」这件事本身要能被看见：只记拒绝行的话，"守卫没装上" 和
+  // "守卫装上了但这次没人触发" 在日志里长得一模一样。启动行把**白名单规模**
+  // 与**机制落点**写出来 —— 排查时第一眼就能确认是哪一道闸在管。
+  //
+  // 只记启动行 + 拒绝行，**不记放行行**：放行是每一次 bash 调用都会有的常规
+  // 流量，逐条落盘只会把真正的拒绝行淹掉（realm 闸门那层已经在逐次记
+  // tool allow/deny，两层合起来就够复原「这次到底执行没执行」）。
+  ctx.logger?.info?.(
+    `[etscli-shell-guard] armed on tools/pre-execute, read-only allowlist=${ETSCLI_READONLY_ARGV.length} ` +
+    `bin=${config.etscliBin} shellTools=${SHELL_TOOL_NAMES.join('/')}`,
+  )
 
   for (const spec of ETSCLI_TOOL_SPECS) {
     // 重复注册同名会 throw 并中断整个 apply()(NamedEntries,dsh-tools `lib/index.js:2538`),

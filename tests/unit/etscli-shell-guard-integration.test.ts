@@ -28,6 +28,7 @@ import { Context } from '@deepseek-ai/cordis'
 import { ToolRuntime, defineTool } from '@deepseek-ai/dsh-tools'
 
 import { registerEtscliShellGuard } from '../../src/dsh-adapter/etscli-shell-guard'
+import { ETSCLI_READONLY_ARGV } from '../../src/dsh-adapter/etscli-tools'
 
 /**
  * 真 cordis + 真 ToolRuntime。
@@ -83,6 +84,7 @@ describe('§7.120 — 真运行时：write 子命令被真 ToolRuntime 拦下', 
     const { ctx, tools, dispatched } = harness()
     const denials: Array<{ tool: string; subcommand: string }> = []
     registerEtscliShellGuard(ctx as any, {
+      allowlist: ETSCLI_READONLY_ARGV,
       onDeny: d => denials.push({ tool: d.tool, subcommand: d.subcommand }),
     })
 
@@ -99,7 +101,7 @@ describe('§7.120 — 真运行时：write 子命令被真 ToolRuntime 拦下', 
 
   it('只读子命令 ⇒ 照常派发（不误伤）', async () => {
     const { ctx, tools, dispatched } = harness()
-    registerEtscliShellGuard(ctx as any, {})
+    registerEtscliShellGuard(ctx as any, { allowlist: ETSCLI_READONLY_ARGV })
 
     const result = await runBash(tools, 'etscli fs ls --parent /tmp')
 

@@ -17447,7 +17447,20 @@ vitest **1516 passed** · eslint **0 error**（59 warning 既有）· 双侧 `ts
 本体**（聊天记录），插件既不该改写也不改写得了（改了就等于篡改用户原话）。
 主对话的**回复**在两处都是掩码形态。
 
-### 五、门禁
+### 五、顺带两处收紧
+
+1. **依赖方向理直**：`etscli-tools → etscli-shell-guard → etscli-tools` 是个环
+   （白名单在 tools 侧、守卫在 guard 侧）。环在这里恰好不炸（两边都在函数体里
+   用对方），但那是**求值顺序的运气**。⇒ 白名单改成**由调用方以 `allowlist`
+   参数传入**（单一事实源不变：仍是注册表派生那份），守卫模块不再 import
+   `etscli-tools.ts`。
+2. **「闸门上膛了」要能被看见**：只记拒绝行的话，"守卫没装上" 和 "守卫装上了
+   但这次没人触发" 在日志里长得一模一样。⇒ 启动时记一行
+   `[etscli-shell-guard] armed on tools/pre-execute, read-only allowlist=14 bin=… shellTools=bash/pwsh`。
+   **不记放行行**（每次 bash 调用都记会淹掉真正的拒绝行；realm 闸门那层已经在
+   逐次记 tool allow/deny）。
+
+### 六、门禁
 
 vitest **1543 passed | 2 skipped**（76 文件，比上轮 +27）· eslint **0 error**
 （59 warning 既有）· 双侧 `tsc` OK · `verify:build` **exit=0（25 项）** ·
