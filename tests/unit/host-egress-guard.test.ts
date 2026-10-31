@@ -334,3 +334,80 @@ describe('§7.151 — 实机形状回归（2026-10-29 16:04 那一轮）', () =>
     assert.ok(texts(plan!.messages).includes('查询下AI新闻'))
   })
 })
+
+/**
+ * §7.164 —— 守卫层：历史轮里「云在前、本地在后」的真实形状
+ *
+ * ## 这条为什么存在
+ *
+ * §7.151 的实机回归（上一节）那条会话里，每一轮都是**纯**云段或**纯**本地段，
+ * 所以「一轮内翻路由」的形状没被覆盖到。
+ *
+ * 真实会话数据里**确实有**这种轮次（provider 顺序
+ * `qwen-token-plan-cn → qwen-token-plan-cn → local-llm → …`）：旧口径按「第一
+ * 条 assistant 的 provider」整轮归云 ⇒ 整轮保留 ⇒ 本地模型的回答 + 本地工具
+ * 输出跟着上云，且因为 `droppedCount === 0`，**守卫连裁剪都不触发**
+ * （`planHostEgress` 返回 undefined，请求原样出网）。
+ *
+ * 这一条钉住守卫层的结果：守卫必须给出裁剪结果，且本地内容必须不在出网的那份里。
+ */
+describe('§7.164 — 守卫层：历史轮的云→本地混合形状', () => {
+  const CLOUD = 'qwen-token-plan-cn'
+  const LOCAL = 'local-llm'
+
+  function user(text: string, kind = 'user'): EgressMessage {
+    return { role: 'user', content: [{ type: 'text', text }], source: { kind } }
+  }
+  function asst(provider: string, text: string): EgressMessage {
+    return { role: 'assistant', content: [{ type: 'text', text }], source: { kind: 'model', provider, model: 'm' } }
+  }
+  function tool(text: string): EgressMessage {
+    return { role: 'tool', content: [{ type: 'text', text }], source: { kind: 'tool', callId: 'c1' } }
+  }
+
+  /** 真实形状：同一轮里先云后本地。 */
+  function mixedTurnHistory(): EgressMessage[] {
+    return [
+      user('第一轮用户输入'),
+      asst(CLOUD, '云回答 1'),
+      asst(CLOUD, '云回答 2'),
+      asst(LOCAL, '本地模型的回答'),
+      tool('本地工具的输出'),
+      user('当前轮用户输入'),
+    ]
+  }
+
+  it('守卫必须给出裁剪结果（旧口径下这里会返回 undefined —— 压根不裁）', () => {
+    const plan = planHostEgress(mixedTurnHistory(), [LOCAL])
+    assert.ok(plan, '历史轮里有本地产出 ⇒ 必须触发裁剪')
+    assert.equal(plan!.droppedCount, 2)
+  })
+
+  it('本地模型的回答与本地工具输出都不在出网的那份里', () => {
+    const plan = planHostEgress(mixedTurnHistory(), [LOCAL])
+    const kept = texts(plan!.messages)
+    assert.ok(!kept.includes('本地模型的回答'), '本地模型输出绝不能上云')
+    assert.ok(!kept.includes('本地工具的输出'), '本地工具输出绝不能上云')
+    // 云段前缀与当前轮输入照常保留
+    assert.ok(kept.includes('云回答 1'))
+    assert.ok(kept.includes('云回答 2'))
+    assert.ok(kept.includes('当前轮用户输入'))
+  })
+
+  it('守卫走真实入口（provider=宿主自选模型）时同样拦得住', () => {
+    const guard = new HostEgressGuard({
+      reflect: { provide() { return () => {} } },
+      provide() { return () => {} },
+    } as any)
+    const plan = guard.plan({
+      provider: CLOUD,
+      model: 'deepseek-v4.1-flash',
+      messages: mixedTurnHistory(),
+    })
+    assert.ok(plan, '宿主原生 provider 的出网必须被裁')
+    assert.equal(plan!.droppedCount, 2)
+    const kept = texts(plan!.messages)
+    assert.ok(!kept.includes('本地模型的回答'))
+    assert.ok(!kept.includes('本地工具的输出'))
+  })
+})

@@ -114,11 +114,36 @@ export function isUserInputMessage(message: EgressMessage): boolean {
 /**
  * 切分消息流，标出每一段（轮次）的归属。
  *
- * 轮次起点 = 真实用户输入消息。每一段的归属 = 该段内**第一条** assistant 消息的
- * `source.provider`；本轮（最后一段）还没有 assistant 消息 → 用 `currentSegment`。
+ * 轮次起点 = 真实用户输入消息。段起点之前的消息（理论上只有 system / 早期注入）
+ * 不属于任何轮次 → `null`，保留（它们不是会话历史，是运行时上下文）。
  *
- * 段起点之前的消息（理论上只有 system / 早期注入）不属于任何轮次 → `null`，
- * 保留（它们不是会话历史，是运行时上下文）。
+ * ## 每一轮怎么判归属（§7.164 修订）
+ *
+ * 判据只有一条：**这条内容真的上过云吗？** 上过才带。
+ *
+ * | 轮次形状 | 归属 |
+ * |---|---|
+ * | 整轮都是云端产出 | 云段 —— 全带 |
+ * | 整轮都是本地/未知池产出 | 本地段 —— 整轮丢（含该轮用户输入） |
+ * | **云在前、本地在后**（同一轮内路由翻转）| 云前缀带、从本地产出起全丢 |
+ * | 本轮（正在出网的这一轮）| 按出网目标归属；出现本地产出则从它起全丢 |
+ *
+ * ### 为什么「云在前、本地在后」必须切（§7.164 实测发现的泄漏）
+ *
+ * 旧口径：非当前轮的归属 = 该轮**第一条** assistant 的 provider ⇒ 一轮里只要
+ * 第一条是云，**整轮**都算云段 —— 于是同一轮里本地模型产出的回答、以及它之后
+ * 的本地工具输出，会被后续出网请求原样带走。
+ *
+ * 实测形状（真实会话 `session-bd598cb9-…`，provider 顺序
+ * `qwen-token-plan-cn → qwen-token-plan-cn → local-llm → …`）⇒ 旧口径下
+ * `kept 5 / dropped 0`，裁剪**根本没触发**（`planHostEgress` 见
+ * `droppedCount === 0` 就返回 undefined）。本地模型的回答 + 本地工具输出跟着
+ * 上云。
+ *
+ * 修法：非当前轮也按「出现本地产出即从它起切开」处理 —— 云段前缀（真的上过云的
+ * 那部分）留下，本地产出起（含其后的工具结果）全部拦下。
+ *
+ * 纯本地轮（本地产出在前）仍整轮丢：那一轮的用户输入只到过本地池，没上过云。
  */
 export function planCloudEgress(
   messages: readonly EgressMessage[],
@@ -145,36 +170,60 @@ export function planCloudEgress(
     const start = turnStarts[t]!
     const end = t + 1 < turnStarts.length ? turnStarts[t + 1]! : list.length
     const isCurrent = t === turnStarts.length - 1
-    let segment: EgressSegment | undefined
-    let cut = -1
+
+    // 本轮内的三条事实（一次扫描得出）：
+    // - firstLocal：本轮**第一条**本地/未知池产出的 assistant 下标（-1 = 没有）
+    // - cloudBeforeLocal：firstLocal 之前是否出现过云端产出
+    //   （= 这一轮的用户输入真的被送到云端过）
+    // - hasAssistant：本轮有没有任何 assistant 产出
+    let firstLocal = -1
+    let cloudBeforeLocal = false
+    let hasAssistant = false
     for (let i = start; i < end; i++) {
       const m = list[i]!
-      if (m.role === 'assistant' && m.source?.kind === 'model') {
-        const seg = providerSegment(m.source.provider, localProviders)
-        // §7.151 (2026-10-29): 本轮里出现**本地/未知池产出**的 assistant 消息
-        // （同一轮内路由从 LOCAL 翻到 CLOUD 的那一步）⇒ 从它起（含其后的工具
-        // 结果）全部拦下：本地产出的内容不上云。
-        //
-        // 为什么不能整轮丢：整轮丢会把本轮的**当前用户输入**一起丢掉 —— 那是
-        // 「当前内容」，本来就该出网（裁决：当前内容出网前脱敏）。丢了它，云端
-        // 模型收到的是一个没有问题的请求。
-        if (isCurrent && (seg === 'local' || seg === 'unknown')) {
-          cut = i
-          break
-        }
-        if (segment === undefined) segment = seg
+      if (m.role !== 'assistant' || m.source?.kind !== 'model') continue
+      hasAssistant = true
+      const seg = providerSegment(m.source.provider, localProviders)
+      if (seg === 'cloud') {
+        if (firstLocal < 0) cloudBeforeLocal = true
+        continue
       }
+      if (firstLocal < 0) firstLocal = i
     }
-    if (cut >= 0) {
-      // 本轮前缀（当前用户输入 + 之前的云段内容）→ 按出网目标的段归属。
-      for (let i = start; i < cut; i++) segments[i] = options.currentSegment
-      // 本地产出的部分 → 拦下。
-      for (let i = cut; i < end; i++) segments[i] = 'local'
+
+    if (firstLocal < 0) {
+      // 本轮没有任何本地产出 ⇒ 整轮是云段。
+      // 本轮（正在出网的这一轮）还没有 assistant 消息时，归属由出网目标决定。
+      const segment = hasAssistant ? 'cloud' : options.currentSegment
+      for (let i = start; i < end; i++) segments[i] = segment
       continue
     }
-    // 本轮尚未产生 assistant 消息 → 归属由出网目标决定。
-    if (segment === undefined) segment = options.currentSegment
-    for (let i = start; i < end; i++) segments[i] = segment
+
+    if (isCurrent) {
+      // §7.151：当前轮里出现本地产出 ⇒ 从它起（含其后的工具结果）全部拦下。
+      //
+      // 为什么不能整轮丢：整轮丢会把本轮的**当前用户输入**一起丢掉 —— 那是
+      // 「当前内容」，本来就该出网（裁决：当前内容出网前脱敏）。丢了它，云端
+      // 模型收到的是一个没有问题的请求。
+      for (let i = start; i < firstLocal; i++) segments[i] = options.currentSegment
+      for (let i = firstLocal; i < end; i++) segments[i] = 'local'
+      continue
+    }
+
+    if (cloudBeforeLocal) {
+      // §7.164：历史轮里的「云在前、本地在后」形状 —— 云前缀（真上过云）留下，
+      // 从本地产出起（含其后的工具结果）全部拦下。
+      //
+      // 旧口径按「第一条 assistant 的 provider」整轮归云 ⇒ 本地模型的回答和本地
+      // 工具输出会跟着下一次出网请求上云（实测 + 真实会话数据都证实过）。
+      for (let i = start; i < firstLocal; i++) segments[i] = 'cloud'
+      for (let i = firstLocal; i < end; i++) segments[i] = 'local'
+      continue
+    }
+
+    // 纯本地轮（本地产出在前，没有云段前缀）⇒ 整轮拦下，含该轮的用户输入：
+    // 那一轮的内容只到过本地池，没上过云。
+    for (let i = start; i < end; i++) segments[i] = 'local'
   }
 
   const kept: EgressMessage[] = []

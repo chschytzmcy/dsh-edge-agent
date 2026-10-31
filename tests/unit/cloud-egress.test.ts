@@ -310,3 +310,102 @@ describe('§7.131 — provider 分布观测（审计用）', () => {
     assert.deepEqual(assistantProviderHistogram([]), {})
   })
 })
+
+/**
+ * §7.164 —— 历史轮里「云在前、本地在后」的混合形状
+ *
+ * ## 这条为什么存在
+ *
+ * 旧口径：非当前轮的归属 = 该轮**第一条** assistant 的 provider。一轮里只要第一
+ * 条是云，**整轮**都算云段 ⇒ 同一轮里本地模型产出的回答、以及它之后的本地工具
+ * 输出，会被后续出网请求原样带走。
+ *
+ * 实测（用编译产物跑 `planCloudEgress`）：
+ *
+ * ```
+ * 输入：user(第一轮) → assistant(qwen-token-plan-cn) → assistant(local-llm)
+ *       → tool(本地工具输出) → user(当前轮)
+ * 结果：kept 5 条、dropped 0 条 ⇒ 整段保留，连裁剪都没触发
+ * ```
+ *
+ * 真实会话数据也证实过这个形状可达（provider 顺序
+ * `qwen-token-plan-cn → qwen-token-plan-cn → local-llm → …`）。
+ *
+ * ## 修好之后的口径
+ *
+ * 历史轮里出现本地产出 ⇒ 从它起（含其后的工具结果）全部拦下；云段前缀留下
+ * （那一部分真的上过云）。
+ */
+describe('§7.164 — 历史轮里的云→本地混合形状', () => {
+  it('非当前轮的本地产出（及其后的工具结果）被拦下', () => {
+    const messages = [
+      userMsg('第一轮用户输入'),
+      assistantMsg('qwen-token-plan-cn', '云回答 1'),
+      assistantMsg('local-llm', '本地模型的回答'),
+      toolMsg('本地工具的输出'),
+      userMsg('当前轮用户输入'),
+    ]
+    const plan = planCloudEgress(messages, { currentSegment: 'cloud' })
+    assert.deepEqual(texts(plan.kept), [
+      '第一轮用户输入', '云回答 1', '当前轮用户输入',
+    ])
+    assert.equal(plan.droppedCount, 2)
+  })
+
+  it('反向证伪：云段前缀必须留下（那部分真的上过云，丢了就是误伤）', () => {
+    const messages = [
+      userMsg('第一轮用户输入'),
+      assistantMsg('qwen-token-plan-cn', '云回答 1'),
+      assistantMsg('local-llm', '本地模型的回答'),
+      userMsg('当前轮用户输入'),
+    ]
+    const plan = planCloudEgress(messages, { currentSegment: 'cloud' })
+    const kept = texts(plan.kept)
+    assert.ok(kept.includes('云回答 1'), '云段前缀不能被误伤')
+    assert.ok(kept.includes('第一轮用户输入'), '该轮用户输入随云段请求上过云')
+    assert.ok(!kept.includes('本地模型的回答'), '本地产出绝不能上云')
+  })
+
+  it('混合轮里的纯云段轮次不受影响（前后夹着的云轮照常保留）', () => {
+    const messages = [
+      userMsg('纯云轮输入'),
+      assistantMsg('qwen-token-plan-cn', '纯云轮回答'),
+      userMsg('混合轮输入'),
+      assistantMsg('qwen-token-plan-cn', '混合轮的云回答'),
+      assistantMsg('local-llm', '混合轮的本地回答'),
+      toolMsg('混合轮的本地工具输出'),
+      userMsg('当前轮用户输入'),
+    ]
+    const plan = planCloudEgress(messages, { currentSegment: 'cloud' })
+    assert.deepEqual(texts(plan.kept), [
+      '纯云轮输入', '纯云轮回答',
+      '混合轮输入', '混合轮的云回答',
+      '当前轮用户输入',
+    ])
+    assert.equal(plan.droppedCount, 2)
+  })
+
+  it('本地产出排在云段之前 ⇒ 整轮拦下（那一轮只到过本地池）', () => {
+    const messages = [
+      userMsg('本地轮输入'),
+      assistantMsg('local-llm', '本地回答'),
+      assistantMsg('qwen-token-plan-cn', '后到的云回答'),
+      userMsg('当前轮用户输入'),
+    ]
+    const plan = planCloudEgress(messages, { currentSegment: 'cloud' })
+    assert.deepEqual(texts(plan.kept), ['当前轮用户输入'])
+    assert.equal(plan.droppedCount, 3)
+  })
+
+  it('当前轮的混合形状口径不变（§7.151）：本地起全丢、当前用户输入保留', () => {
+    const messages = [
+      userMsg('当前轮用户输入'),
+      assistantMsg('qwen-token-plan-cn', '本轮的云回答'),
+      assistantMsg('local-llm', '本轮后来切到本地的回答'),
+      toolMsg('本地工具输出'),
+    ]
+    const plan = planCloudEgress(messages, { currentSegment: 'cloud' })
+    assert.deepEqual(texts(plan.kept), ['当前轮用户输入', '本轮的云回答'])
+    assert.equal(plan.droppedCount, 2)
+  })
+})
