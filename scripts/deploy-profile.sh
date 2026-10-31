@@ -141,8 +141,23 @@ fi
 "$DSH_BIN" plugin --profile "$PROFILE" add "file:$TARBALL" >/dev/null 2>&1 \
   || { echo "error: dsh plugin add failed" >&2; exit 1; }
 rm -rf "$PROFILE_DIR/node_modules/.ignored/@deepseek-harness-edge-agent"
+# The mv-aside trick is NOT enough: pnpm keys its content store by the file:
+# SPEC PATH + version, and our version string never changes (0.1.1-desktop-safe
+# / 0.1.1-full), so a rebuilt tarball at the same path "reuses" the OLD bytes
+# (measured 2026-10-30: the §7.153 array-form patch fix never reached the live
+# profile — `reused 1` + an extraction dated three days earlier). Override the
+# install dir with the bytes of THIS tarball, bypassing every pnpm cache layer.
+TMPX="$(mktemp -d)"
+tar -xzf "$TARBALL" -C "$TMPX"
+rm -rf "$NESTED"
+mv "$TMPX/package" "$NESTED"
+rmdir "$TMPX"
+# Drift guard: what landed in the profile must equal what we packaged.
+if ! diff <(tar -xzf "$TARBALL" -O package/package.json) "$NESTED/package.json" >/dev/null; then
+  echo "error: installed package.json diverges from the tarball" >&2; exit 1
+fi
 [ -d "$NESTED/lib" ] || { echo "error: bundle not installed at $NESTED" >&2; exit 1; }
-echo "        installed: $NESTED"
+echo "        installed: $NESTED (bytes forced from tarball, package.json drift-checked)"
 
 # ── 4. shipped runtime config ──────────────────────────────────────────
 echo "==> [4/5] runtime config"
