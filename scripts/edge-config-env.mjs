@@ -112,7 +112,7 @@ push('DSH_EDGE_INTENT_JEV_ENABLED', jev.enabled)
 push('DSH_EDGE_INTENT_JEV_URL', jev.url)
 push('DSH_EDGE_INTENT_JEV_TIMEOUT_MS', jev.timeoutMs)
 push('DSH_EDGE_INTENT_JEV_CONFIDENCE_THRESHOLD', jev.confidenceThreshold)
-// 方向分闸的 LOCAL 侧门（§7.155 接线）：LOCAL 倾向的判决用低门即采纳。
+// 方向分闸的 LOCAL 侧门（§7.163 接线）：LOCAL 倾向的判决用低门即采纳。
 push('DSH_EDGE_INTENT_JEV_LOCAL_ADOPT_FLOOR', jev.localAdoptFloor)
 push('DSH_EDGE_INTENT_JEV_RISK_THRESHOLD', jev.riskThreshold)
 // Breaker / boot-probe knobs — the plugin side consumes these names

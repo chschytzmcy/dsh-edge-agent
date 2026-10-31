@@ -1,4 +1,4 @@
-// §7.155 — 配置接线回归：jev.localAdoptFloor 与 checkOutput 的输出侧兜底。
+// §7.163 — 配置接线回归：jev.localAdoptFloor 与 checkOutput 的输出侧兜底。
 //
 // 这两项此前都是「配置面已声明、运行时没接线」：
 //   1. jev.localAdoptFloor —— edge-config.ts 声明了类型、edge.example.json
@@ -28,7 +28,7 @@ function makeCtx(extra: Record<string, unknown> = {}): any {
   }
 }
 
-describe('§7.155 jev.localAdoptFloor 配置接线', () => {
+describe('§7.163 jev.localAdoptFloor 配置接线', () => {
   it('配置文件里的 localAdoptFloor 到达运行时 config(此前被静默忽略)', async () => {
     const config: Record<string, unknown> = {
       defaultCategory: 'LOCAL',
@@ -66,7 +66,7 @@ describe('§7.155 jev.localAdoptFloor 配置接线', () => {
   })
 })
 
-describe('§7.155 input-guard 输出侧 PII 掩码兜底', () => {
+describe('§7.163 input-guard 输出侧 PII 掩码兜底', () => {
   const PII_TEXT = '你的手机号是 13812345678'
 
   /** 造一个只有 promptGuard + auditLog 的 input-guard 实例。 */
@@ -74,7 +74,7 @@ describe('§7.155 input-guard 输出侧 PII 掩码兜底', () => {
     checkOutput: (text: string, ctx?: { sanitized?: boolean }) => Promise<{ filtered: string; redacted: Array<{ type: string; masked: string }> }>
     state?: Record<string, unknown>
   }) {
-    // 审计条目收集器：§7.155 实机复盘发现「掩码执行了但没留审计」，
+    // 审计条目收集器：§7.163 实机复盘发现「掩码执行了但没留审计」，
     // 根因就是没断言这条 —— 这里把它变成可断言的对象。
     const auditEntries: Array<{ kind: string; level: string; payload: Record<string, unknown> }> = []
     const ctx: any = makeCtx({

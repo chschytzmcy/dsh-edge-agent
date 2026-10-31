@@ -227,7 +227,7 @@ interface StreamChunkLike {
 }
 
 /**
- * §7.155: 输出侧 PII 掩码的「尾部待定区」长度（字符）。
+ * §7.163: 输出侧 PII 掩码的「尾部待定区」长度（字符）。
  *
  * 流式输出可能把一个 PII 切成多块（手机号断成两块时，两块单独看都匹配不
  * 上 11 位数字的正则），逐块掩码就会漏。所以保留尾部一段待定，只对更早的
@@ -1985,7 +1985,7 @@ export class InputGuardServiceImpl extends Service {
       return this.dispatchTrimmed(options, egress, state)
     }
 
-    // §7.155: 只有「脱敏会话」需要 sanitizer 做 desanitize；未脱敏会话的
+    // §7.163: 只有「脱敏会话」需要 sanitizer 做 desanitize；未脱敏会话的
     // 输出掩码兜底不需要它。所以这个早退只挡「要 desanitize 却没 sanitizer」
     // 这一种情况 —— 否则掩码兜底会被 sanitizer 的存在与否绑住（生产里
     // 两者总是一起出现，但绑住没有道理）。
@@ -2006,7 +2006,7 @@ export class InputGuardServiceImpl extends Service {
       stream = hostRecorder.wrap(stream) as AsyncIterable<StreamChunkLike>
     }
 
-    // §7.155 (2026-10-31): 输出侧 PII 掩码兜底。
+    // §7.163 (2026-10-31): 输出侧 PII 掩码兜底。
     //
     // 背景：input-guard 迁移（eaec70b）时声明要把 http-api 的
     // prompt-guard.checkOutput 一起搬过来，但只搬了 desanitize —— 掩码侧
@@ -2047,7 +2047,7 @@ export class InputGuardServiceImpl extends Service {
       /**
        * 掩码一段文本，并把「掩了几条、哪几类」记进审计。
        *
-       * §7.155 实机复盘（10-31）：最初只在 text-delta 的 head 分支记审计，
+       * §7.163 实机复盘（10-31）：最初只在 text-delta 的 head 分支记审计，
        * 而实机上真正执行掩码的常常是 **block-end** 那条（短回复走不到 head
        * 分支）⇒ 面板上看不到任何掩码记录，事实与记录不符。现在三条路径
        * （delta head / block-end 的待定区 / block-end 的 block.text / 流尾
