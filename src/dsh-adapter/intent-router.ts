@@ -3141,6 +3141,11 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
     fill('jevTimeoutMs', jev.timeoutMs)
     fill('jevConfidenceThreshold', jev.confidenceThreshold)
     fill('jevRiskThreshold', jev.riskThreshold)
+    // 方向分闸：LOCAL 倾向的判决用低门（默认本地，不落 LLM），
+    // 非 LOCAL 仍走 jevConfidenceThreshold（出网要严门）。
+    // 这一项在配置面（edge-config.ts / edge.example.json）早已声明，
+    // 但此前漏接线 ⇒ 写了不生效，静默走构造默认值。
+    fill('jevLocalAdoptFloor', jev.localAdoptFloor)
     fill('jevBreakerTtlMs', jev.breakerTtlMs)
     fill('jevBootProbeEnabled', jev.bootProbeEnabled)
     fill('jevBootProbeTimeoutMs', jev.bootProbeTimeoutMs)

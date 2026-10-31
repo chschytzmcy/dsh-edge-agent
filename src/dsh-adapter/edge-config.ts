@@ -577,6 +577,12 @@ const ENV_OVERRIDES: Array<{
     apply: (cfg, v) => { cfg.jev!.confidenceThreshold = Number(v) },
   },
   {
+    // 方向分闸的 LOCAL 侧门：LOCAL 倾向的判决用低门即采纳（默认本地，
+    // 不落 LLM），非 LOCAL 仍走 confidenceThreshold（出网要严门）。
+    env: 'DSH_EDGE_INTENT_JEV_LOCAL_ADOPT_FLOOR',
+    apply: (cfg, v) => { cfg.jev!.localAdoptFloor = Number(v) },
+  },
+  {
     env: 'DSH_EDGE_INTENT_JEV_RISK_THRESHOLD',
     apply: (cfg, v) => { cfg.jev!.riskThreshold = Number(v) },
   },

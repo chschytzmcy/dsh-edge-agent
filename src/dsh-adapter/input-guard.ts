@@ -226,6 +226,20 @@ interface StreamChunkLike {
   [k: string]: unknown
 }
 
+/**
+ * §7.155: 输出侧 PII 掩码的「尾部待定区」长度（字符）。
+ *
+ * 流式输出可能把一个 PII 切成多块（手机号断成两块时，两块单独看都匹配不
+ * 上 11 位数字的正则），逐块掩码就会漏。所以保留尾部一段待定，只对更早的
+ * 安全前缀做掩码。
+ *
+ * 128 覆盖了当前最长的一条 PII 规则：`credential`
+ * （标签最长 `access[ _-]?token` = 17 字符 + 最多 2 个引号/空格 +
+ * 分隔符 + 最多 2 个空格 + 64 位值 ≈ 90）。若将来新增更长的规则，
+ * 这个数要跟着抬 —— 抬小的后果是「跨 chunk 的长 PII 漏出」。
+ */
+const PII_MASK_TAIL_CHARS = 128
+
 declare module '@deepseek-ai/cordis' {
   interface Context {
     inputGuard: InputGuardServiceImpl
@@ -1971,7 +1985,12 @@ export class InputGuardServiceImpl extends Service {
       return this.dispatchTrimmed(options, egress, state)
     }
 
-    if (!this.sanitizer) return next()
+    // §7.155: 只有「脱敏会话」需要 sanitizer 做 desanitize；未脱敏会话的
+    // 输出掩码兜底不需要它。所以这个早退只挡「要 desanitize 却没 sanitizer」
+    // 这一种情况 —— 否则掩码兜底会被 sanitizer 的存在与否绑住（生产里
+    // 两者总是一起出现，但绑住没有道理）。
+    const needsDesanitize = state.sanitized === true && state.replacements > 0
+    if (needsDesanitize && !this.sanitizer) return next()
 
     let stream = next()
 
@@ -1987,9 +2006,139 @@ export class InputGuardServiceImpl extends Service {
       stream = hostRecorder.wrap(stream) as AsyncIterable<StreamChunkLike>
     }
 
-    if (!state.sanitized || state.replacements === 0) return stream
+    // §7.155 (2026-10-31): 输出侧 PII 掩码兜底。
+    //
+    // 背景：input-guard 迁移（eaec70b）时声明要把 http-api 的
+    // prompt-guard.checkOutput 一起搬过来，但只搬了 desanitize —— 掩码侧
+    // 留在 http-api 的旧位置，随后随 http-api 瘦身被删掉 ⇒ checkOutput
+    // 成了死代码。后果：state.sanitized=false 的会话（LOCAL-only，或 CLOUD
+    // 但本轮没命中任何 PII）的**输出**一路直通，不经任何掩码。
+    //
+    // 审计层（audit-log）与存储层（local-storage）另有 redactObject 兜底，
+    // 但用户可见的输出（面板、客户端、SSE）没有 —— 这条缺口就是这里补的。
+    //
+    // 语义与迁移前一致：
+    //   sanitized=true  → 本轮发生过 sanitizer 脱敏，输出里的 PII 是
+    //                      desanitize **还原**出来的原文 ⇒ 跳过掩码，
+    //                      否则会把刚还给用户的 PII 又遮掉。
+    //   sanitized=false → 没有还原发生过 ⇒ 对输出做不可逆掩码。
+    //
+    // 跨 chunk：PII 可能被流式切成多块（手机号断成两块时各自都匹配不上），
+    // 所以逐块掩码会漏。这里用「尾部待定区」策略：保留尾部
+    // PII_MASK_TAIL_CHARS 个字符待定，只对更早的安全前缀做掩码。
+    // 128 覆盖了最长的一条规则（credential：标签 + 分隔符 + 64 位值 ≈ 90）。
+    //
+    // 位置：必须在「没脱敏就直通」的早退**之后** —— 脱敏会话的输出要交给
+    // desanitize 还原，不能走这条掩码路径。
+    if (!needsDesanitize) {
+      if (!this.promptGuard?.checkOutput) return stream
 
+      const maskGuard = this.promptGuard
+      const maskAudit = this.auditLog
+      const maskSessionId = state.sessionId
+      // 迁移前 http-api 的原始写法是 `wasSanitized = !!sanitizationInfo`，
+      // 即「本轮发生过脱敏替换 ⇒ 输出里的 PII 是 desanitize 还原出来的
+      // 原文 ⇒ 跳过掩码」。这里落在掩码分支里 ⇒ 恒为 false（没脱敏过）。
+      const wasSanitized = false
+      const maskBuffer = { value: '' }
+      // 最近一个 text-delta 的 block index —— 补发待定区时要带上它，
+      // 否则宿主 BlockAssembler 会把补发的文本算成另一个 block。
+      let lastTextIndex: unknown = undefined
+      const masked = (async function* (): AsyncIterable<StreamChunkLike> {
+        try {
+          for await (const chunk of stream) {
+            if (chunk.type === 'text-delta' && typeof chunk.text === 'string' && chunk.text.length > 0) {
+              lastTextIndex = chunk.index
+              maskBuffer.value += chunk.text
+              // 待定区不足一个安全前缀长度时先攒着，避免把半个 PII 放出去。
+              if (maskBuffer.value.length <= PII_MASK_TAIL_CHARS) continue
+              const cut = maskBuffer.value.length - PII_MASK_TAIL_CHARS
+              const head = maskBuffer.value.slice(0, cut)
+              maskBuffer.value = maskBuffer.value.slice(cut)
+              const filtered = await maskGuard.checkOutput!(head, { sanitized: wasSanitized })
+              if (filtered.redacted.length > 0 && maskAudit) {
+                void maskAudit.log({
+                  level: 'info',
+                  kind: 'input-guard.output.masked',
+                  source: 'input-guard',
+                  payload: {
+                    sessionId: maskSessionId,
+                    count: filtered.redacted.length,
+                    types: [...new Set(filtered.redacted.map((r) => r.type))],
+                  },
+                }).catch(() => {})
+              }
+              if (filtered.filtered.length > 0) {
+                yield { ...chunk, text: filtered.filtered }
+              }
+              continue
+            }
+            if (chunk.type === 'block-end') {
+              // block-end 带完整 block.text（宿主的 BlockAssembler 以它为准，
+              // delta 只是增量路径）。所以待定区在 block-end 之前补发成
+              // text-delta —— 只看 delta 的消费方才不会丢掉这一段 ——
+              // 而 block.text 本身也整段过一遍掩码。
+              const block = chunk.block as { type?: string; text?: string } | undefined
+              const tail = maskBuffer.value
+              maskBuffer.value = ''
+              if (tail.length > 0) {
+                try {
+                  const filtered = await maskGuard.checkOutput!(tail, { sanitized: wasSanitized })
+                  if (filtered.filtered.length > 0) {
+                    yield { type: 'text-delta', index: lastTextIndex, text: filtered.filtered } as StreamChunkLike
+                  }
+                } catch {
+                  yield { type: 'text-delta', index: lastTextIndex, text: tail } as StreamChunkLike
+                }
+              }
+              if (block && typeof block.text === 'string' && block.text.length > 0) {
+                try {
+                  const filtered = await maskGuard.checkOutput!(block.text, { sanitized: wasSanitized })
+                  yield { ...chunk, block: { ...block, text: filtered.filtered } }
+                } catch {
+                  yield chunk
+                }
+              } else {
+                yield chunk
+              }
+              continue
+            }
+            yield chunk
+          }
+          // 流结束：把待定区最后一段也掩码后吐出（否则尾部 PII 永远不发出去）。
+          if (maskBuffer.value.length > 0) {
+            const tail = maskBuffer.value
+            maskBuffer.value = ''
+            try {
+              const filtered = await maskGuard.checkOutput!(tail, { sanitized: wasSanitized })
+              if (filtered.filtered.length > 0) {
+                yield { type: 'text-delta', index: lastTextIndex, text: filtered.filtered } as StreamChunkLike
+              }
+            } catch {
+              yield { type: 'text-delta', index: lastTextIndex, text: tail } as StreamChunkLike
+            }
+          }
+        } catch (err: any) {
+          // 掩码是兜底不是主防线：失败时放行原文并留审计，绝不阻断回复。
+          if (maskAudit) {
+            void maskAudit.log({
+              level: 'error',
+              kind: 'input-guard.output.mask-error',
+              source: 'input-guard',
+              payload: { sessionId: maskSessionId, error: err?.message ?? String(err) },
+            }).catch(() => {})
+          }
+          yield { type: 'text-delta', index: lastTextIndex, text: maskBuffer.value } as StreamChunkLike
+          maskBuffer.value = ''
+        }
+      })()
+      return masked
+    }
+
+    // 走到这里说明 needsDesanitize 为真 ⇒ sanitizer 必然存在（上面早退过）。
+    // 这个 if 只是为了让类型收窄，运行时不可达。
     const sanitizer = this.sanitizer
+    if (!sanitizer) return stream
     const sessionId = state.sessionId
     const auditLog = this.auditLog
 
