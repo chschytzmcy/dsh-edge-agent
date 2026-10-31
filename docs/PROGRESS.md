@@ -11457,6 +11457,24 @@ call id 在**消息顶层**，content 里是结果文本块、**没有** `tool-r
 没有命令级白名单配置项，所以"摘 PATH"要么落在宿主启动环境（影响面大），
 要么另找挂载点。本节只记录事实与候选，**未改任何代码**。
 
+**「另找挂载点」有解（2026-10-31 补记）**：宿主 `@deepseek-ai/dsh-tools`
+提供了 `ctx.tools.guard(guard)`（`lib/index.js:3008-3022`）—— 一个**单调
+守卫**，注册在可扩展的 `tools/pre-execute` waterfall 之后：
+
+> Any matching guard may deny by returning a reason, while no guard can
+> force-allow a call another guard denied.
+
+即**返回字符串即拒绝该次执行**，且拒绝是单调的（谁都放不回来）。宿主另
+有 `tool/call` / `tool/result` / `tools/execute` / `tools/post-execute` 等
+事件可用于观测。⇒ 本仓完全可以在**插件侧**注册一个 guard，检查 bash 的
+命令文本，命中 `etscli` 的写子命令（`file upload` / `chat send` / `fs rm`
+/ `file delete` …）就返回拒绝理由：不碰宿主启动环境、不改 PATH、桌面与
+无头两个 profile 都生效，且 `etscli-tools` 那套白名单工具走绝对路径不受影响。
+
+**但它不是能力层的等价物**：命令文本匹配可被绝对路径调用、复制二进制、
+别名或拼接绕过 ⇒ 真正封死「模型按名字够到那个二进制」仍要靠摘 PATH。
+两条是**纵深防御**关系，不是二选一。**裁决待主人**（2026-10-31）。
+
 ## §7.121 —— Edge 面板「每一次判断都要给出原始判断数据」（2026-10-26）
 
 operator 反馈：Edge 面板的六个判定节点只给**结论**，不给**依据**。
