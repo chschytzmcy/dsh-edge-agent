@@ -213,8 +213,8 @@ dsh --profile <profile> --dump-config | grep -E 'input-guard|file-logger|intent-
 | [`docs/config-reference.md`](docs/config-reference.md) | 完整配置清单 |
 | [`docs/architecture.md`](docs/architecture.md) | 架构主文档：四层模型 / Realm / 插件开发 / 威胁模型 |
 | [`docs/desktop-troubleshooting.md`](docs/desktop-troubleshooting.md) | 桌面版排障手册 |
-| [`docs/intent-and-sanitization.md`](docs/intent-and-sanitization.md) | 意图判定 + PII 脱敏详细设计 |
-| [`docs/intent-decision-reference.md`](docs/intent-decision-reference.md) | 三层决策参考手册 |
+| [`docs/intent-and-sanitization.md`](docs/intent-and-sanitization.md) | 输入防御 / 意图识别 / 脱敏的当前策略 |
+| [`docs/intent-decision-reference.md`](docs/intent-decision-reference.md) | 判定表附录（正则原文 / prompt 全文） |
 | [`docs/version-policy.md`](docs/version-policy.md) | 上游版本策略 |
 | [`docs/TEST-REPORT.md`](docs/TEST-REPORT.md) | 测试报告与实测记录 |
 | [`docs/PROGRESS.md`](docs/PROGRESS.md) | 实施进度档案（§7.x 全量历史） |

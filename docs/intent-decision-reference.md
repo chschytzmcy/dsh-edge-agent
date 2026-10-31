@@ -9,7 +9,7 @@
 > - 💻 **本地** —— LOCAL 域：本地池生成 + 本地工具（不出 edge 云池）
 >
 > 配套设计见 [intent-and-sanitization.md](intent-and-sanitization.md)。
-> 数据与代码对齐于 2026-10-27（policy v1.9.0）。
+> 数据与代码对齐于 policy v1.9.0。
 >
 > **家庭设备操作正则层**在两个阶段各出现一次，共用同一套词表与同一个匹配器：
 >
@@ -62,8 +62,8 @@
 | jev 风险闸 | 0.70 | `jev.riskThreshold`（riskScore = score/3） |
 | LLM 采纳门 | 0.60 | `stages.intent.confidenceThreshold` |
 | 语义解锁门 | **0.95** | `stages.intent.semanticCloudMinConfidence` |
-| jev / LLM 超时 | 6000 / 4000 ms | `jev.timeoutMs` / `stages.intent.timeoutMs` |
-| 语义检测超时 | 60000 ms | `stages.guard.timeoutMs` |
+| jev / LLM 超时 | 2500 / 30000 ms | `jev.timeoutMs` / `stages.intent.timeoutMs` |
+| 语义检测超时 | 20000 ms | `stages.guard.timeoutMs` |
 
 ---
 
@@ -73,13 +73,13 @@
 |---|---|---|---|---|---|
 | 1 | 限流 | 统计 | — | — | 超限 🚫 429 |
 | 2 | 截断 | 统计 | — | — | >10000 字截断后继续 |
-| 3 | **注入判定** | **正则 26 条** + 语义* | 见附录 A5 全文（直接注入/越狱/提示词泄漏/数据外传/中文变体十连 → block；角色覆盖/弱化 → warn 放行） | Stage 6 语义检测（默认关，附录 B3）：choice 攻击类型 + 危险内容 | block 🚫 400；warn 继续并注入审计 |
-| 4 | **PII 一票否决** | **正则 10 类中 5 类 secret** | 身份证/银行卡/api-key/凭据/护照（附录 A6）命中 → 整条阻断 | — | 🚫 400 |
+| 3 | **注入判定** | **正则 26 条** + 语义* | 见附录 A5 全文（直接注入/越狱/提示词泄漏/数据外传/中文变体十连 → block；角色覆盖/弱化 → warn 放行） | Stage 6 语义检测（默认开，附录 B3）：choice 攻击类型 + 危险内容 | block 🚫 400；warn 继续并注入审计 |
+| 4 | **PII 数据分级** | **正则 10 类中 5 类 secret** | 身份证/银行卡/api-key/凭据/护照（附录 A6）命中 → 标记分级 + 升 risk high，**不拦截** | — | 放行（下游路由护栏与脱敏处理） |
 | 5 | 业务 REJECT 预检 | **正则 2 条** | `(导出\|删除\|清空\|格式化).*(数据库\|系统\|磁盘\|全部数据)`、`(drop\s+table\|rm\s+-rf\|format\s+[a-z]:\|del\s+/[fs])` | — | 🚫 403 |
 | 6 | 威胁门禁（http 入口） | 统计 | — | — | 速率 ≥1×/2×/4× 基线 → elevated/high/critical；critical 🚫 503 |
 | 7 | **设备操作正则层** | **正则** | 家庭设备操作词表（附录 A8），与意图识别 Tier-0 **同一匹配器** | — | 纯设备指令 → **跳过语义检测（LLM）**；非纯 → 照常走 LLM |
 
-\* 语义检测（Stage 6，`DSH_EDGE_GUARD_MODEL` 默认关）：本机 MLX 决策模型是现成端点候选。
+\* 语义检测（Stage 6，`stages.guard.enabled` 默认开）：本机 MLX 决策模型是现成端点候选。
 
 **本阶段的输出只有两种：🚫 拦截，或放行进入第二阶段。**
 
@@ -279,7 +279,7 @@ confidence 含义：
 
 | 序 | 条件 | 去向 |
 |---|---|---|
-| L1 | HTTP/超 4s/解析失败/conf < **0.60** | → 跳过，进规则层 |
+| L1 | HTTP/超 30s/解析失败/conf < **0.60** | → 跳过，进规则层 |
 | L2 | verdict conf ≥ 0.60 | ☁️/🚫/💻 按 category（→ 后处理 2.4） |
 
 ### 2.3 规则层（正则护栏，优先级从高到低首中即停，R1–R6）
@@ -399,7 +399,7 @@ confidence 含义：
 |---|---|---|---|
 | B1 决策模型 | bailian-decision / 本地 MLX `/systemone` | §2.1 题目全文（intent choice + risk score） | 本文 2.1 |
 | B2 LLM 分类器 | local-llm（MiniMax） | §2.2 prompt 全文 | 本文 2.2 |
-| B3 注入语义层 | prompt-guard Stage 6（默认关） | system prompt 逐字：TYPE 1 语义攻击五类（指令覆盖/越狱/提示词泄漏/数据外传/混淆 payload）+ TYPE 2 危险内容五类（武器/暴力/违法/自残/未成年人）+ UNSAFE 五条 + SAFE 白名单六条（"查看系统信息"…"查询AI新闻"）+ PRINCIPLE（拿不准判 safe）+ 判决格式 `{"safe",threats,dataClass,rationale}`；user 模板 `Classify the following user input…<<<…>>>` | `src/dsh-adapter/prompt-guard.ts` |
+| B3 注入语义层 | prompt-guard Stage 6（默认开） | system prompt 逐字：TYPE 1 语义攻击五类（指令覆盖/越狱/提示词泄漏/数据外传/混淆 payload）+ TYPE 2 危险内容五类（武器/暴力/违法/自残/未成年人）+ UNSAFE 五条 + SAFE 白名单六条（"查看系统信息"…"查询AI新闻"）+ PRINCIPLE（拿不准判 safe）+ 判决格式 `{"safe",threats,dataClass,rationale}`；user 模板 `Classify the following user input…<<<…>>>` | `src/dsh-adapter/prompt-guard.ts` |
 | B4 本地 ONNX jev | `POST {jevUrl}/predict`（provider='local'） | `{query, lang:'zh', metadata, intents[]（categories.jevIntents 去重分批≤16，每条带类别描述）, chitchat_intents:['闲聊','其他']}` | `src/dsh-adapter/intent-router.ts` |
 
 ## 附录 C：调整入口速查（热重载）

@@ -81,36 +81,38 @@
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `DSH_EDGE_PRIVACY_POLICY_PATH` | `${DSH_EDGE_STORAGE_ROOT}/privacy-policy.json`（默认 `~/.dsh-edge-agent-web/storage/privacy-policy.json`）| 隐私策略文件路径 |
+| `DSH_EDGE_PRIVACY_POLICY_PATH` | `~/.dsh-edge-agent/privacy-policy.json` → 随包发布的 `config/privacy-policy.json` | 隐私策略文件路径（三级回退，见下） |
 | `DSH_EDGE_REALM_HOT_RELOAD` | `true` | realm 配置热重载开关（不重载策略文件本身） |
+
+策略文件按顺序回退，取第一个存在的：`config/edge.json` 的 `privacy.policyPath` →
+`~/.dsh-edge-agent/privacy-policy.json`（运行员副本）→ 随包发布的
+`config/privacy-policy.json`（version 1.9.0）。策略文件缺失或解析失败时回退到
+代码内置的 `DEFAULT_POLICY`（3 条路由规则 + 完整 10 条脱敏规则）。
 
 ## 6. 路由配置
 
+> **配置真相源是 `config/edge.json`**（模板见 `config/edge.example.json`）——
+> 下面的环境变量只是它的 env 桥接面，且**只有列出的这些有实际消费方**。
+> 未列出的变量设置了也不生效。
+
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `DSH_EDGE_DEFAULT_DATA_LEVEL` | `sanitized` | 默认数据级别（`public` / `sanitized` / `internal`） |
-| `DSH_EDGE_ROUTER_LLM_FALLBACK` | `true` | 当规则匹配置信度低时是否使用 LLM 兜底 |
-| `DSH_EDGE_ROUTER_THRESHOLD` | `0.6` | 规则匹配置信度阈值 |
-| `DSH_EDGE_INTENT_CONFIDENCE_THRESHOLD` | `0.6` | LLM 分类置信度门槛；低于此值降级到 keyword 规则 |
-| `DSH_EDGE_GUARD_MODEL` | `false` | 是否启用 prompt-guard 模型辅助检测 |
-| `DSH_EDGE_GUARD_MODEL_PROVIDER` | `local-llm` | 模型辅助检测 provider route |
-| `DSH_EDGE_GUARD_MODEL_MODEL` | `Qwen3-4B-Instruct-2507` | 模型辅助检测 model id（部署默认） |
-| `DSH_EDGE_GUARD_MODEL_TIMEOUT_MS` | `4000` | 模型辅助检测单次超时（毫秒） |
+| `DSH_EDGE_INTENT_CONFIDENCE_THRESHOLD` | `0.6` | LLM 分类置信度门槛；低于此值降级到规则层 |
+| `DSH_EDGE_GUARD_MODEL` | `true` | 是否启用 prompt-guard 模型辅助检测 |
+| `DSH_EDGE_GUARD_MODEL_PROVIDER` | `local-llm` | 模型辅助检测 provider route（**不得指向云模型**） |
+| `DSH_EDGE_GUARD_MODEL_MODEL` | 跟随 `llm.local.model` | 模型辅助检测 model id |
+| `DSH_EDGE_GUARD_MODEL_TIMEOUT_MS` | `20000` | 模型辅助检测单次超时（毫秒） |
 | `DSH_EDGE_GUARD_MODEL_MAX_INPUT` | `2000` | 超过此字符数则跳过模型检测（fail-open） |
 | `DSH_EDGE_INTENT_PROVIDER` | `local-llm` | 意图分类 provider |
-| `DSH_EDGE_INTENT_MODEL` | `Qwen3-4B-Instruct-2507` | 意图分类 model id |
-| `DSH_EDGE_INTENT_LLM_TIMEOUT_MS` | `4000` | 意图分类单次 LLM 超时（毫秒） |
+| `DSH_EDGE_INTENT_MODEL` | 跟随 `llm.local.model` | 意图分类 model id |
+| `DSH_EDGE_INTENT_LLM_TIMEOUT_MS` | `30000` | 意图分类单次 LLM 超时（毫秒） |
 | `DSH_EDGE_INTENT_RECENT_LIMIT` | `3` | 上下文 recent-messages 数量 |
-| `DSH_EDGE_INTENT_MAX_INPUT` | `2000` | 超过此字符数则跳过 LLM 分类 |
-| `DSH_EDGE_INTENT_FALLBACK_KEYWORDS` | （空） | 关键词兜底列表（逗号分隔） |
+| `DSH_EDGE_INTENT_MAX_INPUT` | `2000` | 超过此字符数则截断后再分类 |
+| `DSH_EDGE_INTENT_FALLBACK_KEYWORDS` | （空） | LOCAL 兜底关键词追加（逗号分隔，追加不替换） |
 
 ## 7. 模型配置
 
-| 变量 | 默认值 | 说明 |
-|---|---|---|
-| `DSH_EDGE_DEFAULT_MODEL` | `local-llm` | 默认模型 |
-| `DSH_EDGE_LOCAL_MODELS` | `local-llm,local-llm-llama3` | 本地模型列表（逗号分隔） |
-| `DSH_EDGE_CLOUD_MODELS` | `cloud-llm,cloud-llm-v3` | 云端模型列表（逗号分隔） |
+模型池在 `config/edge.json` 的 `llm.local` / `llm.cloud` 段配置，无独立环境变量。
 
 ### 7.1 本地 LLM（`config/edge.json` → `llm.local`）
 
@@ -456,7 +458,7 @@ response 写进 ops log（`info` 级别，默认可见）：
 - [`deploy-npm.md`](deploy-npm.md) — 从 npm 包名安装（配置落位见 §9.1）
 - [`load-into-local-dsh.md`](load-into-local-dsh.md) — 装进本地 DSH
 - [`architecture.md`](architecture.md) — 架构、Realm 模型、威胁模型、插件开发
-- [`intent-and-sanitization.md`](intent-and-sanitization.md) — 意图判定 + PII 脱敏详细设计
-- [`intent-decision-reference.md`](intent-decision-reference.md) — 三层决策参考手册
+- [`intent-and-sanitization.md`](intent-and-sanitization.md) — 输入防御 / 意图识别 / 脱敏的当前策略
+- [`intent-decision-reference.md`](intent-decision-reference.md) — 判定表附录（正则原文 / prompt 全文）
 - [`version-policy.md`](version-policy.md) — 上游版本策略
 - [`PROGRESS.md`](PROGRESS.md) — 实施进度档案（§7.x 全量历史）

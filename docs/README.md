@@ -34,8 +34,8 @@
 |---|---|---|
 | [`architecture.md`](architecture.md) | 架构主文档：四层模型 / realm / cordis 插件机制 + 上游适配契约 + 威胁模型 + 插件开发 | 活（9 引用） |
 | [`PROGRESS.md`](PROGRESS.md) | 实施进度档案（§7.x 全量历史）——**唯一存档点**，测试过程与 boot 签名逐字存这里 | 活（13 引用） |
-| [`intent-and-sanitization.md`](intent-and-sanitization.md) | 意图判定 + PII 脱敏的详细设计 | 活（4 引用） |
-| [`intent-decision-reference.md`](intent-decision-reference.md) | 三层决策参考手册（正则 / 决策模型 / LLM 全清单） | 活（2 引用） |
+| [`intent-and-sanitization.md`](intent-and-sanitization.md) | **当前策略说明书**：输入防御 / 意图识别 / 脱敏三块的分层、判据、阈值、配置与审计 | 活（4 引用） |
+| [`intent-decision-reference.md`](intent-decision-reference.md) | 判定表附录：逐条正则原文、决策模型题目、prompt 全文 | 活（2 引用） |
 | [`desktop-troubleshooting.md`](desktop-troubleshooting.md) | 桌面版排障手册（起不来 / Edge tab 不见了 / 面板口径） | 活（3 引用） |
 | [`TEST-REPORT.md`](TEST-REPORT.md) | 测试报告：单元测试 / 门禁 / eslint / 实机取证 | 活（2 引用） |
 | [`deploy-minimal-files.md`](deploy-minimal-files.md) | 最小部署清单：每个文件装了什么、起什么作用 | 活（4 引用） |
