@@ -2044,6 +2044,31 @@ export class InputGuardServiceImpl extends Service {
       // 最近一个 text-delta 的 block index —— 补发待定区时要带上它，
       // 否则宿主 BlockAssembler 会把补发的文本算成另一个 block。
       let lastTextIndex: unknown = undefined
+      /**
+       * 掩码一段文本，并把「掩了几条、哪几类」记进审计。
+       *
+       * §7.155 实机复盘（10-31）：最初只在 text-delta 的 head 分支记审计，
+       * 而实机上真正执行掩码的常常是 **block-end** 那条（短回复走不到 head
+       * 分支）⇒ 面板上看不到任何掩码记录，事实与记录不符。现在三条路径
+       * （delta head / block-end 的待定区 / block-end 的 block.text / 流尾
+       * 补发）统一走这里。
+       */
+      const maskText = async (text: string): Promise<string> => {
+        const filtered = await maskGuard.checkOutput!(text, { sanitized: wasSanitized })
+        if (filtered.redacted.length > 0 && maskAudit) {
+          void maskAudit.log({
+            level: 'info',
+            kind: 'input-guard.output.masked',
+            source: 'input-guard',
+            payload: {
+              sessionId: maskSessionId,
+              count: filtered.redacted.length,
+              types: [...new Set(filtered.redacted.map((r) => r.type))],
+            },
+          }).catch(() => {})
+        }
+        return filtered.filtered
+      }
       const masked = (async function* (): AsyncIterable<StreamChunkLike> {
         try {
           for await (const chunk of stream) {
@@ -2055,21 +2080,9 @@ export class InputGuardServiceImpl extends Service {
               const cut = maskBuffer.value.length - PII_MASK_TAIL_CHARS
               const head = maskBuffer.value.slice(0, cut)
               maskBuffer.value = maskBuffer.value.slice(cut)
-              const filtered = await maskGuard.checkOutput!(head, { sanitized: wasSanitized })
-              if (filtered.redacted.length > 0 && maskAudit) {
-                void maskAudit.log({
-                  level: 'info',
-                  kind: 'input-guard.output.masked',
-                  source: 'input-guard',
-                  payload: {
-                    sessionId: maskSessionId,
-                    count: filtered.redacted.length,
-                    types: [...new Set(filtered.redacted.map((r) => r.type))],
-                  },
-                }).catch(() => {})
-              }
-              if (filtered.filtered.length > 0) {
-                yield { ...chunk, text: filtered.filtered }
+              const maskedHead = await maskText(head)
+              if (maskedHead.length > 0) {
+                yield { ...chunk, text: maskedHead }
               }
               continue
             }
@@ -2083,9 +2096,9 @@ export class InputGuardServiceImpl extends Service {
               maskBuffer.value = ''
               if (tail.length > 0) {
                 try {
-                  const filtered = await maskGuard.checkOutput!(tail, { sanitized: wasSanitized })
-                  if (filtered.filtered.length > 0) {
-                    yield { type: 'text-delta', index: lastTextIndex, text: filtered.filtered } as StreamChunkLike
+                  const maskedTail = await maskText(tail)
+                  if (maskedTail.length > 0) {
+                    yield { type: 'text-delta', index: lastTextIndex, text: maskedTail } as StreamChunkLike
                   }
                 } catch {
                   yield { type: 'text-delta', index: lastTextIndex, text: tail } as StreamChunkLike
@@ -2093,8 +2106,8 @@ export class InputGuardServiceImpl extends Service {
               }
               if (block && typeof block.text === 'string' && block.text.length > 0) {
                 try {
-                  const filtered = await maskGuard.checkOutput!(block.text, { sanitized: wasSanitized })
-                  yield { ...chunk, block: { ...block, text: filtered.filtered } }
+                  const maskedBlock = await maskText(block.text)
+                  yield { ...chunk, block: { ...block, text: maskedBlock } }
                 } catch {
                   yield chunk
                 }
@@ -2110,9 +2123,9 @@ export class InputGuardServiceImpl extends Service {
             const tail = maskBuffer.value
             maskBuffer.value = ''
             try {
-              const filtered = await maskGuard.checkOutput!(tail, { sanitized: wasSanitized })
-              if (filtered.filtered.length > 0) {
-                yield { type: 'text-delta', index: lastTextIndex, text: filtered.filtered } as StreamChunkLike
+              const maskedTail = await maskText(tail)
+              if (maskedTail.length > 0) {
+                yield { type: 'text-delta', index: lastTextIndex, text: maskedTail } as StreamChunkLike
               }
             } catch {
               yield { type: 'text-delta', index: lastTextIndex, text: tail } as StreamChunkLike

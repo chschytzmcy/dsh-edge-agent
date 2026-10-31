@@ -74,8 +74,15 @@ describe('§7.155 input-guard 输出侧 PII 掩码兜底', () => {
     checkOutput: (text: string, ctx?: { sanitized?: boolean }) => Promise<{ filtered: string; redacted: Array<{ type: string; masked: string }> }>
     state?: Record<string, unknown>
   }) {
+    // 审计条目收集器：§7.155 实机复盘发现「掩码执行了但没留审计」，
+    // 根因就是没断言这条 —— 这里把它变成可断言的对象。
+    const auditEntries: Array<{ kind: string; level: string; payload: Record<string, unknown> }> = []
     const ctx: any = makeCtx({
-      auditLog: { log: async () => {} },
+      auditLog: {
+        log: async (entry: { kind: string; level: string; payload: Record<string, unknown> }) => {
+          auditEntries.push(entry)
+        },
+      },
     })
     // sanitizer 也要给上：生产里 apply() 的 fail-fast 保证 promptGuard /
     // sanitizer / intentRouter / privacyPolicy 四件套齐备，测试要贴近这条。
@@ -90,7 +97,7 @@ describe('§7.155 input-guard 输出侧 PII 掩码兜底', () => {
       undefined,
       undefined,
       sanitizer as never,
-      { log: async () => {} } as never,
+      ctx.auditLog as never,
     )
     // 预置 stepState：模拟 pre-step 已经跑过、但本轮没有发生脱敏替换
     // （sanitized=false ⇒ replacements=0），这正是需要掩码兜底的会话。
@@ -102,7 +109,7 @@ describe('§7.155 input-guard 输出侧 PII 掩码兜底', () => {
       timestamp: Date.now(),
       ...(opts.state ?? {}),
     })
-    return { service, ctx }
+    return { service, ctx, auditEntries }
   }
 
   /** 把 handleLlmStream 的 chunk 流收成一段文本。 */
@@ -227,5 +234,24 @@ describe('§7.155 input-guard 输出侧 PII 掩码兜底', () => {
     assert.equal(deltaText, '你的手机号是 138****5678', `delta 流应完整且已掩码,实得: ${deltaText}`)
     // block.text 是宿主的定稿来源，也必须已掩码。
     assert.equal(blockText, '你的手机号是 138****5678', `block.text 应已掩码,实得: ${blockText}`)
+  })
+
+  it('掩码必须留下审计事件(实机复盘:短回复走 block-end 路径,原来没留记录)', async () => {
+    const counter = { n: 0 }
+    const { service, auditEntries } = makeGuard({ checkOutput: maskingCheckOutput(counter) })
+
+    // 短回复：总长 < 尾部待定区 ⇒ 走不到 delta head 分支，掩码发生在
+    // block-end 与流尾补发这两条路径上。
+    await drainChunks(service, [
+      { type: 'text-delta', index: 0, text: '13812345678' },
+      { type: 'block-end', index: 0, block: { type: 'text', text: '13812345678' } },
+    ])
+
+    const maskedEvents = auditEntries.filter((e) => e.kind === 'input-guard.output.masked')
+    assert.ok(maskedEvents.length > 0, '掩码执行了就必须留审计,否则面板上「没发生过」')
+    assert.equal(maskedEvents[0].level, 'info')
+    assert.equal(maskedEvents[0].payload.sessionId, 'sess-local')
+    assert.equal(maskedEvents[0].payload.count, 1)
+    assert.deepEqual(maskedEvents[0].payload.types, ['phone'])
   })
 })
