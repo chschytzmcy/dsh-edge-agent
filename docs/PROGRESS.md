@@ -17120,3 +17120,91 @@ user-role 但 kind 不同，不算起点）。
 vitest **1510 passed**（含新增 8 例）· eslint **0 error**（59 warning 既有）·
 双侧 `tsc` OK · `verify:build` **23 项 exit=0** · `verify-doc-links` 0 断链
 0 孤儿。
+
+---
+
+## §7.165 裁剪守卫的第二轮加固：抛错留证 + 当前轮输入不再被误判（2026-10-31）
+
+> §7.164 修完「历史轮先云后本地」的形状后，请了一个 verifier 子代理独立复核整条
+> 出网链路。子代理独立确认了 §7.164 修的是**真泄漏**（它自己跑出来的探针结论
+> 与我的实测一致），另外带出三条本轮收掉/记账的发现。
+
+### 一、裁剪判断抛错 ⇒ fail-closed 但**没有证据**（已修）
+
+`planCloudEgress` 遍历消息时会读 `message.role`，请求体里混进 `null` /
+`undefined` 元素就会抛 TypeError。
+
+- **实测确认（子代理探针 + 我的集成测试）**：`plan()` 在 waterfall 监听器里
+  **同步**执行，抛错发生在派发**之前** ⇒ 请求**根本没到 provider**
+  （adapter 收到 0 次调用）⇒ **fail-closed**，不会泄露。
+- **但缺的是证据**：这一路上没有任何审计行，面板上看起来像「什么都没发生」。
+  本项目对面板的纪律是「宁可漏显示，也不能显示一件没发生过的事」；这里恰恰
+  相反 —— **发生了拦截却什么都不显示**。
+- **修法**：`handleLlmStream` 里把 `plan()` 包进 try/catch，捕获后落一条
+  `llm.cloud.egress.blocked`（`reason: 'plan-error'`、`provider`/`model`/
+  `error`），**再把异常原样抛出** —— fail-closed 语义一个字不改，只补证据。
+- 回归：真 cordis Context + 真 LlmRuntime 的集成测试（2 例）。
+
+### 二、当前轮输入缺 `source` ⇒ 归属整个颠倒（已修）
+
+宿主类型明写（`@deepseek-ai/dsh-llm` `lib/types/types.d.ts:485`）：
+
+```ts
+/** User input for one LLM request; it has no durable Session identity or source. */
+interface RequestUserInput {
+    readonly role: 'user'
+    readonly content: UserMessage['content']
+    readonly id?: never
+    readonly source?: never
+}
+```
+
+⇒ **没有 source 的 user-role 消息就是当前轮的问题**。旧判据只认
+`source.kind === 'user'`，漏判它 ⇒ 当前轮被并进上一轮 ⇒ 上一轮若判成云段，
+结果是**当前的问题被丢掉**（云端模型收到一个没有问题的请求）、
+**上一轮本地段的输入反而被带上云**。
+
+- **修法**：`isUserInputMessage` 认两种形态 —— `source.kind === 'user'`，
+  或 `source` 完全没有（`RequestUserInput`）。宿主注入的 user-role 消息
+  （`runtime-context` / `skill-catalog` / `time-context` / `model-selection`）
+  **都带 source** ⇒ 不会被误认成用户输入。
+- 回归：4 例（轮次起点识别 + 反向证伪 + 只有 RequestUserInput 的请求 +
+  宿主注入消息不受影响）。
+
+### 三、整段没有轮次起点 ⇒ 裁剪变成空操作（记账，未改）
+
+`planCloudEgress` 在找不到任何轮次起点时走退化路径：**全部保留**。这是出网
+裁剪**唯一**的 fail-open（守卫连裁都不触发，请求原样出网）。
+
+- **实测可达性**：5274 个真实请求前缀里 **0 次**触及 —— 宿主每轮至少有一条
+  持久化用户输入（`source.kind='user'`），或一条 `RequestUserInput`（§7.165
+  之后它也算轮次起点）。
+- 仍**保留**这条退化路径：请求里完全没有用户输入时，「静默清空」比「保留」
+  更危险（会把一个正常请求变成空请求）。已写进 `docs/privacy-policy.md`
+  的「已知边界」。
+
+### 四、另外两条记账（不改代码）
+
+- **`purpose` 非空不裁**（compaction / session-title）：这是 §7.151 就记过的
+  **有意的取舍**（compaction 要总结整段历史，裁它会破坏压缩语义），代价是这类
+  请求可能带着本地段出网。本部署未观察到实际触发。此前只记在 PROGRESS 里，
+  §7.165 补进 `docs/privacy-policy.md` 的「已知边界」。
+- **历史轮里「本地在前、云在后」整轮被拦下**（2 例真实轮次）：安全，但云端
+  上下文会缺一截。同样补进「已知边界」。
+
+### 五、回归与实测（新增 6 例）
+
+- `tests/unit/host-egress-integration.test.ts` —— §7.165 两例（真运行时：抛错
+  ⇒ 请求没到 provider + 审计行落盘；没有审计通道时 fail-closed 语义不变）；
+- `tests/unit/cloud-egress.test.ts` —— §7.165 四例（轮次起点识别两种形态 +
+  反向证伪 + 只有 RequestUserInput 的请求 + 宿主注入消息不受影响）。
+
+**对现网仍是零影响**（实测，不是推断）：把每个会话按「历史长度」逐前缀展开
+（= 模拟该会话每一种真实出网请求的请求体形状），共 **5274 个请求前缀**，新旧
+口径的**出网条数逐请求完全一致，0 差异**；退化路径在全部前缀里 **0 次**触及。
+
+### 六、门禁
+
+vitest **1516 passed**（含新增 6 例）· eslint **0 error**（59 warning 既有）·
+双侧 `tsc` OK · `verify:build` **23 项 exit=0** · `verify-doc-links` 0 断链
+0 孤儿 · 重建重部署后 E2E **4 用例全绿**。

@@ -189,3 +189,92 @@ describe('§7.151 — 真运行时：出网请求只带云段历史', () => {
     assert.deepEqual(guard2.localProviders(), ['local-llm', 'qwen-local'])
   })
 })
+
+/**
+ * §7.165 —— 裁剪判断**自己抛错**时的语义
+ *
+ * ## 为什么要有这一组
+ *
+ * 裁剪判断（`planCloudEgress`）会遍历消息并读 `message.role`。请求体里混进
+ * null / undefined 元素就会抛 TypeError。宿主契约下消息都是规范对象，但守卫
+ * 不能被人为构造的载荷打穿。
+ *
+ * 抛错路径的关键事实（实测确认）：`plan()` 在 waterfall 监听器里**同步**执行，
+ * 抛错发生在派发**之前** ⇒ 请求**根本没到 provider**（fail-closed，不会泄露）。
+ *
+ * 原来缺的是**证据**：这一路上没有任何审计行，面板上看起来像「什么都没发生」。
+ * 本项目对面板的纪律是「宁可漏显示，也不能显示一件没发生过的事」；这里恰恰
+ * 相反 —— **发生了拦截却什么都不显示**。§7.165 补上一条审计行，fail-closed
+ * 语义一个字不改。
+ */
+describe('§7.165 — 裁剪判断抛错：fail-closed + 必须留证据', () => {
+  it('消息数组里混进 null ⇒ 请求没到 provider，且审计行落盘', async () => {
+    const rows: any[] = []
+    const auditLog = { log: async (row: any) => { rows.push(row); return row } }
+
+    const ctx = new Context()
+    void new LlmRuntime(ctx)
+    const adapter = new RecordingAdapter()
+    ctx.llm.registerAdapter(['qwen-token-plan-cn'], adapter)
+    const svc = new InputGuardServiceImpl(
+      scopedCtxLike(ctx) as any, config(),
+      undefined, undefined, undefined, undefined, auditLog as any,
+    )
+    ;(svc as any).stepState.set('s1', {
+      sanitized: false, replacements: 0, sessionId: 's1', timestamp: Date.now(),
+    })
+    ctx.on('llm/stream', (options: any, next: any) => svc.handleLlmStream(options, next), { global: true } as any)
+
+    const bad = markAgentLoopRequest(Object.freeze({
+      provider: 'qwen-token-plan-cn',
+      model: 'deepseek-v4.1-flash',
+      messages: Object.freeze([null as any]),
+      sessionId: 's1',
+    })) as any
+
+    let thrown: unknown
+    try {
+      await drain(ctx.llm.stream(bad))
+    } catch (err) {
+      thrown = err
+    }
+
+    assert.ok(thrown, '异常必须继续往上抛（fail-closed 语义不变）')
+    assert.equal(adapter.calls.length, 0, 'fail-closed：请求根本没到 provider')
+
+    const blocked = rows.find(r => r.kind === 'llm.cloud.egress.blocked')
+    assert.ok(blocked, '发生了拦截就必须有审计行 —— 面板不能“什么都没发生”')
+    assert.equal(blocked!.level, 'security')
+    assert.equal(blocked!.payload.reason, 'plan-error')
+    assert.equal(blocked!.payload.provider, 'qwen-token-plan-cn')
+    assert.equal(typeof blocked!.payload.error, 'string')
+  })
+
+  it('没有审计通道时也不改变 fail-closed 语义（异常照抛、请求照不到 provider）', async () => {
+    const ctx = new Context()
+    void new LlmRuntime(ctx)
+    const adapter = new RecordingAdapter()
+    ctx.llm.registerAdapter(['qwen-token-plan-cn'], adapter)
+    const svc = new InputGuardServiceImpl(scopedCtxLike(ctx) as any, config())
+    ;(svc as any).stepState.set('s1', {
+      sanitized: false, replacements: 0, sessionId: 's1', timestamp: Date.now(),
+    })
+    ctx.on('llm/stream', (options: any, next: any) => svc.handleLlmStream(options, next), { global: true } as any)
+
+    const bad = markAgentLoopRequest(Object.freeze({
+      provider: 'qwen-token-plan-cn',
+      model: 'deepseek-v4.1-flash',
+      messages: Object.freeze([undefined as any]),
+      sessionId: 's1',
+    })) as any
+
+    let thrown: unknown
+    try {
+      await drain(ctx.llm.stream(bad))
+    } catch (err) {
+      thrown = err
+    }
+    assert.ok(thrown)
+    assert.equal(adapter.calls.length, 0)
+  })
+})

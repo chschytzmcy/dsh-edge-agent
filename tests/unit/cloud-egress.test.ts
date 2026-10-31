@@ -88,6 +88,67 @@ describe('§7.131 — 轮次起点识别', () => {
   })
 })
 
+/**
+ * §7.165 —— 当前轮输入若**没有 source**（宿主 `RequestUserInput`），也要算轮次起点
+ *
+ * ## 为什么要有这一组
+ *
+ * 宿主类型明写：
+ *
+ * ```ts
+ * /** User input for one LLM request; it has no durable Session identity or source. *\/
+ * interface RequestUserInput {
+ *     readonly role: 'user'
+ *     readonly content: UserMessage['content']
+ *     readonly id?: never
+ *     readonly source?: never
+ * }
+ * ```
+ *
+ * 也就是说：**没有 source 的 user-role 消息就是当前轮的问题**。漏判它 ⇒ 归属
+ * 整个颠倒：当前轮被并进上一轮，上一轮若判成云段，结果是**当前的问题被丢掉**
+ * （云端模型收到一个没有问题的请求）、**上一轮本地段的输入反而被带上云**。
+ *
+ * 宿主注入的 user-role 消息（`runtime-context` / `skill-catalog` /
+ * `time-context` / `model-selection`）都**带 source** ⇒ 不受影响。
+ */
+describe('§7.165 — 无 source 的 user 消息（RequestUserInput）也是轮次起点', () => {
+  function bareUser(text: string): EgressMessage {
+    return { role: 'user', content: [{ type: 'text', text }] }
+  }
+
+  it('没有 source 的 user 消息 → 是轮次起点', () => {
+    assert.equal(isUserInputMessage(bareUser('当前轮的问题')), true)
+  })
+
+  it('反向证伪：当前轮输入不丢，且上一轮本地段的输入不带上云', () => {
+    const messages = [
+      userMsg('上一轮的输入'),
+      assistantMsg('local-llm', '上一轮本地模型的回答'),
+      bareUser('当前轮的问题'),
+    ]
+    const plan = planCloudEgress(messages, { currentSegment: 'cloud' })
+    assert.deepEqual(texts(plan.kept), ['当前轮的问题'])
+    assert.equal(plan.droppedCount, 2)
+  })
+
+  it('只有 RequestUserInput 的请求（会话第一轮）→ 正常切出轮次，不再走退化路径', () => {
+    const messages = [
+      bareUser('当前轮的问题'),
+      assistantMsg('local-llm', '本地产出'),
+    ]
+    const plan = planCloudEgress(messages, { currentSegment: 'cloud' })
+    assert.deepEqual(texts(plan.kept), ['当前轮的问题'])
+    assert.equal(plan.droppedCount, 1)
+  })
+
+  it('带 source 的宿主注入消息仍然不是轮次起点', () => {
+    assert.equal(isUserInputMessage(userMsg('ctx', 'runtime-context')), false)
+    assert.equal(isUserInputMessage(userMsg('ctx', 'skill-catalog')), false)
+    assert.equal(isUserInputMessage(userMsg('ctx', 'time-context')), false)
+  })
+})
+
 describe('§7.131 — 云端出网：本地段一律不带', () => {
   it('本地段（含其 user 输入与 assistant 回复）整段丢弃', () => {
     const messages = [

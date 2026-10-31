@@ -1980,7 +1980,33 @@ export class InputGuardServiceImpl extends Service {
     //
     // 位置要紧：裁剪**不依赖 sanitizer**（脱敏栈关掉不等于可以带本地历史
     // 出网）—— 所以它排在 sanitizer 检查**之前**。
-    const egress = this.hostEgressGuard.plan(options)
+    //
+    // §7.165：裁剪判断本身抛错时，**保留 fail-closed，但必须留下证据**。
+    //
+    // 抛错路径确实存在：`planCloudEgress` 遍历消息时会读 `message.role`，
+    // 数组里混进 null / undefined 元素就会抛 TypeError。宿主契约下消息都是
+    // 规范对象（不会混进 null），但「守卫不能被人为构造的载荷打穿」这条要
+    // 守住 —— 实测确认：抛错发生在派发**之前**（`plan()` 在 waterfall 监听器
+    // 里同步执行），⇒ 请求**根本没到 provider**（fail-closed，不会泄露）。
+    //
+    // 缺的是证据：原来这一路上没有任何审计行，面板上看起来像「什么都没发生」。
+    // 本项目对面板的纪律是反的 ——「宁可漏显示，也不能显示一件没发生过的事」；
+    // 这里恰恰相反：**发生了拦截却什么都不显示**。所以补一条审计行，并把
+    // 异常原样抛出（fail-closed 语义一个字都不改）。
+    let egress: HostEgressPlan | undefined
+    try {
+      egress = this.hostEgressGuard.plan(options)
+    } catch (err) {
+      this.audit('security', 'llm.cloud.egress.blocked', {
+        ...sessionIdField(state.sessionId),
+        provider: typeof options.provider === 'string' ? options.provider : '',
+        model: typeof options.model === 'string' ? options.model : '',
+        via: 'host-provider',
+        reason: 'plan-error',
+        error: err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200),
+      })
+      throw err
+    }
     if (egress !== undefined) {
       return this.dispatchTrimmed(options, egress, state)
     }

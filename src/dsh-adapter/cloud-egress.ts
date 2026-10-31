@@ -34,13 +34,20 @@
  * 靠推断或靠会话边界记账。
  *
  * 用户消息 / 工具结果没有 provider 标记 —— 它们归属于**所在的那一轮**。轮次
- * 起点 = 一条**真实用户输入**消息（`role === 'user' && source.kind === 'user'`）：
+ * 起点 = 一条**真实用户输入**消息：
+ *
+ * - 持久化形态：`role === 'user' && source.kind === 'user'`
+ * - 单次请求形态：`role === 'user'` 且**完全没有 source**（宿主的
+ *   `RequestUserInput`：「User input for one LLM request; it has no durable
+ *   Session identity or source」）—— 它就是**当前轮**的问题（§7.165）
+ *
+ * 而下面这些**不是**用户输入，所以按 source 过滤能精确切出轮次：
  *
  * - 宿主的 model-switch 通知也是 user-role，但 `source.kind === 'model-selection'`
  * - dsh-agent-instructions 注入的运行上下文也是 user-role，但 `source.kind` 是
  *   别的 producer kind
  *
- * 两者都**不是**用户输入，所以按 `source.kind === 'user'` 过滤能精确切出轮次。
+ * 它们都**带 source**，所以「没有 source」这条判据不会把它们误认成用户输入。
  *
  * ## 纯函数
  *
@@ -106,9 +113,39 @@ export function providerSegment(
   return 'cloud'
 }
 
-/** 是不是一条**真实用户输入**消息（轮次起点）。 */
+/**
+ * 是不是一条**真实用户输入**消息（轮次起点）。
+ *
+ * 两种形态都算：
+ *
+ * 1. `source.kind === 'user'` —— 持久化的会话消息（宿主把用户输入落进会话日志，
+ *    source 标记为 `user`）。
+ * 2. **完全没有 source** —— 宿主的 `RequestUserInput`：
+ *
+ *    ```ts
+ *    /** User input for one LLM request; it has no durable Session identity or source. *\/
+ *    interface RequestUserInput {
+ *        readonly role: 'user'
+ *        readonly content: UserMessage['content']
+ *        readonly id?: never
+ *        readonly source?: never
+ *    }
+ *    ```
+ *
+ *    它是**只用于这一次请求**的用户输入 —— 也就是**当前轮**的问题。漏判它会
+ *    让归属整个颠倒（§7.165）：当前轮被并进上一轮，而上一轮若判成云段，
+ *    结果是**当前的问题被丢掉**（云端模型收到一个没有问题的请求）、
+ *    **上一轮本地段的输入反而被带上云**。
+ *
+ * 宿主的 user-role 注入消息（`runtime-context` / `skill-catalog` /
+ * `time-context` / `model-selection`）都**带 source**（kind 不是 `user`）⇒
+ * 不受影响。
+ */
 export function isUserInputMessage(message: EgressMessage): boolean {
-  return message.role === 'user' && message.source?.kind === 'user'
+  if (message.role !== 'user') return false
+  const source = message.source
+  if (source === undefined || source === null) return true
+  return source.kind === 'user'
 }
 
 /**
