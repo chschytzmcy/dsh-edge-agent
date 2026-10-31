@@ -21,17 +21,17 @@ profile(`edge-min-test` TUI 形状 / `edge-min-chat` headless 孪生),绝不进�
   + 7 插件执法闭包 → 冒烟聊天实弹 BLOCK / REJECT。§7.59.1 全云不变量:
   localProvider 指宿主云 provider ⇒ `sanitizeLocalTraffic:true` +
   `downgradeOnSanitizeFailure:false`(LOCAL 轮也脱敏;脱敏失败 REJECT)。全量部署勿抄。
-  ⚠️ headless 宿主不可逐字挂:file-logger `inject=['web']`,headless
-  (dsh-base+dsh-headless)无 web service 会 boot FAIL-LOUD——rig deploy 时为
-  headless 冒烟臂**运行时派生** 7 插件图(剥 file-logger 行块,派生物不落仓库)。
+  §7.169 重评:file-logger `inject=[]`(web 降为延迟注入),headless
+  (dsh-base+dsh-headless)无 web service 时诊断子纤维 pending 不报错 —— **两形状
+  逐字同图**,旧「headless 运行时派生剥 file-logger」逻辑已移除。
 - `skill-realms.seed.json` — §7.59.3 realm 种子:部署第⑤步落
   `<root>/skill-realms.json`(派工单里 realm-skill-bridge.configPath 同路径)。
   缺表 ≠ 缺闸门:未点名工具 Layer 3 按 §7.47.1 **设计为 fail-open**(CLOUD agent 跑
   本地 bash 合法),技能则全隐;种子的实际语义 = web_search/web_fetch 锁 CLOUD →
   LOCAL/SANITIZED 轮网络工具被拒。刻意不照抄生产私有策略(ets-* 映射)。
 
-驱动:`bash scripts/minimal-bundle-rig.sh all`(build 检查 → deploy(TP 逐字 /
-CP 派生)→ 冒烟断言 B1-B4 → 反事实探针 P1-P5;`down` / `clean` 收尾;deploy 含
-第⑤步 cp 种子)。CI 锁:`tests/unit/bundle-minimal.test.ts` 防本目录三文件与
+驱动:`bash scripts/minimal-bundle-rig.sh all`(build 检查 → deploy(TP/CP 均逐字
+9 插件,§7.169 起两形状同图)→ 冒烟断言 B1-B4 → 反事实探针 P1-P5;`down` /
+`clean` 收尾;deploy 含第⑤步 cp 种子)。CI 锁:`tests/unit/bundle-minimal.test.ts` 防本目录三文件与
 产品面漂移。`lib/` 不入库——rig 部署时 rsync 仓库 `lib/`(即 architecture.md
 手工步骤的逐字执行)。

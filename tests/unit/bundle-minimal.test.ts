@@ -4,12 +4,14 @@
  * bundle-minimal 是真机 rig 的静态面(1 张派工单 cordis.patch.yml + 1 份花名册
  * package.json + 1 份 realm 种子 skill-realms.seed.json;§7.59.5 单源收敛),
  * rig 脚本(scripts/minimal-bundle-rig.sh)跑真机验证,本测试跑漂移验证:
- *   - 派工单名单恰好 = 现役 9 插件实装花名册(8 插件闭包 + file-logger 居首)。
+ *   - 派工单名单恰好 = 现役 9 插件实装花名册(8 插件闭包 + file-logger 居首;
+ *     §7.169 后两形状逐字同图,ops log 通道可用性由延迟注入保证、不靠树序)。
  *     §7.93.0(2026-09-24):tools(edge-tools-registry)入图 —— realm-skill-bridge
  *     §7.92.2 inject 加了 edgeTools,极简图必须自带 provider(id≠源名:派工单
  *     id=edge-tools-registry,name 末段=tools;名单断言按 name 末段比)。
  *     §7.59.4:证伪级 stage1/1b 已退役;§7.59.5:stage2/stage2-ops 合并为单一
- *     cordis.patch.yml(headless 孪生的 8 插件图由 rig 运行时派生,不落仓库),
+ *     cordis.patch.yml(当时 headless 孪生由 rig 运行时派生 8 插件图、不落仓库;
+ *     §7.169 起 file-logger 零静态依赖,headless 逐字挂 9 插件,派生已移除),
  *     boot 签名逐字存档于 docs/PROGRESS.md §7.59(单一存档点)
  *   - 每条 insert 的 name 末段 ∈ 极简 exports,对应 src 文件存在(①↔②互指)
  *   - Schema 必填字段 + 存储隔离锁(③必填、R7:realm-skill-bridge.configPath;
@@ -52,10 +54,11 @@ function stageInserts(file: string): InsertRow[] {
 // (ids helper 已退役:名单断言按 name 末段比 —— edge-tools-registry id≠源名)
 
 const CLOSURE = ['audit-log', 'privacy-policy', 'prompt-guard', 'intent-router', 'sanitizer-pipeline', 'tools', 'realm-skill-bridge', 'input-guard'] as const
-/** 实装花名册 = 执法闭包 8 + file-logger(运维日志落盘)。file-logger
- *  inject=['web'],headless 冒烟图由 rig deploy 时剥除,但 exports 必须提供,
- *  否则 TUI 形状派工单断链。tools 提供 edgeTools(realm-skill-bridge §7.92.2
- *  inject 依赖),派工单 id=edge-tools-registry、name 末段=tools。 */
+/** 实装花名册 = 执法闭包 8 + file-logger(运维日志落盘)。§7.169 后 file-logger
+ *  零静态依赖(inject=[],web 降为延迟注入),headless 可逐字挂全图——rig 不再
+ *  派生剥除版。exports 必须提供 file-logger,两形状同图。tools 提供 edgeTools
+ *  (realm-skill-bridge §7.92.2 inject 依赖),派工单 id=edge-tools-registry、
+ *  name 末段=tools。 */
 const ROSTER = [...CLOSURE, 'file-logger']
 
 const patchRows = stageInserts(PATCH)
@@ -88,7 +91,7 @@ function injectOf(text: string): string[] {
 }
 
 describe('bundle-minimal:单一派工单名单', () => {
-  it('cordis.patch.yml = 恰 9 插件实装花名册,且 file-logger 居首(mount FIRST 才能兜住后续插件的 ctx.logger)', () => {
+  it('cordis.patch.yml = 恰 9 插件实装花名册,且 file-logger 居首(排版约定;§7.169:通道可用性由延迟注入保证,不靠树序)', () => {
     assert.equal(patchRows[0]!.id, 'file-logger', 'file-logger 必须是第一行')
     // 按 name 末段(= 源文件名 = 花名册名)比,不按 id —— edge-tools-registry
     // 的 id 与源名 'tools' 不同(dsh-base 同名冲突改名,§7.93.0)。
@@ -190,9 +193,10 @@ describe('bundle-minimal:inject 闭包锁', () => {
       }
     }
     assert.deepEqual([...missing], [], '派工单缺依赖(补插件行或确认宿主提供)')
-    // rig 的 headless 派生图剥 file-logger 的前提就是它只多依赖 web:
-    // 若此断言炸,说明 file-logger 依赖面变了,headless 派生逻辑需重评。
-    assert.ok(injectList('file-logger').includes('web'), 'file-logger 若不再 inject web,需重评 headless 剥离派生')
+    // §7.169 重评:headless 逐字挂全图的前提 = file-logger 零静态依赖
+    // (旧 tripwire「须含 web」作废——rig 的剥离派生已随之移除)。
+    // 若此断言炸,说明 file-logger 重新声明了静态依赖,headless 孪生臂需重评。
+    assert.deepEqual(injectList('file-logger'), [], 'file-logger 若有静态 inject,headless 逐字挂载前提失效,需重评 rig')
   })
 
   it('PROVIDES 映射与源码一致:每个 service 名至少被 src/dsh-adapter 某个 inject 列表引用(闭包外也算,如 inputGuard 被 *-llm-adapter 消费)', () => {

@@ -4,13 +4,15 @@
 # 必须自带 provider,否则 inject 闭包锁红 / rig 静默 pending。名字即 loader 指针名(package.json
 # dsh.bundle.patch = "./cordis.patch.yml"):部署 = 逐字 cp 本文件进嵌套包,零改名。
 # dsh-tui 生产所挂副本与本文件逐字节一致。
-# file-logger 放【第一行】是生产注释(全量 cordis.patch.yml §M6)的硬要求
-# "Must mount FIRST":Cordis 按依赖序加载且它除宿主 web service 外无闭包内依赖,
-# 居首才能兜住后续所有插件的 ctx.logger.* 输出。
-# ⚠️ 宿主前提:file-logger.ts:97 `inject = ['web']`(boot 诊断读
-#   ctx.web.searchProviders)。dsh-tui / web 宿主提供 web service;headless
-#   (dsh-base+dsh-headless)没有 → boot FAIL-LOUD。rig 的 headless 冒烟臂因此
-#   在 deploy 时【运行时派生】8 插件图(剥掉 file-logger 行块),派生物不落仓库。
+# file-logger 放【第一行】是排版约定(历史沿袭自全量 cordis.patch.yml §M6 的
+# "Must mount FIRST")。§7.169 实测:同层插件的 apply 先后由模块解析/求值速度
+# 决定,不依赖配置树顺序 —— ops log 通道可用性改由消费方延迟注入
+# (ctx.inject(['fileLogger'], …))保证,居首不再是正确性前提。
+# ✅ headless 可逐字挂(§7.169 重评,file-logger.ts inject=[]):web 已降为
+#   延迟注入(ctx.inject(['web'], …)),无 web 宿主时该诊断子纤维保持 pending、
+#   不报错不阻塞(实测 cordis lib/index.js _checkImpl 对缺席 impl 只 delete)。
+#   rig 的 headless 孪生因此拿【同一张逐字 9 插件图】,旧「剥 file-logger 派生
+#   8 插件」逻辑已随此前提作废而移除。
 # 运维日志责任分离(两-channel discipline,见 file-logger.ts 头注释):
 #   ops log(本文件带出的)= 过程流水,metadata only;
 #   audit JSONL = 安全账本,redacted 内容 preview。二者互不顶替。
