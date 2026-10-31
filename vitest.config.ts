@@ -18,9 +18,33 @@
  * red). The setup file clears the ambient names before each test file.
  */
 import { defineConfig } from 'vitest/config'
+import { fileURLToPath } from 'node:url'
 
 export default defineConfig({
+  /**
+   * §7.120（2026-10-31）：宿主 `@deepseek-ai/dsh-tools` 顶层 import
+   * `@deepseek-ai/dsh-sandbox`，而本仓没依赖那个包 ⇒ 任何 import dsh-tools 的
+   * 测试都会在**加载期**抛 `Cannot find package`。这里把它指到本地桩
+   * （`tests/unit/stubs/dsh-sandbox.ts`）：只顶替三个**沙箱升级**相关的符号，
+   * dsh-tools 的执行管道（pre-execute waterfall / guard / 拒绝物化）全是宿主
+   * 原样代码。桩的边界写在它自己的文件头里。
+   */
+  resolve: {
+    alias: {
+      '@deepseek-ai/dsh-sandbox': fileURLToPath(new URL('./tests/unit/stubs/dsh-sandbox.ts', import.meta.url)),
+    },
+  },
   test: {
+    /**
+     * dsh-tools 必须**内联**处理（不能被 externalize 成 Node 直接 require）——
+     * 否则它的 `@deepseek-ai/dsh-sandbox` import 由 Node 解析，绕过上面的
+     * alias，测试在加载期就炸。
+     */
+    server: {
+      deps: {
+        inline: ['@deepseek-ai/dsh-tools'],
+      },
+    },
     env: {
       DSH_EDGE_CONFIG_FILE: 'off',
     },

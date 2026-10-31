@@ -1258,6 +1258,7 @@ ops log 默认只记 LLM 调用的**长度**。要看「到底发了什么、回
 | `input-guard.sanitize.failed` / `input-guard.sanitize.downgraded` | 出网前脱敏失败 / 降级 |
 | `input-guard.blocked.policy` / `.attack` / `.intent` | 拦截 |
 | `llm.cloud.egress.blocked` | 出网前脱敏失败，不出网；`reason: 'plan-error'` 表示裁剪判断本身出错（同样不出网，见行为契约） |
+| `etscli.shell.denied` | shell 里调了**非只读**的 etscli 子命令 ⇒ 拒绝执行（§7.120）。载荷只有工具名与子命令标签，**不含命令原文**（里面可能有本地路径与文件名） |
 | `policy.tamper-detected` | 策略文件签名校验失败 |
 
 **`llm.cloud.egress` 有两条路径，`via` 字段是唯一的区分依据**（§7.165）：
@@ -1308,6 +1309,15 @@ ops log 默认只记 LLM 调用的**长度**。要看「到底发了什么、回
   宿主的会话标题生成 —— 它们与主对话走**同一个** adapter，落**同样**的
   `llm.local.start` 审计行。出口审计行带 `internal` 与 `tools` 两个判别字段，
   面板据此把内部调用排除在「答案出口」之外。
+- **shell 里的 etscli 只允许只读子命令**（§7.120）：`bash` / `pwsh` 里出现的
+  `etscli` 调用，只有注册表派生的那 **14 个只读子命令**放行
+  （`auth list/status`、`user list`、`system info/health/alarm list`、
+  `file search`、`fs ls/stat/stats/search`、`meeting list`、`chat list`、
+  `sharing list`），其余一律**拒绝执行**并落一条 `etscli.shell.denied`。
+  用**白名单**而不是黑名单：黑名单只能挡住已经想到的写子命令，etscli 加一个新
+  写命令它就漏一个；白名单多挡（新增只读命令会被挡）而清单就在注册表里，两者
+  天然同步。技能（`skill` 工具）与已注册的 `etscli_*` 工具都**不经过 shell**
+  ⇒ 不受影响。
 - **LLM 调用记录按类别分组、请求响应成对**：Edge 标签页底部的「LLM 调用」板块按
   **攻击检测 / 意图判定 / 路由决策 / 宿主内部调用**分组，每次往返的**请求在上、
   响应在下**成对显示。配对靠 `callId`。
@@ -1337,6 +1347,7 @@ ops log 默认只记 LLM 调用的**长度**。要看「到底发了什么、回
 | 整段请求里**没有任何轮次起点**时 | 裁剪走退化路径：**全部保留**（不裁）。这是出网裁剪唯一的 fail-open。实测语料（5274 个真实请求前缀）里**从未触及**（0 次）—— 宿主每轮至少有一条持久化用户输入，或一条 `RequestUserInput`（§7.165 已把它算作轮次起点） |
 | 本地 provider 的**命名** | 归属判定认两种本地 provider：model-router 的 LOCAL 名单，或名字以 `local-` 开头。若将来注册一个**既不在名单、名字也不带 `local-` 前缀**的本地 provider，它的产出会被当成云段带上云。当前部署的本地池是 `local-llm`（两种判据都命中），实测语料里出现过的 provider 只有 `local-llm` / `cloud-llm` / `qwen-token-plan-cn` / `deepseek-account` / `aliyun` / `minimax-cn` ⇒ 属潜在风险，未发生 |
 | **标准模式下出网裁剪不生效** | 裁剪守卫挂在 `llm/stream` 上，但它只在**边缘模式**会话里执行：没有 pre-step 留下的会话状态就整条跳过（`input-guard.ts` 的 `if (!state) return next()`），而 pre-step 绑在边缘模式 preset 的 scope 上。⇒ 标准模式会话的出网请求**不做**「只带云段历史」的裁剪。这是 §7.140「标准模式零 edge 事件」不变式的直接后果（标准模式的审计链里一条 edge 事件都不该有，因此也**没有**「裁剪没跑」的提示行）。**实测影响面 = 0**：真实语料里 5 个无 edge 事件的会话（标准模式 / 非边缘）**全部没有任何本地 provider 产出**（provider 只有 `qwen-token-plan-cn` / `deepseek-account`）⇒ 没有本地历史可泄漏。**真正的触发条件是「同一会话里换工作方式」**（先用边缘模式跑出本地历史，再切到标准模式），这条未实测 |
+| §7.120 逃逸口守卫的**覆盖面** | 它拦的是**命令文本里出现的 etscli 调用**（`tools/pre-execute` waterfall 上判定）。**可以被绝对路径调用、复制二进制、别名、变量拼接、`eval` 等方式绕过** ⇒ 它**不是**能力层的等价物，只是纵深防御的一层。真正封死「模型按名字够到那个二进制」仍要靠从 PATH 里摘掉 `~/.local/bin`（主人 2026-10-31 裁决**不做**）。另外：**标准模式会话不受这条守卫约束**（监听器挂在边缘 preset 的 scope 上，标准模式的 scope 链里没有它）—— 与 §7.140 的「标准模式是纯宿主」一致，但代价是标准模式里那条逃逸口**仍然敞开** |
 
 ---
 

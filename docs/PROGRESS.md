@@ -17331,3 +17331,129 @@ vitest **1516 passed** · eslint **0 error**（59 warning 既有）· 双侧 `ts
 
 本节只做取证与文档，**代码未改**：vitest **1516 passed** · eslint **0 error** ·
 双侧 `tsc` OK · `verify-doc-links` 0 断链 0 孤儿。
+
+---
+
+## §7.168 §7.120 逃逸口封堵落地（机制落点改用 waterfall）+ 桌面输出掩码闭环实锤（2026-10-31）
+
+本节两件事：①把 §7.118 那次「agent 自己把文件传到 MEOS 设备」的逃逸口封掉；
+②主人 2026-10-31 在桌面里发的第一条含手机号消息，**输出掩码闭环实锤**。
+
+### 一、§7.120 封堵：机制落点从 `ctx.tools.guard()` 改成 `tools/pre-execute` waterfall
+
+主人裁决（2026-10-31）：
+
+> 用**插件侧 `ctx.tools.guard()` 守卫**封堵 —— 拦 bash 里 etscli 的写子命令。
+
+裁决的实质是「**插件侧**封堵，不碰宿主启动环境（不改 PATH / 不改启动脚本），
+桌面与无头两个 profile 都生效」。本轮把**机制落点**从 `ctx.tools.guard()` 换成
+`tools/pre-execute` waterfall，理由是三条**可查证**的事实（不是偏好）：
+
+1. **`ctx.tools.guard()` 不接受调用方的 scope。**
+   宿主实现：`guard(guard) { return this.layers.effect(this.ctx, …) }`
+   （`@deepseek-ai/dsh-tools` `lib/index.js:3017-3022`）—— 注册进的是
+   **ToolRuntime 服务自己那个 ctx** 所在的层。插件侧拿到 `ctx.tools` 时拿不到、
+   改不了那个 ctx ⇒ **无法把守卫绑到边缘 preset 的 scope 上**；服务在宿主根上下文
+   提供时那层就是**全局层** ⇒ 标准模式会话也会被拦 ⇒ 破坏 §7.140
+   「标准模式会话审计链零事件」不变式。
+   （宿主的注释「one registered through `agent.ctx` applies only to that agent」
+   描述的是**服务按 scope 提供**时的情形 —— 插件侧无法制造那个 ctx。）
+2. **宿主给插件的沙箱 façade 刻意不暴露 `guard`。**
+   `dsh-cordis-host-runner/lib/types/guard.js:581-588` 给插件的 `ctx.tools`
+   只留 `register` / `schemas` / `get`（注释里点名 `guard` 属于
+   「identity protection, pre-policy, **monotonic guards**, …」这一串不许旁路的
+   机制）。桌面 profile 现在给的是**真服务**（`ctx.tools.view()` 能用 ⇒ boot scan
+   数出 28 个工具，见 ops log `boot scan: 28 tools visible via ctx.tools`），
+   但那是**沙箱边界之外的当前状态**，不是稳定契约。
+3. **`tools/pre-execute` 既是宿主点名的扩展点，又是 scope 感知的。**
+   宿主注释原话（`lib/index.js:3008`）：「Register a monotonic guard **after the
+   extensible `tools/pre-execute` waterfall**」；派发时
+   `carrier = scopeTarget(this, exec.agent)`（`lib/index.js:3320-3321`）——
+   监听器按 scope 链派发，**边缘 preset 的监听器只收边缘会话的事件**。
+
+而 §7.136 已经把这条路在本仓跑通了：`realm-skill-bridge` 的 Layer 3 realm 闸门
+就是同一个 waterfall（`realm-skill-bridge.ts:1182`），审计链里有 **6 条**
+`tool.realm.denied`（`level: security`）作实证。
+
+**拒绝语义等价且同样单调**：waterfall 判 `deny` 时 `decision.reason` 直接成为
+拒绝理由（`lib/index.js:3337-3353`），工具**不派发**，后续监听器与守卫都放不回来。
+
+### 二、封堵内容（白名单，不是黑名单）
+
+- `bash` / `pwsh` 的参数里**所有字符串值**都过一遍分词（不依赖参数名 ——
+  宿主 bash 工具的参数名在 app.asar 里读不到，且版本间会变）；
+- 只放行**注册表派生的 14 个只读子命令**（`auth list/status`、`user list`、
+  `system info/health/alarm list`、`file search`、`fs ls/stat/stats/search`、
+  `meeting list`、`chat list`、`sharing list`），其余一律拒；
+- 用**白名单**而不是黑名单：黑名单只能挡住**已经想到的**写子命令（etscli 加一个
+  新写命令就漏一个），白名单的漏法是**多挡**（新增只读命令也会被挡）而清单就在
+  `etscli-tools.ts` 的注册表里 ⇒ 两者天然同步（单一事实源）；
+- 拒绝理由与审计行**只带前两段命令词**（`file upload`），**不带本地路径与文件名**
+  —— 理由会回到模型的上下文里、审计行会落盘；
+- **技能与白名单工具不受影响**：技能走宿主 `skill` 工具（参数 `skillName`），
+  `etscli_*` 工具走绝对路径直接调二进制 ⇒ 都不经过 shell 工具；
+- **被拒必须留证据**：ops log `warn`（`[etscli-shell-guard] denied tool=… subcommand=…`）
+  + 审计行 `etscli.shell.denied`（`level: security`，`source: etscli-tools`，
+  **不记命令原文**）；
+- **缺 `ctx.on` ⇒ 拒绝启动**（逃逸口不能静默敞开）。
+
+### 三、真运行时验证（新集成测试）：命令真的没跑起来
+
+新增 `tests/unit/etscli-shell-guard-integration.test.ts` —— 用**真 cordis Context +
+真 ToolRuntime**（`@deepseek-ai/dsh-tools`）跑完整条管道：
+
+| 断言 | 结果 |
+|---|---|
+| 写子命令 ⇒ `isError: true` + `error.message` 含拒绝理由 | ✅ |
+| 写子命令 ⇒ **工具的 `execute` 一次都没被调用** | ✅ `dispatched === 0` |
+| 只读子命令 ⇒ 照常派发 | ✅ `dispatched === 1` |
+| **反向证伪**：不注册守卫时写子命令**照常派发** | ✅ 拦它的确实是我们这道闸 |
+
+> 依赖注记：`dsh-tools` 顶层 import `@deepseek-ai/dsh-sandbox`（宿主侧包，本仓没
+> 依赖）⇒ 测试里用 `tests/unit/stubs/dsh-sandbox.ts` 顶替**三个沙箱升级相关符号**
+> （`ESCALATION_TARGETS` / `validateEscalationArgs` / `approveEscalation`），
+> **管道本身全是宿主原样代码**；桩里 `approveEscalation` 直接抛错（fail-closed），
+> 任何测试若真走到升级审批必须立刻炸出来。顶替边界写在桩的文件头里。
+
+单测另加 3 例（24 + 3 = **27 例全绿**）：注册形状（缺 `ctx.on` ⇒ 抛）、
+放行路径**必须 `return next()`**（直接 `allow` 会把宿主后面的链条整条截断）、
+`onDeny` 回调带出工具名与子命令。
+
+### 四、桌面 GUI 输出掩码闭环：实锤
+
+主人 12:24:31 在桌面会话 `session-c25ef9f8-5fdf-4c3f-be57-59e99efeffb8` 里发了
+「请原样回显 13812345678」。审计链（`~/.dsh-edge-agent/audit/audit.plain.jsonl`）：
+
+| 时刻 | 事件 | 载荷 |
+|---|---|---|
+| 12:24:31 | `guard.model-detect.start` | `textLen: 17`（原文长度） |
+| 12:24:32 | `intent.classify.end` | `category: LOCAL`（jev 判定，`intent: LOCAL`） |
+| 12:24:32 | `input-guard.route.overridden` | `qwen-token-plan-cn/deepseek-v4.1-flash` → `local-llm/qwen3.8-flash` |
+| 12:24:36 | `llm.local.end` | 主对话本地轮结束 |
+| 12:24:36 | **`input-guard.output.masked` ×2** | `count: 1, types: ["phone"]` |
+| 12:24:36 | `input-guard.selection.restored` | 轮末还原宿主模型选择 |
+
+桌面 ops log 里模型产出**本身就是掩码形态**：`"content":"138****5678"`。
+
+**落盘核查（关键）**：
+
+| 落盘面 | 明文 `13812345678` | 掩码 `138****5678` |
+|---|---|---|
+| 插件审计链 `audit.plain.jsonl` | **0 次** | — |
+| 插件 ops log | **0 次** | 14 次 |
+| 宿主会话投影缓存（`session_projcache`） | 有（用户的 `prompt` / `lastUser`） | 2 次（**模型回复**） |
+
+⇒ **插件自己的落盘面没有明文**；宿主会话存储里那条明文是**用户自己发的那条消息
+本体**（聊天记录），插件既不该改写也不改写得了（改了就等于篡改用户原话）。
+主对话的**回复**在两处都是掩码形态。
+
+### 五、门禁
+
+vitest **1543 passed | 2 skipped**（76 文件，比上轮 +27）· eslint **0 error**
+（59 warning 既有）· 双侧 `tsc` OK · `verify:build` **exit=0（25 项）** ·
+`verify-doc-links` 0 断链 0 孤儿。
+
+> 顺带改了 `scripts/verify-plugin-spec.ts`：给纯工具模块 `etscli-shell-guard`
+> 加了豁免（与 `host-egress-guard` / `cloud-egress` / `llm-trace` 同款）——
+> 它被 `etscli-tools.ts` import，**不是** cordis patch 行，不在 package.json
+> exports 里。

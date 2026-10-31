@@ -117,6 +117,10 @@ for (const file of sources) {
   // 裁剪）。Imported by input-guard; never inserted by a cordis patch row, not in
   // package.json exports.
   if (base === 'host-egress-guard') continue
+  // §7.120: 「bash 里直接调 etscli 写子命令」那条逃逸口的封堵（只读子命令
+  // 白名单 + tools/pre-execute waterfall 监听器）。Imported by etscli-tools.ts;
+  // never inserted by a cordis patch row, not in package.json exports.
+  if (base === 'etscli-shell-guard') continue
   if (base === 'plugin' || base === 'index') continue
   const content = readFileSync(file, 'utf8')
 

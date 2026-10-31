@@ -52,6 +52,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
 import { loadEdgeConfig } from './edge-config.js'
+import { registerEtscliShellGuard } from './etscli-shell-guard.js'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Structural types (loose coupling — see module header)
@@ -132,8 +133,7 @@ interface EtscliToolSpec {
  * | `file search` | `keyword` | `--keyword` | |
  * | `system alarm list` | `limit` | `--number` | 不是 `--limit` |
  */
-const ETSCLI_TOOL_SPECS: readonly EtscliToolSpec[] = [
-  {
+const ETSCLI_TOOL_SPECS: readonly EtscliToolSpec[] = [  {
     name: 'etscli_auth_list',
     description: 'list all saved login profiles',
     argv: ['auth', 'list'],
@@ -230,6 +230,16 @@ const ETSCLI_TOOL_SPECS: readonly EtscliToolSpec[] = [
     params: [],
   },
 ]
+
+/**
+ * §7.120：**只读** etscli 子命令的 argv 前缀清单（从注册表派生，单一事实源）。
+ *
+ * `etscli-shell-guard` 用它做**白名单**：shell 里只允许这几个只读子命令，
+ * 其余一律拒绝。派生而不是另抄一份 ⇒ 注册表加一个只读工具，白名单自动跟上；
+ * 反过来，写子命令永远不在白名单里（它们压根没注册）。
+ */
+export const ETSCLI_READONLY_ARGV: readonly (readonly string[])[] =
+  ETSCLI_TOOL_SPECS.map(spec => spec.argv)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Shell quoting
@@ -346,7 +356,7 @@ export const Config: Schema<Config> = Schema.object({
   timeoutMs: Schema.natural(),
 })
 
-export async function apply(ctx: Context, config: Config): Promise<void> {
+export async function apply(ctx: Context, config: Config): Promise<() => void> {
   // §7.102: fill unset knobs from config/edge.json (etscli.*).
   const e = loadEdgeConfig().etscli
   const ec = config as Partial<Config>
@@ -373,6 +383,55 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   ctx.logger?.info?.(
     `[etscli-tools] registering ${ETSCLI_TOOL_SPECS.length} read-only tools, bin=${config.etscliBin}`,
   )
+
+  // ── §7.120：封堵「bash 里直接调 etscli 写子命令」这条逃逸口 ────────────
+  //
+  // §7.98 的白名单管的是**工具清单**（模型选不到写子命令），管不住「模型自己
+  // 在 shell 里敲 etscli」。§7.118 那次实测就是这么把本地文件传到 MEOS 设备的
+  // —— 而宿主那道 Auto review 闸门在 edge preset 下不存在，沙箱又只看得见文件
+  // 系统（远端设备写操作对它完全不可见）⇒ 两道闸都拦不住。
+  //
+  // 主人裁决（2026-10-31）：用**插件侧守卫**封堵，不碰宿主启动环境、不改
+  // PATH，桌面与无头都生效。
+  //
+  // 机制落点：`tools/pre-execute` waterfall（`etscli-shell-guard.ts` 模块头
+  // 记了为什么不是 `ctx.tools.guard()`：guard 注册进的是**服务自己那个 ctx**
+  // 所在的层，插件侧绑不到边缘 preset 的 scope ⇒ 会伸到标准模式，破坏
+  // §7.140 的「标准模式会话零事件」不变式；waterfall 则按 scope 链派发）。
+  //
+  // 守卫只拦**写子命令**；技能（`skill` 工具 + `skillName`）与白名单工具
+  // （绝对路径直接调二进制）都不经过 shell 工具 ⇒ 不受影响。
+  const auditLog = (() => {
+    try {
+      return (ctx as unknown as {
+        get?: (name: string) => unknown
+      }).get?.('auditLog') as { log?: (entry: unknown) => Promise<unknown> } | undefined
+    } catch {
+      return undefined
+    }
+  })()
+
+  const guardDisposer = registerEtscliShellGuard(ctx, {
+    bin: config.etscliBin,
+    onDeny: denial => {
+      // 证据必须留：ops log 里「tool allow」是 realm 过滤那一层的放行，
+      // 我们的守卫是**执行前**最后一道 —— 面板上必须能看出这次到底执行没执行。
+      ctx.logger?.warn?.(
+        `[etscli-shell-guard] denied tool=${denial.tool} subcommand=${denial.subcommand}`,
+      )
+      void auditLog?.log?.({
+        level: 'security',
+        kind: 'etscli.shell.denied',
+        source: 'etscli-tools',
+        payload: {
+          tool: denial.tool,
+          subcommand: denial.subcommand,
+          // 刻意**不记命令原文**：里面可能有本地路径与文件名。
+          reason: denial.reason.slice(0, 300),
+        },
+      })?.catch?.(() => {})
+    },
+  })
 
   for (const spec of ETSCLI_TOOL_SPECS) {
     // 重复注册同名会 throw 并中断整个 apply()(NamedEntries,dsh-tools `lib/index.js:2538`),
@@ -460,4 +519,8 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   } catch (err) {
     ctx.logger?.warn?.(`[etscli-tools] failed to dump registry tool list: ${String(err)}`)
   }
+
+  // 宿主返回的**精确 disposer**（`ctx.on('tools/pre-execute', …)` 的返回值）——
+  // 有序拆卸 / HMR 清理时用它注销监听器。
+  return guardDisposer
 }
