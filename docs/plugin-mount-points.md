@@ -217,13 +217,14 @@ ctx.reflect.provide('edgeTools', this)       // → ctx.edgeTools (被 realm-ski
 inject: [auditLog, tools]
 ```
 
-### file-logger — 观测底盘(必须第一个 apply)
+### file-logger — 观测底盘(居首=排版约定;通道可用性靠延迟注入,§7.169)
 
 ```ts
-// src/dsh-adapter/file-logger.ts:524
-// 重写 ctx.logger.*, 所有 plugin 的日志输出 → ~/.dsh-edge-agent/log/dsh-edge-agent.log
-// cordis.patch.yml:299-303 注释:
-// "Must mount FIRST so every other plugin's ctx.logger.* call lands on disk"
+// src/dsh-adapter/file-logger.ts(export const inject = [] as const)
+// 重写 ctx.logger.*, 所有 plugin 的日志输出 → ~/.dsh-edge-agent/log/…log
+// cordis.patch.yml §M6 注释(§7.169 已更正):旧的 "Must mount FIRST / 按依赖序
+// 加载所以居首必最先 apply" 断言被实测推翻 —— 同层先后由模块解析速度决定。
+// 需要「通道就位后才落」的启动凭据走 ctx.inject(['fileLogger'], …) 延迟注入。
 ```
 
 ---
@@ -378,7 +379,7 @@ http-api ──inject──► [agents, intentRouter, auditLog, tdBus, realmSkil
 
 观测底盘:
   audit-log ─► 所有 plugin ctx.auditLog.log(...)
-  file-logger ─► 重写 ctx.logger.*, 第一个 apply, 落 ~/.dsh-edge-agent/log/
+  file-logger ─► 重写 ctx.logger.*, 落 ~/.dsh-edge-agent/log/(就位时机=延迟注入,§7.169)
 
 Provider 注册 (并行):
   cloud-llm-adapter   ─► ctx.llm.registerAdapter(['cloud-llm'], adapter)
@@ -405,4 +406,4 @@ Provider 注册 (并行):
 
 1. **每个插件只有三种挂法**:挂 dsh 事件(`ctx.on`) / 注册 service(`ctx.reflect.provide`) / 注册 LLM/web provider(`ctx.llm.registerAdapter` / `ctx.web.registerSearchProvider`)。
 2. **input-guard 是编排器**:挂 3 个 dsh 钩子,`softInject` 5 个 service,把 prompt-guard / privacy-policy / intent-router / sanitizer 串成一条管线。
-3. **观测底盘 = audit-log + file-logger**:audit-log 是 service provider(几乎所有 plugin emit),file-logger 重写 ctx.logger(必须第一个 apply 才能捞住所有日志)。
+3. **观测底盘 = audit-log + file-logger**:audit-log 是 service provider(几乎所有 plugin emit),file-logger 重写 ctx.logger(§7.169:同层 apply 先后靠不住,通道就位由消费方 `ctx.inject(['fileLogger'], …)` 延迟注入保证)。

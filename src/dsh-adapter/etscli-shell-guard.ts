@@ -69,15 +69,46 @@
  *
  * ## 依赖方向
  *
- * 本模块**不 import** `etscli-tools.ts`：白名单由调用方以 `allowlist` 参数传入
- * （单一事实源仍是 `etscli-tools.ts` 从注册表派生的那份）。
- * 否则 `etscli-tools → etscli-shell-guard → etscli-tools` 会成环 —— 环在这里
- * 恰好不炸（两边都在函数体里用对方），但那是**求值顺序的运气**，不是设计。
+ * 本模块 import `etscli-tools.ts` 的 `ETSCLI_READONLY_ARGV`（白名单的**单一
+ * 事实源** = 从只读工具注册表派生的那份）—— **单向**依赖：`etscli-tools.ts`
+ * 不 import 本模块（否则成环：环在这里恰好不炸，那是求值顺序的运气）。
+ *
+ * ## 为什么是**独立插件行**，而不是写在 etscli-tools 里
+ *
+ * §7.118 那次 MEOS 写入事故发生在**headless HTTP profile**里，而那个 profile
+ * （以及 desktop-safe preset）**本来就没挂** `etscli-tools` ⇒ 守卫写在它里面
+ * 就等于**哪个部署都没上膛**（「代码写了、测试过了、闸门没装」是本仓最怕的
+ * 那种状态）。独立成行后可以**按需挂载**：
+ *
+ * - `profiles/dsh-edge-agent/cordis.patch.yml`（headless HTTP profile ——
+ *   事故发生的那个）；
+ * - `presets/edge.desktop-safe.patch.yml`（桌面 preset）；
+ * - `presets/edge.patch.yml`（完整 edge preset）。
+ *
+ * 独立行只**加一道闸**，**不**把那 14 个只读 etscli 工具带进那些 profile ——
+ * 带进去是能力扩张，超出「封堵逃逸口」这件事本身。
  *
  * @module dsh-edge-agent/etscli-shell-guard
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+import Schema from '@deepseek-ai/schemastery'
+
+import { loadEdgeConfig } from './edge-config.js'
+import { defaultEtscliBin, ETSCLI_READONLY_ARGV } from './etscli-tools.js'
+
+/** 插件名（cordis patch 行的 id 与本名一致）。 */
+export const name = 'etscli-shell-guard'
+
+/**
+ * 没有服务依赖（§7.169）：只用 `ctx.on`（cordis 的框架动词）。
+ *
+ * **刻意不声明 `auditLog`**：声明成硬依赖后，本行要等 auditLog 服务就绪
+ * 才 apply —— 那条服务一旦缺席，**闸门整个不装上**（逃逸口静默敞开）。
+ * 闸门必须先于任何证据通道就位。审计服务改为**延迟注入**捕获
+ * （见 apply() 内注释）：审计是证据通道，不是闸门的依赖。
+ */
+export const inject = [] as const
 
 /** 能执行任意命令的工具名（小写比较）。 */
 export const SHELL_TOOL_NAMES: readonly string[] = ['bash', 'pwsh']
@@ -402,4 +433,103 @@ export function registerEtscliShellGuard(
     return { kind: 'deny', reason } satisfies PreToolDecision
   })
   return typeof disposer === 'function' ? disposer : () => {}
+}
+
+// ── 插件入口 ────────────────────────────────────────────────────────────────
+
+export interface Config {
+  /**
+   * etscli 二进制绝对路径 —— 只用来**识别**绝对路径调用
+   * （`/Users/me/.local/bin/etscli file upload …`）。
+   *
+   * 缺省顺序：本项 → `config/edge.json` 的 `etscli.bin` → `~/.local/bin/etscli`
+   * （§7.102「one config file」：运行期配置只有一个读点）。
+   */
+  etscliBin?: string
+}
+
+export const Config: Schema<Config> = Schema.object({
+  etscliBin: Schema.string(),
+})
+
+/**
+ * 装上这道闸。
+ *
+ * 装的顺序与两件记录：
+ *
+ * 1. **启动行**（`armed`）：只记拒绝行的话，"守卫没装上" 和 "守卫装上了但这次
+ *    没人触发" 在日志里长得一模一样 ⇒ 启动时把**白名单规模**与**机制落点**
+ *    写出来。不记放行行（每次 bash 调用都记会淹掉真正的拒绝行；realm 闸门那层
+ *    已经在逐次记 tool allow/deny）。
+ * 2. **拒绝行**：ops log `warn` + 审计行 `etscli.shell.denied`
+ *    （`level: security`；载荷**不含命令原文** —— 里面可能有本地路径与文件名）。
+ */
+export async function apply(ctx: Context, config: Config): Promise<() => void> {
+  const configured = loadEdgeConfig().etscli
+  const bin = (config.etscliBin && config.etscliBin.length > 0)
+    ? config.etscliBin
+    : (configured?.bin && configured.bin.length > 0 ? configured.bin : defaultEtscliBin())
+
+  // 审计服务用**延迟注入**捕获（§7.169）。
+  //
+  // 为什么不用 `ctx.get('auditLog')`：宿主 cordis 的 `get(name)` 走
+  // `ctx[isolate][name]` —— 只有**声明在 inject 里**的名字才进 isolate 表。
+  // 本插件刻意不声明 auditLog（见上方 inject 的说明），所以
+  // `ctx.get('auditLog')` 恒为 undefined ⇒ 拒绝路径的审计行**从未落过地**
+  // （实测 2026-10-31：探针打印 `ctx.get(auditLog) type=undefined`）。
+  //
+  // 延迟注入（`ctx.inject(['auditLog'], cb)`）另起一根 fiber，它自己的
+  // isolate 表里有 auditLog ⇒ 回调里拿得到服务。拒绝真发生时，审计行
+  // 才需要它，那时服务早已就位。
+  let auditLog: { log?: (entry: unknown) => Promise<unknown> } | undefined
+  ctx.inject(['auditLog'], (raw: any) => {
+    auditLog = raw?.auditLog as typeof auditLog
+  })
+
+  const disposer = registerEtscliShellGuard(ctx, {
+    // 白名单的单一事实源：从只读工具注册表派生的那份（本模块 import 过来，
+    // 单向依赖）。守卫不自己造第二份清单。
+    allowlist: ETSCLI_READONLY_ARGV,
+    bin,
+    onDeny: denial => {
+      ctx.logger?.warn?.(
+        `[etscli-shell-guard] denied tool=${denial.tool} subcommand=${denial.subcommand}`,
+      )
+      void auditLog?.log?.({
+        level: 'security',
+        kind: 'etscli.shell.denied',
+        source: 'etscli-shell-guard',
+        payload: {
+          tool: denial.tool,
+          subcommand: denial.subcommand,
+          // 刻意**不记命令原文**：里面可能有本地路径与文件名。
+          reason: denial.reason.slice(0, 300),
+        },
+      })?.catch?.(() => {})
+    },
+  })
+
+  // 「已上膛」的凭据必须落在**已经就位**的通道上（§7.169）。
+  //
+  // 为什么不能直接在 apply() 末尾 `ctx.logger.info(...)`：ops log 的落盘
+  // 导出器由 `file-logger` 插件注册，而**插件的 apply 先后由模块解析速度
+  // 决定**（实测：守卫比 file-logger 先 apply）⇒ apply 那一刻 logger 还没
+  // 有导出器 ⇒ 那一行**静默丢失**（实测 t0 丢、t300 起才落盘）。
+  //
+  // 办法：延迟注入 `fileLogger`。宿主 cordis 只在 providing fiber **变为
+  // ACTIVE 之后**才 notify 依赖方（`_updateState`），而导出器正是在那之前
+  // 注册好的 ⇒ 回调触发时通道必定可用 ⇒ 这一行必定落盘，且**与加载顺序
+  // 无关**。服务已经就位时回调立即触发（桌面 preset 就是这种），还没就位
+  // 就等它（headless profile 是这种）。
+  //
+  // 刻意**不在 apply 时先打一次**：那一刻通道可能还没有导出器，那一行会
+  // 悄悄丢掉，还会让后面那次被"只记一次"的标志吞掉 ⇒ 反而永远看不到。
+  ctx.inject(['fileLogger'], () => {
+    ctx.logger?.info?.(
+      `[etscli-shell-guard] armed on tools/pre-execute, read-only allowlist=${ETSCLI_READONLY_ARGV.length} ` +
+      `bin=${bin} shellTools=${SHELL_TOOL_NAMES.join('/')}`,
+    )
+  })
+
+  return disposer
 }

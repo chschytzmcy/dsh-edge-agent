@@ -36,6 +36,11 @@ import {
   registerEtscliShellGuard,
   tokenizeShell,
 } from '../../src/dsh-adapter/etscli-shell-guard'
+import {
+  apply as pluginApply,
+  inject as pluginInject,
+  name as pluginName,
+} from '../../src/dsh-adapter/etscli-shell-guard'
 import { ETSCLI_READONLY_ARGV } from '../../src/dsh-adapter/etscli-tools'
 
 /** 主调用的判定：是否被拒 + 子命令。 */
@@ -258,5 +263,112 @@ describe('§7.120 — 注册到宿主（tools/pre-execute waterfall）', () => {
     assert.equal(seen.length, 1)
     assert.equal(seen[0]!.tool, 'bash')
     assert.equal(seen[0]!.subcommand, 'file upload')
+  })
+})
+
+describe('§7.120 — 插件行（独立挂载，不带 etscli-tools 那一整套工具）', () => {
+  it('插件形状齐备（cordis patch 行靠它认）', () => {
+    assert.equal(pluginName, 'etscli-shell-guard')
+    // §7.169: inject 必须是**空** —— 闸门不能因为某个服务缺席就不装上
+    // （那等于逃逸口静默敞开）。审计服务走**延迟注入**。
+    assert.deepEqual([...pluginInject], [])
+    assert.equal(typeof pluginApply, 'function')
+  })
+
+  it('apply()：挂上监听器 + 记「已上膛」启动行 + 返回 disposer', async () => {
+    const listeners: Array<(exec: unknown, next: () => Promise<unknown>) => Promise<unknown>> = []
+    const logged: string[] = []
+    const ctx = {
+      on(event: string, fn: (exec: unknown, next: () => Promise<unknown>) => Promise<unknown>) {
+        assert.equal(event, 'tools/pre-execute')
+        listeners.push(fn)
+        return () => {}
+      },
+      logger: { info: (m: string) => logged.push(m), warn: (m: string) => logged.push(m) },
+      // §7.169: 「已上膛」启动行走**延迟注入的 fileLogger** —— 只有 ops log
+      // 通道真的就位了才打（否则那一行会静默丢掉）。
+      inject(deps: string[], cb: (raw: unknown) => void) {
+        if (deps.includes('fileLogger')) cb({ fileLogger: {} })
+        return () => {}
+      },
+    }
+    const disposer = await pluginApply(ctx as any, {})
+    assert.equal(listeners.length, 1)
+    assert.equal(typeof disposer, 'function')
+    assert.ok(logged.some(line => line.includes('armed on tools/pre-execute')))
+    // 启动行必须把**白名单规模**写出来 —— 白名单是空的/没接上的话一眼能看出来。
+    assert.ok(logged.some(line => line.includes(`read-only allowlist=${ETSCLI_READONLY_ARGV.length}`)))
+  })
+
+  it('§7.169：审计服务缺席也**照样上膛**（闸门不因证据通道缺失而消失）', async () => {
+    const listeners: Array<(exec: unknown, next: () => Promise<unknown>) => Promise<unknown>> = []
+    const logged: string[] = []
+    const ctx = {
+      on(_event: string, fn: (exec: unknown, next: () => Promise<unknown>) => Promise<unknown>) {
+        listeners.push(fn)
+        return () => {}
+      },
+      logger: { info: (m: string) => logged.push(m), warn: (m: string) => logged.push(m) },
+      // 审计服务**永远**不就绪（auditLog 的回调不触发），fileLogger 就绪。
+      inject(deps: string[], cb: (raw: unknown) => void) {
+        if (deps.includes('fileLogger')) cb({ fileLogger: {} })
+        return () => {}
+      },
+    }
+    await pluginApply(ctx as any, {})
+    assert.equal(listeners.length, 1, '闸门必须已经挂上 —— 审计缺席不是免装的理由')
+    assert.ok(logged.some(line => line.includes('armed on tools/pre-execute')))
+  })
+
+  it('§7.169：ops log 通道没就位时，闸门照样挂上（启动行等通道就位再记）', async () => {
+    const listeners: Array<(exec: unknown, next: () => Promise<unknown>) => Promise<unknown>> = []
+    const logged: string[] = []
+    const ctx = {
+      on(_event: string, fn: (exec: unknown, next: () => Promise<unknown>) => Promise<unknown>) {
+        listeners.push(fn)
+        return () => {}
+      },
+      logger: { info: (m: string) => logged.push(m), warn: (m: string) => logged.push(m) },
+      // fileLogger 永远不就绪 ⇒ 启动行此刻还没法落盘。
+      inject(_deps: string[], _cb: (raw: unknown) => void) { return () => {} },
+    }
+    await pluginApply(ctx as any, {})
+    assert.equal(listeners.length, 1, '通道没就位不是闸门不上的理由')
+    // 此刻**不**该有一行「已上膛」—— 那会是一行落不了盘的假凭据。
+    assert.equal(logged.filter(line => line.includes('armed on tools/pre-execute')).length, 0)
+  })
+
+  it('apply()：拒绝时同时落 ops log 与审计行，且**不记命令原文**', async () => {
+    const listeners: Array<(exec: unknown, next: () => Promise<unknown>) => Promise<unknown>> = []
+    const logged: string[] = []
+    const audited: any[] = []
+    const ctx = {
+      on(_event: string, fn: (exec: unknown, next: () => Promise<unknown>) => Promise<unknown>) {
+        listeners.push(fn)
+        return () => {}
+      },
+      logger: { info: (m: string) => logged.push(m), warn: (m: string) => logged.push(m) },
+      // §7.169: 宿主语义 —— 审计服务经**延迟注入**送达（`ctx.get('auditLog')`
+      // 在未声明 inject 时恒为 undefined，见守卫源码里的说明）。
+      inject(deps: string[], cb: (raw: unknown) => void) {
+        if (deps.includes('fileLogger')) cb({ fileLogger: {} })
+        if (deps.includes('auditLog')) {
+          cb({ auditLog: { log: async (entry: any) => { audited.push(entry) } } })
+        }
+        return () => {}
+      },
+    }
+    await pluginApply(ctx as any, {})
+    await listeners[0]!(
+      { name: 'bash', arguments: { command: 'etscli file upload /Users/me/备忘/联系方式.txt' } },
+      async () => ({ kind: 'allow' }),
+    )
+    assert.ok(logged.some(line => line.includes('denied tool=bash subcommand=file upload')))
+    assert.equal(audited.length, 1)
+    assert.equal(audited[0].level, 'security')
+    assert.equal(audited[0].kind, 'etscli.shell.denied')
+    assert.equal(audited[0].payload.subcommand, 'file upload')
+    // 命令原文（含本地路径与文件名）**不得**进审计行。
+    assert.ok(!JSON.stringify(audited[0]).includes('联系方式'))
   })
 })

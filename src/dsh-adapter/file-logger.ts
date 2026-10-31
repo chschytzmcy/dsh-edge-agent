@@ -92,11 +92,31 @@ import Schema from '@deepseek-ai/schemastery'
 
 export const name = 'file-logger'
 
-// 2026-09-02: inject `web` so the boot diagnostic at installFileLogger()
-// can read `ctx.web.searchProviders.size` without Cordis throwing
-// `cannot get property "web" without inject`. file-logger itself does
-// not use the service; only the diagnostic does.
-export const inject = ['web'] as const
+/**
+ * 无硬依赖（§7.169，2026-10-31）。
+ *
+ * 原来是 `inject = ['web']`，只为了一句 boot 诊断（web-diag）能读
+ * `ctx.web.searchProviders.size`。代价是**整个 ops log 通道被一个无关服务
+ * 卡住**：cordis 要等 `web` 服务就绪才让本插件 apply，而**注册文件导出器的
+ * 正是本插件** ⇒ 凡是比 file-logger 更早 apply 的插件，它的启动日志（乃至
+ * 拒绝行）会**静默丢失**。
+ *
+ * 实测（§7.169，headless `dsh-edge-agent` profile，探针实测）：
+ *   - 守卫 apply 那一刻 `ctx.logger` 还没有落盘导出器；
+ *   - 同一 ctx 上 `ctx.logger.info(...)` 在 t0 **丢失**，t300 / t1500 / t4000
+ *     才落盘 —— 即「闸门上膛」启动行与拒绝行都可能无处可落。
+ *
+ * 改法：`web` 从硬依赖降为**延迟注入**（`ctx.inject(['web'], cb)`，与
+ * edge-context-view / input-guard 同款纪律），本插件零静态依赖 ⇒ 导出器注册
+ * 不再被无关服务拖后。**注意**：实测同层插件的 apply 先后由模块解析速度
+ * 决定、不靠配置树顺序（§7.169），所以「通道就位」不能靠"谁先 apply"保证 ——
+ * 消费方要用 `ctx.inject(['fileLogger'], …)` 延迟注入，回调触发时导出器必已
+ * 注册（cordis `_updateState` 只在 providing fiber 变 ACTIVE 后 notify）。
+ *
+ * 注意：桌面版 ops log 的文件名（`dsh-edge-agent-desktop.log`）来自**行**
+ * 的 config，本插件行必须比裸包名聚合行先装载 —— 零依赖后这个顺序只会更稳。
+ */
+export const inject = [] as const
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error'
 
@@ -540,12 +560,16 @@ export function installFileLogger(
   // `ctx.web.registerSearchProvider(...)` line — either because its
   // `inject: ['web']` dep wasn't satisfied, or because
   // `installSettingsSection` threw first. Knowing which one at boot saves
-  // a 90s chat round-trip. Deferred via setImmediate so every plugin's
-  // `apply()` has run before we read the registry; `ctx.inject` callbacks
-  // only fire when their deps are live, so the loader must settle first.
-  setImmediate(() => {
+  // a 90s chat round-trip.
+  //
+  // §7.169: `web` 是**延迟注入**（不再是本插件的硬依赖）—— 见本文件
+  // `export const inject` 上方的说明：硬依赖会把整个 ops log 通道拖到
+  // `web` 就绪之后，早 apply 的插件日志会静默丢失。延迟注入的回调在
+  // `web` 出现时触发；没有 `web` 的 profile 就不打这一行（与原行为等价：
+  // 原来是「读不到就打印 failed」）。
+  ctx.inject(['web'], (raw: any) => {
     try {
-      const web = (ctx as unknown as { web?: { searchProviders?: Map<string, unknown> } }).web
+      const web = raw?.web as { searchProviders?: Map<string, unknown> } | undefined
       const map = web?.searchProviders
       const size = map instanceof Map ? map.size : -1
       const ids = map instanceof Map ? [...map.keys()].join(',') : 'n/a'

@@ -358,6 +358,19 @@
                 name: '@deepseek-harness-edge-agent/dsh-edge-agent/etscli-tools'
                 inject: [tools, shell]
 
+              # §7.120: 封堵「bash 里直接调 etscli 写子命令」这条逃逸口。
+              #
+              # 上面那份注册表白名单管的是**工具清单**（模型选不到写子命令），
+              # 管不住「模型自己在 shell 里敲 etscli」—— §7.118 那次实测就是
+              # `bash: etscli file upload …` 把本地文件传到了 MEOS 设备。
+              # 本行挂在 `tools/pre-execute` waterfall 上：shell 里只放行注册表
+              # 派生的那 14 个只读子命令，其余一律拒（白名单，不是黑名单）。
+              #
+              # 独立成行（不与 etscli-tools 合并）⇒ headless HTTP profile 与
+              # desktop-safe preset 可以只挂这道闸、不引入那 14 个工具。
+              - id: etscli-shell-guard
+                name: '@deepseek-harness-edge-agent/dsh-edge-agent/etscli-shell-guard'
+
               - id: local-storage
                 name: '@deepseek-harness-edge-agent/dsh-edge-agent/local-storage'
                 config:

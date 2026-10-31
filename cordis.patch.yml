@@ -295,10 +295,12 @@
     includeUserRoot: true
 
 # ── 2026-09-01 (M6): file-logger — durable ops log exporter.
-# Must mount FIRST so every other plugin's ctx.logger.* call (audit-log
-# diagnostics, http-api req lines, td-bus blocks, etc.) lands on disk.
-# No inject deps — Cordis loads plugins in dependency order, and this
-# has none, so it runs before tcm / td-bus / audit-log / http-api.
+# Mount FIRST kept as a placement convention, but §7.169 实测推翻其原依据：
+# 同层插件的 apply 先后由模块解析/求值速度决定,**不**依赖配置树顺序 ⇒
+# "居首所以兜住所有 ctx.logger.*"不成立。通道可用性改由消费方延迟注入保证
+# (ctx.inject(['fileLogger'], …):回调触发时导出器必已注册)。
+# 历史上本行还声明过 inject:['web'](boot 诊断),该硬依赖会把它整个 apply 拖到
+# web 就绪之后 ⇒ §7.169 起 web 降为延迟注入,本插件零静态依赖。
 # See `src/dsh-adapter/file-logger.ts` for the two-channel discipline
 # (ops log: metadata only; audit JSONL: redacted call content).
 

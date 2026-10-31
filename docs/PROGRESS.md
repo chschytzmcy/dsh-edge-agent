@@ -17470,3 +17470,150 @@ vitest **1543 passed | 2 skipped**（76 文件，比上轮 +27）· eslint **0 e
 > 加了豁免（与 `host-egress-guard` / `cloud-egress` / `llm-trace` 同款）——
 > 它被 `etscli-tools.ts` import，**不是** cordis patch 行，不在 package.json
 > exports 里。
+
+## §7.169 追「headless 的闸门上膛行去哪了」：两处静默失真（2026-10-31）
+
+§7.168 把守卫做成了独立插件行并挂到三处。桌面 preset 的「已上膛」行出现了
+（13:08:00 实锤），**headless `dsh-edge-agent` profile 一条都没有**。
+这一节记的是：怎么追的、追出来是什么、改了什么、怎么证明改对了。
+
+### 一、先排除掉三个"看起来最像"的解释
+
+| 猜测 | 排除方式 | 结论 |
+|---|---|---|
+| 守卫行没进 profile 的插件树 | `dsh --profile dsh-edge-agent --dump-config` 里守卫行在最终配置树中 | 排除 |
+| 已安装产物是旧的 | tarball 与已安装产物逐字节比对 + 已安装 `package.json` 的 `exports` 含 `./etscli-shell-guard` | 排除 |
+| profile 没起来 | 部署脚本健康检查 `/v1/health` 200；ops log 里 13:14:40 那次启动有 **15 个插件**的启动行 | 排除 |
+
+⚠️ 顺带查实一件事：**桌面 App 会派生 `dsh-desktop-host --profile dsh-edge-agent`
+进程**（它占着 :21017）⇒ 部署脚本的健康检查可能打到**桌面派生进程**上而
+**假绿**。所以"健康检查 200"不能当作"headless profile 自己起来了"的证据。
+
+### 二、探针：闸门到底装上没有
+
+在**已安装产物**里插探针（源码不脏），前台起 profile 看 stderr：
+
+```
+[PROBE-MODULE] etscli-shell-guard module evaluated url=…/lib/dsh-adapter/etscli-shell-guard.js
+[PROBE-APPLY]  entered loggerType=function infoType=function onType=function
+[PROBE-BEFORE-ARMED] about to log armed line
+```
+
+⇒ 模块被求值、`apply()` 被调用、**走到了 armed 日志那一行**、而且
+`ctx.logger.info` 确实是函数。**闸门是装上了的**，缺的是"上膛"这两个字。
+
+### 三、根因 A：ops log 通道被一个无关服务卡住
+
+在同一 ctx 上打标记行（`ctx.logger.info('[PROBE-MARKER] …')`），
+ops log 里 **0 条**。再按时间点分批打：
+
+| 时刻 | 落盘？ |
+|---|---|
+| t0（= apply 那一刻） | **丢** |
+| t300 / t1500 / t4000 | 落盘 ✓ |
+
+⇒ 守卫 apply 的那一刻，**这个 ctx 的 logger 还没有落盘导出器**。
+谁提供导出器？`file-logger` 插件。而它声明的是：
+
+```ts
+export const inject = ['web'] as const   // ← 只为了一句 boot 诊断
+```
+
+cordis 要等 `web` 服务就绪才让它 apply ⇒ **注册文件导出器的那个插件，
+恰好是最后一个才 apply 的** ⇒ 比它早 apply 的插件，日志全部静默丢失。
+守卫是「零依赖 ⇒ 最早 apply」的那一类，于是它的启动行**必然丢**。
+
+> 这不是守卫自己的问题，是**通道**的问题：ops log 是全项目的证据面，
+> 却挂在一个与它毫无关系的 `web` 服务上。
+
+### 四、根因 B：拒绝路径的审计行**从来没落过地**
+
+守卫原来这样取审计服务：
+
+```ts
+const auditLog = ctx.get?.('auditLog')   // ← 读出来恒为 undefined
+```
+
+宿主 cordis 的 `get(name)` 实现（`@deepseek-ai/cordis/lib/index.js`）：
+
+```js
+get(name, strict = true) { … this.ctx[symbols.isolate][name] … }
+```
+
+⇒ **只有声明在 `inject` 里的名字才在 isolate 表里**。守卫的 `inject` 是空的
+⇒ `ctx.get('auditLog')` 恒为 `undefined` ⇒ **拒绝时那条 `etscli.shell.denied`
+审计行一次都没落过**（探针实测：`ctx.get(auditLog) type=undefined`）。
+
+⚠️ 单测**掩盖**了这一点：那一例把 `ctx.get` 桩成了"能返回 auditLog"，
+于是 30 例全绿，而真实运行时它是个 `undefined`。
+
+### 五、改法（含中途假说的自我推翻）
+
+中途假说过一次：「把 `file-logger.inject` 清空 ⇒ 它第一个 apply ⇒ 通道从
+第一刻在，问题自然消失」。**实测证伪**：改完后探针仍显示守卫比 file-logger
+**先** apply —— 同层插件的先后由**模块解析/求值速度**决定，不依赖配置树顺序
+（「Must mount FIRST」这类注释承载的语义是想象出来的）。⇒ 正确性**不能**
+建在 apply 顺序上。
+
+1. **`file-logger`：`inject` 清空**，`web` 降为**延迟注入**
+   （`ctx.inject(['web'], cb)`，与 edge-context-view / input-guard 同款纪律）。
+   ⇒ 导出器注册不再被无关服务拖后（t300 落 ⇒ 它自己 apply 就注册）。
+   但「谁先 apply」仍不可依赖 —— 那交给消费方保证（见 2）。
+2. **守卫：`inject` 保持空的**（**刻意**，闸门绝不因服务缺席而不装）。
+   - **armed 启动行放进 `ctx.inject(['fileLogger'], …)` 回调**里打：cordis
+     `_updateState`（宿主 lib/index.js:1295-1306）只在 providing fiber 变
+     ACTIVE 后才 notify ⇒ **回调触发时文件导出器必已注册**，与两插件的相对
+     顺序无关。**刻意不在 apply 时先打一次** —— 那会制造一条落不了盘的
+     假凭据，还被一次性标志吞掉真凭据。服务已就位时回调立即触发
+     （桌面即此情形，armed 行 13:28:32 照常落）。
+   - 审计服务同样改**延迟注入**捕获。为什么不在 `inject` 里声明
+     `auditLog`？—— 声明后本行要等审计服务就绪才 apply，那条服务一旦
+     缺席，**闸门整个不装上**（逃逸口静默敞开）。闸门必须先于任何证据
+     通道就位；审计是证据，不是闸门的依赖。
+3. **单测同步改口径**：不再用 `ctx.get` 桩 auditLog（那是假的宿主语义），
+   改走 `ctx.inject`；并补三条回归：
+   - 「审计服务缺席也照样上膛」（闸门不因证据通道缺失而消失）；
+   - 「通道没就位时启动行**不**打、且闸门照挂」（宁可漏显示，不显示
+     没发生过的事）；
+   - 「无 web 服务时文件导出器仍注册」（file-logger 侧）。
+4. **部署脚本不再用 `rm -rf`**（§7.169 顺手修）：受控环境里 `rm -rf` 会被
+   权限门转成基于 Finder 的删除（`mavis-trash` → `osascript … Finder … delete`），
+   目录大时能挂住十几分钟，部署看起来像卡死（实测一次耗了 11 分钟）。
+   那两处要的只是"移开"⇒ 改成 `mv` 带时间戳移开。
+
+### 六、bundle-minimal headless 派生逻辑的重评（同轮连锁）
+
+§7.169 把 `file-logger` 改成零静态依赖后，rig 的旧前提
+「headless 无 web ⇒ 挂 file-logger 必 FAIL-LOUD ⇒ deploy 时运行时派生剥
+file-logger 行块」失效（`scripts/minimal-bundle-rig.sh` 的 awk 剥离、
+`bundle-minimal/cordis.patch.yml` 头注释、`bundle-minimal/README.md`、
+`tests/unit/bundle-minimal.test.ts` 的 tripwire 断言四处联动）。重评结论：
+
+- **cordis 语义查证**：`ctx.inject(['web'], cb)` 实为 `ctx.plugin({inject:{web},apply})`
+  造一个子纤维；`_checkImpl`（宿主 lib/index.js:1307）对**缺席** impl 只是
+  `delete this._store[name]`，子纤维保持 INACTIVE pending，**不抛错、不阻塞
+  父纤维**（父的静态 inject 为空即可 ACTIVE）。
+- **真机实测（2026-10-31 14:04）**：重建 headless 孪生 `edge-min-chat`
+  （dsh-base + dsh-headless），挂**逐字 9 插件图**（含新 file-logger，零派生）：
+  boot **0 条 "did not activate"**、无 FAIL-LOUD 签名；ops log
+  `~/.dsh-edge-agent-minimal/log/dsh-edge-agent.log`（1.9MB）正常落盘，
+  `[edge-tools-registry]` 等 `ctx.logger.info` 行全在；audit 20 行闭环
+  （boot.probe / llm_error / rules fallback / session-realm / purged）。
+- **一个更老的事实顺带翻案**：ops log 第一行 `[web-diag] ctx.web
+  registered=true searchProviders.size=2` —— 当前 dsh-headless 宿主**其实
+  提供 web 服务**。这与 §7.61 时代「发现 1」的钉死记录一致（dsh-base@0.1.2-rc.1
+  自带 patch 无条件挂 `- id: web`，"headless 无 web"前提自 rc.1 起即作废，
+  rig 侧一直没跟着改）。因此「无 web 时 pending 子纤维无害」这一分支由 cordis
+  源码语义 + 单测桩支撑，未在本机实测复现；但**两分支都安全**，且实测臂
+  （有 web）逐字图 boot 通过。
+- 落码：rig deploy 两形状统一 `cp` 逐字拷贝（删 awk 派生）；测试 tripwire
+  反向钉住新前提 —— `assert.deepEqual(injectList('file-logger'), [])`，
+  「若 file-logger 重新声明静态依赖，headless 逐字挂载前提失效、需重评」。
+
+### 七、门禁与实机凭据
+
+- 实机双侧 armed 行：headless profile `13:27:51`、桌面 preset
+  `13:28:32.650`（同读 `~/.dsh-edge-agent/log/dsh-edge-agent-desktop.log`）。
+- 定向 vitest：guard 29 + integration 3 + file-logger 24 = 56 passed。
+- 全量门禁（vitest / eslint / tsc×2 / verify:build / verify-doc-links）结果
+  见提交说明与下一节末尾记录。

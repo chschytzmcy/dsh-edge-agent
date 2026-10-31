@@ -55,6 +55,10 @@ function fakeCtx() {
     registered,
     reflect: { provide(_n: string, _v: unknown) { return () => {} } },
     provide(_n: string, _v: unknown) { return () => {} },
+    // §7.169: `web` 已是**延迟注入**（不再��硬依赖）。这里刻意**不触发**
+    // 回调 —— 模拟「profile 里没有 web 服务」的真实情形：ops log 通道照样
+    // 必须建立（这正是本组要钉的性质）。
+    inject(_deps: string[], _cb: (raw: unknown) => void) { return () => {} },
     logger: {
       exporters,
       exporter(impl: object) {
@@ -83,12 +87,33 @@ afterEach(() => {
 describe('file-logger plugin shape', () => {
   it('exports the canonical plugin shape', () => {
     assert.equal(fileLogger.name, 'file-logger')
-    // 2026-09-02: inject=['web'] — see file-logger.ts for rationale
-    // (boot diagnostic reads ctx.web.searchProviders.size).
-    assert.deepEqual([...fileLogger.inject], ['web'])
+    // §7.169: `inject` 必须是**空**。原来是 ['web']，只为了一句 boot 诊断，
+    // 代价是**整个 ops log 通道被卡在 web 服务就绪之后** —— 比 file-logger
+    // 更早 apply 的插件日志（§7.120 守卫的「已上膛」启动行与拒绝行）会
+    // 静默丢失（实测：t0 丢、t300 起才落盘）。
+    assert.deepEqual([...fileLogger.inject], [])
     // Config is a Schemastery function (`Schema.object(...)`), not a plain
     // object — just assert it exists and is callable.
     assert.equal(typeof fileLogger.Config, 'function')
+  })
+})
+
+describe('§7.169 — ops log 通道不被无关服务卡住', () => {
+  it('没有 web 服务时也要把文件导出器注册上（通道先于一切就位）', () => {
+    const ctx = fakeCtx()
+    // fakeCtx 的 inject 回调**永不触发**（= 没有 web 服务）。
+    const svc = installFileLogger(ctx as never, {
+      root,
+      filename: 'a.log',
+      flushIntervalMs: 60_000,
+      queueCapacity: 100,
+      maxFileSizeBytes: 50 * 1024 * 1024,
+      maxFileAgeDays: 0,
+      maxRotatedFiles: 5,
+    })
+    assert.ok(svc, 'file logger must install even without the web service')
+    assert.equal(ctx.registered.length, 1, 'exactly one file exporter registered')
+    svc?.stop()
   })
 })
 

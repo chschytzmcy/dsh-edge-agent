@@ -83,6 +83,20 @@
     - id: edge-tools-registry
       name: '@deepseek-harness-edge-agent/dsh-edge-agent/tools'
 
+    # §7.120: 封堵「bash 里直接调 etscli 写子命令」这条逃逸口。
+    #
+    # 为什么是**独立行**：§7.118 那次 MEOS 设备写入事故就发生在**这个**
+    # headless profile 里（`bash: etscli file upload …` 把本地文件传到了
+    # 设备的 /备忘/联系方式.txt）—— 宿主 Auto review 闸门在 edge preset 下
+    # 不存在，沙箱只看得见文件系统（远端设备写操作对它不可见）⇒ 两道闸都
+    # 拦不住。守卫挂在 `tools/pre-execute` waterfall 上，只放行注册表派生的
+    # 那 14 个只读子命令，其余一律拒。
+    #
+    # 注意：本行**只加一道闸**，不挂 `etscli-tools` ⇒ 不会把那 14 个只读
+    # 工具带进本 profile（那是能力扩张，超出「封堵逃逸口」本身）。
+    - id: etscli-shell-guard
+      name: '@deepseek-harness-edge-agent/dsh-edge-agent/etscli-shell-guard'
+
     # Realm-aware skill/tool filtering. Uses the shared realm config file
     # (~/.dsh-edge-agent/skill-realms.json).
     - id: realm-skill-bridge

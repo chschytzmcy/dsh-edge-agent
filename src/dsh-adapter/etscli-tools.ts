@@ -52,7 +52,6 @@
 import type { Context } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
 import { loadEdgeConfig } from './edge-config.js'
-import { registerEtscliShellGuard, SHELL_TOOL_NAMES } from './etscli-shell-guard.js'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Structural types (loose coupling — see module header)
@@ -342,6 +341,17 @@ export const name = 'etscli-tools'
 
 export const inject = ['tools', 'shell']
 
+/**
+ * etscli 二进制的默认绝对路径（没有配置时的兜底）。
+ *
+ * Windows 走 `USERPROFILE`，其余走 `HOME`。**单一事实源**：§7.120 的 shell
+ * 守卫（`etscli-shell-guard.ts`，独立插件行）也要认绝对路径调用，它从这里
+ * import 这个兜底 —— 两处各写一份路径，早晚会长歪。
+ */
+export function defaultEtscliBin(): string {
+  return `${(process.env.USERPROFILE ?? process.env.HOME) ?? ''}/.local/bin/etscli`
+}
+
 export interface Config {
   /** etscli 可执行文件绝对路径。 */
   etscliBin: string
@@ -384,69 +394,20 @@ export async function apply(ctx: Context, config: Config): Promise<() => void> {
     `[etscli-tools] registering ${ETSCLI_TOOL_SPECS.length} read-only tools, bin=${config.etscliBin}`,
   )
 
-  // ── §7.120：封堵「bash 里直接调 etscli 写子命令」这条逃逸口 ────────────
+  // ── §7.120：逃逸口守卫**不在本插件里** ────────────────────────────────
   //
-  // §7.98 的白名单管的是**工具清单**（模型选不到写子命令），管不住「模型自己
-  // 在 shell 里敲 etscli」。§7.118 那次实测就是这么把本地文件传到 MEOS 设备的
-  // —— 而宿主那道 Auto review 闸门在 edge preset 下不存在，沙箱又只看得见文件
-  // 系统（远端设备写操作对它完全不可见）⇒ 两道闸都拦不住。
+  // 「bash 里直接调 etscli 写子命令」这条逃逸口的封堵是**独立插件行**
+  // （`etscli-shell-guard`，单独挂载）—— 理由：
   //
-  // 主人裁决（2026-10-31）：用**插件侧守卫**封堵，不碰宿主启动环境、不改
-  // PATH，桌面与无头都生效。
+  // - **覆盖面**：两个部署 profile 原本都**没挂**本插件（http profile 与
+  //   desktop-safe preset 都没有 `etscli-tools` 行）⇒ 守卫写在��插件里就
+  //   等于**哪都没上膛**。§7.118 那次 MEOS 写入事故恰恰发生在**没挂本插件的
+  //   headless HTTP profile**里 ⇒ 守卫必须能**独立**挂载。
+  // - **不新增能力**：独立行只加一道闸，**不**把那 14 个只读 etscli 工具带进
+  //   那些 profile（带进去是能力扩张，超出「封堵逃逸口」这件事本身）。
   //
-  // 机制落点：`tools/pre-execute` waterfall（`etscli-shell-guard.ts` 模块头
-  // 记了为什么不是 `ctx.tools.guard()`：guard 注册进的是**服务自己那个 ctx**
-  // 所在的层，插件侧绑不到边缘 preset 的 scope ⇒ 会伸到标准模式，破坏
-  // §7.140 的「标准模式会话零事件」不变式；waterfall 则按 scope 链派发）。
-  //
-  // 守卫只拦**写子命令**；技能（`skill` 工具 + `skillName`）与白名单工具
-  // （绝对路径直接调二进制）都不经过 shell 工具 ⇒ 不受影响。
-  const auditLog = (() => {
-    try {
-      return (ctx as unknown as {
-        get?: (name: string) => unknown
-      }).get?.('auditLog') as { log?: (entry: unknown) => Promise<unknown> } | undefined
-    } catch {
-      return undefined
-    }
-  })()
-
-  const guardDisposer = registerEtscliShellGuard(ctx, {
-    // 白名单由本模块提供 —— 它是从注册表派生的那份，守卫只拿到它、不自己
-    // 造一份（单一事实源）。守卫模块**不 import** 本模块（否则成环）。
-    allowlist: ETSCLI_READONLY_ARGV,
-    bin: config.etscliBin,
-    onDeny: denial => {
-      // 证据必须留：ops log 里「tool allow」是 realm 过滤那一层的放行，
-      // 我们的守卫是**执行前**最后一道 —— 面板上必须能看出这次到底执行没执行。
-      ctx.logger?.warn?.(
-        `[etscli-shell-guard] denied tool=${denial.tool} subcommand=${denial.subcommand}`,
-      )
-      void auditLog?.log?.({
-        level: 'security',
-        kind: 'etscli.shell.denied',
-        source: 'etscli-tools',
-        payload: {
-          tool: denial.tool,
-          subcommand: denial.subcommand,
-          // 刻意**不记命令原文**：里面可能有本地路径与文件名。
-          reason: denial.reason.slice(0, 300),
-        },
-      })?.catch?.(() => {})
-    },
-  })
-
-  // 「闸门上膛了」这件事本身要能被看见：只记拒绝行的话，"守卫没装上" 和
-  // "守卫装上了但这次没人触发" 在日志里长得一模一样。启动行把**白名单规模**
-  // 与**机制落点**写出来 —— 排查时第一眼就能确认是哪一道闸在管。
-  //
-  // 只记启动行 + 拒绝行，**不记放行行**：放行是每一次 bash 调用都会有的常规
-  // 流量，逐条落盘只会把真正的拒绝行淹掉（realm 闸门那层已经在逐次记
-  // tool allow/deny，两层合起来就够复原「这次到底执行没执行」）。
-  ctx.logger?.info?.(
-    `[etscli-shell-guard] armed on tools/pre-execute, read-only allowlist=${ETSCLI_READONLY_ARGV.length} ` +
-    `bin=${config.etscliBin} shellTools=${SHELL_TOOL_NAMES.join('/')}`,
-  )
+  // 白名单的单一事实源仍是本模块的 `ETSCLI_READONLY_ARGV`（守卫从���里 import，
+  // 单向依赖，不成环）。
 
   for (const spec of ETSCLI_TOOL_SPECS) {
     // 重复注册同名会 throw 并中断整个 apply()(NamedEntries,dsh-tools `lib/index.js:2538`),
@@ -535,7 +496,6 @@ export async function apply(ctx: Context, config: Config): Promise<() => void> {
     ctx.logger?.warn?.(`[etscli-tools] failed to dump registry tool list: ${String(err)}`)
   }
 
-  // 宿主返回的**精确 disposer**（`ctx.on('tools/pre-execute', …)` 的返回值）——
-  // 有序拆卸 / HMR 清理时用它注销监听器。
-  return guardDisposer
+  // 本插件只注册只读工具，没有需要注销的监听器 ⇒ 返回空 disposer。
+  return () => {}
 }

@@ -140,7 +140,17 @@ if [ -d "$NESTED" ]; then
 fi
 "$DSH_BIN" plugin --profile "$PROFILE" add "file:$TARBALL" >/dev/null 2>&1 \
   || { echo "error: dsh plugin add failed" >&2; exit 1; }
-rm -rf "$PROFILE_DIR/node_modules/.ignored/@deepseek-harness-edge-agent"
+# §7.169: 这里**不用 rm -rf**。
+#
+# 受控环境里 `rm -rf` 会被权限门转成基于 Finder 的删除（`mavis-trash` →
+# `osascript tell Finder to delete`）—— 目录大时能挂住十几分钟，部署看起来
+# 像卡死（实测 2026-10-31 一次部署耗了 11 分钟）。
+#
+# 这两处要做的只是「把它移开」：移开就够了，不需要真删。
+IGNORED="$PROFILE_DIR/node_modules/.ignored/@deepseek-harness-edge-agent"
+if [ -e "$IGNORED" ] || [ -L "$IGNORED" ]; then
+  mv "$IGNORED" "$IGNORED.old-$(date +%s)"
+fi
 # The mv-aside trick is NOT enough: pnpm keys its content store by the file:
 # SPEC PATH + version, and our version string never changes (0.1.1-desktop-safe
 # / 0.1.1-full), so a rebuilt tarball at the same path "reuses" the OLD bytes
@@ -149,7 +159,10 @@ rm -rf "$PROFILE_DIR/node_modules/.ignored/@deepseek-harness-edge-agent"
 # install dir with the bytes of THIS tarball, bypassing every pnpm cache layer.
 TMPX="$(mktemp -d)"
 tar -xzf "$TARBALL" -C "$TMPX"
-rm -rf "$NESTED"
+# 同上：$NESTED 此时是 pnpm 建的符号链接 —— 移开即可，不必删。
+if [ -e "$NESTED" ] || [ -L "$NESTED" ]; then
+  mv "$NESTED" "$NESTED.old-$(date +%s)"
+fi
 mv "$TMPX/package" "$NESTED"
 rmdir "$TMPX"
 # Drift guard: what landed in the profile must equal what we packaged.

@@ -278,6 +278,15 @@
                   enableToolIsolation: false
                   presentationMode: native
 
+              # §7.120: 封堵「bash 里直接调 etscli 写子命令」这条逃逸口。
+              #
+              # 独立行（不挂 etscli-tools）⇒ 桌面**只多一道闸**，不新增那 14 个
+              # 只读 etscli 工具。监听器挂在 `tools/pre-execute` waterfall 上，
+              # 按 scope 链派发 ⇒ 只有边缘模式会话够得着它，标准模式不受影响
+              # （§7.140 的「标准模式零 edge 事件」不变式）。
+              - id: etscli-shell-guard
+                name: '@deepseek-harness-edge-agent/dsh-edge-agent/etscli-shell-guard'
+
               # Realm-aware skill/tool filtering. Uses the shared realm config file.
               - id: realm-skill-bridge
                 name: '@deepseek-harness-edge-agent/dsh-edge-agent/realm-skill-bridge'

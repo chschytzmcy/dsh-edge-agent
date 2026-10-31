@@ -71,6 +71,12 @@
       "require": "./lib/dsh-adapter/etscli-tools.js",
       "default": "./lib/dsh-adapter/etscli-tools.js"
     },
+    "./etscli-shell-guard": {
+      "types": "./lib/dsh-adapter/etscli-shell-guard.d.ts",
+      "import": "./lib/dsh-adapter/etscli-shell-guard.js",
+      "require": "./lib/dsh-adapter/etscli-shell-guard.js",
+      "default": "./lib/dsh-adapter/etscli-shell-guard.js"
+    },
     "./http-api": {
       "types": "./lib/dsh-adapter/http-api.d.ts",
       "import": "./lib/dsh-adapter/http-api.js",
