@@ -5,7 +5,7 @@
  * runtime, all backed by a real OpenAI-compatible `/chat/completions`
  * endpoint. Defaults to `http://127.0.0.1:8080/v1` (llama.cpp's
  * `server` binary); the reachable endpoint in this repo is
- * `http://192.168.66.195:8701/v1`. No in-process mock — every call
+ * `http://192.0.2.101:8701/v1`. No in-process mock — every call
  * leaves the process.
  *
  * The wire-protocol parser lives in `./openai-sse.js` so changes to
@@ -569,7 +569,7 @@ class RealLocalAdapter extends LlmAdapter {
     // 状态机卡住、agent-loop 永远等不到 block-end。
     //
     // 实测数据：webui chat "查询下密盒有哪些图片文件"（17:20:40 +08:00），
-    // 远端 llama.cpp 192.168.1.121:11017 返回 completion_tokens=0 finish=stop
+    // 远端 llama.cpp 192.0.2.102:11017 返回 completion_tokens=0 finish=stop
     // （254ms），dsh 进入 idle 4+ 分钟无响应。
     //
     // 修复：block-start 改为 lazy（首次 text-delta 前 yield 一次），empty stream

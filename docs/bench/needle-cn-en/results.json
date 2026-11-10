@@ -127,12 +127,12 @@
       "cn": "列出 .md 文件"
     },
     "medium": {
-      "en": "list all .md files under /home/etsme/work",
-      "cn": "列出 /home/etsme/work 下的所有 .md 文件"
+      "en": "list all .md files under /home/<user>/work",
+      "cn": "列出 /home/<user>/work 下的所有 .md 文件"
     },
     "long": {
-      "en": "list all .md files under /home/etsme/work, then show each file's full path, size in bytes and last modified time",
-      "cn": "列出 /home/etsme/work 下的所有 .md 文件,并显示每个文件的完整路径、字节大小和最后修改时间"
+      "en": "list all .md files under /home/<user>/work, then show each file's full path, size in bytes and last modified time",
+      "cn": "列出 /home/<user>/work 下的所有 .md 文件,并显示每个文件的完整路径、字节大小和最后修改时间"
     }
   },
   "summary": {

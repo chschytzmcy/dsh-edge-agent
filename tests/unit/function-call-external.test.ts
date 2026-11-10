@@ -388,7 +388,7 @@ function okJsonResponse(body: any, status = 200): Response {
 /** Realistic cactus-needle /extract OK response for happy-path tests. */
 const FCX_OK_CALL = {
   type: 'call',
-  function_calls: [{ name: 'bash', arguments: { command: 'ls /home/etsme/work' } }],
+  function_calls: [{ name: 'bash', arguments: { command: 'ls /home/tester/work' } }],
   confidence: 0.92,
   validation: { ungrounded: [] },
   reasoning: 'list markdown files in work dir',

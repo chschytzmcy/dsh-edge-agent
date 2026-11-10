@@ -59,6 +59,13 @@ key
 # §7.77: `make package` 产物目录 —— tarball + sha256 落 dist/ 而非顶层。
 dist/
 
+# 2026-11-10: 本地运行产物 —— bench stdout 与 TUI 会话日志。
+# logs/ 里的 bench-*.log 含本机绝对路径与内网端点；
+# .run/ 是 dsh TUI 的会话日志，未来可能含真实对话内容。
+# 两者都无语义价值，且随时可能被 `git add .` 误提交 —— 绝不入库。
+logs/
+.run/
+
 # pnpm 本地对象缓存 —— 绝不入库
 .pnpm-store/
 

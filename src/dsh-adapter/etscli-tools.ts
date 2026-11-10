@@ -40,7 +40,7 @@
  * ## 上游包的 import 纪律
  *
  * **不 import `@deepseek-ai/dsh-tools`。** 该包只存在于 dsh CLI 自带的
- * `node_modules`(`/home/etsme/.npm-global/lib/node_modules/@deepseek-ai/dsh/...`),
+ * `node_modules`(`/home/<user>/.npm-global/lib/node_modules/@deepseek-ai/dsh/...`),
  * **不在 dsh-edge profile 的 `node_modules` 里** —— 从本插件 `lib/` 出发做
  * runtime import 会解析失败。本文件因此改用结构化类型 + 窄 cast 访问
  * `ctx.tools` / `ctx.shell`,与 `tools.ts:275-291`、`tool-runner.ts` 文件头

@@ -516,9 +516,9 @@ PYEOF
   return 0
 }
 
-DSH_BIN="${DSH_EDGE_BIN:-$(command -v dsh 2>/dev/null || echo /home/etsme/.npm-global/bin/dsh)}"
+DSH_BIN="${DSH_EDGE_BIN:-$(command -v dsh 2>/dev/null || echo "$HOME/.npm-global/bin/dsh")}"
 if [ ! -x "$DSH_BIN" ]; then
-  echo "error: dsh binary not found (tried \$DSH_EDGE_BIN, PATH, /home/etsme/.npm-global/bin/dsh)" >&2
+  echo "error: dsh binary not found (tried \$DSH_EDGE_BIN, PATH, $HOME/.npm-global/bin/dsh)" >&2
   exit 1
 fi
 

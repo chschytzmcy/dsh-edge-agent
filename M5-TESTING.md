@@ -5,7 +5,7 @@
 ### 一键测试（推荐）
 
 ```bash
-cd /home/etsme/cy/agent/dsh-edge-agent
+cd /home/<user>/cy/agent/dsh-edge-agent
 
 # 使用 mock provider（无需 API key）
 ./scripts/m5-e2e-test.sh
@@ -30,7 +30,7 @@ npm install -g @deepseek-ai/dsh
 #### 2. 启动服务器
 
 ```bash
-cd /home/etsme/cy/agent/dsh-edge-agent
+cd /home/<user>/cy/agent/dsh-edge-agent
 npm run compile
 
 export EDGE_API_KEY=test-secret-key
@@ -118,7 +118,7 @@ curl -N -X POST http://127.0.0.1:21017/v1/chat/stream \
 npm install -g @deepseek-ai/dsh
 
 # 或从源码运行
-cd /home/etsme/cy/agent/deepseek-harness
+cd /home/<user>/cy/agent/deepseek-harness
 pnpm install
 pnpm run build
 export PATH="$PWD/packages/examples/agent-spine-demo/bin:$PATH"
@@ -156,7 +156,7 @@ tail -f /tmp/dsh-m5-test.log
 ## 单元测试
 
 ```bash
-cd /home/etsme/cy/agent/dsh-edge-agent
+cd /home/<user>/cy/agent/dsh-edge-agent
 npx vitest run tests/unit/http-api.test.ts
 ```
 

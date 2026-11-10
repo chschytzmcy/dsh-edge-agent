@@ -54,13 +54,13 @@ export DSH_BIN="/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cl
 ## 2. 编译本仓
 
 ```bash
-cd /Users/a18104385217/cy/code/dsh-edge-agent
+cd /Users/<user>/cy/code/dsh-edge-agent
 pnpm install
 pnpm run compile
 ```
 
 > 本机若 `pnpm` 不在 PATH，可用 DSH 自带 pnpm：
-> `/Users/a18104385217/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/pnpm/bin/pnpm.mjs`
+> `/Users/<user>/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/pnpm/bin/pnpm.mjs`
 
 ## 3. 建一个隔离 profile（不碰 ~/.dsh/profiles/desktop）
 
@@ -70,7 +70,7 @@ pnpm run compile
 ```bash
 export DSH_HOME=/tmp/dsh-edge-probe
 PROFILE=edge
-REPO=/Users/a18104385217/cy/code/dsh-edge-agent
+REPO=/Users/<user>/cy/code/dsh-edge-agent
 PKG="$DSH_HOME/profiles/$PROFILE/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent"
 
 rm -rf "$DSH_HOME/profiles/$PROFILE"
@@ -143,7 +143,7 @@ curl -s http://127.0.0.1:21099/v1/models
 
 > `/v1/health` 只证明插件图完整、HTTP 起来了。要真正聊天，还需要在
 > `.env` / 环境变量里配置本地或云端 LLM（默认本地端点是
-> `http://192.168.1.121:11017/v1`，本机不一定可达）。
+> `http://192.0.2.102:11017/v1`，本机不一定可达）。
 
 ## 6. 已知警告（不影响启动）
 
@@ -188,7 +188,7 @@ rm -rf /tmp/dsh-edge-probe
 ### 8.1 生成可安装产物
 
 ```bash
-cd /Users/a18104385217/cy/code/dsh-edge-agent
+cd /Users/<user>/cy/code/dsh-edge-agent
 bash scripts/build-desktop-bundle.sh --emit-dir   # 需要 lib/ 时自动编译
 ```
 
@@ -212,7 +212,7 @@ Plugins → Add plugin → Install a third-party plugin
 选「本地目录」，输入绝对路径：
 
 ```text
-/Users/a18104385217/cy/code/dsh-edge-agent/dist/installable/dsh-edge-agent-desktop-safe
+/Users/<user>/cy/code/dsh-edge-agent/dist/installable/dsh-edge-agent-desktop-safe
 ```
 
 安装后启用该 bundle。若提示需要重启，就重启 DSH Desktop。
@@ -444,7 +444,7 @@ spec.replace(/^(?:file:|link:)/, '')   ← 只剥一个前缀
 ```json
 "dependencies": {
   "@deepseek-harness-edge-agent/dsh-edge-agent":
-    "link:C:/Users/cheng/GolandProjects/gitlab/dsh-edge-agent/dist/installable/dsh-edge-agent-desktop-safe"
+    "link:C:/Users/<user>/GolandProjects/gitlab/dsh-edge-agent/dist/installable/dsh-edge-agent-desktop-safe"
 }
 ```
 

@@ -95,7 +95,7 @@ e2e-benchmark:
 # 打包部署文件
 # §7.55 (2026-09-15): 收紧打包内容
 #   - 不打 .env（避免 DEEPSEEK_API_KEY 泄漏）
-#   - 不打 profiles/node_modules/（252 symlink 指向开发机 /home/etsme/.npm-global）
+#   - 不打 profiles/node_modules/（252 symlink 指向开发机 /home/<user>/.npm-global）
 #   - 不打 profiles/dsh-edge-agent/node_modules/（开发机 runtime，~30M）
 #   - §7.73 (2026-09-17): 打 profiles/dsh-edge/ —— tarball 模式 install.sh §2.5
 #     (cordis.patch.yml overlay) + §2.7 (skeleton bootstrap) 依赖 $REPO_ROOT/

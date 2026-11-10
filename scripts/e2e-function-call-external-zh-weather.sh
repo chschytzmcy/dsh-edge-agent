@@ -28,7 +28,7 @@ HTTP_API_URL="http://127.0.0.1:${HTTP_API_PORT}/v1/chat"
 # §7.93 Phase 8:固定 sid 便于 grep audit JSONL;ops log 与 audit.jsonl
 # 都按 sid 索引。ci / 本地复用同一 sid,history grep 用 sid 通配符避免漏。
 SID="e2e-function-call-external-zh-weather"
-QUERY="查 /home/etsme/work 下的所有 .md 文件,列出文件名"
+QUERY="查 $HOME/work 下的所有 .md 文件,列出文件名"
 
 # ── config/edge.json 加载(§7.102:取代 .env) ─────────────────────────
 if [ -z "${EDGE_API_KEY:-}" ]; then

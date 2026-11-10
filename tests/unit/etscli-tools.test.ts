@@ -12,7 +12,7 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'vitest'
 import { buildCommand, shellQuote } from '../../src/dsh-adapter/etscli-tools.js'
 
-const BIN = '/home/etsme/.local/bin/etscli'
+const BIN = '/home/tester/.local/bin/etscli'
 
 describe('shellQuote', () => {
   it('普通值原样包进单引号', () => {
@@ -49,7 +49,7 @@ describe('buildCommand', () => {
   it('无参工具:只拼固定子命令', () => {
     assert.equal(
       buildCommand(BIN, { name: 'x', description: '', argv: ['auth', 'list'], params: [] }, {}),
-      `'/home/etsme/.local/bin/etscli' 'auth' 'list'`,
+      `'/home/tester/.local/bin/etscli' 'auth' 'list'`,
     )
   })
 
@@ -60,7 +60,7 @@ describe('buildCommand', () => {
       { name: 'x', description: '', argv: ['auth', 'list'], params: [] },
       { auth: 'rm', argv: 'user delete' },
     )
-    assert.equal(cmd, `'/home/etsme/.local/bin/etscli' 'auth' 'list'`)
+    assert.equal(cmd, `'/home/tester/.local/bin/etscli' 'auth' 'list'`)
   })
 
   it('fs ls 用 --parent(不是 --path)', () => {
@@ -74,7 +74,7 @@ describe('buildCommand', () => {
       },
       { path: '/' },
     )
-    assert.equal(cmd, `'/home/etsme/.local/bin/etscli' 'fs' 'ls' --parent '/'`)
+    assert.equal(cmd, `'/home/tester/.local/bin/etscli' 'fs' 'ls' --parent '/'`)
   })
 
   it('fs stat 用 --file-id(不是 --path)', () => {
@@ -103,7 +103,7 @@ describe('buildCommand', () => {
       },
       { limit: 5 },
     )
-    assert.equal(cmd, `'/home/etsme/.local/bin/etscli' 'system' 'alarm' 'list' --number '5'`)
+    assert.equal(cmd, `'/home/tester/.local/bin/etscli' 'system' 'alarm' 'list' --number '5'`)
   })
 
   it('undefined / null 参数不拼 flag', () => {
@@ -114,7 +114,7 @@ describe('buildCommand', () => {
     }
     for (const args of [{}, { path: undefined }, { path: null }]) {
       const cmd = buildCommand(BIN, spec, args)
-      assert.equal(cmd, `'/home/etsme/.local/bin/etscli' 'fs' 'ls'`)
+      assert.equal(cmd, `'/home/tester/.local/bin/etscli' 'fs' 'ls'`)
     }
   })
 
@@ -128,7 +128,7 @@ describe('buildCommand', () => {
       },
       { path: '' },
     )
-    assert.equal(cmd, `'/home/etsme/.local/bin/etscli' 'fs' 'ls'`)
+    assert.equal(cmd, `'/home/tester/.local/bin/etscli' 'fs' 'ls'`)
   })
 
   it('注入载荷作为参数值时被引号困住', () => {
@@ -143,7 +143,7 @@ describe('buildCommand', () => {
       { keyword: "$(rm -rf /); id" },
     )
     // flag 裸、值被单引号困住 —— 分号/$( ) 落在引号内只是字面文本
-    assert.equal(cmd, `'/home/etsme/.local/bin/etscli' 'file' 'search' --keyword '$(rm -rf /); id'`)
+    assert.equal(cmd, `'/home/tester/.local/bin/etscli' 'file' 'search' --keyword '$(rm -rf /); id'`)
     // 结构性检查:把引号内的内容整段挖掉,剩下的裸区不得含任何 shell 元字符
     const bare = cmd.replace(/'[^']*'/g, ' ')
     assert.ok(!/[;|&`<>$()\\]/.test(bare), `裸区出现 shell 元字符: ${bare}`)

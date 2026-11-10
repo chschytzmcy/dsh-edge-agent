@@ -1982,7 +1982,7 @@ async search(query: string, options?: { maxResults?: number }): Promise<WebSearc
 - id: fs-local
   name: '@deepseek-ai/dsh-fs-local'
   config:
-    cwd: /home/etsme/cy/agent/dsh-edge-agent
+    cwd: /home/<user>/cy/agent/dsh-edge-agent
 ```
 
 **好处**:
@@ -2075,7 +2075,7 @@ function getToolRealm(toolName: string): Realm {
 - id: fs-local
   name: '@deepseek-ai/dsh-fs-local'
   config:
-    cwd: /home/etsme/cy/agent/dsh-edge-agent
+    cwd: /home/<user>/cy/agent/dsh-edge-agent
     # 通过沙箱策略限制访问范围
     sandboxMode: workspace-write
 ```
@@ -7542,7 +7542,7 @@ $ pnpm dsh --profile edge-minimal sessions list
 
 **目标**：同一会话内能切换不同 LLM 后端——本地 mock + 本地真机（llama.cpp OpenAI-compatible endpoint）+ 云端 DeepSeek，三者共存并由同一个 `ctx.llm` runtime 调度。
 
-**v7.1 合并说明**：v7.0 把 M4（mock）与 A7（真 llama.cpp）拆成两段。本仓库有一台可达的本地 LLM（`http://192.168.66.195:8701/v1`，OpenAI 兼容 chat-completions 流式），没有必要先 mock 再替；本阶段直接把两条路径都实现在 `local-llm-adapter` 里，靠 `Config.mode` 在 `mock` 与 `real` 之间切换。`A7` 原条目（v7.0 § 8.13）整体删去。
+**v7.1 合并说明**：v7.0 把 M4（mock）与 A7（真 llama.cpp）拆成两段。本仓库有一台可达的本地 LLM（`http://192.0.2.101:8701/v1`，OpenAI 兼容 chat-completions 流式），没有必要先 mock 再替；本阶段直接把两条路径都实现在 `local-llm-adapter` 里，靠 `Config.mode` 在 `mock` 与 `real` 之间切换。`A7` 原条目（v7.0 § 8.13）整体删去。
 
 **任务**：
 
@@ -7568,7 +7568,7 @@ $ pnpm dsh --config profiles/edge-m1.cordis.yml --provider cloud-llm "今天天�
 ✅ DeepSeek 真实响应
 
 $ DSH_EDGE_LOCAL_LLM_MODE=real \
-  DSH_EDGE_LOCAL_LLM_BASEURL=http://192.168.66.195:8701/v1 \
+  DSH_EDGE_LOCAL_LLM_BASEURL=http://192.0.2.101:8701/v1 \
   pnpm dsh --config profiles/edge-m1.cordis.yml --provider local-llm "今天天气"
 ✅ 真 llama.cpp 响应
 ```
@@ -8432,7 +8432,7 @@ describe('http-api', () => {
 
 | 资源 | 路径 | 说明 |
 |------|------|------|
-| Lark CLI | `/home/etsme/.npm-global/bin/lark-cli` | Go 二进制，200+ 命令，11 业务域 |
+| Lark CLI | `/home/<user>/.npm-global/bin/lark-cli` | Go 二进制，200+ 命令，11 业务域 |
 | 已安装 Skill | `~/.agents/skills/lark-*/SKILL.md` | 19 个 skill，含 YAML frontmatter |
 | 源 Skill | `~/cy/go/cli/skills/lark-*/SKILL.md` | 23 个 skill（多出 approval, attendance, okr, slides） |
 

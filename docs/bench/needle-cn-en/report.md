@@ -107,12 +107,12 @@ python3 scripts/needle-cn-en-compat-test.py --trials 9
 
 # 3. 手工对照(单次)
 curl -s -X POST http://127.0.0.1:8081/extract -H 'content-type: application/json' \
-  -d '{"query":"list all .md files under /home/etsme/work",
+  -d '{"query":"list all .md files under /home/<user>/work",
        "tools":[{"name":"bash","description":"run shell","parameters":{"type":"object","properties":{}}}],
        "system":"date: 2026-09-28 Mon; locale: en-US"}'   # → 200
 
 curl -s -X POST http://127.0.0.1:8081/extract -H 'content-type: application/json' \
-  -d '{"query":"列出 /home/etsme/work 下的所有 .md 文件",
+  -d '{"query":"列出 /home/<user>/work 下的所有 .md 文件",
        "tools":[{"name":"bash","description":"run shell","parameters":{"type":"object","properties":{}}}],
        "system":"date: 2026-09-28 Mon; locale: zh-CN"}'   # → 502 utf-8
 ```

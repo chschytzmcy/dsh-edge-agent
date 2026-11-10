@@ -27,7 +27,7 @@ NC='\033[0m'
 # ── Locate script directory + repo root ──────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # §7.87.1(2026-09-18):SCRIPT_DIR 是 scripts/,一层 .. 就回到 REPO_ROOT。
-# 之前写 ../.. 导致 harness 把 dist/bench-* 写到 /home/etsme/cy/agent/dist/
+# 之前写 ../.. 导致 harness 把 dist/bench-* 写到 $HOME/cy/agent/dist/
 # (repo root 之上的兄弟目录)而不是项目内 dist/。修一层即可。
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 HARNESS="$SCRIPT_DIR/e2e-model-quality-bench/harness.py"

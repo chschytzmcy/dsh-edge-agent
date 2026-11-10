@@ -172,7 +172,7 @@ describe('local-llm-adapter (M4, real-only)', () => {
 
     const adapter = new LocalLlmAdapterImpl({
       providers: ['local-llm'],
-      baseUrl: 'http://192.168.66.195:8701/v1',
+      baseUrl: 'http://192.0.2.101:8701/v1',
       defaultModel: 'qwen3-4b',
     })
     for await (const _ of adapter.stream({
@@ -186,7 +186,7 @@ describe('local-llm-adapter (M4, real-only)', () => {
     assert.ok(captured)
     const headers = captured!.init.headers as Record<string, string>
     assert.equal(headers.authorization, undefined)
-    assert.equal(captured!.url, 'http://192.168.66.195:8701/v1/chat/completions')
+    assert.equal(captured!.url, 'http://192.0.2.101:8701/v1/chat/completions')
     restoreFetch()
   })
 
@@ -198,7 +198,7 @@ describe('local-llm-adapter (M4, real-only)', () => {
 
     const adapter = new LocalLlmAdapterImpl({
       providers: ['local-llm'],
-      baseUrl: 'http://192.168.66.195:8701/v1',
+      baseUrl: 'http://192.0.2.101:8701/v1',
       defaultModel: 'qwen3-4b',
       apiKeyEnv: 'DSH_EDGE_LOCAL_LLM_KEY',
     })
@@ -226,7 +226,7 @@ describe('local-llm-adapter (M4, real-only)', () => {
 
     const adapter = new LocalLlmAdapterImpl({
       providers: ['local-llm', 'local-llm-alt'],
-      baseUrl: 'http://192.168.66.195:8701/v1',
+      baseUrl: 'http://192.0.2.101:8701/v1',
       defaultModel: 'qwen3-4b',
     })
 
@@ -288,7 +288,7 @@ describe('local-llm-adapter (M4, real-only)', () => {
   // 2026-09-03 §7.34.2 regression suite: empty stream must NOT leave
   // BlockAssembler with an orphan text block. Real-world repro (webui
   // chat "查询下密盒有哪些图片文件" 17:20:40 +08:00): llama.cpp
-  // 192.168.1.121:11017 returned completion_tokens=0 finish_reason=stop
+  // 192.0.2.102:11017 returned completion_tokens=0 finish_reason=stop
   // for a 24-message / 2535-token prompt. dsh received block-start
   // then finish with no block-end — agent-loop state machine hung
   // waiting for the missing block-end.

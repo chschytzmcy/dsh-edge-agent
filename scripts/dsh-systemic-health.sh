@@ -387,7 +387,7 @@ if [ "$SCENARIO" = "tui-deploy" ]; then
   echo "═══ tui-deploy 场景：TUI 兼容性校验 ═══"
   echo
   # TUI 源码编译状态
-  TUI_SRC="/home/etsme/cy/agent/dsh-TUI"
+  TUI_SRC="${DSH_TUI_SRC:-$HOME/cy/agent/dsh-TUI}"
   TUI_LIB="$TUI_SRC/lib"
   if [ -d "$TUI_LIB" ]; then
     FILE_COUNT=$(find "$TUI_LIB" -name "*.js" | wc -l | tr -d ' ')

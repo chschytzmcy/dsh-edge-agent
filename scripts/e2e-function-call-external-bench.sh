@@ -46,7 +46,7 @@ ONLY=""
 DRY_RUN=0
 QUERIES=(
   "Lagos 今天的天气怎么样?"
-  "查 /home/etsme/work 下的所有 .md 文件"
+  "查 $HOME/work 下的所有 .md 文件"
   "本机 IP 是多少?"
   "当前 git 仓库上次 commit 是什么?"
   "查 Elon Musk 最近的一条新闻"

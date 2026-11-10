@@ -279,7 +279,7 @@ app.asar/dsh/node_modules/@deepseek-ai/dsh-client-connection/lib/index.js   Brow
 app.asar/dsh/node_modules/@deepseek-ai/dsh-host-webserver/lib/index.js       createServer:412
 ```
 
-宿主源码 checkout（更易读）：`C:/Users/cheng/GolandProjects/gitlab/deepseek-harness`
+宿主源码 checkout（更易读）：`C:/Users/<user>/GolandProjects/gitlab/deepseek-harness`
 （`apps/desktop-host/src/index.ts`、`packages/settings/settings/src/index.ts`、
 `packages/preset/agent-preset-registry/src/index.ts`、
 `packages/client/ui-sidebar-right/src/client/tab-registry.ts`）。

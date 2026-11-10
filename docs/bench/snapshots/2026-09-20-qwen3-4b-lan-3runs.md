@@ -1,6 +1,6 @@
 # qwen3-4b LAN 3-run median(2026-09-20)
 
-**Server**:192.168.1.174:8911/v1(model id = `llm-a`,rknn backend)
+**Server**:192.0.2.103:8911/v1(model id = `llm-a`,rknn backend)
 **.env snapshot**:`docs/bench/snapshots/2026-09-20-qwen3-4b.env`(gitignored)
 
 | Run | Intrinsic | Pipeline | Final | C1 | C2 | C3 | C4 | C5 | C6 | C7 | C8 | C9 | C10 |

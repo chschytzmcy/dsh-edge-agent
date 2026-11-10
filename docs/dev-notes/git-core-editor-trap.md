@@ -7,7 +7,7 @@
 在仓库内 `git commit -m "..."`（带 `-m`）**偶发** 出错：
 
 ```
-fatal: C:/Program Files/Git/: 'C:/Program Files/Git/' is outside repository at 'C:/Users/cheng/GolandProjects/gitlab/dsh-edge-agent'
+fatal: C:/Program Files/Git/: 'C:/Program Files/Git/' is outside repository at 'C:/Users/<user>/GolandProjects/gitlab/dsh-edge-agent'
 ```
 
 - `-m` 给出 message，本不该打开编辑器；却报错

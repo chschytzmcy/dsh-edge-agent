@@ -1068,7 +1068,7 @@ vLLM / Ollama / DashScope 实例：
 {
   "llm": {
     "local": {
-      "baseUrl": "http://192.168.66.195:8701/v1",
+      "baseUrl": "http://192.0.2.101:8701/v1",
       "model": "qwen3-4b-instruct-2507",
       "keyRef": "dashscopeApiKey"   // 指向 secrets 段里的键名；无鉴权则留空
     }

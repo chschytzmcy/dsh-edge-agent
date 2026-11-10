@@ -2,7 +2,7 @@
 
 ## 结论先行
 
-**minicpm5-2b-MLX @ 192.168.65.2:8080 不可用** — **C6 tool_call 0/17**。
+**minicpm5-2b-MLX @ 192.0.2.104:8080 不可用** — **C6 tool_call 0/17**。
 
 | 维度 | vllm 67.0.0.5:28000 FP16(baseline) | **MLX 0.31.3 w4a16** | 差 |
 |------|--------------------------------|---------------------|-----|
@@ -27,7 +27,7 @@
 
 user 指令:"MiniCPM5-2B切换到 curl http://127.0.0.1:8080/v1/chat/completions -d '{\"model\": \"/Users/etsme/.cache/modelscope/models/OpenBMB--MiniCPM5-2B-MLX/snapshots/master\", ...}'，也是W4A16量化，这样统一了"
 
-目标:让 size scaling comparison (9B > 4B > 2B) clean — 同 server (mlx @ 192.168.65.2:8080) 同 quantization (w4a16) 只有 model size 不同。
+目标:让 size scaling comparison (9B > 4B > 2B) clean — 同 server (mlx @ 192.0.2.104:8080) 同 quantization (w4a16) 只有 model size 不同。
 
 ## 测试发现
 

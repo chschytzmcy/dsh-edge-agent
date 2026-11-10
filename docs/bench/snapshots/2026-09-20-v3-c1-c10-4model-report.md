@@ -12,8 +12,8 @@
 |---|------|--------|------|------|
 | 0 | **dashscope-qwen3.7-plus**(gate baseline)| cloud(coding.dashscope)| N/A 闭源 720B 量级 | `.env.local-dashscope-qwen3.7-plus` |
 | 1 | **Qwen3.8-27B** | llama.cpp b10438 @ 67.0.0.5:28001 | gguf Q4_K_M | `.env.local-qwen3.8-27b` |
-| 2 | **qwen3-4b** | rknn @ 192.168.1.174:8911 | w4a16(weights int4 + activation fp16)| `.env.local-qwen3-4b` |
-| 3 | **qwen3.5-9b** | mlx 0.31.3 @ 192.168.65.2:8080 | w4a16(mlx bits=4 group_size=64 mode=affine,默认 activation fp16)| `.env.local-qwen3.5-9b` |
+| 2 | **qwen3-4b** | rknn @ 192.0.2.103:8911 | w4a16(weights int4 + activation fp16)| `.env.local-qwen3-4b` |
+| 3 | **qwen3.5-9b** | mlx 0.31.3 @ 192.0.2.104:8080 | w4a16(mlx bits=4 group_size=64 mode=affine,默认 activation fp16)| `.env.local-qwen3.5-9b` |
 
 ## C1-C10 测试方法
 

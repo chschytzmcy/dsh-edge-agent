@@ -41,7 +41,7 @@ make e2e-benchmark LABEL=qwen3.5-9b-lan
 
 ```bash
 bash scripts/e2e-model-quality-bench.sh --label qwen3.5-9b
-BASE_URL=http://192.168.66.195:8701/v1 MODEL=qwen3-4b bash scripts/e2e-model-quality-bench.sh --label qwen3-4b
+BASE_URL=http://192.0.2.101:8701/v1 MODEL=qwen3-4b bash scripts/e2e-model-quality-bench.sh --label qwen3-4b
 
 # diff 两份报告
 diff <(jq .final dist/bench-qwen3.5-9b-*/scores.json) \

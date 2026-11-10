@@ -636,11 +636,11 @@ bash scripts/e2e-model-quality-bench.sh \
 | 模型 | server | Intrinsic | Pipeline | Final | Verdict | 关键观察 |
 |------|--------|-----------|----------|-------|---------|---------|
 | **dashscope-qwen3.7-plus** | cloud(coding.dashscope,9B 等价 72B 闭源) | **100.0** | 100 | **90.0** | ✅ Prod-ready | v15 跟 v14 差 6.5 分来自 latency=0(v15 默认 `--skip-latency`);intrinsic + pipeline 都 100/100 持平,dsh-edge 完整性复验 ✓ |
-| **qwen3-4b**(4B) | rknn @ 192.168.1.174:8911(w4a16,v15.4 新增)| **100.0** | 100 | **90.0** | ✅ Prod-ready | 0 variance(3 run 完全一致);C1=0.899(conf_mae=0.148)、C3=0.104 informational;**C7-C9 全 PASS**;server 极稳 |
-| **qwen3.5-9b**(9B) | mlx 0.31.3 @ 192.168.65.2:8080(w4a16,v15.4 新增)| **90.0** | 100 | **90.0** | ✅ Prod-ready | C5 IP 子集 0.5~0.75 浮动(median 0.875);C10 retention **100**;mlx server 极稳,跨网段慢(~10min/run)但不掉链 |
+| **qwen3-4b**(4B) | rknn @ 192.0.2.103:8911(w4a16,v15.4 新增)| **100.0** | 100 | **90.0** | ✅ Prod-ready | 0 variance(3 run 完全一致);C1=0.899(conf_mae=0.148)、C3=0.104 informational;**C7-C9 全 PASS**;server 极稳 |
+| **qwen3.5-9b**(9B) | mlx 0.31.3 @ 192.0.2.104:8080(w4a16,v15.4 新增)| **90.0** | 100 | **90.0** | ✅ Prod-ready | C5 IP 子集 0.5~0.75 浮动(median 0.875);C10 retention **100**;mlx server 极稳,跨网段慢(~10min/run)但不掉链 |
 | **Qwen3.8-27B**(27B) | llama.cpp 28001(gguf, Q4_K_M,v15.5 新增)| **100.0** | 100 | **90.0** | ✅ Prod-ready | **C1=0.949(conf_mae=0.062 best)**、C5 phone/id/ip/email **全 1.0**、C6 bash+search **全 1.0**;gguf Q4_K_M + NO_THINKING;27B 模型在 dsh-edge 工作负载上**显著优于** 4B/9B;r1 single-run(median 待 3-run 验证) |
 | ~~**minicpm5-2b**(2B)~~ | ~~vllm 28000~~ | ~~77.8~~ | ~~100~~ | ~~78.9~~ | ~~⚠️ Conditional~~ | **§7.87.10 移除对比**:1) vllm FP16 跟其他 w4a16 不可比(quant 精度不同);2) MLX 4bit 化失败(§7.87.9 C6 tool_call 0/17);3) 跟 size scaling 故事无关(non-Qwen family) |
-| ~~**minicpm5-2b-MLX**(2B)~~ | ~~mlx 0.31.3 @ 192.168.65.2:8080(w4a16,统一量化尝试)~~ | ~~41.5~~ | ~~33.3~~ | ~~41.5~~ | 💀 ~~Reject~~ | **§7.87.9 单次实测拒绝 — tool_call 0/17**;**C6 不会发 tool_calls**(model 输出纯文本);C7/C9 fail(dsh-edge 路由正常但 LLM 不发 tool → bash 不跑);同 mlx server 上 qwen3.5-9b C6=1.0 → **非 server 端 bug,模型版本/量化方法差异** |
+| ~~**minicpm5-2b-MLX**(2B)~~ | ~~mlx 0.31.3 @ 192.0.2.104:8080(w4a16,统一量化尝试)~~ | ~~41.5~~ | ~~33.3~~ | ~~41.5~~ | 💀 ~~Reject~~ | **§7.87.9 单次实测拒绝 — tool_call 0/17**;**C6 不会发 tool_calls**(model 输出纯文本);C7/C9 fail(dsh-edge 路由正常但 LLM 不发 tool → bash 不跑);同 mlx server 上 qwen3.5-9b C6=1.0 → **非 server 端 bug,模型版本/量化方法差异** |
 
 **Pipeline 4 模型都 100/100**:§7.87.6 `agent.whenIdle()` fix **跨 server 跨模型泛化** —— 不依赖具体 local LLM server 实现(vllm / mlx / rknn / llama.cpp / cloud 全部 PASS C7-C9)。
 
@@ -671,8 +671,8 @@ bash scripts/e2e-model-quality-bench.sh \
    - C5 PII 退化(8.8.8.8 / 1.1.1.1 偶发漏) — Qwen3.5 改了 IP 模式识别训练
    - C6 tool_call 退化(web_search name match 0.75) — Qwen3.5 改了 tool_call 训练分布
 3. **量化精度等价**(非主因):
-   - rknn @ 192.168.1.174 = Qwen3-4B **w4a16**(weights int4 + activation fp16)
-   - mlx 4-bit @ 192.168.65.2 = Qwen3.5-9B **w4a16**(mlx config.json `bits:4, group_size:64, mode:affine` — mlx 默认只量化 weights,activation fp16)
+   - rknn @ 192.0.2.103 = Qwen3-4B **w4a16**(weights int4 + activation fp16)
+   - mlx 4-bit @ 192.0.2.104 = Qwen3.5-9B **w4a16**(mlx config.json `bits:4, group_size:64, mode:affine` — mlx 默认只量化 weights,activation fp16)
    - 两边 activation 都是 fp16 → 数字/IP 精度差异**不是量化导致**
 4. **测试用例天花板**:C1-C6 都是 dsh-edge prompt copy 的**短结构化输出**(JSON / PII / tool_call),9B 大模型在短任务上的优势体现不出来,反而 4B 已够用
 
@@ -794,7 +794,7 @@ if (ipMatches) {
 
 #### 5.2.7 minicpm5-2b-MLX 单次测试结论(2026-09-20,§7.87.9)
 
-**测试动机**:user 要求把 minicpm5-2b 从 vllm 67.0.0.5:28000 切到 mlx 0.31.3 @ 192.168.65.2:8080,跟 qwen3.5-9b 共用同一 server,**统一量化**让 size scaling comparison(9B > 4B > 2B)更 clean。
+**测试动机**:user 要求把 minicpm5-2b 从 vllm 67.0.0.5:28000 切到 mlx 0.31.3 @ 192.0.2.104:8080,跟 qwen3.5-9b 共用同一 server,**统一量化**让 size scaling comparison(9B > 4B > 2B)更 clean。
 
 **测试结果**(单次,NO_THINKING=1,NO median — 单次已足):
 

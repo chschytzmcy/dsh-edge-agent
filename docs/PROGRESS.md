@@ -56,7 +56,7 @@
 | **M2** | 工具调用 | ✅ 完成 | `8c8499f` | local_file_read / file_write / calculate |
 | **M3** | 会话与持久化 | ✅ 完成 | `e97391d` | JSONL 明文持久化（sessions + local-storage + audit-log） |
 | **M4** | 多模型 + 路由 | ✅ 完成 | `9ca6fab` | mock + 真 llama.cpp + cloud 三路由共存 |
-| **M4+** | 真实本地 LLM 端到端 | ✅ 完成 | (pending) | qwen3-4b-instruct-2507 @ http://192.168.66.195:8701/v1 |
+| **M4+** | 真实本地 LLM 端到端 | ✅ 完成 | (pending) | qwen3-4b-instruct-2507 @ http://192.0.2.101:8701/v1 |
 | **M5** | HTTP API 服务 | ✅ 完成 | `428f8f3` `158769a` | REST + SSE + 会话管理 + 13 项 E2E 测试 |
 | **A1** | 输入/输出防护 | ✅ **完成** | (Phase 2) | 5 类攻击检测 + PII 检测（5 规则）+ 限流 + 输出脱敏 |
 | **A2-分类** | 意图路由（分类层） | ✅ 完成 | `08e6b9e` `b1af057` | `intent-router` LLM 分类 + 关键词兜底 + 真实路由 |
@@ -2751,12 +2751,12 @@ POST /v1/chat 200 14756ms intent=CLOUD
 
 ```bash
 # 1. 编辑 dsh-edge-agent（如有改动）
-cd /home/etsme/cy/agent/dsh-edge-agent
+cd /home/<user>/cy/agent/dsh-edge-agent
 npm run compile
 
 # 2. 装到 web profile（bundle add 模式）
 ./install.sh --to-profile web
-#   → §2: dsh plugin --profile web add -w /home/etsme/cy/agent/dsh-edge-agent
+#   → §2: dsh plugin --profile web add -w /home/<user>/cy/agent/dsh-edge-agent
 #   → §3: rsync lib/ → ~/.dsh/profiles/web/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/lib/
 #   → §5: kill+restart dsh --profile web（带 NODE_OPTIONS=--import katex-shim.js）
 
@@ -3500,7 +3500,7 @@ policyPath: !!js (process.env.DSH_EDGE_PRIVACY_POLICY_PATH ?? (process.cwd() + '
 policyPath: !!js (process.env.DSH_EDGE_PRIVACY_POLICY_PATH ?? (process.env.DSH_EDGE_STORAGE_ROOT ?? (process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent-web') + '/privacy-policy.json')
 ```
 
-web profile 通过 `~/.dsh/profiles/web/.env.sh` 把 `DSH_EDGE_STORAGE_ROOT` 指到 `/home/etsme/.dsh-edge-agent-web/storage`，bundle 自动在 `~/.dsh-edge-agent-web/storage/privacy-policy.json` 找 policy。
+web profile 通过 `~/.dsh/profiles/web/.env.sh` 把 `DSH_EDGE_STORAGE_ROOT` 指到 `/home/<user>/.dsh-edge-agent-web/storage`，bundle 自动在 `~/.dsh-edge-agent-web/storage/privacy-policy.json` 找 policy。
 
 **5. unit test fixture 路径重定位**
 
@@ -3712,7 +3712,7 @@ llm.local.end   {durationMs:253, resultLen:0, finishKind:unknown}    ← 空响�
 [agent-loop 之后无任何事件，dsh ep_poll idle 4+ 分钟]
 ```
 
-**根因**：远端 llama.cpp `http://192.168.1.121:11017/v1`（cordis.patch.yml:345 baseUrl）在 24 条 message / 2535 tokens prompt 上返回：
+**根因**：远端 llama.cpp `http://192.0.2.102:11017/v1`（cordis.patch.yml:345 baseUrl）在 24 条 message / 2535 tokens prompt 上返回：
 
 ```
 data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
@@ -3722,7 +3722,7 @@ data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
 合法 OpenAI 兼容响应（completion_tokens=0 + finish_reason=stop），但 **生成 0 token**。curl 直测确认：
 
 ```bash
-$ curl -s http://192.168.1.121:11017/v1/chat/completions -d '{"messages":[...24条...2535 token prompt...], "stream":true}'
+$ curl -s http://192.0.2.102:11017/v1/chat/completions -d '{"messages":[...24条...2535 token prompt...], "stream":true}'
 data: {... "delta":{},"finish_reason":"stop"}
 : [METRICS] {"completion_tokens":0,...}   ← 0 token 输出
 ```
@@ -3890,7 +3890,7 @@ if (result.chunk.type === 'text-delta') {
 
 **关键障碍：dsh-llm 0.1.2-rc.1 deepFreeze 整个 options payload**。
 
-证据：`/home/etsme/.npm-global/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-llm/lib/index.js:1658` `adapterStream(options, prepared)` 调 `dispatch(forAdapter(projectedOptions, ...))` 之前 `deepFreeze(structuredClone(options))`。`deepFreeze` 是 `dsh-util-values` 递归冻结（对象 + 每个数组 index）。
+证据：`/home/<user>/.npm-global/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-llm/lib/index.js:1658` `adapterStream(options, prepared)` 调 `dispatch(forAdapter(projectedOptions, ...))` 之前 `deepFreeze(structuredClone(options))`。`deepFreeze` 是 `dsh-util-values` 递归冻结（对象 + 每个数组 index）。
 
 实测验证：
 
@@ -4187,7 +4187,7 @@ dsh-agent-loop 的 `for await (const chunk of stream)` 写在裸 AsyncGenerator 
 
 ```bash
 # 1. compile + unit test
-cd /home/etsme/cy/agent/dsh-edge-agent
+cd /home/<user>/cy/agent/dsh-edge-agent
 npm run compile
 npx vitest run tests/unit/file-logger.test.ts
 
@@ -4956,7 +4956,7 @@ dsh-tool-skill 的参数 schema 是 `{ name: '<skill>' }`（lib/index.js:62）�
 **关键观测**：
 - ✅ `intentSource=http-api-classified` 一眼区分：本会话的 SANITIZED 是 http-api resolveRoute 返回的（不是 local-llm hang fallback）。之前只能反推 `rationale=default:sanitized` 是不是 local-llm 问题；现在不需要反推。
 - ✅ `tool allow ... tool=skill skillName=ets-auth` 一眼看出：LLM 选了 ets-auth skill（不是别的）。配合"先 tool allow skill=ets-auth → 再 tool allow bash"可推断出 LLM 调用链：load ets-auth skill → 内部跑 bash → 返回结果。
-- 真实响应：`resultLen=273` 含"密盒已登录 / Profile=default / 服务地址=192.168.1.101:8080 / Token 类型=bearer"等表格内容。**这次 mibao 查询不再返回空**——上次（09-11 [[mibao-empty-result-diagnosis]]）是 local-llm hang 导致的空响应，这次 dsh-tui 正常 source 了 .env.sh（DSH_EDGE_LOCAL_LLM_BASEURL 已设），所以 intent classifier 走默认 fallback 但不影响最终查询（因为 intent 走 http-api resolveRoute 不依赖 local-llm）。
+- 真实响应：`resultLen=273` 含"密盒已登录 / Profile=default / 服务地址=192.0.2.105:8080 / Token 类型=bearer"等表格内容。**这次 mibao 查询不再返回空**——上次（09-11 [[mibao-empty-result-diagnosis]]）是 local-llm hang 导致的空响应，这次 dsh-tui 正常 source 了 .env.sh（DSH_EDGE_LOCAL_LLM_BASEURL 已设），所以 intent classifier 走默认 fallback 但不影响最终查询（因为 intent 走 http-api resolveRoute 不依赖 local-llm）。
 
 **测试覆盖**（新增 8 个 unit case）：
 
@@ -5092,7 +5092,7 @@ e94ca30  fix(input-guard): §7.46.3 desanitize + route override + routeSource op
 
 HTTP API 修复后虽然正常 200 + 全节点 emit，但最终响应 `resultLen=0`。从 trace 推断：
 - LLM 调 ets-auth skill（13:49:55.184）→ 调 bash 两次（13:49:56.016 + 13:49:56.094）
-- bash 短时间内连续调两次（间隔 78ms），可能 ets-auth skill 让 bash 跑密盒查询但 bash 找不到 mibao CLI / 连不上 `192.168.1.101:8080`（容器内网络隔离）
+- bash 短时间内连续调两次（间隔 78ms），可能 ets-auth skill 让 bash 跑密盒查询但 bash 找不到 mibao CLI / 连不上 `192.0.2.105:8080`（容器内网络隔离）
 - LLM 拿到空结果 → 拼出空响应
 
 **这跟 [[mibao-empty-result-diagnosis]] 不完全一样**：09-11 那次是 dsh-tui 没 source `.env.sh` → local-llm hang → 200+空；这次是 bash 执行失败（跟 ops log 完整性无关，是 web 进程所在环境网络隔离问题，单独 track）。**§7.46.8 的目标是"21 节点都能 emit"，已达到**。
@@ -6727,7 +6727,7 @@ HTTP API 路径（us-news-test-001 session）**没有**这一行——只在 inp
 
 **背景**:`make package` 旧实现是"整目录 cp"式黑名单打包,产物 `dsh-edge-agent-deploy.tar.gz` 有 75MB,且藏着两类泄漏/失效风险:
 1. **`cp .env`**——把真实 `DEEPSEEK_API_KEY` / `DASHSCOPE_API_KEY` / `EDGE_API_KEY` 打进 release 产物(secrets 随 tarball 扩散)
-2. **`cp -r profiles`**——把 `profiles/node_modules/` 的 252 个 symlink(全部指向开发机绝对路径 `/home/etsme/.npm-global/...`)和 `profiles/dsh-edge-agent/node_modules/`(~30M 开发 runtime)一起打包;换机解压即全部断链
+2. **`cp -r profiles`**——把 `profiles/node_modules/` 的 252 个 symlink(全部指向开发机绝对路径 `/home/<user>/.npm-global/...`)和 `profiles/dsh-edge-agent/node_modules/`(~30M 开发 runtime)一起打包;换机解压即全部断链
 3. legacy 配置(`cordis.yml`、`profiles/*.cordis.yml`,§7.31 起 install.sh 不再读取)也一并进产物,误导接收方
 
 **改动**:
@@ -7103,7 +7103,7 @@ audit 配置的 `maxFileAgeDays: 7`(cordis.patch.yml:443)同样从未生效过�
 @cp -r profiles/dsh-edge $(PACKAGE_DIR)/dsh-edge-agent-v$(VERSION)/profiles/
 ```
 
-**只打 `dsh-edge/`,不打整 `profiles/`**:top-level `profiles/` 还有 `profiles/dsh-edge-agent/`(§7.61 退役的 legacy profile + agent-presets/)和 `profiles/node_modules/`(252 symlink 指向开发机 `/home/etsme/.npm-global`,**绝不能进 tarball**)。`@cp -r profiles/dsh-edge` 只拿项目在用、dunbar-shape 小的 `dsh-edge/`(2 个文件: `cordis.patch.yml` skin + `package.json` skeleton,共 ~1.1KB)。
+**只打 `dsh-edge/`,不打整 `profiles/`**:top-level `profiles/` 还有 `profiles/dsh-edge-agent/`(§7.61 退役的 legacy profile + agent-presets/)和 `profiles/node_modules/`(252 symlink 指向开发机 `/home/<user>/.npm-global`,**绝不能进 tarball**)。`@cp -r profiles/dsh-edge` 只拿项目在用、dunbar-shape 小的 `dsh-edge/`(2 个文件: `cordis.patch.yml` skin + `package.json` skeleton,共 ~1.1KB)。
 
 **install.sh 不动**:§2.5 已经读 `$REPO_ROOT/profiles/$PROFILE/cordis.patch.yml`,§2.7 已经读 `$REPO_ROOT/profiles/$PROFILE/package.json` —— tarball 模式 REPO_ROOT = 解开 tarball 的目录,有这两个文件就直接用,**install.sh 一行不改**。
 
@@ -7242,13 +7242,13 @@ audit 配置的 `maxFileAgeDays: 7`(cordis.patch.yml:443)同样从未生效过�
 
 **实跑验证**(`make install` 一次):`/usr/bin/sudo -n true` 退出码 1(user 不在 sudoers NOPASSWD),改后 `make install` 全程不调 sudo,输出:
 ```
-==> 安装到本地 /home/etsme/.dsh-edge-agent
+==> 安装到本地 /home/<user>/.dsh-edge-agent
 ==> 解压 tarball...
 ==> 维护 latest 软链...
 ==> pnpm install (--ignore-scripts)...
 ✓ 安装完成
 下一步:
-  1. 进入目录: cd /home/etsme/.dsh-edge-agent/latest
+  1. 进入目录: cd /home/<user>/.dsh-edge-agent/latest
   2. 配置环境: cp .env.example .env && $EDITOR .env
   3. 启动服务: ./install.sh    # 默认同步 + 启动 dsh-edge(:21017,§7.69)
 ```
@@ -7593,7 +7593,7 @@ kill_profile() {
 
 不用 `pkill -f` (会误杀同主机别人 dsh);awk 精确匹配 `node.*dsh --profile $PROFILE`,不是裸 `dsh`。
 
-**端到端验证**(11 步 A-L,REPO_ROOT `/home/etsme/cy/agent/dsh-edge-agent`,2026-09-18):
+**端到端验证**(11 步 A-L,REPO_ROOT `/home/<user>/cy/agent/dsh-edge-agent`,2026-09-18):
 
 | 步 | 操作 | 结果 |
 |---|---|---|
@@ -7754,13 +7754,13 @@ uninstall complete
 Rollback hint: 跑 `./install.sh --skip-pnpm --no-restart` 一键恢复部署。
 ```
 
-**端到端验证**(T0-T14,REPO_ROOT `/home/etsme/cy/agent/dsh-edge-agent`,2026-09-18):
+**端到端验证**(T0-T14,REPO_ROOT `/home/<user>/cy/agent/dsh-edge-agent`,2026-09-18):
 
 | 步 | 操作 | 结果 |
 |---|---|---|
 | T0 | pre-test: 看 `.env` placeholder 内容(7567 bytes) | ✅ 状态可重现 |
 | T1 | `cp .env /tmp/dotenv-roundtrip-test-<pid>-pre` | ✅ 双保险 manual backup |
-| T2 | 跑 `./uninstall.sh` 输 y (Phase 1.7 backup → Phase 2 kill → Phase 6 shred) | ✅ backup dir `/home/etsme/cy/agent/dsh-edge-agent/.env.uninstall-backup.20260918-105229/` 创建 |
+| T2 | 跑 `./uninstall.sh` 输 y (Phase 1.7 backup → Phase 2 kill → Phase 6 shred) | ✅ backup dir `/home/<user>/cy/agent/dsh-edge-agent/.env.uninstall-backup.20260918-105229/` 创建 |
 | T3 | `stat -c '%a'` backup dir / .env / .env.sh | ✅ dir `700` / .env `600` / .env.sh `775` (cp -p 继承原 perms,chmod 收紧) |
 | T4 | `diff` backup .env vs /tmp pre-test 副本 | ✅ 内容字节级一致 |
 | T5 | restore: `cp backup/.env $REPO_ROOT/.env && chmod 600` | ✅ 恢复后 `diff` pre-test 一致 |
@@ -7873,8 +7873,8 @@ Rollback hint: 跑 `./install.sh --skip-pnpm --no-restart` 一键恢复部署。
   status:     ⚠ outdated → npm i -g @deepseek-ai/dsh@latest
 
 ==> [check] profile 'dsh-edge' bundle
-  deployed:   0.1.0  (/home/etsme/.dsh/profiles/dsh-edge/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/package.json)
-  REPO src:   0.1.0  (/home/etsme/cy/agent/dsh-edge-agent/package.json)
+  deployed:   0.1.0  (/home/<user>/.dsh/profiles/dsh-edge/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/package.json)
+  REPO src:   0.1.0  (/home/<user>/cy/agent/dsh-edge-agent/package.json)
   npm latest: (404 / not published / network 5s timeout)
 
 ==> [check] summary
@@ -7895,7 +7895,7 @@ Rollback hint: 跑 `./install.sh --skip-pnpm --no-restart` 一键恢复部署。
 
 5. **`exit_code` 用 local `rc` 累积** —— 多个 failure 维度(dsh missing + bundle missing + REPO ≠ deployed)各自 `rc=1`,最后 `return $rc`。dsh outdated 不算 failure (只是 informational warning),不参与 `rc` 累积。
 
-**端到端验证**(5 case,REPO_ROOT `/home/etsme/cy/agent/dsh-edge-agent`,2026-09-18 11:38):
+**端到端验证**(5 case,REPO_ROOT `/home/<user>/cy/agent/dsh-edge-agent`,2026-09-18 11:38):
 
 | case | 操作 | 期望 exit | 实际 |
 |---|---|---|---|
@@ -7937,15 +7937,15 @@ Rollback hint: 跑 `./install.sh --skip-pnpm --no-restart` 一键恢复部署。
 #### 7.79.1 `.env` 真 DashScope key 注入 + shell export DSH_EDGE_LOCAL_LLM_*
 
 **问题分解**:
-1. `cordis.patch.yml` 读 `process.env.DSH_EDGE_LOCAL_LLM_BASEURL ?? 'http://192.168.1.121:11017/v1'`,而 `.env` 写的是 `LOCAL_LLM_BASEURL=...`(无前缀)→ JS `??` 走 fallback,baseUrl 硬编码到 `192.168.1.121`(LAN server 已死)
-2. `192.168.1.121:11017` 是上一个跑通的 LAN server,2026-09-18 502 不可达
+1. `cordis.patch.yml` 读 `process.env.DSH_EDGE_LOCAL_LLM_BASEURL ?? 'http://192.0.2.102:11017/v1'`,而 `.env` 写的是 `LOCAL_LLM_BASEURL=...`(无前缀)→ JS `??` 走 fallback,baseUrl 硬编码到 `192.0.2.102`(LAN server 已死)
+2. `192.0.2.102:11017` 是上一个跑通的 LAN server,2026-09-18 502 不可达
 3. `coding.dashscope.aliyuncs.com/v1` 是 OpenAI 兼容端点,但 `.env` 里 `DASHSCOPE_API_KEY=sk-xxxxx...` 是 placeholder,401
 
 **修复链**(4 步):
-1. `.env` 把 `DASHSCOPE_API_KEY` 从 `sk-xxxxx...` placeholder 替换为真 token(从 `/home/etsme/cy/agent/dsh-edge-agent/key` 第 1 行;**注意 `key` 文件里的 token 是 token-plan 专属 Anthropic 兼容 token,不通用 coding 端点**,需要单独验证 key 配对 — 本轮用户填的 key 已在 coding 端点验通)
+1. `.env` 把 `DASHSCOPE_API_KEY` 从 `sk-xxxxx...` placeholder 替换为真 token(从 `/home/<user>/cy/agent/dsh-edge-agent/key` 第 1 行;**注意 `key` 文件里的 token 是 token-plan 专属 Anthropic 兼容 token,不通用 coding 端点**,需要单独验证 key 配对 — 本轮用户填的 key 已在 coding 端点验通)
 2. 启动 dsh-edge 前 **shell export** `DSH_EDGE_LOCAL_LLM_BASEURL=https://coding.dashscope.aliyuncs.com/v1` 等 4 个变量,**不能写 `.env`** —— DSH 启动器把 `DSH_EDGE_*` 加入 BOOTSTRAP_NAMES 黑名单(与 `DEEPSEEK_BASE_URL` / `DSH_EDGE_HTTP_PORT` 等同处理),`.env` 里写会被拒:
    ```
-   Error: dsh: /home/etsme/.../.env sets "DSH_EDGE_LOCAL_LLM_BASEURL",
+   Error: dsh: /home/<user>/.../.env sets "DSH_EDGE_LOCAL_LLM_BASEURL",
    which only the launching environment may set ... export ... instead of putting it in a .env file
    ```
 3. `local-llm-adapter` boot 验证:ops log `baseUrl=https://coding.dashscope.aliyuncs.com/v1` ✓
@@ -7989,7 +7989,7 @@ Rollback hint: 跑 `./install.sh --skip-pnpm --no-restart` 一键恢复部署。
 #### 7.79.5 环境约束 takeaway(给后续排查用)
 
 1. **`.env` 写 `DSH_EDGE_*` 变量 = 启动失败**(DSH 启动器黑名单),必须 shell export
-2. **`cordis.patch.yml` 读 `DSH_EDGE_LOCAL_LLM_BASEURL`,`.env` 写 `LOCAL_LLM_BASEURL` = 永远 fallback 到硬编码 `192.168.1.121:11017`**(变量名不一致)
+2. **`cordis.patch.yml` 读 `DSH_EDGE_LOCAL_LLM_BASEURL`,`.env` 写 `LOCAL_LLM_BASEURL` = 永远 fallback 到硬编码 `192.0.2.102:11017`**(变量名不一致)
 3. **`coding.dashscope.aliyuncs.com/v1` 需要的是普通 DashScope API key,不接受 token-plan 体系的 `sk-sp-...DXDL...` token**
 
 #### 7.79.6 未做(候选给后续)
@@ -8210,7 +8210,7 @@ fi
 
 ### §7.82 Phase 5 最小可用 — Tavily + 博查 AI + DeepSeek 三级 web_search 兜底链(2026-09-18)
 
-**触发**:user 评估 Phase 5 tool 能力,先只做 Tavily + 博查 AI,**参考 `/home/etsme/cy/go/lingguard`** 的 `WebSearchTool`(linguard 风格: Tavily 优先 → 博查 兜底)。本节扩到 3 级链以最大化韧性。
+**触发**:user 评估 Phase 5 tool 能力,先只做 Tavily + 博查 AI,**参考 `/home/<user>/cy/go/lingguard`** 的 `WebSearchTool`(linguard 风格: Tavily 优先 → 博查 兜底)。本节扩到 3 级链以最大化韧性。
 
 **现状**:
 - 之前 §7.43 / §7.50 / §7.69 已统一 web_search 走 `@deepseek-ai/dsh-web-search-deepseek`(DeepSeek Anthropic Messages + `web_search_20250305` server tool),封装在 `ctx.web` seam 后由 `@deepseek-ai/dsh-tool-web` 暴露。
@@ -8439,7 +8439,7 @@ fi
 **配置切换**(本节改动):
 - `LOCAL_LLM_BASEURL`: `https://coding.dashscope.aliyuncs.com/v1` → `http://67.0.0.5:28001/v1`
 - `LOCAL_LLM_MODEL`: `qwen3.7-plus` → `qwen3.5-9b`(model 实际路径 `/data/lizhouyang/models/mtp/Qwen3.5-9B-Q4_K_M.gguf`,Q4_K_M 量化)
-- `LOCAL_LLM_KEY_ENV`: `DASHSCOPE_API_KEY` → `NO_AUTH`(无 auth,跟旧 192.168.1.174:8911 同款)
+- `LOCAL_LLM_KEY_ENV`: `DASHSCOPE_API_KEY` → `NO_AUTH`(无 auth,跟旧 192.0.2.103:8911 同款)
 
 **§7.83 翻译层的余热**(本节零代码改动):
 跟 §7.84 一样,切池**0 行代码改动** —— `cordis.patch.yml` 已动态读 `process.env.DSH_EDGE_LOCAL_LLM_BASEURL` / `DSH_EDGE_LOCAL_LLM_KEY_ENV` / `DSH_EDGE_LOCAL_LLM_MODEL`,只改 `.env` 三件套即可。
@@ -8597,7 +8597,7 @@ verdict: ≥85 ✅ / 70-84 ⚠️ / 50-69 ❌ / <50 💀
 
 **Bug A**:bash `REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"` 多一层 `..`
 - 脚本在 `scripts/e2e-model-quality-bench.sh`,SCRIPT_DIR=`scripts/`,**只要 `scripts/..` 一层**就回到 repo root
-- 之前写 `../..` → REPO_ROOT=/home/etsme/cy/agent(项目根的**父目录**),harness 把 `dist/bench-*` 写到 `/home/etsme/cy/agent/dist/` 而不是项目内
+- 之前写 `../..` → REPO_ROOT=`/home/<user>/cy/agent`(项目根的**父目录**),harness 把 `dist/bench-*` 写到 `/home/<user>/cy/agent/dist/` 而不是项目内
 - 修法:改为 `cd "$SCRIPT_DIR/.."`
 - 加 REPO_ROOT sanity check:必须含 `cordis.patch.yml` + `package.json`,否则 fail-fast(exit 2),防再犯
 - 对照 `scripts/e2e-ops-log-coverage.sh:35` 同位置写 `SCRIPT_DIR/..` 一层,bench 当时漏对齐
@@ -8617,7 +8617,7 @@ verdict: ≥85 ✅ / 70-84 ⚠️ / 50-69 ❌ / <50 💀
 
 **实跑结果**(fix 落地后跑了两轮 `--only C7,C8,C9,C10` pipeline only,intrinsic 没跑因为 LAN Ollama CPU 单跑 6s/case × 115 fixture ≈ 12min):
 
-| | Ollama qwen3:4b @ 127.0.0.1:11434 | LAN minicpm5-2b @ 192.168.1.174:8911 |
+| | Ollama qwen3:4b @ 127.0.0.1:11434 | LAN minicpm5-2b @ 192.0.2.103:8911 |
 |---|---|---|
 | C7 mibao | ✗ intent=LOCAL result_len=**0** | ✗ intent=LOCAL result_len=**0** |
 | C8 news | ✓ intent=CLOUD result_len=**1510** | ✓ intent=CLOUD result_len=**1407** |
@@ -9052,7 +9052,7 @@ ERR_PNPM_FETCH_404
 **根因诊断**(2 步):
 1. `curl https://registry.npmjs.org/@deepseek-ai/dsh-bash-env` → `{"error":"Not found"}`,**该包从未发布**到 npm registry(只活在 dsh 内部 0.1.0-rc.x 那一开发线的 dep list 里)
 2. `curl .../dsh-base/0.0.1-rc.1`(registry `dist-tags.latest`)=> deps 含 `@deepseek-ai/dsh-bash-env@^0.0.1-rc.1`(79 个 deps 中 3 个 bash 相关,这个 404)
-3. dsh CLI 自带的 dsh-base@0.1.2-rc.1(`/home/etsme/.npm-global/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-base/package.json`)deps **不包含 dsh-bash-env**,改用 `@deepseek-ai/dsh-bash-sandbox@^0.1.2-rc.1`(可在 npm registry 查到)
+3. dsh CLI 自带的 dsh-base@0.1.2-rc.1(`/home/<user>/.npm-global/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-base/package.json`)deps **不包含 dsh-bash-env**,改用 `@deepseek-ai/dsh-bash-sandbox@^0.1.2-rc.1`(可在 npm registry 查到)
 
 **结论**:**registry latest dist-tag 指向的是早期 dev 系列(0.0.1-rc.1),CLI 自带的才是 0.1.2-rc.1 稳定线**。两者 deps 树差异极大(后者剥掉了 dsh-bash-env)。
 
@@ -9092,8 +9092,8 @@ pnpm add @deepseek-ai/dsh-shell-env@0.1.2-rc.1 \
 
 **验证**(踩 [[install-script-boot-verify-required]] 教训:必须 boot 验,字节级 diff 不够):
 ```bash
-DSH_HOME=/home/etsme/.dsh dsh --profile web --dump-config | wc -l   # 146 个 plugin entry
-DSH_HOME=/home/etsme/.dsh timeout 8 dsh --profile web                 # stdout: 'dsh web: http://127.0.0.1:3080/?token=...'
+DSH_HOME=/home/<user>/.dsh dsh --profile web --dump-config | wc -l   # 146 个 plugin entry
+DSH_HOME=/home/<user>/.dsh timeout 8 dsh --profile web                 # stdout: 'dsh web: http://127.0.0.1:3080/?token=...'
 ```
 
 ✅ boot 干净。`dsh-edge` 仍在 21017 跑(PID 4049652),`dsh web` 默认 3080,无端口冲突;`dsh-im` bundle 跟 dsh-base / dsh-web-app 共存,xmanrui-dsh-im-host 的 `connection`/`credentials`/`typertGateway` inject 都能解析。
@@ -9267,8 +9267,8 @@ ctx.on('system-prompt/assemble', async (assembly, ctx2, next) => {
 **REJECT 路径 `preflight intent` log 缺席 ≠ bug**:http-api.ts:506 `if (intent.category === 'REJECT')` 在 intent-router 返回 REJECT 时 short-circuit,**不进** input-guard 管线 → input-guard.ts:939 的 `[input-guard] preflight intent` emit 不触发。`chat received`(http-api:453) + audit `http.chat.rejected`(http-api:508) 是 REJECT 的全部留痕。这是 design-v6 §2.15+§4.3 契约"REJECT bypasses the agent loop entirely"的预期结果。
 
 **LOCAL smoke 配套配置**(2026-09-23 切池):
-- `.env` 切 LAN 192.168.1.174:8911/v1(minicpm5-2b,无 auth,wire 已验)— 原 192.168.65.2:8080 不可达
-- `LOCAL_LLM_STRIP_TOOLS=true`(按 memory `lan-local-llm-192-168-1-174` Jinja2 tojson bug 客户端侧绕开)
+- `.env` 切 LAN 192.0.2.103:8911/v1(minicpm5-2b,无 auth,wire 已验)— 原 192.0.2.104:8080 不可达
+- `LOCAL_LLM_STRIP_TOOLS=true`(按 memory `lan-local-llm-192.0.2.103` Jinja2 tojson bug 客户端侧绕开)
 - `bash scripts/dev-restart.sh` → boot 验通(health 200 + new env pick up + assemble filter 对称 emit)
 - full LOCAL 链路 12 个日志节点全 emit:chat received → intent classify(local-llm 448ms) → assemble filter → prompt-guard done(1318ms) → privacy-policy done → preflight intent → pre-step filter → route override → chat received(reason=initial) → main LLM call(5457ms) → chat finished → chat reply
 
@@ -9317,7 +9317,7 @@ patch yml line 359 是 `[auditLog, skills, edgeTools, tools]` —— 之前 sour
 
 **§7.93.1(2026-09-25)function-call-external — generic tool-call prefill(替换 §7.93 cactus-needle 3.0.1)**
 
-**痛点**:minicpm5-2b @ LAN 192.168.1.174:8911 的 function-calling 弱,§7.42 P0-1 文档 malformed tool_call(XML fragment + finish_reason=tool_calls)浪费 1-3s/chat。cactus-needle 3.0.1(8MB tool-call foundation model)在 ~/work/needle,user 已实测 production 抽取质量比大模型好 10x。
+**痛点**:minicpm5-2b @ LAN 192.0.2.103:8911 的 function-calling 弱,§7.42 P0-1 文档 malformed tool_call(XML fragment + finish_reason=tool_calls)浪费 1-3s/chat。cactus-needle 3.0.1(8MB tool-call foundation model)在 ~/work/needle,user 已实测 production 抽取质量比大模型好 10x。
 
 **架构(locked)**:ExternalToolCaller 只做提取,**不翻译不执行**(translation + execution 都在 client);dsh-edge-agent 执行 realm/PII/audit 不绕过;最终整段对话给 LOCAL LLM 合成回复。所有失败 fall through 到 §7.42 P0-1 LLM 自提取路径(function-call-external 是 prefill 不是替代)。
 
@@ -10121,7 +10121,7 @@ python3 scripts/etscli-tools-test.py --desc-lang match --distractors 3 --trials 
 > - `buildSynthesisContext()` 只在 `executedCount >= 1` 时触发,而没有工具注册时
 >   needle 选的每个工具都会撞 `external.unknown_tool` → denied → 恒为 0
 >   → **§7.96 Track B 那 36 行 synthesis 代码在当前部署下不可达**
-> - LOCAL LLM(`192.168.65.2`)无可用端点;`.env` 的 `LOCAL_LLM_STRIP_TOOLS=true`
+> - LOCAL LLM(`192.0.2.104`)无可用端点;`.env` 的 `LOCAL_LLM_STRIP_TOOLS=true`
 >   还使 fall-through 降级成纯文本回答
 >
 > 换句话说:**needle 这一层已经够用甚至偏宽裕(74% > 60% 门槛),瓶颈不在它。**
@@ -11325,7 +11325,7 @@ ops log 出现该会话的 8 条 trace（4 REQ + 4 RESP），逐条对应：
 
 **脱敏复核的一个坑（记录下来免得下次重犯）**：用宽松检测式
 `(?<!\d)1[3-9]\d{9}(?!\d)` 扫整份日志会报 184 处"未脱敏手机号"，**全是误报**
-——命中的是路径里的**用户名子串** `a18104385217`（`/Users/a18104385217/…`）。
+——命中的是路径里的**用户名子串** `a1b2c3d4e5`（`/Users/<user>/…`）。
 PII 的 `phone` 规则是 `\b1[3-9]\d{9}\b`，`\b` 会正确拒绝嵌在更长单词里的
 数字串，所以那些**本来就该被掩**。正确的复核式必须与 PII 规则同语义：
 
@@ -14241,7 +14241,7 @@ rebuild-installable: dsh-edge-agent-desktop-safe declares dsh.client but ./lib/c
 | `skills/dsh-systemic-health/SKILL.md` | `scripts/dsh-systemic-health.sh`（20 KB，活的）的技能定义 + **已知陷阱备忘**（dsh-scope 双实例 / `Session.events` 移除 / audit-log minLevel 静默 drop / bundle lib 不同步 / `cordis.patch.yml` 双层） | 留；脚本头部加反向链接 |
 
 > bench 快照为何**不可再生**：当时的端点（`67.0.0.5:28000/28001`、
-> `192.168.65.2:8080`、`192.168.1.174:8911`）是当时的内网机器，云端模型
+> `192.0.2.104:8080`、`192.0.2.103:8911`）是当时的内网机器，云端模型
 > `dashscope-qwen3.7-plus` 早已换代；而 `make package` 的一行 `@rm -rf $(DIST_DIR)`
 > 当时把 `dist/bench-*/` 全擦了 —— 快照正是那份擦掉之后的存档。
 
@@ -16074,7 +16074,7 @@ profile 里真装一次 `dist/installable/dsh-edge-agent-desktop-safe`：
 ```json
 "dependencies": {
   "@deepseek-harness-edge-agent/dsh-edge-agent":
-    "link:C:/Users/cheng/GolandProjects/gitlab/dsh-edge-agent/dist/installable/dsh-edge-agent-desktop-safe"
+    "link:C:/Users/<user>/GolandProjects/gitlab/dsh-edge-agent/dist/installable/dsh-edge-agent-desktop-safe"
 }
 ```
 
@@ -16434,7 +16434,7 @@ npm run build:tarball
 2. `run()` 的 `.cmd` 分支加 `windowsVerbatimArguments: true` + **双层外引号**
    `""${inner}""`（cmd 的 `/c` 只剥一对外引号）。
 
-实测：`==> pnpm: C:/Users/cheng/AppData/Roaming/npm/node_modules/pnpm/pnpm.exe`
+实测：`==> pnpm: C:/Users/<user>/AppData/Roaming/npm/node_modules/pnpm/pnpm.exe`
 ⇒ clean-lib + tsc + `[build-client] lib/client.js = 52 KB` ⇒ **exit 0**。
 
 ### 三、★ Bug B：`build:tarball` 漏跑 `build:client`

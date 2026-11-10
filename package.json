@@ -274,6 +274,7 @@
     "verify:session-audit": "node scripts/probe-session-audit.mjs --selftest",
     "verify:package": "npm pack --dry-run --json --ignore-scripts | node scripts/verify-package.mjs",
     "verify:doc-links": "node scripts/verify-doc-links.mjs",
+    "verify:doc-links:selftest": "node scripts/verify-doc-links.mjs --selftest",
     "verify:config-hints": "node scripts/verify-config-hints.mjs",
     "verify:config-hints:selftest": "node scripts/verify-config-hints.mjs --selftest",
     "verify:edge-config-tool": "node --import tsx/esm scripts/edge-config-from-env.ts --selftest"

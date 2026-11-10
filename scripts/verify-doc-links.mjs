@@ -34,6 +34,7 @@
  */
 
 import { readFileSync, readdirSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { join, resolve, dirname, relative, sep } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -48,8 +49,36 @@ function isNavSurface(relPath) {
   return relPath === 'README.md' || /(^|[\\/])README\.md$/.test(relPath)
 }
 
-/** 递归列出 `docs/` 下的全部文件（仓库相对，正斜杠）。 */
+/**
+ * 列出 git **已跟踪** 的 `docs/` 文件（仓库相对，正斜杠）。
+ *
+ * 门禁问的是「随仓库发布出去的文档，导航完整吗」——所以只该看已跟踪的文件。
+ * `docs/` 里同时躺着 gitignored 的本地产物（bench 的 `.env` 快照、.DS_Store）：
+ * 它们不会进仓库，却会被文件系统遍历当成「待发布的孤儿文档」。
+ *
+ * 这不只是误报：`docs/bench/snapshots/*.env` 装的是**真 API key**
+ * （见 .gitignore 的 `docs/bench/snapshots/*.env` 规则）。把它们登记成
+ * 「仓库里的一篇文档」，等于在本机把一份含凭据的文件表登记为待发布内容。
+ *
+ * 不在 git 仓库里时返回 null，调用方退回文件系统遍历（selftest 的临时目录走这条路）。
+ */
+function listTrackedDocs(root) {
+  try {
+    const out = execFileSync('git', ['ls-files', '-z', '--', DOC_ROOT], {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+    return out.split('\0').filter(Boolean)
+  } catch {
+    return null
+  }
+}
+
+/** 递归列出 `docs/` 下的文件（仓库相对，正斜杠）。 */
 export function collectDocFiles(root = ROOT) {
+  const tracked = listTrackedDocs(root)
+  if (tracked) return tracked.sort()
   const out = []
   const base = join(root, DOC_ROOT)
   if (!existsSync(base)) return out
