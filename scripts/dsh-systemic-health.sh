@@ -311,7 +311,7 @@ PYEOF
   # ── [D] Bundle 完整性 ───────────────────────────────────
   echo
   echo "  ── [D] dsh-edge-agent bundle 完整性 ──"
-  BUNDLE_PATH="$PROFILE_DIR/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent"
+  BUNDLE_PATH="$PROFILE_DIR/node_modules/@dsh-edge/dsh-edge-agent"
   if [ ! -d "$BUNDLE_PATH" ]; then
     echo "    ✗ bundle 缺失！"
     echo "      → 重跑: cd $REPO_ROOT && ./install.sh --to-profile=$PROFILE"

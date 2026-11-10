@@ -1593,7 +1593,7 @@ Error: dsh: plugin tree failed to load: duplicate loader entry id: session-persi
 |---|---|---|
 | 1 | `src/dsh-adapter/file-logger.ts` | 导出标准 `apply(ctx, config): Promise<dispose>`，内部调 `installFileLogger(ctx, config)` + 返回 `shutdownFileLogger` 包装 |
 | 2 | `package.json` `exports` | 加 `"./file-logger": { "types": ..., "import": ... }`（参考其他子 plugin 入口）|
-| 3 | `profiles/dsh-edge-agent/cordis.patch.yml` `- insert:` 块首位 | 加 `- id: file-logger` + `name: '@deepseek-harness-edge-agent/dsh-edge-agent/file-logger'` + config |
+| 3 | `profiles/dsh-edge-agent/cordis.patch.yml` `- insert:` 块首位 | 加 `- id: file-logger` + `name: '@dsh-edge/dsh-edge-agent/file-logger'` + config |
 | 4 | `src/dsh-adapter/file-logger.ts` 顶部注释 | 加 "Wiring (2026-09-01)" 段落，记录 disabled 聚合器的约束 |
 
 **为什么放在 `- insert:` 块首位**：`inject=[]`，cordis 按依赖顺序加载，no-inject plugin 自然排在前 —— file-logger **早于** tcm / td-bus / audit-log / http-api 启动，所有后续 plugin 的 `ctx.logger.*` 都进 file。
@@ -2642,12 +2642,12 @@ DSH_EDGE_LOG_LEVEL=info dsh --profile dsh-edge-agent &
 ```bash
 # 1. Compile + 同步 + 重启
 npm run compile
-rsync -a --delete lib/types/ ~/.dsh/profiles/dsh-edge-agent/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/lib/
-mkdir -p ~/.dsh/profiles/dsh-edge-agent/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/lib/types/dsh-adapter
-cp ~/.dsh/profiles/dsh-edge-agent/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/lib/dsh-adapter/* \
-   ~/.dsh/profiles/dsh-edge-agent/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/lib/types/dsh-adapter/
-cp ~/.dsh/profiles/dsh-edge-agent/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/lib/*.js \
-   ~/.dsh/profiles/dsh-edge-agent/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/lib/types/
+rsync -a --delete lib/types/ ~/.dsh/profiles/dsh-edge-agent/node_modules/@dsh-edge/dsh-edge-agent/lib/
+mkdir -p ~/.dsh/profiles/dsh-edge-agent/node_modules/@dsh-edge/dsh-edge-agent/lib/types/dsh-adapter
+cp ~/.dsh/profiles/dsh-edge-agent/node_modules/@dsh-edge/dsh-edge-agent/lib/dsh-adapter/* \
+   ~/.dsh/profiles/dsh-edge-agent/node_modules/@dsh-edge/dsh-edge-agent/lib/types/dsh-adapter/
+cp ~/.dsh/profiles/dsh-edge-agent/node_modules/@dsh-edge/dsh-edge-agent/lib/*.js \
+   ~/.dsh/profiles/dsh-edge-agent/node_modules/@dsh-edge/dsh-edge-agent/lib/types/
 cp profiles/dsh-edge-agent/cordis.patch.yml ~/.dsh/profiles/dsh-edge-agent/cordis.patch.yml
 nohup env EDGE_API_KEY=test-secret-key dsh --profile dsh-edge-agent > /tmp/dsh.log 2>&1 &
 sleep 8
@@ -2731,10 +2731,10 @@ POST /v1/chat 200 14756ms intent=CLOUD
    ```json
    "dsh": { "profile": { "bundles": [
      "@deepseek-ai/dsh-base",
-     "@deepseek-harness-edge-agent/dsh-edge-agent"   // 新增
+     "@dsh-edge/dsh-edge-agent"   // 新增
    ]}},
    "dependencies": {
-     "@deepseek-harness-edge-agent/dsh-edge-agent": "file:../.."
+     "@dsh-edge/dsh-edge-agent": "file:../.."
    }
    ```
    （`file:../..` 因为 `~/.dsh/profiles/dsh-edge-agent/` 离仓库根两级深）
@@ -2757,7 +2757,7 @@ npm run compile
 # 2. 装到 web profile（bundle add 模式）
 ./install.sh --to-profile web
 #   → §2: dsh plugin --profile web add -w /home/<user>/cy/agent/dsh-edge-agent
-#   → §3: rsync lib/ → ~/.dsh/profiles/web/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/lib/
+#   → §3: rsync lib/ → ~/.dsh/profiles/web/node_modules/@dsh-edge/dsh-edge-agent/lib/
 #   → §5: kill+restart dsh --profile web（带 NODE_OPTIONS=--import katex-shim.js）
 
 # 3. 验证
@@ -2797,7 +2797,7 @@ curl -s -X POST http://127.0.0.1:21017/v1/chat \
 | dsh-credentials-local | `~/.dsh/.credentials.yaml` | DSH CLI 单 root |
 | @linxin666/dsh-web-ui-all（pet widget）| `~/.dsh/pet.json` | DSH CLI 单 root |
 | dsh-agent-presets | `~/.dsh/.agent-presets/` | DSH CLI 单 root |
-| **@deepseek-harness-edge-agent/dsh-edge-agent** | **`~/.dsh-edge-agent/<channel>`** | **bundle-named root** |
+| **@dsh-edge/dsh-edge-agent** | **`~/.dsh-edge-agent/<channel>`** | **bundle-named root** |
 | `@deepseek-harness-tui/dsh-tui`（早期 subcommand 残留 `~/.dsh-tui/`，已清理）| 历史 `~/.dsh-tui/` | bundle-named root（历史） |
 | `@xmanrui/dsh-im` | 当前 web profile **无数据**（IM channel 未登录、update service 未跑） | 源码意图 `~/.dsh/channels/<channel>/`，CLI 模式未触发 |
 
@@ -2876,7 +2876,7 @@ dsh --profile web    # 或 ./install.sh 启动
 
 字符串 `dsh-edge-agent` 必须**只**出现在以下两种上下文：
 
-1. **npm package name**：`@deepseek-harness-edge-agent/dsh-edge-agent`（产品标识）
+1. **npm package name**：`@dsh-edge/dsh-edge-agent`（产品标识）
 2. **cordis plugin id / aggregator name**：`name = 'dsh-edge-agent'`（cordis 注册名）
 
 **禁止**出现在：
@@ -3270,7 +3270,7 @@ dsh-edge-agent 的 19 个 plugin manifest 都在 repo 根 `cordis.patch.yml`（4
 之前 `profiles/dsh-edge-agent/cordis.patch.yml` 是 459 行（profile-level overlay，自己注册 19 个 plugin），跟 bundle 路径没关系，dsh 正常。b1c11e0 改成 7 行空 stub（意图走 bundle 路径）— 但**同时** install.sh 没改，bundle 路径没接通 → dsh 启动只加载 dsh-base 的 30 个 plugin，19 个 dsh-edge-agent plugin 全部未注册。
 
 **为什么 `dsh plugin add` 没自动修复**：
-本包 `@deepseek-harness-edge-agent/dsh-edge-agent` **不在 npm registry**（`pnpm add` 报 404），`dsh plugin add` 静默失败 — 没有报错，但 `dsh.profile.bundles` 没更新。手创建的 profile（不在 `PROFILE_TEMPLATES` 里：`web` / `headless`）初始 bundles 只包含 `[@deepseek-ai/dsh-base]`，本包永远加不进去。
+本包 `@dsh-edge/dsh-edge-agent` **不在 npm registry**（`pnpm add` 报 404），`dsh plugin add` 静默失败 — 没有报错，但 `dsh.profile.bundles` 没更新。手创建的 profile（不在 `PROFILE_TEMPLATES` 里：`web` / `headless`）初始 bundles 只包含 `[@deepseek-ai/dsh-base]`，本包永远加不进去。
 
 **修复（`install.sh` §3.5 + §3.6）**：
 
@@ -3288,7 +3288,7 @@ fi
 §3.6：python3 JSON 编辑 profile `package.json`，确保 bundle 在 `dsh.profile.bundles` + `dependencies`：
 
 ```python
-target = "@deepseek-harness-edge-agent/dsh-edge-agent"
+target = "@dsh-edge/dsh-edge-agent"
 bundles = d["dsh"]["profile"]["bundles"]
 if target not in bundles:
     bundles.append(target)
@@ -3347,7 +3347,7 @@ metadata:
 ---
 ```
 
-**核心解决**：DSH **不会**从 `repo/lib/` 加载，它从 `~/.dsh/profiles/<name>/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/lib/` 加载。光 `npm run compile` 不够 — 必须 rsync + 同步 bundle manifest + 重启。这条路径不写下来就 100% 踩坑。
+**核心解决**：DSH **不会**从 `repo/lib/` 加载，它从 `~/.dsh/profiles/<name>/node_modules/@dsh-edge/dsh-edge-agent/lib/` 加载。光 `npm run compile` 不够 — 必须 rsync + 同步 bundle manifest + 重启。这条路径不写下来就 100% 踩坑。
 
 **6 个工作流**：
 
@@ -3389,14 +3389,14 @@ tail -3 ~/.dsh-edge-agent/log/dsh-edge-agent.log
 
 ```bash
 # 1. 嵌套包 patch 存在？
-ls -la ~/.dsh/profiles/dsh-edge-agent/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/cordis.patch.yml
+ls -la ~/.dsh/profiles/dsh-edge-agent/node_modules/@dsh-edge/dsh-edge-agent/cordis.patch.yml
 # 没有就 cp repo 根 patch 过去
 
 # 2. profile bundles 包含本包？
 cat ~/.dsh/profiles/dsh-edge-agent/package.json | python3 -c "
 import json, sys
 d = json.load(sys.stdin)
-print('OK' if '@deepseek-harness-edge-agent/dsh-edge-agent' in d['dsh']['profile']['bundles'] else 'MISSING')
+print('OK' if '@dsh-edge/dsh-edge-agent' in d['dsh']['profile']['bundles'] else 'MISSING')
 "
 
 # 3. 不在就 python3 加 bundles + file: link
@@ -3442,7 +3442,7 @@ print('OK' if '@deepseek-harness-edge-agent/dsh-edge-agent' in d['dsh']['profile
 | 概念 | refactor 前 | refactor 后 |
 |---|---|---|
 | profile 容器 | `dsh-edge-agent`（headless）+ `web`（full）| **`web` only** |
-| bundle | `@deepseek-harness-edge-agent/dsh-edge-agent`（装在两 profile）| 同 bundle，只装在 `web` |
+| bundle | `@dsh-edge/dsh-edge-agent`（装在两 profile）| 同 bundle，只装在 `web` |
 | HTTP 入口 | `:21017` 自研 http-api + `:3080` dsh-web-app | **`:3080` dsh-web-app only** |
 | channel root | `~/.dsh-edge-agent/` + `~/.dsh-edge-agent-web/` | **`~/.dsh-edge-agent-web/` only**（历史遗留路径名保留） |
 | 启动器 | `bin/dsh-edge-agent.js`（npm bin `dsh-edge-agent`）| **删除**，用户用 `dsh --profile web` 或 setsid |
@@ -3485,7 +3485,7 @@ print('OK' if '@deepseek-harness-edge-agent/dsh-edge-agent' in d['dsh']['profile
 - id: http-api
   disabled: true    # ← 新加
   # 原 config 留作 reference（不删）
-  - package: '@deepseek-harness-edge-agent/dsh-edge-agent/http-api'
+  - package: '@dsh-edge/dsh-edge-agent/http-api'
   - http: { port: 21017, host: 127.0.0.1, ... }
   ...
 ```
@@ -3529,7 +3529,7 @@ npm run verify:bundle-mounted-in-web
 逻辑（node inline，因为 jq 不一定装）：
 
 1. 遍历 `~/.dsh/profiles/*/package.json`
-2. 每个 profile 检查 `dsh.profile.bundles` 数组是否含 `@deepseek-harness-edge-agent/dsh-edge-agent`
+2. 每个 profile 检查 `dsh.profile.bundles` 数组是否含 `@dsh-edge/dsh-edge-agent`
 3. 报告 `web` 必须命中，其他 profile 必须 0 命中
 4. **0 DSH 装机时干净 skip**（CI 无 DSH 安装环境正常通过）
 
@@ -3968,7 +3968,7 @@ CLOUD session 看 11 个 tool 是正确的（Layer 1.5 注释里也是 `note: fr
 - **dsh-tui 主 chat 空 result**：agent 没挂 preset → tool/skill layers 空 → agent loop 不动。属于 dsh-agent-presets plugin 装配问题（TUI 没正确注入），与 Layer 1/3 无关，待 dsh-tui 升级。
 - **CLOUD session realm-skill-bridge.hook.probe 没出 tools.filtered**：因为 default skill-realms.json 只 tag 了 `web_search` 和 `web_fetch` 两个 CLOUD tool；其他 9 个 tool 没 tag → `filterToolsField` 当 `toolRealms === undefined` 保留（pass-through，Layer 3 兜底）。如需 Layer 1.5 真正剔除更多 tool，先扩 templates/skill-realms.default.json 的 `tools` 段。
 
-**deploy**：`npx tsc -p tsconfig.json && rsync -a --delete lib/types/ ~/.dsh/profiles/dsh-tui/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/lib/types/`（DSH Profile Overlay，profile node_modules 不会自动同步）。
+**deploy**：`npx tsc -p tsconfig.json && rsync -a --delete lib/types/ ~/.dsh/profiles/dsh-tui/node_modules/@dsh-edge/dsh-edge-agent/lib/types/`（DSH Profile Overlay，profile node_modules 不会自动同步）。
 
 **lesson**：
 
@@ -5034,7 +5034,7 @@ e94ca30  fix(input-guard): §7.46.3 desanitize + route override + routeSource op
 ═══ 修复 ═══
   备份: package.json.bak-<ts>
   移除 15 个 @deepseek-ai/*
-  保留 1 个 deps: @deepseek-harness-edge-agent/dsh-edge-agent
+  保留 1 个 deps: @dsh-edge/dsh-edge-agent
   pnpm reconcile: Packages: +1 -28 Done in 1.5s
 ═══ 修复完成 ═══
 ```
@@ -5233,7 +5233,7 @@ fi
 
 只看本次 session 的 chat reply 行（不查历史）——历史 session 的旧字符串是改名前的合理 log，不算 FAIL。
 
-**部署注意**：install.sh 重启 profile 时只 `rsync lib/`，**不会**覆盖 `cordis.patch.yml`（手动 sync）。改名后必须手动 `cp cordis.patch.yml ~/.dsh/profiles/<p>/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/cordis.patch.yml`，否则 cordis patch 层还在用旧字符串（`classificationProvider ?? 'local-qwen3-4b'`）。
+**部署注意**：install.sh 重启 profile 时只 `rsync lib/`，**不会**覆盖 `cordis.patch.yml`（手动 sync）。改名后必须手动 `cp cordis.patch.yml ~/.dsh/profiles/<p>/node_modules/@dsh-edge/dsh-edge-agent/cordis.patch.yml`，否则 cordis patch 层还在用旧字符串（`classificationProvider ?? 'local-qwen3-4b'`）。
 
 **验收**：
 
@@ -6461,7 +6461,7 @@ user 选 A 跟之前"增加超时时间"立场一致。**最稳的还是 D**，�
 **相关**：
 - `cordis.patch.yml:397,459` — 10000/8000 → 30000/15000
 - `.env.sh:83-84` — 同步 env 默认值
-- `~/.dsh/profiles/dsh-tui/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/cordis.patch.yml` — cp 同步项目 patch
+- `~/.dsh/profiles/dsh-tui/node_modules/@dsh-edge/dsh-edge-agent/cordis.patch.yml` — cp 同步项目 patch
 - `~/.dsh/profiles/dsh-tui/.env.sh` — cp 同步 .env.sh
 - memory `mibao-empty-result-diagnosis.md` — 2026-09-11 切 DashScope 时有讨论过"切回本地 llama.cpp"路径，作为 fallback 候选
 
@@ -6889,7 +6889,7 @@ audit 配置的 `maxFileAgeDays: 7`(cordis.patch.yml:443)同样从未生效过�
 
 「回到正式bundle版本,把tui替换成正式bundle版本」——dsh-tui 生产实例从极简挂载(§7.59 验证期)恢复为全量正式 bundle,极简线自此彻底回到 throwaway rig 专属。
 
-**操作**(= install.sh §2.5-2.8 的手工等价,不走 pnpm):仓库根 `package.json` + 全量 `cordis.patch.yml`(17 insert/10 config/30 disable)+ `rsync lib/` 落 `~/.dsh/profiles/dsh-tui/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/`(diff-then-copy 验证字节一致);`bundles[]` 摘 `…-minimal`、全量名 append 末位(merge 压顶),`dependencies` 同步;`rm -rf` 极简嵌套目录。
+**操作**(= install.sh §2.5-2.8 的手工等价,不走 pnpm):仓库根 `package.json` + 全量 `cordis.patch.yml`(17 insert/10 config/30 disable)+ `rsync lib/` 落 `~/.dsh/profiles/dsh-tui/node_modules/@dsh-edge/dsh-edge-agent/`(diff-then-copy 验证字节一致);`bundles[]` 摘 `…-minimal`、全量名 append 末位(merge 压顶),`dependencies` 同步;`rm -rf` 极简嵌套目录。
 
 **发现并修复一个真配置漂移**:`~/.dsh/profiles/dsh-tui/.env.sh` 是 repo `.env.sh` 的逐字拷贝,端口行是条件式 `${DSH_EDGE_HTTP_PORT:-21017}`——此前 21018 全靠 install.sh 启动器 inline `export` 维持,任何手工 `source .env.sh && dsh` 都会以 **21017 撞 web**。已改为无条件 `export DSH_EDGE_HTTP_PORT=21018`。另:该实例是 tmux 单 pane 进程,kill 即整个 session 消失——重启后改用「session 留 shell + send-keys 启动」,窗口不再随进程陪葬。
 
@@ -7071,9 +7071,9 @@ audit 配置的 `maxFileAgeDays: 7`(cordis.patch.yml:443)同样从未生效过�
 
 **实跑验证**(tarball 模式 --no-restart 两分支):
 - `./install.sh --profile=dsh-edge --no-restart`:Phase 2 rsync lib/ 到 dsh-edge profile + Phase 2.5 skin sync(若 tarball cordis.patch.yml [] 与 dest [] 不一致才动)+ §2.7 skeleton bootstrap(若 ~/.dsh/profiles/dsh-edge/package.json 缺才 cp);dsh-edge profile 是 init 状态时,§2.5 + §2.7 都是 no-op。
-- `./install.sh --profile=web --no-restart`:Phase 2 rsync lib/ 到 web profile(node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/lib/, 64 个 lib/types/* 文件),Phase 2.5 无 echo(tarball 无 profiles/web/cordis.patch.yml),§2.7 注册 bundle 到 ~/.dsh/profiles/web/package.json(web 已 init,无 skeleton bootstrap)。
+- `./install.sh --profile=web --no-restart`:Phase 2 rsync lib/ 到 web profile(node_modules/@dsh-edge/dsh-edge-agent/lib/, 64 个 lib/types/* 文件),Phase 2.5 无 echo(tarball 无 profiles/web/cordis.patch.yml),§2.7 注册 bundle 到 ~/.dsh/profiles/web/package.json(web 已 init,无 skeleton bootstrap)。
 - `./install.sh --profile=tui --no-restart`:同 web,Phase 2 rsync lib/ 到 dsh-tui profile,Phase 2.5 无 echo,§2.7 注册 bundle 到 ~/.dsh/profiles/dsh-tui/package.json。
-- 三 profile 的 `~/.dsh/profiles/<p>/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/lib/types/` 都有 64 个文件,内容一致(同一份 tarball lib/)。
+- 三 profile 的 `~/.dsh/profiles/<p>/node_modules/@dsh-edge/dsh-edge-agent/lib/types/` 都有 64 个文件,内容一致(同一份 tarball lib/)。
 
 **典型用户场景对照**:
 - **场景 A:本机开发**(git clone 仓库 + 改代码 + 反复迭代):`./install.sh --profile=dsh-edge --no-restart`(repo 模式,Phase 1 make package 重 build)
@@ -7534,9 +7534,9 @@ prompt-guard.config.modelDetectionModel = qwen3.7-plus
 profile_has_bundle() {
   local prof_dir="$1"
   local pkg_json="$prof_dir/package.json"
-  local nested_pkg="$prof_dir/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent"
+  local nested_pkg="$prof_dir/node_modules/@dsh-edge/dsh-edge-agent"
   # 任一命中即认为装了,支持 partial-state
-  if [ -f "$pkg_json" ] && grep -q '@deepseek-harness-edge-agent/dsh-edge-agent' "$pkg_json" 2>/dev/null; then
+  if [ -f "$pkg_json" ] && grep -q '@dsh-edge/dsh-edge-agent' "$pkg_json" 2>/dev/null; then
     return 0  # fingerprint 1: package.json 含 bundle 字符串
   fi
   if [ -d "$nested_pkg" ]; then
@@ -7855,8 +7855,8 @@ Rollback hint: 跑 `./install.sh --skip-pnpm --no-restart` 一键恢复部署。
 |---|---|---|
 | **dsh CLI local** | `dsh --version` (前 1 行) | 装机 dsh daemon 当前跑哪个版本 |
 | **dsh CLI npm latest** | `timeout 5 npm view @deepseek-ai/dsh version` | npm registry 最新 release (best-effort, 5s timeout) |
-| **profile bundle deployed** | `$DSH_HOME/profiles/<prof>/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/package.json` 的 `version` 字段 | 已装 bundle 版本 |
-| **profile bundle npm latest** | `timeout 5 npm view @deepseek-harness-edge-agent/dsh-edge-agent version` | npm registry 最新 release (best-effort;本项目私有 npm 包通常 404) |
+| **profile bundle deployed** | `$DSH_HOME/profiles/<prof>/node_modules/@dsh-edge/dsh-edge-agent/package.json` 的 `version` 字段 | 已装 bundle 版本 |
+| **profile bundle npm latest** | `timeout 5 npm view @dsh-edge/dsh-edge-agent version` | npm registry 最新 release (best-effort;本项目私有 npm 包通常 404) |
 | **REPO source** | `$REPO_ROOT/package.json` 的 `version` 字段 | 当前 repo 源码版本(tarball 模式下读 extract 目录的 package.json) |
 
 **退出码设计**:
@@ -7873,7 +7873,7 @@ Rollback hint: 跑 `./install.sh --skip-pnpm --no-restart` 一键恢复部署。
   status:     ⚠ outdated → npm i -g @deepseek-ai/dsh@latest
 
 ==> [check] profile 'dsh-edge' bundle
-  deployed:   0.1.0  (/home/<user>/.dsh/profiles/dsh-edge/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/package.json)
+  deployed:   0.1.0  (/home/<user>/.dsh/profiles/dsh-edge/node_modules/@dsh-edge/dsh-edge-agent/package.json)
   REPO src:   0.1.0  (/home/<user>/cy/agent/dsh-edge-agent/package.json)
   npm latest: (404 / not published / network 5s timeout)
 
@@ -10594,16 +10594,16 @@ desktop installable bundle smoke               lib/client.js 落入 + cordis.pat
 | 2 | host half apply() 里 `ctx.event.emit`:cordis 0.2.1-rc.2 Proxy ctx 访问未声明服务即抛 `cannot get property "event" without inject` | ops log 16:21/17:04 + UI warning 截图 | `1d6b9a7`(plugin.ts try/catch 降级;该事件本就无订阅者) |
 | 3 | `ctx.edgeContextView = service` 裸赋值 + `ctx.on('session/event')` 同样触发 Proxy 拦截 | cordis reflect.ts handler.set/get | `1d6b9a7`(移除赋值;on 包 try/catch) |
 | 4 | **webview client bundle 格式根本错误**:`dsh.client` 缺 `platform:'web'` → dsh-client-modules resolveMeta 直接跳过;且 client.js 是纯 ESM,而 webview 按 classic script 要求自注册 `window.__ModuleLoader__.load({id,factory})` | dsh-client-modules/lib/index.js:733 `if (decl.platform !== "web") return null`;runtime:758 `loaded without registering` | `1d6b9a7`(build-client.mjs 改 CJS+wrapper;preact→react 迁移 10 文件,seed 词表核验只有 react 系无 preact;bundle 20KB→9KB) |
-| 5 | **client 发现机制依赖 loader entry NAME**:dsh-client-modules 扫描每个 loader entry 的 name 找包,其定位器 `exactPackageSpecifier` 只接受 bare package-root specifier——desktop-safe patch 的 16 行全是子路径名,永远扫不到 `dsh.client` | index.js:100 stripClientSuffix / locatePkgJson pathLike 分支;dsh-context 的可工作形态=单条裸名 row | `54e775c`(两份 patch 的 insert 段首各加 `- id/name: '@deepseek-harness-edge-agent/dsh-edge-agent'` 裸包名 host-half row) |
+| 5 | **client 发现机制依赖 loader entry NAME**:dsh-client-modules 扫描每个 loader entry 的 name 找包,其定位器 `exactPackageSpecifier` 只接受 bare package-root specifier——desktop-safe patch 的 16 行全是子路径名,永远扫不到 `dsh.client` | index.js:100 stripClientSuffix / locatePkgJson pathLike 分支;dsh-context 的可工作形态=单条裸名 row | `54e775c`(两份 patch 的 insert 段首各加 `- id/name: '@dsh-edge/dsh-edge-agent'` 裸包名 host-half row) |
 
 **配套工程**:
 - 验证门禁升级(`1d6b9a7`):`verify-installable.mjs` 校验 `dsh.client.platform==='web'` + inject/external/immediately 形状 + `exports['./client']` 落盘存在;`_verify-installable-edge.mjs` 校验 bundle 含 `__ModuleLoader__.load` 注册 + id===pkg.name。
 - 工具链跨平台化(`4e81325`):`_sync-to-nested.mjs` home 解析 USERPROFILE→HOME→os.homedir()+symlink 守卫(macOS/Linux pnpm link: 安装下 rmSync 会误删 link 目标);`build-client.mjs` Windows 走 cmd.exe /c 包装绕 .cmd EINVAL、POSIX 直接 execFileSync;`_rebuild-installable.mjs` 去 Windows-only 措辞。核心修复(manifest/bundle/源码)本身与 OS 无关。
 
 **当前状态(2026-10-20 ~18:40)**:五层修复全部部署进嵌套包并三道门禁绿,但**桌面重启后 Edge tab 仍未出现**。已确认后端组件全部运行中、ops log 恢复写入。**下一步诊断方向**(尚未执行):
-1. 确认裸名 row 真的进了运行中的 profile:`~/.dsh/profiles/desktop/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/cordis.desktop-safe.patch.yml` 第 56-57 行已核验存在;插件管理页组件计数是否变 17 待用户目视。
+1. 确认裸名 row 真的进了运行中的 profile:`~/.dsh/profiles/desktop/node_modules/@dsh-edge/dsh-edge-agent/cordis.desktop-safe.patch.yml` 第 56-57 行已核验存在;插件管理页组件计数是否变 17 待用户目视。
 2. DevTools Console(Ctrl+Shift+I)取 `client-modules` / `edge` / `slot` 现场报错——现在每条宿主文案都能对照 asar 源码定位。
-3. 检查 `/plugins/??@deepseek-harness-edge-agent.../client.js&rev=` combo URL 是否出现在 webview Network(dsh-client-modules serveBundle 路由 line 564 register)。
+3. 检查 `/plugins/??@dsh-edge.../client.js&rev=` combo URL 是否出现在 webview Network(dsh-client-modules serveBundle 路由 line 564 register)。
 4. 若 bundle 已注册但 tab 不显示:查 `sidebarRightTabs.register` 在 webview ctx 上的真实服务名(可能非 'sidebarRightTabs';对照 dsh-context client.js 尾部 `inject:['slots','locale']` + slots.inject('sidebar.right.pane.tab') 的确切用法)。
 5. 若 client-modules 静默 skip:查 pkgMeta 负缓存语义("negative verdict cached until restart"——restart 应已清,需再核)。
 
@@ -10754,7 +10754,7 @@ config/edge.json  (唯一真源,含明文 key,gitignored)
 候选 3  ✅ HIT  <repo>/dist/installable/dsh-edge-agent-desktop-safe/config/edge.example.json（兜底，未用）
 ```
 
-嵌套安装 `~/.dsh/profiles/desktop/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent` 是**指向 dist 的 Junction**，而 loader 用 `import.meta.url` 相对解析路径（`resolve(here, "..", "..")`）→ Node 解析 junction 到真实路径 → 落点就是仓库的 `dist/installable/dsh-edge-agent-desktop-safe/`。**与 cwd 无关**（探针在仓库根运行，解析结果不变）。
+嵌套安装 `~/.dsh/profiles/desktop/node_modules/@dsh-edge/dsh-edge-agent` 是**指向 dist 的 Junction**，而 loader 用 `import.meta.url` 相对解析路径（`resolve(here, "..", "..")`）→ Node 解析 junction 到真实路径 → 落点就是仓库的 `dist/installable/dsh-edge-agent-desktop-safe/`。**与 cwd 无关**（探针在仓库根运行，解析结果不变）。
 
 生效值：`llm.local.baseUrl=https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1`、`model=qwen3.8-flash`、`keyRef=dashscopeApiKey` → `secrets.dashscopeApiKey`。
 
@@ -10811,8 +10811,8 @@ SessionFormatError: tool call id requires a nonempty string
 **现象**：bundle 加入 DSH Desktop profile 后，右栏始终不出现 Edge tab；dsh-context 的 Context tab 正常。
 
 **根因（装机层，已实证）**：`~/.dsh/profiles/desktop/package.json` 声明
-`"@deepseek-harness-edge-agent/dsh-edge-agent": "link:C:/.../dist/installable/dsh-edge-agent-desktop-safe"`，
-但磁盘上该包**不在 `node_modules/` 里**，而在 `node_modules/.ignored/@deepseek-harness-edge-agent/dsh-edge-agent{,_1,_2,_3}/`
+`"@dsh-edge/dsh-edge-agent": "link:C:/.../dist/installable/dsh-edge-agent-desktop-safe"`，
+但磁盘上该包**不在 `node_modules/` 里**，而在 `node_modules/.ignored/@dsh-edge/dsh-edge-agent{,_1,_2,_3}/`
 ——四份被搁置的副本。`dsh.profile.bundles` 仍列着这个 bundle，所以桌面启动一切正常、
 Context tab 正常显示，**唯独 Edge tab 永不出现**：host 侧 `dsh-client-modules` 扫 loader entry
 （`resolveMeta` → `locatePkgJson` → `exactPackageSpecifier`）时找不到这个包，client 半体根本没被加载。
@@ -10822,10 +10822,10 @@ Context tab 正常显示，**唯独 Edge tab 永不出现**：host 侧 `dsh-clie
 把包移进 `.ignored/`。§7.103 已改成 staging + rename 防这个，但**当时已搁置的 4 份副本没被恢复**。
 
 **修复**：`node scripts/_sync-to-nested.mjs` —— 把 `dist/installable/dsh-edge-agent-desktop-safe/`
-物理拷回 `~/.dsh/profiles/desktop/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/`
+物理拷回 `~/.dsh/profiles/desktop/node_modules/@dsh-edge/dsh-edge-agent/`
 （脚本对 symlink 情况有守卫，macOS/Linux 的 `link:` 安装下会自动跳过拷贝）。已执行并核验：
 `lib/client.js` / `lib/index.js` / `lib/dsh-adapter/edge-context-view.js` / `cordis.desktop-safe.patch.yml` /
-`config/edge.json` 全部就位，patch 的裸包名 row（`- id: dsh-edge-agent` + `name: '@deepseek-harness-edge-agent/dsh-edge-agent'`）
+`config/edge.json` 全部就位，patch 的裸包名 row（`- id: dsh-edge-agent` + `name: '@dsh-edge/dsh-edge-agent'`）
 在第 56-57 行。
 
 **代码层硬化**（`src/client/index.ts`、`src/client/theme.ts`）：
@@ -10859,7 +10859,7 @@ Context tab 正常显示，**唯独 Edge tab 永不出现**：host 侧 `dsh-clie
 `build:client` 9KB、`rebuild-installable` 两 variant 重建、十道 verify 门禁全绿。过程中 mount 模拟
 门禁**当场抓住一次编辑事故**（改 `inject` 时误删 `const TAB_ID` 定义 → `TAB_ID is not defined`），
 补回后 PASSED（1 tab + body/title 双座位）。桌面重启后：`__DSH_BOOT__.entries` 含
-`@deepseek-harness-edge-agent/dsh-edge-agent`；右栏 **Edge tab 打开、四面板渲染、意图面板收到活体行
+`@dsh-edge/dsh-edge-agent`；右栏 **Edge tab 打开、四面板渲染、意图面板收到活体行
 `jev.boot_probe`（warn 着色）**——audit-log onEntry → edge-context-view fold →
 `/api/dsh-edge/context` pull → client 轮询 → 渲染，全链路实证打通。
 **遗留观察（非阻塞）**：① file-logger 的 ops 文本日志在新 boot 未追加（audit 正常），待查 exporter 挂载时序；
@@ -15720,7 +15720,7 @@ token）与 `git+ssh://git@github.com/chschytzmcy/dsh-edge-agent.git`（靠 SSH 
 
 ```
 allowBuilds:
-  "@deepseek-harness-edge-agent/dsh-edge-agent@git+https://github.com/chschytzmcy/dsh-edge-agent.git#552a6e7f…": true
+  "@dsh-edge/dsh-edge-agent@git+https://github.com/chschytzmcy/dsh-edge-agent.git#552a6e7f…": true
 ```
 
 键 = `<包名>@<pkgResolutionId>`，而 `pkgResolutionId` = `git+<地址>#<commit>`。
@@ -15781,7 +15781,7 @@ git（解除 `.gitignore` 里的 `/lib/`）⇒ `prepare` 可以留空 ⇒ pnpm �
    「允许这些脚本并重试」，手工先做掉）：
    ```yaml
    allowBuilds:
-     "@deepseek-harness-edge-agent/dsh-edge-agent@git+ssh://git@github.com/chschytzmcy/dsh-edge-agent.git#c2b01fc…": true
+     "@dsh-edge/dsh-edge-agent@git+ssh://git@github.com/chschytzmcy/dsh-edge-agent.git#c2b01fc…": true
    ```
 
 ⇒ 实操结论：**填 SSH 形式**（预检这关才能过）+ **allowBuilds 提前放行**（不必指望
@@ -15819,7 +15819,7 @@ commit 都放行：
 
 ```yaml
 allowBuilds:
-  "@deepseek-harness-edge-agent/dsh-edge-agent@git+ssh://git@github.com/chschytzmcy/dsh-edge-agent.git": true
+  "@dsh-edge/dsh-edge-agent@git+ssh://git@github.com/chschytzmcy/dsh-edge-agent.git": true
 ```
 
 （键必须不含 `#`，否则 `isGitRepoAllowBuildKey`（`:197367`）会把它当成精确
@@ -15834,7 +15834,7 @@ exit = 0
   lib/index.js       : true
   lib/client.js      : true
 dependencies:
-+ @deepseek-harness-edge-agent/dsh-edge-agent 0.1.1
++ @dsh-edge/dsh-edge-agent 0.1.1
 Done in 50.3s using pnpm v11.28.5
 ```
 
@@ -15851,7 +15851,7 @@ Done in 50.3s using pnpm v11.28.5
 [ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED] Failed to prepare git-hosted package fetched from
   "https://github.com/chschytzmcy/dsh-edge-agent.git"
 allowBuilds:
-  @deepseek-harness-edge-agent/dsh-edge-agent@git+https://github.com/chschytzmcy/dsh-edge-agent.git#5a1418796986dc3d0ce2aa326b31f420bc888857: true
+  @dsh-edge/dsh-edge-agent@git+https://github.com/chschytzmcy/dsh-edge-agent.git#5a1418796986dc3d0ce2aa326b31f420bc888857: true
 ```
 
 ⇒ 这次 pnpm 的 `fetchSpec` 是 **https**（上一次是 ssh）⇒ **键的形态随当次网络
@@ -15867,8 +15867,8 @@ allowBuilds:
 
 ```yaml
 allowBuilds:
-  "@deepseek-harness-edge-agent/dsh-edge-agent@git+https://github.com/chschytzmcy/dsh-edge-agent.git": true
-  "@deepseek-harness-edge-agent/dsh-edge-agent@git+ssh://git@github.com/chschytzmcy/dsh-edge-agent.git": true
+  "@dsh-edge/dsh-edge-agent@git+https://github.com/chschytzmcy/dsh-edge-agent.git": true
+  "@dsh-edge/dsh-edge-agent@git+ssh://git@github.com/chschytzmcy/dsh-edge-agent.git": true
 ```
 
 > 这次失败**分类是对的**（GUI 弹「插件安装失败」并给出完整输出 + 重试按钮，
@@ -15895,13 +15895,13 @@ allowBuilds:
 ... pnpm-install: Done in 23.6s using pnpm v11.7.0        ← 注入的 pnpm 用的是【全局那支】
 Progress: resolved 3, reused 1, downloaded 1, added 2, done
 dependencies:
-+ @deepseek-harness-edge-agent/dsh-edge-agent 0.1.1
++ @dsh-edge/dsh-edge-agent 0.1.1
 Done in 41.7s using pnpm v11.28.5
 ```
 
 GUI 显示「**已安装**（Git 仓库 · 版本 0.1.1）」，并给出「立即启用」按钮。
 
-**独立核验装出来的东西**（`~/.dsh/profiles/desktop/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/`）：
+**独立核验装出来的东西**（`~/.dsh/profiles/desktop/node_modules/@dsh-edge/dsh-edge-agent/`）：
 
 | 项 | 结果 |
 |---|---|
@@ -15913,7 +15913,7 @@ GUI 显示「**已安装**（Git 仓库 · 版本 0.1.1）」，并给出「立�
 | 整个仓库（`src/`、`scripts/`、`tests/`） | ❌ 没跟进来（`files` 白名单生效） |
 
 profile 的 `package.json` 里记的是 git 依赖：
-`"@deepseek-harness-edge-agent/dsh-edge-agent": "git+https://github.com/chschytzmcy/dsh-edge-agent.git"`。
+`"@dsh-edge/dsh-edge-agent": "git+https://github.com/chschytzmcy/dsh-edge-agent.git"`。
 
 ⚠️ **但 `dsh.profile.bundles` 里还没有它** ⇒ GUI 装完**不会自动启用**
 （客户端传 `enabled: false`，`manager-store.ts:1250`）⇒ **必须点「立即启用」**，
@@ -16073,7 +16073,7 @@ profile 里真装一次 `dist/installable/dsh-edge-agent-desktop-safe`：
 
 ```json
 "dependencies": {
-  "@deepseek-harness-edge-agent/dsh-edge-agent":
+  "@dsh-edge/dsh-edge-agent":
     "link:C:/Users/<user>/GolandProjects/gitlab/dsh-edge-agent/dist/installable/dsh-edge-agent-desktop-safe"
 }
 ```
@@ -16299,7 +16299,7 @@ TARBALL_SPEC = /\.(?:tgz|tar\.gz)(?:#.*)?$/i
 
 ```
 pnpm add C:\…\dist\dsh-edge-agent-desktop-safe.tar.gz
-  → dependencies = { "@deepseek-harness-edge-agent/dsh-edge-agent":
+  → dependencies = { "@dsh-edge/dsh-edge-agent":
                       "file:C:/…/dist/dsh-edge-agent-desktop-safe.tar.gz" }
   → node_modules 条目是符号链接 → .pnpm/@deepseek-harness-edge-agen_<hash>/…
      （**解包副本** ⇒ 冻结）
@@ -17710,7 +17710,7 @@ file-logger 行块」失效（`scripts/minimal-bundle-rig.sh` 的 awk 剥离、
 
 ### 七、门禁
 
-vitest / eslint / tsc×2 / verify:build（23 项，含 `verify:doc-links` 0 断链 0 孤儿）
+vitest / eslint / tsc×2 / verify:build（22 项，含 `verify:doc-links` 0 断链 0 孤儿）
 结果见提交说明。
 
 ## §7.171 `llm.local` 未配置时也走 DELEGATE（转发宿主提供商）（2026-11-10）
@@ -17800,4 +17800,422 @@ delegate 只改变「**谁提供模型**」，不改变「**这一域的口径**
 
 ### 九、门禁
 
-vitest / eslint / tsc×2 / verify:build（23 项，含 `verify:doc-links` 0 断链 0 孤儿）结果见提交说明。
+vitest / eslint / tsc×2 / verify:build（22 项，含 `verify:doc-links` 0 断链 0 孤儿）结果见提交说明。
+
+## §7.172 增加 npm 发布方式（2026-11-10）
+
+主人要求（2026-11-10）：
+
+> 增加npm发布方式
+
+配套事实（同日）：主人把本仓**转成了 public**（原话「我设置为public」）。
+
+### 一、查实的起点：npm 这条通道今天是什么状态
+
+| 项 | 实测结果（2026-11-10）|
+|---|---|
+| 仓库可见性 | **public**（匿名 GitHub API 核实 `visibility = public`）|
+| registry 上的包 | **不存在**（整包端点 404）⇒ 这条通道今天还用不了 |
+| scope `@dsh-edge` | **未被占用**（registry 上查无此 scope）|
+| 本仓 git tag | **0 个** ⇒ `publish.yml` 从没被触发过 |
+| 本机 npm 凭据 | **未登录**、无 `NPM_TOKEN` / `NODE_AUTH_TOKEN`、无 `~/.npmrc` ⇒ **无法代主人完成真实发布** |
+
+⇒ 缺的不是代码，是**作者侧的三件东西**（§八）。
+
+### 二、两条实测：把「读文档猜」变成事实
+
+#### ① provenance 的可见性端点：**不是 404，是 200 + `{"public":false}`**
+
+`docs/deploy-npm.md` §8.5.1 此前猜的是「包不存在时端点返回 404 ⇒ `ProvenanceFailedToFetchVisibilityError`」。**实测（匿名请求）**：
+
+| 目标 | HTTP | body |
+|---|---|---|
+| `@dsh-edge/dsh-edge-agent`（**尚不存在**）| **200** | `{"public":false}` |
+| `@deepseek-ai/cordis`（已存在的公开包）| 200 | `{"public":true}` |
+
+⇒ **形态猜错，结论一样**：首次发布**不能**带 `--provenance`（哪怕仓库已经是 public）——
+pnpm 的 provenance 生成器要问 registry「这包是不是 public」，首次发布时它还不存在 ⇒
+registry 答 `false` ⇒ pnpm 拒绝做 provenance ⇒ 整个发布失败。
+**后续版本**（包已存在且 public）才带得上徽章。
+
+#### ② OIDC：**pnpm 11.7.0 自己就实现了**，旧结论「用不了」不成立
+
+`docs/deploy-npm.md` §8.5.2 此前写的是「OIDC Trusted Publishing 需 **npm CLI ≥ 11.5.1** ⇒ Node 24 ⇒ 本仓 CI 用 Node 22.20 ⇒ **用不了**，要升 Node」。
+
+⇒ 这条对 **`npm publish`** 成立，但**对 pnpm 不成立**。pnpm 11.7.0 的二进制里内建了
+OIDC 交换（`ACTIONS_ID_TOKEN_REQUEST_URL` / `ACTIONS_ID_TOKEN_REQUEST_TOKEN` /
+`npm.pkg.github.com` / `trusted publish` / `crates/publish/src/oidc/*` / `NPM_ID_TOKEN`）
+⇒ **「要升 Node」这条额外改动不需要做**。
+
+### 三、五个新脚本（把发布这件事变成可查证、可复现的）
+
+| 脚本 | 作用 | 自证 |
+|---|---|---|
+| `scripts/registry-version.mjs` | registry 探针：`probePackage` / `probeVisibility` / `probeVersion` / `decideProvenance`；CLI 输出 JSON（带 `isEntryPoint()` 入口守卫，被 import 时不打印）。探针**可注入** ⇒ 自证不联网 | `--selftest` **10 条断言全绿**（判定表五行 + registry 路径编码）|
+| `scripts/verify-npm-publish.mjs` | **发布就绪门禁**：把 `deploy-npm.md` §7 的「作者侧义务」表变成 11 项机器检查（包名合规 / semver / `publishConfig.access=public` / `dsh.bundle.patch` 文件存在且在 `files` 内 / `engines.dsh` / peer⊆dev / `repository.url`↔git remote / `CHANGELOG` 存在+含当前版本+在 `files` / 排除 `config/edge.json` / `prepare` 跑 compile+build:client / main+types 在包内）| `--selftest` **27 条断言全绿** |
+| `scripts/publish-npm.mjs` | **本地一键发布**：默认 dry-run 不碰 registry，`--yes` 才真发，`--tag` 发完打 tag | 本轮端到端跑通（exit 0）|
+| `scripts/publish-decision.mjs` | 给 CI 的决策脚本：stdout **只有 `key=value`**（`skip` / `provenance` / `provenance_reason` / `package` / `version`），人类可读走 stderr，供 `>> "$GITHUB_OUTPUT"` | `--selftest` **14 条断言全绿**（stdout 契约：5 个键、值都单行、stderr 不混格式）|
+| `scripts/verify-npm-decision.mjs` | **发布决策门禁**：把上面两个自证都跑一遍（链内第 23 位）—— 它们只在 CI 的 publish job 里跑，build job 的门禁够不着 | 任一自证失败 ⇒ 门禁红 |
+
+`package.json`：`files` 加 `CHANGELOG.md`；新增 `verify:npm-publish` /
+`verify:npm-publish:selftest` / `verify:npm-decision` / `publish:npm`；**`verify:build`
+链加入 `verify:npm-publish`（链内第 22 位）+ `verify:npm-decision`（第 23 位）**
+⇒ 链长 **22 → 24 项**（§7.173 又补一道 `verify:package-name`，链长 **25 项**）⇒ CI 每次 push 都会跑它们。
+
+### 四、发现并修掉的两个「会让发布链死掉」的洞
+
+这一节是本轮最重要的产出：**两个洞都不是「缺功能」，是「看起来完整但永远跑不通」**
+—— 与 §7.154（CI build 链少一步）、§7.156（publish 链少几步）同一类。
+
+#### 洞 1：CI 在 tag push 时**必然**是 detached HEAD ⇒ pnpm 拒绝发布
+
+`actions/checkout@v4` 在 **tag push** 时检出的是那个 tag ⇒ **detached HEAD**
+（`git branch --show-current` 返回空串）。而 `pnpm publish` 默认做 git 检查
+（工作树干净 + HEAD 挂在 `master|main` 上）。
+
+**实测（构造 detached HEAD 复现）**：
+
+```
+$ pnpm publish --dry-run --ignore-scripts              # detached HEAD
+Error: ERR_PNPM_GIT_UNKNOWN_BRANCH
+  × The Git HEAD may not attached to any branch, but your
+    "publish-branch" is set to "master|main".
+exit 1
+
+$ pnpm publish --dry-run --ignore-scripts --no-git-checks
+exit 0
+```
+
+⇒ **不加 `--no-git-checks`，这个 job 会在每一次 tag push 上死在 publish 步**
+—— §7.154 的陷阱再次出现，只不过这次要等到有人推了 `v*` tag 才暴露
+（而本仓至今 0 个 tag ⇒ 这条链**从来没被走通过**，也就从来没暴露过）。
+
+**修法**：CI 与本地**都**传 `--no-git-checks`（理由相同：CI 没有别的选择）。
+绕开之后 pnpm 就不再查分支了 ⇒ 这道检查由**本地脚本自己接住**：
+
+| pnpm 原本会查的 | 谁来接住 |
+|---|---|
+| 工作树干净 | `publish-npm.mjs` 0.1（`--allow-dirty` 可强行越过）|
+| HEAD 挂在默认分支上 | `publish-npm.mjs` 0.2（本地必须 attached；CI 天然 detached，跳过）|
+| HEAD 指向默认分支 | 不再需要 —— 本地不强制分支名，`--tag` 把 tag 打在当前 HEAD 上 |
+
+#### 洞 2：Windows 上 `pnpm` 是 `.cmd` shim ⇒ `spawnSync` 根本跑不起来
+
+Node 20.12+ 出于 CVE-2024-27980 **直接拒绝 spawn `.cmd`/`.bat`**，且不会给无扩展名的
+命令名补 PATHEXT ⇒ `spawnSync('pnpm', [...], { shell: false })` 在 Windows 上必然
+ENOENT。
+
+**实测**：不带 shell 时 `status === null` / `error.code === 'ENOENT'`；
+带上 shell（按裸名）时 `status === 0`、`pnpm --version` → `11.7.0`。
+
+⇒ 本仓的既有纪律（`scripts/verify-git-install.mjs` 的 `resolveOnPath()`）就是为这个
+准备的：**PATH 逐目录 × PATHEXT 逐扩展名**。`publish-npm.mjs` 照抄该做法，
+**不再退回 npm**（理由见 §五）。
+
+### 五、CI 的两个决策（`skip` / `provenance`）
+
+`publish.yml` 新增两步：
+
+1. **Assert CHANGELOG.md mentions this version** —— workflow 自己的前置清单第 3 条
+   （"CHANGELOG.md is updated"）此前**没有对应的机器检查**。
+   ⚠️ npm **不会**自动带 `CHANGELOG.md`（只自动带 package.json / README / LICENSE）
+   ⇒ 必须显式进 `files`。
+2. **Decide (skip if published / provenance)** —— 跑 `scripts/publish-decision.mjs`，
+   stdout 写进 `$GITHUB_OUTPUT`；Publish 步按 `skip` / `provenance` 分支。
+
+**skip** 让**两条发布路径共存且幂等**：本地 `npm run publish:npm -- --yes --tag`
+发完再推 tag ⇒ CI 看到这个版本已在 registry 上 ⇒ **跳过 publish**（不撞 409），
+但 release job 仍会建 GitHub Release。
+
+**provenance** 由 `decideProvenance` 统一判定（§二①的表），**不写死**在 workflow 里。
+取不到 registry 状态时默认**不带** ⇒ 宁可少一个徽章，也不让整个发布失败。
+
+### 六、本地路径与 CI 路径是**同一条命令**
+
+```
+pnpm publish --access public --ignore-scripts --no-git-checks [--provenance|--no-provenance]
+```
+
+- `--ignore-scripts`：让 `prepare` 不要在发布步里**重跑一遍** compile+build:client ——
+  Build 步产出的 `lib/` 已经过了 `verify:build`，发出去的应该是**门禁验过的那个**。
+- **不用 npm 兜底**：① CI 用的就是 `pnpm publish`，本地必须同一条命令；
+  ② npm CLI ≥ 11.5.1 在公开仓库上会**自动**带 provenance ⇒ 首次发布必失败 ——
+  正是 `decideProvenance` 要绕开的那个坑。PATH 上没有 pnpm ⇒ **明确报错**，不静默换一支。
+
+### 七、改动清单
+
+| 文件 | 改了什么 |
+|---|---|
+| `scripts/registry-version.mjs`（新）| registry 探针 + `decideProvenance`；CLI 有入口守卫 |
+| `scripts/verify-npm-publish.mjs`（新）| 发布就绪门禁（11 项）+ `--selftest`（27 条断言）|
+| `scripts/publish-npm.mjs`（新）| 本地一键发布（默认 dry-run）；Windows 上按裸名走 shell；自接 pnpm 的 git 检查；**真发布前的认证预检**（离线读 `.npmrc`/环境变量，找不到 token 就在 3 秒内停，而不是等构建 + 24 门禁跑完）|
+| `scripts/publish-decision.mjs`（新）| 给 CI 的决策脚本（stdout 只有 `key=value`）+ `--selftest`（stdout 契约 14 条断言）|
+| `scripts/verify-npm-decision.mjs`（新）| **发布决策门禁**：把上面两个自证都跑一遍（链内第 23 位）—— 它们只在 CI 的 publish job 里跑，build job 的门禁够不着 |
+| `CHANGELOG.md`（新）| 首次发布的变更记录（workflow 前置清单要求，此前**缺失**）|
+| `package.json` | `files` 加 `CHANGELOG.md`；新增 4 个 script；`verify:build` 加入 2 项（链长 22 → **24**）|
+| `.github/workflows/publish.yml` | 加 CHANGELOG 断言步 + Decide 步；Publish 步按决策分支 + `--ignore-scripts --no-git-checks` |
+| `README.md` | 通道 C 的状态行（不再是「尚未发布（404）」，改成「发布链已就绪，缺作者侧三件」）|
+| `docs/deploy-npm.md` | 状态块 / §7 义务表（接上机器门禁）/ §7.1 文件数（235/69）/ §8.1.1 **本地发布路径**（新）/ §8.2 报错表（+3 条）/ §8.4（+2 道门禁）/ §8.5 条件表（21 条）/ §8.5.1 **404→200 的形态修正** + 判定表 / §8.5.2 **OIDC 结论修正** |
+| `docs/README.md` | `deploy-npm.md` 的索引描述（补「本地一键发布路径」）|
+| `docs/load-into-local-dsh.md` | npm 通道的现状行（改成「发布链就绪，缺作者侧三件」）|
+| `docs/PROGRESS.md` | 本节（§7.172）+ **顺带改正 §7.170 / §7.171 的门禁数**（见下）|
+
+**顺带查出并改正的一处口径失真（门禁数偏一）**：§7.170 与 §7.171 都写
+「`verify:build`（**23** 项）」，而**实测链长是 22 项** —— 偏了一格，且这个错
+跨了 **4 个 commit** 传下来（`91ba3d8` → `51bed56` → `78873ce` → `bfabfe8`）。
+本轮用脚本对每个历史 commit 逐个数过（`git show <sha>:package.json` ⇒ 数
+`verify:build` 链的条目）：
+
+| commit | 链长 | 文中声称 |
+|---|---|---|
+| `bfabfe8`（§7.171）| 22 | 23 ✗ |
+| `78873ce` | 22 | 23 ✗ |
+| `51bed56` | 22 | 23 ✗ |
+| `91ba3d8`（§7.170）| 22 | 23 ✗ |
+
+⇒ **两处已改成 22 项**（§7.170 / §7.171 的「九、门禁」）。本轮加**两道**门禁后
+链长是 **25 项**：`verify:package-name` 在**链内第 21 位**、`verify:npm-publish` 在**第 22 位**、`verify:npm-decision`
+**第 23 位** —— 这些数都已按实测写进本节与 `docs/deploy-npm.md`。
+
+> 为什么值得单独记：这类数字**没有任何门禁守着**，`verify:build` 链变长/变短
+> 时没人会想起来同步文档里的计数。而它恰恰是「发布链修好了没有」的第一眼证据。
+
+**临时文件**（本轮为实测临时造，用完即删）：
+`.tmp-yaml-check.mjs`（解析 `publish.yml` 断言步骤结构）、
+`.tmp-git-check.ps1` + `.tmp-pnpm-git-check/`（构造 detached HEAD 复现洞 1）、
+`.tmp-pnpm-probe.mjs`（复现洞 2）、
+`.tmp-count-gates.mjs` / `.tmp-audit-count.mjs`（数 `verify:build` 链长、逐个历史 commit 审计）、
+`.tmp-fix-counts.mjs`（批量改文档里的门禁数口径）、
+`.tmp-byte-scan.mjs`（字节级体检：NUL / 控制字符 / U+FFFD）、
+`.tmp-nul-scan.mjs`（查并修 `verify-npm-publish.mjs` 里的裸 NUL 占位符）、
+`.tmp-vitest.log` / `.tmp-section.md`（取 vitest 汇总 / 通读本节）。
+**全部已删**（走回收站，可恢复）。
+
+### 八、剩下的：主人手上的三件（**无代码层面的阻塞**）
+
+> **裁决（2026-11-10，主人）**：走 **方案 B** —— **建同名组织 + 主人自己的账号做
+> 成员**，而不是注册一个同名的「机器人式」用户账号。
+> ⇒ **本仓代码一个字都不用改**（包名/对外标识不变 ⇒ §七那 181 处字符串不动）。
+
+1. **在 npmjs.com 建组织 `dsh-edge`**，把主人自己的 npm 账号加
+   为成员（角色含 publish）。npm 的规则：scope 由同名用户**或**同名组织拥有，而
+   **发包的人不必是那个名字** —— 官方原文：「…you must first either create an
+   organization with the name of the scope … **or be added to an existing
+   organization** with the appropriate permissions」。
+   （名字可用性已查实：registry 上无同名组织、该 scope 下无任何包。）
+2. **发布凭据** —— 首次发布用 granular access token（Read and write + Bypass 2FA +
+   ≤90 天；权限走「Select packages and scopes」选中本 scope，**不要**用 token 表单
+   的「Organizations」那一栏 —— 那是管成员的，不能用来发包）；**或**在 npmjs.com 上
+   给本包登记 trusted publisher（Owner = 这个组织）改走 OIDC（pnpm 11.7.0 直接支持，
+   **不用升 Node**）。
+3. **执行一次发布**：
+
+```bash
+npm login --scope=@dsh-edge   # 用主人自己的账号；scope 钉到组织
+npm run publish:npm -- --yes --tag
+git push origin v0.1.1     # 触发 CI；它会看到版本已发 ⇒ 跳过 publish，只建 Release
+```
+
+⇒ **本仓代码侧已就绪**，不需要再改任何东西。
+
+> **为什么不再考虑「换个 scope」**：换 scope **并不能**省掉「注册一个同名账号/组织」
+> —— npm 要求 scope 名 = 账号/组织名 ⇒ 换个 scope 只是把「注册什么名字」从账号挪到
+> 包上。而本仓这个 scope 字符串散布在 **181 处 / 45 个文件**，其中 **84 处是宿主在
+> 运行时解析的 patch 行**（漏改 ⇒ 插件挂不上 ⇒ Edge tab 静默消失、零报错），外加
+> **两个门禁各自硬编码了一份包名**（`verify-preset-isolate.ts:47`、
+> `verify-patch-surface.ts:55`）。⇒ 走组织方案 = **零改动**。
+
+> **npm 正在退场「用 token 直接发版」**（2026-11-10 查实）：官方文档写明
+> bypass-2FA 的 direct-publish token 正在被弃用，「publish new package versions
+> directly with a granular access token **will be removed in January 2027**」，
+> 替代路径是 stage-only token + `npm stage publish` / `npm stage approve` 人工审批。
+> ⇒ **token 只是第一次发布的过桥** ⇒ 发完立刻登记 trusted publisher 走 OIDC。
+
+### 九、门禁
+
+vitest / eslint / tsc×2 / verify:build（**25 项**，新增 `verify:package-name` + `verify:npm-publish` + `verify:npm-decision`；
+`verify:doc-links` 0 断链 0 孤儿）结果见提交说明。
+
+另：`node scripts/publish-npm.mjs --allow-dirty` **端到端跑通**（exit 0）——
+canonical 构建链 + 24 道门禁 + `pnpm publish --dry-run` 全绿。
+
+## §7.173 npm scope 迁到 `@dsh-edge` + 补「包名一致性」门禁（2026-11-10）
+
+### 一、为什么改 scope
+
+主人裁决：npm 包名从旧 scope `@deepseek-harness-edge-agent` 下的包
+`dsh-edge-agent`，改成 `@dsh-edge/dsh-edge-agent`（短、项目名、与仓库名
+`dsh-edge-agent` 同源）。
+
+**空闲性实测（2026-11-10，带对照组）**：
+
+| 探针 | 结果 | 结论 |
+|---|---|---|
+| `https://www.npmjs.com/~dsh-edge` | h1 `not found` + `NotFoundError: Scope not found` | **scope 空闲** |
+| `https://www.npmjs.com/~deepseek-harness-edge-agent` | 同上 | 旧名**也**空闲（不是被占，是自己选的） |
+| `https://registry.npmjs.org/-/org/dsh-edge/package` | **404** | 无同名组织 |
+| `https://registry.npmjs.org/-/org/deepseek-harness-edge-agent/package` | **404** | 无同名组织 |
+| **对照组** `https://www.npmjs.com/~babel` | 跳 `/org/babel`，标题 `npm | Profile`，列 `Packages 435` | **判别口径成立** |
+
+> **判别口径（以后复用）**：`~<name>` 页面对**存在的** scope 会 302 到 `/org/<name>`
+> 并渲染 `npm | Profile` + `Packages N`；对**不存在的**留在原 URL，渲染
+> `not found` + `NotFoundError: Scope not found`。
+> registry 端 `/-/org/<name>/package` 对不存在的组织返 **404**（对照 `/-/org/types` 返 200）。
+> **用户**账号端点 `/-/user/org.couchdb.user:<name>` 匿名访问恒 401 ⇒ 用户是否存在
+> **查不了**，只能靠 `~<name>` 页 + org 端点两条证据一起判。
+> `web_fetch` 直连 `www.npmjs.com` 会被 Cloudflare 挡（返 challenge HTML）⇒ 必须用内置浏览器。
+
+**业界惯例（36 个 DSH 插件 scope 实测）**：scope = 发布者本人/团队名
+（`@huanlin` / `@weaxs` / `@choate` …），包名 = `dsh-<功能>`
+（`dsh-time-machine` / `dsh-context-lens`）或 `dsh-plugin-<功能>`
+（`dsh-plugin-notify`）。scope ≠ 发布者名的那几个正是「组织 + 成员」模式
+（`@dr-co` → unera、`@dsh-cc` → jianxx）。⇒ 取 `@dsh-edge` 合规。
+
+### 二、作者侧义务跟着变了
+
+npm 官方规则：**注册用户账号或创建组织时，你会自动获得一个与账号/组织同名的 scope**。
+所以 `@dsh-edge` 的归属者名字必须**正好是** `dsh-edge` —— 换 scope 名 ≠ 省掉注册，
+只是把「注册什么名字」从包上挪到账号/组织上。
+
+两条路（scope 都是 `@dsh-edge`）：
+
+| 路线 | 做法 | 取舍 |
+|---|---|---|
+| **A** | 用**自己名字**注册个人账号 → 建**组织** `dsh-edge` → 把自己加为成员（角色含 publish） | 语义清楚（账号=人，组织=项目），以后能加协作者 |
+| **B** | 直接注册**用户名 = `dsh-edge`** 的个人账号 | 一步到位；代价是这个名字成为公开身份，以后加协作者得另建组织（同名不可能） |
+
+⚠️ npm 使用条款把「只注册名字留着不发包」算**抢注**；组织长期不发包会被判抢注
+⇒ 注册后要尽快真发一版（本项目本来就要发）。
+
+### 三、改名的真实代价：47 个文件 / 244 处字面量，其中 84 处是**宿主运行时解析**的
+
+这是本节最要紧的一条。包名在仓库里被**复制**到了几十处，而这些副本
+**没有任何一处会自检**：
+
+| 位置 | 性质 | 漏改的后果 |
+|---|---|---|
+| `cordis.patch.yml` / `cordis.desktop-safe.patch.yml` / `cordis.yml` / `presets/edge*.patch.yml` / `profiles/*/cordis.patch.yml` 的 `name: '@<scope>/dsh-edge-agent/...'` 行 —— **84 处** | **宿主运行时解析** | 宿主按名字找不到包 ⇒ **插件静默挂不上** ⇒ Edge tab 直接消失，**零报错、零日志** |
+| `src/dsh-adapter/invariant.ts` 的 `PACKAGE_NAME`、`invariant-install.ts` 的 `packageName` | 运行时注册 invariant | invariant 注册不上，**不报错** |
+| `scripts/verify-preset-isolate.ts` / `scripts/verify-patch-surface.ts` 的 `BUNDLE_PKG` | 门禁自己认包的依据 | 门禁**对着空气断言** ⇒ 恒绿（比红更糟：门禁失去意义） |
+| `install.sh` / `uninstall.sh` / `scripts/*.sh` 的 `node_modules/@<scope>/...` 路径 | 装/卸路径 | 装到错目录 / 卸不干净 |
+| `profiles/*/package.json` 的依赖键 | 宿主装依赖 | 依赖装不上 |
+
+⇒ 改名**必须**先有一道门禁盯着，否则就是把「静默失败」从概率事件变成必然事件。
+
+### 四、新门禁：`scripts/verify-package-name.mjs`（链内第 21 位）
+
+4 条检查：
+
+1. **单一事实源**：`package.json#name` 必须是 `@<scope>/<base>` 形态，scope/base 合法。
+2. **点名的副本**：4 个已知副本常量必须字面等于 `package.json#name`。
+3. **残留 scope（本项目的包）**：全仓任何 `@<scope>/<base>` 形态的 token，scope 段必须 === 事实源。
+4. **残留 scope（单独出现）**：`node_modules/@<scope>` / `--scope=@<scope>` 两种形态。
+
+**门禁自己不硬编码包名**：scope/base 从 `package.json#name` 派生；副本点按
+「文件 + 常量名」定位。以后再改 scope，只需改事实源 + 被点名的副本，漏一个就红。
+
+**为什么第 3/4 条只认这两种形态**：仓库里 `@` 开头的 token 绝大多数**不是 npm scope** ——
+JSDoc 标签（`@module` / `@param` / `@returns`）、Makefile 配方前缀（`@echo` / `@rm` / `@mkdir`）、
+脱敏后的邮箱（`t***@gmail.com`）、文档占位符（`@scope/pkg`）。通用扫描会把它们全当 scope
+⇒ 门禁天天误报 ⇒ 没人看 ⇒ 门禁等于没有。
+
+**自证**：`--selftest` **16 条断言全绿**，含**反向证伪** —— 拿**真实树**注入一处旧 scope
+（改 `cordis.patch.yml`），必须被抓到。这条比合成数据更有说服力：它证明门禁对
+**本仓真实的文件形态**有效。
+
+**门禁扫自己，零例外**：合成测试样本里的「漂移 scope」必然是 `@<别的scope>/<base>` 形态 ——
+要是把这些字面量**写死在门禁源码里**，门禁会把自己判成漂移。⇒ 源码里**一个
+`@scope/base` 字面量都不写**：包名一律由事实源动态拼（`facts.scope + '/' + facts.base`），
+漂移样本用 `OTHER + '/' + facts.base` 拼。这样以后再改 scope，门禁不会自己炸。
+同理，本节这条迁移记录里，旧 scope 后面**不接包名**（写成「旧 scope `X` 下的包 `Y`」），
+否则它本身就构成 `@<旧scope>/<base>` ⇒ 被自己判成漂移。
+（这正是本节第一版被门禁判红的原因：**门禁没错，是留档写法要配合门禁口径**。）
+
+### 五、改名的执行方式：全仓字面替换，**含 PROGRESS.md 历史章节**
+
+一次字面替换 `deepseek-harness-edge-agent` → `dsh-edge`：**47 个文件 / 244 处**。
+
+**PROGRESS.md 的历史章节也一并改了**，理由：
+
+- 本包**从未发布过**（0 个 tag、registry 上查无此包）⇒ 旧名**不存在于任何已发布产物**
+  ⇒ 改写不产生「与实际行为相反的陈述」；
+- 改写后全仓**只有一个包名**（旧名在本节作为**迁移留档**出现 4 处，别处为 0）
+  ⇒ 门禁可以**零例外**覆盖全仓（含 PROGRESS.md），不需要「历史档案白名单」这种口子；
+- §7.173 是这次改名**唯一的留档**。
+
+### 六、门禁链：24 → 25 项
+
+| 链内位置 | 门禁 | 守什么 |
+|---|---|---|
+| 20 | `verify:package` | tarball 装得进去、入口齐全（235 文件 / 69 入口） |
+| **21** | **`verify:package-name`（新）** | **包名在全仓一致** |
+| 22 | `verify:npm-publish` | 发布面就绪（11 项断言） |
+| 23 | `verify:npm-decision` | 发布决策（判定表 + stdout 契约的自证） |
+| 24 | `verify:doc-links` | 文档链接不断 |
+| 25 | `verify:config-hints` | 配置提示与真实配置一致 |
+
+> §7.172 记的「链长 22 → 24 项」是**当时的史实**；当前链长 **25 项**，多出来的那道
+> 是 §7.173 的 `verify:package-name`。
+
+### 七、本次改动清单
+
+- 新增：`scripts/verify-package-name.mjs`
+- `package.json`：`name` 改 `@dsh-edge/dsh-edge-agent`；新增 `verify:package-name` /
+  `verify:package-name:selftest`；`verify:build` 链插入 `verify:package-name`（第 21 位）
+- 改名：47 文件 / 244 处字面量
+- 文档：`README.md` / `docs/deploy-npm.md` / `docs/architecture.md` /
+  `docs/load-into-local-dsh.md` / `docs/dev-notes/` / `CHANGELOG.md` / 本节
+- **新增** `docs/npm-account-setup.md`：注册 npm 账号/组织 + 办发布凭据的逐步操作
+  （主人暂时没法注册 ⇒ 先落成文档，随时照着点）
+- **刷新** `docs/plugin-mount-points.md`：三处口径失效 + 补 preset 子树 + 补漏掉的插件
+- **清理**：示例/注释里的真用户名与内网 IP 换成占位符（11 处），实测记录原样保留
+- 口径：门禁计数 24 → 25、链内位置、账号/组织措辞
+
+### 八、还没做的（等主人手上的凭据）
+
+逐步操作已写成独立文档：**`docs/npm-account-setup.md`**（注册账号/组织 → 开 2FA →
+签 granular token → 发第一版 → 登记 trusted publisher）。
+
+- npmjs.com 上注册**账号或组织 `dsh-edge`**（见 §二）⇒ scope 才真正归你
+- 首次发布的凭据（granular token，Read and write + Bypass 2FA + ≤90 天）
+- 发完登记 **trusted publisher**（Owner = 该账号/组织、Repository = `chschytzmcy/dsh-edge-agent`、
+  Workflow = `publish.yml`）⇒ CI 转 OIDC，不再需要 token，也不受 2027 退场影响
+
+### 九、顺带清的两处旧遗留
+
+**一、`docs/plugin-mount-points.md` 全量刷新**（上一版有三处口径失效）：
+
+- **注入列表指错了文件** —— 上一版说在「`cordis.patch.yml` 第 345–565 行」，实际那个
+  区间属于 **`cordis.yml` 101–315**（bundle 清单，21 行）；`cordis.patch.yml` 里
+  只有 **4 行 insert**（326/330/354/376）。
+- **dormant 的口径也不准** —— 上一版写「5 个，`cordis.patch.yml:120-137`」；实际
+  `cordis.patch.yml` **100–135** 是**一整段 upstream-disabled（7 行）**，语义各不相同
+  （`dsh-edge-agent` 是防聚合器双 apply、`web-search` 是让位给我们自己的
+  `web-search-tavily-bocha`，其余 5 个才是 M5+ stub）。
+- 补上了 **preset 子树 / 桌面安全版 preset / 独立 profile overlay** 三层清单，
+  并写清「同一个插件在三层的 `inject` 不一样」（§8.5）—— 以前那张表把某一层的值
+  当成了全局真值。
+- 补上了正文里**漏掉的插件**：`etscli-tools`、`etscli-shell-guard`、
+  `function-call-external`、`td-bus`。其中 `etscli-shell-guard` 是端侧工具的
+  **shell 护栏**，漏写等于让人以为没有护栏。
+- `sessions` 的说法改了：**bundle 清单挂、patch 层不挂**（上一版只说了后半句）。
+
+**二、真用户名 / 内网 IP 换成占位符**（仓库已转公开）。
+
+扫描命中 `67.0.0.5` 或 `C:\Users\cheng` 的共 **50 行**，**全部在注释 / 示例 /
+实测记录里，没有一处是运行时硬编码**。处置：
+
+| 类别 | 位置 | 处置 |
+|---|---|---|
+| 示例配置 | `config/edge.example.json` 的「实测 67.0.0.5:11434」 | → `<你的内网主机>` |
+| 源码/测试注释 | `src/client/flowPanel.tsx`、`src/client/verdict.ts`、`src/dsh-adapter/openai-sse.ts`、`tests/unit/flow-panel-verdict-honesty.test.ts` | → `<内网主机>` |
+| 脚本里的示例值 | `scripts/e2e-model-quality-bench.sh`、`scripts/e2e-model-quality-bench/harness.py` | → `<lan-host>` / `<lan-ip>` |
+| 注释里举例的 Windows 路径 | `scripts/build-desktop-bundle.sh`、`scripts/verify-bundle-mounted.mjs`、`scripts/verify-git-install.mjs`、`docs/deploy-github.md`（通用说明那条） | → `C:\Users\<user>\…` |
+| **实测记录**（39 行） | `docs/PROGRESS.md`（23）、`docs/bench/**`（14）、`docs/deploy-github.md` 标「实测本机 / 本机已装好」的 2 行 | **原样保留** |
+
+最后一行是原则：**实测记录改了就是篡改证据**。`docs/bench/` 的快照按其自身 README
+的说法「这些数据不可再生」；`docs/PROGRESS.md` 里 §7.129 → §7.130 那段
+「`67.0.0.5` 是公网 IP ⇒ 撤回」更是判断依据本身。
+
+⇒ 结果：**代码与示例里不再有**真用户名 / 内网 IP；留下的 39 行**全部在历史记录里**，
+且都标着「实测」。

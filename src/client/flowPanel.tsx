@@ -369,7 +369,7 @@ function sanitizeNode(rows: EdgeRow[], category: string | undefined): FlowNode {
     // §7.129 / §7.130: 「无需脱敏」的理由是「答案不出设备」—— 依据是
     // **category（哪个池）**，不是端点落在哪台机。主人裁决：category=LOCAL
     // 即不算出公网，`llm.local` 池是 operator 自有设施（当前部署指向
-    // 67.0.0.5，那是主人自己的机器/内网）。§7.129 曾按出口端点把这个节点
+    // <内网主机>，那是 operator 自己的机器/内网）。§7.129 曾按出口端点把这个节点
     // 改成「未脱敏（落点不在本机）」，该推导已由 §7.130 撤回。
     return { label: tr('flow.sanitize'), tone: 'ok', detail: tr('flow.sanitize.localSkip'), sub: [tr('flow.s.localWhy')] }
   }

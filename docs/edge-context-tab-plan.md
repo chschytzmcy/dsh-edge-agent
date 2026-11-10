@@ -99,7 +99,7 @@
 
 ```yaml
 - id: edge-context-view
-  name: '@deepseek-harness-edge-agent/dsh-edge-agent/edge-context-view'
+  name: '@dsh-edge/dsh-edge-agent/edge-context-view'
   inject: [auditLog]   # 仅 1 硬依赖；connection 软延迟
   config:
     bufferSize: !!js parseInt(process.env.DSH_EDGE_VIEW_BUFFER_SIZE ?? '64', 10)

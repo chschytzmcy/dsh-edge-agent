@@ -99,7 +99,7 @@
 # registers the model-facing `services` namespace. The subpath exports
 # pattern lets each row below be reused independently of this aggregator.
 - id: dsh-edge-agent
-  name: '@deepseek-harness-edge-agent/dsh-edge-agent'
+  name: '@dsh-edge/dsh-edge-agent'
   inject: [agents, llm, sessions, invariants]
   config:
     teeType: !!js process.env.DSH_EDGE_TEE_TYPE ?? 'simulated'
@@ -113,7 +113,7 @@
 # and remote-attestation primitives. MUST mount first (every privacy/security
 # plugin depends on its key store).
 - id: tcm
-  name: '@deepseek-harness-edge-agent/dsh-edge-agent/tcm'
+  name: '@dsh-edge/dsh-edge-agent/tcm'
   config:
     teeType: !!js process.env.DSH_EDGE_TEE_TYPE ?? 'simulated'
     keyStorePath: !!js (process.env.DSH_EDGE_STORAGE_ROOT ?? ((process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent')) + '/keys'
@@ -123,7 +123,7 @@
 # Encrypted SQLite-backed key/value. Each value is AES-256-GCM encrypted via
 # the TCM service before being written to disk.
 - id: local-storage
-  name: '@deepseek-harness-edge-agent/dsh-edge-agent/local-storage'
+  name: '@dsh-edge/dsh-edge-agent/local-storage'
   inject: [tcm]
   config:
     root: !!js (process.env.DSH_EDGE_STORAGE_ROOT ?? ((process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent')) + '/storage'
@@ -131,7 +131,7 @@
 
 # Encrypted session lifecycle.
 - id: sessions-edge
-  name: '@deepseek-harness-edge-agent/dsh-edge-agent/sessions'
+  name: '@dsh-edge/dsh-edge-agent/sessions'
   inject: [tcm, localStorage]
   config:
     defaultTtlSeconds: !!js parseInt(process.env.DSH_EDGE_SESSION_TTL ?? String(60 * 60), 10)
@@ -139,7 +139,7 @@
 
 # Tamper-evident audit log. HMAC-chained so any tampering is detected.
 - id: audit-log
-  name: '@deepseek-harness-edge-agent/dsh-edge-agent/audit-log'
+  name: '@dsh-edge/dsh-edge-agent/audit-log'
   inject: [tcm, localStorage]
   config:
     minLevel: !!js process.env.DSH_EDGE_AUDIT_LEVEL ?? 'info'
@@ -153,7 +153,7 @@
 
 # Hot-reloadable privacy policy engine.
 - id: privacy-policy
-  name: '@deepseek-harness-edge-agent/dsh-edge-agent/privacy-policy'
+  name: '@dsh-edge/dsh-edge-agent/privacy-policy'
   inject: [tcm, localStorage, auditLog]
   config:
     policyPath: !!js process.env.DSH_EDGE_POLICY_PATH ?? ((process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent/policy.json')
@@ -162,7 +162,7 @@
 
 # Realm-aware tool registry (LOCAL / CLOUD / SANITIZED).
 - id: tools
-  name: '@deepseek-harness-edge-agent/dsh-edge-agent/tools'
+  name: '@dsh-edge/dsh-edge-agent/tools'
   inject: [auditLog]
   config:
     defaultRateLimitPerMinute: !!js parseInt(process.env.DSH_EDGE_TOOL_RATE ?? '60', 10)
@@ -173,7 +173,7 @@
 # mapping at agent/pre-step (catalog filtering) and tools/pre-execute (deny
 # cross-realm calls). Hot-reloads the config file without restart.
 - id: realm-skill-bridge
-  name: '@deepseek-harness-edge-agent/dsh-edge-agent/realm-skill-bridge'
+  name: '@dsh-edge/dsh-edge-agent/realm-skill-bridge'
   inject: [auditLog]
   config:
     configPath: !!js process.env.DSH_EDGE_REALM_CONFIG ?? ((process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent/skill-realms.json')
@@ -182,7 +182,7 @@
 
 # Input/output safety scanning. MVP: checkInput only with 4 default rules.
 - id: prompt-guard
-  name: '@deepseek-harness-edge-agent/dsh-edge-agent/prompt-guard'
+  name: '@dsh-edge/dsh-edge-agent/prompt-guard'
   inject: [tcm, privacyPolicy, auditLog, llm]
   config:
     rules: []
@@ -194,7 +194,7 @@
 
 # Intent classification → routing decision.
 - id: intent-router
-  name: '@deepseek-harness-edge-agent/dsh-edge-agent/intent-router'
+  name: '@dsh-edge/dsh-edge-agent/intent-router'
   inject: [llm, promptGuard, privacyPolicy, auditLog, sessions, localStorage]
   config:
     confidenceThreshold: !!js parseFloat(process.env.DSH_EDGE_INTENT_CONFIDENCE_THRESHOLD ?? '0.6')
@@ -206,7 +206,7 @@
 
 # Model router — single `llm` surface, routes to local/cloud adapters.
 - id: model-router
-  name: '@deepseek-harness-edge-agent/dsh-edge-agent/model-router'
+  name: '@dsh-edge/dsh-edge-agent/model-router'
   inject: [llm, privacyPolicy, auditLog]
   config:
     defaultModel: !!js process.env.DSH_EDGE_DEFAULT_MODEL ?? 'local-llm'
@@ -226,7 +226,7 @@
 # cloud-hosted OpenAI-compatible endpoints like DashScope, OpenRouter, etc).
 # Leave undefined to skip the Authorization header (plain llama.cpp server).
 - id: local-llm-adapter
-  name: '@deepseek-harness-edge-agent/dsh-edge-agent/local-llm-adapter'
+  name: '@dsh-edge/dsh-edge-agent/local-llm-adapter'
   config:
     providers: !!js (process.env.DSH_EDGE_LOCAL_MODELS ?? 'local-llm').split(',').filter(Boolean)
     baseUrl: !!js process.env.DSH_EDGE_LOCAL_LLM_BASEURL ?? 'http://127.0.0.1:8080/v1'
@@ -235,7 +235,7 @@
 
 # Cloud LLM adapter (DeepSeek / other providers). Routes through secure-bridge.
 - id: cloud-llm-adapter
-  name: '@deepseek-harness-edge-agent/dsh-edge-agent/cloud-llm-adapter'
+  name: '@dsh-edge/dsh-edge-agent/cloud-llm-adapter'
   inject: [secureBridge, auditLog]
   config:
     providers: !!js (process.env.DSH_EDGE_CLOUD_MODELS ?? 'cloud-llm').split(',').filter(Boolean)
@@ -245,7 +245,7 @@
 
 # Forward / reverse PII sanitization (SANITIZED realm).
 - id: sanitizer-pipeline
-  name: '@deepseek-harness-edge-agent/dsh-edge-agent/sanitizer-pipeline'
+  name: '@dsh-edge/dsh-edge-agent/sanitizer-pipeline'
   inject: [localStorage, privacyPolicy]
   config:
     enableAutoDetection: !!js process.env.DSH_EDGE_SAN_AUTO !== 'false'
@@ -259,7 +259,7 @@
 # OHTTP gateway (RFC 9458) — HPKE ciphertext to a relay that cannot link
 # user identity to request content.
 - id: ohttp-gateway
-  name: '@deepseek-harness-edge-agent/dsh-edge-agent/ohttp-gateway'
+  name: '@dsh-edge/dsh-edge-agent/ohttp-gateway'
   inject: [tcm, auditLog]
   config:
     relayUrl: !!js process.env.DSH_EDGE_OHTTP_RELAY ?? ''
@@ -270,7 +270,7 @@
 
 # Outbound channel for cloud-bound requests.
 - id: secure-bridge
-  name: '@deepseek-harness-edge-agent/dsh-edge-agent/secure-bridge'
+  name: '@dsh-edge/dsh-edge-agent/secure-bridge'
   inject: [tcm, ohttp, privacyPolicy, auditLog]
   config:
     mode: !!js process.env.DSH_EDGE_BRIDGE_MODE ?? 'ohttp'
@@ -280,7 +280,7 @@
 
 # TEE attestation token generation + verification.
 - id: attestation
-  name: '@deepseek-harness-edge-agent/dsh-edge-agent/attestation'
+  name: '@dsh-edge/dsh-edge-agent/attestation'
   inject: [tcm, auditLog]
   config:
     verifierUrl: !!js process.env.DSH_EDGE_ATTEST_VERIFIER ?? undefined
@@ -290,7 +290,7 @@
 # quarantine action when patterns indicate abuse. Phase D: real state
 # machine; http-api reads getThreatLevel() and blocks at blockLevel.
 - id: td-bus
-  name: '@deepseek-harness-edge-agent/dsh-edge-agent/td-bus'
+  name: '@dsh-edge/dsh-edge-agent/td-bus'
   inject: [auditLog, privacyPolicy]
   config:
     windowSeconds: !!js parseInt(process.env.DSH_EDGE_TD_WINDOW ?? '60', 10)
@@ -302,7 +302,7 @@
 
 # Voice input (Whisper-tiny). MVP off by default.
 - id: voice-input
-  name: '@deepseek-harness-edge-agent/dsh-edge-agent/voice-input'
+  name: '@dsh-edge/dsh-edge-agent/voice-input'
   inject: [sessions, auditLog]
   config:
     modelPath: !!js process.env.DSH_EDGE_VOICE_MODEL ?? ((process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent/models/whisper-tiny.bin')
@@ -313,7 +313,7 @@
 # runtime generation id, Host Descriptor). Mounted ahead of any third-party
 # plugin row.
 - id: plugin-host
-  name: '@deepseek-harness-edge-agent/dsh-edge-agent/plugin-host'
+  name: '@dsh-edge/dsh-edge-agent/plugin-host'
   inject: [agents, sessions]
   config:
     enableThirdParty: !!js process.env.DSH_EDGE_PLUGINS_THIRD_PARTY === 'true'

@@ -61,7 +61,7 @@ export async function apply(ctx, config) {
 v5 patch row 用了这种 file-path 形态：
 ```yaml
 - id: edge-context-view
-  name: '@deepseek-harness-edge-agent/dsh-edge-agent/lib/types/dsh-adapter/edge-context-view.js'
+  name: '@dsh-edge/dsh-edge-agent/lib/types/dsh-adapter/edge-context-view.js'
 ```
 
 桌面启动直接 crash（Windows correlation id `7F082FCF-6162-4740-B46B-1BAA9AF23686`），错误信息：
@@ -81,7 +81,7 @@ Package subpath './lib/types/dsh-adapter/edge-context-view.js' is not defined by
 
 ### 修法
 v6 已 revert：
-- `name` 改回裸包名：`'@deepseek-harness-edge-agent/dsh-edge-agent'`
+- `name` 改回裸包名：`'@dsh-edge/dsh-edge-agent'`
 - 同时在 `src/dsh-adapter/index.ts` 加 `export * from './edge-context-view.js'`，让 main entry `lib/types/index.js` 暴露该 plugin
 - cordis `require('@scope/pkg')` 走 main → main re-export 该 plugin → plugin 实装
 

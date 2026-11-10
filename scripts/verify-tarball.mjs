@@ -260,7 +260,7 @@ function selftest() {
     'config/edge.example.json': '{}\n',
   }
   const GOOD_MANIFEST = {
-    name: '@deepseek-harness-edge-agent/dsh-edge-agent',
+    name: '@dsh-edge/dsh-edge-agent',
     version: '0.1.1-desktop-safe',
     main: 'lib/index.js',
     engines: { node: '^22.19 || >=24', dsh: '>=0.2.1-rc.2' },

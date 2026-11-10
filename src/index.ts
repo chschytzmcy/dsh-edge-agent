@@ -30,7 +30,7 @@ export {
 } from './dsh-adapter/dsh-edge-agent.js'
 
 // Convenience: re-export the canonical subpath plugins so that consumers
-// who `import '@deepseek-harness-edge-agent/dsh-edge-agent'` can also
+// who `import '@dsh-edge/dsh-edge-agent'` can also
 // pull individual cordis rows out of the same module.
 export * from './dsh-adapter/tcm.js'
 export * from './dsh-adapter/local-storage.js'

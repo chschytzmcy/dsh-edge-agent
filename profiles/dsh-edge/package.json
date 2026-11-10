@@ -6,7 +6,7 @@
     "profile": {
       "bundles": [
         "@deepseek-ai/dsh-base",
-        "@deepseek-harness-edge-agent/dsh-edge-agent"
+        "@dsh-edge/dsh-edge-agent"
       ],
       "patchReload": "live"
     }

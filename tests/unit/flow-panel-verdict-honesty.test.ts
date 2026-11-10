@@ -17,7 +17,7 @@
  * > 「只要定位到 category=LOCAL，就不算到公网，不用关心具体的模型来源。」
  *
  * 判定「是否出网」的依据是 **category（哪个池）**，**不是**端点落在哪台机。
- * `llm.local` 池是 operator 自有设施（当前部署指向 67.0.0.5 —— 那是
+ * `llm.local` 池是 operator 自有设施（当前部署指向内网主机 —— 那是
  * operator 自己的机器/内网），所以 provider 名叫 `local-llm`、端点不在
  * 本机，**都不构成出网**。
  *

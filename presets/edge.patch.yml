@@ -248,7 +248,7 @@
             config:
               # tcm: prompt-guard injects this; must mount first
               - id: tcm
-                name: '@deepseek-harness-edge-agent/dsh-edge-agent/tcm'
+                name: '@dsh-edge/dsh-edge-agent/tcm'
                 # §7.102: teeType / keyStorePath come from config/edge.json (tee.*).
 
               # td-bus: http-api injects this; must mount before http-api.
@@ -258,7 +258,7 @@
               #   - blockLevel: 'elevated' | 'high' | 'critical'  (default 'critical')
               # Block triggers at 4× threshold within windowSeconds.
               - id: td-bus
-                name: '@deepseek-harness-edge-agent/dsh-edge-agent/td-bus'
+                name: '@dsh-edge/dsh-edge-agent/td-bus'
                 inject: [auditLog, privacyPolicy]
                 config:
                   windowSeconds: 60
@@ -273,7 +273,7 @@
               # §7.102: configPath / hot-reload knobs come from config/edge.json
               # (privacy.realm*). Row carries no config.
               - id: realm-skill-bridge
-                name: '@deepseek-harness-edge-agent/dsh-edge-agent/realm-skill-bridge'
+                name: '@dsh-edge/dsh-edge-agent/realm-skill-bridge'
                 inject: [auditLog, skills, edgeTools, tools]
 
               # §7.102: host/port from config/edge.json http.*, session/body caps
@@ -282,11 +282,11 @@
               # a per-process override via edge-config's ENV_OVERRIDES. Row carries
               # no config.
               - id: http-api
-                name: '@deepseek-harness-edge-agent/dsh-edge-agent/http-api'
+                name: '@dsh-edge/dsh-edge-agent/http-api'
                 inject: [agents, intentRouter, auditLog, tdBus, realmSkillBridge, edgeTools]
 
               - id: cloud-llm-adapter
-                name: '@deepseek-harness-edge-agent/dsh-edge-agent/cloud-llm-adapter'
+                name: '@dsh-edge/dsh-edge-agent/cloud-llm-adapter'
                 inject: [llm, auditLog]
                 config:
                   providers: [cloud-llm]
@@ -303,7 +303,7 @@
                   #   delegateModel   → wire model override（压过 GUI selection.model）
 
               - id: local-llm-adapter
-                name: '@deepseek-harness-edge-agent/dsh-edge-agent/local-llm-adapter'
+                name: '@dsh-edge/dsh-edge-agent/local-llm-adapter'
                 inject: [llm, auditLog]
                 config:
                   providers: [local-llm]
@@ -315,7 +315,7 @@
                   # 自动降级到关键词 / 正则规则档）。
 
               - id: model-router
-                name: '@deepseek-harness-edge-agent/dsh-edge-agent/model-router'
+                name: '@dsh-edge/dsh-edge-agent/model-router'
                 inject: [llm]
                 config:
                   # §7.75: 删 defaultModel（v0.1.x 死字段，model-router.ts:143 构造时
@@ -325,7 +325,7 @@
                   cloudModels: [cloud-llm]
 
               - id: intent-router
-                name: '@deepseek-harness-edge-agent/dsh-edge-agent/intent-router'
+                name: '@dsh-edge/dsh-edge-agent/intent-router'
                 inject: [llm, auditLog, privacyPolicy]
                 config:
                   # 2026-09-02: changed from CLOUD to SANITIZED. Old default failed open
@@ -338,7 +338,7 @@
 
               # NOTE: id renamed from `tools` to avoid colliding with dsh-base.
               - id: edge-tools-registry
-                name: '@deepseek-harness-edge-agent/dsh-edge-agent/tools'
+                name: '@dsh-edge/dsh-edge-agent/tools'
                 inject: [auditLog, tools]
                 config:
                   defaultRateLimitPerMinute: 60
@@ -357,7 +357,7 @@
               # 判别、输出截断、凭据擦除 env、进程组 kill 升级 —— 不自己 spawn。
               # §7.102: etscliBin / timeoutMs come from config/edge.json (etscli.*).
               - id: etscli-tools
-                name: '@deepseek-harness-edge-agent/dsh-edge-agent/etscli-tools'
+                name: '@dsh-edge/dsh-edge-agent/etscli-tools'
                 inject: [tools, shell]
 
               # §7.120: 封堵「bash 里直接调 etscli 写子命令」这条逃逸口。
@@ -371,10 +371,10 @@
               # 独立成行（不与 etscli-tools 合并）⇒ headless HTTP profile 与
               # desktop-safe preset 可以只挂这道闸、不引入那 14 个工具。
               - id: etscli-shell-guard
-                name: '@deepseek-harness-edge-agent/dsh-edge-agent/etscli-shell-guard'
+                name: '@dsh-edge/dsh-edge-agent/etscli-shell-guard'
 
               - id: local-storage
-                name: '@deepseek-harness-edge-agent/dsh-edge-agent/local-storage'
+                name: '@dsh-edge/dsh-edge-agent/local-storage'
                 config:
                   # §7.102: root comes from config/edge.json (storage.root), default
                   # ~/.dsh-edge-agent/storage (2026-08-29 unified bundle root).
@@ -384,7 +384,7 @@
 
               # ── A1 端侧隐私安全防护 ─────────────────────────────────────────────────
               - id: prompt-guard
-                name: '@deepseek-harness-edge-agent/dsh-edge-agent/prompt-guard'
+                name: '@dsh-edge/dsh-edge-agent/prompt-guard'
                 inject: [auditLog, llm]
                 config:
                   maxInputLength: 10000
@@ -397,7 +397,7 @@
 
               # ── Phase 4: 隐私策略引擎 + 脱敏管线 ──────────────────────────────────
               - id: privacy-policy
-                name: '@deepseek-harness-edge-agent/dsh-edge-agent/privacy-policy'
+                name: '@dsh-edge/dsh-edge-agent/privacy-policy'
                 inject: [auditLog]
                 # §7.102: row carries no config — policyPath / hot-reload 由
                 # config/edge.json (privacy.*) 提供。
@@ -411,7 +411,7 @@
                   # 2026-09-03 (§7.36): 默认 policy path 单 bundle root（见 PROGRESS）。
 
               - id: sanitizer-pipeline
-                name: '@deepseek-harness-edge-agent/dsh-edge-agent/sanitizer-pipeline'
+                name: '@dsh-edge/dsh-edge-agent/sanitizer-pipeline'
                 inject: [privacyPolicy, auditLog]
                 config:
                   enableAutoDetection: true
@@ -428,7 +428,7 @@
               # chain;避开 DSH 黑名单 DSH_/XDG_/DYLD_/BASH_FUNC_): TAVILY_API_KEY /
               # BOCHA_API_KEY / DEEPSEEK_API_KEY,都在 repo .env 里跟其他 secret 同地。
               - id: web-search-tavily-bocha
-                name: '@deepseek-harness-edge-agent/dsh-edge-agent/web-search-tavily-bocha'
+                name: '@dsh-edge/dsh-edge-agent/web-search-tavily-bocha'
                 inject: [web]
                 config:
                   reserved: {}
@@ -457,7 +457,7 @@
               # 否则读到 undefined 或上 turn 旧 realm → 触发跳过路径。
               # cordis waterfall 注册顺序 = 执行顺序(shift 第一个 = 最外层)。
               - id: function-call-external
-                name: '@deepseek-harness-edge-agent/dsh-edge-agent/function-call-external'
+                name: '@dsh-edge/dsh-edge-agent/function-call-external'
                 inject: [auditLog, realmSkillBridge, tools]
                 # §7.102: row carries no config — 全部旋钮由 config/edge.json
                 # (functionCallExternal.*) 提供。默认关(user 终裁)。
@@ -482,7 +482,7 @@
                   # functionCallExternalBreakerProbeMs: !!js parseInt(process.env.DSH_EDGE_FUNCTION_CALL_EXTERNAL_BREAKER_PROBE_MS ?? '5000', 10)
                   # functionCallExternalProbeTimeoutMs: !!js parseInt(process.env.DSH_EDGE_FUNCTION_CALL_EXTERNAL_PROBE_TIMEOUT_MS ?? '2000', 10)
               - id: input-guard
-                name: '@deepseek-harness-edge-agent/dsh-edge-agent/input-guard'
+                name: '@dsh-edge/dsh-edge-agent/input-guard'
                 # §7.123 (2026-10-27): realmSkillBridge was missing here while
                 # input-guard.ts:35-39 declares it MANDATORY ("必须 inject realmSkillBridge，
                 # 否则 this.ctx.realmSkillBridge 永远 undefined"). With it absent,

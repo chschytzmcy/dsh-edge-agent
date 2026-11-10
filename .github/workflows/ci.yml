@@ -240,8 +240,8 @@ jobs:
       - name: Bootstrap DSH web profile (含 dsh-edge-agent bundle)
         run: |
           mkdir -p "$HOME/.dsh/profiles/web"
-          dsh plugin --profile web add @deepseek-harness-edge-agent/dsh-edge-agent || true
-          NESTED="$HOME/.dsh/profiles/web/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent"
+          dsh plugin --profile web add @dsh-edge/dsh-edge-agent || true
+          NESTED="$HOME/.dsh/profiles/web/node_modules/@dsh-edge/dsh-edge-agent"
           mkdir -p "$NESTED"
           cp cordis.patch.yml "$NESTED/cordis.patch.yml"
           echo "已同步 bundle patch → $NESTED/cordis.patch.yml"

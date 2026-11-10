@@ -71,7 +71,7 @@ pnpm run compile
 export DSH_HOME=/tmp/dsh-edge-probe
 PROFILE=edge
 REPO=/Users/<user>/cy/code/dsh-edge-agent
-PKG="$DSH_HOME/profiles/$PROFILE/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent"
+PKG="$DSH_HOME/profiles/$PROFILE/node_modules/@dsh-edge/dsh-edge-agent"
 
 rm -rf "$DSH_HOME/profiles/$PROFILE"
 mkdir -p "$PKG"
@@ -82,13 +82,13 @@ cat > "$DSH_HOME/profiles/$PROFILE/package.json" <<'EOF'
   "name": "dsh-profile-edge",
   "private": true,
   "dependencies": {
-    "@deepseek-harness-edge-agent/dsh-edge-agent": "file:./node_modules/@deepseek-harness-edge-agent/dsh-edge-agent"
+    "@dsh-edge/dsh-edge-agent": "file:./node_modules/@dsh-edge/dsh-edge-agent"
   },
   "dsh": {
     "profile": {
       "bundles": [
         "@deepseek-ai/dsh-base",
-        "@deepseek-harness-edge-agent/dsh-edge-agent"
+        "@dsh-edge/dsh-edge-agent"
       ]
     }
   }
@@ -176,7 +176,7 @@ rm -rf /tmp/dsh-edge-probe
 
 | 通道 | 现状 |
 |---|---|
-| npm 包名 | 发布流水线就绪（`publish.yml`），但包尚未发布（registry 404）；推 `v*` tag 后可用。**2026-10-30（§7.156）发现发布链有个洞：build 步只跑 `compile` ⇒ `verify:build` 必红 ⇒ 从来没走到过 `pnpm publish`，已修**。完整指南见 [`deploy-npm.md`](deploy-npm.md) |
+| npm 包名 | **发布链就绪**（§7.172），但包**仍未**发布（registry 上查无此包）；缺的是**作者侧**的 npm 账号/组织 + scope 所有权 + 发布凭据，不是代码。`npm run publish:npm -- --yes --tag` 一条命令走完构建 + 24 道门禁 + 发布（默认 dry-run）。此前（§7.156）发现发布链有个洞：build 步只跑 `compile` ⇒ `verify:build` 必红 ⇒ 从来没走到过 `pnpm publish`，已修。完整指南见 [`deploy-npm.md`](deploy-npm.md) |
 | Git 仓库 | **2026-10-30（§7.155）起可用**：见 [`deploy-github.md`](deploy-github.md)。此前不成立的根因是 `prepare` 只跑 `compile`、产不出浏览器半侧 `lib/client.js`（Edge tab 会静默消失），且桌面环境无 npm；现在 `prepare` 走 `run.mjs compile build:client`（不依赖 npm），并有 `verify:git-install` 门禁守着。代价：pnpm ≥10 要求用户点一次「允许这些脚本并重试」 |
 | tarball 路径 | **2026-10-30（§7.157）起有门禁守着**：见 [`deploy-tarball.md`](deploy-tarball.md)。此前 `dist/*.tar.gz` **从来没被任何门禁检查过**，且实测发现它是 §7.153 修复**之前**的陈旧产物（`dsh.bundle.patch` 写成字符串 ⇒ preset 层缺席 ⇒ 「边缘模式」工作方式不会注册）⇒ 新增 `verify:tarball` 并接进 `verify:build` |
 | **本地目录（推荐）** | 指 `--emit-dir` 产出的可安装目录：预置 `lib/`、已删 `scripts`/`devDependencies`，安装即用。宿主侧的完整契约见 **§8.8**（2026-10-30 读透） |
@@ -349,7 +349,7 @@ if (path !== spec || isAbsolute(path)) {
 
 ```bash
 export DSH_BIN="/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh"
-PKG=~/.dsh/profiles/desktop/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent
+PKG=~/.dsh/profiles/desktop/node_modules/@dsh-edge/dsh-edge-agent
 osascript -e 'tell application "DeepSeek Harness" to quit'      # 先退干净
 mv "$PKG" "$PKG.old"
 "$DSH_BIN" plugin --profile desktop install                    # 装新的
@@ -367,7 +367,7 @@ tarball 故意不带 `config/edge.json`（明文密钥）。桌面版真正在�
 `edge-config.ts` 的 `edgeConfigCandidates()` 顺序找：
 
 1. `<bundle>/config/edge.json` —— 即
-   `~/.dsh/profiles/desktop/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/config/edge.json`
+   `~/.dsh/profiles/desktop/node_modules/@dsh-edge/dsh-edge-agent/config/edge.json`
 2. `~/.dsh-edge-agent/edge.json`
 3. `<bundle>/config/edge.example.json`（模板兜底）
 
@@ -391,7 +391,7 @@ grep -o '"kind":"config.loaded".\{0,240\}' ~/.dsh-edge-agent/audit/audit.plain.j
 ├── package.json                    依赖 + dsh.profile.bundles
 ├── cordis.yml / cordis.patch.yml   profile 自己的 patch 层（桌面侧手改的 model/persona/providers）
 └── node_modules/
-    ├── @deepseek-harness-edge-agent/dsh-edge-agent/     ← 【插件代码真正所在】
+    ├── @dsh-edge/dsh-edge-agent/     ← 【插件代码真正所在】
     │   ├── lib/                    编译产物（host 半 + client.js）
     │   ├── cordis.desktop-safe.patch.yml
     │   └── config/                 edge.json / edge.example.json / privacy-policy.json
@@ -408,7 +408,7 @@ grep -o '"kind":"config.loaded".\{0,240\}' ~/.dsh-edge-agent/audit/audit.plain.j
 |---|---|---|---|
 | npm 包 | `publish.yml`（推 `v*` tag）→ `pnpm publish` | `package.json#files` = `lib/` + `config/`（去 edge.json）+ 3 个 yml + `presets/` | 用户 profile 的 `node_modules/` |
 | release tarball | `make package` → `dist/dsh-edge-agent-v<ver>.tar.gz` | 上面这些 + `scripts/` + `profiles/dsh-edge/` + `install.sh`/`uninstall.sh`/`README`/`LICENSE` | 外部用户解压后跑 `install.sh` |
-| 桌面 bundle | `scripts/build-desktop-bundle.sh --emit-dir` | `dist/dsh-edge-agent-{desktop-safe,full}.tar.gz` + `dist/installable/<variant>/` | `~/.dsh/profiles/desktop/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/` |
+| 桌面 bundle | `scripts/build-desktop-bundle.sh --emit-dir` | `dist/dsh-edge-agent-{desktop-safe,full}.tar.gz` + `dist/installable/<variant>/` | `~/.dsh/profiles/desktop/node_modules/@dsh-edge/dsh-edge-agent/` |
 
 npm 包与桌面 bundle 都带 `config/`（去掉 `config/edge.json`），所以装完
 就能找到 shipped 模板；`config/edge.json` 只留在 operator 自己的机器上。
@@ -443,12 +443,12 @@ spec.replace(/^(?:file:|link:)/, '')   ← 只剥一个前缀
 
 ```json
 "dependencies": {
-  "@deepseek-harness-edge-agent/dsh-edge-agent":
+  "@dsh-edge/dsh-edge-agent":
     "link:C:/Users/<user>/GolandProjects/gitlab/dsh-edge-agent/dist/installable/dsh-edge-agent-desktop-safe"
 }
 ```
 
-`node_modules/@deepseek-harness-edge-agent/dsh-edge-agent` 是个**符号链接**
+`node_modules/@dsh-edge/dsh-edge-agent` 是个**符号链接**
 （`lstat` → `isSymbolicLink() === true`），指向那个目录。
 
 ⇒ **裸绝对路径 ⇒ 记成 `link:<绝对路径>`、装出来是符号链接**（不是 `file:`）。
@@ -578,7 +578,7 @@ npm run build:tarball                   # 编译 + 打包 + 门禁 → dist/dsh-
 
 ```bash
 # 1. bundle 已注册到 target profile？
-grep '@deepseek-harness-edge-agent/dsh-edge-agent' ~/.dsh/profiles/<profile>/package.json
+grep '@dsh-edge/dsh-edge-agent' ~/.dsh/profiles/<profile>/package.json
 
 # 2. 隐私栈全部挂载？（desktop-safe 是 18 个 row，full 19 个）
 dsh --profile <profile> --dump-config | grep -E 'input-guard|file-logger|intent-router|sanitizer' | wc -l
@@ -619,14 +619,14 @@ pkill -f 'node.*dsh --profile web' || true
 # §7.43: dsh-tui + web 都要处理（如果都装过）
 
 # 3. 移除嵌套包
-rm -rf ~/.dsh/profiles/dsh-tui/node_modules/@deepseek-harness-edge-agent/
-rm -rf ~/.dsh/profiles/web/node_modules/@deepseek-harness-edge-agent/   # 若 web 装过
+rm -rf ~/.dsh/profiles/dsh-tui/node_modules/@dsh-edge/
+rm -rf ~/.dsh/profiles/web/node_modules/@dsh-edge/   # 若 web 装过
 
 # 4. 移除 bundle 数据（注意：会删除所有会话和加密数据！）
 rm -rf ~/.dsh-edge-agent-web/
 
 # 5. 移除全局包（如适用）
-npm uninstall -g @deepseek-harness-edge-agent/dsh-edge-agent
+npm uninstall -g @dsh-edge/dsh-edge-agent
 ```
 
 > **桌面版走宿主 GUI 的卸载**（Plugins → 已安装 → 移除）：宿主会做

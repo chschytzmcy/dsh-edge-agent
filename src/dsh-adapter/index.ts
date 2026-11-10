@@ -87,7 +87,7 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
 }
 
 // Convenience: re-export the canonical subpath plugins so that consumers
-// who `import '@deepseek-harness-edge-agent/dsh-edge-agent'` can also
+// who `import '@dsh-edge/dsh-edge-agent'` can also
 // pull individual cordis rows out of the same module.
 export * from './tcm.js'
 export * from './local-storage.js'
@@ -118,7 +118,7 @@ export { name as httpApiName, inject as httpApiInject, Config as HttpApiConfig, 
 export type { HttpApiService } from './http-api.js'
 export * from './llm-adapters.js'
 // §7.101 v5: re-export edge-context-view so it is reachable from the package
-// root (`@deepseek-harness-edge-agent/dsh-edge-agent`). The cordis patch row
+// root (`@dsh-edge/dsh-edge-agent`). The cordis patch row
 // in cordis.desktop-safe.patch.yml points at this name (bare package name,
 // matching dsh-context's pattern); without this re-export the package root
 // has no apply() for the host plugin and Edge tab remains invisible.

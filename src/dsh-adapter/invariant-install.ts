@@ -11,6 +11,6 @@
  */
 
 export const installedRef = Object.freeze({
-  packageName: '@deepseek-harness-edge-agent/dsh-edge-agent',
+  packageName: '@dsh-edge/dsh-edge-agent',
   invariants: [] as ReadonlyArray<string>,
 })

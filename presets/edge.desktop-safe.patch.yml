@@ -247,13 +247,13 @@
             config:
               # Stub TCM. Real crypto remains future work; keep shape stable.
               - id: tcm
-                name: '@deepseek-harness-edge-agent/dsh-edge-agent/tcm'
+                name: '@dsh-edge/dsh-edge-agent/tcm'
                 # §7.102 "one config file": teeType / keyStorePath come from
                 # config/edge.json (tee.*) inside the plugin — no row config.
 
               # Privacy policy engine. Missing file falls back to built-in v1.6 policy.
               - id: privacy-policy
-                name: '@deepseek-harness-edge-agent/dsh-edge-agent/privacy-policy'
+                name: '@dsh-edge/dsh-edge-agent/privacy-policy'
                 inject: [auditLog]
                 # §7.102 "one config file": policyPath / hot-reload knobs come from
                 # config/edge.json (privacy.*).
@@ -261,7 +261,7 @@
               # Threat bus. Thresholds come from config/edge.json (threat.*) — §7.102.
               # Desktop-safe keeps the looser default threshold.
               - id: td-bus
-                name: '@deepseek-harness-edge-agent/dsh-edge-agent/td-bus'
+                name: '@dsh-edge/dsh-edge-agent/td-bus'
                 inject: [auditLog, privacyPolicy]
                 config:
                   windowSeconds: 60
@@ -271,7 +271,7 @@
 
               # Edge tool registry. Do not isolate tools by default in desktop mode.
               - id: edge-tools-registry
-                name: '@deepseek-harness-edge-agent/dsh-edge-agent/tools'
+                name: '@dsh-edge/dsh-edge-agent/tools'
                 inject: [auditLog, tools]
                 config:
                   defaultRateLimitPerMinute: 60
@@ -285,11 +285,11 @@
               # 按 scope 链派发 ⇒ 只有边缘模式会话够得着它，标准模式不受影响
               # （§7.140 的「标准模式零 edge 事件」不变式）。
               - id: etscli-shell-guard
-                name: '@deepseek-harness-edge-agent/dsh-edge-agent/etscli-shell-guard'
+                name: '@dsh-edge/dsh-edge-agent/etscli-shell-guard'
 
               # Realm-aware skill/tool filtering. Uses the shared realm config file.
               - id: realm-skill-bridge
-                name: '@deepseek-harness-edge-agent/dsh-edge-agent/realm-skill-bridge'
+                name: '@dsh-edge/dsh-edge-agent/realm-skill-bridge'
                 inject: [auditLog, skills, edgeTools, tools]
                 # §7.102 "one config file": configPath / hot-reload knobs come from
                 # config/edge.json (privacy.realm*).
@@ -297,7 +297,7 @@
               # Input guard. Model-assisted detection config comes from
               # config/edge.json (stages.guard.*) — §7.102.
               - id: prompt-guard
-                name: '@deepseek-harness-edge-agent/dsh-edge-agent/prompt-guard'
+                name: '@dsh-edge/dsh-edge-agent/prompt-guard'
                 inject: [privacyPolicy, auditLog, llm]
                 config:
                   maxInputLength: 10000
@@ -309,7 +309,7 @@
               # Reversible PII sanitizer. Session limits come from
               # config/edge.json (privacy.*) — §7.102.
               - id: sanitizer-pipeline
-                name: '@deepseek-harness-edge-agent/dsh-edge-agent/sanitizer-pipeline'
+                name: '@dsh-edge/dsh-edge-agent/sanitizer-pipeline'
                 inject: [privacyPolicy, auditLog]
                 config:
                   enableAutoDetection: true
@@ -319,7 +319,7 @@
               # (stages.intent.*) — §7.102. Classifier provider may be absent;
               # fail-open to keywords.
               - id: intent-router
-                name: '@deepseek-harness-edge-agent/dsh-edge-agent/intent-router'
+                name: '@dsh-edge/dsh-edge-agent/intent-router'
                 inject: [llm, auditLog, privacyPolicy]
 
               # §7.100 cloud-llm = DELEGATE route. baseUrl deliberately absent →
@@ -330,7 +330,7 @@
               # §7.102: the pool + delegate knobs come from config/edge.json
               # (llm.cloud.*) — the patch row no longer reads process.env.
               - id: cloud-llm-adapter
-                name: '@deepseek-harness-edge-agent/dsh-edge-agent/cloud-llm-adapter'
+                name: '@dsh-edge/dsh-edge-agent/cloud-llm-adapter'
                 inject: [llm, auditLog]
                 config:
                   providers: [cloud-llm]
@@ -356,7 +356,7 @@
               #     host's model — configure a local endpoint to keep them on
               #     device.
               - id: local-llm-adapter
-                name: '@deepseek-harness-edge-agent/dsh-edge-agent/local-llm-adapter'
+                name: '@dsh-edge/dsh-edge-agent/local-llm-adapter'
                 inject: [llm, auditLog]
                 config:
                   providers: [local-llm]
@@ -364,7 +364,7 @@
               # Route catalog so /v1-style enumeration & intent-router soft-dep see
               # both routes with registry truth (§7.100 isAvailable).
               - id: model-router
-                name: '@deepseek-harness-edge-agent/dsh-edge-agent/model-router'
+                name: '@dsh-edge/dsh-edge-agent/model-router'
                 inject: [llm]
                 config:
                   localModels: [local-llm]
@@ -373,12 +373,12 @@
               # Optional external tool caller; disabled by default. Knobs come from
               # config/edge.json (functionCallExternal.*) — §7.102.
               - id: function-call-external
-                name: '@deepseek-harness-edge-agent/dsh-edge-agent/function-call-external'
+                name: '@dsh-edge/dsh-edge-agent/function-call-external'
                 inject: [auditLog, realmSkillBridge, tools]
 
               # Orchestrator. This is the actual global hook installer.
               - id: input-guard
-                name: '@deepseek-harness-edge-agent/dsh-edge-agent/input-guard'
+                name: '@dsh-edge/dsh-edge-agent/input-guard'
                 inject: [promptGuard, privacyPolicy, intentRouter, sanitizer, auditLog, realmSkillBridge]
                 config:
                   sanitizeLocalTraffic: false
@@ -415,7 +415,7 @@
               # docs/dev-notes/cordis-rc021-patch-loader.md). The plugin declares
               # its deps in src; runtime knobs come from process.env inside apply().
               - id: edge-context-view
-                name: '@deepseek-harness-edge-agent/dsh-edge-agent/edge-context-view'
+                name: '@dsh-edge/dsh-edge-agent/edge-context-view'
 
               # §7.107 (2026-10-23): web search aggregator — Tavily → 博查 AI →
               # DeepSeek（三级链，§7.82）。它的 Tier-3 DeepSeek 用
@@ -423,7 +423,7 @@
               # config/edge.json 的 secrets.deepseekApiKey —— 不依赖环境变量，所以
               # CLI 起的 profile（dsh-http）也能用。
               - id: web-search-tavily-bocha
-                name: '@deepseek-harness-edge-agent/dsh-edge-agent/web-search-tavily-bocha'
+                name: '@dsh-edge/dsh-edge-agent/web-search-tavily-bocha'
 
       # ── web capability: DEEPSEEK Search + Fetch（§7.107）──────────────────────
       #

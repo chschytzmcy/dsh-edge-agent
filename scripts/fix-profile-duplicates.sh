@@ -76,7 +76,7 @@ fi
 
 # ── 3. 检查 bundle 完整性 ──────────────────────────────────────
 echo
-BUNDLE_PATH="$PROFILE_DIR/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent"
+BUNDLE_PATH="$PROFILE_DIR/node_modules/@dsh-edge/dsh-edge-agent"
 if [ -d "$BUNDLE_PATH" ]; then
   echo "✓ dsh-edge-agent bundle 在位"
 else

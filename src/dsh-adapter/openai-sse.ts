@@ -85,7 +85,7 @@ export function buildChatCompletionsBody(
   enableThinking: boolean = false,
   // §7.106 (2026-10-23): also send the standard `reasoning_effort:"none"` —
   // the dialect OLLAMA's /v1 layer actually honors (probe-verified on the
-  // user's 67.0.0.5:11434: chat_template_kwargs AND top-level `think:false`
+  // user's <内网主机>:11434: chat_template_kwargs AND top-level `think:false`
   // are both silently dropped there; reasoning_effort:none removed
   // message.reasoning and took completion 46→6 tokens). Without it the
   // 256-token model-detect call has its budget eaten by reasoning and

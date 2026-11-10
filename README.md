@@ -77,7 +77,7 @@ DSH 桌面 App 侧边栏的 **Plugins → Add plugin** 支持四个通道。**�
 |---|---|---|---|---|---|---|
 | **A 本地目录** | 绝对路径 | 否 | 否 | 符号链接 | ⚠️ **有** | ✅ 改文件重启即生效 |
 | **B GitHub 地址** | `git+ssh://git@github.com/<owner>/<repo>` | **是** | **是** | 现场编译 | 否 | ❌ 须重装 |
-| **C npm 包名** | `@deepseek-harness-edge-agent/dsh-edge-agent` | 否 | 否 | 预构建 | 否 | 走 `updateBundle` |
+| **C npm 包名** | `@dsh-edge/dsh-edge-agent` | 否 | 否 | 预构建 | 否 | 走 `updateBundle` |
 | **D tarball 路径** | `…/x.tar.gz` 绝对路径 | 否 | 否 | pnpm store 冻结副本 | 否 | ❌ 须卸载重装 |
 
 四条通道在宿主里是**同一段代码**（`install-spec.ts` 解析四种形态，一律 `pnpm add <spec>`）。
@@ -105,7 +105,11 @@ DSH 桌面 App 侧边栏的 **Plugins → Add plugin** 支持四个通道。**�
   `pnpm install` 是用 shell 跑的；宿主自己调 pnpm 用的是 App 自带那支）。
 
 - **C npm 包名**（发布给公众）—— 装的是**预构建**包，不需要构建授权、不需要 PATH 上有
-  pnpm。⚠️ **包尚未发布到 registry（404）**，这条通道要等第一次发布之后才成立。
+  pnpm。⚠️ **包目前仍未发布到 registry**（registry 上查无此包）⇒ 这条通道要等第一次发布之后才成立。
+  发布链**本身已经就绪**（`npm run publish:npm` 一条命令走完构建 + 全部门禁 + 发布），
+  缺的是**作者侧**：npm 上拥有 `@dsh-edge` scope 的账号/组织 + 发布凭据。
+  详见 [`docs/deploy-npm.md`](docs/deploy-npm.md)；注册账号与办凭据的逐步操作见
+  [`docs/npm-account-setup.md`](docs/npm-account-setup.md)。
 
 - **D tarball 路径**（离线分发）——
   ```bash
@@ -141,7 +145,7 @@ npm run build:macos -- --deploy-profile=dsh-tui           # 终端
 
 ```bash
 # 1. bundle 已注册到 profile？
-grep '@deepseek-harness-edge-agent/dsh-edge-agent' ~/.dsh/profiles/<profile>/package.json
+grep '@dsh-edge/dsh-edge-agent' ~/.dsh/profiles/<profile>/package.json
 
 # 2. 隐私栈挂上了？（期望 ≥4）
 dsh --profile <profile> --dump-config \
@@ -282,6 +286,7 @@ edge 侧一个 secret 都不碰：
 | [`docs/privacy-policy.md`](docs/privacy-policy.md) | 隐私链路单一权威文档：策略 + 判定表 + 配置清单 + 审计 + 行为契约 |
 | [`docs/deploy-github.md`](docs/deploy-github.md) | 从 GitHub 仓库地址安装 |
 | [`docs/deploy-npm.md`](docs/deploy-npm.md) | 从 npm 包名安装 + 发布链排障 |
+| [`docs/npm-account-setup.md`](docs/npm-account-setup.md) | 注册 npm 账号/组织（scope `@dsh-edge`）+ 办发布凭据 |
 | [`docs/deploy-tarball.md`](docs/deploy-tarball.md) | 从 tarball 路径安装（离线分发） |
 | [`docs/load-into-local-dsh.md`](docs/load-into-local-dsh.md) | 装进本地 DSH（三条路 + 宿主契约） |
 | [`docs/desktop-troubleshooting.md`](docs/desktop-troubleshooting.md) | 桌面版排障手册 |
@@ -296,6 +301,17 @@ pnpm run build      # compile → typecheck:client → build:client → build:in
 pnpm test           # 单元测试
 pnpm run lint       # eslint
 ```
+
+### 发布到 npm
+
+```bash
+npm run publish:npm                    # 构建 + 24 道门禁 + dry-run（**默认不发**）
+npm run publish:npm -- --yes           # 真发
+npm run publish:npm -- --yes --tag     # 发完打 v<version> tag（再 git push origin v<version> 触发 CI）
+```
+
+前置：`npm login` 一次（凭据写在 `~/.npmrc`；PATH 上要有 `pnpm`）。
+不带 `--yes` **永远不会碰 registry**。详见 [`docs/deploy-npm.md`](docs/deploy-npm.md)。
 
 > ⚠️ **`build` 的步骤顺序不能省**：门禁验的是**产物**不是源码 —— `compile` 只重建 Node
 > 半侧，`lib/client.js` 来自 `build:client`（esbuild），`dist/installable/` 来自

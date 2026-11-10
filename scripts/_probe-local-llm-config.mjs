@@ -12,7 +12,7 @@ import { pathToFileURL } from 'node:url'
 const bundleRoot = resolve(process.argv[2] ?? join(
   process.env.USERPROFILE ?? process.env.HOME ?? '',
   '.dsh', 'profiles', 'desktop', 'node_modules',
-  '@deepseek-harness-edge-agent', 'dsh-edge-agent',
+  '@dsh-edge', 'dsh-edge-agent',
 ))
 
 const loaderUrl = pathToFileURL(join(bundleRoot, 'lib', 'dsh-adapter', 'edge-config.js')).href

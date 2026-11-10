@@ -4,7 +4,7 @@
 
 const base = process.argv[2]
 const token = process.argv[3]
-const ours = process.argv[4] ?? '@deepseek-harness-edge-agent/dsh-edge-agent'
+const ours = process.argv[4] ?? '@dsh-edge/dsh-edge-agent'
 
 const jar = new Map()
 const cookieHeader = () => [...jar].map(([k, v]) => `${k}=${v}`).join('; ')

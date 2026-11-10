@@ -1,6 +1,6 @@
 # dsh-edge-agent bundle patch — applied after the dsh-base layer.
 # This patch is the ONLY patch needed when a profile lists
-# `@deepseek-harness-edge-agent/dsh-edge-agent` in its bundles array.
+# `@dsh-edge/dsh-edge-agent` in its bundles array.
 #
 # 2026-09-05 (§7.43): 默认 host = dsh-tui（mandatory primary）。bundle 本身仍
 # profile-agnostic，可挂到 web / dsh-tui / 任意 profile；只是 install.sh 的默认
@@ -17,7 +17,7 @@
 # Web profile still uses dsh-web-app native chat (:3080) alongside http-api.
 #
 # Load order:
-#   dsh-base → ...other bundles... → @deepseek-harness-edge-agent/dsh-edge-agent (this)
+#   dsh-base → ...other bundles... → @dsh-edge/dsh-edge-agent (this)
 #   → ~/.dsh/profiles/<prof>/cordis.patch.yml (user skin)
 #
 # Layer-ordering rule resolves all 5 conflicts vs. dsh-web-app automatically:
@@ -324,10 +324,10 @@
     # row inside the preset would therefore never surface the browser half and
     # the Edge tab would vanish in every work mode.
     - id: dsh-edge-agent
-      name: '@deepseek-harness-edge-agent/dsh-edge-agent'
+      name: '@dsh-edge/dsh-edge-agent'
 
     - id: file-logger
-      name: '@deepseek-harness-edge-agent/dsh-edge-agent/file-logger'
+      name: '@dsh-edge/dsh-edge-agent/file-logger'
       config:
         # §7.102 "one config file": root / level / rotation come from
         # config/edge.json (audit.*) inside the plugin. Only static wiring
@@ -351,7 +351,7 @@
     # (commit b42c7db). Keep the upstream mount; our session-root env
     # override (`DSH_EDGE_SESSION_ROOT`) flows through `dshHomePath()`.
     - id: audit-log
-      name: '@deepseek-harness-edge-agent/dsh-edge-agent/audit-log'
+      name: '@dsh-edge/dsh-edge-agent/audit-log'
       config:
         # §7.102: minLevel / flush / root come from config/edge.json
         # (audit.*; root default = ~/.dsh-edge-agent/audit, 2026-08-29 统一).
@@ -373,7 +373,7 @@
     # 它自带 `process.versions.electron` 判据 ⇒ headless profile（web / tui）
     # 里直接跳过，不会去动无关 profile 的宿主 web 服务。
     - id: desktop-cookie-janitor
-      name: '@deepseek-harness-edge-agent/dsh-edge-agent/desktop-cookie-janitor'
+      name: '@dsh-edge/dsh-edge-agent/desktop-cookie-janitor'
       config:
         enabled: true
         # 宿主 web 服务是裸 createServer（16 KB 头上限）；抬到 64 KB 让

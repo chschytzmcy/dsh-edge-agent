@@ -17,7 +17,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 
-const PKG_NAME = '@deepseek-harness-edge-agent/dsh-edge-agent'
+const PKG_NAME = '@dsh-edge/dsh-edge-agent'
 const REPO = resolve(import.meta.dirname, '..')
 let problems = 0
 

@@ -80,7 +80,7 @@ done
 # 安全），实际调用统一走 pnpm_run()。
 PNPM_CMD=()
 
-# Git Bash 把 LOCALAPPDATA 导成 Windows 风格（"C:\Users\cheng\AppData\Local"），
+# Git Bash 把 LOCALAPPDATA 导成 Windows 风格（"C:\Users\<user>\AppData\Local"），
 # 直接拼 "/Programs/…" 会得到混合分隔符路径 —— 有些工具处理不好。统一
 # 转成正斜杠。
 if [ -n "${LOCALAPPDATA:-}" ]; then

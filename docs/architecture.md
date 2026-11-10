@@ -219,7 +219,7 @@ dsh-edge-agent 是 profile-agnostic 的 Cordis bundle：它"能不能装上"与�
 
 | # | 文件 | 位置 | 作用 |
 |---|---|---|---|
-| 1 | `package.json` | `~/.dsh/profiles/<p>/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/` | bundle 身份卡：`name`/`version`；**`exports` 29 个 subpath 映射**（patch 里每个插件 `name: '…/file-logger'` 靠它解析到实现文件）；**`dsh.bundle.patch` 指针**（告诉 DSH 去哪读装配清单） |
+| 1 | `package.json` | `~/.dsh/profiles/<p>/node_modules/@dsh-edge/dsh-edge-agent/` | bundle 身份卡：`name`/`version`；**`exports` 29 个 subpath 映射**（patch 里每个插件 `name: '…/file-logger'` 靠它解析到实现文件）；**`dsh.bundle.patch` 指针**（告诉 DSH 去哪读装配清单） |
 | 2 | `cordis.patch.yml` | 同上 | 装配说明书：10 个 config 覆盖 + 30 个 disable + 17 个插件 insert。⚠️ §7.59 实测修正：指针在而文件缺是 **boot 硬失败**（`failed to read overlay …ENOENT`），不是"静默一个都不 mount"；"死 JS 躺 node_modules"只有 ④ 未注册时成立 |
 | 3 | `lib/**/*.js` | 同上 | 插件实现本体（tsc 产物）。⚠️ 目录名误导：tsconfig `outDir: "lib/types"`，运行时 `.js` 实际就在 `lib/types/dsh-adapter/*.js`；每模块三份产物，Node 只读 `.js`（`.d.ts` 服务 `types` 条件、`.map` 仅调试定位） |
 | 4 | profile 注册 | `~/.dsh/profiles/<p>/package.json` → `dsh.profile.bundles` 数组追加包名 | 唯一入口开关：不列入 bundles，DSH 启动时不加载本包 |
@@ -235,7 +235,7 @@ dsh-edge-agent 是 profile-agnostic 的 Cordis bundle：它"能不能装上"与�
 ### 手工最小部署（等价 install.sh 核心路径）
 
 ```bash
-N=~/.dsh/profiles/<p>/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent
+N=~/.dsh/profiles/<p>/node_modules/@dsh-edge/dsh-edge-agent
 mkdir -p "$N"
 cp package.json cordis.patch.yml "$N/"     # ① ②
 rsync -a --delete lib/ "$N/lib/"           # ③
@@ -1282,7 +1282,7 @@ dsh-edge-agent 同时对外暴露**三个用户入口**，明确分工：
 
 ### 4.2 http-api（`:21017`）
 
-- **宿主**：`@deepseek-harness-edge-agent/dsh-edge-agent/http-api`（自研插件）
+- **宿主**：`@dsh-edge/dsh-edge-agent/http-api`（自研插件）
 - **协议**：REST + SSE（chat 流）
 - **鉴权**：Bearer token（`Authorization: Bearer <EDGE_API_KEY>`，环境变量注入）+ body cap（默认 1 MiB）
 - **CORS**：**v1 不暴露**——`enableCors` 字段在 schema 中完全不出现（即便 `DSH_EDGE_HTTP_CORS=true` 也不生效）。理由：CORS 是 webui 补救路径，会引入 preflight 攻击面；程序客户端同主机调用不需要 CORS。**v2 再启用**（必须配 origin allowlist + `Vary: Origin`）。
@@ -1702,6 +1702,7 @@ pnpm run verify:build
 # + verify:patch-surface
 # + verify:plugin-spec
 # + verify:package
+#   …（完整清单以 package.json#scripts.verify:build 为准）
 ```
 
 串联所有验证脚本，CI 必须全部通过。
@@ -1969,7 +1970,7 @@ async search(query: string, options?: { maxResults?: number }): Promise<WebSearc
 ```yaml
 # 移除 local-tools 插件
 # - id: local-tools
-#   name: '@deepseek-harness-edge-agent/dsh-edge-agent/local-tools'
+#   name: '@dsh-edge/dsh-edge-agent/local-tools'
 
 # 确保 DSH 工具已加载
 - id: tool-bash
@@ -1997,7 +1998,7 @@ async search(query: string, options?: { maxResults?: number }): Promise<WebSearc
 ```yaml
 # 移除 web-search 插件
 # - id: web-search
-#   name: '@deepseek-harness-edge-agent/dsh-edge-agent/web-search'
+#   name: '@dsh-edge/dsh-edge-agent/web-search'
 
 # 加载 DSH web 工具
 - id: tool-web
@@ -2831,7 +2832,7 @@ export { default } from './dsh-adapter/my-plugin.js'
 
 ```yaml
 - id: my-plugin
-  name: '@deepseek-harness-edge-agent/dsh-edge-agent/my-plugin'
+  name: '@dsh-edge/dsh-edge-agent/my-plugin'
   inject: [tcm]
   config:
     enabled: true
@@ -2989,7 +2990,7 @@ describe('my-plugin', () => {
   "version": "0.1.0",
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-harness-edge-agent/dsh-edge-agent": "^0.1.0"
+    "@dsh-edge/dsh-edge-agent": "^0.1.0"
   }
 }
 ```
@@ -7455,7 +7456,7 @@ DSH 当前实现相比论文理想保证有以下差距，本设计通过插件�
 
 **已完成**（见 commit `17330da`，56 files changed）：
 
-- [x] 单包多 subpath：`@deepseek-harness-edge-agent/dsh-edge-agent` + 21 个 subpath（19 插件 + index + http-api + invariant）
+- [x] 单包多 subpath：`@dsh-edge/dsh-edge-agent` + 21 个 subpath（19 插件 + index + http-api + invariant）
 - [x] 19 个插件全部 stub：`name` + `inject` + `Config` + `apply` 四项 named-export 完整
 - [x] 三个 profile：`edge-minimal` / `edge-standard` / `edge-full`
 - [x] 验证门禁：`verify:boundary` / `verify:contract` / `verify:patch-surface` / `verify:plugin-spec` 全部通过
@@ -9174,7 +9175,7 @@ ctx.on('tools/pre-execute', async (exec, next) => {
 ```yaml
 # ── 新增：Realm-Skill Bridge ──────────────────────────────────────
 - id: realm-skill-bridge
-  name: '@deepseek-harness-edge-agent/dsh-edge-agent/realm-skill-bridge'
+  name: '@dsh-edge/dsh-edge-agent/realm-skill-bridge'
   inject: [skills, edgeTools, auditLog]
   config:
     realmConfigPath: !!js process.env.DSH_EDGE_REALM_CONFIG ?? ((process.env.HOME ?? '') + '/.dsh-edge-agent/skill-realms.json')

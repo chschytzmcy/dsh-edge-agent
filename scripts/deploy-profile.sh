@@ -130,7 +130,7 @@ fi
 
 # ── 3. install the bundle (and force the re-extract) ───────────────────
 echo "==> [3/5] install bundle → $PROFILE_DIR"
-NESTED="$PROFILE_DIR/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent"
+NESTED="$PROFILE_DIR/node_modules/@dsh-edge/dsh-edge-agent"
 # pnpm does NOT re-extract a `file:` tarball whose CONTENT changed — it
 # updates the lockfile's integrity and then says "Already up to date",
 # leaving the profile running the old bundle. Moving the installed copy
@@ -147,7 +147,7 @@ fi
 # 像卡死（实测 2026-10-31 一次部署耗了 11 分钟）。
 #
 # 这两处要做的只是「把它移开」：移开就够了，不需要真删。
-IGNORED="$PROFILE_DIR/node_modules/.ignored/@deepseek-harness-edge-agent"
+IGNORED="$PROFILE_DIR/node_modules/.ignored/@dsh-edge"
 if [ -e "$IGNORED" ] || [ -L "$IGNORED" ]; then
   mv "$IGNORED" "$IGNORED.old-$(date +%s)"
 fi

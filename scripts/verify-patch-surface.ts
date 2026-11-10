@@ -52,7 +52,7 @@ const presetDir = join(root, 'presets')
 const snapshotPath = join(root, 'patch-surface.snapshot.json')
 /** The bundle's own package name — a plugin row belongs to this bundle when
  *  its `name` is the bare package root or a subpath of it. */
-const BUNDLE_PKG = '@deepseek-harness-edge-agent/dsh-edge-agent'
+const BUNDLE_PKG = '@dsh-edge/dsh-edge-agent'
 
 interface ParsedPatch {
   overrides: Array<{ id: string; disabled: boolean; hasConfig: boolean }>

@@ -76,7 +76,7 @@ pnpm 把 tarball 解包进 store，`node_modules/<包名>` 是 isolated 布局�
 符号链接，指向：
 
 ```
-node_modules/.pnpm/@deepseek-harness-edge-agen_<hash>/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent
+node_modules/.pnpm/@deepseek-harness-edge-agen_<hash>/node_modules/@dsh-edge/dsh-edge-agent
 ```
 
 ⇒ **冻结副本**。改了 tarball 内容再 `pnpm install`，pnpm **不会重新解包**
@@ -87,7 +87,7 @@ node_modules/.pnpm/@deepseek-harness-edge-agen_<hash>/node_modules/@deepseek-har
 
 ```
 "dependencies": {
-  "@deepseek-harness-edge-agent/dsh-edge-agent":
+  "@dsh-edge/dsh-edge-agent":
     "file:C:/Users/…/dist/dsh-edge-agent-desktop-safe.tar.gz"
 }
 ```
@@ -301,7 +301,7 @@ dist/README-DEMO.txt            ← 醒目警告，随包一起生成
 
 ```
 pnpm add C:\…\dist\dsh-edge-agent-desktop-safe.tar.gz
-  → dependencies = { "@deepseek-harness-edge-agent/dsh-edge-agent":
+  → dependencies = { "@dsh-edge/dsh-edge-agent":
                       "file:C:/…/dist/dsh-edge-agent-desktop-safe.tar.gz" }
   → node_modules 条目是符号链接 → 指向 .pnpm/<hash>/… 的解包副本（冻结）
   → 包里：lib/index.js ✓  lib/client.js ✓

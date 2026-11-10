@@ -1,5 +1,5 @@
 # dsh-edge profile skin — applied AFTER every bundle layer (load order:
-# dsh-base → ...bundles... → @deepseek-harness-edge-agent/dsh-edge-agent → this file).
+# dsh-base → ...bundles... → @dsh-edge/dsh-edge-agent → this file).
 #
 # §7.68 (2026-09-17): skin 清空 —— audit 合并到共享 ~/.dsh-edge-agent/audit/
 # 与 dsh-tui 同目录。

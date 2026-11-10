@@ -1,6 +1,16 @@
 # dsh-edge-agent 插件挂点表(代码版)
 
 > 每个插件在 dsh 流程上的真实挂点 + 真实代理引用。
+>
+> **状态：2026-11-10 全量刷新（§7.173）**。上一版有三处口径已失效，本轮按
+> **实测的四个 YAML** 重刷（行号与清单都从文件里读，不是从上一版抄）：
+>
+> | 上一版说的 | 实际 |
+> |---|---|
+> | 注入列表在 `cordis.patch.yml` 第 345–565 行 | 注入列表在 **`cordis.yml` 101–315**（bundle 清单）；`cordis.patch.yml` 里只有 **4 行 insert**（326/330/354/376） |
+> | dormant 插件 5 个，`cordis.patch.yml:120-137` | `cordis.patch.yml` **100–135** 是 **7 行 upstream-disabled**，语义各不相同；其中 **5 个 M5+ stub** 才是 dormant |
+> | 没写 preset 子树 | 补齐：**preset 子树 / 桌面安全版 preset / 独立 profile overlay** 三层 |
+> | 没写 `etscli-shell-guard` | 补齐（它在三个 preset/overlay 层都有） |
 
 ## 一、三种挂法速查
 
@@ -199,6 +209,17 @@ ctx.web.registerSearchProvider('tavily-bocha-fallback', provider)
 inject: [web]   // 硬依赖 dsh-web seam
 ```
 
+### function-call-external — 外部 function call 通道
+
+```ts
+// src/dsh-adapter/function-call-external.ts
+export const inject = ['auditLog', 'realmSkillBridge', 'tools'] as const
+```
+
+让**外部系统**（手机 app、第三方服务）经宿主调用本仓的 function call 通道。
+它在 preset 里排在 `realm-skill-bridge` 之后 ⇒ 外部调用同样过 realm 闸门与工具打标。
+（上一版漏了这个插件。）
+
 ---
 
 ## 六、Tool 层监控 + Logger
@@ -226,6 +247,21 @@ inject: [auditLog, tools]
 // 加载所以居首必最先 apply" 断言被实测推翻 —— 同层先后由模块解析速度决定。
 // 需要「通道就位后才落」的启动凭据走 ctx.inject(['fileLogger'], …) 延迟注入。
 ```
+
+### etscli-tools / etscli-shell-guard — 端侧直出工具 + shell 护栏
+
+```ts
+// src/dsh-adapter/etscli-tools.ts
+export const inject = ['tools', 'shell'] as const
+// src/dsh-adapter/etscli-shell-guard.ts
+export const inject = [] as const
+export function registerEtscliShellGuard(ctx, …)   // 单独注册函数
+```
+
+`etscli-tools` 把端侧直出工具挂进宿主的 `ctx.tools`；`etscli-shell-guard` 是它的
+**shell 护栏**（单独注册，`inject` 为空 ⇒ 不依赖别的服务）。
+两者在**三个 preset/overlay 层都有**（§8.4）—— 上一版整份清单里**漏了它们**，
+其中 `etscli-shell-guard` 尤其关键：漏了它，端侧工具就能绕过 shell 护栏。
 
 ---
 
@@ -283,60 +319,163 @@ ctx.localStorage.get/set/del
 // 路径: ~/.dsh-edge-agent/storage/storage.plain.jsonl
 ```
 
-### sessions — JSONL 持久化(继承 dsh-base,这里没 mount)
+### sessions — JSONL 持久化（**bundle 清单挂、patch 层不挂**）
 
 ```ts
-// cordis.patch.yml:454-464 没在 patch 里重新 mount
-// dsh-base 已 mount 同一包 (session-persistence-jsonl)
-// DSH_EDGE_SESSION_ROOT env 改写 root 到 ~/.dsh-edge-agent/sessions
+// cordis.yml:133  id=sessions-edge → '@dsh-edge/dsh-edge-agent/sessions'
+//   inject: [tcm, localStorage]
+// cordis.patch.yml:342-352 —— patch 层**故意不再 mount**：
+//   dsh-base 已 mount 同一包 (session-persistence-jsonl)，再挂一次会 duplicate
+//   provide() ⇒ 硬 boot 失败（§7.25 后修正）。root 由
+//   DSH_EDGE_SESSION_ROOT env 改写（走 dshHomePath('sessions')）
 // 提供的方法
 ctx.sessions.create/resume/list/getEvents/snapshotEvents
 ```
 
+> ⚠️ 上一版只写「继承 dsh-base，这里没 mount」，漏了 **bundle 清单（`cordis.yml`）
+> 里其实有这一行**（id 是 `sessions-edge`）。两层不是一回事。
+
+### td-bus — 威胁总线
+
+```ts
+// src/dsh-adapter/td-bus.ts
+export const inject = ['auditLog', 'privacyPolicy'] as const
+// 对外：getThreatLevel(): 'normal'|'elevated'|'high'|'critical'
+//       recordCloudRequest() / isBlocked()
+```
+
+订阅高流量 audit 事件，按滑动窗口的云请求数抬高威胁等级（阈值来自
+`config/edge.json` 的 `threat.*`）。**`http-api` 读 `getThreatLevel()`**：
+达到 `threat.blockLevel` 就拒收外部请求。上游 `prompt-guard` 的攻击检测是
+**单次请求**判定，td-bus 是**速率/累积**判定，两者互补。
+
 ---
 
-## 八、注入依赖完整列表(cordis.patch.yml 第 345-565 行)
+## 八、四层挂载树 + 注入依赖完整列表
 
-```yaml
-# td-bus
-inject: [auditLog, privacyPolicy]
+### 8.1 四层模型（先看这个，否则行号全对不上）
 
-# realm-skill-bridge
-inject: [auditLog, skills]
+本仓的插件**挂在哪里**取决于哪份清单，共四层：
 
-# http-api
-inject: [agents, intentRouter, auditLog, tdBus, realmSkillBridge, edgeTools]
+| 层 | 文件 | 作用 | 本仓行数 |
+|---|---|---|---|
+| **bundle 清单** | `cordis.yml` | `dsh --config cordis.yml` 的插件清单（**带 `inject`**）—— 注入依赖的事实源 | **21 行**（101–315） |
+| **patch 层** | `cordis.patch.yml` | 覆盖上游 `dsh-base` 层 + **4 行 insert**（宿主树） | 383 行；insert 326/330/354/376 |
+| **preset 子树** | `presets/edge.patch.yml` | 「边缘模式」工作方式的插件子树（§7.135） | **18 行**（250–484） |
+| **preset 子树** | `presets/edge.desktop-safe.patch.yml` | 桌面安全版 preset 子树 | **16 行**（249–425） |
+| **profile overlay** | `profiles/dsh-edge-agent/cordis.patch.yml` | 独立 profile 的 overlay（安装脚本落的那份） | **17 行**（70–154） |
 
-# cloud-llm-adapter
-inject: [llm, auditLog]
+> ⚠️ 上一版把 inject 列表说成「`cordis.patch.yml` 第 345–565 行」是**指错了文件**
+> —— 那个区间属于 `cordis.yml`。`cordis.patch.yml` 里只有 4 行 insert。
 
-# local-llm-adapter
-inject: [llm, auditLog]
+### 8.2 bundle 清单（`cordis.yml` 101–315）—— 注入依赖的事实源
 
-# model-router
-inject: [llm]
+| 行 | id | 挂载点 | inject |
+|---|---|---|---|
+| 101 | `dsh-edge-agent` | 聚合器（挂所有子插件 + 注册 model-facing `services` 命名空间） | `agents, llm, sessions, invariants` |
+| 115 | `tcm` | TEE 密钥管理（**必须最先挂**） | — |
+| 125 | `local-storage` | 加密 KV | `tcm` |
+| 133 | `sessions-edge` | sessions（patch 层不重复挂，见 §七） | `tcm, localStorage` |
+| 141 | `audit-log` | JSONL 审计 | `tcm, localStorage` |
+| 155 | `privacy-policy` | 策略引擎 | `tcm, localStorage, auditLog` |
+| 164 | `tools` | 工具注册 + realm 打标 | `auditLog` |
+| 175 | `realm-skill-bridge` | 3-tier realm gate | `auditLog` |
+| 184 | `prompt-guard` | 攻击检测 | `tcm, privacyPolicy, auditLog, llm` |
+| 196 | `intent-router` | LOCAL/CLOUD 分类 | `llm, promptGuard, privacyPolicy, auditLog, sessions, localStorage` |
+| 208 | `model-router` | provider/model 决策 | `llm, privacyPolicy, auditLog` |
+| 228 | `local-llm-adapter` | 本地池 adapter | — |
+| 237 | `cloud-llm-adapter` | 云池 adapter | `secureBridge, auditLog` |
+| 247 | `sanitizer-pipeline` | PII 占位符 | `localStorage, privacyPolicy` |
+| 261 | `ohttp-gateway` | OHTTP 匿名传输（**dormant**，见 §十） | `tcm, auditLog` |
+| 272 | `secure-bridge` | 加密桥（**dormant**） | `tcm, ohttp, privacyPolicy, auditLog` |
+| 282 | `attestation` | TEE 远程证明（**dormant**） | `tcm, auditLog` |
+| 292 | `td-bus` | 威胁总线 | `auditLog, privacyPolicy` |
+| 304 | `voice-input` | 语音输入（**dormant**） | `sessions, auditLog` |
+| 315 | `plugin-host` | 插件宿主（**dormant**） | `agents, sessions` |
 
-# intent-router
-inject: [llm, auditLog]
+### 8.3 patch 层（`cordis.patch.yml`）
 
-# edge-tools-registry
-inject: [auditLog, tools]
+- **upstream-disabled（100–135）**：7 行，覆盖上游 `dsh-base` 的同名 id。
+  `dsh-edge-agent`(118) 是**防聚合器与 individual rows 双 apply**（不是 dormant）；
+  `web-search`(132) 是**让位**给我们自己的 `web-search-tavily-bocha`；
+  另 5 个是 M5+ stub（见 §十）。
+- **insert 段（326–381）**：4 行，必须留在**宿主树**（不在 preset 里）——
 
-# prompt-guard
-inject: [auditLog, llm]
+  | 行 | id | 为什么必须留在宿主树 |
+  |---|---|---|
+  | 326 | `dsh-edge-agent`（裸包名） | client-modules 扫的是**宿主 Loader** 的 entries，preset 的 EntryTree 不在其中 ⇒ 裸名行放 preset 里永远扫不到浏览器半体，**Edge tab 会消失**（§7.136） |
+  | 329 | `file-logger` | 重写 `ctx.logger.*`（通道就位由消费方延迟注入保证，§7.169） |
+  | 353 | `audit-log` | 审计底座 |
+  | 375 | `desktop-cookie-janitor` | 修**宿主自己的启动**（Electron 握手 cookie 堆到 16 KB ⇒ 431 ⇒ 外壳拆宿主）—— 发生在任何工作方式选定之前 ⇒ 必须在 preset 之外 |
 
-# privacy-policy
-inject: [auditLog]
+### 8.4 preset 子树与 profile overlay
 
-# sanitizer-pipeline
-inject: [privacyPolicy, auditLog]
+**`presets/edge.patch.yml`（边缘模式，250–484，18 行）**
 
-# web-search-tavily-bocha
-inject: [web]
+| 行 | id | inject |
+|---|---|---|
+| 250 | `tcm` | — |
+| 260 | `td-bus` | `auditLog, privacyPolicy` |
+| 275 | `realm-skill-bridge` | `auditLog, skills, edgeTools, tools` |
+| 284 | `http-api` | `agents, intentRouter, auditLog, tdBus, realmSkillBridge, edgeTools` |
+| 288 | `cloud-llm-adapter` | `llm, auditLog` |
+| 305 | `local-llm-adapter` | `llm, auditLog` |
+| 317 | `model-router` | `llm` |
+| 327 | `intent-router` | `llm, auditLog, privacyPolicy` |
+| 340 | `edge-tools-registry` | `auditLog, tools` |
+| 359 | `etscli-tools` | `tools, shell` |
+| 373 | `etscli-shell-guard` | — |
+| 376 | `local-storage` | — |
+| 386 | `prompt-guard` | `auditLog, llm` |
+| 399 | `privacy-policy` | `auditLog` |
+| 413 | `sanitizer-pipeline` | `privacyPolicy, auditLog` |
+| 430 | `web-search-tavily-bocha` | `web` |
+| 459 | `function-call-external` | `auditLog, realmSkillBridge, tools` |
+| 484 | `input-guard` | `promptGuard, privacyPolicy, intentRouter, sanitizer, auditLog, realmSkillBridge` |
 
-# input-guard (5 个硬依赖 + softService)
-inject: [promptGuard, privacyPolicy, intentRouter, sanitizer, auditLog]
-```
+**`presets/edge.desktop-safe.patch.yml`（桌面安全版，249–425，16 行）**
+
+| 行 | id | inject |
+|---|---|---|
+| 249 | `tcm` | — |
+| 255 | `privacy-policy` | `auditLog` |
+| 263 | `td-bus` | `auditLog, privacyPolicy` |
+| 273 | `edge-tools-registry` | `auditLog, tools` |
+| 287 | `etscli-shell-guard` | — |
+| 291 | `realm-skill-bridge` | `auditLog, skills, edgeTools, tools` |
+| 299 | `prompt-guard` | `privacyPolicy, auditLog, llm` |
+| 311 | `sanitizer-pipeline` | `privacyPolicy, auditLog` |
+| 321 | `intent-router` | `llm, auditLog, privacyPolicy` |
+| 332 | `cloud-llm-adapter` | `llm, auditLog` |
+| 358 | `local-llm-adapter` | `llm, auditLog` |
+| 366 | `model-router` | `llm` |
+| 375 | `function-call-external` | `auditLog, realmSkillBridge, tools` |
+| 380 | `input-guard` | `promptGuard, privacyPolicy, intentRouter, sanitizer, auditLog, realmSkillBridge` |
+| 417 | `edge-context-view` | — |
+| 425 | `web-search-tavily-bocha` | — |
+
+**`profiles/dsh-edge-agent/cordis.patch.yml`（独立 profile overlay，70–154，17 行）**
+
+tcm(70) / privacy-policy(75) / td-bus(79) / edge-tools-registry(83) /
+etscli-shell-guard(97) / realm-skill-bridge(102) / prompt-guard(107) /
+sanitizer-pipeline(112) / intent-router(118) / model-router(123) /
+input-guard(127) / local-llm-adapter(132) / cloud-llm-adapter(135) /
+function-call-external(140) / edge-context-view(145) /
+web-search-tavily-bocha(149) / http-api(154)
+
+> overlay 行的 `inject` 一律留空 —— 它们继承 preset 层已解析的依赖。
+
+### 8.5 三层的 inject 差异（别拿某一层的值当全局真值）
+
+同一个插件在三层的 `inject` **不一样**，因为层内可见的服务集合不同。例：
+
+| 插件 | bundle 清单 | 边缘 preset | 桌面安全 preset |
+|---|---|---|---|
+| `prompt-guard` | `tcm, privacyPolicy, auditLog, llm` | `auditLog, llm` | `privacyPolicy, auditLog, llm` |
+| `intent-router` | `llm, promptGuard, privacyPolicy, auditLog, sessions, localStorage` | `llm, auditLog, privacyPolicy` | `llm, auditLog, privacyPolicy` |
+| `realm-skill-bridge` | `auditLog` | `auditLog, skills, edgeTools, tools` | `auditLog, skills, edgeTools, tools` |
+
+⇒ 「某插件到底 inject 了谁」这个问题**没有单一答案**，必须指明在哪一层查。
 
 ---
 
@@ -389,16 +528,34 @@ Provider 注册 (并行):
 
 ---
 
-## 十、dormant 插件(5 个,M5+ 待做)
+## 十、dormant 插件（5 个 M5+ stub，2026-11-10 实测）
 
-```yaml
-# cordis.patch.yml:120-137 — 全部 disabled: true
-- id: plugin-host       # 53 行 stub
-- id: ohttp-gateway     # OHTTP 匿名传输
-- id: secure-bridge     # 加密桥
-- id: attestation       # TEE 远程证明
-- id: voice-input       # 53 行 skeleton
-```
+在 `cordis.yml`（bundle 清单）里声明了、但**不在任何 preset 子树里** ⇒ 实际不挂载：
+
+| bundle 清单行 | id | 用途 | inject |
+|---|---|---|---|
+| 261 | `ohttp-gateway` | OHTTP 匿名传输 | `tcm, auditLog` |
+| 272 | `secure-bridge` | 加密桥 | `tcm, ohttp, privacyPolicy, auditLog` |
+| 282 | `attestation` | TEE 远程证明 | `tcm, auditLog` |
+| 304 | `voice-input` | 语音输入 | `sessions, auditLog` |
+| 315 | `plugin-host` | 插件宿主 | `agents, sessions` |
+
+> ⚠️ 上一版写的「`cordis.patch.yml:120-137`」不准。`cordis.patch.yml`
+> **100–135** 是一整段 **upstream-disabled**，一共 **7 行**，语义各不相同，别混为一谈：
+>
+> | 行 | id | 这条 disable 的含义 |
+> |---|---|---|
+> | 118 | `dsh-edge-agent` | **防聚合器与 individual rows 双 apply**（不是 dormant） |
+> | 124 | `plugin-host` | M5+ stub ⇒ dormant |
+> | 126 | `ohttp-gateway` | M5+ stub ⇒ dormant |
+> | 128 | `secure-bridge` | M5+ stub ⇒ dormant |
+> | 130 | `attestation` | M5+ stub ⇒ dormant |
+> | 132 | `web-search` | **让位**给我们自己的 `web-search-tavily-bocha`（上游那个不是 dormant） |
+> | 134 | `voice-input` | M5+ stub ⇒ dormant |
+>
+> 也就是说：**dormant 的 5 个 = 上表 124 / 126 / 128 / 130 / 134 这 5 行**，
+> 它们在 `cordis.yml` 里另有各自的声明行（见上表）。
+> `web-search` 与 `dsh-edge-agent` 两条 disable 是**另外的语义**，别数进 dormant。
 
 ---
 

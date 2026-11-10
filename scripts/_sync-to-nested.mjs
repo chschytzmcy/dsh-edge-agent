@@ -7,7 +7,7 @@
 // Node mirror does the equivalent copy on ANY platform (Windows/macOS/Linux).
 //
 // Path: dist/installable/dsh-edge-agent-desktop-safe/*
-//    → ~/.dsh/profiles/desktop/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/*
+//    → ~/.dsh/profiles/desktop/node_modules/@dsh-edge/dsh-edge-agent/*
 
 import { cpSync, lstatSync, rmSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -25,7 +25,7 @@ if (!HOME) {
   process.exit(1)
 }
 const NESTED = join(HOME, '.dsh', 'profiles', 'desktop',
-  'node_modules', '@deepseek-harness-edge-agent', 'dsh-edge-agent')
+  'node_modules', '@dsh-edge', 'dsh-edge-agent')
 
 if (!statSync(STAGE, { throwIfNoEntry: false })) {
   console.error(`staged tree missing: ${STAGE}`)

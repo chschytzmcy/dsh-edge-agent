@@ -1,5 +1,5 @@
 {
-  "name": "@deepseek-harness-edge-agent/dsh-edge-agent",
+  "name": "@dsh-edge/dsh-edge-agent",
   "version": "0.1.1",
   "description": "Edge-side private agent built on DSH Cordis plugin mechanism: TEE-secured, OHTTP-encrypted, multi-LLM-routed, zero-core-modification.",
   "license": "MIT",
@@ -222,6 +222,7 @@
     "cordis.desktop-safe.patch.yml",
     "cordis.yml",
     "presets",
+    "CHANGELOG.md",
     "!config/edge.json"
   ],
   "engines": {
@@ -252,7 +253,7 @@
     "e2e:benchmark": "bash scripts/e2e-model-quality-bench.sh",
     "verify:local-channel": "node scripts/verify-local-channel.mjs",
     "verify:local-channel:selftest": "node scripts/verify-local-channel.mjs --selftest",
-    "verify:build": "node scripts/run.mjs verify:boundary verify:contract verify:patch-surface verify:preset-isolate verify:patch-row-shape verify:plugin-spec verify:edge-config-tool verify:env-bridge verify:bundle-mount verify:ci-build-chain verify:installable verify:tarball verify:git-install verify:local-channel verify:installable-edge verify:host-mount verify:client-mount verify:desktop-auth-cookies verify:session-audit verify:package verify:doc-links verify:config-hints",
+    "verify:build": "node scripts/run.mjs verify:boundary verify:contract verify:patch-surface verify:preset-isolate verify:patch-row-shape verify:plugin-spec verify:edge-config-tool verify:env-bridge verify:bundle-mount verify:ci-build-chain verify:installable verify:tarball verify:git-install verify:local-channel verify:installable-edge verify:host-mount verify:client-mount verify:desktop-auth-cookies verify:session-audit verify:package verify:package-name verify:npm-publish verify:npm-decision verify:doc-links verify:config-hints",
     "verify:boundary": "node --import tsx/esm scripts/verify-adapter-boundary.ts",
     "verify:contract": "node --import tsx/esm scripts/verify-upstream-contract.ts",
     "verify:patch-surface": "node --import tsx/esm scripts/verify-patch-surface.ts",
@@ -273,6 +274,12 @@
     "verify:desktop-auth-cookies": "node --disable-warning=ExperimentalWarning scripts/reset-desktop-auth-cookies.mjs --selftest",
     "verify:session-audit": "node scripts/probe-session-audit.mjs --selftest",
     "verify:package": "npm pack --dry-run --json --ignore-scripts | node scripts/verify-package.mjs",
+    "verify:package-name": "node scripts/verify-package-name.mjs",
+    "verify:package-name:selftest": "node scripts/verify-package-name.mjs --selftest",
+    "verify:npm-publish": "node scripts/verify-npm-publish.mjs",
+    "verify:npm-publish:selftest": "node scripts/verify-npm-publish.mjs --selftest",
+    "verify:npm-decision": "node scripts/verify-npm-decision.mjs",
+    "publish:npm": "node scripts/publish-npm.mjs",
     "verify:doc-links": "node scripts/verify-doc-links.mjs",
     "verify:doc-links:selftest": "node scripts/verify-doc-links.mjs --selftest",
     "verify:config-hints": "node scripts/verify-config-hints.mjs",

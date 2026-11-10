@@ -44,7 +44,7 @@ const presetDir = join(root, 'presets')
 const adapterDir = join(root, 'src', 'dsh-adapter')
 /** The bundle's own package name — a plugin row belongs to this bundle when
  *  its `name` is the bare package root or a subpath of it. */
-const BUNDLE_PKG = '@deepseek-harness-edge-agent/dsh-edge-agent'
+const BUNDLE_PKG = '@dsh-edge/dsh-edge-agent'
 
 interface PluginFacts {
   /** The ctx service this plugin provides (`Service` subclass constructor). */

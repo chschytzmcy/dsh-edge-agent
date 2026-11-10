@@ -1,10 +1,17 @@
 # 从 npm 包名安装（桌面版 Plugins → Add plugin）
 
-> 状态：**2026-10-30 完成通道调研 + 发布链修复**（§7.156）。宿主侧的 npm 通道
-> 早就做完了；这一轮把它读透，并修好了**发布链上那个从来没被走通过的洞**。
+> 状态：**2026-11-10 发布链就绪**（§7.172）。宿主侧的 npm 通道 2026-10-30 就
+> 调研完了（§7.156），这一轮把**发布这条路本身**修成了可用状态：本地一键发布
+> 脚本 + 发布就绪门禁 + CI 决策（已发版本跳过 / 首次发布不带 provenance）。
 >
-> ⚠️ **但这个通道今天还用不了** —— 包尚未发布到 registry（404）。
-> 「填包名」这条路要等第一次发布之后才成立。
+> ⚠️ **但这个通道今天还用不了** —— 包**仍未**发布到 registry（registry 上查无
+> 此包）。「填包名」这条路要等第一次发布之后才成立。
+>
+> ⇒ 缺的**不是代码**，是**作者侧的三件东西**：① npmjs.com 上拥有
+> `@dsh-edge` scope 的账号/组织；② 发布凭据（granular
+> access token，或登记 trusted publisher 改走 OIDC）；③ 执行
+> `npm run publish:npm -- --yes --tag`。逐条清单见 §8.5，
+> **注册与办凭据的逐步操作见 [`npm-account-setup.md`](npm-account-setup.md)**。
 >
 > 宿主契约出处：`deepseek-harness`（只读参考仓）
 > `packages/boot/plugin-manager/src/*`、`packages/client/ui-plugin-manager/src/client/*`、
@@ -15,7 +22,7 @@
 在桌面 App 的 **Plugins → Add plugin** 里填
 
 ```
-@deepseek-harness-edge-agent/dsh-edge-agent
+@dsh-edge/dsh-edge-agent
 ```
 
 宿主负责查 registry、装、校验、启用；**本仓负责让 registry 上那个 tarball
@@ -66,7 +73,7 @@
 - 长度 ≤ 214；
 - scope 是包名的一部分，一路带到依赖键、bundle 名、列表行。
 
-本仓的 `@deepseek-harness-edge-agent/dsh-edge-agent` ✅ 合规。
+本仓的 `@dsh-edge/dsh-edge-agent` ✅ 合规。
 
 ### 2.3 版本后缀怎么切
 
@@ -217,7 +224,7 @@ npm 通道根本不触发这次注入 ⇒ **用户机器上没装 pnpm 也能装
 
 | 要求 | 出处 | 本仓 | 状态 |
 |---|---|---|---|
-| 包名合规（小写、≤214） | `install-spec.ts:32-33` | `@deepseek-harness-edge-agent/dsh-edge-agent` | ✅ |
+| 包名合规（小写、≤214） | `install-spec.ts:32-33` | `@dsh-edge/dsh-edge-agent` | ✅ |
 | `name` / `version` | `publish.md:36-44` | `0.1.1` | ✅ |
 | `dsh.bundle.patch`（字符串或列表） | `publish.md:13,64` | `["./cordis.desktop-safe.patch.yml", "./presets/edge.desktop-safe.patch.yml"]` | ✅ |
 | patch 文件**必须在包里** | `app-boot/src/index.ts:538-546` | 两个都在 `files` 白名单里 | ✅ |
@@ -225,20 +232,36 @@ npm 通道根本不触发这次注入 ⇒ **用户机器上没装 pnpm 也能装
 | 共享的 dsh 包同时进 peer + dev | `publish.md:105` | 8 个 `@deepseek-ai/*` 两边都有 | ✅ |
 | **npm 发布时必须预构建 `lib/`** | `publish.md:169,185` | `prepare` = `compile` + `build:client` | ✅ |
 | `files` 白名单 | `publish.md:41` | `lib` `config` `presets` 3 个 yml，且 `!config/edge.json` | ✅ |
-| 包名可发（registry 上没被占） | npm | registry 404 ⇒ **还没发** | ❌ |
+| 包名可发（registry 上没被占） | npm | registry 上查无此包 ⇒ **还没发** | ❌ |
+| `CHANGELOG.md` 存在且**含当前版本** | `publish.yml` 前置清单第 3 条 | 已在 `files` 白名单里 | ✅ |
+
+**这张表现在是机器检查的** —— §7.172 加了 `scripts/verify-npm-publish.mjs`，
+把上表（除「还没发」那一行）逐条变成 11 项断言，已接进 `verify:build`（链内第 22 位）：
+
+```bash
+node scripts/verify-npm-publish.mjs             # 查当前树
+node scripts/verify-npm-publish.mjs --selftest  # 自证 + 反向证伪（27 条断言）
+```
+
+⇒ **发布前不必再靠人肉对表**；漏了哪条，门禁会指名道姓地报出来。
 
 **`prepare` 只对 git 安装有意义**（`publish.md:171`）—— npm 装的时候 tarball 里
 已经是构建好的 `lib/`，pnpm 不会跑 `prepare`。
 
-### 7.1 包里有什么（`verify:package` 实测：231 文件 / 67 个入口目标）
+### 7.1 包里有什么（`verify:package` 实测：235 文件 / 69 个入口目标，2026-11-10）
 
 ```
 lib/            ← Node 半侧（.js + .d.ts）+ 浏览器半侧 lib/client.js
 config/         ← edge.example.json + privacy-policy.json（**没有 edge.json**）
 presets/
 cordis.yml / cordis.patch.yml / cordis.desktop-safe.patch.yml
-package.json / README.md / LICENSE
+package.json / README.md / LICENSE / CHANGELOG.md
 ```
+
+> `CHANGELOG.md` 是 §7.172 补进 `files` 的 —— npm **不会**自动带它（npm 只自动带
+> package.json / README / LICENSE），而 `publish.yml` 的前置清单明写「CHANGELOG.md is
+> updated」，且 npm 页面会渲染它。不显式加进 `files` ⇒ 门禁 `verify:npm-publish` 报
+> 「CHANGELOG 不在包里」。
 
 `files` 白名单在 npm 通道同样生效：`src/`、`scripts/`、`tests/`、`.git/` 都不进包。
 
@@ -249,7 +272,7 @@ package.json / README.md / LICENSE
 | 文件 | 触发 | 作用 |
 |---|---|---|
 | `ci.yml` | push main / PR | 只检查，不发布 |
-| `publish.yml` | **推 `v*` tag** | 检查 + `pnpm publish --provenance --access public` + GitHub Release |
+| `publish.yml` | **推 `v*` tag** | 检查 + `pnpm publish`（**按决策**带/不带 provenance；该版本已发则跳过 publish）+ GitHub Release |
 | `upstream-latest.yml` | 每周一 03:17 UTC + 手动 | 探测上游 `@latest` 会不会打破兼容（**有意的，不是发布闸**） |
 
 **推 tag 就是全部动作**：
@@ -266,6 +289,49 @@ git push origin v0.1.1     # ← 这一步才触发 publish.yml
 > （§7.154 记过：2026-09-20 起每次 push 到 main 都红，连续 9 天没人被拦）。
 > ⇒ **push 前在本地跑 `npm run build`**（它含门禁），这是唯一的「事前」窗口。
 
+### 8.1.1 本地发布路径（§7.172 新增，第一次发布走这条）
+
+CI 那条链是「代码上去了之后才跑」的 —— 而 npm 这条链**从来没被走通过**（本仓至今
+0 个 tag、registry 上查无此包）。第一次发布不该拿 CI 当试验品，所以给了一条
+**发布前**的本地路径：
+
+```bash
+npm run publish:npm                    # 构建 + 全部门禁 + dry-run（安全默认，不发）
+npm run publish:npm -- --yes           # 真发
+npm run publish:npm -- --yes --tag     # 发完打 v<version> tag（再 git push origin v<version>）
+```
+
+它按顺序做 5 件事：
+
+1. **工作树必须干净**（`--allow-dirty` 可强行越过）—— 发出去的必须是 git 里有的东西；
+2. **registry 预检**：这个版本发过没有？发过 ⇒ 立刻停（不浪费一次构建 + 门禁）；
+3. **认证预检**（仅真发时）：`NPM_TOKEN` / `NODE_AUTH_TOKEN` / `~/.npmrc` / 仓库
+   `.npmrc` 里有没有 token？**没有就立刻停**（实测 3 秒）—— 不能等构建链 + 24 道
+   门禁跑完才在 `pnpm publish` 那一步才发现没登录；
+4. **canonical 构建链**（`compile → typecheck:client → build:client → build:installable
+   → pack:tarball`）—— 与 CI **一字不差**；
+5. **全部门禁**（`verify:build`，25 项，验的是**产物**）；
+6. **`pnpm publish --dry-run`** —— **默认不发**，只把「将要发出去的东西」摊开给你看。
+
+⇒ **不带 `--yes` 永远不会碰 registry。** 这是这个脚本的默认值，也是它能被信任的原因。
+
+**两条路径可以共存且幂等**：本地 `--yes --tag` 发完再推 tag ⇒ CI 的 publish job 看到
+「该版本已在 registry 上」⇒ **跳过 publish**（不撞 409），但 release job 仍会建
+GitHub Release。这正是 `publish-decision.mjs` 的 `skip` 决策存在的原因。
+
+本地与 CI 跑的是**同一条命令**：
+
+```
+pnpm publish --access public --ignore-scripts --no-git-checks [--provenance|--no-provenance]
+```
+
+- `--no-git-checks`：CI 在 tag push 时**必然**是 detached HEAD（`actions/checkout`
+  检出的是 tag）⇒ pnpm 的 git 检查会直接报 `ERR_PNPM_GIT_UNKNOWN_BRANCH`
+  （**实测**，见 §8.2）。绕开之后，这道检查由本地脚本自己接住（0.1 工作树干净 /
+  0.2 HEAD 必须 attached）。
+- `--ignore-scripts`：让 `prepare` 不要在发布步里**重跑一遍** compile+build:client ——
+  Build 步产出的 `lib/` 已经过了 `verify:build`，发出去的应该是**门禁验过的那个**。
+
 ### 8.2 环节与报错对照
 
 | 环节 | 报错首行 | 含义 / 怎么办 |
@@ -279,9 +345,17 @@ git push origin v0.1.1     # ← 这一步才触发 publish.yml
 | `verify:build` → `verify:ci-build-chain` | `verify-ci-build-chain: CI build chain is not sound:` + 逐条 `- ...` | CI 少跑了构建步骤 |
 | `pnpm test -- --run` | vitest 失败摘要 | 单测红 |
 | tag 版本一致性 | `::error::tag v0.1.2 does not match package.json#version 0.1.1` | tag 与 manifest 版本不一致 |
+| CHANGELOG 缺版本（§7.172） | `::error::CHANGELOG.md has no entry for version 0.1.1` | `publish.yml` 的前置清单第 3 条 |
 | `pnpm publish`（无 token） | `You must be logged in to publish packages.` | `NPM_TOKEN` secret 没配/失效 |
 | `pnpm publish`（无权限） | `403 Forbidden - PUT https://registry.npmjs.org/... - You do not have permission to publish` | scope 没建好 / 名字被占 |
 | `pnpm publish`（版本已存在） | `409 Conflict - PUT ... - Cannot publish over the previously published versions: 0.1.1` | 改版本号再发 |
+| `pnpm publish`（**CI，detached HEAD**） | `Error: ERR_PNPM_GIT_UNKNOWN_BRANCH` + `× The Git HEAD may not attached to any branch, but your "publish-branch" is set to "master|main"` | **实测（2026-11-10）**：CI 在 tag push 时必然 detached HEAD ⇒ 必须加 `--no-git-checks`（§7.172） |
+| `pnpm publish`（**首次发布带 provenance**） | pnpm 的 provenance 生成器抛错（registry 答 `{"public":false}`） | 首次发布**不能**带 `--provenance` ⇒ 由 `publish-decision.mjs` 判定（§8.5.1） |
+| `pnpm publish`（Windows 上跑不起来） | `退出码 null（进程没起来）` | `pnpm`/`npm` 在 Windows 上是 `.cmd` shim，Node 20.12+ 拒绝 spawn ⇒ 要按裸名走 shell（§8.1.1） |
+
+> §7.172 起，**「版本已存在」在 CI 上不再是一个错误**：publish job 会先看 registry，
+> 发现该版本已发 ⇒ **跳过 publish**（不撞 409），release job 照常建 GitHub Release。
+> 本地脚本则在**预检阶段**就停下来（不浪费一次构建 + 门禁）。
 
 ### 8.3 §7.156 修的那个洞（发布链从来没走通过）
 
@@ -326,34 +400,92 @@ node scripts/verify-ci-build-chain.mjs --selftest  # 自证 + 反向证伪（11 
 自证里包含**反向证伪**：把「只跑 `compile`」这个 §7.104 的缺陷造出来，
 门禁必须报出 `build:client` 与 `build:installable` 两项；造回完整链，门禁必须放过。
 
-### 8.5 真正发布成功需要哪些条件（逐条核对，2026-10-30 核实）
+**§7.172 加了两道门禁** —— `verify:npm-publish` 守的不是「构建链」，而是
+**发布前的作者义务**（§7 那张表）：包名合规、semver、`publishConfig.access=public`、
+`dsh.bundle.patch` 列出的文件既存在又在 `files` 里、`engines.dsh`、peer ⊆ dev、
+`repository.url` 与 git remote 对得上、`CHANGELOG.md` 存在且含当前版本且在 `files` 里、
+`config/edge.json` 确实被排除、`prepare` 跑的是 compile+build:client、`main`+`types`
+确实在包里。
+
+它已接进 `package.json#scripts.verify:build`（链内第 22 位）⇒ **CI 每次 push 都会跑它** ⇒
+「漏了哪条发布义务」在合并前就被拦下，而不是等到推了 tag 才炸。
+
+**§7.172 还加了第二道门禁** `verify:npm-decision`（链内第 23 位）—— 它守的是
+**发布决策本身**。理由很硬：`registry-version.mjs` 与 `publish-decision.mjs`
+**只在 CI 的 publish job 里跑**（`publish.yml` 的 Decide 步）⇒ build job 里的任何
+门禁都够不着它们 ⇒ 一旦判错方向：
+
+- 该带不带 `--provenance` 判错 ⇒ pnpm 的 provenance 生成器抛错 ⇒ **整个发布失败**；
+- stdout 的 `key=value` 契约破了 ⇒ `$GITHUB_OUTPUT` 解析失败 ⇒ job 在一个跟发布
+  毫无关系的地方红掉。
+
+⇒ 两段代码各自带 `--selftest`（判定表 10 条断言 / stdout 契约 14 条断言），
+`verify:npm-decision` 把它们**都跑一遍**（不联网：判定表用注入的假探针，stdout
+契约用连不上的端口）⇒ 在**每一次 push** 上就能发现它们坏了，而不是等到推 tag。
+
+### 8.5 真正发布成功需要哪些条件（逐条核对，2026-11-10 核实）
 
 | # | 条件 | 状态 | 备注 |
 |---|---|---|---|
-| 1 | npmjs.com 账号 | ❓ | 需要主人在 registry 上有账号 |
-| 2 | scope `@deepseek-harness-edge-agent` 可用 | ✅ | 查得 404 ⇒ 该 scope 未被占用；首次发布会创建它 |
+| 1 | npmjs.com 账号 | ❓ | 需要主人在 registry 上有账号 —— **名字必须正好是 `dsh-edge`**（npm 的 scope 名 = 账号/组织名）；逐步操作见 [`npm-account-setup.md`](npm-account-setup.md) |
+| 2 | scope `@dsh-edge` 可用 | ✅ | registry 上查无此 scope ⇒ 未被占用；首次发布会创建它 |
 | 3 | 认证：`NPM_TOKEN`（**granular access token**，publish 权限、Bypass 2FA、≤90 天） | ❓ | **classic token 已于 2025-12 被 npm 撤销**，只能用 granular |
-| 3′ | 或 OIDC **Trusted Publishing**（不要 token） | ⚠️ | 需 **npm CLI ≥ 11.5.1**（⇒ Node 24）；CI 现在 Node 22.20 ⇒ npm 10.x ⇒ **用不了** |
+| 3′ | 或 OIDC **Trusted Publishing**（不要 token） | ✅ **可用** | **pnpm 11.7.0 自己实现了 OIDC 交换**（`crates/publish/src/oidc/*`）⇒ **不需要 npm CLI ≥ 11.5.1**，也**不需要升 Node**（CI 是 Node 22.20 + pnpm 11.7.0）。**§7.172 修正了旧结论** |
 | 4 | `publishConfig.access: "public"` | ✅ | scoped 包默认 restricted，必须显式 public |
 | 5 | `repository.url` 与发布位置**精确匹配**（大小写敏感） | ✅ | **§7.156 已从 SSH 形式改成 `https://github.com/chschytzmcy/dsh-edge-agent.git`** |
 | 6 | `permissions: id-token: write` | ✅ | workflow 里已有 |
 | 7 | 云托管 runner | ✅ | `ubuntu-latest`（自托管 runner 不满足 provenance 要求） |
-| 8 | **仓库公开**（provenance 的前提） | ❌ **当前是私有** | GitHub API 匿名查本仓返回 **404** ⇒ 私有。⇒ §8.5.1 |
+| 8 | **仓库公开**（provenance 的前提） | ✅ **已转公开**（2026-11-10） | 主人把仓库改成了 public；匿名 GitHub API 核实 `visibility = public` |
 | 9 | 包本身 public | ✅ | `--access public` |
 | 10 | `lib/` 预构建 | ✅ | §8.3 修的就是这个 |
-| 11 | `files` 白名单 | ✅ | 231 文件 / 67 入口 |
+| 11 | `files` 白名单 | ✅ | 235 文件 / 69 入口（2026-11-10 实测） |
 | 12 | `dsh.bundle.patch` 列出的文件在包里 | ✅ | 两个 patch 都在白名单里 |
 | 13 | `engines.dsh` 声明 | ✅ | `>=0.2.1-rc.2` |
-| 14 | 版本未被占用 | ✅ | `0.1.1` 未发过（registry 404） |
+| 14 | 版本未被占用 | ✅ | `0.1.1` 未发过（registry 上查无此包） |
 | 15 | tag ↔ `package.json#version` 一致 | ✅ | §7.156 加了断言 |
 | 16 | 真密钥不在包里 | ✅ | `.npmignore` + `files` **双重**排除 `config/edge.json` |
+| 17 | `CHANGELOG.md` 存在 + 含当前版本 + 在 `files` 里 | ✅ | §7.172 补的（npm **不会**自动带它） |
+| 18 | pnpm 的 git 检查不挡路 | ✅ | §7.172：CI 在 tag push 时是 detached HEAD ⇒ 必须 `--no-git-checks`（**实测**） |
+| 19 | 首次发布**不带** `--provenance` | ✅ | §7.172：`decideProvenance` 判定（实测 visibility 端点答 200 `{"public":false}`） |
+| 20 | 发布就绪门禁 | ✅ | §7.172：`verify:npm-publish`（链内第 22 位） |
+| 21 | 发布决策门禁 | ✅ | §7.172：`verify:npm-decision`（链内第 23 位）—— 判定表 + stdout 契约的自证 |
+| 22 | 包名一致性门禁 | ✅ | §7.173：`verify:package-name`（链内第 21 位）—— 包名副本与 `package.json#name` 交叉比对 |
 
-⇒ **剩下的只有两件是主人手上的**：① npm 账号 + token（③）；② 要不要转公开（⑧）。
+⇒ **剩下的只有两件是主人手上的**（**2026-11-10 主人已裁决走哪条**，见下）：
+
+1. **在 npmjs.com 建一个叫 `dsh-edge` 的组织**，并把主人自己的
+   npm 账号加为**成员**（角色需含 publish）。
+   ⇒ **口径（2026-11-10 裁决）**：走**组织**，不走同名的「机器人式」用户账号 ——
+   对外的 scope 名不变、凭据是主人本人的、还能邀请别人一起发。
+   npm 的规则是「scope 由同名用户**或**同名组织拥有」，而**发包的人不必是那个
+   名字**（官方原文）：
+
+   > If publishing a public module to an organization scope, you must first either
+   > create an organization with the name of the scope that you'd like to publish to
+   > **or be added to an existing organization** with the appropriate permissions.
+
+   （名字可用性已查实：registry 上**无同名组织**、该 scope 下**无任何包**。）
+2. **发布凭据** —— 首次发布用 granular access token（见 §8.5.2），发完之后登记
+   trusted publisher（Owner 填这个组织）改走 OIDC。
+
+拿到之后，本地发一次就够（**不用改任何代码** —— 包名/对外标识一个字都不动）：
+
+```bash
+npm login --scope=@dsh-edge   # 用主人自己的账号；scope 钉到组织
+npm run publish:npm -- --yes --tag
+git push origin v0.1.1         # 触发 CI；它会看到版本已发 ⇒ 跳过 publish，只建 Release
+```
+
+> **为什么组织方案不需要改任何代码**：scope 仍是 `@dsh-edge`
+> ⇒ `package.json#name`、patch 行、preset、文档、门禁里那 **181 处 / 45 个文件**
+> 的字符串**全部不动**（§7.172 实测的分布）。**换 scope** 才会牵动那 45 个文件，
+> 其中 84 处是宿主在运行时解析的 patch 行（漏改 ⇒ 插件挂不上 ⇒ Edge tab 静默消失），
+> 外加两个门禁各自硬编码了一份包名。⇒ 走组织 = **零改动**。
 
 #### 8.5.1 provenance 的那条硬约束（最容易踩的一脚）
 
 npm 的溯源徽章（`Built and signed on GitHub Actions`）**只接受公共来源仓库**。
-pnpm 自己的判定（`releasing/commands/lib/publish/oidc/provenance.js`）：
+pnpm 自己的判定分**两步**（pnpm 11 的实现是 Rust：`crates/publish/src/oidc/provenance.rs`）：
 
 ```js
 // ① 先解 OIDC token 的 payload
@@ -370,41 +502,106 @@ GET /-/package/<name>/visibility   →  必须是 { public: true }
 `npm error 422 Unprocessable Entity / Error verifying sigstore provenance bundle:
 Unsupported GitHub Actions source repository visibility: "private"`。
 
-**§7.156 的处理**：不写死 `--provenance`，而是**按仓库可见性自动决定**：
+**§7.156 的处理**：不写死 `--provenance`，而是**按仓库可见性自动决定**。但它只
+处理了第①步 —— 第②步当时只能靠猜，于是 §7.172 把它补上了。
+
+#### 8.5.1.1 第②步的真实形态：**不是 404，是 200 + `{"public":false}`**
+
+**实测（2026-11-10，匿名请求 `registry.npmjs.org`）**：
+
+| 目标 | HTTP | body |
+|---|---|---|
+| `@dsh-edge/dsh-edge-agent`（**尚不存在**）| **200** | `{"public":false}` |
+| `@deepseek-ai/cordis`（已存在的公开包）| 200 | `{"public":true}` |
+
+> ⚠️ **本节此前写的是「包不存在时端点返回 404」—— 猜错了形态**。真实形态是
+> **HTTP 200 + `{"public":false}`**（包还不存在，自然不是 public）。**结论一样**
+> （首次发布带 `--provenance` 必失败），但错误类型不同：不是
+> `ProvenanceFailedToFetchVisibilityError`，而是 pnpm 认为「这包不是 public，
+> 不给它做 provenance」而抛错。
+
+⇒ **首次发布不能带 `--provenance`**（哪怕仓库已经是 public）。发完之后
+（必要时 `pnpm access set status=public @scope/pkg`），registry 才会答
+`{"public":true}`，之后的版本才带得上徽章。
+
+**§7.172 的处理**：把两个决策都从 workflow 的 YAML 里挪进一个**可测的脚本**
+（`scripts/publish-decision.mjs`）—— stdout 只有 `key=value`（给 `$GITHUB_OUTPUT`），
+人类可读的判断走 stderr（留在 CI 日志里）：
 
 ```yaml
+- name: Decide (skip if published / provenance)
+  id: decide
+  env:
+    REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
+  run: node scripts/publish-decision.mjs >> "$GITHUB_OUTPUT"
+
 - name: Publish
+  if: steps.decide.outputs.skip != 'true'
   env:
     NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
   run: |
-    VISIBILITY="${{ github.event.repository.visibility }}"
-    if [ "$VISIBILITY" = "public" ]; then
-      pnpm publish --provenance --access public
+    if [ "${{ steps.decide.outputs.provenance }}" = "true" ]; then
+      pnpm publish --provenance --access public --ignore-scripts --no-git-checks
     else
-      echo "::warning::仓库是 private ⇒ npm 不接受私有来源仓库的 provenance。本次不带 --provenance 发布。"
-      pnpm publish --access public
+      pnpm publish --no-provenance --access public --ignore-scripts --no-git-checks
     fi
 ```
 
-- **现在是私有** ⇒ 走「不带」那支 ⇒ **发得出去**（只是没有溯源徽章）；
-- **将来转公开** ⇒ 同一份 workflow 自动升级成带徽章的，**不用再改**；
-- 取不到可见性时默认走「不带」那支 ⇒ 宁可少一个徽章，也不要让整个发布因 provenance 失败。
+判定表（`decideProvenance` 的实现，`scripts/registry-version.mjs`）：
 
-> ⚠️ **首次发布的额外不确定点**：pnpm 第②步要问 registry「这个包是不是 public」，
-> 而首次发布时包**还不存在**。若那个端点在包不存在时返回 404，会变成
-> `ProvenanceFailedToFetchVisibilityError`。这只会影响**公开仓库**的首次发布；
-> 私有仓库走的是「不带 `--provenance`」那支，不经过这一步。
+| 仓库可见性 | 包在 registry 上 | 结论 |
+|---|---|---|
+| 私有 | 任意 | ❌ 不带（① 就抛错）|
+| 公开 | **还不存在** | ❌ 不带（② 答 `{"public":false}`）—— **首次发布** |
+| 公开 | 存在且 public | ✅ 带 |
+| 公开 | 存在但不是 public | ❌ 不带 |
+| 任意 | 查不到（网络失败）| ❌ 不带（宁可少一个徽章，也不让整个发布失败）|
+
+⇒ **仓库从私有转公开之后，同一份 workflow 自动升级成带徽章的，不用再改**；
+取不到可见性 / registry 时默认走「不带」那支 ⇒ 少一个徽章好过整个发布挂掉。
 
 #### 8.5.2 认证方式怎么选
 
 | 方式 | 需要什么 | 代价 |
 |---|---|---|
-| **granular access token** | npmjs.com → Settings → Access Tokens → 新建，勾 publish、勾 Bypass 2FA、有效期 ≤90 天、scope 限定到本包 ⇒ 存成 GitHub secret `NPM_TOKEN` | 要定期轮换（90 天） |
-| **OIDC Trusted Publishing** | npmjs.com 上给本包登记 trusted publisher（Owner / Repository / Workflow 文件名 `publish.yml`，**大小写敏感**）⇒ **完全不需要 token** | 需 **npm CLI ≥ 11.5.1** ⇒ Node 24。本仓 CI 用 Node 22.20 ⇒ **现在用不了**，要升 Node |
+| **granular access token** | npmjs.com → Settings → Access Tokens → 新建，勾 publish、勾 Bypass 2FA、有效期 ≤90 天、scope 限定到本包 ⇒ 存成 GitHub secret `NPM_TOKEN`（或本地 `npm login`） | 要定期轮换（90 天） |
+| **OIDC Trusted Publishing** | npmjs.com 上给本包登记 trusted publisher（Owner / Repository / Workflow 文件名 `publish.yml`，**大小写敏感**）⇒ **完全不需要 token** | **pnpm 11.7.0 自己就能做**（`crates/publish/src/oidc/*`）⇒ **不需要 npm CLI ≥ 11.5.1，也不需要升 Node**。**§7.172 修正了旧结论** |
 
-⇒ **当前建议走 granular token**：CI 已是 Node 22.20，升 Node 属于额外改动。
+⇒ **建议先走 granular token**（一次发布就能验证整条链）；**之后**再登记 trusted
+publisher 换成 OIDC，把 token 从仓库里彻底拿掉。
+
+> **§7.172 修正的旧结论**：本节此前写的是「OIDC 需 npm CLI ≥ 11.5.1 ⇒ Node 24 ⇒
+> 本仓 CI 用 Node 22.20 ⇒ 用不了」。这条对 **`npm publish`** 成立，但**对 pnpm 不成立**
+> —— workflow 里跑的是 `pnpm publish`，而 pnpm 11.7.0 的二进制里内建了 OIDC 交换
+> （`ACTIONS_ID_TOKEN_REQUEST_URL` / `ACTIONS_ID_TOKEN_REQUEST_TOKEN` /
+> `npm.pkg.github.com` / `trusted publish`）。⇒ 「要升 Node」这条额外改动**不需要做**。
 
 > npm 2025-12 起撤销了全部 classic token。旧的 `NPM_TOKEN`（classic）现在一律无效。
+
+#### 8.5.3 组织 scope 下的 token 怎么签（2026-11-10 查实，方案 B 专用）
+
+npm 的 token 表单有**两处容易选错**：
+
+| 表单栏目 | 管什么 | 能不能用来发本包的版 |
+|---|---|---|
+| **「Select packages and scopes」** | 包/作用域的读读写权限 | ✅ **走这里** —— 选中本组织下的 `@dsh-edge` |
+| **「Organizations」** | **组织成员/团队**的增删改 | ❌ **不能用它发包**（那是治理权限，不是发布权限）|
+
+- token 的权限**不能超过签发者本人的权限** ⇒ 主人不在组织里、或组织角色不含
+  publish ⇒ token 一样发不了。⇒ **先把主人自己的账号加进组织、给 publish 角色**。
+- 首次发布需要 **Read and write** + **Bypass 2FA**（CI 发布要跳过交互式 2FA），
+  有效期 **≤90 天**（read-write token 的上限）。
+- 每个账号最多 1000 个 granular token；每个 token 最多覆盖 50 个包 / 50 个 scope。
+
+> ⚠️ **npm 正在退场「用 token 直接发版」这条**（2026-11-10 查实，官方文档原文）：
+> 「Bypass-2FA tokens with direct-publish access are being deprecated. The ability to
+> publish new package versions directly with a granular access token **will be
+> removed in January 2027**」，替代路径是 **Read and write (stage only)** +
+> `npm stage publish` / `npm stage approve` 的**人工审批流**。
+>
+> ⇒ **所以 token 只是「第一次发布」的过桥**：发完立刻登记 trusted publisher 走 OIDC
+> —— 之后既没有凭据要轮换，也不受这条退场影响。本仓 CI 已经支持 OIDC
+> （pnpm 11.7.0 内建交换，§8.5.2），**不需要为 2027 改任何代码**。
 
 ## 9. 排障
 
@@ -441,6 +638,7 @@ Unsupported GitHub Actions source repository visibility: "private"`。
 
 ## 11. 相关文档
 
+- [`npm-account-setup.md`](npm-account-setup.md) — **注册 npm 账号/组织 + 办发布凭据**（§8.5 的第 1、3 条展开）
 - [`deploy-github.md`](deploy-github.md) — 从 GitHub 仓库地址安装
 - [`load-into-local-dsh.md`](load-into-local-dsh.md) — 本地目录通道（§8）
 - [`desktop-troubleshooting.md`](desktop-troubleshooting.md) — 装完起不来 / Edge tab 不见了

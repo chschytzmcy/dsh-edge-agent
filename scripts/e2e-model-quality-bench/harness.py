@@ -21,7 +21,7 @@ import time
 import urllib.error
 import urllib.request
 
-# §7.87.9(2026-09-20)Bypass 系统 HTTP_PROXY:no_proxy 默认不含 67.0.0.5/192.168.x 等 LAN 地址
+# §7.87.9(2026-09-20)Bypass 系统 HTTP_PROXY:no_proxy 默认不含 <lan-ip>/192.168.x 等 LAN 地址
 # → urllib 走 127.0.0.1:7890 proxy → 502 Bad Gateway。install_opener(ProxyHandler({}))
 # 强制直连走 LAN,绕过系统代理。
 _proxy_handler = urllib.request.ProxyHandler({})  # 所有协议都空 proxy = 直连

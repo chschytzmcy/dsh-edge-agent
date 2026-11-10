@@ -97,32 +97,93 @@ jobs:
           fi
           echo "tag $GITHUB_REF_NAME matches package.json#version $VER"
 
-      # npm 的 provenance（溯源徽章）**只接受公共来源仓库**。pnpm 自己的判定
-      # （releasing/commands/lib/publish/oidc/provenance.js）：
+      # §7.172: the workflow's own pre-publish checklist asks for a CHANGELOG
+      # that mentions this version. It is not decoration — npm renders it on
+      # the package page, and "the changelog does not mention this version" is
+      # the classic symptom of a release cut without notes.
       #
-      #   if ((!GITHUB_ACTIONS || payload.repository_visibility !== "public") && ...)
-      #     throw new ProvenanceInsufficientInformationError()
+      # The check lives in the GATE script, not in a grep here: one
+      # implementation, so the two cannot drift. (A local grep — e.g.
+      # `grep -qE "^#{1,3} .*${VER}"` — is looser: `.` is a regex metacharacter
+      # and there is no word boundary, so "0.1.1" would be satisfied by a
+      # "0.1.10" heading.)
+      - name: Assert CHANGELOG.md mentions this version
+        run: node scripts/verify-npm-publish.mjs --check-changelog
+
+      # §7.172: two decisions, both of which used to be guesswork.
       #
-      # 也就是说：**仓库是私有的 ⇒ 这一步本地就抛错，整个发布失败**。
-      # 而本仓当前是私有仓库（GitHub API 匿名查返回 404）。
+      #   skip       — is this version already on the registry? If so, SKIP
+      #                publishing instead of failing with 409. This makes the
+      #                local path and the CI path coexist: `npm run publish:npm
+      #                -- --yes --tag` publishes, then the tag triggers this
+      #                workflow, which sees the version is already there and
+      #                steps aside — while the release job still builds the
+      #                GitHub Release.
       #
-      # 所以按仓库可见性决定要不要带 --provenance：
-      #   私有 → 不带（发得出去，只是没有 "Built and signed on GitHub Actions" 徽章）
-      #   公开 → 自动带上（转公开后这一段不用改，发布自动升级成带徽章的）
+      #   provenance — npm's attestation only accepts a PUBLIC source
+      #                repository, AND pnpm asks the registry whether the
+      #                package itself is public. Measured 2026-11-10:
       #
-      # 取不到可见性时（表达式为空）默认走「不带」那一支 —— 宁可少一个徽章，
-      # 也不要让整个发布因为一个 provenance 失败。
+      #                  GET /-/package/<name>/visibility
+      #                    package does not exist yet → HTTP 200 {"public":false}
+      #                    existing public package  → HTTP 200 {"public":true}
+      #
+      #                So the FIRST publish of a brand-new package CANNOT carry
+      #                --provenance: the registry answers "not public" for a
+      #                package that does not exist yet. (docs/deploy-npm.md
+      #                §8.5.1 predicted a 404 here — wrong shape, same verdict.)
+      #                Later versions do carry the badge.
+      - name: Decide (skip if published / provenance)
+        id: decide
+        env:
+          REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
+        run: node scripts/publish-decision.mjs >> "$GITHUB_OUTPUT"
+
+      # Authentication: a granular NPM_TOKEN if the secret exists, otherwise
+      # OIDC trusted publishing (pnpm 11.7.0 implements the OIDC exchange
+      # itself — crates/publish/src/oidc/* — so it does NOT need npm CLI >= 11.5.1
+      # the way `npm publish` does; see docs/deploy-npm.md §8.5.2).
+      #
+      # Either way, `permissions: id-token: write` above is what makes the OIDC
+      # path possible.
+      #
+      # §7.172 — `--no-git-checks` is NOT optional here. Measured 2026-11-10:
+      #
+      #   actions/checkout@v4 on a TAG push checks out a **detached HEAD**, and
+      #   pnpm publish's git checks then fail outright:
+      #
+      #     $ pnpm publish --dry-run --ignore-scripts     # detached HEAD
+      #     Error: ERR_PNPM_GIT_UNKNOWN_BRANCH
+      #       × The Git HEAD may not attached to any branch, but your
+      #         "publish-branch" is set to "master|main".
+      #     exit 1
+      #
+      #   $ pnpm publish --dry-run --ignore-scripts --no-git-checks
+      #     exit 0
+      #
+      # So without that flag this job would die at the publish step on EVERY
+      # tag push — the §7.154 trap again (a workflow that looks complete but
+      # can never ship), except this time it would only show up once someone
+      # pushed a v* tag. The git checks have nothing to add in CI: a fresh
+      # checkout is clean by construction, and the tag↔version and CHANGELOG
+      # assertions above are the checks that actually matter.
+      #
+      # `--ignore-scripts` for the same reason in the other direction: the
+      # Build step above already produced lib/ through the canonical chain and
+      # `verify:build` gated THOSE artifacts. Letting `prepare` re-run
+      # compile+build:client inside the publish step would ship a second,
+      # ungated build. Ship exactly what the gates saw.
       - name: Publish
+        if: steps.decide.outputs.skip != 'true'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          VISIBILITY="${{ github.event.repository.visibility }}"
-          if [ "$VISIBILITY" = "public" ]; then
-            echo "仓库可见性 = public ⇒ 带 --provenance 发布（会有溯源徽章）"
-            pnpm publish --provenance --access public
+          if [ "${{ steps.decide.outputs.provenance }}" = "true" ]; then
+            echo "带 --provenance 发布（会有溯源徽章）"
+            pnpm publish --provenance --access public --ignore-scripts --no-git-checks
           else
-            echo "::warning::仓库可见性 = ${VISIBILITY:-unknown} ⇒ npm 不接受私有来源仓库的 provenance（ProvenanceInsufficientInformationError / E422）。本次不带 --provenance 发布。"
-            pnpm publish --access public
+            echo "不带 --provenance 发布（${{ steps.decide.outputs.provenance_reason }}）"
+            pnpm publish --no-provenance --access public --ignore-scripts --no-git-checks
           fi
 
   release:

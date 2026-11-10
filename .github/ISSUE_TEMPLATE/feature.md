@@ -22,7 +22,7 @@ How should the feature work? Describe the API, configuration, and behavior.
 
 ```typescript
 // Example: how a user would use the feature
-import { myNewPlugin } from '@deepseek-harness-edge-agent/dsh-edge-agent/my-new-plugin'
+import { myNewPlugin } from '@dsh-edge/dsh-edge-agent/my-new-plugin'
 ```
 
 ### Example Configuration
@@ -30,7 +30,7 @@ import { myNewPlugin } from '@deepseek-harness-edge-agent/dsh-edge-agent/my-new-
 ```yaml
 # Example cordis.yml snippet
 - id: my-new-plugin
-  name: '@deepseek-harness-edge-agent/dsh-edge-agent/my-new-plugin'
+  name: '@dsh-edge/dsh-edge-agent/my-new-plugin'
   config:
     myOption: 'value'
 ```

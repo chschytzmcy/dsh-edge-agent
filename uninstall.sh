@@ -129,8 +129,8 @@ fi
 profile_has_bundle() {
   local prof_dir="$1"
   local pkg_json="$prof_dir/package.json"
-  local nested_pkg="$prof_dir/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent"
-  if [ -f "$pkg_json" ] && grep -q '@deepseek-harness-edge-agent/dsh-edge-agent' "$pkg_json" 2>/dev/null; then
+  local nested_pkg="$prof_dir/node_modules/@dsh-edge/dsh-edge-agent"
+  if [ -f "$pkg_json" ] && grep -q '@dsh-edge/dsh-edge-agent' "$pkg_json" 2>/dev/null; then
     return 0  # fingerprint 1 命中
   fi
   if [ -d "$nested_pkg" ]; then
@@ -345,7 +345,7 @@ RESET_PKG_PY=$(cat <<'PYEOF'
 import json, sys
 pkg_path = sys.argv[1]
 pkg = json.load(open(pkg_path))
-BUNDLE = '@deepseek-harness-edge-agent/dsh-edge-agent'
+BUNDLE = '@dsh-edge/dsh-edge-agent'
 
 # strip dsh.profile.bundles
 bundles = pkg.get('dsh', {}).get('profile', {}).get('bundles', [])
@@ -372,8 +372,8 @@ PYEOF
 reset_profile_files() {
   local prof="$1"
   local prof_dir="$DSH_HOME/profiles/$prof"
-  local nested_pkg="$prof_dir/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent"
-  local nested_parent="$prof_dir/node_modules/@deepseek-harness-edge-agent"
+  local nested_pkg="$prof_dir/node_modules/@dsh-edge/dsh-edge-agent"
+  local nested_parent="$prof_dir/node_modules/@dsh-edge"
 
   log_info "Phase 3: clean profile '$prof' ($prof_dir)"
 
@@ -385,7 +385,7 @@ reset_profile_files() {
     log_info "  skip: $nested_pkg already gone"
   fi
 
-  # 3.1.1 父目录 @deepseek-harness-edge-agent/(空时 rmdir,留 trace 不必要)
+  # 3.1.1 父目录 @dsh-edge/(空时 rmdir,留 trace 不必要)
   if [ -d "$nested_parent" ]; then
     if rmdir "$nested_parent" 2>/dev/null; then
       log_pass "  ✓ rmdir empty parent: $nested_parent"
@@ -396,7 +396,7 @@ reset_profile_files() {
 
   # 3.2 strip profile package.json (我们的 bundle 入口)
   if [ -f "$prof_dir/package.json" ]; then
-    if grep -q '@deepseek-harness-edge-agent/dsh-edge-agent' "$prof_dir/package.json" 2>/dev/null; then
+    if grep -q '@dsh-edge/dsh-edge-agent' "$prof_dir/package.json" 2>/dev/null; then
       python3 -c "$RESET_PKG_PY" "$prof_dir/package.json" && log_pass "  ✓ stripped bundle from $prof_dir/package.json"
     else
       log_info "  skip: profile package.json already clean"

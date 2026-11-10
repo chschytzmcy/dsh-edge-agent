@@ -241,7 +241,7 @@ node scripts/_simulate-client-mount.mjs
 
 ```bash
 # 桌面 profile 的 bundle 是 junction 指向 dist/installable/<variant>
-ls -l "$HOME/.dsh/profiles/desktop/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/lib/client.js"
+ls -l "$HOME/.dsh/profiles/desktop/node_modules/@dsh-edge/dsh-edge-agent/lib/client.js"
 # 没有这个文件 ⇒ 就是这一类
 ```
 
@@ -369,7 +369,7 @@ node scripts/probe-session-audit.mjs --selftest
 | `未检测到 pnpm` | `npm install -g pnpm` 或 `corepack enable pnpm`（桌面版另见 [`deploy-github.md` §2.5](deploy-github.md)） |
 | dsh-tui 启动失败 | `tail -50 ~/.dsh/profiles/dsh-tui/run.log` 看 `intentRouter: found` 行 |
 | web profile 启动后 `:3080` 不 listen | `tail -50 ~/.dsh/profiles/web/run.log` 看 `dsh web:` 行；可能是 webui 包未装，跑 `dsh plugin --profile web add @deepseek-ai/dsh-web @deepseek-ai/dsh-web-ui-all` |
-| 19 个 plugin 只挂载 dsh-base 的 30 个（bundle 没生效） | `dsh plugin --profile dsh-tui add @deepseek-harness-edge-agent/dsh-edge-agent` 重装；或者 `install.sh §2.6 + §2.7` 没跑，手动 cp `cordis.patch.yml` 到嵌套包根 |
+| 19 个 plugin 只挂载 dsh-base 的 30 个（bundle 没生效） | `dsh plugin --profile dsh-tui add @dsh-edge/dsh-edge-agent` 重装；或者 `install.sh §2.6 + §2.7` 没跑，手动 cp `cordis.patch.yml` 到嵌套包根 |
 | `adapter boundary violated` | 把 `@deepseek-ai/*` 的 import 移到 `src/dsh-adapter/` 内（或经 `src/dsh-adapter/types.ts` 重新导出） |
 | `upstream contract violated` | 上游 DSH 包低于最低兼容版本（当前 `0.2.1-rc.2`），或各 `@deepseek-ai/dsh-*` 包版本不一致；运行 `pnpm install` 或 `pnpm update @deepseek-ai/dsh-agent @deepseek-ai/dsh-llm ...` |
 | Windows：`a local path must be absolute` | 填的是 Git Bash 的 `/c/Users/...`（MSYS2 虚拟路径），桌面 App 只认原生 `C:\Users\...`。用构建脚本输出的路径 |

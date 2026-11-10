@@ -19,7 +19,7 @@
 //     "'bash' is not recognized as an internal or external command".
 //   - Even with bash on PATH, the script misreported. It derived its paths
 //     from `$HOME`, which PowerShell/cmd hand over in Windows form
-//     (`C:\Users\cheng`). GNU find treats the backslashes as escapes, so
+//     (`C:\Users\<user>\`). GNU find treats the backslashes as escapes, so
 //     the profile scan found nothing and the report said "bundle is not
 //     mounted in any profile" while it plainly was.
 //   - This Node port resolves the profile directory with node:fs, so the
@@ -31,7 +31,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
-const BUNDLE = '@deepseek-harness-edge-agent/dsh-edge-agent'
+const BUNDLE = '@dsh-edge/dsh-edge-agent'
 const DSH_HOME = process.env.DSH_HOME ?? join(homedir(), '.dsh')
 const PROFILES_DIR = join(DSH_HOME, 'profiles')
 

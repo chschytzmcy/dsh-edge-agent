@@ -83,11 +83,11 @@
     # row inside the preset would therefore never surface the browser half and
     # the Edge tab would vanish in every work mode.
     - id: dsh-edge-agent
-      name: '@deepseek-harness-edge-agent/dsh-edge-agent'
+      name: '@dsh-edge/dsh-edge-agent'
 
     # Ops log exporter. Mount first so later plugin logs land on disk.
     - id: file-logger
-      name: '@deepseek-harness-edge-agent/dsh-edge-agent/file-logger'
+      name: '@dsh-edge/dsh-edge-agent/file-logger'
       config:
         # §7.102 "one config file": only profile-specific statics live here.
         # root / level / rotation come from config/edge.json (audit.*);
@@ -99,7 +99,7 @@
 
     # Security ledger. Default root stays isolated under ~/.dsh-edge-agent.
     - id: audit-log
-      name: '@deepseek-harness-edge-agent/dsh-edge-agent/audit-log'
+      name: '@dsh-edge/dsh-edge-agent/audit-log'
       config:
         # §7.102 "one config file": minLevel / flush / root come from
         # config/edge.json (audit.*). Only static wiring stays here.
@@ -120,7 +120,7 @@
     #
     # 它自带 `process.versions.electron` 判据 ⇒ headless profile 里直接跳过。
     - id: desktop-cookie-janitor
-      name: '@deepseek-harness-edge-agent/dsh-edge-agent/desktop-cookie-janitor'
+      name: '@dsh-edge/dsh-edge-agent/desktop-cookie-janitor'
       config:
         enabled: true
         # 宿主 web 服务是裸 createServer（16 KB 头上限）；抬到 64 KB 让

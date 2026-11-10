@@ -11,7 +11,7 @@
 
 import type { Context } from './types.js'
 
-export const PACKAGE_NAME = '@deepseek-harness-edge-agent/dsh-edge-agent'
+export const PACKAGE_NAME = '@dsh-edge/dsh-edge-agent'
 
 export const name = 'dsh-edge-agent-invariant'
 

@@ -1,5 +1,5 @@
 # dsh-edge-agent profile skin — applied AFTER every bundle layer (load order:
-# dsh-base → ...bundles... → @deepseek-harness-edge-agent/dsh-edge-agent → this file).
+# dsh-base → ...bundles... → @dsh-edge/dsh-edge-agent → this file).
 #
 # §7.107 (2026-10-23): this profile is the desktop's edge logic over HTTP.
 # Same bundle (desktop-safe patch), same routing rules, same defaults — the
@@ -27,7 +27,7 @@
 #
 #   Symptom (real boot, this profile):
 #     dsh: plugin tree failed to load: dsh: 1 entry did not activate
-#     @deepseek-harness-edge-agent/dsh-edge-agent/http-api: pending
+#     @dsh-edge/dsh-edge-agent/http-api: pending
 #     (waiting for services: intentRouter, tdBus, realmSkillBridge, edgeTools)
 #
 #   Root cause — §7.135/§7.136 moved the edge stack OUT of the host tree:
@@ -68,20 +68,20 @@
 - insert:
     # Stub TCM. Real crypto remains future work; keep shape stable.
     - id: tcm
-      name: '@deepseek-harness-edge-agent/dsh-edge-agent/tcm'
+      name: '@dsh-edge/dsh-edge-agent/tcm'
 
     # Privacy policy engine. Missing file falls back to the built-in policy;
     # the deployed copy lives at ~/.dsh-edge-agent/privacy-policy.json.
     - id: privacy-policy
-      name: '@deepseek-harness-edge-agent/dsh-edge-agent/privacy-policy'
+      name: '@dsh-edge/dsh-edge-agent/privacy-policy'
 
     # Threat bus. Thresholds come from config/edge.json (threat.*).
     - id: td-bus
-      name: '@deepseek-harness-edge-agent/dsh-edge-agent/td-bus'
+      name: '@dsh-edge/dsh-edge-agent/td-bus'
 
     # Edge tool registry (provides the `edgeTools` service).
     - id: edge-tools-registry
-      name: '@deepseek-harness-edge-agent/dsh-edge-agent/tools'
+      name: '@dsh-edge/dsh-edge-agent/tools'
 
     # §7.120: 封堵「bash 里直接调 etscli 写子命令」这条逃逸口。
     #
@@ -95,61 +95,61 @@
     # 注意：本行**只加一道闸**，不挂 `etscli-tools` ⇒ 不会把那 14 个只读
     # 工具带进本 profile（那是能力扩张，超出「封堵逃逸口」本身）。
     - id: etscli-shell-guard
-      name: '@deepseek-harness-edge-agent/dsh-edge-agent/etscli-shell-guard'
+      name: '@dsh-edge/dsh-edge-agent/etscli-shell-guard'
 
     # Realm-aware skill/tool filtering. Uses the shared realm config file
     # (~/.dsh-edge-agent/skill-realms.json).
     - id: realm-skill-bridge
-      name: '@deepseek-harness-edge-agent/dsh-edge-agent/realm-skill-bridge'
+      name: '@dsh-edge/dsh-edge-agent/realm-skill-bridge'
 
     # Prompt guard (model-assisted detection). Config comes from
     # config/edge.json (stages.guard.*).
     - id: prompt-guard
-      name: '@deepseek-harness-edge-agent/dsh-edge-agent/prompt-guard'
+      name: '@dsh-edge/dsh-edge-agent/prompt-guard'
 
     # Reversible PII sanitizer. Session limits come from config/edge.json
     # (privacy.*).
     - id: sanitizer-pipeline
-      name: '@deepseek-harness-edge-agent/dsh-edge-agent/sanitizer-pipeline'
+      name: '@dsh-edge/dsh-edge-agent/sanitizer-pipeline'
 
     # Intent router — decides LOCAL / CLOUD / SANITIZED / REJECT per turn.
     # Classifier config comes from config/edge.json (stages.intent.*);
     # a dead classifier falls back to the keyword/regex tier.
     - id: intent-router
-      name: '@deepseek-harness-edge-agent/dsh-edge-agent/intent-router'
+      name: '@dsh-edge/dsh-edge-agent/intent-router'
 
     # Route catalog so /v1-style enumeration and intent-router's soft
     # dependency both see local-llm + cloud-llm.
     - id: model-router
-      name: '@deepseek-harness-edge-agent/dsh-edge-agent/model-router'
+      name: '@dsh-edge/dsh-edge-agent/model-router'
 
     # Orchestrator — this is the plugin that installs the global hooks.
     - id: input-guard
-      name: '@deepseek-harness-edge-agent/dsh-edge-agent/input-guard'
+      name: '@dsh-edge/dsh-edge-agent/input-guard'
 
     # LLM adapters. Pool configuration comes from config/edge.json (llm.*);
     # the plugin registers its own provider routes.
     - id: local-llm-adapter
-      name: '@deepseek-harness-edge-agent/dsh-edge-agent/local-llm-adapter'
+      name: '@dsh-edge/dsh-edge-agent/local-llm-adapter'
 
     - id: cloud-llm-adapter
-      name: '@deepseek-harness-edge-agent/dsh-edge-agent/cloud-llm-adapter'
+      name: '@dsh-edge/dsh-edge-agent/cloud-llm-adapter'
 
     # Optional external tool caller (needle). Knobs come from
     # config/edge.json (functionCallExternal.*).
     - id: function-call-external
-      name: '@deepseek-harness-edge-agent/dsh-edge-agent/function-call-external'
+      name: '@dsh-edge/dsh-edge-agent/function-call-external'
 
     # Edge panel host half — folds the audit stream into the panel rows.
     # Hard dep is auditLog only.
     - id: edge-context-view
-      name: '@deepseek-harness-edge-agent/dsh-edge-agent/edge-context-view'
+      name: '@dsh-edge/dsh-edge-agent/edge-context-view'
 
     # Web search aggregator — Tavily → 博查 AI → DeepSeek.
     - id: web-search-tavily-bocha
-      name: '@deepseek-harness-edge-agent/dsh-edge-agent/web-search-tavily-bocha'
+      name: '@dsh-edge/dsh-edge-agent/web-search-tavily-bocha'
 
     # The HTTP listener — the reason this profile exists. Host / port /
     # bearer token come from config/edge.json (http.* / secrets.edgeApiKey).
     - id: http-api
-      name: '@deepseek-harness-edge-agent/dsh-edge-agent/http-api'
+      name: '@dsh-edge/dsh-edge-agent/http-api'

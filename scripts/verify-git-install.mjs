@@ -322,7 +322,7 @@ function resolveOnPath(name) {
 // 桌面 runtime 的 `bin/` 里**只有 node/node.cmd，没有 pnpm**（宿主
 // `apps/desktop-host/src/index.ts:44` 把 runtime\bin 前置到 PATH）⇒ 这条通道
 // 在桌面版上要求机器上另有一个 `pnpm`（例如 `npm i -g pnpm` 装到
-// `C:\Users\cheng\AppData\Roaming\npm`，该目录本就在用户 PATH 上）。
+// `C:\Users\<user>\AppData\Roaming\npm`，该目录本就在用户 PATH 上）。
 //
 // 这里显式检查并给出可执行的补救，而不是让 pnpm 抛一句
 // 「'pnpm' is not recognized」把人卡住。

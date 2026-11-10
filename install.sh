@@ -43,7 +43,7 @@
 #     (bundles + dependencies),§2.5 不动(无 skin overlay);适合"我已有 web/
 #     tui 在跑,只把 dsh-edge-agent bundle 挂上去"的场景。
 # 两种部署都从 $REPO_ROOT/lib/ rsync 到 ~/.dsh/profiles/<name>/node_modules/
-# @deepseek-harness-edge-agent/dsh-edge-agent/lib/。
+# @dsh-edge/dsh-edge-agent/lib/。
 
 set -euo pipefail
 
@@ -90,7 +90,7 @@ canonical_profile() {
 check_versions() {
   local prof="$PROFILE"
   local prof_dir="$DSH_HOME/profiles/$prof"
-  local nested_pkg_json="$prof_dir/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/package.json"
+  local nested_pkg_json="$prof_dir/node_modules/@dsh-edge/dsh-edge-agent/package.json"
   local repo_pkg_json="$REPO_ROOT/package.json"
   local rc=0
 
@@ -148,7 +148,7 @@ check_versions() {
   echo "  REPO src:   $repo_version  ($repo_pkg_json)"
   if command -v npm >/dev/null 2>&1; then
     local bundle_remote
-    bundle_remote=$(timeout 5 npm view @deepseek-harness-edge-agent/dsh-edge-agent version 2>/dev/null) || true
+    bundle_remote=$(timeout 5 npm view @dsh-edge/dsh-edge-agent version 2>/dev/null) || true
     if [ -n "$bundle_remote" ]; then
       echo "  npm latest: $bundle_remote"
     else
@@ -274,7 +274,7 @@ fi
 PROFILES=("$PROFILE")
 for PROFILE in "${PROFILES[@]}"; do
   PROFILE_DIR="$DSH_HOME/profiles/$PROFILE"
-  NESTED_PKG="$PROFILE_DIR/node_modules/@deepseek-harness-edge-agent/dsh-edge-agent"
+  NESTED_PKG="$PROFILE_DIR/node_modules/@dsh-edge/dsh-edge-agent"
 
   echo
   echo "==> [2/4] sync bundle → profile=$PROFILE ($PROFILE_DIR)"
@@ -287,8 +287,8 @@ for PROFILE in "${PROFILES[@]}"; do
       echo "        skip dsh plugin add (nested package already at $NESTED_PKG)"
       echo "         pass --force-install to force a re-install from npm."
     else
-      echo "        dsh plugin add @deepseek-harness-edge-agent/dsh-edge-agent"
-      dsh plugin --profile "$PROFILE" add @deepseek-harness-edge-agent/dsh-edge-agent || {
+      echo "        dsh plugin add @dsh-edge/dsh-edge-agent"
+      dsh plugin --profile "$PROFILE" add @dsh-edge/dsh-edge-agent || {
         echo "        (npm 404 预期：bundle 未发布；§3.5 兜底本地 install)"
       }
     fi
@@ -358,7 +358,7 @@ for PROFILE in "${PROFILES[@]}"; do
     echo "  error: $_PROFILE_PKG 不存在 — profile \"$PROFILE\" 尚未初始化。" >&2
     echo "       去掉 --skip-pnpm 重跑（§2.1 的 dsh plugin add 会初始化容器），" >&2
     echo "       或先手动引导一次：" >&2
-    echo "       dsh plugin --profile $PROFILE add @deepseek-harness-edge-agent/dsh-edge-agent" >&2
+    echo "       dsh plugin --profile $PROFILE add @dsh-edge/dsh-edge-agent" >&2
     exit 1
   fi
   python3 - "$_PROFILE_PKG" "$NESTED_PKG" <<'PYEOF' || { echo "  error: §2.7 注册改写失败（$_PROFILE_PKG 非法 JSON 或不可写）。" >&2; exit 1; }
@@ -366,7 +366,7 @@ import json, sys, os
 path, nested = sys.argv[1], sys.argv[2]
 with open(path) as f:
     d = json.load(f)
-target = "@deepseek-harness-edge-agent/dsh-edge-agent"
+target = "@dsh-edge/dsh-edge-agent"
 bundles = d.setdefault("dsh", {}).setdefault("profile", {}).setdefault("bundles", [])
 deps = d.setdefault("dependencies", {})
 changed = False

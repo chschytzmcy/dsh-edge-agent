@@ -94,7 +94,7 @@ Options:
   --help               Show this help
 
 Environment variables (auto-sourced from repo .env):
-  LOCAL_LLM_BASEURL    LLM base URL (e.g. http://67.0.0.5:28001/v1)
+  LOCAL_LLM_BASEURL    LLM base URL (e.g. http://<lan-host>:28001/v1)
   LOCAL_LLM_MODEL      Model name (e.g. qwen3.5-9b)
   EDGE_API_KEY         Bearer token for dsh-edge /v1/chat
 

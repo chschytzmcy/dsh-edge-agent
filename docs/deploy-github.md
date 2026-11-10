@@ -107,7 +107,7 @@ pnpm 用的是**系统 git CLI**（自带 `@npmcli/git` 7.0.2，不是纯 JS 实
 > 构建授权那一步，pnpm 打印的键长这样（scoped 包名要加引号）：
 > ```
 > allowBuilds:
->   "@deepseek-harness-edge-agent/dsh-edge-agent@git+https://github.com/chschytzmcy/dsh-edge-agent.git#552a6e7f…": true
+>   "@dsh-edge/dsh-edge-agent@git+https://github.com/chschytzmcy/dsh-edge-agent.git#552a6e7f…": true
 > ```
 > 键 = `<包名>@<pkgResolutionId>`，而 `pkgResolutionId` = `git+<地址>#<commit>`。
 
@@ -241,7 +241,7 @@ pnpm-install$ pnpm install
 
 **补救**（二选一）：
 
-1. **装一个全局 pnpm**：`npm i -g pnpm` ⇒ 落到 `C:\Users\cheng\AppData\Roaming\npm`，
+1. **装一个全局 pnpm**：`npm i -g pnpm` ⇒ 落到 `C:\Users\<user>\AppData\Roaming\npm`，
    该目录**本来就在用户 PATH 上** ⇒ 桌面 app 的 PATH 里就有了 pnpm ⇒ 通道通。
    （实测：用等价 shim 验证过整条链跑通。）**注意桌面 app 要重启**才拿到新 PATH。
    > **本机已于 2026-10-30 装好**：`C:\Users\cheng\AppData\Roaming\npm\pnpm.cmd`
@@ -299,7 +299,7 @@ pnpm 打印的键长这样（键 = `<包名>@<pkgResolutionId>`，而 `pkgResolu
 
 ```yaml
 allowBuilds:
-  "@deepseek-harness-edge-agent/dsh-edge-agent@git+ssh://git@github.com/chschytzmcy/dsh-edge-agent.git#c2b01fc…": true
+  "@dsh-edge/dsh-edge-agent@git+ssh://git@github.com/chschytzmcy/dsh-edge-agent.git#c2b01fc…": true
 ```
 
 **带 `#<commit>` 的键只对那一个 commit 有效**——仓库一更新就失效。而 pnpm 的匹配
@@ -308,7 +308,7 @@ allowBuilds:
 
 ```yaml
 allowBuilds:
-  "@deepseek-harness-edge-agent/dsh-edge-agent@git+ssh://git@github.com/chschytzmcy/dsh-edge-agent.git": true
+  "@dsh-edge/dsh-edge-agent@git+ssh://git@github.com/chschytzmcy/dsh-edge-agent.git": true
 ```
 
 > 键必须**不含 `#`**（`isGitRepoAllowBuildKey`：`:197367`），否则会被当成精确
@@ -325,7 +325,7 @@ exit = 0
   lib/index.js       : true
   lib/client.js      : true
 dependencies:
-+ @deepseek-harness-edge-agent/dsh-edge-agent 0.1.1
++ @dsh-edge/dsh-edge-agent 0.1.1
 Done in 50.3s using pnpm v11.28.5
 ```
 
@@ -345,8 +345,8 @@ pnpm 选出来的 `fetchSpec` **会随网络状态变**，于是 allowBuilds 的
 
 ```yaml
 allowBuilds:
-  "@deepseek-harness-edge-agent/dsh-edge-agent@git+https://github.com/chschytzmcy/dsh-edge-agent.git": true
-  "@deepseek-harness-edge-agent/dsh-edge-agent@git+ssh://git@github.com/chschytzmcy/dsh-edge-agent.git": true
+  "@dsh-edge/dsh-edge-agent@git+https://github.com/chschytzmcy/dsh-edge-agent.git": true
+  "@dsh-edge/dsh-edge-agent@git+ssh://git@github.com/chschytzmcy/dsh-edge-agent.git": true
 ```
 
 > 只写一种的话，网络一变形态就变 ⇒ 放行失效 ⇒ 又撞上
@@ -402,7 +402,7 @@ allowBuilds:
 **装出来的包长什么样**（实测，2026-10-30）：
 
 ```
-node_modules/@deepseek-harness-edge-agent/dsh-edge-agent/
+node_modules/@dsh-edge/dsh-edge-agent/
 ├── lib/          ← prepare 现场编译出来的（Node 半侧 + 浏览器半侧 client.js）
 ├── config/       ← edge.example.json + privacy-policy.json（**没有 edge.json**）
 ├── presets/

@@ -61,7 +61,7 @@ import { fileURLToPath } from 'node:url'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const WRITE = process.argv.includes('--write')
-const PKG = '@deepseek-harness-edge-agent/dsh-edge-agent'
+const PKG = '@dsh-edge/dsh-edge-agent'
 
 /** 必须留在宿主树（顶层 insert 段）的行。 */
 const HOST_ROWS = new Set(['dsh-edge-agent', 'file-logger', 'audit-log'])

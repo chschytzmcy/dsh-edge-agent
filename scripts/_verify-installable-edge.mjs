@@ -82,7 +82,7 @@ if (hasInject || hasConfig) {
   console.error('Bug 1 regression: inject: / config: is back in the edge-context-view patch row.')
   process.exit(1)
 }
-if (!hasName || !hasName.startsWith('@deepseek-harness-edge-agent/dsh-edge-agent')) {
+if (!hasName || !hasName.startsWith('@dsh-edge/dsh-edge-agent')) {
   console.error(`Bug 2 regression: name='${hasName}' is not a valid bundle name.`)
   process.exit(1)
 }
