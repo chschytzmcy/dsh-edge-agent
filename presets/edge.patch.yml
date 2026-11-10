@@ -105,6 +105,10 @@
             disabled: !!js process.platform !== 'win32'
           - id: tool-fs
             name: '@deepseek-ai/dsh-tool-fs'
+            config:
+              # §7.174：随宿主 0.2.2-rc.1 的 standard preset 对齐 ——
+              # Set false to drop the apply_patch tool beside edit.
+              applyPatch: false
           - id: tool-fs-search
             name: '@deepseek-ai/dsh-tool-fs-search'
             config:
@@ -167,24 +171,21 @@
             config:
               - id: tool-subagent-control
                 name: '@deepseek-ai/dsh-tool-subagent-control'
-              - id: tool-subagent-list-agents
-                name: '@deepseek-ai/dsh-tool-subagent-control/list-agents'
+              # §7.174：宿主 0.2.2-rc.1 的 dsh-tool-subagent-control **不再导出**
+              # './list-agents' 子路径 ⇒ 保留这行会在 preset 挂载时抛
+              # ERR_PACKAGE_PATH_NOT_EXPORTED ⇒ 整个 edge preset 被判 broken
+              # ⇒ 设置页「边缘模式」消失。宿主四个内置 preset 都没有这一行。
               - id: tool-subagent
                 name: '@deepseek-ai/dsh-tool-subagent'
                 config:
                   provider: spawn
                   toolName: subagent
-                  # §7.136：**故意不写** `modelSelectionSettings: true`。
-                  # 旧宿主（桌面版 asar 里的 dsh-tool-subagent）的 per-agent 安装
-                  # 路径在 `tools/change` 重投 `tools` 服务时会再次执行 install()
-                  # → 同一 scope 里重复注册 'subagent' ⇒
-                  # `tool "subagent" is already registered in this scope`。
-                  # 不带 modelSelectionSettings 时该行走「挂载时注册一次」的路
-                  # （注册进 preset 自己的 scope 层）⇒ 无重复、无报错。
-                  # 代价：边缘模式没有「子 Agent 选模型」参数（宿主 base 层
-                  # 的全局 tool-subagent 行仍提供 subagent / subagent_fork
-                  # 工具本体，模型可见面不变）。
-                  # 上游新版 tool-subagent 已改为挂载时注册一次，问题消失。
+                  # §7.136 曾经**故意不写** modelSelection（旧宿主键名是
+                  # `modelSelectionSettings`，per-agent 二次安装会重复注册）；
+                  # 上游已改为「挂载时注册一次」，宿主现有 preset 也都写着
+                  # 这两项 ⇒ §7.174 对齐，边缘模式恢复「子 Agent 选模型」。
+                  modelSelection: true
+                  modelDiscovery: true
               - id: tool-subagent-fork
                 name: '@deepseek-ai/dsh-tool-subagent'
                 config:

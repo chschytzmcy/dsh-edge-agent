@@ -18219,3 +18219,149 @@ JSDoc 标签（`@module` / `@param` / `@returns`）、Makefile 配方前缀（`@
 
 ⇒ 结果：**代码与示例里不再有**真用户名 / 内网 IP；留下的 39 行**全部在历史记录里**，
 且都标着「实测」。
+
+---
+
+## §7.174 部署到桌面版：宿主升级带来的三处断裂（2026-11-10）
+
+### 〇、主人指令与本节范围
+
+主人：「部署到本地 dsh 桌面版」。执行过程里发现**三处互相独立的断裂**，前两处当轮修好并实机验证，第三处（模型路由）需要主人裁决后另做。本节记：每一处的**证据**、**根因**、**修法**、**验证**，以及**没修的那一处**。
+
+### 一、断链①：npm scope 迁移 ⇒ 桌面 profile 的 bundle 依赖被 pnpm 剪掉
+
+上游 §7.173 把包 scope 从 `@deepseek-harness-edge-agent` 迁到 `@dsh-edge`。桌面
+profile（`~/.dsh/profiles/desktop`）里记的还是旧依赖名：
+
+```
+~/.dsh/profiles/desktop/.plugin-manager/logs/operation-vXdSnR/pnpm.log
+  dependencies:
+  - <旧 scope 名>/dsh-edge-agent link:…/dist/installable/dsh-edge-agent-desktop-safe
+```
+
+> 旧 scope 名的全名（`@` + 旧 scope + `/dsh-edge-agent`）在本仓**刻意不写全**：
+> 门禁 `verify:package-name` 扫全部受跟踪文本文件，出现「非事实源 scope + 本仓
+> base 名」即判 `E-OWN-SCOPE-DRIFT`（上游 §7.173 迁移时已把历史里的全名清干净）。
+> 上面的旧 scope 名以 `@` + 旧 scope 单独出现，不触发该门禁。
+
+⇒ 桌面 App 每次启动都会跑一次 pnpm 同步（插件管理器），**把这条旧名依赖剪掉了**
+⇒ 我们的 bundle **整个没进组合树**（桌面侧只剩宿主插件行，我们的插件一行没有）。
+
+装回时要注意：桌面 profile 由 Electron 独占管理，CLI 拒绝操作
+（`error: profile "desktop" is managed exclusively by the Electron application`），
+所以只能**主人在桌面版侧边栏 Plugins → Add plugin 里加载本地目录**：
+
+```
+/Users/<user>/cy/code/dsh-edge-agent/dist/installable/dsh-edge-agent-desktop-safe
+```
+
+装完会记成新名 `@dsh-edge/dsh-edge-agent`（`dependencies` + `dsh.profile.bundles`），
+符号链接落在 `node_modules/@dsh-edge/dsh-edge-agent`。
+
+### 二、断链②：edge preset 被宿主判 broken ⇒ 设置页「边缘模式」消失
+
+装上插件后，主人仍看不到边缘模式。用 `scripts/_probe-host-presets.mjs` 问宿主名册：
+
+```
+edge（边缘模式）｜ order 5 ｜ broken=tool-subagent-list-agents
+   (@deepseek-ai/dsh-tool-subagent-control/list-agents): never started
+```
+
+**根因（宿主源码实证）**：桌面 App 升到了 `0.2.2-rc.1`，它的
+`@deepseek-ai/dsh-tool-subagent-control@0.2.2-rc.1` 的 exports 只剩
+`.` / `./src/*` / `./package.json` / `./locale/*.json` —— **`./list-agents` 子路径没了**。
+而我们的 `presets/edge*.patch.yml` 是照着**旧宿主**的 `standard.patch.yml` 抄的，
+里面留着 `tool-subagent-list-agents` 行 ⇒ preset 挂载时 import 抛
+`ERR_PACKAGE_PATH_NOT_EXPORTED` ⇒ 整个 preset 被判 broken ⇒ 设置页那张卡不显示。
+
+宿主现在的四个内置 preset（standard / ptc / minimal / cordis）**都没有这一行**
+（从 asar 里抽 `dsh-web-app/presets/*.patch.yml` 逐行比对确认）。
+
+**修法（对齐宿主现状）**：
+
+1. 删掉 `tool-subagent-list-agents` 行（两个 preset 文件：desktop-safe 与 full）；
+2. `tool-subagent` 行补 `modelSelection: true` + `modelDiscovery: true`
+   —— §7.136 当年**故意不写**（旧宿主键名是 `modelSelectionSettings`，per-agent
+   二次安装会重复注册 'subagent'）；上游已改成「挂载时注册一次」，宿主现有的
+   standard/ptc/cordis preset 都写着这两项 ⇒ 边缘模式恢复「子 Agent 选模型」；
+3. `tool-fs` 行补 `applyPatch: false`（宿主 standard/ptc/cordis 都有）。
+
+> 根 `cordis.patch.yml` 里那条**同名禁用行**（`- id: tool-subagent-list-agents /
+> disabled: true`）**刻意保留**：它是「禁用宿主行」，不 import 任何东西 ⇒ 没有
+> FAIL-LOUD 风险；宿主若将来把这一行加回来，我们仍然禁得住。
+
+**验证**：重建 → 重启桌面 → 探针名册 ⇒ `edge（边缘模式）｜ order 5 ｜ 可组合`
+（`broken` 字段消失），宿主日志里那条 `[group] Error ERR_PACKAGE_PATH_NOT_EXPORTED`
+与 `agent preset edge: … never started` 也随之消失。
+
+> §7.136 的「已知缺口」早就写了「宿主升级后需要重新对齐」——这一节就是那次对齐。
+
+### 三、断链③（**未修**）：宿主新契约禁止在 `agent/request` 里改模型
+
+边缘模式能进了，但一轮就失败：
+
+```
+agent "session-…": agent/request proposed "local-llm/qwen3.8-flash" after step
+preparation fixed "qwen-token-plan-cn/deepseek-v4.1-flash";
+use agent.model.select() before step preparation
+```
+
+宿主 `dsh-agent-loop@0.2.2-rc.1` 的 `prepareRequest()` 现在有硬校验（lib/index.js:1000）：
+
+```js
+const proposedConfig = await this.dispatch.waterfall("agent/request", …);
+if (proposedConfig.provider !== selection.provider || proposedConfig.model !== selection.model)
+  throw new Error(`agent "…": agent/request proposed "…" after step preparation fixed "…"; use agent.model.select() before step preparation`);
+```
+
+⇒ **selection 在 step preparation 时就定死了**；`agent/request` 里再改 provider/model
+（或 reasoningEffort，第 1001 行同样校验）一律抛错。我们 §7.46 起那套「LOCAL 轮在
+`agent/request` 里把路由改写成 local-llm」的实现，正好撞在这条校验上。
+
+宿主的合规入口有两条：`agent.model.select(selection)`（会话级，写
+`model/selection` 事件）与 `sessionController.selectModel({sessionId, provider, model})`
+（我们 §7.106 已在用）。但两者都**改变会话的选择**，而我们现在的设计是**逐轮**
+按 intent 决定 LOCAL/CLOUD。
+
+**主人裁决（2026-11-10）**：**先做底座**——边缘模式恒用本地模型、暂不支持云端轮；
+本地模型默认值由 **preset 级 `agent-default-model` 行**给出（不是 UI 手动选）。
+⇒ 待做（本节不声称已完成）：
+
+- preset 里加一行 `agent-default-model`（provider=`local-llm`、model=`qwen3.8-flash`），
+  并实测它能否遮蔽宿主的全局行（宿主 `session-controller` 取默认模型走
+  `this.ctx.agentDefaultModel`，其 ctx 是不是 agent 所在 scope **待验**）；
+- `input-guard` 去掉 `agent/request` 里的 provider/model/reasoningEffort 改写；
+- `agent/pre-step` 载荷里带 `modelSelection`（宿主 preStep 第 689 行传）⇒ 可做
+  **fail-closed 校验**：本轮 realm 判 LOCAL 而 selection 不是本地模型 ⇒ 直接
+  `kind: 'reject'`（宿主会把该轮标成 blocked，不发 LLM 调用）。
+
+### 四、顺带查清的一件事：桌面 ops log 的「已上膛」行不稳定（**根因未定位**）
+
+守卫的 armed 行（`[etscli-shell-guard] armed on tools/pre-execute …`）在桌面侧
+**时有时无**（19:55:19 ✓、22:08:10 ✓，而 21:11–21:57 与 22:11–22:20 ✗），
+headless 侧稳定落盘。
+
+用临时文件探针（已撤除）逐环查实的事实：
+
+| 环节 | 结论 |
+|---|---|
+| 守卫插件在桌面**是否 apply** | ✅ apply 了（探针写入 apply 时刻） |
+| 守卫的 `ctx.inject(['auditLog'])` 延迟注入 | ✅ 触发（⇒ **拒绝路径的审计行能落**，§7.169 的修法有效） |
+| 守卫的 `ctx.inject(['fileLogger'])` 延迟注入 | ✅ 触发 |
+| 宿主 logger 的导出器表 | 3 个，其中 1 个是**我们**的（`3:OURS`） |
+| 我们导出器**是否被调用** | ❌ 一次都没被调用（export() 计数探针 = 0） |
+
+⇒ 断点在我们自己的导出器**没被宿主 logger 调用**（不是守卫没装、也不是文件没写）。
+同一构建在 headless（CLI，cordis 4.0.5）稳定落盘；桌面宿主是 **cordis 4.1.0**
+（`ctx.logger` 的 shadow 语义与 4.0.5 差异很大，4.1.0 的 `LoggerService.exporters`
+是 Map、且每个 scope 各自持有 LoggerService）。**根因未定位**，留作遗留项；
+诚实记录：**桌面侧目前看不到 armed 行**（不影响拦截本身——拦截挂在
+`tools/pre-execute` waterfall 上，与日志无关）。
+
+### 五、这一轮的产出与状态
+
+- ✅ 边缘模式卡片回来了（`edge（边缘模式）｜ 可组合`）；
+- ✅ 桌面 profile 的 bundle 依赖换成新 scope 名（主人在桌面版里加载）；
+- ✅ 两处 preset 对齐宿主的改动已落码、已实机验证；
+- ❌ **轮次仍会失败**（断链③），按主人裁决另做「底座」；
+- ❌ armed 行在桌面侧不稳定（第四节，根因未定位）。
