@@ -343,12 +343,18 @@
               # hard-coded 127.0.0.1:8080 that collided with unrelated daemons.
               #
               # The adapter now reads the pool from config/edge.json itself:
-              #   - baseUrl unset  → the local-LLM route is not registered at all, the
-              #     model registry never offers `local-llm`, and the internal
-              #     intent/guard stages stay on their keyword/regex tier.
+              #   - baseUrl set    → DIRECT: the local-LLM route talks to that
+              #     OpenAI-compatible endpoint with the key named by
+              #     `llm.local.keyRef` (omit keyRef when the endpoint is open).
+              #   - baseUrl unset  → §7.171 DELEGATE: the route IS registered, but
+              #     forwards to the host profile's provider (symmetric with
+              #     cloud-llm). `llm.local.delegate=false` is the kill switch
+              #     that leaves the route unregistered.
               #   - Internal LLM stages (intent classification / guard model-detect)
               #     point here EXCLUSIVELY per the 2026-10-18 privacy ruling; they
-              #     never target cloud-llm.
+              #     never target cloud-llm. Note: with DELEGATE they run on the
+              #     host's model — configure a local endpoint to keep them on
+              #     device.
               - id: local-llm-adapter
                 name: '@deepseek-harness-edge-agent/dsh-edge-agent/local-llm-adapter'
                 inject: [llm, auditLog]

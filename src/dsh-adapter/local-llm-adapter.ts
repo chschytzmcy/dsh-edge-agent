@@ -36,6 +36,15 @@ import {
   sseFinishReason,
   terminalChunks,
 } from './openai-sse.js'
+// §7.171: 本地池的 DELEGATE 模式复用云池的转发适配器（同一个类，`poolKind` 区分口径）。
+// cloud-llm-adapter 不 import 本模块 ⇒ 无环。
+import {
+  CloudLlmDelegateAdapterImpl,
+  type AgentDefaultModelLike,
+  type DelegateAccessors,
+  type DelegateConfigLike,
+  type DelegateLlmLike,
+} from './cloud-llm-adapter.js'
 import {
   danglingSecretRefs,
   formatDanglingSecretRefs,
@@ -112,13 +121,15 @@ export interface Config {
   providers: string[]
   /** OpenAI-compatible endpoint. `/chat/completions` is appended.
    *
-   *  Undefined means "no local-LLM endpoint configured": the adapter then
-   *  registers NO provider route at all (see `apply`). It must not fall back
-   *  to a hard-coded port — a default like `127.0.0.1:8080` collides with
-   *  unrelated daemons that listen there (observed 2026-10-21: TeleAgent's
-   *  scheduler daemon owns 8080 and answers 401 "Missing bearer token"),
-   *  which turned every turn into a failed local-LLM call even though the
-   *  operator never asked for a local model. */
+   *  Undefined/empty means "no local-LLM endpoint configured". §7.171: that is
+   *  no longer "no route at all" — the adapter falls back to DELEGATE mode
+   *  (forward to the host provider), symmetric with `llm.cloud`. Set
+   *  `llm.local.delegate=false` to restore the opt-in semantics (register
+   *  nothing). It must not fall back to a hard-coded port — a default like
+   *  `127.0.0.1:8080` collides with unrelated daemons that listen there
+   *  (observed 2026-10-21: TeleAgent's scheduler daemon owns 8080 and answers
+   *  401 "Missing bearer token"), which turned every turn into a failed
+   *  local-LLM call even though the operator never asked for a local model. */
   baseUrl?: string
   /** Default model id when the request omits one. */
   defaultModel: string
@@ -149,14 +160,27 @@ export interface Config {
    *  ollama /v1 honors that dialect; strict gateways 400 unknown params
    *  (minimax measured). Opt-in per pool via `llm.local.reasoningEffortNone`. */
   reasoningEffortNone?: boolean
+  /** §7.171 (2026-11-10): baseUrl 留空时是否走 DELEGATE（转发宿主提供商），
+   *  与 `llm.cloud` 对称。默认 true（`llm.local.delegate` 未写 = 委托）。
+   *
+   *  false = kill switch：回到 opt-in 语义（不注册任何路由），LOCAL 意图
+   *  fail-closed 报错。**文件与本字段任一为 false 即关闭** —— 关闭方向上取
+   *  「最严」，避免任一侧漏配就意外出网。 */
+  delegate?: boolean
+  /** §7.171: delegate 模式下的显式目标 provider route id（压过宿主选择）。 */
+  delegateProvider?: string
+  /** §7.171: delegate 模式下的 wire model override（压过宿主选择）。 */
+  delegateModel?: string
 }
 
 export const Config: Schema<Config> = Schema.object({
   providers: Schema.array(Schema.string()).default(['local-llm']),
-  // No default on purpose: an unset endpoint means the local-LLM route stays
-  // off (see `Config.baseUrl` and `apply`). The operator opts in with
-  // llm.local.baseUrl in config/edge.json (§7.102).
-  baseUrl: Schema.string().description('OpenAI-compatible endpoint base; unset = the local-LLM route is not registered.'),
+  // No default on purpose: an unset endpoint must never become a
+  // hard-coded port (the old `127.0.0.1:8080` default collided with
+  // unrelated daemons). §7.171: unset now means DELEGATE — forward to the
+  // host profile's provider, symmetric with `llm.cloud`. The operator opts
+  // into a DIRECT pool with llm.local.baseUrl in config/edge.json (§7.102).
+  baseUrl: Schema.string().description('OpenAI-compatible endpoint base; unset = DELEGATE mode (forward to the host provider, §7.171); set llm.local.delegate=false to leave the route unregistered.'),
   defaultModel: Schema.string().default('qwen3-4b'),
   apiKey: Schema.string().description('Optional bearer token for an authenticated endpoint (literal value from config/edge.json).'),
   apiKeyEnv: Schema.string().description('Deprecated: env-slot name carrying an auth bearer. Prefer apiKey.'),
@@ -165,6 +189,12 @@ export const Config: Schema<Config> = Schema.object({
   // qwen3.5 / QwQ / DeepSeek-R1 will burn max_tokens on reasoning by default.
   enableThinking: Schema.boolean().default(false),
   reasoningEffortNone: Schema.boolean().default(false).description('Send reasoning_effort:"none" alongside think-off (ollama dialect; strict gateways 400 it).'),
+  // §7.171: no default on purpose — `undefined` means "not set at this layer".
+  // The effective switch is AND(file `llm.local.delegate`, this field): either
+  // side saying false turns delegation OFF.
+  delegate: Schema.boolean().description('§7.171: baseUrl 留空时转发宿主提供商（DELEGATE）；false = 不注册本地路由（opt-in 语义）。'),
+  delegateProvider: Schema.string().description('§7.171: delegate 模式：显式目标 provider route id。'),
+  delegateModel: Schema.string().description('§7.171: delegate 模式：wire model override（压过宿主选择）。'),
 })
 
 export interface LocalLlmAdapter {
@@ -772,6 +802,121 @@ function readApiKey(slot: string): string | undefined {
   return value
 }
 
+/**
+ * §7.171 (2026-11-10): DELEGATE mode for the local pool.
+ *
+ * The local pool has no endpoint of its own ⇒ forward every request to the
+ * host provider (the model the operator picked in the host profile), exactly
+ * like `llm.cloud`'s delegate mode. The implementation is the SAME class as
+ * the cloud pool's (`CloudLlmDelegateAdapterImpl`) with `poolKind='local'` —
+ * one forwarding mechanism, one place to fix bugs, and the privacy口径
+ * difference is a single switch:
+ *
+ *   - `'local'` ⇒ **no trimming, no scrubbing** (the LOCAL 口径: 带全部历史).
+ *     The request carries the `LOCAL_POOL_FORWARD_MARKER` so the host-side
+ *     `host-egress-guard` lets it through untouched.
+ *   - `'cloud'` ⇒ §7.131 trimming (cloud-segment history only) + scrubbing.
+ *
+ * `egress` is passed as `undefined` for the local pool: the delegate only
+ * applies it when `poolKind === 'cloud'`, and leaving the guard unconstructed
+ * makes "the local pool never trims" structural rather than conditional.
+ */
+async function applyDelegate(
+  ctx: Context,
+  config: Config,
+  pool: ReturnType<typeof localPool>,
+): Promise<() => Promise<void>> {
+  const auditLog = (ctx as unknown as { auditLog?: AuditLike }).auditLog
+  const inputGuard = (ctx as unknown as { inputGuard?: InputGuardLike }).inputGuard
+  const logger = ctx.logger as LoggerLike | undefined
+  const llm = (ctx as unknown as {
+    llm: {
+      registerAdapter(providers: string[], adapter: LlmAdapter): { (): void }
+      listProviders?(): Array<{ id: string; name: string }>
+      stream?(options: GenerateOptions): AsyncIterable<StreamChunk> | Promise<AsyncIterable<StreamChunk>>
+      listModels?(provider: string): Promise<readonly LlmModelInfo[]>
+      resolveModelInfo?(provider: string, model: string, signal?: AbortSignal): Promise<LlmResolvedModelInfo>
+    }
+  }).llm
+
+  const accessors: DelegateAccessors = {
+    llm: llm as unknown as DelegateLlmLike,
+    // soft dep: dsh-base absent (minimal graphs) → undefined, the probe then
+    // skips to the live-route step. Same read as cloud-llm-adapter.
+    getAgentDefaultModel: () => {
+      try {
+        return (ctx as unknown as { get?: (n: string) => unknown }).get?.('agentDefaultModel') as
+          AgentDefaultModelLike | undefined
+      } catch {
+        return undefined
+      }
+    },
+  }
+
+  const delegateConfig: DelegateConfigLike = {
+    // Own route ids — the recursion guard excludes them from the probe's
+    // candidate set (§7.171: both own pools exclude each other).
+    providers: config.providers,
+    delegateProvider: pool.delegateProvider,
+    delegateModel: pool.delegateModel,
+    delegateEnabled: true,
+  }
+  const delegate = new CloudLlmDelegateAdapterImpl(
+    delegateConfig,
+    accessors,
+    auditLog,
+    inputGuard,
+    logger,
+    undefined, // egress: the local pool never trims (§7.131 asymmetry)
+    'local',   // poolKind: LOCAL 口径 —— 带全部历史 + 不脱敏
+  )
+
+  // §7.100 hot-reload parity: host route churn (pi-ai replace / adapter
+  // install-remove) → drop the cached probe target so the next call re-probes.
+  const offAdaptersUpdated = typeof ctx.on === 'function'
+    ? ctx.on('llm/adapters-updated', () => { delegate.invalidateTopology() })
+    : undefined
+
+  ctx.logger?.info?.(
+    `[local-llm-adapter] DELEGATE mode (llm.local.baseUrl empty) — forwarding to the host provider `
+    + `for providers: ${config.providers?.join(', ')}`,
+  )
+  let registration: { (): void }
+  try {
+    registration = llm.registerAdapter(config.providers, delegate)
+  } catch (err: any) {
+    // A user-defined pi-ai route literally named 'local-llm' wins the name;
+    // that live route legitimately IS the local pool then. Degrade loudly
+    // instead of crashing the whole bundle (mirrors cloud-llm-adapter).
+    const isDuplicate = err?.code === 'DUPLICATE_ADAPTER'
+      || String(err?.message ?? err).includes('DUPLICATE_ADAPTER')
+      || String(err?.message ?? err).includes('already has an adapter')
+    if (isDuplicate) {
+      logger?.error?.(
+        `[local-llm-adapter] DUPLICATE_ADAPTER on ${config.providers.join(',')}; host route owns it, edge adapter stands down`,
+      )
+      auditLog?.log({
+        level: 'security',
+        kind: 'llm.local.registration.duplicate',
+        source: 'local-llm-adapter',
+        payload: {
+          providers: config.providers,
+          mode: 'delegate',
+          error: String(err?.message ?? err),
+        },
+      }).catch(() => {})
+      offAdaptersUpdated?.()
+      return async () => {}
+    }
+    throw err
+  }
+  ctx.logger?.info?.('[local-llm-adapter] Adapter registered successfully')
+  return async () => {
+    registration()
+    offAdaptersUpdated?.()
+  }
+}
+
 export async function apply(ctx: Context, config: Config): Promise<() => Promise<void>> {
   ctx.logger?.info?.(`[local-llm-adapter] apply() called with providers: ${config.providers?.join(', ')}`)
   // §7.102: the effective pool comes from config/edge.json. The cordis
@@ -785,26 +930,47 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
       ? config.baseUrl
       : pool.baseUrl ?? ''
   ).trim()
-  // 2026-10-21: the local-LLM route is opt-in. Without an endpoint the
-  // adapter registers NOTHING, so the model registry never offers
-  // `local-llm`, the model router cannot select it, and the internal
-  // intent/guard stages stay on their keyword/regex tier instead of
-  // burning a request against whatever happens to own the default port.
-  // Previously the Schema default (`127.0.0.1:8080`) made the route live
-  // unconditionally: on a machine where 8080 is an unrelated authenticated
-  // daemon, every turn failed with HTTP 401 "Missing bearer token".
+  // §7.171 (2026-11-10): the local-LLM route has TWO modes now, symmetric
+  // with `llm.cloud`:
+  //
+  //   - DIRECT  : `llm.local.baseUrl` configured → own OpenAI-compatible pool
+  //               (unchanged behaviour, the key in `llm.local.keyRef` is used).
+  //   - DELEGATE: `llm.local.baseUrl` empty → forward to the host provider
+  //               (the model the operator picked in the host profile), exactly
+  //               like `llm.cloud`'s delegate mode. Credentials belong to the
+  //               host adapter, not to us.
+  //
+  // Before §7.171, "no endpoint" meant "register NOTHING" (the 2026-10-21
+  // opt-in semantics): the model registry never offered `local-llm`, the model
+  // router could not select it, and the internal intent/guard stages stayed on
+  // their keyword/regex tier instead of burning a request against whatever
+  // happens to own the default port. That behaviour is still reachable — it is
+  // now the explicit kill switch `llm.local.delegate=false`.
+  //
+  // Why the default flipped: `llm.cloud` already delegates to the host
+  // provider when it has no endpoint (§7.100), so a deployment that never
+  // configured `llm.local` ended up with a working CLOUD route and a dead
+  // LOCAL route — the asymmetry surprised operators ("cloud works, local
+  // doesn't"). §7.171 makes the two pools symmetric.
+  const delegateEnabled = pool.delegate !== false && config.delegate !== false
   if (baseUrl.length === 0) {
-    ctx.logger?.info?.(
-      '[local-llm-adapter] no endpoint configured — the local-LLM route stays off. '
-      + 'Set llm.local.baseUrl in config/edge.json to enable it.',
-    )
-    return async () => {}
+    if (!delegateEnabled) {
+      ctx.logger?.info?.(
+        '[local-llm-adapter] no endpoint configured and delegation disabled — '
+        + 'the local-LLM route stays off (opt-in semantics). '
+        + 'Set llm.local.baseUrl in config/edge.json for a direct pool, '
+        + 'or drop llm.local.delegate=false to delegate to the host provider.',
+      )
+      return async () => {}
+    }
+    return applyDelegate(ctx, config, pool)
   }
   // §7.154: a keyRef that names a slot that is not there leaves the pool
   // with NO credential. The local pool always uses its key, so this is
   // always worth saying — and it must be said AT BOOT: otherwise the
   // operator finds out at the first request, long after the edit that
-  // broke it.
+  // broke it. (DELEGATE mode returns above: there the credential belongs to
+  // the host adapter, not to us.)
   {
     const dangling = danglingSecretRefs().filter((r) => r.field.startsWith('llm.local'))
     if (dangling.length > 0) {

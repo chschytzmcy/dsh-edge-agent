@@ -955,7 +955,8 @@ user 模板：`Classify the following user input…<<<…>>>`（`<<<` 分隔符�
 
 ## 1. Secret
 
-`secrets` 段存明文 key，池通过 `keyRef` 指向它：
+`secrets` 段存明文 key，其他段通过 `keyRef` / `apiKeyRef` **按名字**引用它
+（不复制值）：
 
 ```jsonc
 {
@@ -963,6 +964,29 @@ user 模板：`Classify the following user input…<<<…>>>`（`<<<` 分隔符�
   "llm": { "local": { "baseUrl": "https://...", "model": "qwen3.6-flash", "keyRef": "dashscopeApiKey" } }
 }
 ```
+
+### 1.1 槽位与消费者
+
+| 槽位 | 消费者 | 不配会怎样 |
+|---|---|---|
+| `edgeApiKey` | http-api 的 bearer（`Authorization: Bearer`）| **桌面版不需要**（不挂 http-api）；**独立 HTTP profile 必填** —— 缺了 http-api **拒绝启动**（它暴露 `/v1/audit` 与 session delete/fork，开一个无鉴权的 API 比不开更糟）|
+| `dashscopeApiKey` | 通用（本机 `llm.local` 指的就是它）| 端点不鉴权时不需要 |
+| `aliyuntokenplanApiKey` | 阿里云 token-plan 直连 | 同上 |
+| `minimaxApiKey` | MiniMax 直连 | 同上 |
+| `deepseekApiKey` | 搜索 Tier 3（DeepSeek 兜底）| 搜索少了最后一档兜底 |
+| `tavilyApiKey` / `bochaApiKey` | 搜索 Tier 1 / Tier 2 | `available()` 变 false ⇒ 该 provider 被宿主从可用清单里过滤掉（搜索不可用），其余功能照常 |
+| `bailianApiKey` | jev 判定模型（`jev.apiKeyRef`）| jev 的决策模型档失效 ⇒ 该阶段降级到规则层 |
+
+> **`secrets` 整段可以不写** —— 桌面版装法下一个 secret 都不需要。
+
+### 1.2 `keyRef` 是**键名**，不是环境变量名
+
+`keyRef` 指的是 `secrets` 段里的键（`"dashscopeApiKey"`），**不是**某个环境变量
+的名字。§7.102 之前池配置读的是 env 槽名，那条链已经删了。
+
+**指向不存在的槽位（或值为空串）会静默失效** —— `resolveSecret` 返回 `undefined`，
+池子要到**第一次请求**才以 MISSING_CREDENTIAL 炸出来。§7.154 加了启动期检查：
+`danglingSecretRefs()` 会在 boot 时报一行 error，**只报字段名与槽位名，绝不报值**。
 
 > **Secret 警告**：`config/edge.json` 含明文 API key，**绝不能提交到 git**。
 
@@ -1050,19 +1074,25 @@ user 模板：`Classify the following user input…<<<…>>>`（`<<<` 分隔符�
 
 模型池在 `config/edge.json` 的 `llm.local` / `llm.cloud` 段配置，无独立环境变量。
 
-### 7.1 本地 LLM（`llm.local`）
+### 7.1 本地 LLM（`llm.local`，不配即 DELEGATE 到宿主 profile 提供商）
+
+§7.171（2026-11-10）：本地池与云池**完全对称** —— 端点留空 = DELEGATE，
+`delegate=false` 才是「不注册路由」。
 
 | 字段 | 默认值 | 说明 |
 |---|---|---|
-| `llm.local.baseUrl` | （空 = 不注册） | OpenAI 兼容端点 URL，**必须含 `/v1`**（adapter 只追加 `/chat/completions`） |
+| `llm.local.baseUrl` | （空 = DELEGATE） | OpenAI 兼容端点 URL，**必须含 `/v1`**（adapter 只追加 `/chat/completions`） |
 | `llm.local.model` | `qwen3-4b` | 端点 model id |
 | `llm.local.keyRef` | （空 = 不发 auth 头） | 指向 `secrets` 段里的键名 |
 | `llm.local.stripTools` | `false` | 省略 `body.tools`（minicpm Jinja2 bug 规避） |
 | `llm.local.enableThinking` | `false` | 关掉 thinking-model 的 chain-of-thought |
 | `llm.local.reasoningEffortNone` | `false` | **ollama 池必开** —— 见下 |
+| `llm.local.delegate` | `true` | `false` = kill switch：路由不注册，LOCAL 意图 fail-closed（内部阶段降级到关键词/正则档） |
+| `llm.local.delegateProvider` | （自动） | 显式锁定委托目标路由 id |
+| `llm.local.delegateModel` | （跟随宿主选择） | 委托 wire model override |
 
-`local-llm-adapter` 始终走真实 OpenAI 兼容端点。端点指向任一 llama.cpp /
-vLLM / Ollama / DashScope 实例：
+配了 `llm.local.baseUrl` 时，`local-llm-adapter` 走真实 OpenAI 兼容端点。
+端点指向任一 llama.cpp / vLLM / Ollama / DashScope 实例：
 
 ```jsonc
 {
@@ -1076,8 +1106,12 @@ vLLM / Ollama / DashScope 实例：
 }
 ```
 
-> `llm.local.baseUrl` **留空 = 不注册本地 LLM 路由**（模型列表里不出现
-> `local-llm`，意图分类 / prompt-guard 自动降级到关键词 / 正则规则档）。
+> `llm.local.baseUrl` **留空 = DELEGATE**（路由照样注册，转发给宿主 profile 的
+> 提供商，与 `llm.cloud` 对称），**不是**「不注册」。两个后果要知道：内部阶段
+> （意图分类 / prompt-guard 模型检测）钉在 `local-llm` 上 ⇒ 它们会跑在宿主
+> 模型上，「待检测的用户原文」也会上行；本地段的全部历史（含未脱敏 PII）随
+> 转发交给宿主提供商。详见[已知边界](#已知边界)。要恢复「本地池绝不出网」：
+> 填 `llm.local.baseUrl`，或设 `llm.local.delegate=false`。
 
 > **ollama 用户注意**：ollama 的 `/v1` 兼容层**静默丢弃** `chat_template_kwargs`
 > 和顶层 `think:false`，只有 `reasoning_effort:"none"` 生效。不开这个开关，
@@ -1355,6 +1389,7 @@ ops log 默认只记 LLM 调用的**长度**。要看「到底发了什么、回
 | §7.120 逃逸口守卫的**覆盖面** | 它拦的是**命令文本里出现的 etscli 调用**（`tools/pre-execute` waterfall 上判定）。**可以被绝对路径调用、复制二进制、别名、变量拼接、`eval` 等方式绕过** ⇒ 它**不是**能力层的等价物，只是纵深防御的一层。真正封死「模型按名字够到那个二进制」仍要靠从 PATH 里摘掉 `~/.local/bin`（主人 2026-10-31 裁决**不做**）。另外：**标准模式会话不受这条守卫约束**（监听器挂在边缘 preset 的 scope 上，标准模式的 scope 链里没有它）—— 与 §7.140 的「标准模式是纯宿主」一致，但代价是标准模式里那条逃逸口**仍然敞开** |
 | §7.120 逃逸口守卫的**留证通道** | 拒绝时落两路：ops log 的 `warn` 行 + 审计链的 `etscli.shell.denied`。审计服务是**延迟注入**拿到的（闸门本身**不依赖**任何服务 ⇒ 审计服务缺席也只是少一路证据，闸门照样上膛）；若某个 profile 压根没有 `auditLog` 服务，**就只有 ops log 那行**，审计链里不会有 `etscli.shell.denied` |
 | ops log **落盘通道的时序** | 通道由 `file-logger` 插件建立。§7.169 之前它声明 `inject: ['web']`（只为一句 boot 诊断）⇒ cordis 等 `web` 就绪才让它 apply ⇒ 比它早 apply 的插件日志**静默丢失**（实测 `t0` 丢、`t300` 起才落盘）。改动后它**零静态依赖**；但实测同层插件的 apply 先后由**模块解析速度**决定、不靠配置树顺序 ⇒ 正确性不建在顺序上：**需要落盘的启动凭据走 `ctx.inject(['fileLogger'], …)` 延迟注入**（回调触发时导出器必已注册），通道没就位就**不打**该行 —— 宁可漏显示，不显示没发生过的事 |
+| `llm.local` 的 **DELEGATE 模式**（§7.171）| `llm.local.baseUrl` 留空时，本地池**转发给宿主选中的提供商**（桌面 GUI 选的模型）。此时这一域的「本地」只是**路由名上的归属** —— 实际出网端点是宿主那个提供商。按 LOCAL 口径（§7.131 不对称规则第一条），本地池**带全部历史、不脱敏**，出网守卫见转发标记即放行。⇒ 两个**已知且当前部署可查证**的副作用：① 意图分类 / guard 检测这两个**内部阶段**钉在 `local-llm` 上，端点留空时它们会跑在宿主模型上 ⇒ 「待检测的用户原文」也会上行（这与 `stages.*` 的「分类 / guard 检测只吃本地模型」不变式冲突）；② 本地段的全部历史（含未脱敏的 PII）随转发一起交给宿主提供商。要恢复「本地池绝不出网」的旧行为：填 `llm.local.baseUrl` 指向自有端点，或设 `llm.local.delegate=false`（不注册路由，LOCAL 意图 fail-closed 报错）|
 
 ---
 

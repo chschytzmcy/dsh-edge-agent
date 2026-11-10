@@ -80,6 +80,26 @@ import type {
 export const OWN_POOL_PROVIDERS: readonly string[] = ['local-llm', 'cloud-llm']
 
 /**
+ * §7.171 (2026-11-10): 「本地池 delegate 转发」标记。
+ *
+ * `local-llm` 走 delegate 时会把请求转发给宿主提供商（§7.171 新增），转发时
+ * `provider` 变成了**目标** provider（不再是 `local-llm`）⇒ `host-egress-guard`
+ * 会把它当成「宿主原生 provider 的出网那一跳」⇒ 按 §7.131 口径裁掉本地段历史。
+ *
+ * 但本地池的口径恰恰相反：**带全部历史**（§7.131 的不对称规则第一条）。
+ * ⇒ 转发时打这个标记，出网守卫看到它就放行（不裁）。
+ *
+ * 打在 options 上是安全的：宿主 `LlmRuntime.stream` 走
+ * `{...options, ...resolvedConfig}` 的 spread（`@deepseek-ai/dsh-llm`
+ * `lib/index.js` 的 `adapterStream`），未知字段原样透传，不会被拒。
+ *
+ * 住在这里（而不是 adapter 里）是因为**打标的一方与读标的一方分属两个模块**：
+ * `cloud-llm-adapter.ts`（打）↔ `host-egress-guard.ts`（读）。与
+ * `OWN_POOL_PROVIDERS` 同处一地 —— 自有池相关的判据只有这一份事实源。
+ */
+export const LOCAL_POOL_FORWARD_MARKER = '__edgeLocalPoolForward'
+
+/**
  * 这个 provider 是不是本项目自己管的池？
  *
  * 是 ⇒ adapter 已经记过这次调用，这里必须跳过（否则同一通调用记两遍）。

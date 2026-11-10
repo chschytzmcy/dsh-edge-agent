@@ -79,13 +79,33 @@ export interface EdgeLlmPool {
    * providers. Defaults to false — never surprise a gateway that 400s extras.
    */
   reasoningEffortNone?: boolean
-}
-
-export interface EdgeCloudPool extends EdgeLlmPool {
+  /**
+   * §7.171 (2026-11-10): DELEGATE 模式（`llm.local` 与 `llm.cloud` 对称）。
+   *
+   * `baseUrl` 留空 = **转发宿主 profile 已配置的模型提供商**（桌面 GUI 选的那个），
+   * 本仓不碰任何 secret；要 edge 自有直连池时填 `baseUrl` + `model` + `keyRef`。
+   *
+   * - `llm.cloud` 留空 ⇒ DELEGATE（§7.100 既有行为）
+   * - `llm.local` 留空 ⇒ DELEGATE（§7.171 新增；此前是「整条路由不注册」）
+   *
+   * ⚠️ delegate 只改变「**谁提供模型**」，**不改变这一域的隐私口径**：
+   * `cloud-llm` 是云池（脱敏 + 只带云段历史）；`local-llm` 是本地池
+   * （不脱敏 + 带全部历史 —— §7.131 裁决的两条不对称规则）。
+   */
   delegate?: boolean
+  /** Delegate 模式：显式指定目标 provider route id（优先于宿主选择 / 探针）。 */
   delegateProvider?: string
+  /** Delegate 模式：wire model 覆盖（压过宿主选择 / 探针模型）。 */
   delegateModel?: string
 }
+
+/**
+ * `llm.cloud` 的形状 —— 与 `llm.local` 同构（§7.171 两池对称）。
+ *
+ * 用 type alias 而不是 `interface X extends Y {}`：后者在
+ * `@typescript-eslint/no-empty-object-type` 下是违规写法。
+ */
+export type EdgeCloudPool = EdgeLlmPool
 
 export interface EdgeStage {
   provider?: string
@@ -271,15 +291,17 @@ export const DEFAULT_EDGE_CONFIG: EdgeConfig = {
   secrets: {},
   http: { host: '127.0.0.1', port: 21017 },
   llm: {
-    // No baseUrl → the local-LLM route is simply not registered. A hard-coded
-    // port here collided with unrelated daemons (see local-llm-adapter.ts
-    // Config.baseUrl docs), so "unset" is the only safe default.
+    // No baseUrl → the local-LLM route is DELEGATE mode (§7.171: forward to the
+    // host profile's own model provider), NOT "no route at all".
+    // A hard-coded port here collided with unrelated daemons (see
+    // local-llm-adapter.ts Config.baseUrl docs), so "unset" is the only safe
+    // default — and unset now means delegate, which never touches a port.
     //
     // The model is deliberately left unset: each plugin owns its own Schema
     // default (local-llm-adapter says 'qwen3-4b', http-api's route fallback
     // says 'qwen3-4b-instruct-2507'). A single default here would silently
     // override the plugin's own value.
-    local: { stripTools: false, enableThinking: false },
+    local: { stripTools: false, enableThinking: false, delegate: true },
     cloud: { delegate: true },
   },
   stages: {
@@ -994,7 +1016,12 @@ export function formatDanglingSecretRefs(refs: DanglingSecretRef[]): string {
   return refs.map((r) => `${r.field} → secrets.${r.ref}（该槽位不存在或为空）`).join('; ')
 }
 
-/** The local-LLM pool with its secret resolved into an api key. */
+/**
+ * The local-LLM pool with its secret resolved into an api key.
+ *
+ * §7.171: `baseUrl` 留空 = DELEGATE 模式（转发宿主提供商），与 `llm.cloud` 对称。
+ * `delegate: false` 是 kill switch —— 回到 opt-in 语义（不注册任何路由）。
+ */
 export function localPool(cfg: EdgeConfig = loadEdgeConfig()): {
   baseUrl?: string
   model?: string
@@ -1002,6 +1029,10 @@ export function localPool(cfg: EdgeConfig = loadEdgeConfig()): {
   stripTools: boolean
   enableThinking: boolean
   reasoningEffortNone: boolean
+  /** §7.171: baseUrl 留空时是否走 DELEGATE（默认 true）。 */
+  delegate: boolean
+  delegateProvider?: string
+  delegateModel?: string
 } {
   const pool = cfg.llm?.local ?? {}
   return {
@@ -1011,6 +1042,9 @@ export function localPool(cfg: EdgeConfig = loadEdgeConfig()): {
     stripTools: pool.stripTools ?? false,
     enableThinking: pool.enableThinking ?? false,
     reasoningEffortNone: pool.reasoningEffortNone ?? false,
+    delegate: pool.delegate ?? true,
+    delegateProvider: pool.delegateProvider || undefined,
+    delegateModel: pool.delegateModel || undefined,
   }
 }
 

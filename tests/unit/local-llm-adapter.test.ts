@@ -14,6 +14,9 @@ import { afterEach, beforeEach, describe, it } from 'vitest'
 
 import * as localMod from '../../src/dsh-adapter/local-llm-adapter.ts'
 import { LocalLlmAdapterImpl } from '../../src/dsh-adapter/local-llm-adapter.ts'
+// §7.171: the no-endpoint mode registers the **delegate** adapter (same class
+// the cloud pool uses, with poolKind='local'), not the direct HTTP one.
+import { CloudLlmDelegateAdapterImpl } from '../../src/dsh-adapter/cloud-llm-adapter.ts'
 
 type FetchInit = { url: string; init: RequestInit }
 
@@ -641,44 +644,64 @@ describe('local-llm-adapter (M4, real-only)', () => {
     })
   })
 
-  // 2026-10-21: the local-LLM route is opt-in. The Schema used to default
-  // `baseUrl` to `http://127.0.0.1:8080/v1`, so the route was live even
-  // when the operator never configured one — and on a machine where an
-  // unrelated authenticated daemon owns 8080, every turn failed with
-  // HTTP 401 "Missing bearer token".
-  describe('opt-in endpoint (2026-10-21)', () => {
-    it('registers no provider route when baseUrl is unset', async () => {
-      const registered: string[][] = []
-      const ctx = {
+  // 2026-10-21: the local-LLM route was opt-in — no endpoint meant "register
+  // nothing". §7.171 (2026-11-10) gave the local pool a DELEGATE mode
+  // (no endpoint → forward to the host provider), symmetric with `llm.cloud`;
+  // the opt-in behaviour survives as the explicit kill switch
+  // `llm.local.delegate=false`.
+  describe('endpoint modes (§7.171)', () => {
+    /** Fake ctx: records every registerAdapter call. */
+    function recordingCtx(registered: string[][], adapters: unknown[]): unknown {
+      return {
         logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
         llm: {
-          registerAdapter(providers: string[], _adapter: unknown) {
+          registerAdapter(providers: string[], adapter: unknown) {
             registered.push(providers)
+            adapters.push(adapter)
             return () => {}
           },
         },
       }
+    }
+
+    it('registers the provider route when baseUrl is unset (DELEGATE to the host provider)', async () => {
+      const registered: string[][] = []
+      const adapters: unknown[] = []
+      const ctx = recordingCtx(registered, adapters)
 
       const dispose = await localMod.apply(ctx as never, {
         providers: ['local-llm'],
         defaultModel: 'qwen3-4b',
       } as never)
 
-      assert.deepEqual(registered, [], 'no route may be registered without an endpoint')
+      assert.deepEqual(registered, [['local-llm']],
+        'the local route must be registered even without an endpoint — it delegates to the host provider')
+      assert.equal(adapters.length, 1)
+      assert.ok(adapters[0] instanceof CloudLlmDelegateAdapterImpl,
+        'the registered adapter must be the delegate adapter, not the direct HTTP one')
+      await dispose()
+    })
+
+    it('registers no provider route when delegation is disabled (kill switch)', async () => {
+      const registered: string[][] = []
+      const adapters: unknown[] = []
+      const ctx = recordingCtx(registered, adapters)
+
+      const dispose = await localMod.apply(ctx as never, {
+        providers: ['local-llm'],
+        defaultModel: 'qwen3-4b',
+        delegate: false,
+      } as never)
+
+      assert.deepEqual(registered, [],
+        'no route may be registered when delegation is off and there is no endpoint')
       await dispose()
     })
 
     it('registers the provider route when baseUrl is set', async () => {
       const registered: string[][] = []
-      const ctx = {
-        logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
-        llm: {
-          registerAdapter(providers: string[], _adapter: unknown) {
-            registered.push(providers)
-            return () => {}
-          },
-        },
-      }
+      const adapters: unknown[] = []
+      const ctx = recordingCtx(registered, adapters)
 
       const dispose = await localMod.apply(ctx as never, {
         providers: ['local-llm'],
@@ -687,6 +710,26 @@ describe('local-llm-adapter (M4, real-only)', () => {
       } as never)
 
       assert.deepEqual(registered, [['local-llm']])
+      assert.equal(adapters.length, 1)
+      assert.ok(!(adapters[0] instanceof CloudLlmDelegateAdapterImpl),
+        'a configured endpoint means the direct adapter, not the delegate')
+      await dispose()
+    })
+
+    it('ignores the kill switch when baseUrl is set (direct pool wins)', async () => {
+      const registered: string[][] = []
+      const adapters: unknown[] = []
+      const ctx = recordingCtx(registered, adapters)
+
+      const dispose = await localMod.apply(ctx as never, {
+        providers: ['local-llm'],
+        baseUrl: 'http://127.0.0.1:11000/v1',
+        defaultModel: 'qwen3-4b',
+        delegate: false,
+      } as never)
+
+      assert.deepEqual(registered, [['local-llm']],
+        'delegate=false only governs the no-endpoint case; a direct pool is a direct pool')
       await dispose()
     })
 

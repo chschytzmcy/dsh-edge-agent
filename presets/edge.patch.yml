@@ -308,8 +308,10 @@
                 config:
                   providers: [local-llm]
                   # §7.102: baseUrl / model / key / stripTools / enableThinking 全部
-                  # 来自 config/edge.json 的 llm.local.*。baseUrl 留空 = 不注册本地
-                  # LLM 路由（模型列表里不出现 local-llm，意图分类 / prompt-guard
+                  # 来自 config/edge.json 的 llm.local.*。§7.171: baseUrl 留空 =
+                  # DELEGATE（local-llm 路由照样注册，转发给宿主 profile 的提供商，
+                  # 与 cloud-llm 对称）；`llm.local.delegate=false` 才是「不注册本地
+                  # LLM 路由」（模型列表里不出现 local-llm，意图分类 / prompt-guard
                   # 自动降级到关键词 / 正则规则档）。
 
               - id: model-router

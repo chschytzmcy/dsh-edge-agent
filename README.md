@@ -5,146 +5,186 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%5E22.19%20%7C%7C%20%3E%3D24-blue)](package.json)
 
-`dsh-edge-agent` 是一个面向用户的端侧私密智能体，基于 [DeepSeek Harness](https://github.com/deepseek-harness)
-的 Cordis 插件机制构建。敏感数据默认留在设备端，仅在用户授权时通过零信任通道与云端通信。
+`dsh-edge-agent` 是面向用户的端侧私密智能体，以 **bundle 补丁**的形式注册在宿主的
+DSH 桌面版 / CLI 上，新增一个 **Agent Preset —— 边缘模式**：宿主自带的标准 / 创造 /
+PTC / 极简四种工作方式之外，边缘模式 = 标准模式 + 本项目的全部功能（隐私护栏、意图
+判定、路由决策、PII 脱敏、Realm 闸门、审计链、Edge 面板）。默认仍是标准模式；在设置页
+选中「边缘模式」即启用。
 
-它以 **bundle 补丁**的形式在宿主的 DSH 桌面版上注册了一个新的 **Agent Preset ——
-边缘模式**：宿主自带的标准 / 创造 / PTC / 极简四种工作方式之外，边缘模式 =
-标准模式 + 本项目的全部功能（隐私护栏、意图判定、路由决策、PII 脱敏、Realm
-闸门、审计链、Edge 面板）。默认仍是标准模式；在设置页选中「边缘模式」即启用。
+> 这是**一种工作方式**，不是替代品。护栏 hook 由宿主的 scope 链判定 —— **标准模式下
+> 本项目的插件完全不生效**；Edge tab 常驻可见，但只有边缘模式才真正生效。判一个会话
+> 有没有走本项目链路，**唯一判据是审计链**。
 
-> 这是**一种工作方式**，不是替代品。边缘模式的护栏 hook 由宿主的 scope 链判定
-> ——**标准模式下本项目的插件完全不生效**；Edge tab 常驻可见，但只有边缘模式
-> 才真正生效。判一个会话有没有走本项目链路，**唯一判据是审计链**。
-> 运行时细节见 [`docs/architecture.md`](docs/architecture.md) 与
-> [`docs/desktop-troubleshooting.md`](docs/desktop-troubleshooting.md)。
+---
+
+## 📥 在 DSH 上加载本插件
+
+### 一、加载模型：DSH 怎么认一个 bundle
+
+装之前先理解这 5 步 —— 后面所有排障都落在这条链上。
+
+```
+① profile 的 package.json → dsh.profile.bundles[] 里追加包名
+   └─ 唯一开关：不在这数组里 = 整包不加载（是「没装」，不是「装了没生效」）
+        ↓
+② 宿主对每个 bundle 读它自己的 package.json → dsh.bundle.patch
+   └─ 本包是【数组】，两份一起加载：
+        ├─ [0] ./cordis.desktop-safe.patch.yml   顶层 patch：宿主行覆盖 + 4 行宿主强制 insert
+        └─ [1] ./presets/edge.desktop-safe.patch.yml  preset：「边缘模式」工作方式的插件行（独立 scope）
+        ↓
+③ 插件行的 name 是个子路径 → 查本包 package.json#exports（37 条）→ 定位实现文件
+   └─ 例：name: '…/dsh-edge-agent/file-logger' → exports['./file-logger'] → lib/…/file-logger.js
+        ↓
+④ cordis 按每个插件的 inject 依赖图实例化
+   └─ inject 只能加不能减 ⇒ 少点一行 → 插件 ACTIVE 但一条都不拦（见「三层语义」）
+        ↓
+⑤ 插件通过三种挂法接进 DSH 流程
+   ├─ 事件钩子   ctx.on('agent/pre-step' | 'llm/stream' | 'tools/pre-execute' | …)
+   ├─ Service    ctx.reflect.provide('promptGuard' | 'auditLog' | …)
+   └─ Provider   ctx.llm.registerAdapter(['cloud-llm'], …) / ctx.web.registerSearchProvider(…)
+```
+
+> **两个变体**：`desktop-safe`（上面这个，只 insert、不改写宿主默认）与 `full`
+> （顶层 patch 改写 persona / approval / sandbox / session root 等宿主全局）。
+> **本文所有通道都用 `desktop-safe`** —— 桌面版四通道装的是
+> `dist/installable/dsh-edge-agent-desktop-safe`，独立 profile 走
+> `deploy-profile.sh`（同样是 desktop-safe + 该 profile 自己的 skin overlay）。
+> `full` 变体是给「独立部署一个自有 profile」的场景的。
+
+**顶层 patch 为什么只有 4 行 insert**（`dsh-edge-agent` / `file-logger` / `audit-log` /
+`desktop-cookie-janitor`）：一行都不是「方便」留下的，是**宿主机制逼的** —— 宿主的
+client-modules 只扫宿主 Loader 的 entries（Edge tab 的浏览器半边只能从这里被发现）；
+裸包名行 inject `auditLog` 且 `file-logger` 要先占住 `fileLogger` 服务名 ⇒ 必须在
+root realm；welcome 握手发生在任何工作方式选定之前 ⇒ 修 431 的插件必须在 preset 之外。
+
+**三棵树各装什么**：
+
+| 树 | 文件 | 装什么 | 跟着谁走 |
+|---|---|---|---|
+| 宿主树顶层 | `cordis.desktop-safe.patch.yml` / `cordis.patch.yml` | 宿主行覆盖 + 4 行强制 insert | 进程级，整机生效 |
+| **preset 子树** | `presets/edge*.patch.yml` | 本项目**行为插件行** | **只跟着「边缘模式」工作方式走** |
+| profile skin | `profiles/<name>/cordis.patch.yml` | 压顶层（headless profile 在这里加 HTTP 监听器） | 跟着那个 profile |
+
+⚠️ **preset 子树的 service 对宿主树行不可见**（cordis scope 隔离）—— 顶层 patch 里插一行
+依赖 preset 服务的插件，会永远 pending 并让 boot 硬失败（§7.152 原样）。
+
+### 二、桌面版（主路径）：Plugins → Add plugin
+
+DSH 桌面 App 侧边栏的 **Plugins → Add plugin** 支持四个通道。**装完必须点「立即启用」**
+（GUI 不会自动启用），否则启动时不加载。
+
+| 通道 | 输入 | 要构建授权 | PATH 要有 pnpm | 产物形态 | 含真密钥 | 改了会生效吗 |
+|---|---|---|---|---|---|---|
+| **A 本地目录** | 绝对路径 | 否 | 否 | 符号链接 | ⚠️ **有** | ✅ 改文件重启即生效 |
+| **B GitHub 地址** | `git+ssh://git@github.com/<owner>/<repo>` | **是** | **是** | 现场编译 | 否 | ❌ 须重装 |
+| **C npm 包名** | `@deepseek-harness-edge-agent/dsh-edge-agent` | 否 | 否 | 预构建 | 否 | 走 `updateBundle` |
+| **D tarball 路径** | `…/x.tar.gz` 绝对路径 | 否 | 否 | pnpm store 冻结副本 | 否 | ❌ 须卸载重装 |
+
+四条通道在宿主里是**同一段代码**（`install-spec.ts` 解析四种形态，一律 `pnpm add <spec>`）。
+差别全在本仓的作者侧义务：
+
+- **A 本地目录**（本机开发调试）
+  ```bash
+  pnpm install && npm run build:windows   # 或 build:macos / build:linux
+  ```
+  在 App 里选「本地目录」，填**绝对路径**指向产物目录：
+  ```
+  Windows  C:\Users\<你>\…\dsh-edge-agent\dist\installable\dsh-edge-agent-desktop-safe
+  macOS    /Users/<你>/…/dsh-edge-agent/dist/installable/dsh-edge-agent-desktop-safe
+  Linux    /home/<你>/…/dsh-edge-agent/dist/installable/dsh-edge-agent-desktop-safe
+  ```
+  > ⚠️ **相对路径会被拒**（`a local path must be absolute`）；Git Bash 的 `/c/Users/…` 是
+  > MSYS2 虚拟路径，桌面 App 不认，必须用 `C:\…`。
+  > ⚠️ 这个目录**含明文 API key**（`config/edge.json`）⇒ **别把 `dist/` 发给别人**。
+
+- **B GitHub 地址**（小范围分发 / 持续迭代）—— 填
+  `git+ssh://git@github.com/chschytzmcy/dsh-edge-agent.git`。宿主克隆源码、在本地跑
+  `prepare` 编译出 `lib/`、再装成 bundle。首次会失败并提示「允许这些脚本并重试」——
+  点它放行；装完点「立即启用」；重启桌面 App。两个前置条件：仓库要能读（私有库建议
+  SSH 形式）、**PATH 上要有 `pnpm`**（只有这条通道要，因为 pnpm 给 git 依赖注入的
+  `pnpm install` 是用 shell 跑的；宿主自己调 pnpm 用的是 App 自带那支）。
+
+- **C npm 包名**（发布给公众）—— 装的是**预构建**包，不需要构建授权、不需要 PATH 上有
+  pnpm。⚠️ **包尚未发布到 registry（404）**，这条通道要等第一次发布之后才成立。
+
+- **D tarball 路径**（离线分发）——
+  ```bash
+  npm run build:tarball    # 编译 + 打包 + 门禁 → dist/dsh-edge-agent-desktop-safe.tar.gz
+  ```
+  在 App 里填 tarball 的**绝对路径**。不需要构建授权、不需要 PATH 上有 pnpm；tarball
+  **不含 `config/edge.json`**（目标机器要自己写 `~/.dsh-edge-agent/edge.json`）。
+  > ⚠️ **改了 tarball 不会自动生效** —— 装出来是 pnpm store 里的冻结副本，要卸载重装。
+
+### 三、独立 HTTP profile（headless CLI）
+
+```bash
+npm run build:macos -- --deploy-profile=dsh-edge-agent   # 或 build:linux
+npm run build:macos -- --deploy-profile=dsh-web           # 官方 Web UI (:3080) + IM 机器人
+npm run build:macos -- --deploy-profile=dsh-tui           # 终端
+```
+
+一条命令做完整件事：build + 装 bundle + 同步配置 + 重启 + 验活。HTTP API 监听 `:21017`
+（`/v1/chat`，GET `/v1/health`）。
+
+> ⚠️ **Windows 只有桌面版**：桌面 App 独占 `desktop` profile（`managed exclusively by the
+> Electron application`），CLI 碰不了 ⇒ Windows 上没有独立 headless profile 这条路。
+
+### 四、加载后自检：**mount ≠ active ≠ enforced**
+
+「装上了」分三层，**boot 不报错只证明前两层**：
+
+| 层 | 含义 | 怎么验 |
+|---|---|---|
+| **mount** | 插件被挂上 | boot 不报错 |
+| **active** | cordis 把插件置为 ACTIVE | `--dump-config` 里能看到插件行 |
+| **enforced** | 真拦得住 | **审计链里出现执法行**（`blocked.attack` / `blocked.policy` / `etscli.shell.denied` …） |
+
+```bash
+# 1. bundle 已注册到 profile？
+grep '@deepseek-harness-edge-agent/dsh-edge-agent' ~/.dsh/profiles/<profile>/package.json
+
+# 2. 隐私栈挂上了？（期望 ≥4）
+dsh --profile <profile> --dump-config \
+  | grep -E 'input-guard|file-logger|intent-router|sanitizer' | wc -l
+
+# 3. 桌面版：右栏出现 Edge tab → 发一条本地 query → Intent panel 出现一行
+```
+
+**排障对照**：
+
+| 现象 | 多半是 |
+|---|---|
+| `profile is not mounted` / 插件行根本不在 `--dump-config` | ① 没进 `dsh.profile.bundles` |
+| `1 entry did not activate` + `pending (waiting for services: …)` | ④ inject 闭包不齐 —— 补齐被点名插件的传递依赖 |
+| 插件行在、但会话里什么也不拦 | ③ scope 隔离：preset 子树的 service 对宿主树行不可见 / 当前会话是**标准模式**（不是边缘模式） |
+| 桌面版没有 Edge tab | `lib/client.js` 没构建 —— `prepare` 链里漏了 `build:client`（静默失败，无报错） |
+
+### 五、完整文档
+
+| 想知道 | 看哪 |
+|---|---|
+| 每个插件挂在哪 / 三种挂法 | [`docs/plugin-mount-points.md`](docs/plugin-mount-points.md) |
+| 装配面全貌 / 三棵树 / 最小必需集 | [`docs/architecture.md`](docs/architecture.md) |
+| 每个文件装了什么 | [`docs/deploy-minimal-files.md`](docs/deploy-minimal-files.md) |
+| 隐私链路的判定表 / 配置清单 | [`docs/privacy-policy.md`](docs/privacy-policy.md) |
+
+---
 
 ## ✨ 核心特性
 
 | 能力 | 状态 | 说明 |
 |---|---|---|
 | **🔒 端侧优先** | ✅ | 默认本地 LLM 处理；未决轮次一律留在设备上 |
-| **🛡️ 隐私保护** | ✅ | PII 可逆脱敏（10 类规则）+ 不可逆日志掩码 + 隐私策略热重载 + HMAC 校验 |
+| **🛡️ 隐私保护** | ✅ | PII 可逆脱敏 + 不可逆日志掩码 + 隐私策略热重载 + HMAC 校验 |
 | **🚦 Realm 三级闸门** | ✅ | LOCAL → SANITIZED → CLOUD；分类→脱敏→路由→执行的完整拦截链，缺件即降级本地 |
 | **🚨 威胁检测** | ✅ | `td-bus` 滑动窗口计数 + 分级 + 隔离；超阈值返回 503 |
 | **📜 审计与可追溯** | ✅ | 追加式 JSONL 审计链 + ops log 详细 LLM request/response 追踪（PII + 密钥双重脱敏） |
-| **🔌 插件化** | ✅ | 22+1 个 plugin（含 1 桌面 webview bundle），全部 subpath 导出，`verify:*` 门禁锁死装配面 |
+| **🔌 插件化** | ✅ | 插件全部按 subpath 导出（**37 条**），`verify:*` 门禁锁死装配面 |
 | **🌐 零信任通信** | 🚧 | RFC 9458 OHTTP 网关为**桩实现**；当前云端通道走标准 TLS |
 | **🔑 TEE / 远程证明** | 🚧 | `tcm` / `attestation` 为**桩实现**；真实 TEE 后端待接入 |
 
-> 当前真正生效的隐私保证来自 **Layer 2**（脱敏管线 + 策略引擎 + 审计链 +
-> Realm 闸门）。分层状态表见
-> [`docs/architecture.md`](docs/architecture.md)。
-
----
-
-## 📦 安装
-
-### 系统要求
-
-| 组件 | 最低版本 | 推荐版本 |
-|---|---|---|
-| Node.js | `^22.19` 或 `>=24` | `>=22.20` |
-| pnpm | `^10` 或 `^11` | `^11.7.0` |
-| 操作系统 | Linux / macOS / Windows | Linux |
-
-### 前置依赖
-
-```bash
-npm install -g @deepseek-ai/dsh    # DSH CLI（DeepSeek Harness 官方客户端）
-npm install -g pnpm                # 或：corepack enable pnpm
-```
-
-### 桌面版（主路径）
-
-DSH 桌面 App（DeepSeek Harness）的侧边栏 **Plugins → Add plugin** 支持
-**npm 包名 / tarball 路径 / GitHub 地址 / 本地目录** 四个通道。装完**必须点
-「立即启用」**（GUI 不会自动启用），否则启动时不加载。
-
-#### 通道 A：本地目录（本机开发调试用）
-
-```bash
-git clone https://github.com/chschytzmcy/dsh-edge-agent.git
-cd dsh-edge-agent && pnpm install
-npm run build:windows    # 或 build:macos / build:linux
-```
-
-然后在 App 里选「本地目录」，填**绝对路径**指向产物目录：
-
-```
-Windows  C:\Users\<你>\GolandProjects\gitlab\dsh-edge-agent\dist\installable\dsh-edge-agent-desktop-safe
-macOS    /Users/<你>/code/dsh-edge-agent/dist/installable/dsh-edge-agent-desktop-safe
-Linux    /home/<你>/code/dsh-edge-agent/dist/installable/dsh-edge-agent-desktop-safe
-```
-
-装出来是**符号链接** ⇒ 改文件 + 重启 App 即生效，不用重装。
-
-> ⚠️ **相对路径会被拒**（`a local path must be absolute`）；Git Bash 里的
-> `/c/Users/…` 是 MSYS2 虚拟路径，桌面 App 不认，必须用 `C:\…`。
-> ⚠️ 这个目录**含明文 API key**（`config/edge.json`）⇒ **别把 `dist/` 发给别人**。
-
-#### 通道 B：GitHub 仓库地址（现场编译，适合分发给别人）
-
-在同一个对话框里填仓库地址：
-
-```
-git+ssh://git@github.com/chschytzmcy/dsh-edge-agent.git
-```
-
-宿主会克隆源码、在本地跑 `prepare` 编译出 `lib/`、再装成 bundle。
-
-1. 首次会失败并提示「允许这些脚本并重试」——点它放行本仓的构建脚本；
-2. 装完点「立即启用」；
-3. 重启桌面 App；
-4. 配置写进 `~/.dsh-edge-agent/edge.json`（git 装出来的包里**不含**明文密钥）。
-
-两个前置条件：**仓库要能读**（私有库建议填 SSH 形式——只依赖 SSH key）、
-**PATH 上要有 `pnpm`**（`npm i -g pnpm` 可解，装完要重启桌面 App）。
-
-细节见 [`docs/deploy-github.md`](docs/deploy-github.md)。
-
-#### 通道 C：npm 包名
-
-```
-@deepseek-harness-edge-agent/dsh-edge-agent
-```
-
-装的是**预构建**的包，不需要构建授权。包尚未发布到 registry；发布条件见
-[`docs/deploy-npm.md`](docs/deploy-npm.md)。
-
-#### 通道 D：tarball 路径（离线分发给别人）
-
-```bash
-npm run build:tarball                   # 编译 + 打包 + 门禁
-                                       # → dist/dsh-edge-agent-desktop-safe.tar.gz
-```
-
-在同一个对话框里填 tarball 的**绝对路径**：
-
-```
-Windows  C:\Users\<你>\GolandProjects\gitlab\dsh-edge-agent\dist\dsh-edge-agent-desktop-safe.tar.gz
-```
-
-- **不需要构建授权、不需要 PATH 上有 pnpm**；
-- tarball **不含 `config/edge.json`**（没有真密钥）⇒ 目标机器要自己写
-  `~/.dsh-edge-agent/edge.json`；
-- 装出来是 **pnpm store 里的冻结副本** ⇒ 改了 tarball **不会**自动生效，
-  要卸载重装。
-
-细节见 [`docs/deploy-tarball.md`](docs/deploy-tarball.md)。
-
-### 独立 HTTP profile（macOS / Linux）
-
-```bash
-npm run build:macos -- --deploy-profile=dsh-edge-agent
-npm run build:macos -- --deploy-profile=dsh-web      # 官方 Web UI (:3080) + IM 机器人
-npm run build:macos -- --deploy-profile=dsh-tui      # 终端
-```
-
-一条命令做完整件事：build + 装 bundle + 同步配置 + 重启 + 验活。HTTP API 监听
-`:21017`（`/v1/chat`，GET `/v1/health`）。
-
-> **Windows 只有桌面版**：桌面 App 独占 `desktop` profile，CLI 碰不了。
+> 当前真正生效的隐私保证来自 **Layer 2**（脱敏管线 + 策略引擎 + 审计链 + Realm 闸门）。
+> 分层状态表见 [`docs/architecture.md`](docs/architecture.md)。
 
 ---
 
@@ -153,11 +193,47 @@ npm run build:macos -- --deploy-profile=dsh-tui      # 终端
 配置只有**一个文件**：`config/edge.json`。所有 profile 读同一份，不依赖环境变量。
 
 ```bash
-cp config/edge.example.json config/edge.json
-$EDITOR config/edge.json    # 填 secrets.* 的真实 key、llm.local.baseUrl 等
+cp config/edge.example.json config/edge.json   # 想改配置时才需要这一步
 ```
 
-最小可用：
+**先说结论：`secrets` 和 `llm` 都不是必填。** 桌面版装法下，`config/edge.json` 写成
+`{}` 也能正常跑 —— 两个池都会**转发宿主 GUI 里选中的模型**，凭据全归宿主，
+edge 侧一个 secret 都不碰：
+
+```json
+{}
+```
+
+查找顺序（与 profile 无关）：
+
+```
+1. <bundle>/config/edge.json         ← 本地目录装法落这里
+2. ~/.dsh-edge-agent/edge.json       ← git / npm / tarball 装法落这里
+3. <bundle>/config/edge.example.json ← shipped 模板（空密钥兜底）
+```
+
+### 两个池怎么配
+
+`llm.local` 与 `llm.cloud` 现在**完全对称**：
+
+| `llm.<池>.baseUrl` | `llm.<池>.delegate` | 行为 |
+|---|---|---|
+| 填了 | 任意 | **直连** —— edge 自有池，密钥走 `keyRef`（端点不鉴权时 `keyRef` 也可以不填）|
+| 留空 | `true`（默认）| **DELEGATE** —— 转发宿主选中的提供商（凭据归宿主，edge 侧不碰 secret）|
+| 留空 | `false` | **不注册路由** —— LOCAL 意图 fail-closed 报错 |
+
+也就是说：**不填 `baseUrl` 不等于「没模型」**，而是「用宿主 GUI 里选的那个模型」。
+
+```jsonc
+{
+  "llm": {
+    "local": { "baseUrl": "", "delegate": true },   // → 转发宿主选中的模型
+    "cloud": { "baseUrl": "", "delegate": true }    // → 同上
+  }
+}
+```
+
+要 edge 自有直连池时填 `baseUrl + model + keyRef`（`baseUrl` 必须含 `/v1`）：
 
 ```jsonc
 {
@@ -166,38 +242,33 @@ $EDITOR config/edge.json    # 填 secrets.* 的真实 key、llm.local.baseUrl �
     "local": {
       "baseUrl": "https://your-endpoint/v1",
       "model": "your-model",
-      "keyRef": "dashscopeApiKey"
+      "keyRef": "dashscopeApiKey"     // 端点不鉴权（本地 llama.cpp / vLLM）时整行可省
     }
   }
 }
 ```
 
-**查找顺序**（与 profile 无关）：
+`delegate: false` 是 kill switch —— 回到「没端点就不注册路由」的旧语义。
 
-```
-1. <bundle>/config/edge.json         ← 本地目录装法落这里
-2. ~/.dsh-edge-agent/edge.json       ← git / npm 装法落这里
-3. <bundle>/config/edge.example.json ← shipped 模板（空密钥兜底）
-```
+### 不配会怎样
 
-> ⚠️ `config/edge.json` 含**明文 API key**，绝不能提交到 git（已在
-> `.gitignore` 里，`.npmignore` 也排除了它 ⇒ 不会进 npm 包）。
+| 你没配的东西 | 结果 |
+|---|---|
+| `llm` 整段 | 两池都 DELEGATE ⇒ **实际是同一个模型**（宿主选的那个）。⚠️ 意图分类与 guard 检测这两个**内部阶段**钉在 `local-llm` 上，端点留空时它们会跑在宿主模型上 ⇒「待检测的用户原文」也会上行（§7.171 的已知边界）|
+| `llm.local.baseUrl` | `local-llm` 路由**照样注册**（转发宿主模型），不是「没模型」|
+| `llm.local.keyRef` | 端点不鉴权 ⇒ 完全正常（不发 Authorization 头）；端点要鉴权 ⇒ 401，报错会指名让你配 `keyRef` |
+| `secrets` 整段（**桌面版**）| **完全正常** —— 桌面版不挂 http-api，一个 secret 都不需要 |
+| `secrets.edgeApiKey`（**独立 HTTP profile**）| **必填**：http-api 暴露 `/v1/audit` 与 session delete/fork，没凭据就**拒绝启动**（fail-closed），而不是开一个无鉴权的 API |
+| `secrets.tavilyApiKey` / `bochaApiKey` | 搜索 provider 的 `available()` 变 false ⇒ 被宿主从可用清单里过滤掉（搜索不可用），其余功能照常 |
+
+> ⚠️ 两池的**出网口径不同**：云池只带「之前上过云的历史」；本地池带**全部**历史
+> （§7.131 的不对称规则）。本地池走 delegate 时同样按这个口径 —— 已知边界见
+> [`docs/privacy-policy.md`](docs/privacy-policy.md#已知边界)。
+
+> ⚠️ `config/edge.json` 含**明文 API key**，绝不能提交到 git（已在 `.gitignore` 里，
+> `.npmignore` 也排除了它 ⇒ 不会进 npm 包）。
 > 完整配置清单（16 类配置项 + 路由行为约定）见
 > [`docs/privacy-policy.md`](docs/privacy-policy.md#配置清单)。
-
----
-
-## ✅ 验证
-
-```bash
-# 1. bundle 已注册到 profile？
-grep '@deepseek-harness-edge-agent/dsh-edge-agent' ~/.dsh/profiles/<profile>/package.json
-
-# 2. 隐私栈挂上了？
-dsh --profile <profile> --dump-config | grep -E 'input-guard|file-logger|intent-router|sanitizer' | wc -l   # 期望 ≥4
-
-# 3. 桌面版：右栏出现 Edge tab → 发一条本地 query → Intent panel 出现一行
-```
 
 ---
 
@@ -206,23 +277,29 @@ dsh --profile <profile> --dump-config | grep -E 'input-guard|file-logger|intent-
 | 文档 | 内容 |
 |---|---|
 | [`docs/README.md`](docs/README.md) | **文档总索引**（每份一句说明 + 状态） |
+| [`docs/architecture.md`](docs/architecture.md) | 架构主文档：四层模型 / Realm / 插件开发 / 威胁模型 |
+| [`docs/plugin-mount-points.md`](docs/plugin-mount-points.md) | 插件挂点表：每个插件的真实挂点 + 三种挂法 |
+| [`docs/privacy-policy.md`](docs/privacy-policy.md) | 隐私链路单一权威文档：策略 + 判定表 + 配置清单 + 审计 + 行为契约 |
 | [`docs/deploy-github.md`](docs/deploy-github.md) | 从 GitHub 仓库地址安装 |
 | [`docs/deploy-npm.md`](docs/deploy-npm.md) | 从 npm 包名安装 + 发布链排障 |
 | [`docs/deploy-tarball.md`](docs/deploy-tarball.md) | 从 tarball 路径安装（离线分发） |
 | [`docs/load-into-local-dsh.md`](docs/load-into-local-dsh.md) | 装进本地 DSH（三条路 + 宿主契约） |
-| [`docs/privacy-policy.md`](docs/privacy-policy.md) | 隐私链路单一权威文档：策略 + 判定表 + 配置清单 + 审计 + 行为契约 |
-| [`docs/architecture.md`](docs/architecture.md) | 架构主文档：四层模型 / Realm / 插件开发 / 威胁模型 |
 | [`docs/desktop-troubleshooting.md`](docs/desktop-troubleshooting.md) | 桌面版排障手册 |
 | [`docs/version-policy.md`](docs/version-policy.md) | 上游版本策略 |
-| [`docs/TEST-REPORT.md`](docs/TEST-REPORT.md) | 测试报告与实测记录 |
 | [`docs/PROGRESS.md`](docs/PROGRESS.md) | 实施进度档案（§7.x 全量历史） |
 
 ### 开发
 
 ```bash
-pnpm test                # 单元测试
-pnpm run verify:build    # 19 项构建门禁
-pnpm run lint            # eslint
+pnpm install
+pnpm run build      # compile → typecheck:client → build:client → build:installable → pack:tarball → verify:build
+pnpm test           # 单元测试
+pnpm run lint       # eslint
 ```
+
+> ⚠️ **`build` 的步骤顺序不能省**：门禁验的是**产物**不是源码 —— `compile` 只重建 Node
+> 半侧，`lib/client.js` 来自 `build:client`（esbuild），`dist/installable/` 来自
+> `build:installable`。缺 `build:client` 的包是**静默**坏法：Edge tab 根本不出现，
+> 没有任何报错。
 
 MIT License. 详见 [LICENSE](LICENSE)。

@@ -12,6 +12,7 @@ import {
   probeCloudTarget,
   CloudLlmDelegateAdapterImpl,
 } from '../../src/dsh-adapter/cloud-llm-adapter.ts'
+import { LOCAL_POOL_FORWARD_MARKER } from '../../src/dsh-adapter/host-llm-trace.ts'
 
 type Recorded = { provider: string; model: string }
 
@@ -23,6 +24,9 @@ function mkLlm(routes: string[], opts: {
   const llm: any = {
     registered: [] as Array<{ providers: string[]; adapter: unknown }>,
     calls: [] as Recorded[],
+    /** §7.171: the raw options object handed to `stream()` — the local-pool
+     *  forward marker rides on it, so the assertion must see the whole thing. */
+    rawCalls: [] as any[],
     disposed: false,
     registerAdapter(providers: string[], adapter: unknown) {
       if (opts.duplicate) {
@@ -36,6 +40,7 @@ function mkLlm(routes: string[], opts: {
     listProviders: () => routes.map((id) => ({ id, name: id })),
     stream(options: any) {
       llm.calls.push({ provider: options.provider, model: options.model })
+      llm.rawCalls.push(options)
       const script = opts.script ?? [
         { type: 'text-delta', index: 0, text: 'hi' },
         { type: 'finish', reason: { kind: 'stop' } },
@@ -259,5 +264,124 @@ describe('§7.100 apply() dispatch', () => {
     const dispose = await apply(ctx as any, cfg())
     await dispose()
     assert.ok(audits.includes('llm.cloud.registration.duplicate'))
+  })
+})
+
+/**
+ * §7.171 —— 本地池的 DELEGATE 模式（`llm.local` 没配端点时转发宿主提供商）
+ *
+ * 与云池共用同一个转发类，差别只有两处，且两处都必须钉死：
+ *   1. **口径**：本地池带全部历史、不脱敏（§7.131 的不对称规则第一条）⇒
+ *      转发时打「本地池转发」标记，出网守卫看到它就放行（不裁）。
+ *   2. **防环**：本地池不得委托给 `cloud-llm`（否则 local → cloud → delegate
+ *      → 宿主，多一跳且口径混流）。
+ */
+describe('§7.171 — 本地池的 DELEGATE 模式', () => {
+  const localCfg = (over: Record<string, unknown> = {}): any => ({
+    providers: ['local-llm'],
+    delegateEnabled: true,
+    ...over,
+  })
+
+  const selection = { provider: 'deepseek-official', model: 'dm' }
+  const accessors = (llm: any) => ({
+    llm,
+    getAgentDefaultModel: () => ({ currentSelection: () => selection }),
+  }) as any
+
+  it('转发时带上「本地池转发」标记（守卫据此放行，不裁历史）', async () => {
+    const llm = mkLlm(['deepseek-official'])
+    const d = new CloudLlmDelegateAdapterImpl(
+      localCfg(),
+      accessors(llm),
+      undefined, undefined, undefined, undefined, 'local',
+    )
+    await drain(d.stream({ provider: 'local-llm', model: 'm', messages: [] } as any))
+    assert.equal(llm.calls.length, 1)
+    assert.equal(llm.rawCalls[0]![LOCAL_POOL_FORWARD_MARKER], true)
+  })
+
+  it('云池转发**不**带这个标记（云池照旧按 §7.131 裁剪）', async () => {
+    const llm = mkLlm(['deepseek-official'])
+    const d = new CloudLlmDelegateAdapterImpl(cfg(), accessors(llm))
+    await drain(d.stream({ provider: 'cloud-llm', model: 'm', messages: [] } as any))
+    assert.equal(llm.rawCalls[0]![LOCAL_POOL_FORWARD_MARKER], undefined)
+  })
+
+  it('本地池转发不裁历史：本地段消息原样送出（LOCAL 口径 = 带全部历史）', async () => {
+    const llm = mkLlm(['deepseek-official'])
+    const d = new CloudLlmDelegateAdapterImpl(
+      localCfg(),
+      accessors(llm),
+      undefined, undefined, undefined, undefined, 'local',
+    )
+    const messages = [
+      { role: 'user', content: [{ type: 'text', text: '本地轮输入' }], source: { kind: 'user' } },
+      { role: 'assistant', content: [{ type: 'text', text: '本地模型的回答' }], source: { kind: 'model', provider: 'local-llm', model: 'm1' } },
+      { role: 'user', content: [{ type: 'text', text: '当前轮输入' }], source: { kind: 'user' } },
+    ]
+    await drain(d.stream({ provider: 'local-llm', model: 'm', messages } as any))
+    const forwarded = llm.rawCalls[0]!.messages as Array<{ content: Array<{ text: string }> }>
+    assert.equal(forwarded.length, 3, '本地池转发不得裁掉任何一段历史')
+    assert.equal(forwarded[1]!.content[0]!.text, '本地模型的回答')
+  })
+
+  it('防环：本地池的 delegate 不得委托给 cloud-llm', () => {
+    const llm = mkLlm(['cloud-llm', 'deepseek-official'])
+    const t = probeCloudTarget(
+      { llm, getAgentDefaultModel: () => ({ currentSelection: () => ({ provider: 'cloud-llm' }) }) } as any,
+      localCfg(),
+    )
+    assert.ok(t, '探针必须落到一个可用目标')
+    assert.notEqual(t!.provider, 'cloud-llm')
+    assert.equal(t!.provider, 'deepseek-official')
+  })
+
+  it('防环：本地池的 delegate 不得委托给 local-llm 自己', () => {
+    const llm = mkLlm(['local-llm', 'deepseek-official'])
+    const t = probeCloudTarget(
+      { llm, getAgentDefaultModel: () => ({ currentSelection: () => ({ provider: 'local-llm' }) }) } as any,
+      localCfg(),
+    )
+    assert.ok(t)
+    assert.notEqual(t!.provider, 'local-llm')
+  })
+
+  it('审计行的 kind 前缀按池区分：本地池 llm.local.*，云池 llm.cloud.*', async () => {
+    const entries: any[] = []
+    const auditLog = { log: async (e: any) => { entries.push(e) } }
+
+    const localLlm = mkLlm(['deepseek-official'])
+    const local = new CloudLlmDelegateAdapterImpl(
+      localCfg(), accessors(localLlm), auditLog, undefined, undefined, undefined, 'local',
+    )
+    await drain(local.stream({ provider: 'local-llm', model: 'm', messages: [], sessionId: 's1' } as any))
+
+    const cloudLlm = mkLlm(['deepseek-official'])
+    const cloud = new CloudLlmDelegateAdapterImpl(cfg(), accessors(cloudLlm), auditLog)
+    await drain(cloud.stream({ provider: 'cloud-llm', model: 'm', messages: [], sessionId: 's2' } as any))
+
+    const localKinds = entries.filter(e => e.source === 'local-llm-adapter').map(e => e.kind)
+    const cloudKinds = entries.filter(e => e.source === 'cloud-llm-adapter').map(e => e.kind)
+    assert.ok(localKinds.length > 0, '本地池必须有审计行')
+    assert.ok(localKinds.every(k => k.startsWith('llm.local.')), `本地池的 kind 必须是 llm.local.*: ${localKinds.join(',')}`)
+    assert.ok(cloudKinds.length > 0, '云池必须有审计行')
+    assert.ok(cloudKinds.every(k => k.startsWith('llm.cloud.')), `云池的 kind 必须是 llm.cloud.*: ${cloudKinds.join(',')}`)
+  })
+
+  it('本地池没有可用目标 → NO_CLOUD_TARGET，提示指向 llm.local.*（不是云池那套 env 名）', async () => {
+    const llm = mkLlm(['cloud-llm', 'local-llm'])
+    const d = new CloudLlmDelegateAdapterImpl(
+      localCfg(),
+      { llm, getAgentDefaultModel: () => undefined } as any,
+      undefined, undefined, undefined, undefined, 'local',
+    )
+    await assert.rejects(
+      () => drain(d.stream({ provider: 'local-llm', model: 'm', messages: [] } as any)),
+      (err: any) => err.code === 'NO_CLOUD_TARGET'
+        && /llm\.local\.baseUrl/.test(String(err.message))
+        && /llm\.local\.delegate=false/.test(String(err.message)),
+    )
+    assert.equal(llm.calls.length, 0)
   })
 })

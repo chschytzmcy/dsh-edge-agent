@@ -69,6 +69,9 @@ import { PII_ORDER, PII_PATTERNS } from './pii-utils.js'
 import { egressAuditFields, internalCallerOf } from './llm-internal-caller.js'
 import { sessionIdField } from './session-attribution.js'
 import { getTraceStore, callIdFor } from './llm-trace-store.js'
+// §7.171: 自有池名单的单一事实源（cloud-llm-adapter ↔ local-llm-adapter 互斥用），
+// 以及「本地池转发」标记（打标方 = 本模块，读标方 = host-egress-guard）。
+import { LOCAL_POOL_FORWARD_MARKER, OWN_POOL_PROVIDERS } from './host-llm-trace.js'
 
 export const name = 'cloud-llm-adapter'
 
@@ -1133,7 +1136,7 @@ export interface CloudDelegateTarget {
 }
 
 /** Minimal live-topology surface the delegate needs from ctx.llm. */
-interface DelegateLlmLike {
+export interface DelegateLlmLike {
   listProviders(): Array<{ id: string; name: string }>
   stream(options: GenerateOptions): AsyncIterable<StreamChunk> | Promise<AsyncIterable<StreamChunk>>
   listModels(provider: string): Promise<readonly LlmModelInfo[]>
@@ -1141,7 +1144,7 @@ interface DelegateLlmLike {
 }
 
 /** Structural view of `@deepseek-ai/dsh-agent-default-model`'s service. */
-interface AgentDefaultModelLike {
+export interface AgentDefaultModelLike {
   currentSelection(): { provider?: string; model?: string } | undefined
 }
 
@@ -1151,7 +1154,7 @@ export interface DelegateAccessors {
   getAgentDefaultModel(): AgentDefaultModelLike | undefined
 }
 
-interface DelegateConfigLike {
+export interface DelegateConfigLike {
   /** Own route ids (the cloud-llm set) — recursion guard. */
   providers: string[]
   delegateProvider?: string
@@ -1173,7 +1176,15 @@ export function probeCloudTarget(
   cfg: DelegateConfigLike,
 ): CloudDelegateTarget | null {
   if (cfg.delegateEnabled === false) return null
-  const own = new Set<string>([...cfg.providers, 'local-llm'])
+  // §7.171: 递归护栏 —— **两个自有池互相排除**。
+  // - `cloud-llm` 的 delegate 不得委托给 `local-llm`（realm 语义反转：LOCAL 池的
+  //   口径是带全部历史，让云池借道会把本地历史原样带上去）。
+  // - `local-llm` 的 delegate 不得委托给 `cloud-llm`（否则 local → cloud →
+  //   delegate → 又指回宿主，构成一条多余的一跳 + 口径混流）。
+  //
+  // `OWN_POOL_PROVIDERS` 是这个名单的单一事实源（host-llm-trace.ts），与
+  // 出网守卫的 `isCloudBoundProvider` 同源。
+  const own = new Set<string>([...cfg.providers, ...OWN_POOL_PROVIDERS])
   let live: string[]
   try {
     live = accessors.llm.listProviders().map((p) => p.id)
@@ -1227,6 +1238,16 @@ export class CloudLlmDelegateAdapterImpl extends LlmAdapter {
   private readonly logger: LoggerLike | undefined
   /** §7.131: 出网准备器（裁剪云段 + 脱敏）。 */
   private readonly egress: CloudEgressGuard | undefined
+  /**
+   * §7.171: 这一池的隐私口径。
+   *
+   * - `'cloud'`（默认）：云池 —— 出网裁剪（只带云段历史）+ 脱敏。
+   * - `'local'`：本地池 —— **不裁**（带全部历史）+ 不脱敏（§7.131 不对称规则）。
+   *
+   * delegate 只改变「谁提供模型」，不改变口径 —— 两个池共用同一套转发机制，
+   * 只有这一处口径开关不同。
+   */
+  private readonly poolKind: 'local' | 'cloud'
 
   /** Cached probe result (undefined = not probed yet; null = probed, none). */
   private targetCache: CloudDelegateTarget | null | undefined
@@ -1240,6 +1261,8 @@ export class CloudLlmDelegateAdapterImpl extends LlmAdapter {
     inputGuard?: InputGuardLike,
     logger?: LoggerLike,
     egress?: CloudEgressGuard,
+    /** §7.171: 本地池 = 'local'（不裁剪）；云池 = 'cloud'（默认，裁剪）。 */
+    poolKind: 'local' | 'cloud' = 'cloud',
   ) {
     super()
     this.providersList = [...config.providers]
@@ -1249,11 +1272,30 @@ export class CloudLlmDelegateAdapterImpl extends LlmAdapter {
     this.inputGuard = inputGuard
     this.logger = logger
     this.egress = egress
+    this.poolKind = poolKind
   }
 
   private audit(level: 'debug' | 'info' | 'warn' | 'error' | 'security', kind: string, payload: Record<string, unknown>): void {
     if (!this.auditLog) return
-    void this.auditLog.log({ level, kind, source: 'cloud-llm-adapter', payload }).catch(() => {})
+    // §7.171: 本地池的 delegate 走同一个类，但审计 source/kind 必须能区分 ——
+    // 否则审计链里 `llm.cloud.delegate.*` 会同时装着两个池的行。
+    const source = this.poolKind === 'local' ? 'local-llm-adapter' : 'cloud-llm-adapter'
+    void this.auditLog.log({ level, kind, source, payload }).catch(() => {})
+  }
+
+  /** §7.171: 审计 kind 的池前缀（`llm.local.*` / `llm.cloud.*`）。 */
+  private poolTag(): string {
+    return this.poolKind === 'local' ? 'llm.local' : 'llm.cloud'
+  }
+
+  /** §7.171: 本池在宿主侧的 provider 名（`local-llm` / `cloud-llm`）。 */
+  private poolProvider(): string {
+    return this.poolKind === 'local' ? 'local-llm' : 'cloud-llm'
+  }
+
+  /** §7.171: 日志前缀（`local-llm-adapter` / `cloud-llm-adapter`）。 */
+  private logTag(): string {
+    return this.poolKind === 'local' ? 'local-llm-adapter' : 'cloud-llm-adapter'
   }
 
   /** `llm/adapters-updated` sink: drop cached target + model ids so the
@@ -1336,19 +1378,26 @@ export class CloudLlmDelegateAdapterImpl extends LlmAdapter {
   override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
     const target = this.resolveTarget()
     if (!target) {
+      const tag = this.poolTag()
       this.logger?.error?.(
-        `[cloud-llm-adapter] NO_CLOUD_TARGET sessionId=${(options as { sessionId?: string }).sessionId ?? 'unknown'} provider=${options.provider} delegateEnabled=${this.cfg.delegateEnabled !== false}`,
+        `[${this.logTag()}] NO_CLOUD_TARGET sessionId=${(options as { sessionId?: string }).sessionId ?? 'unknown'} provider=${options.provider} delegateEnabled=${this.cfg.delegateEnabled !== false}`,
       )
-      this.audit('error', 'llm.cloud.delegate.unavailable', { sessionId: options.sessionId,
+      this.audit('error', `${tag}.delegate.unavailable`, { sessionId: options.sessionId,
         provider: options.provider,
         model: options.model,
         delegateProvider: this.cfg.delegateProvider ?? '',
-        hint: 'configure CLOUD_LLM_BASEURL (direct pool), select a model in the host profile, or set DSH_EDGE_CLOUD_DELEGATE=false',
+        hint: this.poolKind === 'local'
+          ? 'configure llm.local.baseUrl (direct pool), select a model in the host profile, or set llm.local.delegate=false to restore the opt-in semantics (route stays unregistered)'
+          : 'configure CLOUD_LLM_BASEURL (direct pool), select a model in the host profile, or set DSH_EDGE_CLOUD_DELEGATE=false',
       })
       throw new LlmError(
-        'cloud-llm-adapter: no cloud provider available (delegate mode). '
-        + 'Configure CLOUD_LLM_BASEURL for a direct pool, select a model in the host profile, '
-        + 'or set DSH_EDGE_CLOUD_DELEGATE=false to restore the §7.35 downgrade-to-LOCAL semantics.',
+        this.poolKind === 'local'
+          ? 'local-llm-adapter: no provider available (delegate mode). '
+            + 'Configure llm.local.baseUrl for a direct pool, select a model in the host profile, '
+            + 'or set llm.local.delegate=false to restore the opt-in semantics (route stays unregistered).'
+          : 'cloud-llm-adapter: no cloud provider available (delegate mode). '
+            + 'Configure CLOUD_LLM_BASEURL for a direct pool, select a model in the host profile, '
+            + 'or set DSH_EDGE_CLOUD_DELEGATE=false to restore the §7.35 downgrade-to-LOCAL semantics.',
         'NO_CLOUD_TARGET',
       )
     }
@@ -1370,10 +1419,15 @@ export class CloudLlmDelegateAdapterImpl extends LlmAdapter {
     // §7.131 (2026-10-27): delegate 路径同样要裁剪 —— 它转发给宿主的云模型，
     // 那也是出网。当前部署走的就是这条（llm.cloud.baseUrl="" = DELEGATE），实测
     // 10-24 的 route.restored 就是带着 28 条本地历史走到这里的。
+    //
+    // §7.171: **本地池的 delegate 不裁** —— `local-llm` 的口径是「带全部历史」
+    // （§7.131 不对称规则第一条）。它转发给宿主提供商这件事不改变这一域的口径：
+    // delegate 只改变「谁提供模型」。对应的出网守卫放行靠
+    // `LOCAL_POOL_FORWARD_MARKER`（见 host-egress-guard.ts）。
     let egressDropped = 0
     let egressReplacements = 0
     let egressSanitized = false
-    if (this.egress) {
+    if (this.egress && this.poolKind === 'cloud') {
       try {
         const prepared = await this.egress.prepare(
           forwardMessages as unknown as EgressMessage[],
@@ -1384,7 +1438,7 @@ export class CloudLlmDelegateAdapterImpl extends LlmAdapter {
         egressReplacements = prepared.replacements
         egressSanitized = prepared.sanitized
       } catch (err: any) {
-        this.audit('security', 'llm.cloud.egress.blocked', {
+        this.audit('security', `${this.poolTag()}.egress.blocked`, {
           provider: target.provider,
           model: wireModel,
           sessionId,
@@ -1397,8 +1451,8 @@ export class CloudLlmDelegateAdapterImpl extends LlmAdapter {
       }
     }
 
-    this.audit('info', 'llm.cloud.delegate.resolved', {
-      from: 'cloud-llm',
+    this.audit('info', `${this.poolTag()}.delegate.resolved`, {
+      from: this.poolProvider(),
       toProvider: target.provider,
       toModel: wireModel,
       source: target.source,
@@ -1409,7 +1463,7 @@ export class CloudLlmDelegateAdapterImpl extends LlmAdapter {
       egressSanitized,
     })
     if (egressDropped > 0 || egressReplacements > 0 || !egressSanitized) {
-      this.audit('info', 'llm.cloud.egress', {
+      this.audit('info', `${this.poolTag()}.egress`, {
         provider: target.provider,
         model: wireModel,
         sessionId,
@@ -1421,7 +1475,7 @@ export class CloudLlmDelegateAdapterImpl extends LlmAdapter {
     }
     try {
       this.logger?.info?.(
-        `[cloud-llm-adapter] DELEGATE start sessionId=${sessionId} from=cloud-llm to=${target.provider}/${wireModel} source=${target.source} messageCount=${forwardMessages.length} droppedLocalHistory=${egressDropped}`,
+        `[${this.logTag()}] DELEGATE start sessionId=${sessionId} from=${this.poolProvider()} to=${target.provider}/${wireModel} source=${target.source} messageCount=${forwardMessages.length} droppedLocalHistory=${egressDropped}`,
       )
     } catch { /* debug only */ }
 
@@ -1432,8 +1486,19 @@ export class CloudLlmDelegateAdapterImpl extends LlmAdapter {
     let finishKind: 'stop' | 'length' | 'tool-calls' | 'error' | 'aborted' | string | undefined
 
     try {
+      // §7.171: 本地池转发时打标记 —— 宿主侧的 `host-egress-guard` 看到它就
+      // **不裁**（本地池口径 = 带全部历史，§7.131 不对称规则第一条）。
+      // 云池不打这个标记 ⇒ 照旧按 §7.131 裁剪云段历史。
+      //
+      // cast 是必要的：`GenerateOptions` 没有索引签名（dsh-llm
+      // `lib/types/types.d.ts:506`），多出来的键会触发 excess-property 检查。
+      // 运行时安全 —— 宿主 `adapterStream` 用 `{...options, ...resolvedConfig}`
+      // spread，未知字段原样透传。
+      const forwardOptions: GenerateOptions = this.poolKind === 'local'
+        ? ({ ...options, [LOCAL_POOL_FORWARD_MARKER]: true } as GenerateOptions)
+        : options
       const streamRaw = this.accessors.llm.stream({
-        ...options,
+        ...forwardOptions,
         messages: forwardMessages,
         provider: target.provider,
         model: wireModel,
@@ -1458,8 +1523,8 @@ export class CloudLlmDelegateAdapterImpl extends LlmAdapter {
       }
     } finally {
       const durationMs = Date.now() - start
-      this.audit('info', 'llm.cloud.delegate.end', {
-        from: 'cloud-llm',
+      this.audit('info', `${this.poolTag()}.delegate.end`, {
+        from: this.poolProvider(),
         toProvider: target.provider,
         toModel: wireModel,
         sessionId,
@@ -1471,7 +1536,7 @@ export class CloudLlmDelegateAdapterImpl extends LlmAdapter {
       })
       try {
         this.logger?.info?.(
-          `[cloud-llm-adapter] DELEGATE done sessionId=${sessionId} from=cloud-llm to=${target.provider}/${wireModel} source=${target.source} durationMs=${durationMs} resultLen=${assembledLen} finishKind=${finishKind ?? 'unknown'}`,
+          `[${this.logTag()}] DELEGATE done sessionId=${sessionId} from=${this.poolProvider()} to=${target.provider}/${wireModel} source=${target.source} durationMs=${durationMs} resultLen=${assembledLen} finishKind=${finishKind ?? 'unknown'}`,
         )
       } catch { /* debug only */ }
     }
@@ -1485,15 +1550,15 @@ export class CloudLlmDelegateAdapterImpl extends LlmAdapter {
           ? options.sessionId
           : 'default'
         if (consecutiveCount > MAX_CONSECUTIVE_TOOL_CALLS) {
-          this.audit('warn', 'llm.cloud.max_turns_exceeded', {
-            provider: 'cloud-llm',
+          this.audit('warn', `${this.poolTag()}.max_turns_exceeded`, {
+            provider: this.poolProvider(),
             toProvider: target.provider,
             model: wireModel,
             sessionId: sessionKeyForLog,
             consecutiveCount,
           })
           this.logger?.error?.(
-            `[cloud-llm-adapter] per-session max-turns exceeded (session=${sessionKeyForLog}, count=${consecutiveCount}/${MAX_CONSECUTIVE_TOOL_CALLS})`,
+            `[${this.logTag()}] per-session max-turns exceeded (session=${sessionKeyForLog}, count=${consecutiveCount}/${MAX_CONSECUTIVE_TOOL_CALLS})`,
           )
           resetSessionToolCallCount(options.sessionId)
           throw new LlmError(

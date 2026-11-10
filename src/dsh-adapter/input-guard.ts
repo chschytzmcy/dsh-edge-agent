@@ -67,8 +67,14 @@ export const inject = [
   // 就被 if 跳过。Boot 顺序无死锁:realm-skill-bridge 在 cordis.patch.yml
   // 排在 http-api 之前(已确认 line 317),input-guard 同样靠后启动。
   'realmSkillBridge',
-  // §7.101 (2026-10-21): 确认 local-llm 路由真的存在（local-llm 是 opt-in
-  // 的：未配置端点时 adapter 不注册任何路由）。
+  // §7.171 (2026-11-10): 确认 local-llm 路由真的存在。
+  //
+  // local-llm 现在有两种上线方式：
+  //   - 配置了 `llm.local.baseUrl` → 直连自有池（一直如此）；
+  //   - 没配置 → **DELEGATE 模式**（转发宿主提供商），路由照样注册 ⇒
+  //     `modelRouter.isAvailable('local-llm')` 为 true，与直连时无差别。
+  // 只有 `llm.local.delegate=false`（kill switch）才回到「不注册任何路由」的
+  // opt-in 语义 —— 那时 LOCAL 意图必须 fail-closed，不能改写到一条不存在的路由。
   //
   // 刻意**不**把 modelRouter 放进 inject：
   //   - localAvailable() 已经用 try { ctx.get(...) } catch {} 做
@@ -471,10 +477,14 @@ export class InputGuardServiceImpl extends Service {
   }
 
   /**
-   * §7.101 (2026-10-21): "本地路由现在到底可用吗" —— local-llm 是 opt-in 的：
-   * 未设置 DSH_EDGE_LOCAL_LLM_BASEURL 时 local-llm-adapter 不注册任何路由
-   * （见 local-llm-adapter.apply）。intent=LOCAL 按隐私裁决必须走本地模型，
-   * 所以在改写 provider 之前必须确认目标路由真的存在。
+   * §7.171 (2026-11-10): "本地路由现在到底可用吗" —— local-llm 有两种上线方式：
+   * 配置了 `llm.local.baseUrl` → 直连自有池；没配置 → DELEGATE 模式（转发宿主
+   * 提供商，见 local-llm-adapter.apply）。**两种情况下路由都是注册了的** ⇒
+   * `modelRouter.isAvailable('local-llm')` 即可判据，与直连时完全一致。
+   *
+   * 只有 `llm.local.delegate=false`（kill switch）才会让路由不存在 —— 那时
+   * intent=LOCAL 按隐私裁决必须走本地模型，在改写 provider 之前必须确认目标
+   * 路由真的存在，否则会把「本地」意图发给一条不存在的路由。
    *
    * 旧上游 / fake ctx 没有 listProviders 时无法证伪 → 保持旧行为（照常改写），
    * 不让老环境因这次收紧而回归。
@@ -1633,10 +1643,12 @@ export class InputGuardServiceImpl extends Service {
 
     const state = this.stepState.get(sessionId)
     if (state?.downgraded) {
-      // §7.101 (2026-10-21): 改写前先确认本地路由存在。
+      // 改写前先确认本地路由存在。
       //
-      // 背景：local-llm 是 opt-in 的（未设 DSH_EDGE_LOCAL_LLM_BASEURL 时
-      // adapter 不注册路由）。intent=LOCAL 必须走本地模型（隐私裁决），
+      // 背景：local-llm 的路由存在与否取决于配置（§7.171）：配了
+      // `llm.local.baseUrl` → 直连自有池；没配 → DELEGATE 模式（转发宿主
+      // 提供商），路由照样注册。只有 `llm.local.delegate=false`（kill switch）
+      // 才让路由不存在。intent=LOCAL 必须走本地模型（隐私裁决），
       // 但目标路由不存在时，把 provider 改写成 local-llm 只会得到一条
       // 必然失败的请求——实测是打到本机 8080 上一个无关的鉴权 daemon，
       // 报 HTTP 401 "Missing bearer token"，完全无法指导用户。

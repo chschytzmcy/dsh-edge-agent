@@ -17712,3 +17712,92 @@ file-logger 行块」失效（`scripts/minimal-bundle-rig.sh` 的 awk 剥离、
 
 vitest / eslint / tsc×2 / verify:build（23 项，含 `verify:doc-links` 0 断链 0 孤儿）
 结果见提交说明。
+
+## §7.171 `llm.local` 未配置时也走 DELEGATE（转发宿主提供商）（2026-11-10）
+
+主人要求（2026-11-10）：
+
+> 增加一个功能，如果 llm.local 没有配置，也和 llm.cloud 一样复用 DELEGATE 模式（转发宿主提供商）。要 edge 自有直连云池时填 baseUrl + model + keyRef。
+
+配套裁决：**隐私口径按 LOCAL**（不脱敏、带全部历史，与直连时完全一致）；**实现范围完整**（配置 + 适配器 + 护栏口径 + 文档 + 测试 + 门禁）。
+
+### 一、为什么做（对称性缺口）
+
+两个池的「没配端点」行为本来不对称：
+
+| 池 | 没配端点时 | 依据 |
+|---|---|---|
+| `llm.cloud` | DELEGATE —— 转发宿主 profile 选中的提供商 | §7.100 |
+| `llm.local` | **什么都不注册**（opt-in）| 2026-10-21 的收紧 |
+
+后果是部署上的反直觉：没配 `llm.local` 的机器上，**云路由是通的、本地路由是死的**。主人要的正是把这条不对称抹平。
+
+### 二、两种模式 + 一个 kill switch
+
+| `llm.local.baseUrl` | `llm.local.delegate` | 行为 |
+|---|---|---|
+| 填了 | 任意 | **DIRECT** —— 自有直连池（密钥走 `llm.local.keyRef`，行为不变）|
+| 留空 | `true`（默认）| **DELEGATE** —— 转发宿主提供商（凭据归宿主 adapter，edge 侧不碰 secret）|
+| 留空 | `false` | **opt-in 语义** —— 不注册任何路由，LOCAL 意图 fail-closed 报错 |
+
+`delegate=false` 是**关闭方向取最严**：文件里的 `llm.local.delegate` 与插件 Config 层的 `delegate` 任一为 false 即关闭（`local-llm-adapter.apply`：`pool.delegate !== false && config.delegate !== false`）。
+
+### 三、口径：LOCAL = 不裁、不脱敏（§7.131 的不对称规则第一条）
+
+delegate 只改变「**谁提供模型**」，不改变「**这一域的口径**」。于是：
+
+- **云池转发**照旧按 §7.131 裁剪（只带云段历史）+ 脱敏；
+- **本地池转发**带**全部**历史、不脱敏 —— 与它直连时一模一样。
+
+实现上只差两处，都在同一个类里（`CloudLlmDelegateAdapterImpl` + `poolKind`）：
+
+1. `poolKind === "local"` ⇒ 不构造 `CloudEgressGuard` ⇒ 根本不裁；
+2. 转发时在 options 上打 `LOCAL_POOL_FORWARD_MARKER`（`__edgeLocalPoolForward`）⇒ 宿主侧的 `host-egress-guard`（§7.151，挂在 `llm/stream` waterfall）看到它就**放行**。
+
+第 2 条是必须的：转发后 `provider` 已经是宿主的目标路由（如 `deepseek-official`），与「用户自己选了那个模型」在 provider 维度上**无法区分** —— 光看 provider 会把本地池的转发误判成出网并裁掉本地段历史。标记是唯一的区分依据。
+
+标记打在 options 上是安全的：宿主 `LlmRuntime.stream` 走 `{...options, ...resolvedConfig}` 的 spread（`@deepseek-ai/dsh-llm` `lib/index.js` 的 `adapterStream`），未知字段原样透传。
+
+### 四、防环：两个自有池互相排除
+
+`probeCloudTarget` 的候选集排除 `OWN_POOL_PROVIDERS`（`["local-llm", "cloud-llm"]`，住在 `host-llm-trace.ts`，与出网守卫的 `isCloudBoundProvider` 同源）：
+
+- `cloud-llm` 的 delegate 不得委托给 `local-llm`（本地池口径是带全部历史，让云池借道会把本地历史原样带上去）；
+- `local-llm` 的 delegate 不得委托给 `cloud-llm`（否则 local → cloud → delegate → 又指回宿主，多一跳且口径混流）。
+
+（对云池是**行为不变**的：旧的 own 集合是 `[...cfg.providers, "local-llm"]`，与新的 `[...cfg.providers, ...OWN_POOL_PROVIDERS]` 在云池场景下是同一个集合。）
+
+### 五、审计口径：两个池的行必须分得开
+
+两个池共用同一个转发类 ⇒ 审计 source/kind 必须按池分流，否则审计链里 `llm.cloud.*` 会同时装着两个池的行：
+
+| 池 | source | kind 前缀 |
+|---|---|---|
+| 本地池 | `local-llm-adapter` | `llm.local.*` |
+| 云池 | `cloud-llm-adapter` | `llm.cloud.*` |
+
+### 六、改动清单
+
+| 文件 | 改了什么 |
+|---|---|
+| `src/dsh-adapter/edge-config.ts` | `EdgeLlmPool` 加 `delegate` / `delegateProvider` / `delegateModel`；`localPool()` 透出这三个字段（`delegate` 默认 true）；`EdgeCloudPool` 改为 `EdgeLlmPool` 的别名 |
+| `src/dsh-adapter/cloud-llm-adapter.ts` | `CloudLlmDelegateAdapterImpl` 加 `poolKind`（`local`/`cloud`）；审计 kind / source / 日志前缀按池分流；转发时打 `LOCAL_POOL_FORWARD_MARKER`；own 集合换成 `OWN_POOL_PROVIDERS` |
+| `src/dsh-adapter/local-llm-adapter.ts` | `apply()` 的「没端点」分支改为**注册 delegate 适配器**（`delegate=false` 才回到「不注册」）；新增 `applyDelegate()`；`Config` 加 `delegate` / `delegateProvider` / `delegateModel` |
+| `src/dsh-adapter/host-llm-trace.ts` | 新增 `LOCAL_POOL_FORWARD_MARKER`（打标方与读标方分属两个模块，与 `OWN_POOL_PROVIDERS` 同处一地）|
+| `src/dsh-adapter/host-egress-guard.ts` | `plan()` 见标记 ⇒ 返回 undefined（不裁）；新增 `isLocalPoolForward()` |
+| `src/dsh-adapter/input-guard.ts` | **逻辑不变**（`localAvailable()` 靠 `modelRouter.isAvailable`，delegate 注册后自然为 true）；注释改口径 |
+| `config/edge.example.json` | `llm.local` 的 `_comment` 改成与 `llm.cloud` 对称的措辞 + 补三个 delegate 字段 |
+
+### 七、查实的一条事实（决定实现顺序）
+
+**文件配置赢过 cordis 配置。** `apply()` 里 cordis 的 `config.baseUrl` 优先于文件，但桌面 preset 的 `local-llm-adapter` 行**不带** `baseUrl` ⇒ cordis 层是空的 ⇒ 走文件。审计链实证：本机 `llm.local.start` 的 `baseUrl` 是 `https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1`（文件里的阿里云 token-plan），**不是** `cordis.yml` 里那行 `127.0.0.1:8080` 硬编码默认值。
+
+⇒ 「文件里 `llm.local.baseUrl` 留空 ⇒ 进 delegate 模式」这条路径在桌面部署上**真的可达**，不是死代码。
+
+### 八、顺带查实并修正的一处引用失真
+
+代码里多处把「local-llm 是 opt-in」这条规矩标成 **§7.101**，但 `docs/PROGRESS.md` 的 §7.101 是「Edge tab：桌面右栏 4 panel」（2026-10-20）—— 与 opt-in 那条（2026-10-21）不是同一件事（那条的落点是 §7.102 配置归一）。⇒ 本轮新增的注释一律引 §7.171，并把**新写**的引用改正；**存量**的 §7.101 引用未批量改写（不在本轮范围，记档）。
+
+### 九、门禁
+
+vitest / eslint / tsc×2 / verify:build（23 项，含 `verify:doc-links` 0 断链 0 孤儿）结果见提交说明。

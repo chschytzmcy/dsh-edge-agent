@@ -68,7 +68,7 @@ import {
   planCloudEgress,
   type EgressMessage,
 } from './cloud-egress.js'
-import { OWN_POOL_PROVIDERS } from './host-llm-trace.js'
+import { LOCAL_POOL_FORWARD_MARKER, OWN_POOL_PROVIDERS } from './host-llm-trace.js'
 
 /** 一通 `llm/stream` 调用里守卫用得到的字段（结构化描述，不依赖宿主类型）。 */
 export interface HostEgressRequest {
@@ -77,6 +77,8 @@ export interface HostEgressRequest {
   sessionId?: unknown
   purpose?: unknown
   messages?: unknown
+  /** §7.171: 「本地池 delegate 转发」标记（见 `LOCAL_POOL_FORWARD_MARKER`）。 */
+  [LOCAL_POOL_FORWARD_MARKER]?: unknown
 }
 
 /** 裁剪结果。 */
@@ -131,6 +133,23 @@ export function planHostEgress(
     droppedCount: plan.droppedCount,
     histogram: assistantProviderHistogram(messages),
   }
+}
+
+/**
+ * §7.171: 这通调用是不是「本地池 delegate 转发」？
+ *
+ * 本地池转发给宿主提供商时，`provider` 已经是宿主的目标路由（如
+ * `deepseek-official`）—— 与「用户直接选了那个模型」在 provider 维度上
+ * **无法区分**。唯一的区别在发起方：本地池的口径是「带全部历史」，宿主原生
+ * 路由的口径是「只带云段历史」。所以转发方必须在请求上打标记。
+ *
+ * 标记值刻意做成 truthy 判据（而不是 `=== true`）：宿主 spread options 时
+ * 原样透传，值是什么不重要，**有没有**才重要。
+ */
+export function isLocalPoolForward(request: HostEgressRequest | undefined): boolean {
+  if (request == null || typeof request !== 'object') return false
+  const flag = (request as Record<string, unknown>)[LOCAL_POOL_FORWARD_MARKER]
+  return flag !== undefined && flag !== null && flag !== false
 }
 
 /**
@@ -191,8 +210,12 @@ export class HostEgressGuard {
    * 这通调用要不要裁？裁的话给出裁剪结果。
    *
    * 不裁的情形（逐条都要有理由，缺一条就是一条漏）：
+   * - 已经裁过的请求（重新派发进来的那一趟）⇒ 直接放行。
    * - 没有 provider ⇒ 不是模型调用（防御）。
    * - 自有池 / 本地池 ⇒ 按裁决不带云段 / 带全部历史。
+   * - **本地池 delegate 转发**（§7.171）⇒ 这通调用由本地池发起，口径是
+   *   「带全部历史」⇒ 不裁。转发后 `provider` 是宿主的目标 provider，光看
+   *   provider 判不出来（那是宿主原生路由），只能靠转发标记区分。
    * - `purpose` 非空 ⇒ 宿主的内部用途（compaction / session-title），
    *   不是主人关心的「这一轮对话」，裁它会破坏子系统的语义。
    * - 没有可识别的用户输入 ⇒ `planCloudEgress` 走退化路径（全部保留）。
@@ -202,6 +225,9 @@ export class HostEgressGuard {
     // 已经裁过的请求（重新派发进来的那一趟）⇒ 直接放行：再裁一次是幂等的，
     // 但**再派发一次就是递归**。
     if (request != null && typeof request === 'object' && this.isTrimmed(request)) return undefined
+    // §7.171: 本地池 delegate 转发 ⇒ 不裁（LOCAL 口径：带全部历史）。
+    // 标记由 `CloudLlmDelegateAdapterImpl` 在 poolKind='local' 时打上。
+    if (isLocalPoolForward(request)) return undefined
     const provider = typeof request?.provider === 'string' ? request.provider : ''
     if (provider.length === 0) return undefined
     const purpose = typeof request?.purpose === 'string' ? request.purpose : ''

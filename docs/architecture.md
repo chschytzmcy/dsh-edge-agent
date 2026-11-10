@@ -9624,15 +9624,24 @@ intent-router `defaultCategory`、http-api 无分类器兜底）都是 `LOCAL`�
 出网必脱敏：脱敏失败 fail-closed 降级回本地，绝不带原文上云。
 详见 [privacy-policy.md](privacy-policy.md)。
 
-### §7.100 云池可选（DELEGATE 模式）
+### §7.100 / §7.171 两个池都可选（DELEGATE 模式）
 
 不配置 `CLOUD_LLM_BASEURL` 时，`cloud-llm` 路由进入 **DELEGATE 模式**——
 按「显式指定 → 宿主 profile 当前模型选择（桌面 GUI 实时）→ 活的宿主云
 路由探针」三级链转发，凭据解析归宿主，edge 侧不碰任何 secret；三条都
 没有则显式报错（502 / SSE error）。配置了 `CLOUD_LLM_BASEURL` 则维持
-自研直连（§7.83 语义不变）。**唯一必配的是 LOCAL 池**；意图分类与
-prompt-guard 模型检测只使用本地模型，未配置本地端点时自动降级
-关键词/正则规则档。
+自研直连（§7.83 语义不变）。
+
+§7.171（2026-11-10）把 `llm.local` 改成与 `llm.cloud` **完全对称**：不配置
+`llm.local.baseUrl` 时，`local-llm` 路由同样进入 DELEGATE 模式（转发宿主
+profile 的提供商）。**两个池都不是必配的**；`llm.local.delegate=false` 是
+kill switch（路由不注册，LOCAL 意图 fail-closed）。
+
+> ⚠️ 代价要说清楚：意图分类与 prompt-guard 模型检测钉在 `local-llm` 上，
+> 端点留空（DELEGATE）时它们会跑在**宿主模型**上 ⇒「待检测的用户原文」也会
+> 上行。要让这两个内部阶段留在设备上，就得填 `llm.local.baseUrl` 指向自有
+> 端点（或用 `delegate=false` 让它们降级到关键词/正则规则档）。
+> 已知边界见 [privacy-policy.md](privacy-policy.md#已知边界)。
 
 > ⚠️ `DSH_EDGE_PROVIDER` 只作 agent-loop 兜底指针与 input-guard 取证镜像，
 > 不会改变实际路由。实际选择由意图分类结果决定。

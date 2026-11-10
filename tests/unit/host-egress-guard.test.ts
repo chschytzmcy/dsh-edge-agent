@@ -17,8 +17,10 @@ import { describe, it } from 'vitest'
 import {
   HostEgressGuard,
   isCloudBoundProvider,
+  isLocalPoolForward,
   planHostEgress,
 } from '../../src/dsh-adapter/host-egress-guard'
+import { LOCAL_POOL_FORWARD_MARKER } from '../../src/dsh-adapter/host-llm-trace'
 import type { EgressMessage } from '../../src/dsh-adapter/cloud-egress'
 
 function userMsg(text: string): EgressMessage {
@@ -172,6 +174,60 @@ describe('§7.151 — 守卫的判定', () => {
       get() { throw new Error('cannot get property "modelRouter" without inject') },
     } as any)
     assert.deepEqual(guard.localProviders(), ['local-llm'])
+  })
+})
+
+/**
+ * §7.171 —— 本地池 delegate 转发时，守卫必须放行（不裁）
+ *
+ * 背景：本地池没配端点时转发给宿主提供商（§7.171 新增）。转发后 `provider`
+ * 是宿主的目标路由（如 `deepseek-official`）—— 与「用户直接选了那个模型」在
+ * provider 维度上**无法区分**，光看 provider 会把本地池的转发误判成出网并裁掉
+ * 本地段历史（与 §7.131 的不对称规则冲突：本地池带**全部**历史）。
+ *
+ * 唯一的区分依据是转发方打上的标记 —— 守卫读到就放行。
+ */
+describe('§7.171 — 本地池转发 ⇒ 守卫放行（不裁）', () => {
+  const ctx = { reflect: { provide() { return () => {} } }, provide() { return () => {} } } as any
+
+  it('标记存在 ⇒ 不裁（哪怕 provider 是宿主自选路由）', () => {
+    const guard = new HostEgressGuard(ctx)
+    const plan = guard.plan({
+      provider: 'deepseek-official',
+      model: 'deepseek-v4.1-flash',
+      messages: mixedHistory(),
+      [LOCAL_POOL_FORWARD_MARKER]: true,
+    })
+    assert.equal(plan, undefined, '本地池转发必须原样放行 —— 本地池的口径是带全部历史')
+  })
+
+  it('同一个请求去掉标记 ⇒ 照旧裁（标记是唯一的区分依据，不能放宽别的路径）', () => {
+    const guard = new HostEgressGuard(ctx)
+    const plan = guard.plan({
+      provider: 'deepseek-official',
+      model: 'deepseek-v4.1-flash',
+      messages: mixedHistory(),
+    })
+    assert.ok(plan, '没有标记的宿主路由调用仍要裁')
+    assert.equal(plan!.droppedCount, 2)
+  })
+
+  it('isLocalPoolForward：认标记、不认别的键', () => {
+    assert.equal(isLocalPoolForward({ [LOCAL_POOL_FORWARD_MARKER]: true }), true)
+    assert.equal(isLocalPoolForward({ [LOCAL_POOL_FORWARD_MARKER]: 1 }), true)
+    assert.equal(isLocalPoolForward({ [LOCAL_POOL_FORWARD_MARKER]: false }), false)
+    assert.equal(isLocalPoolForward({ [LOCAL_POOL_FORWARD_MARKER]: undefined }), false)
+    assert.equal(isLocalPoolForward({}), false)
+    assert.equal(isLocalPoolForward(undefined), false)
+  })
+
+  it('标记透传宿主 spread 后仍能被识别（未知字段不被拒）', () => {
+    // 宿主 adapterStream 用 `{...options, ...resolvedConfig}` spread ——
+    // 未知字段原样透传。守卫读到的是 spread 之后的对象。
+    const options = { provider: 'deepseek-official', messages: mixedHistory() }
+    const forwarded = { ...options, [LOCAL_POOL_FORWARD_MARKER]: true }
+    const guard = new HostEgressGuard(ctx)
+    assert.equal(guard.plan(forwarded as any), undefined)
   })
 })
 

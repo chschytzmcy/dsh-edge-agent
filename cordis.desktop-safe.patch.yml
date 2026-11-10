@@ -17,25 +17,31 @@
 #   - Realm-aware skill/tool bridge
 #   - privacy policy + PII sanitizer
 #   - prompt guard + intent router + input guard orchestrator
-#   - §7.100 LLM routes: cloud-llm as a DELEGATE adapter (forwards to the
-#     host profile's own configured model provider — the Desktop GUI's model
-#     picker — with host-side credential resolution; the bundle never reads
-#     any secret) + local-llm direct adapter (live only when the operator
-#     exports DSH_EDGE_LOCAL_LLM_BASEURL).
+#   - §7.100 / §7.171 LLM routes: BOTH pools are DELEGATE adapters by default
+#     (they forward to the host profile's own configured model provider — the
+#     Desktop GUI's model picker — with host-side credential resolution; the
+#     bundle never reads any secret). A pool becomes a DIRECT (edge-owned) one
+#     only when its own endpoint is configured in config/edge.json
+#     (llm.local.baseUrl / llm.cloud.baseUrl).
 #
 # Notes:
-#   - Only LOCAL_LLM_* is required for the full privacy experience. With no
-#     local endpoint, intent classification / guard model-detection stay on
-#     the keyword/regex tier by design (user ruling 2026-10-18: internal LLM
-#     calls must never borrow the host's cloud model).
+#   - §7.171 (2026-11-10) made llm.local symmetric with llm.cloud: with no
+#     `llm.local.baseUrl` the local route still registers, but forwards to the
+#     host provider. Consequence to be aware of: the internal LLM stages
+#     (intent classification / guard model-detection) are pinned to
+#     `local-llm`, so with no local endpoint they now run on the host's model
+#     and the text under inspection rides along. The 2026-10-18 ruling
+#     ("internal LLM calls must never borrow the host's cloud model") is
+#     therefore honoured only when a local endpoint IS configured — or when
+#     `llm.local.delegate=false`, which leaves the route unregistered and
+#     sends the stages back to their keyword/regex tier.
 #   - SANITIZED/CLOUD answers egress through the host's own provider — the
 #     same destination plain Desktop use already picks — after PII
 #     placeholder sanitization.
-#   - LLM-based guard/intent detection is intentionally conservative here.
-#     Prompt-guard model detection is OFF by default (set
-#     DSH_EDGE_GUARD_MODEL=true to opt in once a local endpoint exists);
-#     intent-router falls back to keyword/policy rules when its classifier
-#     provider is unavailable.
+#   - LLM-based guard/intent detection config comes from config/edge.json
+#     (stages.guard.* / stages.intent.*): both are ON by default, both point
+#     at `local-llm`, and intent-router falls back to keyword/policy rules
+#     when its classifier provider is unavailable.
 #   - The privacy pipeline still intercepts every agent step. That is expected:
 #     this is what makes it an edge-agent. If you want zero behavior change,
 #     set DSH_EDGE_INPUT_GUARD=false before starting/restarting the profile.

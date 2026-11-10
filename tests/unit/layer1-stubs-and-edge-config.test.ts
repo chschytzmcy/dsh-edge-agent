@@ -362,6 +362,38 @@ describe('edge-config loader', () => {
     assert.equal(pool.apiKey, undefined)
   })
 
+  // §7.171: 本地池与云池对称 —— baseUrl 留空 = DELEGATE（转发宿主提供商）。
+  it('localPool with an empty baseUrl means DELEGATE mode (default true)', () => {
+    const cfg = {
+      ...DEFAULT_EDGE_CONFIG,
+      secrets: {},
+      llm: { local: { baseUrl: '', model: '', keyRef: '', delegate: true } },
+    } as any
+    const pool = localPool(cfg)
+    assert.equal(pool.baseUrl, undefined)
+    assert.equal(pool.delegate, true)
+  })
+
+  it('localPool honours the delegate kill switch (delegate=false)', () => {
+    const cfg = {
+      ...DEFAULT_EDGE_CONFIG,
+      secrets: {},
+      llm: { local: { baseUrl: '', model: '', keyRef: '', delegate: false } },
+    } as any
+    assert.equal(localPool(cfg).delegate, false)
+  })
+
+  it('localPool carries the optional delegate target overrides', () => {
+    const cfg = {
+      ...DEFAULT_EDGE_CONFIG,
+      secrets: {},
+      llm: { local: { delegateProvider: 'deepseek-account', delegateModel: 'flash' } },
+    } as any
+    const pool = localPool(cfg)
+    assert.equal(pool.delegateProvider, 'deepseek-account')
+    assert.equal(pool.delegateModel, 'flash')
+  })
+
   it('jevPool exposes the intent-recognizer pool', () => {
     const cfg = {
       ...DEFAULT_EDGE_CONFIG,
