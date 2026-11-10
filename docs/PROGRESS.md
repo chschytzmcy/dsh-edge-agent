@@ -17617,3 +17617,98 @@ file-logger 行块」失效（`scripts/minimal-bundle-rig.sh` 的 awk 剥离、
 - 定向 vitest：guard 29 + integration 3 + file-logger 24 = 56 passed。
 - 全量门禁（vitest / eslint / tsc×2 / verify:build / verify-doc-links）结果
   见提交说明与下一节末尾记录。
+
+## §7.170 极简线成套退役：`bundle-minimal/` 及其 rig 删掉（2026-11-10）
+
+主人裁决（2026-11-10）：
+
+> 删除去掉 bundle-minimal，这个是之前简化流程验证的。
+
+裁决的实质是「**简化流程验证的载体退役**」——`bundle-minimal/` 从来不是运行时代码，
+是 §7.59 那套「最小部署实证」的静态面。本节记的是：删了什么、为什么零生产影响、
+连带改了哪些地方、**明确失去了什么**。
+
+### 一、删除清单
+
+| 路径 | 是什么 | 角色 |
+|---|---|---|
+| `bundle-minimal/cordis.patch.yml` | 极简派工单（1 个 insert 段 9 行 = file-logger + audit-log + 7 插件执法闭包） | rig 静态面 |
+| `bundle-minimal/package.json` | 极简花名册（12 条 exports = 3 资源 + 9 代码入口） | rig 静态面 |
+| `bundle-minimal/skill-realms.seed.json` | realm 种子（**刻意不含**生产私有 `ets-*` 映射） | rig 静态面 |
+| `bundle-minimal/README.md` | 极简线说明 | rig 静态面 |
+| `scripts/minimal-bundle-rig.sh` | 真机 rig（deploy → 冒烟断言 B1-B4 → 反事实探针 P1-P5） | rig 驱动 |
+| `tests/unit/bundle-minimal.test.ts` | CI 漂移锁（13 处断言） | rig 的机器锁 |
+
+删除走的是受控环境下的可恢复删除（`rm --` ⇒ 回收站），不是永久抹除。
+
+### 二、零生产影响：六条可查证的事实
+
+1. **不进任何发布产物** —— `package.json#files` 白名单是
+   `["lib","config","cordis.patch.yml","cordis.desktop-safe.patch.yml","cordis.yml","presets","!config/edge.json"]`，
+   **不含 `bundle-minimal`** ⇒ 不进 npm 包、不进 tarball、不进 `dist/installable/`。
+   ⇒ 已发布产物不受影响，删目录不会让任何在手安装变成坏包。
+2. **生产的 realm 路径不指向它** —— `cordis.yml` 与 `profiles/dsh-edge-agent/cordis.patch.yml`
+   都指向 `~/.dsh-edge-agent/skill-realms.json`；`presets/edge*.patch.yml` 走
+   `config/edge.json` 的 `privacy.realmConfigPath`；生产默认模板是**另一个文件**
+   `templates/skill-realms.default.json`（含 `ets-*` 生产映射，与极简种子内容不同）。
+   ⇒ 删掉不影响生产 realm 闸门。
+3. `src/dsh-adapter/input-guard.ts` 的 2 处引用是**注释**（讲「为什么不给 input-guard
+   声明 model-router」），不是代码依赖 ⇒ 已随注释改写一并清理。
+4. **CI 工作流不引用**它 —— `.github/workflows/{ci,publish,upstream-latest}.yml` 均无
+   `bundle-minimal` / `minimal-bundle-rig`；只有 vitest 会扫到那个测试文件。
+5. `install.sh` / `scripts/deploy-profile.sh` / `scripts/build-{macos,linux,windows}.sh` /
+   `Makefile` 均不引用 ⇒ 任何现役部署路径都不碰这个目录。
+6. `eslint.config.js` 的 `'bundle-minimal/**'` 只是 ignore 条目 ⇒ 删目录后成空规则，已清理。
+
+### 三、连带改动（防止留下指向不存在目录的陈述）
+
+| 文件 | 改了什么 |
+|---|---|
+| `eslint.config.js` | 删 `'bundle-minimal/**'` ignore 行 |
+| `src/dsh-adapter/input-guard.ts` | 2 处注释改口径（不再指向已删目录；保留「注释里别用单引号包 service 名」的纪律本身） |
+| `docs/architecture.md` | 手工部署第 ⑤ 步的 realm 种子来源 + §7.59 实证结论那条 bullet（标注「结论保留、载体已退役」） |
+| `docs/deploy-minimal-files.md` | 抬头状态行、铁律 3 的措辞、「一图流」下的极简派工单注记；并补一条 §7.170 修订记录 |
+| `docs/README.md` | 「已被删除的文档」表补一行留档（防复发）+ 从「已刷新的文档」列表里摘掉 `bundle-minimal/README.md` |
+
+### 四、明确**失去**了什么（主人裁决：回归锁不迁移，结论只留文档）
+
+1. **inject 闭包锁** —— 「派工单名单必须覆盖全部非宿主依赖（防产品侧新增 inject 后
+   rig 静默 pending）」是**全仓唯一**检查这条结论的活门禁。`verify:plugin-spec` /
+   `verify:patch-surface` / `verify:preset-isolate` 管的是**产品面**，管不到
+   「最小执法集 = 7 插件闭包」这条**推导**。⇒ 这条推导现在只有文档，没有机器校验。
+2. **R7 存储隔离锁** —— `audit-log.root` / `privacy-policy.policyPath` 是 Schema 必填
+   （缺了 schemastery **静默丢插件**，连 boot 报错都没有），`realm-skill-bridge.configPath`
+   **有代码默认值且硬编码生产 root** ⇒ 三处必须显式指走否则污染生产共享 root。
+   这条**知识**留在 `docs/deploy-minimal-files.md` ② 节与 `docs/architecture.md`，**锁**没了。
+3. **可复跑的真机 rig** —— 「最小部署能不能跑起来」以后要重搭。
+4. **那张「只 insert 9 行、零 config 零 disable」的极简派工单** —— 本来是全量 patch 的
+   有用对照组（证明隐私栈可独立于宿主全局改写挂载）。
+
+### 五、**保留**的部分
+
+- `docs/PROGRESS.md` §7.59 系列的 **19 处逐字 boot 签名**原样存档 —— §7.59.4 主人拍板
+  「文件可删，实证不可删」，本轮遵守。
+- `docs/deploy-minimal-files.md` 的**结论**（铁律 3 的 7 插件闭包推导、三层语义
+  mount ≠ active ≠ enforced、缺件行为）—— 按裁决只留文档，不再有机器锁。
+
+### 六、顺带查实并修正的两处失真
+
+1. **realm 默认模板的运行时路径算错一级（未修，记档）** ——
+   `realm-skill-bridge.ts:291` 的 `resolve(dirname(thisFile),'..','..','..')`：
+   编译产物在 `lib/dsh-adapter/` 下 ⇒ 三级上溯落在**仓库根的上一级**
+   （本机实测落在 `C:\Users\cheng\GolandProjects\gitlab`），而模板在
+   `<repo>/templates/skill-realms.default.json` ⇒ `existsSync` **恒 false** ⇒
+   `ensureDefaultConfig` 在**任何**部署形态下都是 no-op。代码注释自称
+   「repo root is three levels up from dist」—— 实际是两 levels（`dist/dsh-adapter/` 往上两级）。
+   且 `templates/` **不在** `package.json#files` 白名单里 ⇒ 发布产物里根本没有该目录。
+   ⇒ 「缺表时自动从模板兜底拷贝」这条路**从来没生效过**。**本轮未修**（超出退役范围），
+   记此备查。
+2. **「缺表 → tools 全部 fail-open」不准确（已随本轮改正）** —— 缺表时 `loadConfig`
+   回落**代码内置** `DEFAULT_CONFIG`（§7.150：`get_goal`/`create_goal`/`update_goal`/
+   `ask_user_question` → hidden + `defaultRealm: hidden`）⇒ 只有**其余** tools 才
+   fail-open。`docs/architecture.md` 手工部署第 ⑤ 步的措辞已改为准确表述。
+
+### 七、门禁
+
+vitest / eslint / tsc×2 / verify:build（23 项，含 `verify:doc-links` 0 断链 0 孤儿）
+结果见提交说明。

@@ -74,14 +74,14 @@ export const inject = [
   //   - localAvailable() 已经用 try { ctx.get(...) } catch {} 做
   //     optional 访问 —— 拿不到就保持旧行为（legacy-no-router），不回归。
   //   - inject 是 cordis 的**硬依赖**：声明它 = cordis 必须等 model-router
-  //     装载完才起 input-guard，还会把 model-router 拉进 bundle-minimal 的
+  //     装载完才起 input-guard，还会把 model-router 拉进最小部署形态的
   //     依赖闭包（那里根本没有 local-llm / cloud-llm，model-router 只是空
   //     catalog，查它没有意义）。
   //   - 同样刻意不 inject llm：那会让 cloudAvailable() 的 delegate 探针
   //     首次真正生效，改变云侧判定语义——不在本次修复范围内。
   //
-  // NB: 不要在本注释里用单引号包 service 名 —— bundle-minimal 的 inject
-  // 闭包检查用正则扫 inject 数组的原文，注释里的引号名会被误当成依赖。
+  // NB: 注释里不要用单引号包 service 名 —— 任何「扫 inject 数组原文」的
+  // 依赖闭包检查都会把注释里的引号名误当成依赖。
 ] as const
 
 export interface Config {

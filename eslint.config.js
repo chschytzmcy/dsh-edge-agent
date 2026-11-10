@@ -17,7 +17,6 @@ export default tseslint.config(
       'lib/**',
       'dist/**',
       'node_modules/**',
-      'bundle-minimal/**',
       '.npm-cache/**',
       'profiles/**',
       'png/**',

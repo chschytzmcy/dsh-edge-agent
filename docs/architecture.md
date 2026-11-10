@@ -241,8 +241,10 @@ cp package.json cordis.patch.yml "$N/"     # ① ②
 rsync -a --delete lib/ "$N/lib/"           # ③
 # ④ 把包名追加进 ~/.dsh/profiles/<p>/package.json 的 dsh.profile.bundles
 # ⑤ (§7.59.3) realm 数据面:往 realm-skill-bridge.configPath 的路径落一张
-#    skill-realms.json(实验根可用 bundle-minimal/skill-realms.seed.json)。
-#    派工单只挂闸门,策略在表里:缺表 → tools 全部 fail-open(§7.47.1 设计)+ 技能全隐。
+#    skill-realms.json(生产模板 templates/skill-realms.default.json)。
+#    派工单只挂闸门,策略在表里:缺表 → 回落代码内置 DEFAULT_CONFIG(§7.150 屏蔽
+#    get_goal/create_goal/update_goal/ask_user_question + defaultRealm=hidden),
+#    其余 tools 全部 fail-open(§7.47.1 设计)+ 技能全隐。
 ```
 
 ### 前提与注意
@@ -250,7 +252,7 @@ rsync -a --delete lib/ "$N/lib/"           # ③
 - **前提**：目标机已装 dsh CLI 全局包（`@deepseek-ai/dsh`，自带 dsh-base / dsh-web-app / `@deepseek-ai/*` 上游插件，经 `~/.dsh/profiles/node_modules/` hoist 可解析）。bundle 零自购依赖。
 - `install.sh` §2.7 额外写入 profile `dependencies` 的 `file:` 链接是给 `pnpm install` 用的；手工物理放置时可省略。
 - **改了嵌套包必须重启 dsh 进程才生效**（运行时唯一真相源是嵌套包那份，不是 repo；§7.54.8 lesson 3）。
-- **§7.59 实证结论（极简线）**：上方手工步骤 ①-⑤ 在 TUI 形状（dsh-tui 克隆）与 headless（dsh-base + dsh-headless，零安装）两形状逐字成立，闸门行为一致（差异仅在 TUI 必须 TTY、非交互驱动要用 headless 单发）。**验证面 = TUI 形状（user 拍板 2026-09-16）：dsh-tui 生产实例测完即完成；headless 仅是自动化臂；web 不列入**（`~/.dsh/profiles/web/` 属全量线资产，原样保留、与极简线零联动）。三层语义 mount ≠ active ≠ enforced、最小执法集 = 7 闭包推导与缺件行为，均已并入 `docs/deploy-minimal-files.md` ② 节（铁律 3 + 部署验收推论）及 ①② 表格；载体 = `bundle-minimal/` 三文件（唯一派工单 `cordis.patch.yml`，§7.59.5 单源收敛）+ `scripts/minimal-bundle-rig.sh`；历轮 boot 签名与结果计数存档 `docs/PROGRESS.md` §7.59 系列。⚠️ 复跑 rig 仍建议 `MIN_ROOT=<scratch>` 覆写——默认 `~/.dsh-edge-agent-minimal/` 已无生产实例使用（dsh-tui 已于 2026-09-16 换回全量 bundle，§7.59.7），但里面是 §7.59 历轮实证证据，rig assert 开头会 `rm -rf` 清空它。
+- **§7.59 实证结论（极简线，**结论保留、载体已退役**）**：上方手工步骤 ①-⑤ 在 TUI 形状（dsh-tui 克隆）与 headless（dsh-base + dsh-headless，零安装）两形状逐字成立，闸门行为一致（差异仅在 TUI 必须 TTY、非交互驱动要用 headless 单发）。**验证面 = TUI 形状（user 拍板 2026-09-16）：dsh-tui 生产实例测完即完成；headless 仅是自动化臂；web 不列入**（`~/.dsh/profiles/web/` 属全量线资产，原样保留、与极简线零联动）。三层语义 mount ≠ active ≠ enforced、最小执法集 = 7 闭包推导与缺件行为，均已并入 `docs/deploy-minimal-files.md` ② 节（铁律 3 + 部署验收推论）及 ①② 表格。⚠️ **可复现载体已删除（§7.170）**：`bundle-minimal/` 三文件（唯一派工单 `cordis.patch.yml`，§7.59.5 单源收敛）、`scripts/minimal-bundle-rig.sh`、以及守它们与产品面同步性的 CI 漂移锁测试，**成套退役** —— 上面保留的是**结论**，不再有可复跑的实证。历轮 boot 签名与结果计数**原样存档**在 `docs/PROGRESS.md` §7.59 系列（§7.59.4 拍板「文件可删，实证不可删」）。
 - **极简/定制部署的存储隔离坑（§7.59 R7）**：`audit-log.root`、`privacy-policy.policyPath` 是 Schema 必填（缺了 schemastery **静默丢插件**，连 boot 报错都没有），而 `realm-skill-bridge.configPath` **有代码默认值且硬编码 `~/.dsh-edge-agent/skill-realms.json`、不读 `DSH_EDGE_STORAGE_ROOT`**——实验/多实例部署想隔离数据根，这三处都必须显式指走，否则会写进生产共享 root。
 - **§7.61 项目自有 headless profile `dsh-edge`（零 UI 宿主）**：仓库带骨架 `profiles/dsh-edge/package.json`（bundles = `[dsh-base, 本包]`）。可行为前提：dsh-base@0.1.2-rc.1 的自带 patch 挂 `- id: web`，故 file-logger 的 `inject: ['web']` 在无 dsh-web-app / 无 dsh-tui 时照样闭合（实机 ops log `web-diag ctx.web registered=true` 钉死）；常驻由 http-api 自己的 `node:http` listen handle 撑（上游 `@deepseek-ai/dsh-headless` 是 one-shot，勿入 bundles）。**§7.68（2026-09-17）audit 撤回 §7.61 分流**：皮肤 `profiles/dsh-edge/cordis.patch.yml` 清空 patch 数组 `[]`，dsh-edge audit 与 dsh-tui/web 共写 `~/.dsh-edge-agent/audit/audit.plain.jsonl`；接受 `audit-log.ts:263-269` read→tmp→rename TOCTOU 偶发丢行（50% 命中率，丢 flush 时窗内 ring buffer 切片；user 拍板"接受偶尔丢行"）。**§7.69（2026-09-17）单 profile 架构 + 端口统一 :21017**：install.sh `--profile=<name>`（默认 dsh-edge），部署前杀其他 profile 进程；http-api schema 默认 :21017（`http-api.ts:63`），所有 profile 共用。`tui-port-override` 撤回，`~/.dsh/profiles/dsh-tui/.env.sh` 不再覆盖 21018。部署：`./install.sh` → 唯一入口 HTTP `http://127.0.0.1:21017/v1/chat`（GET `/v1/health`；鉴权同 bearer）。E2E 复用：`AUTH=on PORT=21017 scripts/e2e-tui-live.sh h1 h2 h5 h4 h3`（§7.60 H 臂平移，§7.68 后 AUDIT env 不再需要，默认 `$PROD_ROOT/audit/audit.plain.jsonl` 已含 dsh-edge；实测 13 PASS/0 FAIL/1 合法 sk）。
 

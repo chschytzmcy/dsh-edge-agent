@@ -98,6 +98,7 @@ ADR 状态为 Accepted 的不删——它记录的是**为什么这么做**，�
 | 文档 | 删除于 | 原因 |
 |---|---|---|
 | `E2E_TUI_CASES.md` | §7.145-D | 零独有信息（内容已被 `E2E_HTTP_API_CASES.md` 覆盖），引用改写后删除 |
+| `bundle-minimal/`（4 文件）+ `scripts/minimal-bundle-rig.sh` + `tests/unit/bundle-minimal.test.ts` | §7.170 | **极简线成套退役**（主人 2026-11-10 拍板）：这是 §7.59「简化流程验证」的载体，不是运行时代码——`package.json#files` 白名单本就不含它 ⇒ 不进 npm 包/tarball/installable 产物；生产的 realm 路径（`~/.dsh-edge-agent/skill-realms.json`）与生产模板（`templates/skill-realms.default.json`）都**不指向**它 ⇒ 删掉零生产影响。**保留**的是结论（`deploy-minimal-files.md` ② 节铁律 3 + 部署验收推论）与**证据**（`docs/PROGRESS.md` §7.59 系列逐字 boot 签名）——§7.59.4 拍板「文件可删，实证不可删」。**失去**的是可复跑的 rig 与那条「inject 闭包锁 / R7 存储隔离锁」回归锁（不再迁移，结论只留在文档里） |
 | `docs/bench/etscli-tools/*/report.md`（**未删**） | — | 教训：按名统计引用会假阳性。三份 report.md 曾被误判为「0 引用可删」，实际是评测**唯一的人类可读报告**，现已由 `etscli-tools/README.md` 显式链接 |
 
 ## 四、维护约定
@@ -106,8 +107,8 @@ ADR 状态为 Accepted 的不删——它记录的是**为什么这么做**，�
   入口能找到它。
 - **删除文档**在本节留一行，说明原因，避免同一个坑重踩。
 - **刷新数字**的文档，数字旁标注核实日期；本轮已刷的：
-  `deploy-minimal-files.md`（§7.146）、`edge-context-tab-plan.md`（§7.146）、
-  `TEST-REPORT.md`（§7.146）、`bundle-minimal/README.md`（§7.146）。
+  `deploy-minimal-files.md`（§7.146、§7.170）、`edge-context-tab-plan.md`（§7.146）、
+  `TEST-REPORT.md`（§7.146）。
 
 ### 门禁：`verify:doc-links`（§7.146 起接入 `verify:build`）
 

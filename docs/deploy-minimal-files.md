@@ -2,7 +2,7 @@
 
 > 配套阅读:architecture.md「📦 最小部署清单」一节(5 项清单 + 手工部署步骤)。
 > 本文只回答一个问题:**每个文件的内容物与具体职责**——只保留最终信息;测试过程与各轮 boot 签名逐字存档在 `docs/PROGRESS.md` §7.59 系列(user 拍板 2026-09-16)。
-> 同步语义以 §7.57 修复后为准:nested `package.json`/`cordis.patch.yml`/`lib/` 每次 install 都与 repo diff-then-copy,profile 注册缺失即 fail-fast。极简线验证面 = **TUI 形状**(web 属全量线资产,不涉极简)。
+> 同步语义以 §7.57 修复后为准:nested `package.json`/`cordis.patch.yml`/`lib/` 每次 install 都与 repo diff-then-copy,profile 注册缺失即 fail-fast。⚠️ 极简线的**结论**仍在本文(② 节铁律 3 + 部署验收推论),但**可复现载体已退役**(§7.170:`bundle-minimal/` + rig 脚本 + CI 漂移锁测试成套删除)。
 
 ## 30 秒版:三件套的关系
 
@@ -43,7 +43,7 @@ repo 根 `package.json` 的**逐字节镜像**(install.sh §2.8 diff-then-copy;�
 三条铁律(实证):
 1. **patch 说了算**:bundle 能力在 lib 里写了也不执行,上不上岗、按什么参数,全看这份派工单——聚合 id `dsh-edge-agent` 被 disable(`src/dsh-adapter/index.ts:apply()` 不执行),新增聚合级 wiring 必须另起独立插件 id。
 2. **系统级、启动时**:一次组装管整个进程生命周期;与会话级的 ⑤ `agent.cordis.yml` 正交,别混。
-3. **inject 只能加不能减**(§7.59 源码实证):代码里的 `export const inject` 会被 loader 追加合并进插件依赖,yml 无法撤销。所以"极简部署"绕不开包的硬依赖闭包——而且**被点名的两个能力插件还不是执法者**:prompt-guard / privacy-policy 是纯 service,自己不挂事件 hook;真正挂在 `agent/pre-step` / `llm/stream` / `agent/request` 上、聊天时挨个调用它们的唯一执法者是 **input-guard**。它的传递依赖闭包 = **最小执法集,共 7 插件**:
+3. **inject 只能加不能减**(§7.59 源码实证):代码里的 `export const inject` 会被 loader 追加合并进插件依赖,yml 无法撤销。所以"最小部署形态"绕不开包的硬依赖闭包(此结论由已退役的极简 rig 推导得出,§7.170 保留结论)——而且**被点名的两个能力插件还不是执法者**:prompt-guard / privacy-policy 是纯 service,自己不挂事件 hook;真正挂在 `agent/pre-step` / `llm/stream` / `agent/request` 上、聊天时挨个调用它们的唯一执法者是 **input-guard**。它的传递依赖闭包 = **最小执法集,共 7 插件**:
 
    ```
    宿主提供,无需点:llm▲(dsh-llm)、skills▲(宿主 bundle)
@@ -166,8 +166,9 @@ profile package.json ──bundles[]──▶ ①嵌套package.json ──dsh.bu
 > 桌面变体 `cordis.desktop-safe.patch.yml` = 3 行宿主行(2 config / 1 disable)+ **insert 段 4 行**(同样 4 行);
 > `presets/edge.patch.yml` = 1 个 insert 段,内含 1 行 `@deepseek-ai/dsh-agent-preset`,
 > 其 `config.plugins` 是 **22 宿主标准行 + 17 本项目行**(桌面变体 22 + 15)。
-> **极简线另有一张派工单**:`bundle-minimal/cordis.patch.yml` = 1 个 insert 段 **9 行**
-> (file-logger + audit-log + 7 插件执法闭包),它不跟上面几张同构,是 §7.59 的独立 rig。
+> ⚠️ **极简线派工单已退役**(§7.170):`bundle-minimal/cordis.patch.yml` 曾是 1 个 insert 段
+> **9 行**(file-logger + audit-log + 7 插件执法闭包)的独立 rig,与上面几张不同构;
+> 它连同 rig 脚本、CI 漂移锁测试已成套删除,结论保留在 ② 节。
 
 ## 修订
 
@@ -177,3 +178,11 @@ profile package.json ──bundles[]──▶ ①嵌套package.json ──dsh.bu
   config 覆盖 10→**8 行**（桌面变体 2 行）、disable 30→**30 行**（桌面变体 1 行），
   并补上「本项目行为插件行已全部迁进 preset」这一结构变化；③铁律 3 的 7 插件闭包
   补注「现在分居 preset 与宿主树两层」。
+- **§7.170（2026-11-10）**：**极简线成套退役** —— `bundle-minimal/`（派工单 + 极简
+  花名册 + realm 种子）、`scripts/minimal-bundle-rig.sh`、以及守它们与产品面同步性的
+  CI 漂移锁测试一并删除。本文**保留结论**（② 节铁律 3 的 7 插件闭包推导、三层语义
+  mount ≠ active ≠ enforced、缺件行为），但不再有可复跑的实证载体；历轮 boot 签名
+  原样存档在 `docs/PROGRESS.md` §7.59 系列。另修一处失真：手工部署第 ⑤ 步原写
+  「缺表 → tools 全部 fail-open」，实为缺表回落**代码内置 `DEFAULT_CONFIG`**（§7.150
+  屏蔽 `get_goal`/`create_goal`/`update_goal`/`ask_user_question` +
+  `defaultRealm: hidden`），**其余** tools 才 fail-open。
