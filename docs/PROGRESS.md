@@ -2828,7 +2828,7 @@ curl -s -X POST http://127.0.0.1:21017/v1/chat \
 ├── storage/                      # local-storage（工具调用持久化）
 │   └── storage.plain.jsonl
 ├── sessions/                     # session-persistence-jsonl（override dsh-base）
-│   └── --home-etsme--/<session-id>/
+│   └── --home-<user>--/<session-id>/
 └── skill-realms.json             # realm-skill-bridge 策略
 ```
 
@@ -4298,7 +4298,7 @@ npx vitest run tests/unit/realm-skill-bridge.test.ts -t "filterSkillCatalog"
 
 # 端到端：TUI 路径发"查询密盒的状态"
 curl -X POST http://127.0.0.1:21017/v1/chat -d '{"message":"查询密盒的状态","sessionId":"745-santize-1789112604"}'
-# 返回真实密盒状态：主机 etsme-ubuntu / 11G 内存 / 磁盘 95% / Docker 容器清单 / 主动建议下一步
+# 返回真实密盒状态：主机 <hostname> / 11G 内存 / 磁盘 95% / Docker 容器清单 / 主动建议下一步
 # durationMs=13977
 ```
 
@@ -9506,7 +9506,7 @@ v1 用"工具目录取前 n 个"变 tool 数量,导致**工具可用性成为隐
 (「列出 .md 文件」+ 通用工具描述),与真实目标领域脱节,故重建语料。
 
 **新套件** `scripts/etscli-function-call-test.py`:
-- 语料源:`etscli -h` 的 10 个 service + `~/work/etsme/etscli/skills/*/SKILL.md` 命令表
+- 语料源:`etscli -h` 的 10 个 service + `~/work/<workspace>/etscli/skills/*/SKILL.md` 命令表
 - **20 个 case**:18 正例(覆盖 auth/fs/file/meeting/chat/system/user/sharing/discover
   九个 service)+ **2 负例**(闲聊 / 知识问答,检测过度触发)
 - 中英双语言,query 语义等价;工具集固定为 `bash`(etscli 专用描述)+ `read`(干扰项)

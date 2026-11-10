@@ -850,7 +850,7 @@ def render_report(results: list[CaseResult], url: str, trials: int, ts: str,
           f"(词法虚高检测,期望工具不变)")
     A(f"- **每 case 试验次数**: {trials}")
     A(f"- **语料**: 42 例(39 正例 + 3 负例),源自 `etscli <service> --help` "
-      f"与 `~/work/etsme/etscli/skills/*/SKILL.md` 的真实命令表")
+      f"与 `~/work/<workspace>/etscli/skills/*/SKILL.md` 的真实命令表")
     A("")
 
     A("## 1. 判定")

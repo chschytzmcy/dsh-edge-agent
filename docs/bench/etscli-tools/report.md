@@ -4,7 +4,7 @@
 - **被测服务**: `http://127.0.0.1:8081` —— 3.0.1
 - **工具形态**: **47 个 etscli 工具直出**(非 bash 包装),描述语言 `cn`
 - **每 case 试验次数**: 2
-- **语料**: 42 例(39 正例 + 3 负例),源自 `etscli <service> --help` 与 `~/work/etsme/etscli/skills/*/SKILL.md` 的真实命令表
+- **语料**: 42 例(39 正例 + 3 负例),源自 `etscli <service> --help` 与 `~/work/<workspace>/etscli/skills/*/SKILL.md` 的真实命令表
 
 ## 1. 判定
 
