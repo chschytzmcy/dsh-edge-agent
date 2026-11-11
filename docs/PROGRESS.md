@@ -20104,9 +20104,59 @@ dependencies:
 且这一轮因为 home 配置在位，**没有**退化到 DELEGATE ⇒ 意图判定与 guard 都直连本地池。
 **这也反证了另一台设备的卡住与 npm 通道无关**（同一份代码、同一份包，那台缺的是配置）。
 
-### 六、还没做的（不写成已完成）
+### 六、发 0.1.2 时撞到的坑：provenance 判定少了「环境」这一维
 
-- **0.1.2 尚未发布** —— 本节记录的是「代码改好了、门禁全绿」，发布本身还没发生；
+第一次发 0.1.2 **失败了**（退出码 1）：
+
+```
+$ pnpm publish --access public --ignore-scripts --no-git-checks --provenance
+📦 @dsh-edge/dsh-edge-agent@0.1.2 → https://registry.npmjs.org/
+Error: ERR_PNPM_PROVENANCE_UNSUPPORTED_PROVIDER
+  × Automatic provenance generation is not supported for this CI provider
+✗ pnpm 退出码 1
+```
+
+**根因**：「要不要带 provenance」这个判定（`decideProvenance`）只看**仓库公开性**与
+**registry 上的可见性** —— 第一次发布之后（包已存在且公开）它就判「带」。
+而 pnpm 的 provenance 生成器**只在受支持的 CI 里**能工作（GitHub Actions / GitLab CI），
+**本机一律炸**。
+
+⇒ 「**要不要带**」与「**带得了带不了**」是**两维**，必须同时满足。
+修法（`3899916`）：`provenance = decision.provenance && provenanceEnv().capable`，
+不在 CI 里一律 `--no-provenance`（本地拿不到徽章，但**发得出去**）；
+CI 那条路（`publish.yml` 直接跑 `pnpm publish --provenance`）不受影响。
+新增 4 条自证断言（本机 / `GITHUB_ACTIONS` / `GITLAB_CI` / `=false`）。
+
+> **为什么第一次发 0.1.1 没撞到**：那时包还不存在 ⇒ registry 答 `{"public":false}`
+> ⇒ 判定本来就是「不带」⇒ 走对了。**只有「第二次及以后的发布」才会撞** ——
+> 也就是说这条坑**在 0.1.1 的那条路径上根本不可见**。
+
+**失败没有留下残留**（实测）：失败发生在上传之前 ⇒ registry 上 `versions` 仍只有
+`0.0.0-stage` 与 `0.1.1`（没有 0.1.2 的占位），本地也没有打上 `v0.1.2`。
+
+### 七、0.1.2 上线了（2026-11-11 20:32 发布 / 20:37 registry 可见）
+
+| 探针 | 结果 |
+|---|---|
+| `pnpm publish` | `✅ Published package @dsh-edge/dsh-edge-agent@0.1.2`，退出码 0 |
+| `npm view … versions` | `0.0.0-stage, 0.1.1, **0.1.2**` |
+| `npm view … dist-tags` | `{"latest":"0.1.2"}` |
+| `npm view …@0.1.2 dist.fileCount` | **238**（与 0.1.1 同数） |
+| `npm view …@0.1.2 scripts / devDependencies / packageManager` | **全部查无此字段** ⇒ 消毒生效（0.1.1 里那 50 余条脚本没了）|
+| `npm view …@0.1.2 dist.unpackedSize` | 1869742 B（0.1.1 是 1886761 B ⇒ 差的就是那份清单）|
+| **真实消费者安装**（临时目录 `pnpm add @dsh-edge/dsh-edge-agent@0.1.2`）| EXIT=0；装出来的**包内容与暂存目录逐个一致**（238 个文件，多出的 3 个是 pnpm 生成的 `node_modules/.bin/cordis*` 链接）；`version=0.1.2`、无 `scripts`/`devDependencies`/`packageManager`、`exports` 37、两个 patch 文件在、**没有** `config/edge.json` / `scripts/` / `src/` / `tests/` |
+| git | `3899916` 提交、tag `v0.1.2` 已推 origin、`main` 已推 |
+
+**staged publishing 的延迟实测（0.1.2）**：发完那一刻 `npm view` 仍返回 **`0.1.1`**
+（上一个真实版本），`versions` 里**还没有** `0.1.2`；约 5 分钟后才出现。
+⇒ **判据要写成「`versions` 里有没有出现新版本」**，不能只看 `latest`
+（staged 期间 `latest` 指的是上一个真实版本，不是占位版 `0.0.0-stage`）。
+⇒ **推 tag 之前必须先确认新版本已在 `versions` 里** —— 否则 CI 的 publish job 会以为
+「该版本还没发过」而真去发一遍，撞 409。（本次是先把 `main` 推上去、等 registry 上
+出现 0.1.2 之后才推的 tag。）
+
+### 八、还没做的（不写成已完成）
+
 - npm 包里仍然带着 `full` 变体的两个 patch 文件（`cordis.patch.yml` +
   `presets/edge.patch.yml`）—— 它们**不被 `dsh.bundle.patch` 引用**，是惰性的。
   本次只按主人的指令把 README 收成「只讲 safe」，**没有**改包的内容清单

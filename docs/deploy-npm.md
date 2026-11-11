@@ -416,6 +416,16 @@ registry 上还装不了这个包**：
 
 **判据**：`npm view <pkg> version` 返回 `0.0.0-stage` ⇒ 还卡在审批；返回真实版本号 ⇒
 已上线。`versions` 里留着 `0.0.0-stage` 是**正常的占位残留** ⇒ 判据看
+`latest`（或 `versions` 里有没有真实版本）。
+
+> **⚠️ 第二次发布同样会被 staged（0.1.2 实测）**：发 0.1.2 时 `pnpm publish` 同样打印
+> `✅ Published`、退出码 0，而那一刻 `npm view` 仍返回 **`0.1.1`**（上一个真实版本），
+> `versions` 里**还没有** `0.1.2`；约 5 分钟后才变成
+> `versions = 0.0.0-stage, 0.1.1, 0.1.2` / `latest = 0.1.2`。
+> ⇒ **判据要写成「`versions` 里有没有出现新版本」，不能只看 `latest`**（staged 期间
+> `latest` 指的是上一个真实版本，不是占位版）。
+> ⇒ **推 tag 之前先确认新版本已经在 `versions` 里** —— 否则 CI 的 publish job 会以为
+> 「该版本还没发过」而真去发一遍，撞 409。
 `dist-tags.latest` 指向谁。
 
 官方文档：[Staged publishing for npm packages](https://docs.npmjs.com/staged-publishing)。
@@ -527,10 +537,10 @@ node scripts/verify-ci-build-chain.mjs --selftest  # 自证 + 反向证伪（11 
 | 8 | **仓库公开**（provenance 的前提） | ✅ **已转公开**（2026-11-10） | 主人把仓库改成了 public；匿名 GitHub API 核实 `visibility = public` |
 | 9 | 包本身 public | ✅ | `--access public` |
 | 10 | `lib/` 预构建 | ✅ | §8.3 修的就是这个 |
-| 11 | `files` 白名单 | ✅ | 235 文件 / 69 入口（2026-11-10 实测） |
+| 11 | `files` 白名单 | ✅ | 238 文件 / 37 个 `exports` 入口（2026-11-11 实测） |
 | 12 | `dsh.bundle.patch` 列出的文件在包里 | ✅ | 两个 patch 都在白名单里 |
 | 13 | `engines.dsh` 声明 | ✅ | `>=0.2.1-rc.2` |
-| 14 | 版本未被占用 | ✅ **0.1.1 已发布**（2026-11-11） | 下一版必须改 `package.json#version`（同一版本不能重发）；tag `v0.1.1` 已推 origin |
+| 14 | 版本未被占用 | ✅ **0.1.2 已发布**（2026-11-11） | 下一版必须改 `package.json#version`（同一版本不能重发）；tag `v0.1.2` 已推 origin |
 | 15 | tag ↔ `package.json#version` 一致 | ✅ | §7.156 加了断言 |
 | 16 | 真密钥不在包里 | ✅ | `.npmignore` + `files` **双重**排除 `config/edge.json` |
 | 17 | `CHANGELOG.md` 存在 + 含当前版本 + 在 `files` 里 | ✅ | §7.172 补的（npm **不会**自动带它） |
@@ -539,6 +549,8 @@ node scripts/verify-ci-build-chain.mjs --selftest  # 自证 + 反向证伪（11 
 | 20 | 发布就绪门禁 | ✅ | §7.172：`verify:npm-publish`（链内第 22 位） |
 | 21 | 发布决策门禁 | ✅ | §7.172：`verify:npm-decision`（链内第 23 位）—— 判定表 + stdout 契约的自证 |
 | 22 | 包名一致性门禁 | ✅ | §7.173：`verify:package-name`（链内第 21 位）—— 包名副本与 `package.json#name` 交叉比对 |
+| 23 | **发布清单不含不在包里的东西** | ✅ | §7.188：`stage:npm` 暂存目录 + `verify:npm-stage`（链内第 27 位）—— 清单里不得有 `scripts` / `devDependencies` / `packageManager` |
+| 24 | **`--provenance` 只在受支持的 CI 里带** | ✅ | §7.188：pnpm 的 provenance 生成器**只在 CI 里**能工作 ⇒ 本机一律 `--no-provenance`（实测 `ERR_PNPM_PROVENANCE_UNSUPPORTED_PROVIDER`） |
 
 ⇒ **原来的两件（2026-11-10 的待办）在 2026-11-11 都已落地**（组织建好、token 在位、
 `0.1.1` 已发布，见 §8.1.2）。**现在剩下的是这两件新的主人手上的事**：
