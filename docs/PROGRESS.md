@@ -19864,3 +19864,119 @@ README **280 行 / 21367 B → 228 行 / 16957 B**（−129/+77 行）—— 删
 > 东西留在 `docs/architecture.md`；README 只留「一句话 + 链接」。
 > 但「搬」之前必须先确认**落点真的存在** —— 本次 scope 隔离那条在 docs 里查无此物，
 > 就是靠这一步拦下来的（否则就等于删掉了唯一的知识）。
+
+## §7.187 npm 通道实装 + 另一台设备「意图判定卡住」的根因定位（2026-11-11）
+
+主人 20:0x 的指令：
+
+> 「这是另一台设备上，在本设备部署下npm插件试下」
+
+### 〇、先把两件事分开（否则会查错方向）
+
+主人截图那台设备**不是 npm 装坏了**：它的 Edge tab 正常出现、攻击检测已经跑完
+（`deepseek-account/deepseek-flash`，1.0s，检测 4 字）⇒ **插件在跑**。
+卡住的是**意图判定**那一段 ⇒ 那是**配置**问题，不是**通道**问题。
+
+所以本节做两件事：① 本机把 npm 通道真装一遍（验通道）；② 把那台设备的根因钉死（验配置）。
+
+### 一、本机 npm 通道实装（真装，不是 dry-run）
+
+```powershell
+# 装前：按 PID 停 App（GUI 10320 / 宿主 64116），避免 Windows 文件锁住要替换的插件目录
+pnpm --dir "C:\Users\cheng\.dsh\profiles\desktop" add "@dsh-edge/dsh-edge-agent@0.1.1"
+# 装后：重启 App（新 GUI 66252 / 宿主 11068）
+```
+
+**踩到的第一个坑**：`pnpm add @dsh-edge/dsh-edge-agent`（**不带版本号**）**没有**把
+`file:` spec 换成 registry spec —— 连跑两遍（pnpm 12.16.1 / 11.28.5），`package.json`
+原样不动（连 mtime 都没变），只有锁文件重算了一遍 tarball 的 integrity。
+写全版本 `@0.1.1` 才对，pnpm 自己打出：
+
+```
+dependencies:
+- @dsh-edge/dsh-edge-agent 0.1.1-desktop-safe
++ @dsh-edge/dsh-edge-agent 0.1.1
+```
+
+**装后核验（全部实测，无一项是推断）**：
+
+| 查什么 | 实测值 |
+|---|---|
+| 插件目录 `package.json#version` | `0.1.1`（tarball 通道是 `0.1.1-desktop-safe`） |
+| 文件数 | **238** = registry `dist.fileCount` |
+| 与 `dist/installable/dsh-edge-agent-desktop-safe/` 逐文件 SHA256 | 236 个共有文件**全部一致**；只多 `README.md`/`LICENSE`；唯一差异是 `package.json#version` |
+| 插件目录 `config/` | 只有 `edge.example.json` + `privacy-policy.json`，**没有 `edge.json`** |
+| 审计链 `config.loaded` | `path=C:\Users\cheng\.dsh-edge-agent\edge.json`（顺位 1 不存在 ⇒ 命中顺位 2） |
+| 审计链 `llm.local.catalog` | `{"provider":"local-llm","model":"qwen3.8-flash","mode":"direct"}` |
+| 审计链 `input-guard.hook.registered` | 只有 3 个：`agent/pre-step` / `llm/stream` / `agent/request` |
+| ops log | 启动后无新告警 |
+
+⇒ **npm 通道在这台设备上与 tarball 通道行为一致**，主人 19:15 搬到 home 的那份配置
+被正确读到（顺位 2）。
+
+### 二、另一台设备卡住的根因（7 环，每环有出处）
+
+| 环 | 事实 | 出处 |
+|---|---|---|
+| 1 | npm 包里**没有**活配置，只有模板 | 发布物实测（`deploy-npm.md` §7.1） |
+| 2 | 配置候选**只有两档**，模板永远不是候选 | `edge-config.ts:508-532` |
+| 3 | 两档都没命中 ⇒ `DEFAULT_EDGE_CONFIG`，两池 `delegate = true` | `edge-config.ts:335-336` |
+| 4 | DELEGATE = 转发**宿主 profile** 已配置的模型提供商（edge 不碰任何 secret） | `local-llm-adapter.ts:819-836`；`edge-config.ts:104-110` |
+| 5 | 意图阶段默认 `provider=local-llm`、`timeoutMs=60000` | `edge-config.ts:345-347` |
+| 6 | `stages.intent.timeoutMs` **会**接进 `llmTimeoutMs` | `intent-router.ts:3113-3115` |
+| 7 | ⇒ 意图判定打在**宿主模型**上，超时窗口是 **60 秒**（不是 4 秒） | 同上 |
+
+**截图逐格对得上**：面板上的 `deepseek-account/deepseek-flash` 是**宿主侧**模型
+（edge 自有池固定叫 `local-llm`）；「意图判定 进行中…」正是第 7 环；
+下游「PII 脱敏 等待」「路由决策 进行中…」是同一条链的下游。
+
+> 口径：**DELEGATE 只换「谁提供模型」，不换这一域的隐私口径** —— local 池仍带全部历史
+> （§7.131 的分段裁剪只作用在 cloud 池）。
+
+**解封**：那台设备写 `~/.dsh-edge-agent/edge.json`（`llm.local.baseUrl` + `model` +
+`keyRef` + `secrets.<槽位>`），**重启 App**（`llm`/`stages`/`jev` 在 `apply()` 里定死），
+审计链应出现 `llm.local.catalog … "mode":"direct"`。完整步骤见
+[`deploy-npm.md`](deploy-npm.md) §9.2。
+
+### 三、另外两个装包坑（实测）
+
+| 坑 | 实测 | 出处 |
+|---|---|---|
+| pnpm 的供应链策略 `minimumReleaseAge` 会给**刚发布**的版本自动加排除项 | pnpm 打印 `Added 1 entry to minimumReleaseAgeExclude in pnpm-workspace.yaml`；profile 的 `pnpm-workspace.yaml` 被写入 `minimumReleaseAgeExclude: ['@dsh-edge/dsh-edge-agent@0.1.1']` | 本机实测 |
+| GUI 装包一律先落 `enabled:false` | `plugin-operations/operations.jsonl` 固定三段：`install`（`enabled:false`）→ `bundle/enable`（`enabled:true`）→ `restart-required` | 本机实测（13:50 那次 tarball 安装留下的记录） |
+
+### 四、顺带校准的文档事实（与实际行为相反的陈述必须改）
+
+- `docs/deploy-npm.md` §7 对照表：「包名可发 ⇒ registry 上查无此包 ⇒ **还没发** ❌」
+  —— **已过期**：2026-11-11 上线 0.1.1，scope 已归本仓账号 ⇒ 改 ✅，并说明这一行查的是
+  registry 实时状态、离线门禁判不了；
+- 同文件 §7.1 的「235 文件 / 69 个入口目标」⇒ 实测 **238 文件 / 37 个 `exports` 入口**
+  （238 = registry `dist.fileCount`）；
+- `docs/load-into-local-dsh.md` §8 的 npm 行还写着「包**仍未**发布（registry 上查无此包）」
+  ⇒ 改成已发布 0.1.1，并补上「必须点立即启用」与「没配置 ⇒ 两池 DELEGATE」两条。
+
+### 五、留证清单
+
+| 证据 | 在哪 |
+|---|---|
+| 装后核验（7 项） | 审计链 `~/.dsh-edge-agent/audit/audit.plain.jsonl`（`config.loaded` / `llm.local.catalog` / `input-guard.hook.registered`） |
+| 238 文件逐个哈希 | 已装目录 vs `dist/installable/dsh-edge-agent-desktop-safe/` |
+| GUI 装包三段式 | `%APPDATA%\@deepseek-ai\dsh-desktop\plugin-operations\operations.jsonl` |
+| 回滚备份 | profile 目录 `package.json.bak-npm-20261111` / `pnpm-lock.yaml.bak-npm-20261111` |
+
+### 六、还没做完的（不写成已完成）
+
+- **npm 通道的活体回合**：审计链目前只有启动行（965 行），主人还没在重启后的 App 里
+  发消息 ⇒ 端到端那一跳（`intent.classify.end` → `input-guard.reroute.local` →
+  `llm.local.start/end`）**还没在 npm 通道上验过**（tarball 通道 19:18 那轮验过：
+  `intent.classify.end` category=LOCAL confidence=0.9 → `input-guard.reroute.local` ×2
+  → `llm.local.start` messageCount=5 / `llm.local.end` durationMs=1006）。
+- **0.1.2 候选两件**：
+  ① 已发布 0.1.1 的 `CHANGELOG.md` 头写的是发布前状态（`2026-11-10 / 506 次提交`，
+     仓库那份已改成 `2026-11-11 / 512 次提交`）—— 同版本不能重发。
+     顺带发现：**「次提交」这个字段本身是移动靶**（写完没几轮就又不对了：写它的时候
+     HEAD 是 512，现在已经是 515）⇒ 0.1.2 里应当改成「截至发布时的提交数」或干脆去掉；
+  ② 发布出去的 `package.json` 仍带 `scripts.*` 与 `devDependencies`，而它们指向的
+     `scripts/`、`src/`、`tests/` **不在 tarball 里**（对消费者无害 —— registry 安装
+     不触发 `prepare`，包里也没有 `postinstall`；但清单声称了不存在的东西）。
+

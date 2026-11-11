@@ -176,7 +176,7 @@ rm -rf /tmp/dsh-edge-probe
 
 | 通道 | 现状 |
 |---|---|
-| npm 包名 | **发布链就绪**（§7.172），但包**仍未**发布（registry 上查无此包）；缺的是**作者侧**的 npm 账号/组织 + scope 所有权 + 发布凭据，不是代码。`npm run publish:npm -- --yes --tag` 一条命令走完构建 + 27 道门禁 + 发布（默认 dry-run）。此前（§7.156）发现发布链有个洞：build 步只跑 `compile` ⇒ `verify:build` 必红 ⇒ 从来没走到过 `pnpm publish`，已修。完整指南见 [`deploy-npm.md`](deploy-npm.md) |
+| npm 包名 | **2026-11-11 起可用**：包名 `@dsh-edge/dsh-edge-agent`，**已发布 0.1.1**（`npm view @dsh-edge/dsh-edge-agent version` → `0.1.1`）。作者侧的 npm 账号（`chschytzmcy`）+ 组织（`dsh-edge`）+ scope 所有权 + 发布凭据**都已就位**。`npm run publish:npm -- --yes` 一条命令走完构建 + 27 道门禁 + 发布（默认 dry-run）。此前（§7.156）发现发布链有个洞：build 步只跑 `compile` ⇒ `verify:build` 必红 ⇒ 从来没走到过 `pnpm publish`，已修。**装完必须点「立即启用」**，且设备上没有 `~/.dsh-edge-agent/edge.json` 的话两个池会退化成 DELEGATE（见 [`deploy-npm.md`](deploy-npm.md) §9.2）。完整指南见 [`deploy-npm.md`](deploy-npm.md) |
 | Git 仓库 | **2026-10-30（§7.155）起可用**：见 [`deploy-github.md`](deploy-github.md)。此前不成立的根因是 `prepare` 只跑 `compile`、产不出浏览器半侧 `lib/client.js`（Edge tab 会静默消失），且桌面环境无 npm；现在 `prepare` 走 `run.mjs compile build:client`（不依赖 npm），并有 `verify:git-install` 门禁守着。代价：pnpm ≥10 要求用户点一次「允许这些脚本并重试」 |
 | tarball 路径 | **2026-10-30（§7.157）起有门禁守着**：见 [`deploy-tarball.md`](deploy-tarball.md)。此前 `dist/*.tar.gz` **从来没被任何门禁检查过**，且实测发现它是 §7.153 修复**之前**的陈旧产物（`dsh.bundle.patch` 写成字符串 ⇒ preset 层缺席 ⇒ 「边缘模式」工作方式不会注册）⇒ 新增 `verify:tarball` 并接进 `verify:build` |
 | **本地目录（推荐）** | 指 `--emit-dir` 产出的可安装目录：预置 `lib/`、已删 `scripts`/`devDependencies`，安装即用。宿主侧的完整契约见 **§8.8**（2026-10-30 读透） |

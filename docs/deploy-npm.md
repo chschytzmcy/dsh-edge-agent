@@ -217,6 +217,39 @@ runPnpm(['add', installSpec, ...saveExact ? ['--save-exact'] : [], ...registryAr
 是用 shell 跑的**，而 App 自带的是 `pnpm.mjs`（不是 PATH 上的可执行命令）。
 npm 通道根本不触发这次注入 ⇒ **用户机器上没装 pnpm 也能装**。
 
+### 6.5 实装实测：npm 通道装到桌面 profile（2026-11-11 真跑，不是 dry-run）
+
+在本机 desktop profile 上完整走了一遍 npm 通道：
+
+```powershell
+# 装前：按 PID 停 App（GUI + 宿主），避免 Windows 文件锁住要替换的插件目录
+pnpm --dir "$env:USERPROFILE\.dsh\profiles\desktop" add "@dsh-edge/dsh-edge-agent@0.1.1"
+# 装后：重启 App
+```
+
+`package.json` 的 `dependencies` 从 `file:...tar.gz` 变成 `"0.1.1"`；
+`dsh.profile.bundles` 本来就含本包 ⇒ 不用动（不在列表里的话，启动不会加载它）。
+
+**三个坑 —— 都是实测撞出来的，不是推测**
+
+| # | 坑 | 实测现象 | 正确做法 |
+|---|---|---|---|
+| 1 | **`pnpm add <pkg>` 不带版本号，不会把已有的 `file:` / `git:` spec 换成 registry spec** | 连跑两遍（pnpm 12.16.1 与 11.28.5），`package.json` **原样不动**（连 mtime 都没变），只有锁文件重算了一遍 tarball 的 integrity | 必须写全版本：`pnpm add <pkg>@0.1.1`（pnpm 会打出 `dependencies: - … 0.1.1-desktop-safe / + … 0.1.1`）。GUI 自己装时是直接改清单的，不受这条影响 |
+| 2 | **pnpm 的供应链策略（`minimumReleaseAge`）会给刚发布的版本自动加排除项** | pnpm 打印 `Added 1 entry to minimumReleaseAgeExclude in pnpm-workspace.yaml`，profile 的 `pnpm-workspace.yaml` 被写入 `minimumReleaseAgeExclude: ['@dsh-edge/dsh-edge-agent@0.1.1']` | 正常现象，不用管。若 profile 设了 `minimumReleaseAgeStrict: true`，这一步会变成提示 / 失败 |
+| 3 | **GUI 装包一律先落 `enabled:false`** | `plugin-operations/operations.jsonl` 里是固定三段：`install`（`enabled:false`）→ `bundle/enable`（`enabled:true`）→ `restart-required` | 必须点「立即启用」（§6.3）。绕过 GUI 直接跑 pnpm 就不产生这段记录 —— 但包仍要出现在 `dsh.profile.bundles` 里才会被加载 |
+
+**装后核验清单（每一条都机器可查）**
+
+| 查什么 | 怎么看 | 2026-11-11 实测值 |
+|---|---|---|
+| 装的是 registry 版还是 tarball 版 | 插件目录 `package.json` 的 `version` | `0.1.1`（tarball 通道是 `0.1.1-desktop-safe`） |
+| 文件全不全 | 数插件目录的文件数 | **238**（= registry `dist.fileCount`） |
+| 内容对不对 | 与 `dist/installable/dsh-edge-agent-desktop-safe/` 逐文件 SHA256 | 236 个共有文件**全部一致**；只多 `README.md`/`LICENSE`；唯一差异是 `package.json#version` |
+| 包里有没有活配置 | 插件目录 `config/` | 只有 `edge.example.json` + `privacy-policy.json`，**没有 `edge.json`** |
+| 配置命中哪一档 | 审计链 `config.loaded` | `path=C:\Users\<你>\.dsh-edge-agent\edge.json`（顺位 1 不存在 ⇒ 命中顺位 2） |
+| 本地池是不是直连 | 审计链 `llm.local.catalog` | `{"provider":"local-llm","model":"qwen3.8-flash","mode":"direct"}` |
+| hook 数对不对 | 审计链 `input-guard.hook.registered` | 只有 3 个：`agent/pre-step` / `llm/stream` / `agent/request` |
+
 ## 7. 作者侧义务 —— 本仓逐条对照
 
 宿主自己的说明在 `publish.md`（**是教程不是清单**）。按它 + 宿主源码的要求
@@ -232,11 +265,14 @@ npm 通道根本不触发这次注入 ⇒ **用户机器上没装 pnpm 也能装
 | 共享的 dsh 包同时进 peer + dev | `publish.md:105` | 8 个 `@deepseek-ai/*` 两边都有 | ✅ |
 | **npm 发布时必须预构建 `lib/`** | `publish.md:169,185` | `prepare` = `compile` + `build:client` | ✅ |
 | `files` 白名单 | `publish.md:41` | `lib` `config` `presets` 3 个 yml，且 `!config/edge.json` | ✅ |
-| 包名可发（registry 上没被占） | npm | registry 上查无此包 ⇒ **还没发** | ❌ |
+| 包名可发（registry 上没被占） | npm | **已发布** —— 2026-11-11 上线 0.1.1，scope `@dsh-edge` 已归本仓账号 | ✅ |
 | `CHANGELOG.md` 存在且**含当前版本** | `publish.yml` 前置清单第 3 条 | 已在 `files` 白名单里 | ✅ |
 
 **这张表现在是机器检查的** —— §7.172 加了 `scripts/verify-npm-publish.mjs`，
-把上表（除「还没发」那一行）逐条变成 11 项断言，已接进 `verify:build`（链内第 22 位）：
+把上表里**能离线机器判定**的那 11 条逐条变成断言，已接进 `verify:build`（链内第 22 位）：
+
+> 「包名可发」那一行查的是 **registry 的实时状态**，离线判不了（脚本全程不联网），
+> 所以它不在断言里 —— 但它**不是可选项**：第一次发布之前它就是 ❌。
 
 ```bash
 node scripts/verify-npm-publish.mjs             # 查当前树
@@ -248,7 +284,7 @@ node scripts/verify-npm-publish.mjs --selftest  # 自证 + 反向证伪（27 条
 **`prepare` 只对 git 安装有意义**（`publish.md:171`）—— npm 装的时候 tarball 里
 已经是构建好的 `lib/`，pnpm 不会跑 `prepare`。
 
-### 7.1 包里有什么（`verify:package` 实测：235 文件 / 69 个入口目标，2026-11-10）
+### 7.1 包里有什么（`npm pack --dry-run` 实测：238 文件 / 37 个 `exports` 入口，2026-11-11）
 
 ```
 lib/            ← Node 半侧（.js + .d.ts）+ 浏览器半侧 lib/client.js
@@ -258,12 +294,23 @@ cordis.yml / cordis.patch.yml / cordis.desktop-safe.patch.yml
 package.json / README.md / LICENSE / CHANGELOG.md
 ```
 
+> **238 = registry 上 0.1.1 的 `dist.fileCount`** —— 逐条对得上。
+> 比 `dist/installable/` 多的两个文件是 `README.md` 与 `LICENSE`：**npm 自动带，
+> 不靠 `files` 白名单**（`verify-npm-publish.mjs` 的 `isCoveredByFiles()` 把
+> `readme*` / `license*` 列为「永远进包」）。
+
 > `CHANGELOG.md` 是 §7.172 补进 `files` 的 —— npm **不会**自动带它（npm 只自动带
 > package.json / README / LICENSE），而 `publish.yml` 的前置清单明写「CHANGELOG.md is
 > updated」，且 npm 页面会渲染它。不显式加进 `files` ⇒ 门禁 `verify:npm-publish` 报
 > 「CHANGELOG 不在包里」。
 
 `files` 白名单在 npm 通道同样生效：`src/`、`scripts/`、`tests/`、`.git/` 都不进包。
+
+> **⚠️ 清单与内容不一致（已知，0.1.2 候选）**：发布出去的 `package.json` 仍带着
+> `scripts.*`（50 余条）和一整套 `devDependencies`，而它们指向的 `scripts/`、`src/`、
+> `tests/` **不在 tarball 里**。对消费者无害 —— registry 安装**不会**触发 `prepare`
+> （只有 git 安装与本地目录安装才会跑 `prepare`），包里也没有 `postinstall`；
+> 但清单声称了并不存在的东西，是个该修的口子。
 
 ## 8. 发布链（CI）
 
@@ -657,6 +704,8 @@ npm 的 token 表单有**两处容易选错**：
 | 装完说「版本不兼容」 | `engines.dsh` vs 宿主版本 | 范围太窄 |
 | 装完桌面右栏没有 Edge tab | `~/.dsh/profiles/desktop/package.json` 的 `dsh.profile.bundles` | **没点「立即启用」**（§6.3） |
 | 配置读不到 / 云端 401 | `~/.dsh-edge-agent/audit/audit.plain.jsonl` 的 `config.loaded` | npm 装法同样**没有** `config/edge.json` ⇒ 要写 `~/.dsh-edge-agent/edge.json`（顺位 2）或插件目录里那份（顺位 1）（§4） |
+| `pnpm add` 之后依赖 spec 还是 `file:` / `git:` | `~/.dsh/profiles/<prof>/package.json` 的 `dependencies` | **不带版本号不会换 source**（§6.5 坑 1）⇒ 写 `pnpm add <pkg>@<version>` |
+| Edge tab 出来了，但「意图判定」长时间「进行中…」 | 审计链 `config.loaded` 的 `path` | **没配置文件** ⇒ 两池都 DELEGATE ⇒ 内部阶段打宿主模型（§9.2） |
 
 ### 9.1 配置落位（与 git 通道一致）
 
@@ -669,6 +718,56 @@ npm 的 token 表单有**两处容易选错**：
 2. `~/.dsh-edge-agent/edge.json` — **顺位 2**：跨通道、跨重装都活着，推荐。
 
 ⇒ 把真实端点与密钥写进这两个位置之一。
+
+### 9.2 「意图判定」卡住 = 那个设备上没有配置文件（2026-11-11 定位）
+
+**症状**：Edge tab 正常出现，但「意图判定」一直「进行中…」，下游「PII 脱敏」「路由决策」
+跟着一起等；面板上的模型是**宿主选的那个模型**（如 `deepseek-account/deepseek-flash`），
+不是 edge 自有的 `local-llm`。
+
+**因果链 —— 每一环都在代码里，不是推测**
+
+| 环 | 事实 | 出处 |
+|---|---|---|
+| 1 | npm 装出来的包里**没有** `config/edge.json`（只有模板 `edge.example.json`） | §7.1；发布物实测 |
+| 2 | 配置候选**只有两档**：插件目录 `config/edge.json` → `~/.dsh-edge-agent/edge.json`；**模板永远不是候选** | `src/dsh-adapter/edge-config.ts:508-532` |
+| 3 | 两档都没命中 ⇒ 走 `DEFAULT_EDGE_CONFIG`，其中 `llm.local.delegate = true`、`llm.cloud.delegate = true` | `edge-config.ts:335-336` |
+| 4 | DELEGATE = **转发宿主 profile 已配置的模型提供商**（edge 一个 secret 都不碰） | `local-llm-adapter.ts:819-836`；`edge-config.ts:104-110` |
+| 5 | 意图阶段默认 `provider=local-llm`、`timeoutMs=60000`，且 `stages.intent.timeoutMs` 会接进 `llmTimeoutMs` | `edge-config.ts:345-347`；`intent-router.ts:3113-3115` |
+
+⇒ 那次意图判定的调用打在**宿主模型**上，超时窗口是 **60 秒**（不是 4 秒）⇒ 面板长时间挂着。
+（DELEGATE 只换「谁提供模型」，不换这一域的隐私口径 —— local 池仍带全部历史。）
+
+**先确认（一条命令，不改任何东西）**
+
+```powershell
+node -e "const fs=require('fs');const p=process.env.USERPROFILE+'/.dsh-edge-agent/audit/audit.plain.jsonl';if(!fs.existsSync(p)){console.log('NO AUDIT FILE');process.exit(0)}const l=fs.readFileSync(p,'utf8').split('\n').filter(Boolean);for(const x of l){try{const o=JSON.parse(x);if(o.kind==='config.loaded')console.log(new Date(o.ts).toISOString(),JSON.stringify(o.payload))}catch{}}"
+```
+
+- `path` = `(defaults — no config file found)` ⇒ **就是这条链**，去写配置；
+- `path` = `…\config\edge.json` ⇒ 顺位 1 命中（插件目录里有活配置）；
+- `path` = `C:\Users\<你>\.dsh-edge-agent\edge.json` ⇒ 顺位 2 命中（配置在 home，跨重装都活着）。
+
+**解封**：写 `~/.dsh-edge-agent/edge.json`（推荐 —— 重装、删 profile 都活着）：
+
+```json
+{
+  "llm": { "local": { "baseUrl": "https://<你的端点>/v1", "model": "<模型 id>", "keyRef": "myEdgeKey" } },
+  "secrets": { "myEdgeKey": "<你的 key>" },
+  "stages": {
+    "intent": { "provider": "local-llm", "timeoutMs": 60000 },
+    "guard":  { "provider": "local-llm", "timeoutMs": 60000 }
+  }
+}
+```
+
+⇒ `baseUrl` 一填，本地池从 DELEGATE 变成 **direct**（`edge-config.ts:1143-1157`），
+内部阶段直接打本地端点，不再借道宿主模型。
+（`keyRef` 指向 `secrets` 里的槽位；明文 key 只落在文件里，不进包、不进仓库。）
+
+**改完必须重启 App** —— `llm` / `stages` / `jev` 这些段是在插件 `apply()` 里定死的。
+重启后审计链应出现
+`llm.local.catalog {"provider":"local-llm","model":"<你的模型>","mode":"direct"}`。
 
 ## 10. 版本语义：npm 通道和 git 通道**不一样**
 
