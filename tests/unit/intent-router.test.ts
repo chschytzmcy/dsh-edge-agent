@@ -564,6 +564,50 @@ describe('intent-router', () => {
     assert.equal(timeoutEntry.payload.timeoutMs, 50)
   })
 
+  // §7.190（2026-11-11）：下游那趟请求**永不 settle** —— 只靠 AbortController
+  // 收不住（abort 只是通知，没人被唤醒）⇒ 整轮永久卡死。
+  //
+  // 实测（桌面版 22:31:58 / 22:37:45 / 22:41:47 / 22:44:25 / 22:46:29 五次全同）：
+  // 意图分类器的委托调用挂在宿主流里；60 秒时限到了，审计链里既没有
+  // `intent.llm.timeout` 也没有 `intent.classify.end` ⇒ 面板永远停在
+  // 「意图判定：等待 / 路由未定」。
+  it('§7.190: gives up on the llm call that never settles and fails open', async () => {
+    let capturedSignal: AbortSignal | undefined
+    const mockCtx = {
+      reflect: { provide: () => {} },
+      llm: {
+        stream(opts: any) {
+          capturedSignal = opts.signal
+          // 既不产出 chunk、也不结束、也不抛错 —— 宿主那趟请求就是这么挂的。
+          return new Promise<AsyncIterable<unknown>>(() => {})
+        },
+      },
+    } as any
+    const audit = { entries: [] as any[], log: async (e: any) => { audit.entries.push(e) } }
+    const service = new IntentRouterServiceImpl(mockCtx, {
+      defaultCategory: 'CLOUD',
+      classificationProvider: 'local-llm',
+      confidenceThreshold: 0.6,
+      llmTimeoutMs: 50,   // 50ms timeout for the test
+    }, audit as any)
+
+    const intent = await service.classify('你好')
+    // fail-open：退回规则层（默认 CLOUD），整轮**继续走完**，不再永久卡死。
+    assert.equal(intent.category, 'CLOUD')
+    assert.match(intent.rationale, /default:cloud/u)
+    // 超时审计行照常落（面板据此显示「意图判定：超时」而不是「等待」）。
+    const timeoutEntry = audit.entries.find((e: any) => e.kind === 'intent.llm.timeout')
+    assert.ok(timeoutEntry, 'intent.llm.timeout audit kind should be present')
+    assert.equal(timeoutEntry.payload.timeoutMs, 50)
+    // 分类这一轮有结局了。
+    const endEntry = audit.entries.find((e: any) => e.kind === 'intent.classify.end')
+    assert.ok(endEntry, 'intent.classify.end should be present — the round must settle')
+    assert.equal(endEntry.payload.path, 'rules-after-llm-error')
+    // abort 通知到了下游（下游守规矩时它自己会更快结束）。
+    assert.ok(capturedSignal, 'AbortSignal should be passed to llm.stream')
+    assert.equal(capturedSignal.aborted, true)
+  })
+
   it('passes AbortSignal into llm.stream options', async () => {
     let capturedOpts: any
     const verdict = JSON.stringify({ category: 'CLOUD', confidence: 0.9 })

@@ -1124,6 +1124,34 @@ describe('prompt-guard model-based detection', () => {
     assert.equal(timeout.level, 'warn')
   })
 
+  // §7.190（2026-11-11）：下游那趟请求**永不 settle** —— 光 abort 收不住。
+  //
+  // 实测（桌面版 22:39:45）：安检的委托调用挂在宿主流里，60 秒时限到了，
+  // 审计链里既没有 `guard.model-detect.timeout` 也没有 `guard.model-detect.end`
+  // ⇒ 面板永远停在「攻击检测：模型判定中…」。
+  it('§7.190: gives up on the llm call that never settles and stays fail-open', async () => {
+    let capturedSignal: AbortSignal | undefined
+    const llm = {
+      calls: [] as unknown[],
+      stream(opts: unknown) {
+        this.calls.push(opts)
+        capturedSignal = (opts as { signal?: AbortSignal }).signal
+        // 既不产出 chunk、也不结束、也不抛错。
+        return new Promise<AsyncIterable<unknown>>(() => {})
+      },
+    }
+    const { service, audit } = createGuardWithLlm(llm as never, { modelDetectionTimeoutMs: 30 })
+    const result = await service.checkInput('whatever', 's1')
+    // fail-open：安检放行（safe=true），不因为模型那一跳挂死而卡住整轮。
+    assert.equal(result.safe, true)
+    const timeout = audit.entries.find(e => e.kind === 'guard.model-detect.timeout')
+    assert.ok(timeout, 'guard.model-detect.timeout audit kind should be present')
+    assert.equal(timeout.level, 'warn')
+    // abort 通知到了下游。
+    assert.ok(capturedSignal, 'AbortSignal should be passed to llm.stream')
+    assert.equal(capturedSignal.aborted, true)
+  })
+
   // g) Malformed JSON response
   it('audit parse failure and returns null when JSON is malformed', async () => {
     const llm = fakeLlm(chunksFromText('I cannot classify that for you.'))

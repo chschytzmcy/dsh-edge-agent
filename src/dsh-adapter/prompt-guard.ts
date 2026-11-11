@@ -26,6 +26,7 @@ import { resolveEffectiveLocalModel } from './effective-model.js'
 // two layers can never disagree about what counts as a device operation.
 import { matchDeviceCommand, isPureDeviceCommand } from './intent-signals.js'
 import { withInternalCaller } from './llm-internal-caller.js'
+import { raceWithDeadline } from './llm-drain-deadline.js'
 
 export const name = 'prompt-guard'
 
@@ -737,40 +738,45 @@ export class PromptGuardServiceImpl extends Service implements PromptGuardServic
     let providerFailure: { code?: string; message?: string } | undefined
 
     try {
-      const streamRaw = this.llm.stream({
-        provider: cfg.modelDetectionProvider,
-        model: detectModel,
-        messages: [userMessage],
-        system: systemPrompt,
-        signal: controller.signal,
-        temperature: 0,
-        maxTokens: 256,
-        // §7.53 (2026-09-13): propagate sessionId for ops log correlation.
-        // local-llm-adapter reads options.sessionId for its 'LLM call start'
-        // line; realm-skill-bridge probe reads p.sessionId from the
-        // llm/stream waterfall payload. Both go from <pre-session> to the
-        // real sessionId when this is set.
-        ...(sessionId ? { sessionId } : {}),
-        // §7.132: 标记这是**安检内部调用**，不是主对话出网。adapter 会把它
-        // 落到出口审计行的 `internal` 字段，面板据此把「答案出口」与它分开。
-        ...withInternalCaller({}, 'prompt-guard'),
-      })
-      // §7.37: this.llm.stream() returns Promise<AsyncIterable<StreamChunk>>
-      // since dsh-llm 0.1.2-rc.1 — await if thenable, otherwise use directly.
-      const stream = (streamRaw != null && typeof (streamRaw as { then?: unknown }).then === 'function')
-        ? await (streamRaw as unknown as Promise<AsyncIterable<{ type: string; text?: string }>>)
-        : streamRaw as AsyncIterable<{ type: string; text?: string }>
-      for await (const chunk of stream) {
-        chunks++
-        if (chunk.type === 'text-delta' && responseText.length < MAX_ASSEMBLED) {
-          responseText += (chunk as { text: string }).text
-        } else if (chunk.type === 'finish') {
-          const reason = (chunk as { reason?: { kind?: string; failure?: { code?: string; message?: string } } }).reason
-          if (reason?.kind === 'error' || reason?.kind === 'aborted') {
-            providerFailure = reason.failure
+      // §7.190：这次调用**自身**也带时限 —— 不只靠 abort 通知下游。
+      // 下游不守规矩时（promise 永不 settle），光有 abort 会让
+      // `for await` 永远挂着 ⇒ 整轮卡死（实测 2026-11-11 三次全同）。
+      await raceWithDeadline(async () => {
+        const streamRaw = this.llm.stream({
+          provider: cfg.modelDetectionProvider,
+          model: detectModel,
+          messages: [userMessage],
+          system: systemPrompt,
+          signal: controller.signal,
+          temperature: 0,
+          maxTokens: 256,
+          // §7.53 (2026-09-13): propagate sessionId for ops log correlation.
+          // local-llm-adapter reads options.sessionId for its 'LLM call start'
+          // line; realm-skill-bridge probe reads p.sessionId from the
+          // llm/stream waterfall payload. Both go from <pre-session> to the
+          // real sessionId when this is set.
+          ...(sessionId ? { sessionId } : {}),
+          // §7.132: 标记这是**安检内部调用**，不是主对话出网。adapter 会把它
+          // 落到出口审计行的 `internal` 字段，面板据此把「答案出口」与它分开。
+          ...withInternalCaller({}, 'prompt-guard'),
+        })
+        // §7.37: this.llm.stream() returns Promise<AsyncIterable<StreamChunk>>
+        // since dsh-llm 0.1.2-rc.1 — await if thenable, otherwise use directly.
+        const stream = (streamRaw != null && typeof (streamRaw as { then?: unknown }).then === 'function')
+          ? await (streamRaw as unknown as Promise<AsyncIterable<{ type: string; text?: string }>>)
+          : streamRaw as AsyncIterable<{ type: string; text?: string }>
+        for await (const chunk of stream) {
+          chunks++
+          if (chunk.type === 'text-delta' && responseText.length < MAX_ASSEMBLED) {
+            responseText += (chunk as { text: string }).text
+          } else if (chunk.type === 'finish') {
+            const reason = (chunk as { reason?: { kind?: string; failure?: { code?: string; message?: string } } }).reason
+            if (reason?.kind === 'error' || reason?.kind === 'aborted') {
+              providerFailure = reason.failure
+            }
           }
         }
-      }
+      }, cfg.modelDetectionTimeoutMs, controller)
     } catch (err: any) {
       const isAbort = err?.name === 'AbortError' || controller.signal.aborted
       const durationMs = Date.now() - t0

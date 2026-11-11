@@ -20442,3 +20442,209 @@ fail-closed 拒收）。
 
 **没做的**：没有发新的 npm 版本（本轮改动只在仓库里）。要把它送到主人手上的
 npm 包，需要发 **0.1.3** —— 那是对外可见动作，等主人指示。
+
+## §7.190 内部 LLM 阶段可以永久卡死整轮：让「这次调用」与「时限」赛跑（2026-11-11）
+
+### 〇、主人贴的面板截图（原文，不改写）
+
+```
+攻击检测
+模型判定中…
+│
+意图判定
+等待
+│
+PII 脱敏
+等待
+│
+路由决策
+等待
+│
+答案出口
+路由未定
+│
+威胁监控
+本轮窗口无异常
+已检信号 1
+LLM 调用
+0
+本轮没有记录到 LLM 调用
+```
+
+这张截图是**在飞的那一瞬间**，不是陈旧数据（面板数据源是 `/api/dsh-edge/context`
+的审计行增量流）。
+
+### 一、证据链：卡在哪一跳、卡多久、卡成什么样
+
+审计链 `~/.dsh-edge-agent/audit/audit.plain.jsonl`（233 条事件）里，
+**有配置**（`llm.local.catalog mode=direct`）与**无配置**（走 DELEGATE）
+两种形态完全不同：
+
+**有配置时（22:16:07 ~ 22:16:09，1.0 秒走完）**
+
+```
+22:16:07.166  guard.model-detect.start
+22:16:08.048  guard.model-detect.end        durationMs=883
+22:16:08.049  intent.classify.start
+22:16:09.082  intent.classify.end          path=jev-adopt  category=LOCAL  confidence=0.98  durationMs=1033
+```
+
+`path=jev-adopt` —— JEV 预筛直接采纳，**意图分类器根本没调 LLM**。
+
+**无配置时（DELEGATE，五次形状完全相同）**
+
+```
+22:31:57.361  guard.model-detect.start
+22:31:57.362  llm.local.delegate.resolved  toProvider=qwen-token-plan-cn  internal=prompt-guard  tools=0
+22:31:57.362  llm.local.egress
+22:31:58.165  llm.local.delegate.end       durationMs=802  finishKind=stop
+22:31:58.166  guard.model-detect.end       durationMs=805
+22:31:58.168  intent.classify.start
+22:31:58.173  llm.local.delegate.resolved  toProvider=qwen-token-plan-cn  internal=intent-classifier  tools=0
+22:31:58.173  llm.local.egress
+              ←── 再无任何事件（这一轮就死在这儿）
+```
+
+同样的形状在 **22:37:44 / 22:39:45 / 22:41:46 / 22:44:24 / 22:46:28** 又各来一遍。
+
+### 二、把计数摊开：这不是抖动，是某一跳的系统性问题
+
+按 `internal` 分组统计整份审计链：
+
+| 事件 | prompt-guard | intent-classifier | 合计 |
+|---|---|---|---|
+| `llm.local.delegate.resolved`（发起委托） | 6 | 5 | 11 |
+| `llm.local.delegate.end`（委托结束） | **5** | **0** | 5 |
+
+| 阶段 | 发起 | 结束 | 差额 |
+|---|---|---|---|
+| 安检 `guard.model-detect.start` / `.end` | 8 | 7 | 1 |
+| 意图 `intent.classify.start` / `.end` | 6 | **1** | 5 |
+
+**意图分类器的 LLM 调用 5 次，0 次结束（0/5 全挂）。**
+安检 6 次发起、5 次结束 —— 挂掉的那次是 22:39:45（那一轮连安检都没走完）。
+
+而且：
+
+- **`intent.llm.timeout` 与 `guard.model-detect.timeout` 一次都没出现过**（0 次）——
+  说明超时分支**根本没进**，不是「进了但记错了」；
+- `intent.classify.end` 只出现 1 次，且是 `jev-adopt`（没调 LLM 的那条路径）；
+- 时限本身是有的：`stages.intent.timeoutMs` / `stages.guard.timeoutMs` 默认 **60000**
+  ⇒ 60 秒后 abort 定时器**确实触发**了，但没有任何东西被唤醒。
+
+### 三、根因：AbortController 只是**通知**，不是**收口**
+
+两处内部 LLM 调用都是这个形状：
+
+```ts
+const controller = new AbortController()
+const timer = setTimeout(() => controller.abort(), timeoutMs)
+const streamRaw = this.llm.stream({ ..., signal: controller.signal })
+const stream = await streamRaw                       // ← 阶段一：等 promise
+for await (const chunk of stream) { ... }            // ← 阶段二：读流
+```
+
+`abort()` 只告诉下游「你该收尾了」。若下游那趟请求的 promise **永不 settle**
+（既不产出 chunk、也不结束、也不抛错），**两个阶段都会永远挂着** —— abort 触发了
+也没用，因为没有任何东西被唤醒。
+
+实测（Node inspector 直连 `127.0.0.1:9230`，CDP 读 `process.getActiveResourcesInfo()`）：
+活动资源里 `Timeout` 计数归零（定时器已触发并消失），宿主进程里**没有一条到
+provider 的外连 socket**（只有 Electron 的回环 IPC）⇒ 请求压根没走到网络层。
+
+**⇒ 整轮卡在「意图判定」，面板如实显示主人那张截图。**
+
+### 四、修法：让「这次调用」与「时限」赛跑
+
+新模块 `src/dsh-adapter/llm-drain-deadline.ts`：
+
+```ts
+export async function raceWithDeadline<T>(
+  work: () => Promise<T>,
+  timeoutMs: number,
+  controller: AbortController,
+): Promise<T>
+```
+
+时限到了 ⇒ **我们自己** `controller.abort()`（照常通知下游收尾）+ 抛一个
+`name === 'AbortError'` 的错误。
+
+关键在**同形**：上层判定超时用的是 `err?.name === 'AbortError' || controller.signal.aborted`
+⇒ 我们抛的 AbortError 与下游自己因 abort 抛出的错误**同形** ⇒ 上层照常记
+`intent.llm.timeout` / `guard.model-detect.timeout`，照常 fail-open
+（安检放行、意图分类退回规则层）⇒ **阶段不再能永久卡死整轮**。
+
+**它不替代 abort** —— abort 仍然照常发给下游（下游守规矩时，它自己会更快地
+抛错/结束）。这里只是**兜底**：下游不守规矩时，由我们收口。
+
+接线两处：
+
+- `src/dsh-adapter/intent-router.ts` —— 时限 `this.llmTimeoutMs`；
+- `src/dsh-adapter/prompt-guard.ts` —— 时限 `cfg.modelDetectionTimeoutMs`。
+
+### 五、反事实实验：这些测试在修复前是**真的挂死**的
+
+新增 9 条测试（`tests/unit/llm-drain-deadline.test.ts` 7 条 + 两个集成用例），
+其中两条集成用例模拟的是**下游那趟请求永不 settle**。
+
+**把两处接线 stash 掉再跑**（`git stash push -- src/dsh-adapter/intent-router.ts
+src/dsh-adapter/prompt-guard.ts`）：
+
+```
+× intent-router > §7.190: gives up on the llm call that never settles and fails open   5007ms
+  → Test timed out in 5000ms.
+× prompt-guard model-based detection > §7.190: gives up on the llm call that never settles and stays fail-open  5007ms
+  → Test timed out in 5000ms.
+```
+
+**接上修复后**（同一条命令）：30~50ms 通过。
+
+⇒ 测试复现的正是实盘症状（永久卡死），修完即消。这不是「写完就绿」的安慰剂测试。
+
+### 六、这一节**做了什么**、**没做什么**（诚实边界）
+
+**做了**：
+
+- 阶段不再能**永久**卡死整轮。DELEGATE 下意图判定最坏 60 秒后超时 → 退回规则层
+  → 整轮继续走完 → 面板如实显示「超时」而不是永远「等待」；
+- 超时这件事**有了审计行**（此前 0 次）—— 运维能看见「它超时了」，而不是
+  「它还在跑」；
+- fail-open 语义不变（安检放行、意图分类退回规则层），**没有**把任何一档
+  改成 fail-closed。
+
+**没做**（必须说清楚）：
+
+- **没有**修好「意图分类器的 LLM 调用 0/5 成功」这个更根本的问题。修好后
+  的表现是「超时后用规则层的答案」，**不是「真本地判定」**；
+- 根因**仍未定位**。已排除：载荷差异（两次调用 `tools=0` / `messageCount=1` /
+  同 provider 同模型）、`internal` 标记（只做审计/trace 标注）、出网裁剪
+  （本地池转发按 §7.171 不裁）、网络层（无外连 socket）。
+  剩余差异只有四类：`system` / `temperature` / `maxTokens` / `internal` 取值
+  —— 定位它要在宿主侧插桩，代价高，本轮没做；
+- **没有**动 60 秒这个默认时限（属产品语义，见第七节）。
+
+### 七、遗留（待主人裁决，不擅自改）
+
+1. **意图分类器 0/5 的根因**：需在宿主 provider 侧插桩（`qwen-token-plan-cn`
+   那一跳为什么对「无 system / 无 maxTokens」的请求永不返回）；
+2. **60 秒时限是否过长**：实测直连池单跳 800~1300ms，60 秒是极大的余量。
+   改默认值属产品语义 —— 但「超时后用规则层」在 DELEGATE 下**不等于**真本地，
+   越早超时主人越早看见「这一跳没跑起来」；
+3. **DELEGATE 委托到云端时闸门是否 fail-closed**（§7.189 七节同一议题；
+   上游 `tests/unit/input-guard-local-reroute.test.ts:249` 有意断言当前行为）；
+4. **配置放哪**（运维自选位置，**不由部署带过去** —— §7.189 主人裁决）。
+
+### 八、门禁与证据（本轮全绿）
+
+| 检查 | 结果 |
+|---|---|
+| `vitest run tests/unit` | **1615 passed \| 2 skipped**（82 文件，较上轮 +9） |
+| `eslint src tests/unit scripts` | **0 error** / 59 warning（未新增） |
+| `tsc -p tsconfig.json --noEmit` | exit 0 |
+| `tsc -p tsconfig.client.json --noEmit` | exit 0 |
+| `node scripts/run.mjs verify:build` | exit 0（28 道全绿，含 `config/edge.json: 不在 ✓`） |
+| `node scripts/verify-doc-links.mjs` | exit 0 |
+| 反事实（stash 掉接线） | 两条集成用例**均 5000ms 超时挂死** ⇒ 复现实盘症状 |
+
+**没做的**：没有发新的 npm 版本（本轮改动只在仓库里）。要把它送到主人手上的
+npm 包，需要发 **0.1.3** —— 那是对外可见动作，等主人指示。

@@ -122,6 +122,11 @@ for (const file of sources) {
   // prompt-guard.ts / intent-router.ts; never inserted by a cordis patch row,
   // not in package.json exports.
   if (base === 'effective-model') continue
+  // §7.190: 内部 LLM 调用的「自己带时限」收口器（raceWithDeadline）——
+  // 让「这次调用」与「时限」赛跑，下游那趟请求永不 settle 时由我们收口。
+  // Imported by prompt-guard.ts / intent-router.ts; never inserted by a cordis
+  // patch row, not in package.json exports.
+  if (base === 'llm-drain-deadline') continue
   if (base === 'plugin' || base === 'index') continue
   const content = readFileSync(file, 'utf8')
 
