@@ -19,6 +19,7 @@ import { redactString } from './pii-utils.js'
 import { findRoute, type RouteDef, type RouteContext } from './http-api-routes.js'
 import { HttpApiSessionsImpl, type HttpApiSessions } from './http-api-sessions.js'
 import { cloudPool, loadEdgeConfig, localPool } from './edge-config.js'
+import { resolveEffectiveLocalModelSync, type LocalPoolShape } from './effective-model.js'
 
 /**
  * Snapshot a live Session's event log, papering over the upstream API
@@ -1834,6 +1835,44 @@ export class HttpApiServiceImpl extends Service {
 }
 
 /**
+ * §7.192（2026-11-12）：这个池**这一轮真正会跑**的模型名。
+ *
+ * 池**配了** model（直连池）⇒ 就是它 —— §7.102 的老口径一个字不改。
+ *
+ * 池**没配** model（没配置文件 ⇒ DELEGATE，§7.171）⇒ **取 DSH 配置的模型**
+ * —— 也就是宿主当前那个选择（桌面 GUI 的模型选择器）。
+ *
+ * 为什么必须这样：委托模式下 wire 上真正跑的就是宿主当前那个模型
+ * （§7.171/§7.179 同一份解析链）⇒ 写死一个别的名字（老代码写的是
+ * `qwen3-4b-instruct-2507`）等于**面板显示一件没发生过的事** —— 审计行
+ * `http.chat.route` / `http.chat.stream.route` 与会话的 agent options 都会
+ * 带着那个假名字。
+ *
+ * 解析链复用 `resolveEffectiveLocalModelSync`（§7.179/§7.180）——
+ * 与 local-llm-adapter / prompt-guard / intent-router **同一份事实源**，
+ * 这里不另写一套。解析链挂了（宿主没有可选模型 / 委托被关掉）⇒ 退回写死的
+ * 兜底（不因此让整条请求失败）。
+ */
+function poolEffectiveModel(ctx: any, isLocal: boolean, pool: LocalPoolShape): string {
+  const configured = (pool.model ?? '').trim()
+  if (configured.length > 0) return configured
+  const fallback = isLocal ? 'qwen3-4b-instruct-2507' : 'deepseek-chat'
+  try {
+    const effective = resolveEffectiveLocalModelSync(
+      ctx,
+      pool,
+      fallback,
+      isLocal ? 'local-llm' : 'cloud-llm',
+    )
+    const model = (effective?.model ?? '').trim()
+    if (model.length > 0) return model
+  } catch {
+    // 解析链抛错 ⇒ 退回写死的兜底（soft-dep 语义，不让整条请求失败）。
+  }
+  return fallback
+}
+
+/**
  * Pure (exported for unit tests) route resolver. See the inline comment
  * in HttpApiServiceImpl#resolveRoute for the soft-dep / fail-open contract.
  */
@@ -1847,10 +1886,15 @@ export function resolveRoute(
   // layer in edge-config.ts keeps DSH_EDGE_LOCAL_LLM_MODEL / DSH_EDGE_MODEL
   // working, so the desktop GUI and the CLI profiles end up on the same
   // model.
+  //
+  // §7.192：池没配 model 时不再写死一个名字，而是**取 DSH 配置的模型**
+  //（见 `poolEffectiveModel`）。
   const pools = loadEdgeConfig(true)
-  const fallbackModel = isLocal
-    ? (localPool(pools).model ?? 'qwen3-4b-instruct-2507')
-    : (cloudPool(pools).model ?? 'deepseek-chat')
+  const fallbackModel = poolEffectiveModel(
+    ctx,
+    isLocal,
+    isLocal ? localPool(pools) : cloudPool(pools),
+  )
   const mr = typeof ctx?.get === 'function' ? (() => { try { return ctx.get('modelRouter') } catch { return undefined } })() : ctx?.modelRouter
   if (mr && typeof mr.resolve === 'function') {
     try {

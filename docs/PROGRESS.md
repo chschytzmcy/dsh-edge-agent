@@ -20824,3 +20824,108 @@ if (isLocalPoolForward(options)) return false
 3. **是否发 0.1.3**：本轮的「发布面加固 + provider 让位 + 超时收口 + 本节的
    递归根因」都只在仓库里，要送到主人手上的 npm 包需要发 0.1.3 ——
    对外可见动作，等主人指示。
+
+## §7.192 本地 LLM 没配置 ⇒ 取 DSH 配置的模型（2026-11-12）
+
+### 〇、主人的一句话
+
+> 「local llm 没有配置就取 dsh 配置的模型」
+
+### 一、之前哪儿没照这条做
+
+**池自己是对的**：`local-llm-adapter` 的 DELEGATE 分支（§7.171）与
+`effective-model.ts`（§7.179/§7.180）**早就**用同一条解析链取宿主当前那个
+模型。实测审计行（无配置时）：
+
+```
+llm.local.catalog {"provider":"local-llm","model":"deepseek-v4.1-flash",
+                   "target":"qwen-token-plan-cn","targetSource":"selection"}
+```
+
+**没照做的是 http-api 的 `resolveRoute()`** —— 它**自己另维护了一套硬编码兜底**，
+没去问池：
+
+```ts
+const fallbackModel = isLocal
+  ? (localPool(pools).model ?? 'qwen3-4b-instruct-2507')   // ← 写死
+  : (cloudPool(pools).model ?? 'deepseek-chat')             // ← 写死
+```
+
+而 `llm.local` 的默认值里**没有 model**（`DEFAULT_EDGE_CONFIG.llm.local =
+{ stripTools:false, enableThinking:false, delegate:true }`）⇒ 没配置文件时必然
+落进那个写死的名字。
+
+**后果**：委托模式下 wire 上真正跑的是宿主当前那个模型（委托覆盖了 model），
+但
+
+- 审计行 `http.chat.route` / `http.chat.stream.route` 记的是
+  `qwen3-4b-instruct-2507`（本地）/ `deepseek-chat`（云）；
+- 会话创建的 `agents.create({agentOptions:{model}})` 也是那个名字。
+
+⇒ **面板显示一件没发生过的事**（本项目的硬规矩：宁可漏显示，也不能显示假的）。
+
+### 二、修法：同一份解析链，一个事实源
+
+`resolveRoute()` 的本地/云两个分支改成走 `poolEffectiveModel()`：
+
+- 池**配了** model（直连池）⇒ 就是它 —— §7.102 的老口径一个字不改；
+- 池**没配** model（没配置文件 ⇒ DELEGATE）⇒ 取 **DSH 配置的模型**
+  （宿主当前选择 = 桌面 GUI 的模型选择器）；
+- 解析链复用 `resolveEffectiveLocalModelSync`（§7.179/§7.180）——
+  **与 local-llm-adapter / prompt-guard / intent-router 同一份事实源**，
+  这里不另写一套；解析链挂了（宿主没有可选模型 / 委托被关掉）⇒ 退回原硬编码
+  兜底，**不因此让整条请求失败**（soft-dep 语义不变）。
+
+> 主人说的是「local llm」，但**云池是同一条机制**（`llm.cloud` 默认也是
+> `delegate: true`，没配 model 时同样落进写死的 `deepseek-chat`）⇒ 两条分支
+> 一起改，否则 CLOUD 轮次的面板仍在显示没跑过的名字。
+
+### 三、反事实
+
+新增 4 条用例（`tests/unit/http-api.test.ts`）：
+
+- 「本地池没配 model ⇒ 取 DSH 配置的模型（宿主当前选择），不是写死的名字」；
+- 「本地池没配 model + modelRouter 回 provider id ⇒ 也用 DSH 配置的模型」；
+- 「云池没配 model ⇒ 同样取 DSH 配置的模型」；
+- 「宿主解析不到任何落点 ⇒ 退回原硬编码兜底（不因此让请求失败）」。
+
+`git stash push -- src/dsh-adapter/http-api.ts` 后跑：
+
+```
+× 本地池没配 model ⇒ 取 DSH 配置的模型
+  → expected 'qwen3-4b-instruct-2507' to be 'deepseek-v4.1-flash'
+× 本地池没配 model + modelRouter 回 provider id ⇒ 也用 DSH 配置的模型
+  → expected 'qwen3-4b-instruct-2507' to be 'deepseek-v4.1-flash'
+× 云池没配 model ⇒ 同样取 DSH 配置的模型
+  → expected 'deepseek-chat' to be 'deepseek-v4.1-flash'
+```
+
+第 4 条（兜底不许崩）在修复前后都过 —— 它是**防回归的保险**，不是反证。
+
+修复后：**30 passed**（该文件原 26 条 + 新增 4 条）。
+
+### 四、这一节**做了什么**、**没做什么**
+
+**做了**：没配本地模型时，面板/审计/会话 agent options 上的模型名 = DSH 当前
+配置的那个模型 = wire 上真正跑的那个。
+
+**没做**：
+
+- **没有**改 DELEGATE 的产品语义 —— 委托到宿主 provider 这件事本身没变，
+  「委托目标是云端时闸门要不要 fail-closed」仍是待裁决项；
+- **没有**动直连池的口径（配了 model 就是它，§7.102 原样）；
+- 配置**放哪**仍未定（部署不带 `edge.json`，主人已定；落点待选）。
+
+### 五、门禁与证据（本轮全绿）
+
+| 检查 | 结果 |
+|---|---|
+| `vitest run tests/unit` | **1621 passed \| 2 skipped**（82 文件，较上轮 +4） |
+| `eslint src tests/unit scripts` | **0 error** / 59 warning（未新增） |
+| `tsc -p tsconfig.json --noEmit` | exit 0 |
+| `tsc -p tsconfig.client.json --noEmit` | exit 0 |
+| `node scripts/run.mjs verify:build` | exit 0（28 道全绿） |
+| 反事实（stash 掉修复） | 3 条新用例**均失败**，错误文案直指「写死的名字 ≠ DSH 的模型」 |
+
+**没做的**：没有发新的 npm 版本（本轮改动只在仓库里）。要送到主人手上的
+npm 包，需要发 **0.1.3** —— 对外可见动作，等主人指示。

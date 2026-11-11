@@ -384,6 +384,67 @@ describe('http-api resolveRoute (modelRouter wiring)', () => {
     expect(r.model).toBe('deepseek-chat')
   })
 
+  // ─── §7.192: 池没配 model ⇒ 取 DSH 配置的模型 ─────────────────────────────
+  //
+  // 没配置文件 ⇒ 池走 DELEGATE（§7.171）⇒ wire 上真正跑的是**宿主当前那个
+  // 模型**（桌面 GUI 的模型选择器）。这时写死一个别的名字（老代码写的是
+  // `qwen3-4b-instruct-2507`）= **面板显示一件没发生过的事**。
+  const dshSelectionCtx = () => ({
+    get(name: string) {
+      if (name === 'llm') {
+        return {
+          listProviders: () => [{ id: 'qwen-token-plan-cn', name: 'qwen-token-plan-cn' }],
+          listModels: async () => [],
+        }
+      }
+      if (name === 'agentDefaultModel') {
+        return {
+          currentSelection: () => ({ provider: 'qwen-token-plan-cn', model: 'deepseek-v4.1-flash' }),
+        }
+      }
+      return undefined
+    },
+  })
+
+  it('§7.192: 本地池没配 model ⇒ 取 DSH 配置的模型（宿主当前选择），不是写死的名字', () => {
+    delete process.env.DSH_EDGE_LOCAL_LLM_MODEL
+    const r = resolveRoute(dshSelectionCtx(), true)
+    expect(r.provider).toBe('local-llm')
+    expect(r.model).toBe('deepseek-v4.1-flash')
+  })
+
+  it('§7.192: 本地池没配 model + modelRouter 回 provider id ⇒ 也用 DSH 配置的模型', () => {
+    delete process.env.DSH_EDGE_LOCAL_LLM_MODEL
+    const ctx = {
+      ...dshSelectionCtx(),
+      get(name: string) {
+        if (name === 'modelRouter') {
+          return { resolve: () => ({ realm: 'LOCAL', provider: 'local-llm', model: 'local-llm' }) }
+        }
+        return dshSelectionCtx().get(name)
+      },
+    }
+    const r = resolveRoute(ctx, true)
+    expect(r.resolved).toBe(true)
+    expect(r.provider).toBe('local-llm')
+    expect(r.model).toBe('deepseek-v4.1-flash')
+  })
+
+  it('§7.192: 云池没配 model ⇒ 同样取 DSH 配置的模型', () => {
+    delete process.env.DSH_EDGE_MODEL
+    const r = resolveRoute(dshSelectionCtx(), false)
+    expect(r.provider).toBe('cloud-llm')
+    expect(r.model).toBe('deepseek-v4.1-flash')
+  })
+
+  it('§7.192: 宿主解析不到任何落点 ⇒ 退回原硬编码兜底（不因此让请求失败）', () => {
+    delete process.env.DSH_EDGE_LOCAL_LLM_MODEL
+    const r = resolveRoute({}, true)
+    expect(r.resolved).toBe(false)
+    expect(r.provider).toBe('local-llm')
+    expect(r.model).toBe('qwen3-4b-instruct-2507')
+  })
+
   it('falls back when modelRouter.resolve returns a malformed shape', () => {
     const ctx = {
       modelRouter: {
