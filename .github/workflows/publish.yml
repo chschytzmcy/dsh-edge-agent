@@ -75,7 +75,7 @@ jobs:
       # the gates without producing the artifact they read dies at the Verify
       # step, exactly like the lib/client.js hole of §7.154.
       - name: Build (compile → browser half → installable bundle → tarballs)
-        run: node scripts/run.mjs compile typecheck:client build:client build:installable pack:tarball
+        run: node scripts/run.mjs compile typecheck:client build:client build:installable pack:tarball stage:npm
 
       - name: Verify (boundary / contract / patch-surface / plugin-spec / package)
         run: pnpm run verify:build
@@ -173,10 +173,20 @@ jobs:
       # `verify:build` gated THOSE artifacts. Letting `prepare` re-run
       # compile+build:client inside the publish step would ship a second,
       # ungated build. Ship exactly what the gates saw.
+      # §7.188 (2026-11-11): 发布**不在仓库根**跑，而在 `dist/.npm-stage/` ——
+      # 那个目录里摆的是「真正要发给 registry 的那个包」：内容 = safe 变体 +
+      # README + LICENSE，清单 = 去掉 `scripts` / `devDependencies` / `packageManager`
+      # 的那份（0.1.1 的毛病：清单声明了 50 余条脚本和一整套 devDeps，而它们指向的
+      # 文件根本不在 tarball 里）。
+      #
+      # ⇒ **本地 dry-run 与 CI 真发仍是同一条命令**（`pnpm publish`），
+      #   只是 cwd 换了个目录 —— 两边都从 `stage:npm` 产出的同一个暂存目录发。
+      #   暂存目录由门禁 `verify:npm-stage` 守着（verify:build 链的最后一位）。
       - name: Publish
         if: steps.decide.outputs.skip != 'true'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        working-directory: dist/.npm-stage
         run: |
           if [ "${{ steps.decide.outputs.provenance }}" = "true" ]; then
             echo "带 --provenance 发布（会有溯源徽章）"

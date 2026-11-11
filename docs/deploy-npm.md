@@ -258,7 +258,7 @@ pnpm --dir "$env:USERPROFILE\.dsh\profiles\desktop" add "@dsh-edge/dsh-edge-agen
 | 要求 | 出处 | 本仓 | 状态 |
 |---|---|---|---|
 | 包名合规（小写、≤214） | `install-spec.ts:32-33` | `@dsh-edge/dsh-edge-agent` | ✅ |
-| `name` / `version` | `publish.md:36-44` | `0.1.1` | ✅ |
+| `name` / `version` | `publish.md:36-44` | `0.1.2` | ✅ |
 | `dsh.bundle.patch`（字符串或列表） | `publish.md:13,64` | `["./cordis.desktop-safe.patch.yml", "./presets/edge.desktop-safe.patch.yml"]` | ✅ |
 | patch 文件**必须在包里** | `app-boot/src/index.ts:538-546` | 两个都在 `files` 白名单里 | ✅ |
 | `engines.dsh` 声明 | `publish.md:66` | `">=0.2.1-rc.2"` | ✅ |
@@ -306,11 +306,14 @@ package.json / README.md / LICENSE / CHANGELOG.md
 
 `files` 白名单在 npm 通道同样生效：`src/`、`scripts/`、`tests/`、`.git/` 都不进包。
 
-> **⚠️ 清单与内容不一致（已知，0.1.2 候选）**：发布出去的 `package.json` 仍带着
-> `scripts.*`（50 余条）和一整套 `devDependencies`，而它们指向的 `scripts/`、`src/`、
-> `tests/` **不在 tarball 里**。对消费者无害 —— registry 安装**不会**触发 `prepare`
-> （只有 git 安装与本地目录安装才会跑 `prepare`），包里也没有 `postinstall`；
-> 但清单声称了并不存在的东西，是个该修的口子。
+> **✅ 0.1.2 起已修：清单不再声明不在包里的东西。**
+> 0.1.1 发布出去的 `package.json` 带着仓库根清单的 `scripts.*`（50 余条）和一整套
+> `devDependencies`，而它们指向的 `scripts/`、`src/`、`tests/` **不在 tarball 里**
+> ⇒ 清单声称了并不存在的东西（对消费者无害：registry 安装**不会**触发 `prepare`，
+> 包里也没有 `postinstall`）。
+> 现在发布走一个**消毒过的暂存目录** `dist/.npm-stage/`：内容 = safe 变体 +
+> README + LICENSE，清单 = 去掉 `scripts` / `devDependencies` / `packageManager` 的那份。
+> **出货文件逐个不变**（仍是 238 个），只有清单瘦了 —— 由 `verify:npm-stage` 门禁守着。
 
 ## 8. 发布链（CI）
 
@@ -353,15 +356,15 @@ npm run publish:npm -- --yes --tag     # 发完打 v<version> tag（再 git push
 1. **工作树必须干净**（`--allow-dirty` 可强行越过）—— 发出去的必须是 git 里有的东西；
 2. **registry 预检**：这个版本发过没有？发过 ⇒ 立刻停（不浪费一次构建 + 门禁）；
 3. **认证预检**（仅真发时）：`NPM_TOKEN` / `NODE_AUTH_TOKEN` / `~/.npmrc` / 仓库
-   `.npmrc` 里有没有 token？**没有就立刻停**（实测 3 秒）—— 不能等构建链 + 27 道
+   `.npmrc` 里有没有 token？**没有就立刻停**（实测 3 秒）—— 不能等构建链 + 28 道
    门禁跑完才在 `pnpm publish` 那一步才发现没登录。
    ⚠️ **两种 token 行都要认**（§7.185 实测踩过）：`npm login --auth-type=web` 写进
    `~/.npmrc` 的是**带 registry 前缀**的 `//registry.npmjs.org/:_authToken=…`；只认
    不带前缀的 `_authToken=` 会给出**假阴性**（明明 `npm whoami` 有身份、token 也在，
    预检却报「没找到凭据」）。自证：`npm run publish:npm -- --selftest`；
 4. **canonical 构建链**（`compile → typecheck:client → build:client → build:installable
-   → pack:tarball`）—— 与 CI **一字不差**；
-5. **全部门禁**（`verify:build`，**27 项**，验的是**产物**）；
+   → pack:tarball → stage:npm`）—— 与 CI **一字不差**；
+5. **全部门禁**（`verify:build`，**28 项**，验的是**产物**）；
 6. **`pnpm publish --dry-run`** —— **默认不发**，只把「将要发出去的东西」摊开给你看。
 
 ⇒ **不带 `--yes` 永远不会碰 registry。** 这是这个脚本的默认值，也是它能被信任的原因。
@@ -375,6 +378,13 @@ GitHub Release。这正是 `publish-decision.mjs` 的 `skip` 决策存在的原�
 ```
 pnpm publish --access public --ignore-scripts --no-git-checks [--provenance|--no-provenance]
 ```
+
+**⚠️ 0.1.2 起，这一条命令在 `dist/.npm-stage/` 里跑**（本地与 CI 同一目录）：
+那个目录里摆的是「真正要发给 registry 的那个包」—— 内容 = safe 变体 + README +
+LICENSE，清单 = **去掉 `scripts` / `devDependencies` / `packageManager`** 的那份
+（0.1.1 的毛病：清单声明了 50 余条脚本和一整套 devDeps，而它们指向的文件根本不在
+tarball 里）。暂存目录由构建链里的 `stage:npm` 产出，由 `verify:npm-stage` 门禁守着
+（出货文件必须**逐个等于**「变体目录 + README + LICENSE」）。
 
 - `--no-git-checks`：CI 在 tag push 时**必然**是 detached HEAD（`actions/checkout`
   检出的是 tag）⇒ pnpm 的 git 检查会直接报 `ERR_PNPM_GIT_UNKNOWN_BRANCH`

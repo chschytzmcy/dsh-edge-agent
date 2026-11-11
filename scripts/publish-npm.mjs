@@ -14,12 +14,24 @@
  *   2. 跑**完整的 canonical 构建链**（与 CI 一字不差 —— `verify-ci-build-chain`
  *      门禁就管这件事）；
  *   3. **认证预检**（仅 `--yes`；离线读 `.npmrc` / 环境变量，找不到 token 就停）；
- *   4. 跑**全部 27 道门禁**（验的是**产物**，不是源码）；
+ *   4. 跑**全部 28 道门禁**（验的是**产物**，不是源码）；
  *   4. `pnpm publish --dry-run` —— **默认不发**，只把「将要发出去的东西」摊开给你看；
  *   5. 真的发要显式加 `--yes`。
  *
  * ⇒ **不带 `--yes` 永远不会碰 registry。** 这一条是这个脚本的默认值，也是它能
  * 第一次就被信任的原因。
+ *
+ * ## 从暂存目录发布（§7.188，2026-11-11）
+ *
+ * 发布**不在仓库根**跑 —— 而在 `dist/.npm-stage/` 跑。那个目录里摆的是
+ * 「真正要发给 registry 的那个包」：内容 = `dist/installable/dsh-edge-agent-desktop-safe/`
+ * + README + LICENSE，清单 = **去掉 `scripts` / `devDependencies` / `packageManager`**
+ * 的那份（0.1.1 的毛病：清单声明了 50 余条脚本和一整套 devDeps，而它们指向的文件
+ * 根本不在 tarball 里）。
+ *
+ * ⇒ **CI 也从同一个目录发**（`publish.yml` 的 Publish 步骤带 `working-directory`）
+ * ⇒ 「本地 dry-run 与 CI 真发是同一条命令」这条纪律仍然成立，只是 cwd 换了个目录。
+ * 暂存目录由构建链里的 `stage:npm` 产出，由 `verify:npm-stage` 门禁守着。
  *
  * ## 用法
  *
@@ -41,7 +53,7 @@
  * ```
  *
  * 真发布（`--yes`）会先做一次**认证预检**（离线读文件，3 秒内出结果）：找不到
- * token 就直接停 —— 而不是等构建链 + 27 道门禁跑完才在最后一步失败。
+ * token 就直接停 —— 而不是等构建链 + 28 道门禁跑完才在最后一步失败。
  *
  * ## 关于 provenance（溯源徽章）
  *
@@ -108,6 +120,7 @@ import { delimiter, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { decideProvenance, probeVersion } from './registry-version.mjs'
+import { STAGE_DIR } from './stage-npm-publish.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -202,12 +215,12 @@ function assertShellSafe(args) {
   process.exit(1)
 }
 
-function run(cmd, cmdArgs, { allowFail = false } = {}) {
+function run(cmd, cmdArgs, { allowFail = false, cwd = ROOT } = {}) {
   assertShellSafe(cmdArgs)
   console.log(`\n$ ${cmd} ${cmdArgs.join(' ')}`)
   const res = IS_WINDOWS
-    ? spawnSync(`${cmd} ${cmdArgs.join(' ')}`, [], { cwd: ROOT, stdio: 'inherit', shell: true })
-    : spawnSync(cmd, cmdArgs, { cwd: ROOT, stdio: 'inherit', shell: false })
+    ? spawnSync(`${cmd} ${cmdArgs.join(' ')}`, [], { cwd, stdio: 'inherit', shell: true })
+    : spawnSync(cmd, cmdArgs, { cwd, stdio: 'inherit', shell: false })
   if (res.status !== 0 && !allowFail) {
     console.error(`\n✗ ${cmd} 退出码 ${res.status ?? 'null（进程没起来）'}`)
     process.exit(res.status ?? 1)
@@ -446,7 +459,7 @@ if (YES) {
 }
 
 console.log('\n── 构建（与 CI 同链）──')
-run('node', ['scripts/run.mjs', 'compile', 'typecheck:client', 'build:client', 'build:installable', 'pack:tarball'])
+run('node', ['scripts/run.mjs', 'compile', 'typecheck:client', 'build:client', 'build:installable', 'pack:tarball', 'stage:npm'])
 
 /* ── 第 2 步：门禁（验产物，不验源码）─────────────────────────────────── */
 
@@ -456,7 +469,7 @@ run('node', ['scripts/run.mjs', 'verify:build'])
 /* ── 第 3 步：发布 ─────────────────────────────────────────────────────── */
 
 const pnpmVersion = resolvePnpm()
-console.log(`\n── 发布（pnpm ${pnpmVersion}）──`)
+console.log(`\n── 发布（pnpm ${pnpmVersion}，cwd = ${STAGE_DIR}）──`)
 
 const publishArgs = ['publish', '--access', 'public', '--ignore-scripts', '--no-git-checks', '--registry', REGISTRY]
 if (provenance) publishArgs.push('--provenance')
@@ -465,7 +478,7 @@ else publishArgs.push('--no-provenance')
 if (!YES) {
   // dry-run：pnpm 的 dry-run 只打印，不联网写 registry
   publishArgs.push('--dry-run')
-  run('pnpm', publishArgs)
+  run('pnpm', publishArgs, { cwd: STAGE_DIR })
   console.log('\n────────────────────────────────────────')
   console.log('  dry-run 完成 —— 上面是**将要**发出去的 tarball。')
   console.log(`  真的要发：npm run publish:npm -- --yes${TAG ? ' --tag' : ''}`)
@@ -474,7 +487,7 @@ if (!YES) {
 }
 
 // 真发
-run('pnpm', publishArgs)
+run('pnpm', publishArgs, { cwd: STAGE_DIR })
 
 console.log('\n────────────────────────────────────────')
 console.log(`  ✓ 已发布：${NAME}@${VERSION}`)

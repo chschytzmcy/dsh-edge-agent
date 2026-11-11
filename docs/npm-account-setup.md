@@ -143,7 +143,7 @@ $env:NPM_TOKEN = 'npm_xxxxxxxx'
 ```
 
 仓库里的 `scripts/publish-npm.mjs` 会离线读 `NPM_TOKEN` / `NODE_AUTH_TOKEN` /
-`~/.npmrc` / 仓库 `.npmrc`；**找不到凭据会在 3 秒内拦停**，不会白跑一遍构建 + 27 道门禁。
+`~/.npmrc` / 仓库 `.npmrc`；**找不到凭据会在 3 秒内拦停**，不会白跑一遍构建 + 28 道门禁。
 
 ## 7. 发第一版
 
@@ -153,7 +153,7 @@ $env:NPM_TOKEN = 'npm_xxxxxxxx'
 npm run publish:npm -- --yes --tag
 ```
 
-这条命令会依次跑：canonical 构建链（compile → typecheck → build → pack）→ **27 道门禁**
+这条命令会依次跑：canonical 构建链（compile → typecheck → build → pack → stage）→ **28 道门禁**
 → 认证预检 → `pnpm publish --access public --ignore-scripts --no-git-checks`。
 
 - 首次发布**不带** `--provenance`（包还不存在时 visibility 端点答 200

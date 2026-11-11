@@ -19980,3 +19980,137 @@ dependencies:
      `scripts/`、`src/`、`tests/` **不在 tarball 里**（对消费者无害 —— registry 安装
      不触发 `prepare`，包里也没有 `postinstall`；但清单声称了不存在的东西）。
 
+## §7.188 README 收瘦 + 0.1.2：发布清单不再声明不在包里的东西（2026-11-11）
+
+主人 20:1x 的两条指令：
+
+> 「readme尽量简洁，去掉full，只留safe，重点讲下localllm缺省的配置 和 应该怎么配置edge.json」
+>
+> 「npm的介绍是不是就是readme的内容？如果是的话，readme就要尽量简洁」
+
+### 〇、主人第二句的分量（先认下来）
+
+**npm 包页渲染的就是 README.md** ⇒ 这份文件不是「仓库说明书」，是**访客落地页**。
+所以 §7.186 的编辑式重写（保留机制细节、换成链接）方向是对的，但**还不够**：
+访客要的不是机制，是「装完怎么用、为什么我的『本地』没在本地」。
+
+### 一、README：300 行 → 119 行
+
+| | 原 | 现 |
+|---|---|---|
+| 行数 | 300 | **119** |
+| 字节 | 16957 B | **8791 B** |
+
+**删掉的**：
+
+- **「两个变体」整段**（`desktop-safe` 与 `full` 的对照）⇒ 只留一句「本包启用的是
+  `desktop-safe` 变体 —— 只 insert 插件行，不改写宿主的 persona / approval / sandbox」。
+  （`full` 变体在仓库里仍然存在、headless profile 用的**也是** safe 变体 ——
+  `scripts/deploy-profile.sh` 的 `VARIANT` 默认值就是 `desktop-safe` ——
+  只是 README 不再讲它了。）
+- **四条通道的逐条长注** ⇒ 压成四行要点，细节交给 `docs/load-into-local-dsh.md`；
+- **headless CLI profile 整节** ⇒ 压成两行；
+- **「它是怎么被宿主认出来的（速览）」整节** ⇒ 只留「只讲一种变体」那一句；
+- **文档导航表 13 行 → 8 行**（完整索引在 `docs/README.md`）；
+- **排障对照表**（4 行）—— 内容进了 `docs/desktop-troubleshooting.md`。
+
+**重点补上的（主人点名的那两块）**：
+
+1. **「缺省是什么样」** —— 一张 6 行的表把「不写 `edge.json` 会怎样」讲透：
+   `llm.local.baseUrl` 空 ⇒ **DELEGATE** ⇒ `local-llm` 路由照样注册但**转发宿主模型**
+   ⇒ 「本地」这一栏**默认并不在本地**；`stages.intent.provider=local-llm` ⇒ 端点留空时
+   意图判定**跑宿主模型** ⇒ 待检测的用户原文也会上行；`stages.intent.timeoutMs=60000`
+   ⇒ 那一次调用的超时窗口是 **60 秒**（不是 4 秒）。
+   ⇒ 结论一句话：**想让「本地」真的是本地，必须填 `llm.local.baseUrl`**。
+   （这 6 行每一行都有代码出处，见 §7.187 的因果链表。）
+2. **「怎么配 edge.json」** —— 两个落点（插件目录 / `~/.dsh-edge-agent/`，**没有第三个**）
+   → 三步（抄模板 → 填 `baseUrl` + `model` + `keyRef` → **重启桌面 App**）→ 一段可直接抄的
+   `jsonc` → 一张「不配会怎样」的表。
+
+### 二、0.1.2 的两件正事
+
+**① 包内版本头的日期与提交数**。已发布的 0.1.1 写着「2026-11-10 / 506 次提交」——
+两个都不是发布时的真实值（真实发布时刻是 2026-11-11 19:33）。
+**「次提交」这个字段本身是移动靶**（写它的时候 HEAD 是 512，几轮之后就已经 515）
+⇒ 0.1.2 把这个字段整个去掉，只写日期区间。
+
+**② 发布出去的 `package.json` 声明了不在包里的东西**。0.1.1 的清单带着仓库根清单的
+`scripts.*`（50 余条）和一整套 `devDependencies`，而它们指向的 `scripts/`、`src/`、
+`tests/` **不在 tarball 里**。
+
+**为什么不改仓库根的 package.json**：那些 `scripts` / `devDependencies` 是**仓库自己**
+要用的（构建链、门禁、单测）⇒ 不能删。
+**修法**：另摆一份「发布用清单」，从那里发。
+
+- 新增 `scripts/stage-npm-publish.mjs` ⇒ 把「要发给 registry 的那个包」摆到
+  `dist/.npm-stage/`：内容 = `dist/installable/dsh-edge-agent-desktop-safe/`
+  + README + LICENSE；清单 = safe 变体清单 **去掉 `scripts` / `devDependencies` /
+  `packageManager`**、版本换成仓库的纯 semver。
+  （safe 变体的清单**本来就**没有 `scripts` / `devDependencies` ——
+  `scripts/_pack-core.mjs` 的 `stageVariant()` 删的 ⇒ 这个修法其实是「把变体清单的
+  版本号换回去」。）
+- `scripts/publish-npm.mjs` 的 `pnpm publish` 改成 **cwd = `dist/.npm-stage/`**；
+- `.github/workflows/publish.yml` 的 Publish 步骤加 `working-directory: dist/.npm-stage`
+  ⇒ **本地与 CI 仍是同一条命令**（`pnpm publish`），只是 cwd 换了个目录；
+- `ci.yml` / `publish.yml` 的构建步骤都加了 `stage:npm`。
+
+**出货文件逐个不变**（仍是 238 个 = 变体 236 + README + LICENSE）⇒ **0.1.2 与 0.1.1 的
+差异只有清单与 CHANGELOG**。
+
+### 三、门禁（这是本仓的纪律：新东西必须有门禁）
+
+新增 `scripts/verify-npm-stage.mjs`，接进 `verify:build`（链内第 27 位，共 **28** 道）：
+
+- 清单版本 = 仓库版本，且不是 `0.0.0`；
+- 清单**不得**有 `scripts` / `devDependencies` / `packageManager`；
+- `dsh.bundle.patch` 列出的文件都在；`engines.dsh` 已声明；`peerDependencies` 非空；
+  `publishConfig.access=public`；`exports` 条数与仓库根一致（37）；
+- 暂存目录里**没有** `config/edge.json`（明文凭据绝不随包走）、没有 `scripts/`、
+  `src/`、`tests/`、`.git/`；
+- **出货文件集合必须逐个等于「变体目录 + README + LICENSE」** —— 杜绝「构建时没有、
+  发布时冒出来」的文件。
+
+⇒ 两个新脚本都带 `--selftest`（16 条 + 4 条断言），`verify-ci-build-chain` 的
+`REQUIRED_BUILD_STEPS` 也加上了 `stage:npm`（否则 CI 会以「目录不存在」而不是有用的
+信息失败 —— 那正是这道门禁存在的意义）。
+
+### 四、实测证据
+
+| 项 | 结果 |
+|---|---|
+| `npm run build`（全链） | **EXIT=0**，28 道门禁全绿 |
+| `verify:npm-stage` 实检 | 清单 0.1.2、无 scripts/devDeps、`bundle.patch` 2 个都在、exports 37、**出货 238 个**、失败 0 |
+| 暂存目录 `npm pack --dry-run` | 238 文件；无 `config/edge.json`、无 `scripts/`、无 `src/`；manifest 无 scripts/devDeps/packageManager |
+| 暂存目录 `pnpm publish --dry-run` | EXIT=0（pnpm 不会因为目录在 workspace 里而拦） |
+| `verify:doc-links` | 断链 0 / 孤儿 0 |
+| 单测 | 81 文件 / **1602 passed** / 2 skipped |
+
+### 五、npm 通道的活体回合（这一条终于验到了）
+
+主人 20:21 重启了 App 并发了一条消息。审计链（`~/.dsh-edge-agent/audit/audit.plain.jsonl`）
+逐条：
+
+| 时刻 | 审计行 | 说明 |
+|---|---|---|
+| 20:21:41 | `config.loaded` → home 的 `edge.json` | 顺位 2 命中 |
+| 20:21:41 | `llm.local.catalog {"model":"qwen3.8-flash","mode":"direct"}` | **直连**本地池，不是 DELEGATE |
+| 20:22:19 | `guard.model-detect.start` → `llm.local.start/end`（1143 ms）| guard 跑在**本地池**上 |
+| 20:22:20 | `intent.classify.start` → `llm.local.start/end`（578 ms）→ `intent.llm.low-confidence`（0.5 < 0.6）→ `intent.classify.llm_error` → `intent.classify.end`（`path=rules-after-llm-error`，category=LOCAL）| 3 个字的消息分类器没把握 ⇒ **fail-open 落回规则层**（不是卡住）|
+| 20:22:20 | `input-guard.reroute.planned`：`from` = `qwen-token-plan-cn/deepseek-v4.1-flash` → `to` = `local-llm` | 改道**已计划** |
+| 20:22:20 | `input-guard.reroute.local` ×2（`from`/`to` 齐全）| 改道**已发生** |
+| 20:22:20→21 | `llm.local.start`（messageCount=5）→ `llm.local.end`（1094 ms）| 整轮**留在本地** |
+
+⇒ **npm 通道与 tarball 通道行为一致**（19:18 那轮 tarball 通道的链路一模一样），
+且这一轮因为 home 配置在位，**没有**退化到 DELEGATE ⇒ 意图判定与 guard 都直连本地池。
+**这也反证了另一台设备的卡住与 npm 通道无关**（同一份代码、同一份包，那台缺的是配置）。
+
+### 六、还没做的（不写成已完成）
+
+- **0.1.2 尚未发布** —— 本节记录的是「代码改好了、门禁全绿」，发布本身还没发生；
+- npm 包里仍然带着 `full` 变体的两个 patch 文件（`cordis.patch.yml` +
+  `presets/edge.patch.yml`）—— 它们**不被 `dsh.bundle.patch` 引用**，是惰性的。
+  本次只按主人的指令把 README 收成「只讲 safe」，**没有**改包的内容清单
+  （那是一次独立的产品决定）；
+- 主人手上三件仍待办：trusted publisher、WebAuthn 2FA、轮换三个明文 key。
+
+

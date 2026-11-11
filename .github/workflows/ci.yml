@@ -87,8 +87,8 @@ jobs:
       #
       # scripts/verify-ci-build-chain.mjs gates this file — without it, a
       # dropped step here is invisible until CI goes red again.
-      - name: Build (compile → browser half → installable bundle → tarballs)
-        run: node scripts/run.mjs compile typecheck:client build:client build:installable pack:tarball
+      - name: Build (compile → browser half → installable bundle → tarballs → npm stage)
+        run: node scripts/run.mjs compile typecheck:client build:client build:installable pack:tarball stage:npm
 
       - name: Verify (boundary / contract / patch-surface / plugin-spec / package)
         run: pnpm run verify:build
