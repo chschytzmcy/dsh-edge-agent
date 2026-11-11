@@ -135,7 +135,10 @@ function guardNode(rows: EdgeRow[]): FlowNode {
     // The evidence line now carries what the headline cannot: who judged,
     // how long it took, how much text was scanned.
     const sub = [
-      `${tr('flow.lbl.model')} ${str(field(end, 'provider'))}/${str(field(end, 'model'))}`,
+      // §7.179：显示**真实落点**。DELEGATE 模式下本地池把请求转发给宿主
+      // provider（§7.171）⇒ 真正跑的是宿主那个模型，不是路由名 local-llm。
+      // `modelProvider` 是 adapter 侧解析出来的实际落点，缺省才退回路由名。
+      `${tr('flow.lbl.model')} ${str(field(end, 'modelProvider') ?? field(end, 'provider'))}/${str(field(end, 'model'))}`,
       `${tr('flow.lbl.elapsed')} ${ms(field(end, 'durationMs'))} · ${tr('flow.lbl.scanned')} ${str(field(end, 'textLen'))} ${tr('flow.lbl.chars')}`,
     ]
     // §7.121: 原始判断数据 —— 模型判「安全」的**理由原文**（§7.121 起
@@ -215,6 +218,9 @@ function intentNode(rows: EdgeRow[]): FlowNode {
     const pathRaw = field(end, 'path')
     const path = typeof pathRaw === 'string' ? pathRaw : ''
     const classifierProvider = str(field(startRow, 'classifier'))
+    // §7.179：真实落点。DELEGATE 模式下分类器跑在宿主 provider 上（§7.171），
+    // 路由名 `local-llm` 不是落点 —— 显示真实落点才不与实际行为相反。
+    const classifierLanding = str(field(startRow, 'modelProvider') ?? classifierProvider)
     const classifierEndpoint = field(startRow, 'classifierEndpoint')
     const classifierIsLocal = field(startRow, 'classifierIsLocal')
     const jevDecided = path.startsWith('jev-adopt') || path.startsWith('jev-reject')
@@ -236,8 +242,8 @@ function intentNode(rows: EdgeRow[]): FlowNode {
     // （jev / 缓存 / 规则档的「模型身份」在各自的证据行里）。
     const classifierModel = str(field(startRow, 'model'))
     const identity = llmDecided && classifierModel !== '?'
-      ? ` ${classifierProvider}/${classifierModel}`
-      : llmDecided ? ` ${classifierProvider}` : ''
+      ? ` ${classifierLanding}/${classifierModel}`
+      : llmDecided ? ` ${classifierLanding}` : ''
     sub.push(`${tr('flow.lbl.decidedBy')} ${decidedBy}${identity}`)
     // 真实落点 —— operator 判断「原文有没有出网」要看的不是 provider 名
     if (typeof classifierEndpoint === 'string' && classifierEndpoint.length > 0) {
@@ -494,6 +500,29 @@ function answerNode(rows: EdgeRow[], summary: EdgeSummary): FlowNode {
     if (typeof tools === 'number' && tools === 0) return false
     return true
   }
+  // §7.181 (2026-11-11): DELEGATE 池的出口行是 `llm.{local,cloud}.delegate.*`
+  // （§7.171 之后桌面跑的就是它），字段形状也不同：委托行带 `from`（池）与
+  // `toProvider`/`toModel`（真实落点）；直连行带 `provider`/`model`（池自己的
+  // 路由）。面板此前只认直连行 ⇒ 明明作答了，答案出口却写「路由未定」。
+  const isDirectEnd = (r: EdgeRow): boolean => r.kind === 'llm.local.end' || r.kind === 'llm.cloud.end'
+  const isDirectStart = (r: EdgeRow): boolean => r.kind === 'llm.local.start' || r.kind === 'llm.cloud.start'
+  const isDelegateEnd = (r: EdgeRow): boolean => /^llm\.(local|cloud)\.delegate\.end$/.test(r.kind)
+  const isDelegateStart = (r: EdgeRow): boolean => /^llm\.(local|cloud)\.delegate\.resolved$/.test(r.kind)
+
+  /**
+   * 出口行 → 「池 + 真实落点」。
+   *
+   * 委托行的池是 `from`（local-llm / cloud-llm），落点是 toProvider/toModel；
+   * 直连行的 provider/model 就是池自己的路由（落点 = 池）。
+   */
+  const egressTarget = (r: EdgeRow): { pool: string; provider: string; model: string } => {
+    const from = str(field(r, 'from'))
+    if (from !== '?') {
+      return { pool: from, provider: str(field(r, 'toProvider')), model: str(field(r, 'toModel')) }
+    }
+    const provider = str(field(r, 'provider'))
+    return { pool: provider, provider, model: str(field(r, 'model') ?? field(r, 'route')) }
+  }
   // No in-window host.route ≠ no route: `request/context` fires only on
   // CHANGES, so a same-model turn carries the session's last observed route
   // forward (flagged with a 沿用 note — the distinction from a fresh
@@ -507,7 +536,7 @@ function answerNode(rows: EdgeRow[], summary: EdgeSummary): FlowNode {
   // demonstrably answered (real session: 90 llm.local.* rows, 0
   // llm.host.route). Read the adapter rows first — they are the actual
   // wire traffic — and fall back to the host announcement.
-  const adapter = latest(rows, r => (r.kind === 'llm.local.end' || r.kind === 'llm.cloud.end') && isConversation(r))
+  const adapter = latest(rows, r => (isDirectEnd(r) || isDelegateEnd(r)) && isConversation(r))
   // §7.127: an answer that is still in flight is NOT an undecided route.
   // `llm.local.start` lands when the request leaves and carries the egress
   // target (provider/model/promptLen); `llm.local.end` lands only when the
@@ -517,7 +546,7 @@ function answerNode(rows: EdgeRow[], summary: EdgeSummary): FlowNode {
   // the start row names the model the bytes are going to). Read the
   // in-flight and failed states off the start/error rows so the node stops
   // claiming the route is undecided while it is plainly running.
-  const started = latest(rows, r => (r.kind === 'llm.local.start' || r.kind === 'llm.cloud.start') && isConversation(r))
+  const started = latest(rows, r => (isDirectStart(r) || isDelegateStart(r)) && isConversation(r))
   // §7.132: sse_interrupted 也是出网失败态（云侧 SSE 中断）—— 与
   // http_error / network_error 同属「作答失败」，一并纳入判定。
   const failed = latest(rows, r => /^llm\.(local|cloud)\.(http_error|network_error|sse_interrupted)$/.test(r.kind) && isConversation(r))
@@ -525,8 +554,7 @@ function answerNode(rows: EdgeRow[], summary: EdgeSummary): FlowNode {
     && (adapter === undefined || started.ts > adapter.ts)
     && (failed === undefined || failed.ts < started.ts)
   if (inFlight && started !== undefined) {
-    const provider = str(field(started, 'provider'))
-    const model = str(field(started, 'model') ?? field(started, 'route'))
+    const { provider, model } = egressTarget(started)
     const sub: string[] = [`${tr('flow.lbl.route')} ${provider}/${model}`]
     const raw: string[] = []
     const messageCount = field(started, 'messageCount')
@@ -556,33 +584,71 @@ function answerNode(rows: EdgeRow[], summary: EdgeSummary): FlowNode {
       ],
     }
   }
+  // §7.184 (2026-11-11): 边缘模式「选型不动、请求改道」 —— 改道行本身就是一次
+  // **路由宣告**（这一轮已经确定跑在本地池了）⇒ 出口行还没到时也不能写
+  // 「路由未定」（那是与实际行为相反的陈述）。
+  const rerouted = latest(rows, r => r.kind === 'input-guard.reroute.local')
+  const rerouteFrom = rerouted !== undefined
+    ? field(rerouted, 'from') as { provider?: unknown; model?: unknown } | undefined
+    : undefined
+  const rerouteTo = rerouted !== undefined
+    ? field(rerouted, 'to') as { provider?: unknown; model?: unknown } | undefined
+    : undefined
   const effective = adapter !== undefined
-    ? {
-      provider: str(field(adapter, 'provider')),
-      model: str(field(adapter, 'model') ?? field(adapter, 'route')),
-      carried: false,
-    }
+    ? { ...egressTarget(adapter), carried: false }
     : host !== undefined
-      ? { provider: str(field(host, 'provider')), model: str(field(host, 'model')), carried: false }
-      : summary.lastRoute !== undefined
-        ? { provider: summary.lastRoute.provider, model: summary.lastRoute.model, carried: true }
-        : undefined
+      ? { pool: str(field(host, 'provider')), provider: str(field(host, 'provider')), model: str(field(host, 'model')), carried: false }
+      : rerouteTo !== undefined && str(rerouteTo.provider) !== '?'
+        ? { pool: str(rerouteTo.provider), provider: str(rerouteTo.provider), model: str(rerouteTo.model), carried: false }
+        : summary.lastRoute !== undefined
+          ? { pool: summary.lastRoute.provider, provider: summary.lastRoute.provider, model: summary.lastRoute.model, carried: true }
+          : undefined
   if (effective === undefined) {
     return { label: tr('flow.answer'), tone: 'wait', detail: tr('flow.answer.pending'), sub: [] }
   }
-  const { provider, model, carried } = effective
-  const local = provider.startsWith('local-llm')
-  const answerSteps = rows.filter(r => r.kind === 'llm.local.end' && typeof r.payload.promptLen === 'number' && (r.payload.promptLen as number) > 1000)
+  const { pool, provider, model, carried } = effective
+  // §7.129 / §7.130: 「全部留在本机」的判据是**哪个池**（category），不是端点
+  // 落在哪台机。DELEGATE 下出口的 provider 是宿主提供商（如 qwen-token-plan-cn），
+  // 但走的是**本地池**（local-llm）⇒ 仍按 LOCAL 口径显示。
+  const local = pool.startsWith('local-llm')
+  // §7.181: 出口步数 —— 委托行（`llm.local.delegate.end`）与直连行
+  // （`llm.local.end`）都算；用 isConversation 排除内部调用（安检 / 分类器），
+  // 判别字段由 adapter 侧带上（§7.181 补齐了委托行的 tools/internal）。
+  const answerSteps = rows.filter(r => (r.kind === 'llm.local.end' || r.kind === 'llm.local.delegate.end') && isConversation(r))
   const sub: string[] = [
-    `${tr('flow.lbl.route')} ${provider}/${model}${carried ? ` · ${tr('flow.answer.carried')}` : ''}`,
+    `${tr('flow.lbl.route')} ${pool}/${model}${carried ? ` · ${tr('flow.answer.carried')}` : ''}`,
     // §7.129 / §7.130: 「全部留在本机」的依据是 **category（哪个池）**。
     // §7.129 曾按出口端点改成「全部离开了本机」，该推导已由 §7.130 撤回 ——
     // 主人裁决：category=LOCAL 即不算出公网，llm.local 池是 operator 自有设施。
     local ? tr('flow.a.localKeep') : tr('flow.a.cloudSend'),
   ]
+  // §7.181: DELEGATE 的落点 provider 与池不同 ⇒ 补一行「真实落点」。
+  if (provider !== '?' && provider !== pool) {
+    sub.push(`${tr('flow.lbl.endpoint')} ${provider}/${model}`)
+  }
+  // §7.184 (2026-11-11): 边缘模式**选型不动、请求改道** —— 宿主模型选择器里
+  // 仍然显示主人选的那个（云端模型），但这一轮真正跑的是本地池。
+  // ⇒ 面板必须把两者都写出来，否则就是「界面上写的名字跟实际跑的不是一回事」。
+  {
+    const fromProvider = str(rerouteFrom?.provider)
+    const toProvider = str(rerouteTo?.provider)
+    if (fromProvider !== '?' && toProvider !== '?') {
+      sub.push(`${tr('flow.lbl.rerouted')} ${fromProvider}/${str(rerouteFrom?.model)} → ${toProvider}/${str(rerouteTo?.model)}`)
+    }
+  }
   if (local && answerSteps.length > 0) {
     const total = answerSteps.reduce((n, r) => n + (typeof r.payload.durationMs === 'number' ? r.payload.durationMs : 0), 0)
-    sub.push(`${tr('flow.lbl.steps')} ×${answerSteps.length} · ${tr('flow.lbl.total')} ${ms(total)} · ${tr('flow.lbl.context')} ${str(answerSteps.at(-1)?.payload.promptLen)} ${tr('flow.lbl.chars')}`)
+    const lastStep = answerSteps.at(-1)!
+    // §7.181: 委托行没有 promptLen（转发给宿主，落点那边才有）⇒ 上下文规模改用
+    // 委托行自带的 messageCount（**条消息**，不是字）—— 单位不同，标签也跟着不同。
+    const delegateStep = isDelegateEnd(lastStep)
+    const ctx = delegateStep
+      ? num(field(latest(rows, r => isDelegateStart(r) && isConversation(r)), 'messageCount'))
+      : num(field(lastStep, 'promptLen'))
+    const ctxText = ctx === undefined
+      ? ''
+      : ` · ${tr('flow.lbl.context')} ${ctx} ${delegateStep ? tr('flow.lbl.msgs') : tr('flow.lbl.chars')}`
+    sub.push(`${tr('flow.lbl.steps')} ×${answerSteps.length} · ${tr('flow.lbl.total')} ${ms(total)}${ctxText}`)
   }
   // §7.121: 原始判断数据 —— 这一轮实际走了哪条线路的**原始字段**。
   const egress = adapter ?? host

@@ -112,48 +112,50 @@ function verifyBundle(dir) {
     throw new Error(`${relative(ROOT, dir)}: missing host entry ${REQUIRED_HOST_ENTRY}`)
   }
 
-  // 1b. §7.102: the runtime config must ship with the bundle. The plugin
-  //     reads <bundle>/config/edge.json first, then ~/.dsh-edge-agent/.
-  //     Without a config/ dir the bundle falls back to the example
-  //     template, which has blank secrets — the local-LLM route then never
-  //     registers and every LOCAL turn 502s.
+  // 1b. §7.182 (2026-11-11): the bundle's config/ directory must ship the
+  //     TEMPLATE + the policy — and must NOT ship the operator's live config.
+  //
+  //     The runtime's config lookup has exactly TWO candidates:
+  //       1. <bundle>/config/edge.json  — the installed plugin's own config dir
+  //                                      (where the user looks);
+  //       2. ~/.dsh-edge-agent/edge.json — the operator's home copy.
+  //     A BUILD OUTPUT is neither of those: it is a third copy of the
+  //     plaintext keys, and §7.178 already deleted one such copy on purpose.
+  //     The bundle's own config/ therefore holds only what the BUNDLE owns:
+  //       · edge.example.json     — blank-secret template the operator copies
+  //                                 from (the runtime's defaults live in
+  //                                 DEFAULT_EDGE_CONFIG, §7.182);
+  //       · privacy-policy.json   — the enforced policy itself.
   const configDir = join(dir, 'config')
   if (!existsSync(configDir)) {
-    throw new Error(`${relative(ROOT, dir)}: missing config/ directory (edge.json lives there)`)
+    throw new Error(`${relative(ROOT, dir)}: missing config/ directory (edge.example.json + privacy-policy.json live there)`)
   }
   const edgeConfig = join(configDir, 'edge.json')
   const edgeExample = join(configDir, 'edge.example.json')
-  if (!existsSync(edgeConfig) && !existsSync(edgeExample)) {
-    throw new Error(
-      `${relative(ROOT, dir)}: config/ has neither edge.json nor edge.example.json`,
-    )
-  }
   // The template must always ship (it is the last-resort fallback).
   if (!existsSync(edgeExample)) {
     throw new Error(`${relative(ROOT, dir)}: missing config/edge.example.json (template)`)
   }
-  // 1c. §7.161 (2026-10-30): the LOCAL-DIRECTORY channel (link:) is the
-  //     operator's LIVE one — the desktop profile mounts this directory
-  //     through a symlink, so the live config has to travel with it. The
-  //     operator's ruling for the four deployment shapes:
-  //
-  //       npm / git / distributable tarball → NO config/edge.json
-  //       local directory (link:)            → config/edge.json PRESENT
-  //       demo tarball                       → config/edge.json PRESENT
-  //
-  //     ⇒ If this repo HAS a live config, the installable directory MUST
-  //     carry it. Otherwise the link-mode profile silently falls back to the
-  //     blank template on candidate #1 and the operator's real endpoints stop
-  //     being the ones in use — the exact failure §7.102 recorded.
-  //
-  //     Conditional on the repo having one: a clean checkout (CI, a fresh
-  //     clone) has no `config/edge.json` at all — there is nothing to carry,
-  //     and the example template is the correct last-resort fallback.
-  if (existsSync(join(ROOT, 'config', 'edge.json')) && !existsSync(edgeConfig)) {
+  // 1c. §7.182: the operator's live config must NOT travel with any artifact.
+  //     The old rule was the opposite (the link-mode installable had to CARRY
+  //     the repo's live config, because the runtime's candidate #1 read it).
+  //     That candidate is gone ⇒ a bundled edge.json would be a plaintext
+  //     credential file the runtime never reads.
+  if (existsSync(edgeConfig)) {
     throw new Error(
-      `${relative(ROOT, dir)}: 本仓有 config/edge.json（活配置），但 installable 目录里没有 `
-      + '⇒ link 通道会把宿主的顺位 1 落空、悄悄退到空模板。'
-      + 'installable 目录必须带上活配置（stageVariant 的 keepSecretConfig 分支）。',
+      `${relative(ROOT, dir)}: config/edge.json 在产物里 `
+      + '⇒ 产物是构建输出，不是运维的两个落点（插件目录 / ~/.dsh-edge-agent）之一；'
+      + '带着它等于把明文 API key 打进第三份副本（§7.178 删过一份这样的）。'
+      + 'stageVariant / rebuild-installable 都必须排除它。',
+    )
+  }
+  // The operator's live config must not sit in the repo either — one place only.
+  if (existsSync(join(ROOT, 'config', 'edge.json'))) {
+    throw new Error(
+      `${relative(ROOT, dir)}: 仓库里有 config/edge.json `
+      + '⇒ §7.182 起仓库的配置目录不再作为活配置的落点（明文 API key 不该待在 git '
+      + 'checkout 里）。运维配置写 ~/.dsh-edge-agent/edge.json（顺位 2），'
+      + '或装好后写插件目录下的 config/edge.json（顺位 1）。',
     )
   }
   // 1d. §7.162 (2026-10-30): the manifest's `files` whitelist must be the
@@ -165,11 +167,6 @@ function verifyBundle(dir) {
   //       · WITH "!config/edge.json" ⇒ the packed copy carries no plaintext
   //         API key into node_modules;
   //       · WITHOUT it ⇒ the operator's real key is copied into node_modules.
-  //
-  //     The `link:` channel is unaffected either way (a symlink exposes the
-  //     whole directory; `files` never applies), so the live config still
-  //     reaches the profile through candidate #1 — which is exactly why the
-  //     negation is safe to keep in the installable manifest.
   //
   //     Two producers write this very directory —
   //     `scripts/rebuild-installable.mjs` and `scripts/_pack-core.mjs`

@@ -194,13 +194,26 @@ dsh --profile <profile> --dump-config \
 
 ## ⚙️ 配置
 
-配置只有**一个文件**：`config/edge.json`。所有 profile 读同一份，不依赖环境变量。
+配置只有**一个文件**：`edge.json`。所有 profile 读同一份，不依赖环境变量。
+
+**两个合法落点**（§7.182）：插件装在哪，配置就在哪 —— 但要活过重装，就写 home。
 
 ```bash
-cp config/edge.example.json config/edge.json   # 想改配置时才需要这一步
+# 顺位 1：装好后的插件目录里（打开就能看到能改的那个）
+C:\Users\<你>\.dsh\profiles\desktop\node_modules\@dsh-edge\dsh-edge-agent\config\edge.json
+
+# 顺位 2：home（跨通道、跨重装、删 profile 都活着）★ 推荐
+C:\Users\<你>\.dsh-edge-agent\edge.json
 ```
 
-**先说结论：`secrets` 和 `llm` 都不是必填。** 桌面版装法下，`config/edge.json` 写成
+要改配置就抄模板过去填：
+
+```bash
+mkdir -p ~/.dsh-edge-agent
+cp config/edge.example.json ~/.dsh-edge-agent/edge.json
+```
+
+**先说结论：`secrets` 和 `llm` 都不是必填。** 桌面版装法下，`edge.json` 写成
 `{}` 也能正常跑 —— 两个池都会**转发宿主 GUI 里选中的模型**，凭据全归宿主，
 edge 侧一个 secret 都不碰：
 
@@ -208,13 +221,18 @@ edge 侧一个 secret 都不碰：
 {}
 ```
 
-查找顺序（与 profile 无关）：
+查找顺序（与 profile 无关，代码现状）：
 
 ```
-1. <bundle>/config/edge.json         ← 本地目录装法落这里
-2. ~/.dsh-edge-agent/edge.json       ← git / npm / tarball 装法落这里
-3. <bundle>/config/edge.example.json ← shipped 模板（空密钥兜底）
+1. <bundle>/config/edge.json         ← 顺位 1：插件目录里那份（用户找得到）
+2. ~/.dsh-edge-agent/edge.json       ← 顺位 2：home 那份（重装也活着）★ 推荐
 ```
+
+> **仓库的 `config/` 目录不再放活配置**（§7.182）—— 不再往
+> `<repo>/config/edge.json` 写东西：它含明文 key，且 npm / git / tarball 三条通道的
+> 产物里**本来就没有**这个文件（打包时按设计排除）。仓库那份
+> `config/edge.example.json` 仍然随产物发布，但它只是**给你抄的模板**，不是运行时候选
+> —— 模板里的部署值已并入代码默认值，所以「没配置文件」与「照模板抄」行为一致。
 
 ### 两个池怎么配
 
@@ -274,22 +292,39 @@ edge 侧一个 secret 都不碰：
 > 完整配置清单（16 类配置项 + 路由行为约定）见
 > [`docs/privacy-policy.md`](docs/privacy-policy.md#配置清单)。
 
-### 边缘模式的模型从哪来（fail-closed）
+### 边缘模式的模型从哪来（选型不动 + 出网那一跳改道）
 
 宿主 0.2.2-rc.1 起，**路由只由会话级 `modelSelection` 决定** —— 在
 `agent/request` 里改写 provider/model 会被宿主的 `prepareRequest()` 判非法并抛错。
-所以边缘模式的模型是这样定的：
+§7.184 起，本包**不再改写会话选型**：宿主模型选择器里显示什么，就一直是什么。
 
 | 情况 | 结果 |
 |---|---|
-| 边缘模式新建会话、用户没明确选过模型 | input-guard 在 `agent/created` 时用宿主的合规入口 `agent.model.select()` 钉成 `local-llm`（配了本地端点就用本地池的模型，没配就按 DELEGATE 用宿主当前模型） |
-| 用户**明确选过**别的模型 | **不插手** —— 用用户选的那个 |
-| 本轮判定为 LOCAL、会话选的 provider 不是本地 provider | **直接拒绝这一轮**（不放行到可能上云的 provider） |
-| 本轮判定为 CLOUD | 放行（用哪个模型是用户自己的行为） |
+| 进入边缘模式 | **选型一个字都不改**（§7.184）—— 选择器保持主人选的那个，不跳 |
+| 本轮判定为 LOCAL、但会话选的 provider 不是本地 provider | 这一轮在**出网那一跳**被**改道**到本地池（provider 与 model 都换）⇒ 这一轮仍然留在设备上，**不再被拒收**（§7.184） |
+| 本轮判定为 CLOUD | 不改道 —— 本轮就是要出网的（脱敏 + 只带云段历史，§7.131） |
+| 改道改不动（本地路由不存在 / 解析不到本地模型 / 宿主 LLM runtime 不可用） | **fail-closed 抛错**，绝不放行到可能上云的 provider |
+| 宿主模型选择器（输入框下方）里看到什么 | 本地池**如实声明**它真正会跑的那**一个**模型（§7.180）—— 直连池 = 池自己的 model id；DELEGATE = 委托目标的 model id。宿主目录会剔掉「空目录的 provider」，不声明就没有这一项、选择器只能显示「请选择模型」。云池仍在目录里隐身（避免误选 `cloud-llm/deepseek-chat`） |
 
 > 判一个会话到底用了哪个 provider，唯一权威是**审计链**：
-> `input-guard.model.defaulted` / `input-guard.model.default-skipped` /
-> `input-guard.blocked.model-selection`。
+> `input-guard.reroute.local`（改道发生，带 `from` = 被改掉的原选型、
+> `to` = 实际落点）/ `input-guard.reroute.blocked`（改不动，fail-closed）。
+>
+> 面板上的「答案出口」一栏会把两边都写出来：**「会话选型 → 实际落点」**
+> （§7.184）—— 选型是你选的那个，实际跑的是本地池那个，两件事都摆出来。
+>
+> 面板上的「模型」一行显示的是**这一轮真正会跑**的模型（DELEGATE 下 = 委托
+> 解析出来的宿主模型与它的落点 provider），不是配置里的默认值 —— 详见
+> [`docs/PROGRESS.md` §7.179](docs/PROGRESS.md)。
+>
+> §7.180 起，**wire 上跑的模型、宿主模型目录里声明的那一项、改道过去的
+> model id** 三者是同一个 id（共用同一份委托目标缓存）⇒ 界面上写的名字不会
+> 跟实际跑的不一致。
+>
+> 面板上的「答案出口」一栏**认得 DELEGATE 出口行**（`llm.*.delegate.*`）——
+> 直连池与 DELEGATE 池都能显示「池 + 模型」，不会在明明作答时写「路由未定」
+> （§7.181）。LOCAL / CLOUD 的判据仍是**哪个池**（§7.130）；DELEGATE 下额外多
+> 一行「真实落点」，如实说明这一轮转发去了哪儿。
 
 ---
 
@@ -322,7 +357,7 @@ pnpm run lint       # eslint
 ### 发布到 npm
 
 ```bash
-npm run publish:npm                    # 构建 + 24 道门禁 + dry-run（**默认不发**）
+npm run publish:npm                    # 构建 + 27 道门禁 + dry-run（**默认不发**）
 npm run publish:npm -- --yes           # 真发
 npm run publish:npm -- --yes --tag     # 发完打 v<version> tag（再 git push origin v<version> 触发 CI）
 ```

@@ -127,7 +127,7 @@ export DSH_EDGE_LOG_ROOT="$DSH_HOME/log"
 启动成功时 audit 里会有：
 
 ```text
-input-guard.hook.registered      (agent/pre-step, llm/stream, agent/request, agent/created)
+input-guard.hook.registered      (agent/pre-step, llm/stream, agent/request)
 external.hook.registered
 http.started                      { host, port }
 ```
@@ -176,7 +176,7 @@ rm -rf /tmp/dsh-edge-probe
 
 | 通道 | 现状 |
 |---|---|
-| npm 包名 | **发布链就绪**（§7.172），但包**仍未**发布（registry 上查无此包）；缺的是**作者侧**的 npm 账号/组织 + scope 所有权 + 发布凭据，不是代码。`npm run publish:npm -- --yes --tag` 一条命令走完构建 + 24 道门禁 + 发布（默认 dry-run）。此前（§7.156）发现发布链有个洞：build 步只跑 `compile` ⇒ `verify:build` 必红 ⇒ 从来没走到过 `pnpm publish`，已修。完整指南见 [`deploy-npm.md`](deploy-npm.md) |
+| npm 包名 | **发布链就绪**（§7.172），但包**仍未**发布（registry 上查无此包）；缺的是**作者侧**的 npm 账号/组织 + scope 所有权 + 发布凭据，不是代码。`npm run publish:npm -- --yes --tag` 一条命令走完构建 + 27 道门禁 + 发布（默认 dry-run）。此前（§7.156）发现发布链有个洞：build 步只跑 `compile` ⇒ `verify:build` 必红 ⇒ 从来没走到过 `pnpm publish`，已修。完整指南见 [`deploy-npm.md`](deploy-npm.md) |
 | Git 仓库 | **2026-10-30（§7.155）起可用**：见 [`deploy-github.md`](deploy-github.md)。此前不成立的根因是 `prepare` 只跑 `compile`、产不出浏览器半侧 `lib/client.js`（Edge tab 会静默消失），且桌面环境无 npm；现在 `prepare` 走 `run.mjs compile build:client`（不依赖 npm），并有 `verify:git-install` 门禁守着。代价：pnpm ≥10 要求用户点一次「允许这些脚本并重试」 |
 | tarball 路径 | **2026-10-30（§7.157）起有门禁守着**：见 [`deploy-tarball.md`](deploy-tarball.md)。此前 `dist/*.tar.gz` **从来没被任何门禁检查过**，且实测发现它是 §7.153 修复**之前**的陈旧产物（`dsh.bundle.patch` 写成字符串 ⇒ preset 层缺席 ⇒ 「边缘模式」工作方式不会注册）⇒ 新增 `verify:tarball` 并接进 `verify:build` |
 | **本地目录（推荐）** | 指 `--emit-dir` 产出的可安装目录：预置 `lib/`、已删 `scripts`/`devDependencies`，安装即用。宿主侧的完整契约见 **§8.8**（2026-10-30 读透） |
@@ -364,19 +364,30 @@ shasum -a 256 "$PKG/lib/client.js" dist/installable/dsh-edge-agent-desktop-safe/
 
 **坑 2 —— 配置不在 tarball 里，要单独同步。**
 tarball 故意不带 `config/edge.json`（明文密钥）。桌面版真正在用的配置按
-`edge-config.ts` 的 `edgeConfigCandidates()` 顺序找：
+`edge-config.ts` 的 `edgeConfigCandidates()` 顺序找（§7.182 后**只有两档**）：
 
-1. `<bundle>/config/edge.json` —— 即
+1. `<bundle>/config/edge.json` —— **顺位 1** —— 即
    `~/.dsh/profiles/desktop/node_modules/@dsh-edge/dsh-edge-agent/config/edge.json`
-2. `~/.dsh-edge-agent/edge.json`
-3. `<bundle>/config/edge.example.json`（模板兜底）
+   （插件装在哪，配置就在哪；打开插件目录就能找到）
+2. `~/.dsh-edge-agent/edge.json` —— **顺位 2** —— 重装 / 删 profile 都活着
 
-所以放一份进去：
+放一份进去（顺位 2 推荐 —— 顺位 1 会被「重装 tarball」抹掉）：
 
 ```bash
-cp config/edge.json ~/.dsh-edge-agent/edge.json
-cp config/edge.json "<bundle>/config/edge.json"
+mkdir -p ~/.dsh-edge-agent
+cp config/edge.example.json ~/.dsh-edge-agent/edge.json   # 模板 → 顺位 2
+# 或者就地写插件目录那份（顺位 1）：
+cp ~/.dsh-edge-agent/edge.json "<bundle>/config/edge.json"
 ```
+
+> §7.182：**仓库的 `config/` 目录不再放活配置**（明文 key 不该待在 git checkout
+> 里），模板 `config/edge.example.json` 只是给你抄的那份 —— 运行时不再读它
+> （模板里的部署值已并入代码默认值）。
+>
+> §7.182 补：模板里原先的 `jev.apiKeyRef: "bailianApiKey"` 也一并摘掉了
+> —— `danglingSecretRefs()` 把「槽位为空」也算悬空引用 ⇒ 照模板抄的人
+> 每次启动都会看到一条「密钥引用指向不存在的槽位」ERROR。要用百炼决策模型
+> 才把这一行加回来（并在 `secrets` 里填上那个槽位的真实 key）。
 
 **验证哪一份生效**（§7.107 新增的启动审计行）：
 
@@ -473,8 +484,9 @@ spec.replace(/^(?:file:|link:)/, '')   ← 只剥一个前缀
 2. **丢活配置** —— pack 尊重 manifest 的 `files` 白名单，而白名单写着
    `"!config/edge.json"` ⇒ 装出来那份**没有** `config/edge.json`
    ⇒ 宿主的配置**顺位 1**（`<bundle>/config/edge.json`）落空
-   ⇒ 悄悄退到 `~/.dsh-edge-agent/edge.json` 或空模板
+   ⇒ 悄悄退到 `~/.dsh-edge-agent/edge.json`（顺位 2）或内置默认值
    ⇒ 本地路由可能不注册 ⇒ 每轮 LOCAL 被隐私裁决拦下。
+   （§7.182：顺位 2 的 home 那份不受 pack 影响 ⇒ 写在 home 就不受这条影响。）
 
 **宿主不会提醒你**：`install-spec.ts:69-92` 只剥**一个** `file:`/`link:` 前缀，
 **按扩展名**分类（目录一律 `kind: 'path'`，与前缀无关），然后把 spec **原样**交给

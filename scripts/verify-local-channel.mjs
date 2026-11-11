@@ -34,8 +34,8 @@
 // `file:` / `link:` prefix and classifies by EXTENSION only — a directory is
 // `kind: 'path'` no matter which prefix it carries — and then hands the spec
 // to pnpm VERBATIM (`index.ts:930` `pnpm add <spec>`). So the host accepts
-// `file:<dir>` without a word and the operator finds out only when the config
-// silently goes missing.
+// `file:<dir>` without a word and the operator finds out only when the code
+// stops updating.
 //
 // ## What this gate checks
 //
@@ -49,6 +49,8 @@
 //      costs.
 //   4. The build scripts install the local directory with `link:`, never with
 //      `file:`.
+//   5. §7.182: the same doc must name the operator's config location —
+//      `~/.dsh-edge-agent/edge.json` (顺位 2).
 //
 // Run via:
 //   node scripts/verify-local-channel.mjs             # audit the real tree
@@ -83,7 +85,7 @@ const SECRET_NEGATION = '!config/edge.json'
 const DOC_REQUIREMENTS = [
   {
     file: 'docs/load-into-local-dsh.md',
-    required: ['link:', 'file:', 'config/edge.json'],
+    required: ['link:', 'file:', '~/.dsh-edge-agent/edge.json'],
   },
 ]
 

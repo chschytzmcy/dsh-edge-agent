@@ -9,10 +9,16 @@
  *   意图分类 → 脱敏
  * 反向（llm/stream）：对 text-delta chunk 流式反脱敏
  *
- * §7.175 (2026-11-11): 路由改写退役。边缘模式恒用本地模型，路由由宿主的
- * modelSelection 决定；input-guard 不再改写 provider/model（宿主的
- * prepareRequest() 会对改写直接抛错），改为在 agent/pre-step 用
- * modelSelection 做 fail-closed 校验：证明不了本地 ⇒ 拒收，绝不放行到云端。
+ * §7.175 (2026-11-11): 路由改写退役。input-guard 不在 agent/request 里改写
+ * provider/model（宿主的 prepareRequest() 会对改写直接抛错）。
+ *
+ * §7.184 (2026-11-11，主人裁决「选择器完全不动，实际请求改道到本地池」）：
+ *   - **会话选型不再被改写**（§7.176 的钉选 / §7.179 的补钉 / §7.183 的回钉全部
+ *     退役）⇒ 宿主模型选择器保持主人选的那个，不跳。
+ *   - 「本轮必须留在设备上」这条不变式改由**出网那一跳**保证：LOCAL 轮次的请求
+ *     在 `llm/stream` 被换成 provider = 本地池（见 handleLlmStream）。
+ *   - 旧口径（§7.175：判定 LOCAL 而选型不是本地 ⇒ 拒绝这一轮）随之退役 ——
+ *     能改道就不必拒；改不动时仍然 fail-closed（抛错，绝不放行到云端）。
  *
  * 设计详见：docs/input-guard-design.md
  *
@@ -39,6 +45,14 @@ import { assistantProviderHistogram } from './cloud-egress.js'
 // §7.175 (2026-11-11): 路由改写退役后，input-guard 不再探云池
 // （cloud-llm-adapter 的委托探针 probeCloudTarget 也就不再需要了）。
 import { loadEdgeConfig, localPool } from './edge-config.js'
+// §7.180: 「这一轮真正会跑哪个模型」的解析 —— 与 wire（adapter 的委托
+// 解析链）、模型目录（listModels）共用同一份委托目标缓存 ⇒ 补钉下去的
+// model id 就是真正会跑的那个（§7.176）。
+import {
+  resolveEffectiveLocalModelSync,
+  resolveEffectiveLocalModelWith,
+  type LocalPoolShape,
+} from './effective-model.js'
 import { containsCredential } from './pii-utils.js'
 // §7.144: 宿主 provider 那一跳的 trace（delegate 出去的云池调用不在任何
 // adapter 里，adapter 记不到它 —— 面板里会整条缺失）。
@@ -134,6 +148,18 @@ export interface Config {
    *  破坏既有配置文件。*/
   defaultCloudProvider: string
   defaultCloudModel: string
+  /** §7.179 (2026-11-11): 本插件所在 preset 的 id。
+   *
+   *  用途：`agent-preset/selected` 事件是**全局**事件（宿主 registry 直接
+   *  `ctx.emit('agent-preset/selected', session.id, presetId)`，不带 scope 载体）
+   *  ⇒ 所有工作方式的监听器都收到 ⇒ 必须自己按 presetId 过滤，否则会给
+   *  标准模式的会话也钉上 local-llm（那会改掉宿主的选择，违反 §7.140
+   *  「标准模式零 edge 事件」）。
+   *
+   *  这个值必须与 preset yml 里的 `config.id` 一致 —— scripts/verify-preset-isolate.ts
+   *  复核这一点（不一致即门禁失败），所以它不是「两份各写各的」，而是**被门禁
+   *  锁住的一致量**。*/
+  presetId: string
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -157,6 +183,8 @@ export const Config: Schema<Config> = Schema.object({
   defaultCloudModel: Schema.string().default(
     process.env.DSH_EDGE_MODEL ?? 'deepseek-chat',
   ),
+  // §7.179：与 preset yml 的 `config.id` 对齐（门禁复核）。
+  presetId: Schema.string().default('edge'),
 })
 
 /** Minimal prompt-guard 接口（只暴露 input-guard 用到的方法）。*/
@@ -254,6 +282,7 @@ interface StreamChunkLike {
  */
 const PII_MASK_TAIL_CHARS = 128
 
+
 declare module '@deepseek-ai/cordis' {
   interface Context {
     inputGuard: InputGuardServiceImpl
@@ -314,58 +343,6 @@ interface AgentRequestConfig {
   maxTokens?: number
 }
 
-/**
- * §7.176 (2026-11-11): 宿主 `AgentModel` 的最小形状。
- *
- * 宿主 dsh-agent 的 `AgentModel`（dsh-agent/lib/types/model-selection.js）：
- *   - `current()` = 已记录的选择 ?? agentOptions；
- *   - `select(selection)` = 往会话里写一条 `model/selection` 事件（会话级、
- *     持久化、宿主的合规入口）；
- *   - `recordedSelection()` = 会话里已记录的选择（pending ?? lastUsed）；
- *   - `options` = 建 agent 时传入的 agentOptions。
- */
-interface AgentModelLike {
-  select?: (selection: { provider: string; model: string }) => void
-  recordedSelection?: () => { provider?: string; model?: string } | null | undefined
-  options?: { provider?: string; model?: string }
-}
-
-/**
- * §7.176: 边缘模式会话的默认模型 —— provider 恒为本地池，model 分直连/委托两种。
- *
- * 直连池（配了 `llm.local.baseUrl`）⇒ wire 上跑的就是本地池自己的 model id；
- * DELEGATE 模式（没配端点，§7.171）⇒ wire 上真正跑的是**宿主当前选的模型**
- * ⇒ 这里用宿主那个 id，不写一个跟实际不符的名字（面板上显示的就是真名）。
- */
-export function resolveEdgeDefaultSelection(
-  localProvider: string,
-  localModel: string,
-  hostModel: string | undefined,
-  delegate: boolean,
-): { provider: string; model: string; source: 'local-pool' | 'host-delegate' } {
-  const provider = localProvider
-  if (!delegate) return { provider, model: localModel, source: 'local-pool' }
-  const host = typeof hostModel === 'string' ? hostModel.trim() : ''
-  if (host.length > 0) return { provider, model: host, source: 'host-delegate' }
-  return { provider, model: localModel, source: 'local-pool' }
-}
-
-/**
- * §7.176: 该不该由 preset 把会话选择钉到本地池。
- *
- * 显式选择优先：会话里已经记过一次**不同于 agentOptions** 的选择 ⇒ 那是用户
- * （或子 agent 的调用方）明确选的 ⇒ 不动它。
- * 「与 agentOptions 相同」不算显式选择 —— 那是宿主把 agentOptions 回显成
- * `model/selection` 的结果（agent-loop 的 applyConfiguredRoute），不是用户选的。
- */
-export function shouldProvisionEdgeModel(
-  recorded: { provider?: string; model?: string } | null | undefined,
-  options: { provider?: string; model?: string } | undefined,
-): boolean {
-  if (!recorded || typeof recorded.provider !== 'string' || recorded.provider.length === 0) return true
-  if (!options || typeof options.provider !== 'string' || options.provider.length === 0) return false
-  return recorded.provider === options.provider && recorded.model === options.model
-}
 
 /**
  * input-guard 服务。
@@ -374,7 +351,8 @@ export function shouldProvisionEdgeModel(
  *   - `agent/pre-step`（正向）：**fail-closed 路由闸门** → 攻击 → 策略 →
  *     分类 → 脱敏
  *   - `agent/request`（只读放行）：§7.175 起**不再改写** provider/model
- *   - `llm/stream`（反向）：对 text-delta chunk 流式反脱敏
+ *   - `llm/stream`（反向）：§7.184 起把 LOCAL 轮次的请求**改道**到本地池；
+ *     并对 text-delta chunk 流式反脱敏
  *
  * 跨 hook 状态用 Map<sessionId, StepSanitizationState> 维护。
  */
@@ -459,117 +437,166 @@ export class InputGuardServiceImpl extends Service {
   }
 
   /**
-   * §7.176: 本地池现状 —— DIRECT（配了 `llm.local.baseUrl`）还是 DELEGATE
-   * （没配端点，转发宿主提供商，§7.171）。
+   * §7.180: 本地池现状 —— 直连（配了 `llm.local.baseUrl`）还是 DELEGATE
+   * （没配端点，转发宿主提供商，§7.171），连同 model / delegate 旋钮。
+   *
+   * 补钉用的 model id 由这份现状**推导**（而不是另读一份宿主选择）⇒ 与
+   * wire、模型目录同源（见 §7.180）。
    *
    * protected 而不是 private：单测子类化覆写它，不必依赖机器上那份
    * `~/.dsh-edge-agent/edge.json` 的真实内容。
    */
-  protected localPoolMode(): 'direct' | 'delegate' {
+  protected localPoolShape(): LocalPoolShape {
     try {
-      return localPool().baseUrl ? 'direct' : 'delegate'
+      return localPool()
     } catch {
-      return 'delegate'
+      return {}
     }
   }
 
   /**
-   * §7.176 (2026-11-11): 宿主当前选中的模型 id。
+   * §7.184 (2026-11-11): 本轮判定 LOCAL 时，把实际请求**改道**到本地池。
    *
-   * DELEGATE 模式下 wire 上真正跑的是它（local-llm-adapter 的委托解析链第 2 步：
-   * `agentDefaultModel.currentSelection()`）⇒ 边缘模式默认选择要写同一个名字，
-   * 否则面板上显示的模型跟实际发出去的不是一个。
+   * 背景（主人裁决 2026-11-11）：「选择器完全不动，实际请求改道到本地池」。
    *
-   * 读的是 **host scope** 那份 `agentDefaultModel`（preset scope 里没有第二份 ——
-   * §7.175 实测：preset 里再声明 `agent-default-model` 行会撞 service 名，整个
-   * preset 挂载失败）。
+   *   - 边缘模式的会话**不再改写选型**（§7.176 的钉选 / §7.179 的补钉 /
+   *     §7.183 的回钉全部退役）⇒ 宿主模型选择器保持主人选的那个，不跳。
+   *   - 但「本轮必须留在设备上」这条不变式**不能松** ⇒ 真正跑哪儿由**出网
+   *     那一跳**决定：LOCAL 轮次的请求在 `llm/stream` 被换成 provider = 本地池。
+   *
+   * 为什么能在这一跳改：`llm/stream` 的 waterfall **默认处理**才是解析适配器的
+   * 地方（dsh-llm `adapterStream()`：`registration = this.registration(options.provider)`）
+   * ⇒ 换掉 `options.provider` 就换掉了真正发出去的适配器。
+   * 而且 cordis 的 waterfall **不接受替换载荷**（`next()` 无参，载荷被闭包捕获）
+   * ⇒ 只能换一个请求对象**重新派发**（与 §7.151 的出网裁剪同一个姿势）。
+   *
+   * 重新派发会再进一次 waterfall ⇒ 那趟的 provider 已是本地池 ⇒ 天然不再改道
+   * （**防自锁**），且本地池按 §7.131 带**全部**历史（本地池不出网，不裁）。
+   *
+   * fail-closed：改不动（本地路由不存在 / 解析不到 model id / 宿主 LLM runtime
+   * 不可用）⇒ **抛错**，绝不放行到可能上云的 provider。
    */
-  private hostDefaultModel(): string | undefined {
-    try {
-      const svc = (this.ctx as unknown as {
-        get?: (name: string) => unknown
-      }).get?.('agentDefaultModel') as
-        | { currentSelection?: () => { provider?: string; model?: string } | undefined }
-        | undefined
-      const sel = svc?.currentSelection?.()
-      return typeof sel?.model === 'string' && sel.model.length > 0 ? sel.model : undefined
-    } catch {
-      return undefined
-    }
+
+  /** §7.184: 这一通请求要不要改道到本地池？ */
+  private needsLocalReroute(
+    options: { provider?: unknown; [key: string]: unknown },
+    state: StepSanitizationState,
+  ): boolean {
+    // 只对「本轮必须留在设备上」的轮次改道。CLOUD / SANITIZED 轮次按设计就是
+    // 要出网的（脱敏 + 只带云段历史），不改道。
+    if (this.turnCategory.get(state.sessionId) !== 'LOCAL') return false
+    const provider = typeof options.provider === 'string' ? options.provider : ''
+    if (provider.length === 0) return false
+    // 已经是本地池 ⇒ 不用改（重新派发回来的那趟也走这一支 ⇒ 防自锁）。
+    return provider !== this.config.localProvider
   }
 
   /**
-   * §7.176 (2026-11-11): **边缘模式的会话默认模型** —— 把会话级 modelSelection
-   * 钉到本地池。
+   * §7.184: 换掉请求对象**重新派发**到本地池（与 §7.151 的出网裁剪同一姿势）。
    *
-   * 为什么需要它（宿主 0.2.2-rc.1 起的硬约束）：
-   *   1. 路由**只能**由会话级 modelSelection 决定 —— `agent/request` 里改写
-   *      provider/model 会被 `prepareRequest()` 判为非法并抛错（§7.175）。
-   *   2. 桌面 GUI 建的 agent，其 agentOptions 来自 host scope 的
-   *      `agentDefaultModel`（宿主自带的云端模型）⇒ 边缘模式的会话默认会跑到云端。
-   *   3. 本地路由 `local-llm` 在模型目录里隐身（§7.106 Option A：local-llm 是
-   *      管线内部件，不是用户可选项）⇒ GUI 里**选不到**它 ⇒ 用户没法手动纠正。
-   *   ⇒ 只能由 preset 侧（边缘模式 scope）把会话选择钉成 local-llm —— 这正是
-   *      主人裁决里「本地模型默认值由 preset 级给出（不是 UI 手动选）」在新宿主
-   *      契约下的落地方式。
-   *
-   * 用的是宿主自己的合规入口 `agent.model.select()`（agent-loop 的
-   * applyConfiguredRoute() 也是这么写的：往会话写一条 `model/selection` 事件）。
-   * **不用** `sessionController.selectModel()`：它会顺手
-   * `agentDefaultModel.saveSelection()` —— 把宿主**全局**默认也改成 local-llm，
-   * 波及同 profile 的标准模式（§7.175 的教训：preset 只能声明自己的东西）。
-   *
-   * 边界：
-   *   - 用户显式选过模型 ⇒ 不动（显式选择优先于 preset 默认）；
-   *   - 本地路由不存在（`llm.local.delegate=false` 的 kill switch）⇒ 不钉 ——
-   *     让 §7.175 的 fail-closed 闸门按「路由缺失」报可操作的错；
-   *   - 任何异常都吞掉并审计 —— `agent/created` 的监听器抛错会让**整个 agent
-   *     创建失败**（宿主 dsh-agent announce()：a listener failure rejects）。
+   * 为什么不能就地改写：宿主契约明写 LOOP 构建的请求是 **deep-frozen**
+   * （`markAgentLoopRequest` + `deepFreeze`），"listeners read it, never rewrite it"。
    */
-  handleAgentCreated(payload: unknown): void {
-    try {
-      const agent = (payload as { agent?: { id?: string; session?: { id?: string }; model?: AgentModelLike } } | null | undefined)?.agent
-      const model = agent?.model
-      if (!model || typeof model.select !== 'function') return
-      const sessionId = agent?.session?.id ?? agent?.id ?? 'unknown'
+  private async * dispatchRerouted(
+    options: { provider?: unknown; model?: unknown; sessionId?: unknown; [key: string]: unknown },
+    state: StepSanitizationState,
+  ): AsyncIterable<StreamChunkLike> {
+    const fromProvider = typeof options.provider === 'string' ? options.provider : ''
+    const fromModel = typeof options.model === 'string' ? options.model : ''
 
-      const recorded = typeof model.recordedSelection === 'function' ? model.recordedSelection() : undefined
-      if (!shouldProvisionEdgeModel(recorded, model.options)) {
-        this.audit('info', 'input-guard.model.default-skipped', {
-          sessionId,
-          reason: 'explicit-selection',
-          provider: recorded?.provider,
-          model: recorded?.model,
-        })
-        return
-      }
-
-      const local = this.localAvailable()
-      if (!local.ok) {
-        this.audit('info', 'input-guard.model.default-skipped', { sessionId, reason: local.reason })
-        return
-      }
-
-      // §7.171: 没配端点 = DELEGATE 模式（本地路由转发宿主提供商）。
-      const delegate = this.localPoolMode() === 'delegate'
-      const selection = resolveEdgeDefaultSelection(        this.config.localProvider,
-        this.config.localModel,
-        this.hostDefaultModel(),
-        delegate,
+    const local = this.localAvailable()
+    if (!local.ok) {
+      this.audit('security', 'input-guard.reroute.blocked', {
+        ...sessionIdField(state.sessionId),
+        provider: fromProvider,
+        model: fromModel,
+        reason: local.reason,
+      })
+      throw new Error(
+        `input-guard: 本轮 intent 判定为 LOCAL（必须留在设备上），但本地路由 "${this.config.localProvider}" 不可用（${local.reason}）。`
+        + `为避免本地数据/PII 出境，已阻止本轮上云。`
+        // §7.159 门禁按**源码字面量**抽这段报错文案（verify-config-hints.mjs
+        // 取文件里第一个「本轮 intent 判定为 LOCAL」所在的 throw）⇒ 这段配置
+        // 指引必须字面写在这里，不能改成常量插值；内容与 pre-step 那段一致。
+        + `请配置本地 LLM 端点：编辑 ~/.dsh-edge-agent/edge.json 的 llm.local 段，`
+        + `填 baseUrl（OpenAI 兼容端点，必须含 /v1）与 model；`
+        + `端点需要鉴权时，把密钥写进同一文件的 secrets 段，`
+        + `并把 llm.local.keyRef 指向那个键名（keyRef 是 secrets 里的键名，不是环境变量名）。`,
       )
-      model.select({ provider: selection.provider, model: selection.model })
-      this.audit('info', 'input-guard.model.defaulted', {
-        sessionId,
-        provider: selection.provider,
-        model: selection.model,
-        source: selection.source,
-        delegate,
-      })
-    } catch (error) {
-      this.audit('warn', 'input-guard.model.default-failed', {
-        reason: error instanceof Error ? error.message : String(error),
-      })
     }
+
+    // 与 wire / 模型目录同源地解析「本地池真正会跑的那个 model id」（§7.180）。
+    const shape = this.localPoolShape()
+    let effective = resolveEffectiveLocalModelSync(
+      this.ctx,
+      shape,
+      this.config.localModel,
+      this.config.localProvider,
+    )
+    if (effective === undefined || effective.source === 'requested') {
+      // 探针步没定 model ⇒ 需要一次 firstModelId 查询（异步）—— 这里能等。
+      effective = await resolveEffectiveLocalModelWith(
+        this.ctx,
+        shape,
+        this.config.localModel,
+        this.config.localProvider,
+      )
+    }
+    if (effective.source === 'requested' || effective.model.length === 0) {
+      this.audit('security', 'input-guard.reroute.blocked', {
+        ...sessionIdField(state.sessionId),
+        provider: fromProvider,
+        model: fromModel,
+        reason: 'local-model-unresolved',
+      })
+      throw new Error(
+        'input-guard: 本轮 intent 判定为 LOCAL（必须留在设备上），但解析不到本地池真正会跑的模型 —— 已阻止本轮上云。'
+        + '请检查 ~/.dsh-edge-agent/edge.json 的 llm.local 段（baseUrl / model）与 secrets 段。',
+      )
+    }
+
+    const rerouted = { ...options, provider: this.config.localProvider, model: effective.model }
+    // §7.151: 取 LLM runtime **必须走 `ctx.get()`**（cordis 4.x 的 ctx 是 Proxy，
+    // input-guard 的 inject 里没有 'llm' ⇒ 直取会抛）。
+    const llm = (() => {
+      try {
+        return (this.ctx as unknown as {
+          get?: (name: string) => unknown
+        }).get?.('llm') as {
+          stream?: (o: unknown) => AsyncIterable<unknown> | Promise<AsyncIterable<unknown>>
+        } | undefined
+      } catch {
+        return undefined
+      }
+    })()
+    if (typeof llm?.stream !== 'function') {
+      this.audit('security', 'input-guard.reroute.blocked', {
+        ...sessionIdField(state.sessionId),
+        provider: fromProvider,
+        model: fromModel,
+        reason: 'llm-runtime-unavailable',
+      })
+      throw new Error(
+        'input-guard: 无法重新派发到本地池（宿主 LLM runtime 不可用）—— 已阻止本轮上云',
+      )
+    }
+
+    // 审计行放在**真正派发之前**（runtime 不可用时上面的 blocked 已经抛了
+    // ⇒ 不会出现「审计说改道了、其实没改」的假记录）。
+        this.audit('info', 'input-guard.reroute.local', {
+      ...sessionIdField(state.sessionId),
+      from: { provider: fromProvider, model: fromModel },
+      to: { provider: this.config.localProvider, model: effective.model },
+      source: effective.source,
+      ...(effective.via === undefined ? {} : { via: effective.via }),
+      mode: shape.baseUrl ? 'direct' : 'delegate',
+    })
+
+    const raw = llm.stream.call(llm, rerouted)
+    const resolved = (raw != null && typeof (raw as { then?: unknown }).then === 'function')
+      ? await (raw as Promise<AsyncIterable<unknown>>)
+      : raw as AsyncIterable<unknown>
+    yield* resolved as AsyncIterable<StreamChunkLike>
   }
 
   constructor(
@@ -1429,19 +1456,25 @@ export class InputGuardServiceImpl extends Service {
     // §7.175: 读一次，后面两处都用它（闸门 + `intent.local` 审计行）。
     const selection = this.readModelSelection(payload)
     if (category === 'LOCAL') {
-      const selectionIsLocal = selection !== undefined && selection.provider === this.config.localProvider
-      if (!selectionIsLocal) {
-        const reason = selection ? 'model-selection-not-local' : 'model-selection-missing'
-        this.audit('security', 'input-guard.blocked.model-selection', {
+      // §7.184 (2026-11-11，主人裁决「选择器完全不动，实际请求改道到本地池」):
+      // 会话选型**不再**决定这一轮放不放行。
+      //
+      // 旧口径（§7.175）：判定 LOCAL 而选型不是本地 provider ⇒ **拒绝这一轮**
+      // （`model-selection-not-local`）。那时改不了路由（宿主的 prepareRequest()
+      // 会对改写直接抛错），只能拒。现在能在**出网那一跳**改道（llm/stream 把
+      // provider 换成本地池）⇒ 拒收没有意义：改道过去，这一轮就在本地跑。
+      //
+      // 旧口径里「用户明确选过云端模型 ⇒ 拒」其实与 §7.174「用哪个模型是用户
+      // 自己的行为」相冲突 —— 现在两者都成立：选择器保持用户选的那个，
+      // 而「本轮留在设备上」由改道保证。
+      if (selection !== undefined && selection.provider !== this.config.localProvider) {
+        this.audit('info', 'input-guard.reroute.planned', {
           sessionId,
-          reason,
           category,
-          provider: selection?.provider,
-          model: selection?.model,
-          expectedProvider: this.config.localProvider,
+          from: { provider: selection.provider, model: selection.model },
+          to: this.config.localProvider,
+          reason: 'edge-mode-local-intent',
         })
-        this.attachRejection(payload.agent, { kind: 'intent', reason })
-        return { kind: 'reject', reason }
       }
 
       // 本地路由必须真的存在（§7.171）：宿主选了本地 provider，但路由没
@@ -1897,6 +1930,15 @@ export class InputGuardServiceImpl extends Service {
     // 直接直通、零记录。这条守住 §7.140 的不变式：标准模式会话的审计链
     // 里一条 edge 事件都不该有。
     if (!state) return next()
+
+    // §7.184 (2026-11-11): 本轮判定 LOCAL ⇒ 实际请求**改道**到本地池。
+    //
+    // 位置要紧：改道排在**出网裁剪之前** —— 本地池按 §7.131 带**全部**历史
+    // （本地池不出网，不裁）；要是先裁了再改道，本地池就只拿到「云段历史」，
+    // 上下文凭空少一截。
+    if (this.needsLocalReroute(options, state)) {
+      return this.dispatchRerouted(options, state)
+    }
 
     // §7.151 (2026-10-29): 出网裁剪（§7.131 口径：只带云段历史）。
     //
@@ -2452,25 +2494,13 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
     // 「被改写掉的原路由」，而改写本身已经不存在了：路由恒由宿主的
     // modelSelection 决定，GUI 显示的就是用户真正选中的那个。
 
-    // §7.176: 边缘模式的会话默认模型 —— 把会话级 modelSelection 钉到本地池。
+    // §7.176 / §7.179 / §7.183 的三个监听器（`agent/created` /
+    // `agent-preset/selected` / `session/event`）**全部退役**：它们只为
+    // 「把会话选型钉/回钉到本地池」而存在。
     //
-    // 事件由宿主 dsh-agent 的 announce() 派发，载体是 `scopeTarget(agent, agent)`
-    // （agent 自己的 scope key）⇒ 作用域过滤规则（dsh-scope#scopeTarget）：
-    // 「监听器自己的 scope tag 必须是派发 scope 或其祖先」。本插件挂在边缘模式
-    // preset 的 scope 链上（cordis:group 只建 realm，不换 scope tag）⇒ 绑到
-    // 边缘模式的 agent 会触发，绑到标准模式的 agent 不会 ⇒ 标准模式仍是纯宿主。
-    //
-    // 与 agent/pre-step 同一个 ctx ⇒ 生效范围一致。
-    const d4 = on('agent/created', (payload: any) => {
-      service.handleAgentCreated(payload)
-    })
-    void auditLog?.log?.({
-      level: 'info',
-      kind: 'input-guard.hook.registered',
-      source: 'input-guard',
-      payload: { event: 'agent/created', scopedTo: 'agent-preset', disposerReturned: typeof d4 === 'function' },
-    })
-    if (d4) disposers.push(d4)
+    // §7.184（主人裁决「选择器完全不动，实际请求改道到本地池」）：边缘模式
+    // **不再改写会话选型** ⇒ 宿主模型选择器保持主人选的那个。
+    // 「本轮必须留在设备上」改由 `llm/stream` 上的改道保证（dispatchRerouted）。
   }
 
   return async () => {

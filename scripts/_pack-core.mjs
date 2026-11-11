@@ -261,8 +261,12 @@ export const VARIANTS = BUNDLE_VARIANTS.map((v) => ({ ...v, patch: v.patchField 
  *
  * The DEMO build differs from the distributable one by exactly ONE file:
  * `config/edge.json` — the operator's plaintext endpoints and API keys. It
- * is staged in so the artifact works on a machine that was never
- * configured (the file lands on lookup candidate #1, `<bundle>/config/edge.json`).
+ * is staged in so the artifact works on a machine that was never configured
+ * (the file lands on lookup candidate #1, `<bundle>/config/edge.json`).
+ *
+ * §7.182 (2026-11-11): the SOURCE of that file is now 顺位 2 —
+ * `~/.dsh-edge-agent/edge.json` — not the repository's config/ directory
+ * (the repo is no longer a supported drop point for a live config).
  *
  * The operator's ruling (2026-10-30): DEMO use only, never leaves their own
  * machine. The name carries `-DEMO`, the distributable tarball keeps its own
@@ -278,7 +282,8 @@ const DEMO_README = `dsh-edge-agent — DEMO 产物（内含明文凭据，勿�
   dist/dsh-edge-agent-full-DEMO.tar.gz
 
 差别 = 多了 package/config/edge.json —— 那是运维配置里的**明文端点与
-API key**。正因为它在内，产物装到**任何一台没配置过的机器**上都能直接用：
+API key**（§7.182：从 ~/.dsh-edge-agent/edge.json 取，仓库里不再放活配置）。
+正因为它在内，产物装到**任何一台没配置过的机器**上都能直接用：
 配置候选顺位 1（<bundle>/config/edge.json）命中 ⇒ local-llm 路由会注册 ⇒
 边缘模式不会被隐私裁决 fail-closed 拦下。
 
@@ -310,19 +315,22 @@ API key**。正因为它在内，产物装到**任何一台没配置过的机器
  * runtime has neither npm nor the devDeps needed to compile. The artifact
  * already carries a compiled lib/.
  *
- * `config/edge.json` handling DIFFERS by artifact — this is load-bearing:
+ * `config/edge.json` is EXCLUDED from every distributable artifact (§7.182,
+ * 2026-11-11).
  *
- *   - DISTRIBUTABLE (tarball, npm pack): EXCLUDES config/edge.json. That
- *     file holds the operator's real endpoints and API keys in plaintext and
- *     must never reach a distributable artifact.
+ *   - It holds the operator's real endpoints and API keys in plaintext and
+ *     must never travel into an artifact.
+ *   - §7.182: it also does NOT come from the repository any more — the
+ *     repo's config/ directory is no longer a supported drop point. The
+ *     operator's config has two legal homes: the installed bundle's own
+ *     config dir (顺位 1) and `~/.dsh-edge-agent/edge.json` (顺位 2).
  *
- *   - LOCAL INSTALLABLE DIR (link mode): KEEPS config/edge.json. The desktop
- *     profile mounts this directory through a junction/link:, and the
- *     plugin's FIRST config candidate is `<bundle>/config/edge.json`
- *     (edgeConfigCandidates() in edge-config.ts). Dropping it would push
- *     the desktop onto the example template or the ~/.dsh-edge-agent/
- *     fallback — the operator's live endpoints would silently stop being
- *     the ones in use.
+ * The only artifact that DOES carry a config is the DEMO build, and it
+ * takes it from 顺位 2 (`~/.dsh-edge-agent/edge.json`) — never from the repo.
+ *
+ * The `config/` directory still ships `edge.example.json` (the blank-secret
+ * template the operator copies from) and `privacy-policy.json` (the enforced
+ * policy itself).
  */
 export function stageVariant(variant, destDir, { keepSecretConfig = false } = {}) {
   const base = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
@@ -345,11 +353,6 @@ export function stageVariant(variant, destDir, { keepSecretConfig = false } = {}
   //   · WITH the negation ⇒ the packed copy has no config/edge.json ⇒ the
   //     operator's plaintext API keys do not travel into node_modules.
   //   · WITHOUT it ⇒ the plaintext key is copied into node_modules.
-  //
-  // The `link:` channel is unaffected either way (a symlink exposes the whole
-  // directory, `files` never applies) — so the live config still reaches the
-  // profile through candidate #1. That is why the negation is safe to keep
-  // here: it only ever governs the *pack* path, never the link path.
   //
   // ⇒ take the root's list verbatim, so both producers agree by construction.
   pkg.files = base.files
@@ -380,9 +383,25 @@ export function stageVariant(variant, destDir, { keepSecretConfig = false } = {}
   if (existsSync(configSrc)) {
     mkdirSync(join(destDir, 'config'), { recursive: true })
     for (const f of readdirSync(configSrc)) {
-      if (f === 'edge.json' && !keepSecretConfig) continue
+      // §7.182: the operator's config never travels from the REPOSITORY —
+      // the repo's config/ directory is no longer a supported drop point.
+      if (f === 'edge.json') continue
       cpSync(join(configSrc, f), join(destDir, 'config', f), { recursive: true })
     }
+  }
+  // The DEMO artifact carries the operator's LIVE config so it works on a
+  // machine that was never configured (§7.160). §7.182: the source is
+  // 顺位 2 — `~/.dsh-edge-agent/edge.json` — NOT the repository's copy.
+  if (keepSecretConfig) {
+    const live = join(homedir(), '.dsh-edge-agent', 'edge.json')
+    if (!existsSync(live)) {
+      throw new Error(
+        `DEMO 产物需要活配置：${live} 不存在 `
+        + '（§7.182：仓库的配置目录不再放活配置，DEMO 从顺位 2 取）',
+      )
+    }
+    mkdirSync(join(destDir, 'config'), { recursive: true })
+    cpSync(live, join(destDir, 'config', 'edge.json'))
   }
   return pkg
 }
@@ -467,7 +486,12 @@ export function buildInstallable() {
     rmSync(staging, { recursive: true, force: true })
     mkdirSync(staging, { recursive: true })
 
-    stageVariant(variant, staging, { keepSecretConfig: true })
+    // §7.182: the installable directory does NOT carry the operator's live
+    // config any more. It used to (from the repo's config/edge.json), and
+    // §7.178 deleted that copy for a good reason: a second plaintext copy of
+    // the API keys lying in a build output is exactly what the ruling is
+    // about. The link-mode profile reads the home copy (顺位 2) instead.
+    stageVariant(variant, staging)
 
     const retired = join(installableRoot, `.${variant.dir}.retired`)
     rmSync(retired, { recursive: true, force: true })
@@ -518,11 +542,10 @@ export function buildInstallable() {
  * staging dir and a relative operand, then move the result with Node
  * (which handles Windows paths correctly).
  *
- * `keepSecretConfig` (§7.160) stages `config/edge.json` — the operator's
- * PLAINTEXT endpoints and API keys — into the archive. That is OFF for the
- * distributable artifacts (the whole point of the tarball channel) and ON
- * only for the explicitly-named DEMO build, whose operator has decided the
- * artifact never leaves their own machine.
+ * §7.182 (2026-11-11): the DEMO build stages the operator's live config from
+ * 顺位 2 (`~/.dsh-edge-agent/edge.json`) — never from the repository (the
+ * repo's config/ directory is no longer a supported drop point). The
+ * distributable tarball never carries it.
  */
 export function makeTarball(variant, outFile, { keepSecretConfig = false } = {}) {
   const stageRoot = mkdtempSync(join(tmpdir(), 'dsh-edge-pack-'))
@@ -549,7 +572,7 @@ export function makeTarball(variant, outFile, { keepSecretConfig = false } = {})
     moveFile(join(stageRoot, localTar), outFile)
 
     writeChecksum(outFile)
-    console.log(`  built ${outFile}${keepSecretConfig ? '  ← DEMO: 内含 config/edge.json（明文凭据，勿分发）' : ''}`)
+    console.log(`  built ${outFile}${keepSecretConfig ? '  ← DEMO: 内含活配置（明文凭据，勿分发）' : ''}`)
   } finally {
     rmSync(stageRoot, { recursive: true, force: true })
   }
@@ -653,7 +676,7 @@ export function artifactPaths() {
     installableDirFull: join(DIST, 'installable', 'dsh-edge-agent-full'),
     tarball: join(DIST, 'dsh-edge-agent-desktop-safe.tar.gz'),
     tarballFull: join(DIST, 'dsh-edge-agent-full.tar.gz'),
-    // §7.160: the DEMO artifacts carry config/edge.json (plaintext
+    // §7.160: the DEMO artifacts carry the operator's live config (plaintext
     // credentials) — same package, one file difference.
     tarballDemo: join(DIST, 'dsh-edge-agent-desktop-safe-DEMO.tar.gz'),
     tarballDemoFull: join(DIST, 'dsh-edge-agent-full-DEMO.tar.gz'),
@@ -685,10 +708,14 @@ if (isEntryPoint) {
       for (const v of VARIANTS) makeTarball(v, join(DIST, `${v.dir}.tar.gz`))
     } else if (MODE === 'demo') {
       // §7.160 (2026-10-30): DEMO artifacts. Identical to the distributable
-      // tarball EXCEPT that config/edge.json — the operator's plaintext
+      // tarball EXCEPT that the operator's live config — the plaintext
       // endpoints and API keys — is staged in as well, so the artifact works
       // on a machine that has never been configured (the config lands on
       // lookup candidate #1, `<bundle>/config/edge.json`).
+      //
+      // §7.182 (2026-11-11): the config comes from 顺位 2
+      // (~/.dsh-edge-agent/edge.json) — the repository's config/ directory is
+      // no longer a supported drop point for a live config.
       //
       // The operator's ruling (2026-10-30): this build is for DEMO use and
       // never leaves their own machine. Hence:

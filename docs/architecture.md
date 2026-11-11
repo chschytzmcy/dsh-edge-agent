@@ -367,7 +367,7 @@ rsync -a --delete lib/ "$N/lib/"           # ③
 
 | 插件 | 文件 | `inject` 数组 | 作用 |
 |------|------|--------------|------|
-| **local-llm-adapter** | `local-llm-adapter.ts` | `['llm', 'auditLog']` | 本地 Qwen3-4B 推理，继承 `LlmAdapter` |
+| **local-llm-adapter** | `local-llm-adapter.ts` | `['llm', 'auditLog']` | 本地 Qwen3-4B 推理，继承 `LlmAdapter`。**§7.180 起在宿主模型目录里如实声明它真正会跑的那一个模型**（直连池 = 池自己的 model id；DELEGATE = 委托目标的 model id）—— 宿主会剔掉「空目录的 provider」，不声明就没有这一项 |
 | **cloud-llm-adapter** | `cloud-llm-adapter.ts` | `['llm', 'auditLog']` | DeepSeek Chat Completions（SSE），继承 `LlmAdapter` |
 | **model-router** | `model-router.ts` | `['llm']` | 模型路由，统一 `ctx.llm` 表面 |
 
@@ -387,7 +387,7 @@ rsync -a --delete lib/ "$N/lib/"           # ③
 | 插件 | 文件 | `inject` 数组 | 作用 |
 |------|------|--------------|------|
 | **intent-router** | `intent-router.ts` | `['llm', 'auditLog']` | 意图分类 → LOCAL / CLOUD 路由（v2：被 input-guard 编排） |
-| **input-guard** | `input-guard.ts` | `['promptGuard', 'privacyPolicy', 'intentRouter', 'sanitizer', 'auditLog']` | **v2 编排器**（2026-08-29 引入）：注册 4 个 hook（`agent/pre-step` + `agent/request` + `llm/stream` + `agent/created`；§7.136 起只有 `llm/stream` 带 `{ global: true }`），统一 http-api / Web UI / dsh-im 三入口的隐私管线 |
+| **input-guard** | `input-guard.ts` | `['promptGuard', 'privacyPolicy', 'intentRouter', 'sanitizer', 'auditLog']` | **v2 编排器**（2026-08-29 引入）：注册 3 个 hook（`agent/pre-step` + `agent/request` + `llm/stream`；`llm/stream` 带 `{ global: true }` —— 它不带 scope 载体，scope 过滤对它不生效），统一 http-api / Web UI / dsh-im 三入口的隐私管线 |
 | **plugin-host** | `plugin-host.ts` | `['agents', 'sessions']` | 第三方插件宿主（Community Consensus grant） |
 | **http-api** | `http-api.ts` | `['agents', 'intentRouter', 'auditLog', 'tdBus', 'realmSkillBridge', 'edgeTools']` | HTTP 接入（POST /v1/chat, SSE 流，:21017） |
 
@@ -913,7 +913,7 @@ sequenceDiagram
 | `cloud-llm-adapter` | `ctx.llm` | 继承 `LlmAdapter`，注册 `stream()` |
 | `model-router` | `ctx.llm` | 调用 `resolveRoute()`，选择 adapter |
 | `intent-router` | `ctx.llm`, `ctx.auditLog` | 调用 `generate()` 做意图分类 |
-| `input-guard` | `ctx.promptGuard`, `ctx.privacyPolicy`, `ctx.intentRouter`, `ctx.sanitizer`, `ctx.auditLog` | v2 编排器：4 个 waterfall hook（`agent/pre-step` + `agent/request` + `llm/stream` + `agent/created`），调用各服务做正向 + 反向；**§7.175 起 `agent/request` 不再改路由**（只放行），路由闸门在 `agent/pre-step` 里 fail-closed 判定 |
+| `input-guard` | `ctx.promptGuard`, `ctx.privacyPolicy`, `ctx.intentRouter`, `ctx.sanitizer`, `ctx.auditLog` | v2 编排器：3 个 hook（`agent/pre-step` + `agent/request` + `llm/stream`），调用各服务做正向 + 反向；**§7.175 起 `agent/request` 不再改路由**（只放行）；**§7.184 起边缘模式不再改写会话选型**（§7.176 的钉选 / §7.179 的补钉 / §7.183 的回钉全部退役）⇒ 宿主模型选择器保持主人选的那个；「本轮必须留在设备上」改由**出网那一跳的改道**保证（`llm/stream` 把 LOCAL 轮次的 provider 换成本地池，改不动就 fail-closed 抛错） |
 | `sanitizer-pipeline` | `ctx.privacyPolicy`, `ctx.auditLog` | 调用 `sanitize()` / `desanitize()` |
 | `prompt-guard` | `ctx.privacyPolicy`, `ctx.auditLog`, `ctx.llm` | 调用 `checkInput()`；模型辅助检测走 `ctx.llm.stream()` |
 | `http-api` | `ctx.agents`, `ctx.intentRouter`, `ctx.auditLog`, `ctx.tdBus`, `ctx.realmSkillBridge`, `ctx.edgeTools` | 调用 `agents.create()` / `agent.followup()`；订阅 `session/event`；读 `_edgeRejection` 翻译 HTTP 状态 |
@@ -9676,8 +9676,8 @@ realm 桥只在 CLOUD realm 下放行，只有 §7.107 允许出网的那些轮�
 
 | 档 | provider | 在链上的条件 | 失败时 |
 |---|---|---|---|
-| 1 | Tavily | `webSearch.tavilyEnabled` 不是 false **且** `secrets.tavilyApiKey` 在 | warn → 落下一档 |
-| 2 | 博查 AI | `webSearch.bochaEnabled` 不是 false **且** `secrets.bochaApiKey` 在 | warn → 落下一档 |
+| 1 | Tavily | `webSearch.tavilyEnabled` 为 true（**§7.182 默认关闭**）**且** `secrets.tavilyApiKey` 在 | warn → 落下一档 |
+| 2 | 博查 AI | `webSearch.bochaEnabled` 为 true（**§7.182 默认关闭**）**且** `secrets.bochaApiKey` 在 | warn → 落下一档 |
 | 3 | **DeepSeek** | `secrets.deepseekApiKey` 在 | `WEB_PROVIDER_UNAVAILABLE` |
 
 两条独立的门：**开关**决定这一档在不在链上，**key** 决定这一档能不能

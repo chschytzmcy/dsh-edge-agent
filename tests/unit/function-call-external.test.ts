@@ -131,20 +131,25 @@ describe('function-call-external:config 默认值', () => {
     }
   })
 
-  it('§7.102 loader DEFAULT 与 memory 契约逐字一致(edge-config 兜底漂移锁)', () => {
-    // DEFAULT_EDGE_CONFIG.functionCallExternal 是"文件不存在 / 测试关掉文件"
-    // 时 apply() 的填充源 —— 必须与 9 字段契约逐字一致(部署值走 edge.json)。
+  it('§7.182 loader DEFAULT = 部署值（模板退出候选后并入此处）', () => {
+    // §7.182 (2026-11-11): the shipped template is NO LONGER a runtime
+    // candidate ⇒ its deployment values moved into DEFAULT_EDGE_CONFIG. The
+    // service's own `??` fallback (EXPECTED_DEFAULTS above) is unchanged — so
+    // the two layers are now INTENTIONALLY different on timeoutMs /
+    // probeTimeoutMs:
+    //   loader（配置文件层）: 15000 / 1000  ← 模板的部署值
+    //   service（内存兜底）  : 10000 / 2000  ← 代码兜底，逐字未动
     const fce = DEFAULT_EDGE_CONFIG.functionCallExternal as Record<string, unknown>
     const expect: Record<string, unknown> = {
       enabled: EXPECTED_DEFAULTS.functionCallExternalEnabled,
       url: EXPECTED_DEFAULTS.functionCallExternalUrl,
-      timeoutMs: EXPECTED_DEFAULTS.functionCallExternalTimeoutMs,
+      timeoutMs: 15000,
       confidenceThreshold: EXPECTED_DEFAULTS.functionCallExternalConfidenceThreshold,
       breakerTtlMs: EXPECTED_DEFAULTS.functionCallExternalBreakerTtlMs,
       bootProbeEnabled: EXPECTED_DEFAULTS.functionCallExternalBootProbeEnabled,
       bootProbeTimeoutMs: EXPECTED_DEFAULTS.functionCallExternalBootProbeTimeoutMs,
       breakerProbeMs: EXPECTED_DEFAULTS.functionCallExternalBreakerProbeMs,
-      probeTimeoutMs: EXPECTED_DEFAULTS.functionCallExternalProbeTimeoutMs,
+      probeTimeoutMs: 1000,
     }
     for (const [k, v] of Object.entries(expect)) {
       assert.deepEqual(fce[k], v, `DEFAULT_EDGE_CONFIG.functionCallExternal.${k} 漂移`)
@@ -1470,7 +1475,8 @@ describe('function-call-external:Phase 9 ops log 双轨(file-logger + audit-log)
     assert.ok(boot, '缺 boot ops log 行')
     assert.match(boot!, /enabled=true/)
     assert.match(boot!, /url=http:\/\/127\.0\.0\.1:8081/)
-    assert.match(boot!, /timeoutMs=10000/)
+    // §7.182: 配置文件层没有 timeoutMs ⇒ 吃 loader 默认（模板的部署值 15000）。
+    assert.match(boot!, /timeoutMs=15000/)
     assert.match(boot!, /threshold=0\.5/)
   })
 

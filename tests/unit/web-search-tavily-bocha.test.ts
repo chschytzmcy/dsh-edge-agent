@@ -139,7 +139,12 @@ function makeProvider(opts: {
     maxTokens: 4096,
     maxUses: 5,
   }))
-  return new TavilyBochaFallbackProvider(opts.tavilyKey, opts.bochaKey, opts.dsKey, ds)
+  // §7.182: the Tavily / 博查 tiers are OFF by default ⇒ the tests that
+  // exercise them must opt in explicitly.
+  return new TavilyBochaFallbackProvider(opts.tavilyKey, opts.bochaKey, opts.dsKey, ds, {
+    tavilyEnabled: true,
+    bochaEnabled: true,
+  })
 }
 
 // ── tests ───────────────────────────────────────────────────────────
@@ -341,6 +346,40 @@ describe('TavilyBochaFallbackProvider', () => {
     const result = await provider.search({ query: 'q' })
     assert.equal(result.sources[0].url, 'https://ds2.example')
     assert.equal(capturedCalls.length, 3)
+  })
+
+  // ── §7.182 (2026-11-11, owner ruling): Tavily / 博查 默认关闭 ──────────
+  it('§7.182: 不传 tier 开关 ⇒ Tavily / 博查 不在链上（只走 DeepSeek 档）', async () => {
+    // 出厂默认：webSearch.tavilyEnabled / bochaEnabled 都是 false ⇒ 这两档
+    // 即使配了 key 也不在链上（opt-in，不是 opt-out）。
+    responderTable = [
+      deepseekResponder(200, {
+        content: [
+          {
+            type: 'web_search_tool_result',
+            content: [{ type: 'web_search_result', url: 'https://ds.example', title: 'DS' }],
+          },
+        ],
+      }),
+    ]
+    const ds = makeDeepSeekProvider('sk-ds-real')
+    const provider = new TavilyBochaFallbackProvider(
+      'tvly-fake',
+      'sk-bocha-fake',
+      'sk-ds-real',
+      ds,
+    )
+    const result = await provider.search({ query: 'q', maxResults: 5 })
+    assert.equal(result.sources.length, 1)
+    assert.equal(result.sources[0].url, 'https://ds.example')
+    assert.equal(capturedCalls.length, 1, 'Tavily / 博查 不该被调用')
+    assert.equal(capturedCalls[0].url, 'https://api.deepseek.com/anthropic/v1/messages')
+  })
+
+  it('§7.182: 两档都关且没有 DeepSeek key ⇒ provider 不可用', () => {
+    const ds = makeDeepSeekProvider(undefined)
+    const provider = new TavilyBochaFallbackProvider('tvly-fake', 'sk-bocha-fake', undefined, ds)
+    assert.equal(provider.available(), false)
   })
 
   it('T10: abort signal propagates to fetch on the first active tier', async () => {

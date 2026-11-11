@@ -91,6 +91,8 @@ function readTarball(path) {
  *   SUPPOSED to carry config/edge.json, because the operator decided the
  *   artifact is for demo on their own machine and carries the live
  *   configuration. The distributable artifact must never carry it.
+ *   §7.182: the DEMO build sources that file from 顺位 2
+ *   (~/.dsh-edge-agent/edge.json), not from the repository.
  * @returns {{ failures: string[], notes: string[] }}
  */
 export function auditTarball(tarballPath, installableDir, { expectSecretConfig = false } = {}) {
@@ -170,8 +172,12 @@ export function auditTarball(tarballPath, installableDir, { expectSecretConfig =
     }
   }
 
-  // ── 5. the plaintext credential file: excluded from the DISTRIBUTABLE
+  // ── 5. the plaintext credential file: EXCLUDED from the DISTRIBUTABLE
   //      artifact, REQUIRED in the DEMO one (§7.160) ────────────────────────
+  //      §7.182 (2026-11-11): the DEMO build sources the live config from
+  //      顺位 2 (~/.dsh-edge-agent/edge.json) — the repository's config/
+  //      directory is no longer a supported drop point. The rule itself is
+  //      unchanged: distributable artifacts never carry the plaintext file.
   if (expectSecretConfig) {
     if (!tarball.files.includes('config/edge.json')) {
       failures.push(
@@ -400,13 +406,16 @@ if (args.includes('--selftest')) {
       for (const f of result.failures) console.error(`  - ${f}`)
       failures.push(...result.failures)
     }
-
-    // §7.160: the DEMO artifact, when it exists, is audited with the INVERTED
-    // credential rule (it MUST carry config/edge.json). It is optional — the
-    // distributable build never produces it — but if it is there, it has to be
-    // the thing it claims to be.
+  }
+  // §7.160: the DEMO artifact, when it exists, is audited with the INVERTED
+  // credential rule (it MUST carry config/edge.json). It is optional — the
+  // distributable build never produces it — but if it is there, it has to be
+  // the thing it claims to be. §7.182: its config comes from 顺位 2
+  // (~/.dsh-edge-agent/edge.json), not from the repository.
+  for (const variant of VARIANTS) {
     const demoPath = join(DIST, variant.tarball.replace(/\.tar\.gz$/u, '-DEMO.tar.gz'))
     if (existsSync(demoPath)) {
+      const installableDir = join(DIST, 'installable', variant.dir)
       const demo = auditTarball(demoPath, installableDir, { expectSecretConfig: true })
       audited++
       const demoRel = relative(ROOT, demoPath)

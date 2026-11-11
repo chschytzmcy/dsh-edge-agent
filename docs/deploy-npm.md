@@ -612,19 +612,19 @@ npm 的 token 表单有**两处容易选错**：
 | 装完说「failed to read overlay」 | tarball 里有没有那两个 patch 文件 | `files` 白名单漏了 |
 | 装完说「版本不兼容」 | `engines.dsh` vs 宿主版本 | 范围太窄 |
 | 装完桌面右栏没有 Edge tab | `~/.dsh/profiles/desktop/package.json` 的 `dsh.profile.bundles` | **没点「立即启用」**（§6.3） |
-| 配置读不到 / 云端 401 | `~/.dsh-edge-agent/audit/audit.plain.jsonl` 的 `config.loaded` | npm 装法同样**没有** `config/edge.json` ⇒ 要写 `~/.dsh-edge-agent/edge.json`（§4） |
+| 配置读不到 / 云端 401 | `~/.dsh-edge-agent/audit/audit.plain.jsonl` 的 `config.loaded` | npm 装法同样**没有** `config/edge.json` ⇒ 要写 `~/.dsh-edge-agent/edge.json`（顺位 2）或插件目录里那份（顺位 1）（§4） |
 
 ### 9.1 配置落位（与 git 通道一致）
 
 `config/edge.json` 含明文 API key，**不入库、不进包** ⇒ npm 装出来的包里也没有它。
 
-运行时查找顺序（`src/dsh-adapter/edge-config.ts:391-408`）：
+运行时查找顺序（`src/dsh-adapter/edge-config.ts`，§7.182 后**只有两档**）：
 
-1. `<bundle root>/config/edge.json` — npm 装法**没有**；
-2. `~/.dsh-edge-agent/edge.json` — **npm 装法用这个**；
-3. `<bundle root>/config/edge.example.json` — 空密钥兜底。
+1. `<bundle root>/config/edge.json` — **顺位 1**：装好后的插件目录里那份
+   （npm 装法包里没有它，但你可以自己写进去；打开插件目录就能找到）；
+2. `~/.dsh-edge-agent/edge.json` — **顺位 2**：跨通道、跨重装都活着，推荐。
 
-⇒ 把真实端点与密钥写进 `~/.dsh-edge-agent/edge.json`。
+⇒ 把真实端点与密钥写进这两个位置之一。
 
 ## 10. 版本语义：npm 通道和 git 通道**不一样**
 

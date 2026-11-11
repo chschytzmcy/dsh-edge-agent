@@ -433,6 +433,12 @@
                 inject: [promptGuard, privacyPolicy, intentRouter, sanitizer, auditLog, realmSkillBridge]
                 config:
                   sanitizeLocalTraffic: false
+                  # §7.179 (2026-11-11): 本 preset 的 id。`agent-preset/selected`
+                  # 是**全局**事件（宿主 registry 直接 ctx.emit，不带 scope 载体）
+                  # ⇒ input-guard 必须自己按 presetId 过滤，否则会把标准模式的
+                  # 会话也钉成 local-llm。必须与上面 `config.id` 一致 ——
+                  # scripts/verify-preset-isolate.ts 复核这一点。
+                  presetId: edge
 
               # §7.101 Edge tab host half: folds the audit stream into the four panel
               # row-lists + session summary and serves them on /api/dsh-edge/context.

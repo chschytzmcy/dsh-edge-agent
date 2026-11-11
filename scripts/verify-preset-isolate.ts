@@ -53,11 +53,28 @@ interface PluginFacts {
   inject: string[]
 }
 
+/**
+ * Strip comments before scanning a plugin source for facts.
+ *
+ * A comment that quotes host code (`super(ctx, 'agents')`) used to be read as
+ * a real service registration — the scan took the FIRST match, so a docstring
+ * could shadow the actual `super(ctx, 'inputGuard')` and the gate then demanded
+ * an isolate entry for a service the plugin never provides.
+ *
+ * Line comments are only stripped when `//` starts the line or follows
+ * whitespace, so URLs (`http://…`) survive.
+ */
+function stripComments(src: string): string {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|\s)\/\/[^\n]*/gm, '$1')
+}
+
 /** Read a plugin's facts out of its adapter source. */
 function factsOf(sub: string): PluginFacts | undefined {
   const file = join(adapterDir, `${sub}.ts`)
   if (!existsSync(file)) return undefined
-  const src = readFileSync(file, 'utf8')
+  const src = stripComments(readFileSync(file, 'utf8'))
   const service = src.match(/super\(\s*\w+\s*,\s*'([^']+)'\s*\)/)?.[1]
   return { service, inject: parseInject(src) }
 }
@@ -79,7 +96,6 @@ function parseInject(src: string): string[] {
   const body = src.slice(start, i).replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
   return [...body.matchAll(/'([^']+)'/g)].map((m) => m[1])
 }
-
 /** The subpath of a bundle plugin row, or undefined for a host row. */
 function subOf(name: unknown): string | undefined {
   if (typeof name !== 'string') return undefined
@@ -93,13 +109,40 @@ interface Row {
   group?: boolean
   isolate?: Record<string, unknown>
   config?: Row[]
+  /** §7.179: a leaf row's scalar config map (groups use `config` for children). */
+  rowConfig?: Record<string, unknown>
+}
+
+/** One preset document: its own id plus its plugin rows (groups expanded). */
+interface PresetDoc {
+  presetId?: string
+  rows: Row[]
+}
+
+/** One plugin row → Row (groups keep their children; leaves keep their config map). */
+function toRow(raw: Record<string, unknown>): Row {
+  const rowCfg = raw.config
+  const scalarCfg = rowCfg !== null && typeof rowCfg === 'object' && !Array.isArray(rowCfg)
+    ? (rowCfg as Record<string, unknown>)
+    : undefined
+  return {
+    id: typeof raw.id === 'string' ? raw.id : '?',
+    name: typeof raw.name === 'string' ? raw.name : undefined,
+    group: raw.group === true,
+    isolate: (raw.isolate ?? undefined) as Record<string, unknown> | undefined,
+    config: Array.isArray(rowCfg)
+      ? (rowCfg as unknown[]).map((c) => toRow((c ?? {}) as Record<string, unknown>))
+      : undefined,
+    rowConfig: scalarCfg,
+  }
 }
 
 /** Parse one preset patch file into its plugin rows (groups expanded). */
-function parsePresetRows(text: string): Row[] {
+function parsePresetDoc(text: string): PresetDoc {
   const doc = parseYaml(text) as unknown
   const out: Row[] = []
-  if (!Array.isArray(doc)) return out
+  let presetId: string | undefined
+  if (!Array.isArray(doc)) return { presetId, rows: out }
   for (const item of doc) {
     if (item === null || typeof item !== 'object') continue
     const record = item as Record<string, unknown>
@@ -109,26 +152,20 @@ function parsePresetRows(text: string): Row[] {
       const r = raw as Record<string, unknown>
       if (r.name !== '@deepseek-ai/dsh-agent-preset') continue
       const cfg = (r.config ?? {}) as Record<string, unknown>
+      if (typeof cfg.id === 'string') presetId = cfg.id
       const plugins = Array.isArray(cfg.plugins) ? cfg.plugins : []
       for (const p of plugins) {
         if (p === null || typeof p !== 'object') continue
-        const row = p as Record<string, unknown>
-        out.push({
-          id: typeof row.id === 'string' ? row.id : '?',
-          name: typeof row.name === 'string' ? row.name : undefined,
-          group: row.group === true,
-          isolate: (row.isolate ?? undefined) as Record<string, unknown> | undefined,
-          config: Array.isArray(row.config)
-            ? (row.config as Row[]).map((c) => ({
-                id: typeof (c as Record<string, unknown>).id === 'string' ? String((c as Record<string, unknown>).id) : '?',
-                name: typeof (c as Record<string, unknown>).name === 'string' ? String((c as Record<string, unknown>).name) : undefined,
-              }))
-            : undefined,
-        })
+        out.push(toRow(p as Record<string, unknown>))
       }
     }
   }
-  return out
+  return { presetId, rows: out }
+}
+
+/** Parse one preset patch file into its plugin rows (groups expanded). */
+function parsePresetRows(text: string): Row[] {
+  return parsePresetDoc(text).rows
 }
 
 /** Top-level insert rows of a bundle patch file. */
@@ -197,6 +234,7 @@ function collectViolations(
   file: string,
   rows: Row[],
   hostTreeServices: Map<string, string>,
+  presetId?: string,
 ): string[] {
   const out: string[] = []
   const presetRows = rows.filter((r) => r.group === true)
@@ -288,22 +326,45 @@ function collectViolations(
       }
     }
   }
+
+  // Rule 5 (§7.179): the input-guard row must declare THIS preset's own id.
+  //
+  // `agent-preset/selected` is a GLOBAL host event (the registry emits it with
+  // `ctx.emit(...)`, no scope carrier) ⇒ every work style's listeners see it
+  // ⇒ input-guard has to filter by preset id. The id it filters on must be
+  // this preset's id — a mismatch means the §7.179 re-pin never fires and the
+  // first turn after switching work styles is blocked by the §7.175 gate.
+  const guardRow = allPresetRows.find((r) => subOf(r.name) === 'input-guard')
+  if (guardRow) {
+    const declared = guardRow.rowConfig?.presetId
+    if (typeof declared !== 'string' || declared.length === 0) {
+      out.push(
+        `${file}: the input-guard row does not declare config.presetId`
+        + ' — it cannot filter the global "agent-preset/selected" event ⇒ the §7.179 re-pin never fires.',
+      )
+    } else if (declared !== presetId) {
+      out.push(
+        `${file}: the input-guard row declares config.presetId "${declared}" but the preset id is`
+        + ` "${presetId ?? '?'}" ⇒ the §7.179 re-pin would never fire.`,
+      )
+    }
+  }
   return out
 }
 
-const parsed = presetFiles.map((file) => ({
-  file,
-  rows: parsePresetRows(readFileSync(join(presetDir, file), 'utf8')),
-}))
+const parsed = presetFiles.map((file) => {
+  const doc = parsePresetDoc(readFileSync(join(presetDir, file), 'utf8'))
+  return { file, presetId: doc.presetId, rows: doc.rows }
+})
 
-for (const { file, rows } of parsed) {
-  violations.push(...collectViolations(file, rows, hostTreeServices))
+for (const { file, presetId, rows } of parsed) {
+  violations.push(...collectViolations(file, rows, hostTreeServices, presetId))
 }
 
 // ── 自测：故意破坏一次，确认规则真的会响 ───────────────────────────────
 if (process.argv.includes('--selftest')) {
   const selfViolations: string[] = []
-  for (const { file, rows } of parsed) {
+  for (const { file, presetId, rows } of parsed) {
     const group = rows.find((r) => r.group === true && (r.config ?? []).some((c) => subOf(c.name)))
     if (!group) continue
     const provider = (group.config ?? []).find((c) => {
@@ -317,7 +378,7 @@ if (process.argv.includes('--selftest')) {
     const broken = JSON.parse(JSON.stringify(rows)) as Row[]
     const brokenGroup = broken.find((r) => r.id === group.id)!
     delete brokenGroup.isolate![svc]
-    const a = collectViolations(file, broken, hostTreeServices)
+    const a = collectViolations(file, broken, hostTreeServices, presetId)
     if (!a.some((v) => v.includes(`"${svc}"`))) {
       selfViolations.push(`selftest(a): removing "${svc}" from the isolate map produced no violation`)
     }
@@ -326,7 +387,7 @@ if (process.argv.includes('--selftest')) {
     const ghost = JSON.parse(JSON.stringify(rows)) as Row[]
     const ghostGroup = ghost.find((r) => r.id === group.id)!
     ghostGroup.isolate = { ...(ghostGroup.isolate ?? {}), 'edgeGhostService': true }
-    const b = collectViolations(file, ghost, hostTreeServices)
+    const b = collectViolations(file, ghost, hostTreeServices, presetId)
     if (!b.some((v) => v.includes('edgeGhostService'))) {
       selfViolations.push('selftest(b): a ghost isolate entry produced no violation')
     }
@@ -338,10 +399,24 @@ if (process.argv.includes('--selftest')) {
       const both = JSON.parse(JSON.stringify(rows)) as Row[]
       const bothGroup = both.find((r) => r.id === group.id)!
       bothGroup.config = [...(bothGroup.config ?? []), { id: 'selftest-duplicate', name: hostPlugin }]
-      const c = collectViolations(file, both, hostTreeServices)
+      const c = collectViolations(file, both, hostTreeServices, presetId)
       if (!c.some((v) => v.includes(`"${hostService}"`) && v.includes('host-tree row'))) {
         selfViolations.push(`selftest(c): a service on both sides ("${hostService}") produced no violation`)
       }
+    }
+
+    // (d) §7.179 规则 5：把 input-guard 行的 presetId 改成别的 ⇒ 必须响。
+    const wrongId = JSON.parse(JSON.stringify(rows)) as Row[]
+    const wrongGroup = wrongId.find((r) => r.id === group.id)!
+    const guardChild = (wrongGroup.config ?? []).find((c) => subOf(c.name) === 'input-guard')
+    if (guardChild) {
+      guardChild.rowConfig = { ...(guardChild.rowConfig ?? {}), presetId: 'not-the-preset' }
+      const d = collectViolations(file, wrongId, hostTreeServices, presetId)
+      if (!d.some((v) => v.includes('config.presetId'))) {
+        selfViolations.push('selftest(d): a mismatched input-guard presetId produced no violation')
+      }
+    } else {
+      selfViolations.push('selftest(d): no input-guard row found in the edge group')
     }
   }
   if (selfViolations.length > 0) {
@@ -349,7 +424,7 @@ if (process.argv.includes('--selftest')) {
     for (const v of selfViolations) console.error(`  - ${v}`)
     process.exit(1)
   }
-  console.log('preset isolate selftest OK (rules 1/3/4 all fire on a broken preset)')
+  console.log('preset isolate selftest OK (rules 1/3/4/5 all fire on a broken preset)')
 }
 
 if (violations.length > 0) {

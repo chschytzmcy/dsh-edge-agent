@@ -1,5 +1,5 @@
 {
-  "_comment": "dsh-edge-agent 统一配置模板（tracked）。复制为 config/edge.json 后填入真实值：cp config/edge.example.json config/edge.json。config/edge.json 含明文 API key，已在 .gitignore 里。查找顺序：bundle 内 config/edge.json → ~/.dsh-edge-agent/edge.json → 插件内置默认值。",
+  "_comment": "dsh-edge-agent 配置模板（tracked）。§7.182（2026-11-11）起，运行时只认两个落点：①装好后的插件目录里的 config/edge.json（顺位 1 —— 打开插件目录就能看到能改的那个）；②~/.dsh-edge-agent/edge.json（顺位 2 —— 重装/删 profile 都活着，跨 npm/git/tarball 三条通道通用）。仓库的 config/ 目录不再放活配置（明文 API key 不该待在 git checkout 里）。本文件本身不再是运行时候选（模板里的部署值已并入代码默认值），它只是给你抄的那份模板：cp config/edge.example.json ~/.dsh-edge-agent/edge.json，然后填真实端点与 key。",
   "secrets": {
     "_comment": "HTTP API 鉴权 + 各 LLM 池的直连凭据。直连模式下写入 Authorization 头。",
     "edgeApiKey": "",
@@ -70,8 +70,8 @@
     }
   },
   "jev": {
-    "_comment": "§7.92.3 jev 意图识别（toggle，默认 ON；开 → 在 LLM classifier 之前先跑）。Toggle=false 时 classify() 完全跳过 jev 路径（无 network call）。高置信 (>=confidenceThreshold) + 低风险 (<riskThreshold) → 直接采纳；否则 fall through 到 LLM。 §7.112（2026-10-25）：provider 可选 local（默认，ONNX /predict）| bailian-decision（阿里 decision-model /systemone——questions 从 categories 自动生成，model 填 decision-model-preview，apiKeyRef 指向 secrets 里的百炼 MaaS key，authScheme raw=Authorization: <key> / bearer=Bearer 前缀）。§7.114：决策模型是配置文件绑定的外部服务——path 默认 /systemone（MaaS 部署）；本地 MLX serve 同一契约时 url 指 http://127.0.0.1:11017/v1、path 改 /classify（它有 /health，探针自动恢复）。 §7.115：localAdoptFloor=方向分闸——LOCAL 倾向判决 ≥ 该值直接采纳（默认本地，不落 LLM），非 LOCAL 仍走 confidenceThreshold。",
-    "enabled": true,
+    "_comment": "§7.92.3 jev 意图识别（toggle，§7.182 主人裁决：**默认 OFF** —— 它是可选加速器，需要本地 :8001 的决策模型服务；没有它时 classify() 完全跳过 jev 路径；开 → 在 LLM classifier 之前先跑）。Toggle=false 时 classify() 完全跳过 jev 路径（无 network call）。高置信 (>=confidenceThreshold) + 低风险 (<riskThreshold) → 直接采纳；否则 fall through 到 LLM。 §7.112（2026-10-25）：provider 可选 local（默认，ONNX /predict）| bailian-decision（阿里 decision-model /systemone——questions 从 categories 自动生成，model 填 decision-model-preview，apiKeyRef 指向 secrets 里的百炼 MaaS key，authScheme raw=Authorization: <key> / bearer=Bearer 前缀）。§7.114：决策模型是配置文件绑定的外部服务——path 默认 /systemone（MaaS 部署）；本地 MLX serve 同一契约时 url 指 http://127.0.0.1:11017/v1、path 改 /classify（它有 /health，探针自动恢复）。 §7.115：localAdoptFloor=方向分闸——LOCAL 倾向判决 ≥ 该值直接采纳（默认本地，不落 LLM），非 LOCAL 仍走 confidenceThreshold。",
+    "enabled": false,
     "url": "http://127.0.0.1:8001",
     "timeoutMs": 2500,
     "confidenceThreshold": 0.85,
@@ -83,7 +83,7 @@
     "probeTimeoutMs": 1000,
     "provider": "local",
     "model": "decision-model-preview",
-    "apiKeyRef": "bailianApiKey",
+    "_apiKeyRef": "§7.182：默认档（provider=local，ONNX 决策模型）不需要 key —— 故意不写 apiKeyRef。写了就会在启动时报「配置里的密钥引用指向不存在的槽位」（槽位为空也算不存在，edge-config.ts danglingSecretRefs()）。要换百炼决策模型才把这一行加回来：\"apiKeyRef\": \"bailianApiKey\"，同时在 secrets 里填上那个槽位的真实 key。",
     "authScheme": "raw",
     "path": "/systemone",
     "localAdoptFloor": 0.5
@@ -165,9 +165,9 @@
     "blockLevel": "critical"
   },
   "webSearch": {
-    "_comment": "Phase 5 web-search providers（§7.82）三级链：Tavily → 博查 AI → DeepSeek。任一可用即可，任一失败自动 fallback；不写 key 就跳过该 tier。",
-    "tavilyEnabled": true,
-    "bochaEnabled": true
+    "_comment": "Phase 5 web-search providers（§7.82）三级链：Tavily → 博查 AI → DeepSeek。任一可用即可，任一失败自动 fallback；不写 key 就跳过该 tier。§7.182 主人裁决：Tavily / 博查两档**默认关闭** ⇒ 出厂只有 DeepSeek 档在链上（secrets.deepseekApiKey）；要开就把对应开关写 true。",
+    "tavilyEnabled": false,
+    "bochaEnabled": false
   },
   "agent": {
     "_comment": "agent persona + 工具权限。",

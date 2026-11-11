@@ -368,26 +368,24 @@ allowBuilds:
 `config/edge.json` **含明文 API key，不入库**（`.gitignore` 排除，且 `files`
 白名单用 `!config/edge.json` 排除）⇒ **git 装出来的包里没有它**。
 
-运行时查找顺序（`src/dsh-adapter/edge-config.ts:391-408`）：
+运行时查找顺序（`src/dsh-adapter/edge-config.ts`，§7.182 后**只有两档**）：
 
-1. `<bundle root>/config/edge.json` — 装在 `node_modules` 里时就是这里；
-2. `~/.dsh-edge-agent/edge.json` — **git 装完用这个**（已安装覆盖位置）；
-3. `<bundle root>/config/edge.example.json` — 空密钥的模板，最后兜底。
+1. `<bundle root>/config/edge.json` — 装在 `node_modules` 里时就是这里
+   （**顺位 1**：插件装在哪，配置就在哪，用户打开插件目录就能找到）；
+2. `~/.dsh-edge-agent/edge.json` — **顺位 2**：跨通道、跨重装、删 profile 都活着。
 
-⇒ 把真实端点与密钥写进 `~/.dsh-edge-agent/edge.json`（该文件本身同样不入库）。
+⇒ 装完把真实端点与密钥写进这两个位置之一（该文件本身同样不入库）。
 
-> ⚠️ **换成 git 装法后，配置读取位置整体后移了一档**（`edge-config.ts:391-409` 的
-> `edgeConfigCandidates()`）：
+> ⚠️ **git 装法下包里没有活配置**（§7.182）：
 >
 > | 顺位 | 路径 | link 装法 | git 装法 |
 > |---|---|---|---|
-> | 1 | `<bundle root>/config/edge.json` | ✅ 有（`dist/installable/.../config/edge.json`，**含真 key**） | ❌ **没有**（包里只有 `edge.example.json`） |
-> | 2 | `~/.dsh-edge-agent/edge.json` | 用不上 | ✅ **这里** |
-> | 3 | `<bundle root>/config/edge.example.json` | 兜底 | 兜底（空密钥） |
+> | 1 | `<bundle root>/config/edge.json` | 装好后**可以**在这里写（就地可见） | 同左（同一个安装目录） |
+> | 2 | `~/.dsh-edge-agent/edge.json` | ✅ **推荐**（重装也活着） | ✅ **推荐**（重装也活着） |
 >
-> ⇒ 以前靠 link 装法能用的那份配置（主人最新裁决都在仓库那份里）**必须搬到
-> `~/.dsh-edge-agent/edge.json`**，否则 git 装完会退回到**空密钥模板**（云端调用
-> 401）或旧配置。
+> ⇒ git 装完若没有配置：**写 `~/.dsh-edge-agent/edge.json`**（顺位 2），或直接写
+> 装好后的插件目录里那份（顺位 1）。两者都不会因为「重装 tarball」而消失 ——
+> 前提是写的是 home 那份。
 >
 > 本机 2026-10-30 实测：`~/.dsh-edge-agent/edge.json` 是旧配置（DeepSeek 端点、
 > `deepseek-flash`、缺 `alitokenplanApiKey`、jev 指向本机 127.0.0.1:8001、
@@ -396,8 +394,10 @@ allowBuilds:
 > webSearch 关掉）⇒ 已用仓库那份覆盖 home 那份，旧版备份在
 > `~/.dsh-edge-agent/edge.json.bak-20261030T025751`。
 >
-> **仓库里的 `config/edge.json` 不用改** —— 它不入库、不会跟着 git 走，
-> 也不该进 git（明文密钥）。它只是**本机开发时的源**。
+> **仓库里的 `config/edge.json` 不再是配置落点**（§7.182）—— 它不入库、
+> 不会跟着 git 走，也不该进 git（明文密钥）；仓库的 `config/` 目录只留**模板**
+> （`edge.example.json`，给你抄的那份）。运行时在源码 checkout 里也**跳过顺位 1**
+> （`isSourceCheckout()`）⇒ dev 与生产读的是同一份 home 配置。
 
 **装出来的包长什么样**（实测，2026-10-30）：
 

@@ -1095,14 +1095,15 @@ describe('handlePreStep — reads intent from agent._edgeRoute', () => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
-// §7.175 (2026-11-11) regression suite: the fail-closed route gate.
+// §7.184 (2026-11-11) regression suite: 选型不动 + 出网那一跳改道。
 //
-// 边缘模式恒用本地模型（主人裁决）。路由由**宿主**的 modelSelection 决定，
-// input-guard 不再改写（宿主的 prepareRequest() 会对改写直接抛错）。于是
-// 「本该本地却可能上云」这件事只能在 agent/pre-step 用 modelSelection 判：
-//   · modelSelection 缺失 / 不是对象 ⇒ 无法证明本轮走本地 ⇒ reject
-//   · modelSelection.provider !== config.localProvider ⇒ 可能上云 ⇒ reject
-// 命中即 reject（挂 _edgeRejection 让 http-api 拿到原因），绝不放行。
+// 主人裁决：「选择器完全不动，实际请求改道到本地池」。
+//   · 边缘模式**不再改写会话选型** ⇒ 宿主模型选择器保持主人选的那个；
+//   · 「本轮必须留在设备上」改由**出网那一跳**保证：LOCAL 轮次的请求在
+//     llm/stream 被换成 provider = 本地池（见 input-guard-local-reroute.test.ts）；
+//   · 旧口径（§7.175：判定 LOCAL 而选型不是本地 ⇒ reject）随之退役 ——
+//     能改道就不必拒。
+// 仍然 fail-closed 的只剩一件：**本地路由必须真的存在**（否则改道无处可去）。
 // ─────────────────────────────────────────────────────────────────────────────
 describe('handlePreStep — §7.175 fail-closed 路由闸门（modelSelection）', () => {
   it('本地 modelSelection ⇒ 放行（路由不动，本轮走本地模型）', async () => {
@@ -1123,7 +1124,7 @@ describe('handlePreStep — §7.175 fail-closed 路由闸门（modelSelection）
     assert.ok(!audit.entries.some(e => e.kind === 'input-guard.blocked.model-selection'))
   })
 
-  it('非本地 modelSelection ⇒ reject（fail-closed，绝不放行到云端）', async () => {
+  it('非本地 modelSelection ⇒ 放行（§7.184：选型不动，改道在出网那一跳）', async () => {
     const ir = fakeIntentRouter({ category: 'LOCAL' })
     const audit = fakeAuditLog()
     const svc = new InputGuardServiceImpl(
@@ -1133,24 +1134,20 @@ describe('handlePreStep — §7.175 fail-closed 路由闸门（modelSelection）
     const payload = makePreStepPayload('查本地IP')
     payload.modelSelection = { provider: 'cloud-llm', model: 'deepseek-chat' }
     const result = await svc.handlePreStep(payload as any, makeNext(payload.messages))
-    assert.equal(result.kind, 'reject')
-    assert.equal(result.reason, 'model-selection-not-local')
-    // §7.174 字面口径：闸门在**意图分类之后** —— 因为「要不要拦」取决于
-    // 本轮判成什么。只有判成 LOCAL 才需要证明「这一轮留在本地」。
-    // 判成 CLOUD 的轮次由用户自己的模型选择负责（§7.175 主人口径）。
+    // §7.184（主人裁决「选择器完全不动，实际请求改道到本地池」）：
+    // 选型是云端**不再**拒收 —— 这一轮会在 llm/stream 被改道到本地池。
+    assert.equal(result.kind, 'enter')
+    // §7.174 字面口径：闸门在**意图分类之后** —— 因为「要不要改道」取决于
+    // 本轮判成什么。只有判成 LOCAL 才需要改道。
     assert.equal(ir.calls.length, 1, '分类先跑，闸门后判')
-    // 审计 + _edgeRejection（http-api 靠它翻译 4xx）
-    const blocked = audit.entries.find(e => e.kind === 'input-guard.blocked.model-selection')
-    assert.ok(blocked, '必须留下 blocked 审计')
-    assert.equal(blocked?.payload?.provider, 'cloud-llm')
-    assert.equal(blocked?.payload?.expectedProvider, 'local-llm')
-    const rej = (payload.agent as any)._edgeRejection
-    assert.ok(rej, 'agent._edgeRejection 必须被设置，http-api 才能翻译 blocked → 403')
-    assert.equal(rej.kind, 'intent')
-    assert.equal(rej.reason, 'model-selection-not-local')
+    const planned = audit.entries.find(e => e.kind === 'input-guard.reroute.planned')
+    assert.ok(planned, '必须留下改道计划审计行')
+    assert.equal((planned?.payload as any)?.from?.provider, 'cloud-llm')
+    assert.equal((planned?.payload as any)?.to, 'local-llm')
+    assert.ok(!audit.entries.some(e => e.kind === 'input-guard.blocked.model-selection'))
   })
 
-  it('modelSelection 缺失 / 不是对象 ⇒ reject（无法证明本轮走本地）', async () => {
+  it('modelSelection 缺失 / 不是对象 ⇒ 放行（改道不依赖选型）', async () => {
     const ir = fakeIntentRouter({ category: 'LOCAL' })
     const audit = fakeAuditLog()
     const svc = new InputGuardServiceImpl(
@@ -1160,14 +1157,12 @@ describe('handlePreStep — §7.175 fail-closed 路由闸门（modelSelection）
     const payload = makePreStepPayload('查本地IP')
     delete (payload as any).modelSelection
     const missing = await svc.handlePreStep(payload as any, makeNext(payload.messages))
-    assert.equal(missing.kind, 'reject')
-    assert.equal(missing.reason, 'model-selection-missing')
+    assert.equal(missing.kind, 'enter')
 
     const payload2 = makePreStepPayload('查本地IP')
     ;(payload2 as any).modelSelection = 'not-an-object'
     const bogus = await svc.handlePreStep(payload2 as any, makeNext(payload2.messages))
-    assert.equal(bogus.kind, 'reject')
-    assert.equal(bogus.reason, 'model-selection-missing')
+    assert.equal(bogus.kind, 'enter')
     // 两轮各分类一次（闸门在分类之后）
     assert.equal(ir.calls.length, 2)
   })
@@ -1348,12 +1343,16 @@ describe('handlePreStep — §7.26 bug A regression (retired): LOCAL intent no l
     assert.equal(result.maxTokens, 4096, '其他字段保留')
     assert.ok(!audit.entries.some(e => e.kind === 'input-guard.route.overridden'))
 
-    // 真正的兜底：宿主若选了非本地 provider，本轮被 fail-closed 拒收
+    // §7.184: 真正的兜底不再是「拒收」，而是**出网那一跳的改道** ——
+    // 宿主选了非本地 provider，这一轮仍会留在设备上（llm/stream 换成本地池）。
     const cloudPayload = makePreStepPayload('查询密盒里有哪些文件')
     cloudPayload.modelSelection = { provider: 'cloud-llm', model: 'deepseek-chat' }
-    const blocked = await svc.handlePreStep(cloudPayload as any, makeNext(cloudPayload.messages))
-    assert.equal(blocked.kind, 'reject')
-    assert.equal(blocked.reason, 'model-selection-not-local')
+    const entered = await svc.handlePreStep(cloudPayload as any, makeNext(cloudPayload.messages))
+    assert.equal(entered.kind, 'enter')
+    assert.ok(
+      audit.entries.some(e => e.kind === 'input-guard.reroute.planned'),
+      '必须留下改道计划审计行',
+    )
   })
 })
 
@@ -1893,9 +1892,13 @@ describe('§7.128 — REJECT 绝不走 CLOUD', () => {
     assert.deepEqual(routed, seedConfig, '§7.175: agent/request 不再改写路由')
     const cloudPayload = makePreStepPayload('危险内容')
     cloudPayload.modelSelection = { provider: 'cloud-llm', model: 'deepseek-chat' }
-    const blocked = await svc.handlePreStep(cloudPayload as any, makeNext(cloudPayload.messages))
-    assert.equal(blocked.kind, 'reject', '非本地 modelSelection 必须 fail-closed 拒收')
-    assert.equal(blocked.reason, 'model-selection-not-local')
+    const entered = await svc.handlePreStep(cloudPayload as any, makeNext(cloudPayload.messages))
+    // §7.184: 非本地 modelSelection 不再拒收 —— 这一轮在出网那一跳被改道到本地池。
+    assert.equal(entered.kind, 'enter')
+    assert.ok(
+      audit.entries.some(e => e.kind === 'input-guard.reroute.planned'),
+      '必须留下改道计划审计行',
+    )
   })
 
   it('intent-router 判 REJECT + fail-open → 同样留在本地', async () => {
@@ -1919,8 +1922,9 @@ describe('§7.128 — REJECT 绝不走 CLOUD', () => {
     assert.deepEqual(routed, seedConfig, '§7.175: agent/request 不再改写路由')
     const cloudPayload = makePreStepPayload('do weird thing')
     cloudPayload.modelSelection = { provider: 'cloud-llm', model: 'deepseek-chat' }
-    const blocked = await svc.handlePreStep(cloudPayload as any, makeNext(cloudPayload.messages))
-    assert.equal(blocked.kind, 'reject', '非本地 modelSelection 必须 fail-closed 拒收')
+    const entered = await svc.handlePreStep(cloudPayload as any, makeNext(cloudPayload.messages))
+    // §7.184: 非本地 modelSelection 不再拒收 —— 这一轮在出网那一跳被改道到本地池。
+    assert.equal(entered.kind, 'enter')
   })
 
   it('intent-router 判 REJECT + fail-closed → 仍然拦下（回归护栏）', async () => {

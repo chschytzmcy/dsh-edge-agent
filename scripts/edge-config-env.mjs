@@ -1,9 +1,15 @@
-// edge-config-env.mjs — print `export K=V` lines for config/edge.json.
+// edge-config-env.mjs — print `export K=V` lines for the edge config.
 //
 // §7.102 (2026-10-21): the repo's `.env` / `.env.sh` pair is gone; runtime
-// configuration lives in config/edge.json. The e2e / bench scripts still
+// configuration lives in an edge.json file. The e2e / bench scripts still
 // need plain shell variables (they call curl / python / the dsh CLI
 // directly), so scripts/edge-config-env.sh sources this output.
+//
+// §7.182 (2026-11-11): the lookup order is now TWO candidates —
+//   1. <bundle>/config/edge.json   — the installed plugin's own config dir
+//   2. ~/.dsh-edge-agent/edge.json  — the operator's home copy
+// The repository's config/ directory is no longer a supported drop point, so
+// it is NOT a candidate here either.
 //
 // The names emitted are the SAME DSH_EDGE_* names the plugins already
 // understand — edge-config.ts's ENV_OVERRIDES layer maps them back onto the
@@ -17,13 +23,19 @@ import { fileURLToPath } from 'node:url'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
+/** Is this root a source checkout (the repo) rather than an installed bundle? */
+function isSourceCheckout(root) {
+  return existsSync(join(root, 'src', 'dsh-adapter'))
+}
+
 function pickConfigPath(arg) {
   if (arg) return resolve(arg)
-  const candidates = [
-    join(ROOT, 'config', 'edge.json'),
-    join(process.env.USERPROFILE ?? process.env.HOME ?? '', '.dsh-edge-agent', 'edge.json'),
-  ]
-  return candidates.find((p) => existsSync(p)) ?? candidates[0]
+  const candidates = []
+  if (!isSourceCheckout(ROOT)) {
+    candidates.push(join(ROOT, 'config', 'edge.json'))
+  }
+  candidates.push(join(process.env.USERPROFILE ?? process.env.HOME ?? '', '.dsh-edge-agent', 'edge.json'))
+  return candidates.find((p) => existsSync(p)) ?? candidates[candidates.length - 1]
 }
 
 const path = pickConfigPath(process.argv[2])

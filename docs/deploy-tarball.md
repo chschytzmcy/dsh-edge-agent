@@ -170,7 +170,8 @@ tarball 的**顶层目录必须叫 `package`**（npm/pnpm 的期望，`_pack-cor
 1. 桌面 App → 侧边栏 **Plugins → Add plugin → Install a third-party plugin**
 2. 填 tarball 的**绝对路径**（Windows 形式 `C:\…`，不是 MSYS2 的 `/c/…`）
 3. 安装 → **点「立即启用」**（§2.7）→ 重启 App
-4. 配置写 `~/.dsh-edge-agent/edge.json`（tarball 里没有 `config/edge.json`，§3.3）
+4. 配置写**两个落点之一**（§7.182）：`~/.dsh-edge-agent/edge.json`（顺位 2，推荐）
+   或装好后的插件目录里那份 `config/edge.json`（顺位 1）—— tarball 里两者都没有
 
 CLI 装法（另建 profile，不碰 desktop）：
 
@@ -191,22 +192,31 @@ export DSH_HOME=/tmp/dsh-edge-load
 
 ### 3.3 ⚠️ `config/edge.json` 被排除
 
-`_pack-core.mjs` 的 `stageVariant()` 对两类产物**区别对待**（这是 load-bearing）：
+`_pack-core.mjs` 的 `stageVariant()` **一律排除**活配置（§7.182）：
 
 | 产物 | `config/edge.json` |
 |---|---|
 | **tarball / npm pack**（可分发） | **排除** —— 那是运维的明文端点与 API key |
-| **installable 目录**（link 模式，本机用） | **保留** —— 桌面 profile 靠它找到活配置 |
+| **installable 目录**（link 模式，本机用） | **也排除** —— 构建输出不该有第三份明文副本 |
+| **DEMO tarball**（演示用，§3.5） | **例外** —— 唯一会带活配置的产物 |
 
-⇒ **tarball 里没有 `config/edge.json`**（实测确认）⇒ 装完配置要写
-`~/.dsh-edge-agent/edge.json`（第 2 顺位）。
+⇒ **tarball 里没有 `config/edge.json`**（实测确认）⇒ 装完配置写两个落点之一：
+
+1. **顺位 1** —— 装好后的插件目录里那份：
+   `~/.dsh/profiles/desktop/node_modules/@dsh-edge/dsh-edge-agent/config/edge.json`
+   （插件装在哪，配置就在哪，打开目录就能找到）；
+2. **顺位 2** —— `~/.dsh-edge-agent/edge.json`（重装 / 删 profile 都活着，推荐）。
+
+⇒ **没有第三顺位**：shipped 模板 `config/edge.example.json` **不再是运行时候选**，
+它的部署值已折进代码默认值（`DEFAULT_EDGE_CONFIG`）⇒「没配置文件」≡「以前的模板」。
 
 ### 3.4 ⚠️ 拿到 tarball 的机器：没配过本地 LLM，边缘模式跑不起来
 
 **这是 §7.159 在一台干净 Windows 设备上实测出来的硬门槛。**
 
-tarball 不含 `config/edge.json`（§3.3）⇒ 一台**全新的机器**上只有
-`config/edge.example.json`，而它的 `llm.local.baseUrl` 是**空**。
+tarball 不含 `config/edge.json`（§3.3）⇒ 一台**全新的机器**上没有配置文件，
+生效的是**代码内置默认值**（§7.182 起 = 旧模板的部署值），而它的 `llm.local.baseUrl`
+是**空**。
 
 而 `local-llm` 路由**只有端点配了才注册**（`local-llm-adapter.ts:796-802`）：
 baseUrl 为空 ⇒ adapter 不注册任何 provider ⇒ 模型注册表里**根本没有
@@ -277,6 +287,10 @@ dist/README-DEMO.txt            ← 醒目警告，随包一起生成
 
 它们与正规包**只差一个文件**：多了 `package/config/edge.json`（运维的明文
 端点与 API key）。
+
+> §7.182：**来源改了** —— DEMO 包的活配置从**顺位 2**（`~/.dsh-edge-agent/edge.json`）
+> 读取，不再从仓库的 `config/edge.json` 取（仓库的 `config/` 目录已不再放活配置）。
+> 该文件不存在 ⇒ `pack:demo` 直接报错退出，不会静默打一个空配置进去。
 
 ⇒ 好处：装到**任何一台没配置过的机器**上都能直接用 —— 配置候选**顺位 1**
 （`<bundle>/config/edge.json`）命中 ⇒ `local-llm` 路由会注册 ⇒ 边缘模式
@@ -423,7 +437,7 @@ verify:build 链：       … verify:installable → verify:tarball
 | 改了 tarball 没变化 | **冻结副本** ⇒ 卸载重装（§2.5） |
 | 装完一发言就报 `local-route-missing:local-llm` | 目标机器**没配本地 LLM** ⇒ 隐私裁决 fail-closed（**设计如此**）⇒ 按 **§3.4** 写 `~/.dsh-edge-agent/edge.json` 的 `llm.local` 后重启 |
 | 照着报错设了 `DSH_EDGE_LOCAL_LLM_BASEURL` 还是不通 | 桌面 GUI 启动的宿主**读不到进程 env** ⇒ 必须写 `edge.json`（§3.4；§7.159 已改文案） |
-| 想在别的机器上装 | tarball **不含** `config/edge.json` ⇒ 目标机器要自己写 `~/.dsh-edge-agent/edge.json` |
+| 想在别的机器上装 | tarball **不含** `config/edge.json` ⇒ 目标机器要自己写 `~/.dsh-edge-agent/edge.json`（顺位 2）或插件目录里那份（顺位 1）（§7.182） |
 
 ## 7. 相关文档
 

@@ -65,6 +65,9 @@ const EN: Dict = {
   'flow.lbl.elapsed': 'took',
   'flow.lbl.scanned': 'scanned',
   'flow.lbl.chars': 'chars',
+  // §7.181: DELEGATE 出口行没有 promptLen（转发给宿主）⇒ 上下文规模用
+  // messageCount，单位是「条消息」而不是「字」。
+  'flow.lbl.msgs': 'messages',
   'flow.lbl.rule': 'rule',
   'flow.lbl.confidence': 'confidence',
   'flow.lbl.pool': 'cloud pool',
@@ -114,6 +117,8 @@ const EN: Dict = {
   'flow.lbl.watched': 'signals watched',
   'flow.lbl.decidedBy': 'decided by',
   'flow.lbl.endpoint': 'endpoint',
+  // §7.184: 边缘模式「选型不动、请求改道」⇒ 面板要写明「你选的是 A、实际跑的是 B」。
+  'flow.lbl.rerouted': 'selection → actual',
   'flow.lbl.onDevice': 'on this device',
   'flow.lbl.offDevice': 'OFF-DEVICE',
   'flow.intent.byJev': 'decision model (LLM classifier not called)',
@@ -214,6 +219,9 @@ const ZH: Dict = {
   'flow.lbl.elapsed': '用时',
   'flow.lbl.scanned': '检测',
   'flow.lbl.chars': '字',
+  // §7.181: DELEGATE 出口行没有 promptLen（转发给宿主）⇒ 上下文规模用
+  // messageCount，单位是「条消息」而不是「字」。
+  'flow.lbl.msgs': '条消息',
   'flow.lbl.rule': '命中规则',
   'flow.lbl.confidence': '置信',
   'flow.lbl.pool': '云池',
@@ -263,6 +271,8 @@ const ZH: Dict = {
   'flow.lbl.watched': '已检信号',
   'flow.lbl.decidedBy': '裁决者',
   'flow.lbl.endpoint': '真实落点',
+  // §7.184: 边缘模式「选型不动、请求改道」⇒ 面板要写明「你选的是 A、实际跑的是 B」。
+  'flow.lbl.rerouted': '会话选型 → 实际落点',
   'flow.lbl.onDevice': '本机',
   'flow.lbl.offDevice': '不在本机',
   'flow.intent.byJev': '决策模型（LLM 分类器未调用）',

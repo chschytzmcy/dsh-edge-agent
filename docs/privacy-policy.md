@@ -175,12 +175,14 @@ for (const rule of injectionPatterns) {
 
 | 项 | 值 |
 |---|---|
-| provider | `local-llm`（**永不指向云模型**——原始用户文本不能出设备） |
-| model | 跟随 `config/edge.json` 的 `llm.local.model` |
+| provider | `local-llm`（**硬约束：绝不改成云池 `cloud-llm`**）。⚠️ 但 DELEGATE 模式下 `local-llm` 自己会把请求转发给宿主 provider ⇒ 原始用户文本仍可能出设备（§7.171 的已知边界） |
+| model | **这一轮真正会跑**的 model id：直连池 = `llm.local.model`；DELEGATE 池 = 委托解析出来的宿主模型（§7.179）。面板显示的是它，不是配置里的默认值 |
 | 超时 | `stages.guard.timeoutMs`（内置默认 20000ms） |
 | 输入长度上限 | `stages.guard.maxInput`（2000），超出直接跳过 |
 
-**模型永远指向本地池**是硬约束：guard 检测若走云模型，等于把原始用户文本送出设备。
+**guard 检测只走 `local-llm` 这条路由**是硬约束：绝不改成 `cloud-llm` —— 那等于把
+原始用户文本直接交给云池。⚠️ 但 `local-llm` 自身在 DELEGATE 模式（`llm.local.baseUrl`
+留空）下会转发给宿主 provider，这是 §7.171 记录的已知边界，不是这条硬约束。
 
 **system prompt 分两类**：TYPE 1 语义攻击（指令覆盖、越狱、提示词泄漏、数据外传、混淆 payload）
 与 TYPE 2 危险内容（武器、暴力、违法、自残、未成年人），并列出大量「本地操作是正常的」
@@ -517,11 +519,18 @@ sanitizer 的映射表存的是**明文 PII**（还原必须用到），因此�
 | `agent/pre-step` | 每步进入 | 边缘模式 preset 的 scope | 攻击检测 → 策略预检 → 意图分类 → 脱敏 | decision（改写 messages 或 reject） |
 | `agent/request` | 组装 LLM 请求 | 边缘模式 preset 的 scope | §7.175 起**只放行**：seedConfig 原样返回，不改 provider/model | AgentRequestConfig |
 | `llm/stream` | 流式输出 text-delta | 全局 | 脱敏会话还原占位符；未脱敏会话做输出掩码 | 流式 chunk |
+| `llm/stream` | 每次 LLM 往返 | **全局**（事件不带 scope 载体） | §7.151：出网裁剪（只带云段历史）；§7.184：LOCAL 轮次把 provider **改道**到本地池 | 流式 chunk |
 
 前两个是 **scope 绑定**：宿主按 scope 链向上派发，本插件的 scope 在边缘模式 preset 下，
 标准模式的 Agent 收不到这些事件——标准模式是纯宿主行为。
 
 `llm/stream` 保留全局：该事件不带 scope 载体，且无 pre-step 状态时恒直通。
+
+§7.184 起，边缘模式**不再改写会话选型** ⇒ §7.176 的钉选、§7.179 的补钉、
+§7.183 的回钉**全部退役**（宿主模型选择器保持主人选的那个）。
+「本轮必须留在设备上」这条不变式改由 `llm/stream` 上的**改道**保证：
+本轮判定为 LOCAL 时，把请求换成 provider = 本地池（改不动就 fail-closed 抛错，
+绝不放行到云端）。
 
 **跨 hook 状态** `stepState: Map<sessionId, {...}>`。用 sessionId 字符串做键而不是
 `WeakMap<Session>`：pre-step 拿到的是 agent 的 session 对象，llm/stream 拿到的是
@@ -938,25 +947,36 @@ user 模板：`Classify the following user input…<<<…>>>`（`<<<` 分隔符�
 
 ## 0. 配置归一
 
-`dsh-edge-agent` 只通过**一个文件**配置 —— `config/edge.json`。旧的 `.env` /
+`dsh-edge-agent` 只通过**一个文件**配置 —— `edge.json`。旧的 `.env` /
 `.env.sh` 两条链（裸名 env → `.env.sh` 派生 `DSH_EDGE_*` → cordis patch 读
 `process.env`）已删除。
 
-**查找顺序**（与 profile 无关，desktop / tui / web / edge 一致）：
+**两个合法落点**（§7.182 裁决）：
+
+| 顺位 | 路径 | 谁写它 |
+|---|---|---|
+| 1 | `<安装目录>/config/edge.json` | 运维（插件装在哪，配置就在哪 —— 用户找得到） |
+| 2 | `~/.dsh-edge-agent/edge.json` | 运维（跨通道 / 跨重装 / 删 profile 都活着） |
+
+**仓库的 `config/` 目录不再放活配置** —— npm / git / tarball 三条通道的产物里本来
+就没有 `config/edge.json`（打包时按设计排除），而仓库那份含明文 key，正是 git
+checkout 里最不该待的东西。
+
+**查找顺序**（与 profile 无关，desktop / tui / web / edge 一致；**代码现状**）：
 
 ```
-1. <bundle>/config/edge.json     ← 仓库 checkout 或 bundle 自带副本
-2. ~/.dsh-edge-agent/edge.json   ← install.sh 部署的用户副本（可改）
-3. <bundle>/config/edge.example.json  ← shipped 模板（空 secret + 默认值）
+1. <bundle>/config/edge.json     ← 顺位 1：插件目录里那份（源码 checkout 里跳过）
+2. ~/.dsh-edge-agent/edge.json   ← 顺位 2：home 那份
 ```
 
-模板见 [config/edge.example.json](../config/edge.example.json)（tracked）。
-**切勿提交 `config/edge.json`** —— 它含明文 API key，已在 `.gitignore` 里。
+模板见 [config/edge.example.json](../config/edge.example.json)（tracked）。它**不是
+运行时候选**，只是给你抄的那份模板 —— 模板里的部署值已并入代码默认值，所以「没配置
+文件」与「照模板抄」行为一致。**切勿提交任何含明文 API key 的 `edge.json`** ——
+仓库那份已在 `.gitignore` 里，而 `~/.dsh-edge-agent/edge.json` 天然不在 git 里。
 
-> ⚠️ **桌面版的实际落位**：git / npm 装法都**不会**把 `config/edge.json` 带进包里
-> ⇒ 装完要写 `~/.dsh-edge-agent/edge.json`（第 2 顺位）。只有「本地目录」装法
-> （符号链接整个目录）才落在第 1 顺位。详见
-> [`deploy-github.md` §4](deploy-github.md) 与
+> ⚠️ **桌面版的实际落位**：三条通道都**不会**把 `config/edge.json` 带进包里 ⇒
+> 装完要么写插件目录里那份（顺位 1），要么写 `~/.dsh-edge-agent/edge.json`
+> （顺位 2）。详见 [`deploy-github.md` §4](deploy-github.md) 与
 > [`deploy-npm.md` §9.1](deploy-npm.md)。
 
 配置读取的唯一入口是 `src/dsh-adapter/edge-config.ts`。
@@ -1329,6 +1349,10 @@ ops log 默认只记 LLM 调用的**长度**。要看「到底发了什么、回
   且仍会注册 session realm。
 - **面板不得断言与数据相矛盾的事**：Tier-0 设备指令正则裁决的一轮显示
   「设备指令正则裁决」，不会谎称「LLM 裁决」（分类器压根没被调用）。
+- **模型名不许骗人**（§7.180）：面板「模型」行、宿主模型选择器、会话被补钉的
+  model id、wire 上真正跑的那个模型 —— **四者是同一个 id**（共用同一份委托
+  目标缓存）。本地池在宿主的模型目录里**如实声明**它真正会跑的那**一个**
+  模型；云池仍然在目录里隐身（避免用户误选 `cloud-llm/deepseek-chat`）。
 - **「是否出网」的判据是 category（哪个池），不是端点落在哪台机**：
   `category=LOCAL` 即**不算出公网** —— `llm.local` 池是 operator 自有设施，
   端点不在本机也照样不出网。
@@ -1350,7 +1374,13 @@ ops log 默认只记 LLM 调用的**长度**。要看「到底发了什么、回
 - **答案出口只认本对话的出网**：插件自己也调 LLM —— 入口安检、意图分类器、
   宿主的会话标题生成 —— 它们与主对话走**同一个** adapter，落**同样**的
   `llm.local.start` 审计行。出口审计行带 `internal` 与 `tools` 两个判别字段，
-  面板据此把内部调用排除在「答案出口」之外。
+  面板据此把内部调用排除在「答案出口」之外。**委托路径（DELEGATE 池）同样适用**
+  —— `llm.*.delegate.resolved` / `.delegate.end` 也带这两个字段（§7.181）。
+- **明明作答了就不许写「路由未定」**（§7.181）：面板「答案出口」必须认得
+  **两种**出口行 —— 直连池的 `llm.{local,cloud}.{start,end}` 与委托池的
+  `llm.{local,cloud}.delegate.{resolved,end}`；认不出就显示「路由未定」，那是
+  在陈述一件没发生过的事（同 §7.129 原则）。认出来之后仍要分开讲两件事：
+  LOCAL / CLOUD 按**哪个池**判定（§7.130），真实转发去向另起一行「真实落点」。
 - **shell 里的 etscli 只允许只读子命令**（§7.120）：`bash` / `pwsh` 里出现的
   `etscli` 调用，只有注册表派生的那 **14 个只读子命令**放行
   （`auth list/status`、`user list`、`system info/health/alarm list`、

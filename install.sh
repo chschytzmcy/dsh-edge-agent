@@ -460,12 +460,17 @@ else
   echo "  warning: $SHIPPED_POLICY_SRC not found — bundle root policy not synced" >&2
 fi
 
-# §7.102 (2026-10-21) — shipped 运行时配置 to ~/.dsh-edge-agent/edge.json.
-# config/edge.json 是全 profile 共用的唯一配置源（取代 .env / .env.sh）。
-# 部署到 ~/.dsh-edge-agent/ 是为了让用户改配置不必动仓库；bundle 自带的
-# 那份是 fallback（desktop GUI Add Plugin 时会拷进 nested pack）。
+# §7.182 (2026-11-11) — the operator's config has TWO legal homes:
+#   1. <installed bundle>/config/edge.json  — the plugin's own config dir
+#   2. ~/.dsh-edge-agent/edge.json         — survives reinstall / profile
+#                                            deletion, works on every channel
+# The REPOSITORY's config/ directory is no longer a supported drop point
+# (§7.182) — it is where plaintext API keys would live inside a git checkout,
+# which is exactly where they must not.
 #
-# 注意：本文件含明文 API key —— 它在 .gitignore 里，绝不入库。
+# So this step only syncs when the operator still has a repo-local copy
+# (legacy layouts); the canonical location is ~/.dsh-edge-agent/edge.json.
+# Note: that file holds plaintext API keys — 0600, never in git.
 EDGE_CONFIG_SRC="$REPO_ROOT/config/edge.json"
 EDGE_CONFIG_DST="$HOME/.dsh-edge-agent/edge.json"
 if [ -f "$EDGE_CONFIG_SRC" ]; then
@@ -475,7 +480,8 @@ if [ -f "$EDGE_CONFIG_SRC" ]; then
     cp "$EDGE_CONFIG_SRC" "$EDGE_CONFIG_DST"
   fi
 else
-  echo "  warning: $EDGE_CONFIG_SRC not found — runtime config not synced" >&2
+  echo "  note: no $EDGE_CONFIG_SRC (expected — §7.182: 仓库的配置目录不再放活配置)"
+  echo "        运维配置请写 $EDGE_CONFIG_DST（顺位 2）或插件目录下的 config/edge.json（顺位 1）" >&2
 fi
 
 # ── Phase 3: 启动 target profile（单 profile 架构 §7.69）───────────

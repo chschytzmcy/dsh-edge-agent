@@ -523,13 +523,15 @@ describe('input-guard ↔ http-api integration', () => {
     assert.ok(parsed.result.length > 0, '放行后 user 仍得到非空响应')
   })
 
-  it('§7.175: 判定 LOCAL 但宿主选了云端模型 ⇒ 403 fail-closed（绝不放行到云端）', async () => {
-    // §7.175 (2026-11-11) 主人口径：「用哪个模型是用户自己的行为，不用管」
-    // ⇒ 闸门**只在判定为 LOCAL 时**生效：这一轮按端侧策略必须留在设备上，
-    // 而宿主选中的 provider 不是本地 provider ⇒ 原文会被带出设备 ⇒ 拒收。
+  it('§7.184: 判定 LOCAL 但宿主选了云端模型 ⇒ 不再拒收（改道在出网那一跳）', async () => {
+    // §7.184 (2026-11-11) 主人裁决：「选择器完全不动，实际请求改道到本地池」。
+    //
+    // 旧口径（§7.175）在这里是 403 fail-closed —— 当时改不了路由（宿主的
+    // prepareRequest() 会对改写直接抛错），只能拒这一轮。现在能在**出网那一跳**
+    // 把请求改道到本地池 ⇒ 拒收没有意义：这一轮仍然留在设备上。
     //
     // 这里的场景：intent 判成 LOCAL，但 modelRouter 把这一轮解析到了
-    // cloud-llm（宿主/GUI 侧选了云端模型）。这是唯一需要 fail-closed 的组合。
+    // cloud-llm（宿主/GUI 侧选了云端模型）。
     intentRouter.classify = async () => ({
       category: 'LOCAL', confidence: 0.95, targetRealm: 'local', rationale: 'classified:local',
     })
@@ -541,16 +543,17 @@ describe('input-guard ↔ http-api integration', () => {
 
     await (svc as any).handleRequest(req, res)
 
-    assert.equal(cap.status, 403, '判定 LOCAL 却选了云端模型 ⇒ 必须被拒收')
-    const parsed = JSON.parse(cap.body)
-    assert.equal(parsed.error, 'Request rejected')
-    assert.equal(parsed.rejection.reason, 'model-selection-not-local')
-    assert.equal(parsed.rejection.status, 403)
-    assert.equal(llmCallLog.length, 0, '被拒的轮次不得发出 LLM 调用')
+    assert.equal(cap.status, 200, '§7.184: LOCAL + 云端选型不再拒收（改道在出网那一跳）')
+    assert.ok(llmCallLog.length > 0, '这一轮照常跑起来')
 
-    const blocked = audit.entries.find((e: any) => e.kind === 'input-guard.blocked.model-selection')
-    assert.ok(blocked, '必须留下 blocked.model-selection 审计')
-    assert.equal(blocked.payload.provider, 'cloud-llm')
+    const planned = audit.entries.find((e: any) => e.kind === 'input-guard.reroute.planned')
+    assert.ok(planned, '必须留下改道计划审计行')
+    assert.equal(planned.payload.from.provider, 'cloud-llm')
+    assert.equal(planned.payload.to, 'local-llm')
+    assert.ok(
+      !audit.entries.some((e: any) => e.kind === 'input-guard.blocked.model-selection'),
+      '旧口径的拒收审计不再产生',
+    )
   })
 
   it('§7.175: 判定 CLOUD + 宿主选云端模型 ⇒ 放行（不拦用户的模型选择）', async () => {

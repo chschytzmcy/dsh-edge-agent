@@ -70,6 +70,7 @@
 import {
   chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync,
 } from 'node:fs'
+import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { applyEnvOverrides } from '../src/dsh-adapter/edge-config.js'
 
@@ -142,7 +143,13 @@ interface Options {
 
 function parseArgs(argv: string[]): Options {
   const opts: Options = {
-    out: join(ROOT, 'config', 'edge.json'),
+    // §7.182 (2026-11-11): the operator's config has two legal homes — the
+    // INSTALLED bundle's own config dir (candidate #1) and
+    // ~/.dsh-edge-agent/edge.json (candidate #2). The REPOSITORY's config/
+    // directory is no longer a supported drop point, so the default output
+    // moved here: it is the copy that survives a reinstall / profile deletion
+    // and works across every install channel.
+    out: join(homedir(), '.dsh-edge-agent', 'edge.json'),
     port: undefined,
     dryRun: false,
     selftest: false,

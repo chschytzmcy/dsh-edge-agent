@@ -20,6 +20,7 @@ import {
   loadEdgeConfig,
   localPool,
 } from './edge-config.js'
+import { resolveEffectiveLocalModel } from './effective-model.js'
 import { withInternalCaller } from './llm-internal-caller.js'
 import {
   buildRequestTrace,
@@ -248,7 +249,8 @@ export const Config: Schema<Config> = Schema.object({
   // §7.92.3 (2026-09-23): jev HTTP intent recognizer. Schema default
   // is `false` so a bare unit-test construction (no env) skips jev
   // entirely. §7.102: the toggle's value now comes from config/edge.json
-  // (jev.enabled, production default true) via apply()'s file-fill; the
+  // (jev.enabled, production default false — §7.182 owner ruling) via
+  // apply()'s file-fill; the
   // Schema carries no default so "patch row did not configure it" stays
   // distinguishable from an explicit value. The literal fallbacks live in
   // the constructor (this.jevXxx = config.jevXxx ?? …) and match the old
@@ -641,9 +643,10 @@ export class IntentRouterServiceImpl extends Service {
     }
     // §7.92.3 + §7.92.7: jev config. Schema default is `false` so unit
     // tests that construct the service with minimal config don't make
-    // real fetches. PRODUCTION default (set by cordis.patch.yml) is
-    // `true` — see schema docstring. Operators who DEFINITELY don't
-    // want jev set DSH_EDGE_INTENT_JEV_ENABLED=false.
+    // real fetches. PRODUCTION default is ALSO `false` since §7.182
+    // (2026-11-11, owner ruling): jev is an optional accelerator that needs
+    // a local decision-model service, so it stays off until an operator
+    // writes `jev.enabled: true` (or sets DSH_EDGE_INTENT_JEV_ENABLED=true).
     this.jevEnabled = config.jevEnabled ?? false
     this.jevUrl = config.jevUrl ?? 'http://127.0.0.1:8001'
     // §7.112: Bailian decision-model backend (defaults keep the local
@@ -1062,12 +1065,27 @@ export class IntentRouterServiceImpl extends Service {
     //     llm.local.baseUrl），名字骗人，落点不骗人。
     //   - `classifierIsLocal`：落点是否真的在本机（127.0.0.1 / localhost）。
     const classifierEndpoint = this.classifierEndpoint()
+    // §7.179（2026-11-11）：**本轮真正会跑的**分类模型。
+    //
+    // 之前分类模型名只在 apply() 里跟 `llm.local.model` 走一次（§7.102）。DELEGATE
+    // 模式（llm.local.baseUrl 留空）下那个值是空的 ⇒ 模型名停在 Schema 默认
+    // `qwen3-4b`，而 wire 上真正跑的是委托解析出来的宿主当前模型 ⇒ 面板写着
+    // 「裁决者 LLM 分类器 local-llm/qwen3-4b」而实际跑的是另一个模型（与实际
+    // 行为相反）。§7.176 的同一口径：写 wire 上真正跑的那个。
+    const effective = await resolveEffectiveLocalModel(
+      this.ctx,
+      this.classificationModel,
+      this.classificationProvider,
+    )
     this.audit('info', 'intent.classify.start', {
       sessionId: sid,
       textLen: effectiveText.length,
       textPreview,
       classifier: this.classificationProvider,
-      model: this.classificationModel,
+      model: effective.model,
+      // 真实落点（DELEGATE 时是宿主 provider，不是 local-llm）。
+      modelProvider: effective.provider ?? this.classificationProvider,
+      modelSource: effective.source,
       classifierEndpoint,
       classifierIsLocal: isLoopbackEndpoint(classifierEndpoint),
     })
@@ -1257,7 +1275,7 @@ export class IntentRouterServiceImpl extends Service {
 
     // Try LLM classification first
     try {
-      const intent = await this.classifyWithLlm(effectiveText, context?.recentMessages, context?.sessionId)
+      const intent = await this.classifyWithLlm(effectiveText, context?.recentMessages, context?.sessionId, effective)
       this.stats.llmHit++
       // §7.58 (2026-09-16) entity guardrail: the classification LLM has no
       // view of the skill-realm table — it answered CLOUD conf=1 for
@@ -2105,7 +2123,14 @@ export class IntentRouterServiceImpl extends Service {
     }
   }
 
-  private async classifyWithLlm(text: string, recentMessages?: unknown[], sessionId?: string): Promise<Intent> {
+  private async classifyWithLlm(
+    text: string,
+    recentMessages?: unknown[],
+    sessionId?: string,
+    // §7.179：调用方（classify）已经解析过「这一轮真正会跑的模型」⇒ 直接
+    // 传下来，避免同一次分类里重复解析（探针步会触发一次 listModels）。
+    effective?: { model: string; provider?: string; source: string },
+  ): Promise<Intent> {
     if (!this.llm) {
       this.audit('debug', 'intent.llm.skipped', { reason: 'no-llm-handle' })
       throw new Error('intent-router: no llm handle')
@@ -2133,13 +2158,24 @@ export class IntentRouterServiceImpl extends Service {
       catch { return undefined }
     })()
     const provider = resolved?.provider ?? this.classificationProvider
-    const resolvedModel = (resolved && resolved.model === resolved.provider) ? this.classificationModel : resolved?.model
-    const model = resolvedModel ?? this.classificationModel
+    // §7.179：请求里的 model 必须是**真正会跑**的那个（DELEGATE 下 = 委托
+    // 解析出来的宿主模型），不是停在 Schema 默认的 `qwen3-4b`。口径与
+    // effective-model.ts 一致，与 local-llm-adapter 共用同一条解析链。
+    const eff = effective ?? await resolveEffectiveLocalModel(
+      this.ctx,
+      this.classificationModel,
+      this.classificationProvider,
+    )
+    const requestedModel = eff.model
+    const resolvedModel = (resolved && resolved.model === resolved.provider) ? requestedModel : resolved?.model
+    const model = resolvedModel ?? requestedModel
     this.audit('debug', 'intent.llm.route', {
       configured: this.classificationProvider,
       resolvedRealm: resolved?.realm,
       resolvedProvider: provider,
       resolvedModel: model,
+      modelProvider: eff.provider ?? this.classificationProvider,
+      modelSource: eff.source,
       modelRouterMounted: Boolean(modelRouter),
     })
 

@@ -206,7 +206,11 @@ if [ "$EXPLICIT_PROFILE" = 0 ]; then
   echo "  [3] REPO_ROOT 环境文件:"
   if [ "$DO_KEEP_ENV" = 0 ]; then
     [ -f "$REPO_ROOT/.env" ]   && echo "      - shred $REPO_ROOT/.env (含 live API key)"
-    [ -f "$REPO_ROOT/config/edge.json" ] && echo "      - shred $REPO_ROOT/config/edge.json (含 live API key,§7.102)"
+    # §7.182: the operator's config lives in ~/.dsh-edge-agent/edge.json
+    # (顺位 2) or the installed bundle's own config dir (顺位 1). The
+    # repo-local copy is gone (§7.182: 仓库的配置目录不再放活配置) — the
+    # home copy is shredded by Phase 4 (the whole data root goes).
+    [ -f "$REPO_ROOT/config/edge.json" ] && echo "      - shred $REPO_ROOT/config/edge.json (含 live API key,§7.102;§7.182 后不应存在)"
     [ -f "$REPO_ROOT/.env.sh" ] && echo "      - rm $REPO_ROOT/.env.sh"
     if [ ! -f "$REPO_ROOT/.env" ] && [ ! -f "$REPO_ROOT/.env.sh" ] && [ ! -f "$REPO_ROOT/config/edge.json" ]; then
       echo "      - skip (都不存在)"

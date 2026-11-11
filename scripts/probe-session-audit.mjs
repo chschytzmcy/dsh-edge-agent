@@ -49,11 +49,13 @@ const CAPABILITY_EVENTS = {
   'input-guard.routed': '意图落地 / Realm 登记',
   'input-guard.session-realm.registered': 'Realm 登记',
   // §7.175 (2026-11-11): 路由改写机制退役 —— `route.overridden` /
-  // `intent.downgraded` / `selection.restored` 三者都不再产生。取代它们
-  // 的是 `intent.local`（判定 LOCAL 时实际用的模型）与
-  // `blocked.model-selection`（判定 LOCAL 却选了云端 ⇒ fail-closed 拒收）。
-  'input-guard.intent.local': '意图判定为本地（实际用的模型）',
-  'input-guard.blocked.model-selection': '本地闸门拒收（选了云端模型）',
+  // `intent.downgraded` / `selection.restored` 三者都不再产生。
+  // §7.184 (2026-11-11): 选型不再被改写 ⇒ `model.defaulted` / `model.repinned` /
+  // `blocked.model-selection` 也一并退役。取代它们的是 `intent.local`（判定 LOCAL）
+  // 与 `reroute.local`（这一轮被改道到本地池，带 from/to）。
+  'input-guard.intent.local': '意图判定为本地',
+  'input-guard.reroute.local': '出网那一跳改道到本地池（选型不动）',
+  'input-guard.reroute.blocked': '改道失败（fail-closed，绝不放行到云端）',
   'input-guard.blocked.attack': '攻击拦截',
   'input-guard.blocked.policy': '策略拦截',
   'input-guard.sanitized': 'PII 脱敏生效',

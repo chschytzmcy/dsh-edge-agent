@@ -18696,3 +18696,990 @@ preset 名册：`edge（边缘模式）｜ order 5 ｜ 可组合`（**不 broken
 - 📌 宿主 `session/prompt` 的 strict codec 形状仍未解（8 种写法全被
   `gateway/input-invalid: wire field "request" failed boundary validation` 拒）⇒
   无法用宿主 RPC 跑活体对话。
+
+---
+
+## §7.179 切换工作方式后第一轮被拒 + 内部阶段模型名与实际不符（2026-11-11）
+
+### 〇、本节起因：主人实测（2026-11-11 12:56，桌面版）
+
+主人把插件装进桌面版、切到「边缘模式」后发了第一条消息，面板显示：
+
+- 「路由决策：已拦截 · model-selection / 原因 model-selection-not-local」；
+- 「攻击检测：模型 local-llm/qwen3-4b」；
+- 「意图判定：裁决者 LLM 分类器 local-llm/qwen3-4b」。
+
+两个问题：
+
+1. **第一轮被自己的 fail-closed 闸门拒了**。闸门本身是对的（§7.175：判定 LOCAL
+   而会话选的 provider 不是本地 provider ⇒ 拒），但这一轮**本不该被拒** ——
+   用户只是切了个工作方式。
+2. **面板上的模型名与 wire 上实际跑的不是同一个**。审计链里
+   `guard.model-detect.*` 的 model 是 `qwen3-4b`，而同一轮的
+   `llm.local.egress` 是 `{provider: qwen-token-plan-cn, model: deepseek-v4.1-flash}`
+   ⇒ 「模型 local-llm/qwen3-4b」这句话**与实际行为相反**（主人的规矩：不留与
+   实际行为相反的陈述）。
+
+### 一、问题一的根因：切换工作方式是「改绑 scope」，不是「重建 agent」
+
+宿主契约（已查实 —— `@deepseek-ai/dsh-agent-preset-registry` 0.2.2-rc.1）：
+
+- §7.176 的钉选挂在 `agent/created` 上。那个事件由 dsh-agent 的 `announce()` 派发，
+  载体是 `scopeTarget(agent, agent)`（agent 自己的 scope key）⇒ **scope 过滤**：
+  只有绑在本 preset scope 链上的 agent 才会送到我们的监听器。
+- 主人的路径是：① 在**标准模式**建会话 → ② 切到**边缘模式** → ③ 发消息。
+  ① 时 agent 的 scope 父链绑的是**标准 preset** ⇒ 我们的 `agent/created`
+  监听器**收不到** ⇒ 钉选从未发生。
+- ② 切工作方式时宿主做的是 `recompose(agent.ctx, agentPreset)`：**改绑 agent 的
+  scope 父链**（`binding.parent.rebind(generation.key)`），**不是**重建 agent
+  ⇒ `agent/created` 不会再派发一次。
+  ⇒ 我们的 pre-step 闸门从此收到事件（scope 已改绑），但会话选择仍是宿主云模型
+  ⇒ §7.175 的闸门按设计拒（审计行 `input-guard.blocked.model-selection`
+  `{provider: qwen-token-plan-cn, model: deepseek-v4.1-flash,
+  expectedProvider: local-llm}`）。
+
+⇒ **缺的是触发点**，不是判定逻辑。
+
+### 二、宿主契约（这一轮查实，勿再挖）
+
+`dsh-agent-preset-registry/lib/index.js` @30416（`select()`）：
+
+```js
+async select(agent, agentPreset) {
+  const boundary = this.owner.agents.turnBoundaryOf(agent.session)
+  if (boundary.openTurnStartSeq !== null || boundary.lastTurn > 0)
+    throw new RemoteError('agent-preset/locked', 'This session has already started', ...)
+  const preset = await this.recompose(agent.ctx, agentPreset)          // 先改绑 scope
+  agent.session.append('agent-preset/selected', { agentPreset: preset.id })  // 后发事件
+  return preset.id
+}
+```
+
+- registry 把会话事件转成 **`ctx.emit('agent-preset/selected', session.id,
+  event.data.agentPreset)`**（同文件 @18707）⇒ **全局事件**（不带 scope 载体）
+  ⇒ 所有工作方式的监听器都收到 ⇒ **必须自己按 presetId 过滤**。
+- **cordis 侧也查实了**（`@deepseek-ai/cordis` lib/index.js）：
+  - `Context` 构造函数里 `this.events = new EventsService(self)` —— **整个 ctx 树
+    共享同一个事件总线**（`extend()` 是原型式继承，子 ctx 拿到的是同一个
+    `events` 实例）⇒ 我们在 preset 作用域里 `ctx.on(...)` 注册的监听器，
+    和宿主 registry 的 `ctx.emit(...)` 在**同一张 hook 表**里。
+  - `EventsService.dispatch()`：`const thisArg = typeof args[0] === 'object' ||
+    typeof args[0] === 'function' ? args.shift() : null` —— 本事件的第一个参数是
+    **字符串**（sessionId）⇒ `thisArg = null` ⇒ `filter = undefined` ⇒
+    `hook.global || !filter || …` **一律放行** ⇒ preset 作用域的监听器收得到。
+  - `emit()` 传的是**同一个数组**给 `dispatch()`，`dispatch()` 就地 `shift()` 掉
+    事件名 ⇒ 回调收到的是 `(sessionId, presetId)` 两个参数。
+- `select()` 只允许**没开过轮的会话**切换 ⇒ 切换那一刻本轮还没开始 ⇒ 在这里
+  改选型来得及。
+- 改选型对**当轮**无效、对**下一轮**有效：宿主的 `prepareRequest(turn, step,
+  selection, …)` 用的是 pre-step 派发**之前**取到的 `selection`
+  （`this.model.current()`），报错原文就写着「use agent.model.select() before
+  step preparation」。切换工作方式发生在任何发言之前 ⇒ 补钉正好赶上第一轮。
+
+### 三、修复一：input-guard 增 `agent-preset/selected` 触发点
+
+`src/dsh-adapter/input-guard.ts`：
+
+- 新增 `handleAgentPresetSelected(sessionId, presetId)`：
+  1. `presetId !== config.presetId` ⇒ **不碰**（标准模式必须仍是纯宿主，§7.140）；
+  2. `ctx.agents.get(sessionId)` 取 live agent（agent.id === session.id）；
+  3. 复用 §7.176 的钉选逻辑（`provisionEdgeModel` —— 两个触发点共用一份，
+     不复制粘贴）；
+  4. 任何异常都吞掉并审计 —— 监听器抛错会让那次切换失败。
+- `config.presetId`（默认 `edge`）与 preset yml 的 `config.id` 必须一致 ⇒
+  **不是两份各写各的**，而是**被门禁锁住的一致量**：
+  `scripts/verify-preset-isolate.ts` 新增**规则 5**（不一致即门禁失败），
+  自测里配了对应的破坏用例。
+- 审计行 `input-guard.model.defaulted` 多了 `trigger` 字段
+  （`agent-created` / `preset-selected`）⇒ 一眼看出是哪个触发点钉的。
+
+### 四、问题二的根因：模型名只在 apply() 里算一次
+
+- prompt-guard / intent-router 的模型名都来自 `apply()` 里的一次性赋值：
+  `llm.local.model` 有值就用它，没有就停在 Schema 默认（`qwen3-4b`）。
+- **DELEGATE 模式下 `llm.local.baseUrl` 与 `llm.local.model` 都是空的**
+  （shipped 模板如此，§7.171）⇒ 模型名恒为 `qwen3-4b`。
+- 而 wire 上真正跑的是委托解析链的结果：`llm.local.delegate.resolved`
+  `{toProvider: qwen-token-plan-cn, toModel: deepseek-v4.1-flash}`。
+
+⇒ 修法不是「再算一次 hostDefaultModel」，而是**用 adapter 的同一份解析链**。
+
+### 五、修复二：`effective-model.ts`（新增共享模块）+ 面板显示真实落点
+
+`src/dsh-adapter/effective-model.ts`（共享模块，不是 cordis 插件入口）：
+
+- `resolveEffectiveLocalModel(ctx, requested, ownProvider)`：
+  - **直连池**（`llm.local.baseUrl` 非空）⇒ 池自己的 model（wire body 的 model
+    就是它 —— adapter 的 `defaultModel`；`options.model` 只是路由键 `route=`）；
+  - **DELEGATE 池**⇒ **复用 `probeCloudTarget`**（cloud-llm-adapter 导出，
+    local-llm-adapter 的 DELEGATE 分支用的就是它）⇒ 不另写一套解析逻辑；
+    探针步没定 model 时取该 provider 的第一个 model id（与 adapter 同一口径）；
+  - 都拿不到 ⇒ 退回请求值，并如实标 `source: 'requested'`。
+- prompt-guard / intent-router 改成**调用时**解析（宿主的模型选择器随时可改），
+  审计行多两个字段：`modelProvider`（真实落点）+ `modelSource`（来处）。
+- 面板（`src/client/flowPanel.tsx`）的「模型」一行改显示**真实落点**：
+  `modelProvider/model`（缺省才退回路由名）⇒ DELEGATE 下显示
+  `qwen-token-plan-cn/deepseek-v4.1-flash`，不再是 `local-llm/qwen3-4b`。
+  （§7.122 的既有口径：provider 名里的 "local" 不代表落点在本机 ——
+  **名字骗人，落点不骗人**。）
+
+### 六、门禁与测试
+
+- `scripts/verify-preset-isolate.ts`：新增**规则 5**（preset id ↔ input-guard 行的
+  `config.presetId`）+ 自测破坏用例。
+  顺带修了一个**门禁自身的假阳性**：注释里引用的 `super(ctx, '…')` 会被当成
+  「这个插件提供这个服务」⇒ 现在先剥注释再扫（本节新写的注释里正好引了
+  `super(ctx, 'agents')`，当场把门禁带歪了）。
+- `scripts/verify-plugin-spec.ts`：`effective-model` 登记为共享模块
+  （不是插件入口、不进 package.json exports）。
+- 新增 `tests/unit/effective-model.test.ts`（9 例）：直连 / DELEGATE 三步解析链 /
+  kill switch / 读不到 llm 服务。
+- 扩写 `tests/unit/input-guard-edge-model.test.ts`（+7 例）：切换工作方式补钉、
+  切去别的 preset 不碰、agent 不存在、显式选择优先、抛错不连累宿主、监听器接线。
+
+### 七、桌面实测（2026-11-11 13:43，主人复测）：模型名那半对了，拦截还在
+
+主人重装插件后复测，审计链（`~/.dsh-edge-agent/audit/audit.plain.jsonl`）给出的
+**事实**：
+
+| 现象 | 证据 |
+|---|---|
+| ✅ 内部阶段模型名与真实落点一致了 | `guard.model-detect.start {provider: local-llm, model: deepseek-v4.1-flash, modelProvider: qwen-token-plan-cn, modelSource: host-delegate}`；面板显示「模型 qwen-token-plan-cn/deepseek-v4.1-flash」「裁决者 LLM 分类器 qwen-token-plan-cn/deepseek-v4.1-flash」 |
+| ❌ 拦截仍在 | `input-guard.blocked.model-selection {reason: model-selection-not-local, provider: qwen-token-plan-cn, expectedProvider: local-llm}` |
+| ⚠️ **补钉触发了，但被宿主拒了** | `input-guard.model.default-failed {trigger: preset-selected, reason: "session append cannot reenter while another append is being published"}` |
+
+⇒ 触发点、presetId 过滤、agent 取用**都对**（`trigger` 已是 `preset-selected`），
+**栽在最后一步**：`model.select()` 也要往会话里 append 一条 `model/selection`。
+
+#### 根因：宿主会话存储的重入守卫
+
+宿主 `dsh-session/lib/index.js`：
+
+```js
+commit(event, entry) {
+  if (entry !== void 0) entry.appending = true;
+  try { … invokeContainedSessionObservers(entry.emitCtx, 'session/event', …) }
+  finally { if (entry !== void 0) entry.appending = false }      // 同步清
+}
+publicationEntry() {
+  …
+  if (entry?.appending) throw new Error('session append cannot reenter while another append is being published')
+  return entry
+}
+```
+
+而宿主是用 **`agent.session.append('agent-preset/selected', …)`** 发这个事件的
+（registry 的 `select()`）⇒ 我们的处理器**跑在宿主那次 append 的派发过程里**
+⇒ 那一刻 `entry.appending === true` ⇒ 我们再 append 一条 `model/selection`
+必然被拒。
+
+⇒ **补钉必须推迟到那次 append 结束之后**。
+
+#### 修法：`queueMicrotask` 推迟
+
+- 宿主的 `commit()` 是**同步**的（`appending = false` 在 `finally` 里同步清掉）
+  ⇒ 微任务在当前同步栈退栈后才跑，那时守卫已解除 ⇒ 一定成功；
+- `agent/created` 那条路径**不需要**推迟：它由 dsh-agent 的 `announce()` 派发，
+  不在任何会话 append 里（实测同步调用即成功：审计行
+  `input-guard.model.defaulted {trigger: agent-created, provider: local-llm,
+  model: deepseek-v4.1-flash, source: host-delegate}`）。
+
+### 八、这一节的状态
+
+- ✅ 代码 + 门禁 + 单测全绿（76 files / 1564 passed / 2 skipped；`npm run build`
+  的 25 道门禁全绿）；
+- ⏳ **桌面实测：模型名那半已通过；拦截那半在 13:43 的复测里仍是坏的**，
+  根因已定位（会话 append 重入守卫）并已修（推迟到微任务）；
+- ✅ **桌面实测（2026-11-11 13:52，主人复测）：两半都通过了** —— ① 第一轮不再被拦
+  （整条链路正常：攻击检测 / 意图判定 / PII 脱敏 / 路由决策 LOCAL·按需选择 /
+  答案出口 / 威胁监控 / LLM 调用 6 次成对）；② 面板「模型」与「裁决者」都显示
+  `qwen-token-plan-cn/deepseek-v4.1-flash`（真实落点）。
+  **本节遗留（已另起一节修）**：输入框下方的宿主模型选择器显示「请选择模型」
+  （空）⇒ §7.180；
+- 📌 DELEGATE 下内部阶段跑在宿主模型上 ⇒「待检测的用户原文」会上行 ——
+  这是 §7.171 已记录的已知边界，本节**不改变**它（§7.130：顶部结论的判据是
+  category，不是端点）。
+
+---
+
+## §7.180 宿主模型选择器空了：本地池必须在模型目录里如实声明（2026-11-11）
+
+### 〇、本节起因：主人实测（2026-11-11 13:52，桌面版）
+
+主人 13:52 的复测结论：§7.179 的两个问题**都好了**（第一轮不再被拦、面板显示
+真实落点 `qwen-token-plan-cn/deepseek-v4.1-flash`），**但新发现一个**：
+
+> 「下面的选择模型是空的了，但整个流程是正常的」
+
+⇒ 输入框下方的**宿主模型选择器**（`dsh-client-ui-model-selection`）显示
+「请选择模型」。
+
+### 一、根因（宿主源码查实）
+
+**宿主侧**（`app.asar` 内）：
+
+| 位置 | 行为 |
+|---|---|
+| `dsh-api-session-controller/lib/index.js#buildModelCatalog` | `ctx.llm.listProviders()` → 每个 provider `ctx.llm.listModels(provider.id)` → 每项 `ctx.llm.resolveModelInfo(provider.id, model.id)` → **`groups.filter(g => g.models.length > 0)`** ⇒ **空目录的 provider 整组被剔出目录** |
+| `dsh-client-ui-model-selection/lib/client.js` | `currentChoice` = 目录里「provider + model 双匹配」的项；`modelLabel = currentChoice?.model.name ?? t("trigger.fallback")`（`trigger.fallback` = 「请选择模型」）⇒ 目录里没有这一项 ⇒ 只能显示兜底文案 |
+| `dsh-llm/lib/index.js:2091` | `listModels` 的返回项会被校验：`model.provider` 必须等于被问的 provider、`id`/`name` 非空、id 不重复 ⇒ 否则 `INVALID_CATALOG` |
+| `dsh-llm/lib/index.js:2127` | `resolveModelInfo` 校验 `resolved.provider === provider && resolved.id === model` ⇒ 声明的 id 必须与被问的 id 一致 |
+
+**本仓侧**：`local-llm` 的 `listModels()` **恒返回 `[]`** —— §7.106 Option A
+留下的（`RealLocalAdapter.listModels` L435 / `CloudLlmDelegateAdapterImpl.listModels`
+L1329 / `CloudLlmAdapterImpl.listModels` L555）。
+
+⇒ **本地池根本不在宿主模型目录里** ⇒ 选择器永远找不到与会话选择匹配的那一项。
+
+### 二、§7.106 Option A 的理由要分开算
+
+§7.106 当初让 `local-llm` 的目录恒空，理由是「local-llm 是隐私管线内部件，不是
+给用户选的」。这条理由：
+
+- **对云池成立** —— `cloud-llm` 是「所有 CLOUD 轮次的转发口」，让它出现在选择器里
+  会诱导用户选 `cloud-llm/deepseek-chat`（一个跟实际行为对不上的名字），并触发
+  `INVALID_CATALOG`；
+- **对本地池不成立** —— 边缘模式会话**本来就该指向本地池**，目录里没有它 ⇒
+  宿主选择器与实际行为**相反**（显示「请选择模型」，而这一轮明明跑的是本地池
+  转发的那个模型）。§7.176 已经定过口径：「wire 上真正跑的是哪个模型，界面上就
+  写哪个」。
+
+⇒ §7.180：**云池继续隐身；本地池改为如实声明**。
+
+### 三、宿主契约（查实，本节不重复挖）
+
+1. **目录缓存按 Host generation**：`ModelCatalogDirectory` 是「一份 Host generation
+   一份目录」，`load()` 命中缓存直接返回；
+2. **刷新触发点**：`llm/adapters-updated` / `llm/models-updated` /
+   `settings/document-updated` / `credentials/*-updated` ⇒ 客户端 `catalog.refresh()`；
+3. **我们注册路由就会触发刷新**：宿主 `dsh-llm` 的 `commitRoutes()` → `emitAdaptersUpdated()`
+   ⇒ 切到边缘模式时本地路由一注册，宿主就发 `llm/adapters-updated` ⇒ **客户端目录
+   自动重建，不需要重启 App**；
+4. **选模型校验也只看目录**：`modelAvailable(ctx, selection)` = `listProviders().some(p =>
+   p.id === selection.provider)` + `listModels(provider).some(m => m.id === selection.model)`
+   ⇒ 只要目录里有正确的 id，GUI 的选择校验同样能过。
+
+### 四、修法：让 wire / 目录 / 补钉读**同一份**委托目标
+
+§7.176 的口径是「写真正会跑的那个 id」。但「真正会跑哪个」这件事有三处在算：
+wire（`stream()`）、模型目录（`listModels()`）、会话补钉（input-guard）。各算各的
+必然分叉（§7.179 已经踩过一次：内部阶段面板写 `qwen3-4b`、实际跑
+`deepseek-v4.1-flash`）。
+
+⇒ 本节把三处收敛到**一个数据源**：
+
+- **新增 `DelegateTargetCache` + `localPoolTargetCache`**（`cloud-llm-adapter.ts`）：
+  委托目标按「委托旋钮」（开关 / delegateProvider / delegateModel）分键，并校验
+  `llm` 服务身份（换了一个服务实例就重新解析，不串味）；`llm/adapters-updated`
+  ⇒ `invalidateTopology()` 清缓存；
+- **wire 与目录同源**：新增 `resolveWireModel(target)` —— `target.model ?? firstModelId(target)`，
+  解析出来的 id **回填进缓存里那个目标对象** ⇒ wire、目录、补钉三处同时可见；
+- **目录如实声明**：
+  - 直连池（`llm.local.baseUrl` 配了）⇒ 声明它**唯一**会跑的那个 model
+    （wire body 的 model 恒等于 `defaultModel`，`options.model` 只是路由键 `route=`）；
+  - DELEGATE 本地池 ⇒ 声明委托目标的 model id；
+  - **云池仍然返回 `[]`**（§7.106 Option A 不动）；
+- **补钉同源**（`input-guard.ts`）：会话补钉不再自己读宿主 `agentDefaultModel`，
+  改用 `resolveEffectiveLocalModelSync()`（**不触网**）—— `agent/created` 那条路径
+  必须**同步**钉（宿主的第一个 pre-step 紧跟其后，异步会来不及，§7.179）；
+  委托解析链走到「活拓扑探针」那一步时拿不到 model id（要问一次 provider 的
+  第一个 model）⇒ 走**异步兜底**：宁可晚一点钉，也不写一个「看起来对」的 id；
+- **退役两个会分叉的旧口径**：`resolveEdgeDefaultSelection()`（§7.176 的纯函数）
+  与 `hostDefaultModel()`（自己读宿主选择）—— 后者会与「探针步 ⇒ 取该 provider
+  第一个 model id」那一步分叉，写出与实际不符的 id；
+- **留证据**：本地池每次在宿主目录里声明模型时写一行审计
+  `llm.local.catalog {provider, model, target, targetSource}`（直连池则是
+  `{provider, model, mode:'direct'}`）⇒ 「宿主目录里 local-llm 声明了什么」是可
+  查证的事实（桌面复测时对照面板与审计链即可）。
+
+⇒ 结果：**wire 上跑的模型 = 宿主模型目录里声明的那一项 = 会话被补钉的 model id**
+（三者同一个 id）⇒ 面板、宿主选择器、审计链三处口径一致。
+
+### 五、门禁与测试
+
+- **新增门禁 `scripts/verify-local-pool-catalog.ts`**（行为级、纯只读、不联网）：
+  ① 直连池必须声明它的 model（且 `model.provider` 必须等于被问的 provider）；
+  ② DELEGATE 本地池必须恰好声明**一个**模型（多出来的是骗人的），且 id = 委托
+  目标的 model id；③ **云池必须仍然隐身**；④ wire / 目录 / 补钉三者必须同一个 id。
+  已接进 `verify:build`（门禁数 25 → **26**）。
+- **新增 `tests/unit/local-llm-catalog.test.ts`（8 例）**：直连声明 / 宿主校验不变量 /
+  委托目标声明 / 探针步兜底 / 解析不到落点不编 id / 云池仍隐身 / 三处同源 /
+  拓扑变更后重新解析。
+- **改写 `tests/unit/input-guard-edge-model.test.ts`**：测试子类改覆写
+  `localPoolShape()`（池形态），假 ctx 补上 `llm` 服务（委托探针要它的
+  `listProviders()`）；删掉 §7.176 旧纯函数的 4 个用例。
+
+### 六、这一节的状态
+
+- ✅ 代码 + 门禁 + 单测全绿（`npm run build` 的 26 道门禁全绿；单测 1560 passed /
+  0 failed）；
+- ✅ **主人 14:22 桌面复测通过**：模型选择器显示 `deepseek-v4.1-flash`（Default）
+  ⇒ §7.180 生效（同步前审计链已有三条
+  `llm.local.catalog {provider: local-llm, model: deepseek-v4.1-flash, target: qwen-token-plan-cn, targetSource: selection}`
+  与一条 `input-guard.model.default-skipped {reason: explicit-selection, provider: local-llm, model: deepseek-v4.1-flash}`
+  ⇒ 会话选择与目录声明是同一个 id）；
+- 📌 **边界（不夸大）**：
+  - 云池在目录里**仍然隐身** —— 这是有意保留的 §7.106 Option A；
+  - DELEGATE 下本地池**只声明一个**模型（本地池实际只服务一个模型：委托目标），
+    列多个就是骗人的；
+  - 委托落点解析不到（宿主没有任何可用 provider）⇒ 目录为空、**不补钉**，
+    让 §7.175 的 fail-closed 闸门按「选择不是本地」报出来（不编 id）；
+  - 宿主全局默认模型在会话中途变了 ⇒ wire / 目录 / 补钉会因为共享缓存**一起**
+    变（缓存由 `llm/adapters-updated` 清空后重新解析）⇒ 不会出现「界面写的名字
+    跟实际跑的不一致」。
+
+---
+
+## §7.181 答案出口写「路由未定」：面板必须认 DELEGATE 出口行（2026-11-11）
+
+### 〇、本节起因：主人实测（2026-11-11 14:2x，桌面版）
+
+主人 14:22 的复测确认 §7.180 生效（模型选择器显示 `deepseek-v4.1-flash`），
+同时**新发现第三个问题**：面板的「答案出口」一栏显示
+
+>
+> 答案出口   路由未定
+>
+
+⇒ 明明作答了，答案出口却写「路由未定」。
+
+### 一、根因（审计链查实）
+
+**出口审计行有两种形状**（§7.171 之后桌面跑的是第二种）：
+
+| 路径 | kind | 载荷字段 |
+|---|---|---|
+| 直连池 | `llm.local.start` / `llm.local.end` | `provider` / `model` / `route` / `promptLen` |
+| **DELEGATE 池** | `llm.{local,cloud}.delegate.resolved` / `.delegate.end` | `from`（池）/ `toProvider` / `toModel` / `messageCount` / `durationMs` / `resultLen` |
+
+**面板 `answerNode` 此前只认直连行**（`llm.local.end` / `llm.cloud.end` /
+`.start`），加上宿主 `llm.host.route`（宿主**只在路由变化时**宣告 ⇒ 稳态会话
+没有）与 `summary.lastRoute`（只随 host.route 写）⇒ **三条路全空** ⇒
+「路由未定」。
+
+实测该轮审计链（06:21:51 → 06:22:01）：
+
+```
+guard.model-detect.start / intent.classify.start
+llm.local.delegate.resolved  x3
+llm.local.egress
+llm.trace.index
+llm.local.delegate.end  x3
+```
+
+⇒ **一条 `llm.local.end` 都没有** —— 面板认的东西压根没出现。
+
+### 二、第二个缺口：委托行不带判别字段
+
+§7.132 解决过「内部调用冒充主对话出网」：靠出口行上的 `tools`（主对话恒带
+30+ 件工具，内部调用一件不带）与 `internal`（我们自己的内部调用标记）把
+安检 / 分类器排除掉。
+
+⇒ 但**委托行此前不带这两个字段** ⇒ 面板即使认了委托行，也分不出「主对话出网」
+与「安检 / 分类器的内部调用」（两者走同一条委托路径）⇒ §7.132 的 bug 会在
+委托路径上原样复发。
+
+### 三、修法
+
+**adapter 侧**（`cloud-llm-adapter.ts`）：
+
+- `llm.{local,cloud}.delegate.resolved` 与 `.delegate.end` 的载荷补上
+  `...egressAuditFields(options)`（与直连行同款：`tools` 件数 + `internal` 标记）
+  ⇒ 判别字段在**出网的那一跳**产生，不在面板里猜；
+- 委托行本来就带 `from`（池）/ `toProvider` / `toModel`（真实落点）⇒ 面板可直接
+  读出「哪个池 + 实际落在哪儿」。
+
+**面板侧**（`flowPanel.tsx` 的 `answerNode`）：
+
+- 新增 `isDirectStart` / `isDirectEnd` / `isDelegateStart` / `isDelegateEnd` 四个
+  判别式 ⇒ 直连与委托两种形状都被认；
+- 新增 `egressTarget(r)`：委托行取 `from`/`toProvider`/`toModel`，直连行取
+  `provider`/`model`/`route` ⇒ 出口行一律给出「池 + 真实落点」；
+- `adapter` / `started` 两个取值处同时认两种形状 ⇒ 在飞态（只有 `resolved`）
+  也不再写「路由未定」；
+- **§7.130 口径保留**：LOCAL / CLOUD 的判据是**哪个池**（`from` = `local-llm`），
+  **不是**出口端点 ⇒ DELEGATE 下仍按 LOCAL 口径显示「问题、上下文、答案全部留在
+  本机」；但因为「池」与「落点」此时不是同一个，额外补一行「**真实落点**」
+  （`flow.lbl.endpoint`）⇒ 既不改判据，也不藏实际去向；
+- 出口步数统计扩到 `llm.local.delegate.end`，并用 `isConversation` 排除内部调用；
+- 上下文规模：委托行没有 `promptLen`（转发给宿主，落点那边才有）⇒ 改用委托行
+  自带的 `messageCount`，单位随之从「字」改成「**条消息**」（新标签
+  `flow.lbl.msgs`）⇒ 单位不同，标签也不同，不混着写。
+
+### 四、门禁与测试
+
+- **新增 `tests/unit/flow-panel-delegate-egress.test.ts`（9 例）**：只有委托行时
+  不得写「路由未定」/ 路由行带池与模型 / 补「真实落点」行 / §7.130 池口径
+  （本地池仍显示「全部留在本机」、云池显示「出网文本已先行检查/脱敏」）/ 委托行
+  在飞显示「作答中」/ 内部调用（`tools=0`）不得冒充出网 / 内部调用与主对话并存
+  时取主对话那条 / 步数与「条消息」单位 / 直连行不因委托支持而退化；
+- **扩写 `tests/unit/cloud-llm-delegate.test.ts`（+3 例）**：委托行必须带 `tools`
+  件数、内部调用必须带 `internal` 标记且 `tools=0`、委托行必须带 `from` 与
+  `toProvider`/`toModel` ⇒ 「判别字段在 adapter 侧产生」这条口径被钉死。
+
+### 五、这一节的状态
+
+- ✅ 代码 + 单测全绿：typecheck 双绿；单测 **78 files / 1580 passed / 0 failed /
+  2 skipped**；`npm run build` **EXIT=0**（26 道门禁全绿）；
+- ✅ 已装机：重建 tarball（`dsh-edge-agent-desktop-safe.tar.gz` 521964 B /
+  `dsh-edge-agent-full.tar.gz` 521954 B），按文件同步进桌面 profile
+  （3 个文件变更：`lib/client.js`、`lib/dsh-adapter/cloud-llm-adapter.js`、
+  `lib/dsh-adapter/cloud-llm-adapter.d.ts.map`），重启桌面 App ⇒ 插件在 14:31:22
+  用新构建重载；
+- ⏳ **待主人桌面复测**：随便问一句 ⇒ 「答案出口」应当显示池与模型（而不是
+  「路由未定」），并多一行「真实落点」；
+- 📌 **边界（不夸大）**：
+  - 本节**只修面板的显示口径**，不改 §7.130 的顶部结论（判据仍是 category）；
+  - DELEGATE 下内部阶段（安检 / 分类器）跑在宿主模型上 ⇒「待检测的用户原文」
+    会上行 —— 这是 §7.171 已记录的已知边界，本节**不改变**它；
+  - 面板显示「真实落点」只是**如实陈述**转发去向，不等于「文本没出网」——
+    出网侧的裁剪口径仍按 §7.131（本地池带全部历史）。
+
+## §7.182 配置落点裁决：只有两档，模板退出运行时候选（2026-11-11）
+
+### 〇、本节起因：主人三句裁决（原文，不改写）
+
+> 「仓库的配置目录后续不再支持」
+>
+> 「按正常逻辑 `C:/Users/cheng/.dsh/profiles/desktop/node_modules/@dsh-edge/dsh-edge-agent/config/edge.json`
+> 就应该是第一顺位，是有用的，这样用户才可以理解」
+>
+> 「`C:/Users/cheng/.dsh-edge-agent/edge.json` 是第二顺位，没有第3顺位了，就这两个」
+
+⇒ 候选表（**没有第三档**）：
+
+| 顺位 | 路径 | 谁写它 | 特点 |
+|---|---|---|---|
+| 1 | `<安装目录>/config/edge.json` | 运维 | **插件装在哪，配置就在哪** —— 用户打开插件目录就能找到能改的那个 |
+| 2 | `~/.dsh-edge-agent/edge.json` | 运维 | 跨通道 / 跨重装 / 删 profile 都活着 |
+
+### 一、动手前查实的事实（不是推测）
+
+1. **旧的三档**（`src/dsh-adapter/edge-config.ts` 的 `edgeConfigCandidates()`）：
+   `<bundle>/config/edge.json` → `~/.dsh-edge-agent/edge.json` → `<bundle>/config/edge.example.json`。
+   第三档是 shipped 模板。
+2. **仓库那份从来不是跨通道落点**：npm / git / tarball 三条通道的包里**本来就没有**
+   `config/edge.json`（`package.json#files` 白名单里写死 `!config/edge.json`；
+   `_pack-core.mjs` 的 `stageVariant()` 排除；git 通道 `.gitignore` 排除）。
+   ⇒ 仓库那份只对「源码 checkout 直接跑」有意义。
+3. **`edgeBundleRoot()` 从模块位置往上两级** ⇒ **仓库 checkout 与安装目录解析到同一条路径**
+   ⇒ 光删掉第三档不够，**必须显式区分 checkout 与安装态**，否则「仓库那份」会以
+   顺位 1 的身份复活。
+4. **`~/.dsh-edge-agent/` 是插件自己建的**（目录 CreationTime = 2026/11/11 12:56:31，
+   与插件首次加载同一秒；`audit-log.ts` 建 `audit/`、`file-logger.ts` 建 `log/`、
+   `local-storage.ts` 首次写入才建 `storage/`）⇒ 它是**运行时数据根**，不是配置目录，
+   把 `edge.json` 放进去符合它已有的语义。
+5. **审计链自证**：`audit-log.ts:426-432` 每次启动写一行
+   `config.loaded {path, candidates}` ⇒ 命中哪一档不用猜，看审计链就知道。
+   （今天 8 次启动全部命中 `config/edge.example.json`，即旧的第三档。）
+
+### 二、改法
+
+**1）候选只剩两档**（`src/dsh-adapter/edge-config.ts`）
+
+```
+edgeConfigCandidates() =
+  1. <bundle>/config/edge.json      ← 仅当「不是源码 checkout」
+  2. ~/.dsh-edge-agent/edge.json
+  （没有第三档）
+```
+
+**2）顺位 1 在源码 checkout 里跳过**（新增 `isSourceCheckout()`）
+
+判据：`<bundleRoot>/src/dsh-adapter` 存在 ⇒ 是 checkout ⇒ 跳过顺位 1。
+
+⇒ checkout 与安装态读的是**同一份** home 配置，**dev 与生产不会分叉**；
+⇒ 仓库的 `config/` 目录只剩模板，符合「仓库的配置目录后续不再支持」。
+
+**3）模板退出运行时候选 ⇒ 部署值折进代码默认值**
+
+模板不再是候选之后，「没配置文件」必须 ≡「以前的模板」，否则模板一改就等于改行为。
+⇒ 把模板里**比代码默认值更贴近部署**的那些值折进 `DEFAULT_EDGE_CONFIG`：
+
+| 字段 | 折进前（代码默认） | 折进后 = 模板值 |
+|---|---|---|
+| `stages.guard.timeoutMs` | 20000 | **60000** |
+| `stages.intent.timeoutMs` | 30000 | **60000** |
+| `stages.intent.llmFallback` | 未设 | **true** |
+| `jev.provider` / `model` / `authScheme` / `path` / `localAdoptFloor` | 未设 | 模板值 |
+| `functionCallExternal.timeoutMs` | 10000 | **15000** |
+| `functionCallExternal.probeTimeoutMs` | 2000 | **1000** |
+
+**4）刻意不折 `jev.apiKeyRef`**（并从**模板里一并摘掉**）
+
+默认档 `jev.provider = "local"`（本地 ONNX 决策模型）**根本不需要 key**。
+而 `danglingSecretRefs()`（`edge-config.ts:1079`）把「槽位存在但为空」也算**悬空引用**
+⇒ 只要配置里写了 `apiKeyRef` 而 `secrets` 里那个槽位是空的，启动就报一条 ERROR
+（主人 ops log 里那条 `[intent-router] 配置里的密钥引用指向不存在的槽位`）。
+
+⇒ 代码默认值不写 `apiKeyRef`；**模板里也不预置**（否则每个照模板抄的人启动都报同一条）
+⇒ 模板里留一行 `_apiKeyRef` 说明：要用百炼决策模型才把它加回来。
+
+**5）产物不带活配置**（§7.178 已删 installable 里的明文副本，§7.182 补齐 tarball 侧）
+
+- `_pack-core.mjs` 的 `stageVariant()`：**tarball / installable 一律排除** `config/edge.json`
+  （构建输出不该有第三份明文副本）；
+- **DEMO tarball 是唯一例外**（演示用）：活配置来源改为**顺位 2**
+  （`~/.dsh-edge-agent/edge.json`），该文件不存在 ⇒ `pack:demo` 直接报错退出，
+  不会静默打一个空配置进包；
+- `scripts/edge-config-from-env.ts` 默认输出路径：仓库 `config/edge.json` → **home**；
+- `scripts/edge-config-env.mjs` 的候选：非 checkout 才含 bundle 那份 + home 那份。
+
+### 三、「没配置文件 ≡ 以前的模板」是怎么验的
+
+不是靠眼看，是**逐叶比对 + 消费方核实**（一次性诊断脚本比对
+`DEFAULT_EDGE_CONFIG` 与 `config/edge.example.json` 的全部叶路径；
+**永久锁是单测** `tests/unit/edge-config-candidates.test.ts` 的
+「模板 ↔ 代码默认值不得漂移」那一组）：
+
+```
+total leaf paths compared: 113
+real diffs            : 0      ← 两侧都写了的地方，取值完全一致
+one-side-missing      : 40     ← 代码侧不写、模板侧写了
+```
+
+40 条逐类核实（**每条都查过消费方，不是推断**）：
+
+| 类别 | 条数 | 核实结论 |
+|---|---|---|
+| 空串 / `false` 占位（`secrets.*`、`llm.*.baseUrl/model/keyRef`、`stages.*.model`、`privacy.policyPath/realmConfigPath`、`audit.root/logRoot`、`tee.storageRoot/keyStorePath`、`storage.root`、`etscli.bin`、`reasoningEffortNone`） | 29 | 所有消费方都用真值判空或 `.length > 0`（`audit-log.ts:413`、`local-storage.ts:219`、`privacy-policy.ts:558`、`realm-skill-bridge.ts:1045`、`tcm.ts:124-130`、`etscli-tools.ts:374`、`http-api.ts:1894`、`cloud-llm-adapter.ts:1724`、`intent-router.ts:3193`）⇒ **等价** |
+| `privacy.sanTtlMs` / `sanMaxSessions` / `sanSweepMs` | 3 | 与 sanitizer 自身 Schema 默认值**完全相同**（`sanitizer-pipeline.ts:49-51`：900000 / 1000 / 60000）⇒ **等价** |
+| `audit.llmTrace.*` | 7 | 由 `DEFAULT_LLM_TRACE_CONFIG` 兜底，`resolveLlmTraceConfig()` 的**生效值**与模板一致 ⇒ **等价**（已被单测钉住） |
+| `agent.localToolsAllowlist`（模板写 `/tmp`） | 1 | 本仓**没有任何消费方**（只在 `edge-config.ts` 的接口里声明）⇒ 行为无差；留在模板里也无害 |
+
+⇒ **结论**：模板与代码默认值**没有一处行为差异**。模板继续随包发布（它是运维**抄来改**
+的那份），但不再是运行时候选。
+
+### 四、门禁与测试
+
+- **新增 `tests/unit/edge-config-candidates.test.ts`（20 例）**：
+  - checkout 里只剩 home 一档 / checkout 不把仓库那份当候选 / 安装态（无 `src/`）
+    顺位 1 生效 / 顺位 2 = `edgeHome('edge.json')` / 模板不再是候选 /
+    `DSH_EDGE_CONFIG_FILE=off` 仍关掉文件层；
+  - **模板 ↔ 代码默认值漂移锁**：10 个字段逐个相等 + `llmTrace` 生效值一致 +
+    `jev.apiKeyRef` 两侧都必须缺席（代码侧 + **模板侧**）。
+- **改写 `tests/unit/function-call-external.test.ts`**：「loader DEFAULT 与 memory 契约逐字一致」
+  → 「§7.182 loader DEFAULT = 部署值（模板退出候选后并入此处）」（timeoutMs 15000 /
+  probeTimeoutMs 1000；service 内存兜底 10000/2000 不动）；Phase 9 ops-log 期望
+  `/timeoutMs=10000/` → `/timeoutMs=15000/`。
+- **门禁**：
+  - `verify-installable.mjs`：1b 段改为「bundle 的 `config/` 只装模板 + 策略，不装活配置」，
+    新增两条断言 —— **产物里有 `config/edge.json` ⇒ 红**、**仓库里有 `config/edge.json` ⇒ 红**；
+  - `verify-tarball.mjs`：DEMO 的**反向规则恢复**（DEMO 包必须**含** `config/edge.json`，
+    否则红），`--selftest` 通过；
+  - `verify-local-channel.mjs`：文件头口径改写、新增第 5 条检查项，
+    `DOC_REQUIREMENTS` 的 `config/edge.json` → `~/.dsh-edge-agent/edge.json`；
+  - `verify-local-pool-catalog.ts`（§7.180 新增）保持绿。
+
+### 五、影响面盘点（改口径连带改了哪些地方）
+
+| 位置 | 改动 |
+|---|---|
+| `src/dsh-adapter/edge-config.ts` | 候选两档 + `isSourceCheckout()` + 部署值折进默认值 |
+| `config/edge.example.json` | `_comment` 改写为两档口径；**摘掉 `jev.apiKeyRef`** |
+| `scripts/edge-config-from-env.ts` | 默认输出改 home |
+| `scripts/edge-config-env.mjs` | 候选口径 |
+| `scripts/_pack-core.mjs` | tarball / installable 一律排除活配置；**DEMO 通道完整恢复**（`DEMO_README` / `demo` CLI 模式 / `tarballDemo` / `tarballDemoFull`），配置来源 = 顺位 2 |
+| `scripts/rebuild-installable.mjs` | installable 目录也排除 `config/edge.json` |
+| `scripts/verify-installable.mjs` / `verify-tarball.mjs` / `verify-local-channel.mjs` | 口径改写 + 新增断言 |
+| `install.sh` / `uninstall.sh` | 文案改写（仓库不再放活配置；`uninstall.sh` Phase 4 整体删 `~/.dsh-edge-agent/`，要保留配置得带 `--keep-data`） |
+| `package.json` | `pack:demo` + `build:tarball:demo` 脚本恢复 |
+| 文档 | README / CHANGELOG / `docs/privacy-policy.md` / `docs/deploy-github.md` / `docs/deploy-npm.md` / `docs/deploy-tarball.md` / `docs/load-into-local-dsh.md` |
+
+### 六、这一节的状态
+
+- ✅ 代码 + 单测 + 门禁全绿（详见下方「验证记录」）。
+- ✅ 文档口径统一：README / CHANGELOG / privacy-policy / deploy-github / deploy-npm /
+  deploy-tarball / load-into-local-dsh 全部改成「两档 + 仓库不再放活配置 + 模板只是模板」。
+- ⏳ **待主人桌面复测**：重启后审计链的 `config.loaded` 行应当只列**两个候选**，
+  且 `path` 为空（当前机器上两个落点都没有配置文件 ⇒ 生效的是代码内置默认值）。
+- 📌 **边界（不夸大）**：
+  - 本节**只改配置落点**，不改任何隐私口径（§7.130 / §7.131 原样保留）；
+  - 主人机器上 `~/.dsh-edge-agent/edge.json` 与插件目录那份**当前都不存在**
+    ⇒ 生效配置 = 代码内置默认值（= 旧模板的部署值）。**旧模板里的 `llm.local.baseUrl`
+    是空的** ⇒ 本地池仍走 DELEGATE（转发宿主模型），这是主人的现状，不是本节引入的；
+  - `jev.apiKeyRef` 的启动 ERROR 在**没有配置文件**时会自动消失；主人若把模板抄到
+    home，那条 ERROR 也不会再出现（模板里已摘掉 `apiKeyRef`）。
+
+### 七、主人复述规则后的加固（2026-11-11 15:0x）
+
+主人再确认一次口径（原文）：
+
+> 「只有 `C:/Users/cheng/.dsh/profiles/desktop/node_modules/@dsh-edge/dsh-edge-agent/config/edge.json`
+> 不存在，再取 `C:/Users/cheng/.dsh-edge-agent/edge.json`，就算
+> `C:/Users/cheng/.dsh/profiles/desktop/node_modules/@dsh-edge/dsh-edge-agent/config`
+> 下有 edge.example.json 文件都不算」
+
+**代码里本来就是这样实现的**（审计链 `config.loaded` 的 `candidates` 实测就两条，
+里面没有 `edge.example.json`），但**「顺位 1 存在就命中顺位 1」这条优先级此前没有
+任何测试钉住** —— 只能靠人工看审计行。
+
+⇒ 本次加固：
+
+1. **候选表与 loader 做成可注入**：
+   `edgeConfigCandidates(bundleRoot?, homeDir?)` / `loadEdgeConfig(force?, candidates?)`
+   （默认值 = 现有行为，**所有既有调用点的行为不变**）⇒ 门禁能在**临时目录**上验证
+   真实优先级，不必往运维的真 home 里写文件。
+2. **新增 `tests/unit/edge-config-precedence.test.ts`（8 例）**，把规则拆成四条命题：
+
+| # | 命题 | 断言 |
+|---|---|---|
+| R1 | 候选表只有两档，顺序固定 | `deepEqual([顺位1, 顺位2])`；checkout 里只剩顺位 2 |
+| R2 | 插件目录下的 `edge.example.json` **永不入选** | 文件真实存在也不进候选表；只有它存在时 loader 命中不到它（port 仍是内置默认 21017） |
+| R3 | 顺位 1 存在 ⇒ **命中顺位 1**（顺位 2 不看） | 两个文件写不同 port ⇒ 取顺位 1 的那个 |
+| R4 | 顺位 1 不存在 ⇒ 顺位 2；都没有 ⇒ 内置默认值 | `edgeConfigPath()` 分别指向顺位 2 / undefined |
+| R4+ | 顺位 1 内容坏掉（解析失败）⇒ 落到顺位 2（不整套崩） | 写坏 JSON ⇒ 命中顺位 2 |
+
+### 八、这一节的验证记录（2026-11-11 15:0x）
+
+- ✅ 双 typecheck 绿（`tsconfig.json` / `tsconfig.client.json`）；
+- ✅ 单测 **80 files / 1608 passed / 0 failed / 2 skipped**
+  （新增 8 条优先级门禁 + §7.182 候选表 20 例）；
+- ✅ `npm run build` **EXIT=0**（26 道门禁全绿），产物
+  `dist/dsh-edge-agent-desktop-safe.tar.gz` / `dist/dsh-edge-agent-full.tar.gz`；
+- ✅ 独立复跑 §7.182 涉及的门禁：`verify-tarball --selftest`（含 DEMO 反向规则）、
+  `verify-local-channel --selftest` + 实跑、`verify-installable` 全绿；
+- ✅ 装机：同步 `lib/dsh-adapter/edge-config.{js,d.ts,d.ts.map}` +
+  `config/edge.example.json` 进桌面 profile（按 PID 精确停 GUI → 重启，新 GUI PID 24416）；
+- ✅ **审计链自证**（15:07:54 那次启动）：
+  ```
+  config.loaded {
+    path: "...\\@dsh-edge\\dsh-edge-agent\\config\\edge.json",   ← 命中顺位 1
+    candidates: [
+      "...\\@dsh-edge\\dsh-edge-agent\\config\\edge.json",        ← 顺位 1
+      "C:\\Users\\cheng\\.dsh-edge-agent\\edge.json"               ← 顺位 2
+    ]
+  }
+  ```
+  ⇒ **只有两档**；没有 `edge.example.json`；顺位 1 存在 ⇒ 命中顺位 1。
+- ✅ **启动噪声少了一条**：`jev.apiKeyRef → secrets.bailianApiKey 槽位不存在` 这条
+  ERROR 最后一次出现是 15:03:41（配置换成新模板之前）；15:07:54 那次启动**没有这条**。
+
+### 九、桌面这台机器上的当前状态（如实记录，不夸大）
+
+- **顺位 1** `<插件目录>/config/edge.json` **存在**：主人 15:19–15:20 **自己重建并填写**
+  的一份真配置（9703 B：`llm.local` 指向真实端点 + `secrets.aliyuntokenplanApiKey`；
+  `jev.enabled=false`；`webSearch.tavilyEnabled/bochaEnabled=true`）。
+  ⇒ 顺位 1 被它占着 ⇒ **生效配置就是主人这份**，内置默认值不参与。
+  **没有任何真实端点与 key**（所有 `secrets` 槽位为空，`llm.local` / `llm.cloud` 留空
+  = DELEGATE），顶部 `_comment` 已改写成「这是插件目录里的活配置（顺位 1）」。
+  ⇒ 本次把它从**旧模板副本**换成**新模板**（摘掉 `jev.apiKeyRef`）：旧副本是 14:38
+  出现的，字段与取值逐条核对过与旧模板一致 ⇒ 换掉**不丢任何主人自己填的东西**。
+- **顺位 2** `~/.dsh-edge-agent/edge.json` **不存在**（`~/.dsh-edge-agent/` 下只有
+  `audit/` 与 `log/`，都是运行时数据目录，不是配置目录）。
+- ⇒ **当前生效配置 = 顺位 1 那份**（主人自己填的那份）。
+- 📌 因此「出厂默认」只对**没有配置文件**的机器生效：主人这份把
+  `webSearch.tavilyEnabled/bochaEnabled` 显式写成了 `true` ⇒ 桌面上的
+  Tavily / 博查两档**仍在链上**；想让它们关掉，把主人那份里的两个值改成
+  `false` 并重启 App（provider 在 `apply()` 时构造 ⇒ 改完要重启）。
+- 📌 若主人更希望把配置放在顺位 2（重装 tarball / 删 profile 都活着），
+  把这份文件挪到 `~/.dsh-edge-agent/edge.json` 即可，删掉插件目录那份后自动落到顺位 2。
+
+### 十、主人再裁决：三个可选开关出厂关闭（2026-11-11 15:2x）
+
+主人两条指示：
+
+> 「仓库里 edge.example.json 默认 jev 应该是 false，关闭的」
+>
+> 「`"tavilyEnabled": false, "bochaEnabled": false` 也是默认关闭的」
+
+⇒ **三个开关同时改两处**（模板 + 代码默认值），否则 §7.182 的口径就破了：
+
+| 开关 | 改前 | 改后 | 消费方（读取时机） | 改完要重启？ |
+|---|---|---|---|---|
+| `jev.enabled` | true | **false** | `intent-router.ts` 的 `apply()` → `config.jevEnabled` | **要** |
+| `webSearch.tavilyEnabled` | true | **false** | `web-search-tavily-bocha.ts` 的 `apply()`（构造 provider 时读一次） | **要** |
+| `webSearch.bochaEnabled` | true | **false** | 同上 | **要** |
+
+**为什么「两处」都要改**：§7.182 的口径是「没配置文件 ≡ 以前的模板」。只改模板的话，
+「没有配置文件」⇒ jev 开着；「照模板抄」⇒ jev 关着 ⇒ 同一套产品两种行为。
+⇒ 代码默认值（`DEFAULT_EDGE_CONFIG`）与模板必须同值，并由漂移锁钉住。
+
+**语义从 opt-out 改成 opt-in**：`TavilyBochaFallbackProvider` 的两个 getter
+原本是 `!== false`（未设 = 开），现在改成 `=== true`（未设 = 关）⇒ 与出厂默认一致，
+不留第二套口径。连带把 `tests/unit/web-search-tavily-bocha.test.ts` 的 helper
+改成**显式 opt-in**，并新增 2 条用例：
+「不传开关 ⇒ Tavily / 博查 不在链上（只走 DeepSeek 档）」、
+「两档都关且没有 DeepSeek key ⇒ provider 不可用」。
+
+**影响（如实）**：
+
+- `jev` 关 ⇒ 意图识别走「设备正则 →（决策模型那档跳过）→ LLM 分类器 → 规则层」，
+  **不再探测 `127.0.0.1:8001`**（少一次网络往返，也少一条探针噪声）；
+- Tavily / 博查关 ⇒ web-search 链上只剩 DeepSeek 档（`secrets.deepseekApiKey`），
+  少两次注定失败的 401 往返；
+- 三个开关都在 `apply()` 时读 ⇒ **桌面版必须重启才生效**。
+
+**门禁与文档**：
+
+- `tests/unit/edge-config-candidates.test.ts` 的漂移锁新增三条
+  （`jev.enabled` / `webSearch.tavilyEnabled` / `webSearch.bochaEnabled`）
+  ⇒ 模板与代码默认值不许再漂；
+- `docs/architecture.md` 的 web-search 三档链表格改成「为 true（§7.182 默认关闭）」；
+- `src/dsh-adapter/intent-router.ts` 的 Schema 注释与构造期注释同步改口径
+  （原文写着「production default true」，现在已不成立）。
+
+## §7.183 边缘模式被自己的闸门拒掉：客户端回写选型 ⇒ 回钉回本地池（2026-11-11）
+
+> ⚠️ **本节已被 §7.184 推翻**（主人 2026-11-11 18:56 裁决「选择器完全不动，实际请求
+> 改道到本地池」）⇒ 本节的「回钉」机制**整体退役**：钉选 / 补钉 / 回钉都不再做，
+> 边缘模式**一个字都不改**会话选型。保留本节是为了留档「为什么走过这条弯路」，
+> 当前口径见 [§7.184](#§7184-边缘模式选型不动--出网那一跳改道到本地池2026-11-11)。
+
+### 〇、主人报的现象（原文，不改写）
+
+> 「还有一个问题，一切换到 边缘模式，模型马上就会切换成 edge.jsonl里配置的模型名了」
+
+实测：模型确实切到了 `qwen3.8-max`（= edge.json 里 `llm.local.model`），**而且这一轮被
+自己的闸门拒掉**：`input-guard.blocked.model-selection` / `model-selection-not-local`。
+
+⇒ 现象其实是**两件事**，一件已经对（模型切过去了），一件是 bug（这一轮被拒）。
+
+### 一、证据链：会话事件流实测时序
+
+会话 `session-1ea9ccb6-15c4-4d8b-9ed2-4dc3aabfd87d` 的
+`session.v4.jsonl.zstd`（多帧 zstd，按魔数 `28 B5 2F FD` 切帧逐帧解压）：
+
+```
+seq  3  07:28:02.843  agent-preset/selected   {"preset":"edge"}
+seq  4  07:28:02.844  model/selection          {"provider":"local-llm","model":"qwen3.8-flash"}
+seq  5  07:28:18.788  agent-preset/selected   {"preset":"standard"}
+seq  6  07:28:20.404  agent-preset/selected   {"preset":"edge"}
+seq  8  07:29:31.091  agent-preset/selected   {"preset":"standard"}
+seq  9  07:29:37.488  model/selection          {"provider":"qwen-token-plan-cn","model":"deepseek-v4.1-flash"}
+seq 10  07:29:40.117  agent-preset/selected   {"preset":"edge"}
+seq 11  07:29:40.118  model/selection          {"provider":"local-llm","model":"qwen3.8-max"}   ← 我们的补钉
+seq 12  07:30:35.639  model/selection          {"provider":"qwen-token-plan-cn","model":"deepseek-v4.1-flash"}  ← 客户端回写
+seq 13  07:30:38.413  agent/inbox/spliced      {"inserted":["你是谁"],"source":["user"]}
+seq 14  07:30:38.414  turn/start
+seq 16  07:30:41.929  turn/end                {"reason": …}   ← input-guard.blocked.model-selection
+```
+
+⇒ **根因**：§7.179/§7.176 的补钉是**一次性**的（只在 `agent/created` 与
+`agent-preset/selected` 两个时刻各钉一次）。客户端在 55 秒后把选型**写回**宿主默认的
+云端模型（seq 12）⇒ 下一轮拿到的就是云端选择 ⇒ §7.175 的 fail-closed 闸门按设计拒收。
+
+⇒ 缺的不是「再补一次钉」，而是一条**持续**的纠正机制。
+
+### 二、宿主契约（已查实，`app.asar` 逐处读过）
+
+| 事实 | 出处 | 对本节的影响 |
+|---|---|---|
+| 会话存储在提交事件后**同步**派发 `session/event`：`commit()` 里 `entry.appending = true` → `invokeContainedSessionObservers(...)` → `finally` **同步**清掉 | dsh-session `commit()` | 我们的处理器跑在 `appending === true` 期间 ⇒ **同步**调 `model.select()` 会被重入守卫拒掉（"session append cannot reenter while another append is being published"）⇒ **必须推迟到微任务** |
+| `session/event` 的 scope 载体是**会话存储级**的 scope：`enter()` 里 `carrier = scopeTarget(session, scopeOf(store.ctx))` | dsh-session `enter()` | 派发过滤规则是「监听器自己的 scope 必须是派发 scope 或其**祖先**」（dsh-scope `scopeTarget`）⇒ 边缘 preset scope 上的监听器**收不到**存储级 scope 的事件 ⇒ 注册必须带 `{ global: true }`，再**自己**按会话集合过滤 |
+| `select({provider, model})` 写一条会话级 `model/selection` 事件；`current()` 读「pending choice → 上一轮的选择 → `agent.options`」；**相同的选择是 no-op** | dsh-agent model-selection 文档 | 写进去的选择就是下一轮 `prepareRequest()` 用的那份 ⇒ 回钉有效；相同选择 no-op ⇒ 天然防自锁（我们自己也跳过本地选型，双保险） |
+| 选型在 step preparation **之前**快照；改选型只对下一轮生效 | 同上 | 客户端回写（seq 12）比用户发言（seq 13）早 2.8 秒 ⇒ 回钉赶得上这一轮 |
+
+### 三、改法
+
+**1）新增「边缘模式会话集合」**（`InputGuardServiceImpl`）
+
+- `agent/created`（**scope 绑定**）：能收到 ⇒ 该 agent 绑在边缘 preset 上 ⇒ 会话**入集合**；
+- `agent-preset/selected`（全局事件，按 `config.presetId` 过滤）：切进本 preset ⇒ **入集合**；
+  切去别的 preset ⇒ **出集合**（标准模式必须是纯宿主，§7.140）；
+- 集合容量上限 512（满了淘汰最老的）。
+
+**2）订阅 `session/event`（`{ global: true }`）**
+
+- 只看 `event.type === 'model/selection'`；
+- 会话不在边缘集合 ⇒ 直接返回（**标准模式零影响**）；
+- `data.provider === 本地 provider` ⇒ 直接返回（**防自锁**）；
+- 其余 ⇒ `queueMicrotask`（避开重入守卫）里回钉。
+
+**3）回钉写的是**与 wire 同源**的 model id**
+
+复用 §7.180 的 `resolveEffectiveLocalModelSync`（共享委托目标缓存）⇒ 直连池 = 池自己的
+model，DELEGATE 池 = 委托落点的 model ⇒ **wire / 模型目录 / 会话选型说同一个 id**。
+
+**4）边界（fail-closed）**
+
+- 本地路由不存在（`llm.local.delegate=false` 的 kill switch）⇒ 不回钉 ⇒ 让 §7.175 的闸门
+  按「路由缺失」报可操作的错；
+- 解析不到真正会跑的 model id ⇒ 不回钉一个「看起来对」的名字（§7.176 的同一条纪律）；
+- `select()` 抛错 ⇒ 吞掉并审计（监听器抛错不能让宿主的会话派发出错）。
+
+**5）乒乓保护**
+
+客户端与我们可能互相改写（我们回钉 → 客户端再回写 → …）。⇒ 60 秒窗口内同一会话的
+「外来选型」超过 5 次 ⇒ 停止回钉并留审计行（`repin-loop-guard`）⇒ 退回 §7.175 的
+fail-closed 拒收，而不是无限改写。
+
+### 四、审计行
+
+| kind | 何时 | 关键字段 |
+|---|---|---|
+| `input-guard.model.repinned` | 回钉成功 | `sessionId` / `trigger=session-selection` / `provider` / `model` / `source` / `mode` / `from={provider,model}` |
+| `input-guard.model.repin-skipped` | 没回钉 | `reason`（`local-route-missing` / `agent-not-found` / `no-model-handle` / `delegate-target-unresolved` / `repin-loop-guard`） |
+| `input-guard.model.repin-failed` | 回钉抛错 | `reason`（异常原文） |
+
+⇒ `from` 字段把「被改掉的原选型」留在链上 ⇒ 事后能回答「客户端到底写回了什么」。
+
+### 五、门禁与测试
+
+- **新增 `tests/unit/input-guard-model-repin.test.ts`（16 例）**：回钉 / DELEGATE 同源 /
+  防自锁 / 标准模式零影响 / 非 `model/selection` 不动 / 载荷形状不对不抛 / **推迟到微任务** /
+  本地路由不存在不回钉 / 没有 live agent 不回钉 / `select()` 抛错不外溢 / 乒乓保护 /
+  切进切出边缘集合 / `apply()` 接线（`global: true`）/ 端到端派发回钉 / dispose 摘监听器；
+- **新增 `scripts/verify-edge-model-repin.ts`（9 组行为级门禁）**：挂进 `verify:build` 链；
+  纯只读、不联网、不读凭据；
+- 全量：双 typecheck 绿；单测 **81 files / 1629 passed / 2 skipped**；`npm run build` **EXIT=0**
+  （27 道门禁全绿）。
+
+### 六、装机与实测
+
+- 按文件同步 `lib/dsh-adapter/input-guard.{js,d.ts,d.ts.map}` 进桌面 profile
+  （比对全量哈希：只有这三个文件与仓库构建产物不同）；
+- 按 PID 精确停桌面 App（GUI 56436 → 宿主 65592 一并退出）⇒ 同步 ⇒ 重启（GUI 67388）；
+- 重启后审计链自证：
+  - `input-guard.hook.registered {event:"session/event", global:true, scopedTo:"edge-session-set"}`
+    ⇒ 监听器挂上了；
+  - `input-guard.model.defaulted {sessionId:"session-1ea9ccb6-…", trigger:"agent-created",
+    provider:"local-llm", model:"qwen3.8-max", source:"local-pool", mode:"direct"}`
+    ⇒ 宿主恢复该会话时 agent 在**边缘 scope** 上重建 ⇒ 它已在边缘集合里；
+  - ops log 无新 ERROR（最后一条仍是 15:03:41 那条已修掉的 `jev.apiKeyRef` 悬空引用）。
+
+### 七、留给主人的实测（等回话）
+
+在桌面 App 里：切到**边缘模式** → 发一句话 ⇒ 期望
+
+1. 这一轮**不再**被拒（审计链里没有新的 `input-guard.blocked.model-selection`）；
+2. 审计链出现 `input-guard.model.repinned`，`from.provider` = 客户端写回的那个 provider。
+
+### 八、口径与遗留
+
+- 「模型名切到 edge.json 里配的那个」**是设计**，不是 bug：边缘模式恒用本地池
+  （主人 2026-11-10 裁决「边缘模式恒用本地模型」），模型名就是 `llm.local.model`；
+- 本节把「显式选择优先」（§7.174）限定在**首次铺默认**上；边缘模式的**持续**选型
+  由回钉强制为本地池 —— 否则这一轮要么上云、要么被闸门拒掉，两条都不是主人要的；
+- §7.183 之后，`webSearch.tavilyEnabled` / `bochaEnabled` 在主人那份桌面配置里仍是
+  `true`（主人自建的文件，本节未改）⇒ 两档仍在链上（要不要改成 false 由主人定，
+  改完必须重启 App）。
+
+## §7.184 边缘模式选型不动 + 出网那一跳改道到本地池（2026-11-11）
+
+### 〇、主人的裁决（原文，不改写）与现场事实
+
+主人 15:30 报的现象：
+
+> 「还有一个问题，一切换到 边缘模式，模型马上就会切换成 edge.jsonl里配置的模型名了」
+
+我最初把它读成「模型切过去是设计，坏的是这一轮被拒」⇒ 做了 §7.183（持续回钉）。
+主人 18:54 实测后只回了一句：
+
+> 「边缘模式 还是被切换到localllm了」
+
+⇒ **读反了**：主人抱怨的是「进入边缘模式，模型选择器被改成 local-llm」这件事**本身**，
+不是「这一轮被拒」。那一轮主人**没有发言**（会话事件流实测：切进边缘 → 我们的补钉
+写了 `model/selection {local-llm, qwen3.8-max}` → 2 秒后切回 `ptc` ⇒ 只是在看选择器）。
+
+于是重新问了一次，主人选了：
+
+> **选择器完全不动，实际请求改道到本地池**
+
+### 一、为什么 §7.176/§7.179/§7.183 全都要退役
+
+那三节做的事都是同一件：**把会话级 `modelSelection` 钉/补钉/回钉成 `local-llm`**。
+主人的裁决是「选择器完全不动」⇒ 这套机制**整体退役**：
+
+| 退役的东西 | 出处 | 为什么必须退 |
+|---|---|---|
+| `agent/created` 时用 `agent.model.select()` 钉成 local-llm | §7.176 | 主人一进边缘模式，选择器就跳 |
+| `agent-preset/selected` 时补钉 | §7.179 | 同上 |
+| `session/event` 上持续回钉 | §7.183 | 同上（而且它把「跳」固化成了常态） |
+| pre-step 的 `blocked.model-selection` 拒收 | §7.175 | 改道之后没有拒的必要（见第三节） |
+
+**留不下来的问题**：选型不动 ⇒ 宿主选的 provider 可能还是云端 ⇒ 这一轮岂不是带着原文
+上云了？⇒ 这正是**改道**要解决的。
+
+### 二、宿主契约（已查实，`app.asar` 逐处读过）
+
+| 事实 | 出处 | 对本节的影响 |
+|---|---|---|
+| `llm/stream` 的 waterfall **默认处理**才是解析适配器的地方：`adapterStream(options, prepared)` 里 `registration = prepared?.registration ?? this.registration(options.provider)` | dsh-llm `adapterStream()` | **换掉 `options.provider` 就换掉了真正发出去的适配器** ⇒ 改道可行 |
+| `stream(options)` → `streamWithRegistration(options, undefined)` → `ctx.waterfall(this, 'llm/stream', options, () => this.adapterStream(options, prepared))` | dsh-llm `LlmRuntime` | 两条路径（直接 stream / prepareCall）都是在 waterfall **内部**才解析适配器 |
+| cordis 的 waterfall **不接受替换载荷**：`next()` 无参，载荷被闭包捕获；`inner()` 用的是原始 `options` | cordis `EventsService.waterfall` | ⇒ 改道只能换一个请求对象**重新派发**（与 §7.151 的出网裁剪同一个姿势） |
+| LOOP 构建的请求是 **deep-frozen**（`markAgentLoopRequest` + `deepFreeze`） | dsh-llm api-catalog | ⇒ 不能就地改写 `options.provider`，只能 `{...options, provider, model}` |
+
+### 三、改法
+
+**1）`llm/stream` 上先判「要不要改道」，再判「要不要裁剪」**
+
+```
+needsLocalReroute(options, state):
+    turnCategory[sessionId] !== 'LOCAL'        ⇒ false   （CLOUD/SANITIZED 轮次就是要出网的）
+    provider 为空                                ⇒ false
+    provider === localProvider                    ⇒ false   （防自锁：重新派发回来的那趟也走这一支）
+    否则                                          ⇒ true
+```
+
+位置要紧：**改道排在出网裁剪之前** —— 本地池按 §7.131 带**全部**历史（本地池不出网，
+不裁）；要是先裁了再改道，本地池就只拿到「云段历史」，上下文凭空少一截。
+
+**2）改道用「与 wire 同源」的 model id**
+
+复用 §7.180 的 `resolveEffectiveLocalModelSync` / `resolveEffectiveLocalModelWith`
+（共享委托目标缓存）⇒ 直连池 = 池自己的 model id；DELEGATE 池 = 委托落点的 model id
+⇒ **wire / 模型目录 / 改道过去的 id** 三者是同一个（§7.180 的口径不变）。
+
+**3）fail-closed**
+
+改不动（本地路由不存在 / 解析不到 model id / 宿主 LLM runtime 不可用）⇒ **抛错**，
+绝不放行到可能上云的 provider。审计行 `input-guard.reroute.blocked` 记原因。
+
+**4）pre-step 闸门退役「按选型拒收」这一条**
+
+旧口径（§7.175）：判定 LOCAL 而选型不是本地 provider ⇒ 拒绝这一轮。那是**改不了路由
+时**的唯一选择（宿主的 `prepareRequest()` 会对改写直接抛错）。现在能改道 ⇒ 拒收没有
+意义。闸门保留的部分：**本地路由必须真的存在**（否则改道无处可去 ⇒ 仍报可操作的错）。
+
+**5）面板写明「你选的是 A、实际跑的是 B」**
+
+改道行 `input-guard.reroute.local` 带 `from`（被改掉的原选型）与 `to`（实际落点）
+⇒ 「答案出口」节点多一行 **「会话选型 → 实际落点」**；出口行还没到时，改道行本身就是
+一次**路由宣告** ⇒ 面板不再写「路由未定」（那与实际行为相反）。
+
+### 四、口径要点
+
+- **LOCAL 轮次改道；CLOUD 轮次不改道。** 主人裁决说的是「进入边缘模式时怎么处理选型」，
+  不是「边缘模式禁用云端」—— CLOUD 轮次按设计就是要出网的（脱敏 + 只带云段历史，§7.131），
+  插件的云池能力不能因此作废。
+- **DELEGATE 池的边界照旧**（§7.171）：DELEGATE 的「本地池」把请求转发给宿主提供商 ⇒
+  那一跳仍然出网。本节不改变这条边界。
+- 旧口径里「用户明确选过云端模型 ⇒ 拒」其实与 §7.174「用哪个模型是用户自己的行为」
+  相冲突 —— 现在两者都成立：**选择器保持用户选的那个**，而「本轮留在设备上」由改道保证。
+
+### 五、门禁与测试
+
+- **新增 `tests/unit/input-guard-local-reroute.test.ts`（8 例）**：改道 / 本地池拿到全部历史 /
+  CLOUD 不改道 / 已是本地不改道 / 标准模式零影响 / DELEGATE 同源 / 本地路由不存在 fail-closed /
+  LLM runtime 不可用 fail-closed；
+- **新增 `tests/unit/flow-panel-local-reroute.test.ts`（3 例）**：面板写明「会话选型 → 实际落点」/
+  没有改道就不写 / 改道行单独出现时不写「路由未定」；
+- **新增 `scripts/verify-edge-local-reroute.ts`（9 组行为级门禁）**：挂进 `verify:build` 链；
+  其中第 8 组直接守「**不再注册任何会改写选型的监听器**」（`agent/created` /
+  `agent-preset/selected` / `session/event` 三个都不得复活）；
+- **删除** `tests/unit/input-guard-edge-model.test.ts`（钉选口径）、
+  `tests/unit/input-guard-model-repin.test.ts`（回钉口径）、
+  `scripts/verify-edge-model-repin.ts`（回钉门禁）；
+- **改写** `tests/unit/input-guard.test.ts` 的 §7.175 闸门用例、
+  `tests/unit/input-guard-http-api-integration.test.ts` 的 403 用例。
+- **build 链当场抓到、本轮补掉的两处**：
+  - `verify-config-hints`（§7.159）抽的是**文件里第一个**含「本轮 intent 判定为 LOCAL」
+    的 throw 语句，按**源码字面量**检查它有没有点名 `~/.dsh-edge-agent/edge.json` /
+    `llm.local` / `secrets`。§7.184 的改道 fail-closed 报错排在 pre-step **之前**
+    ⇒ 被抽到的是**它** ⇒ 它必须自带同一段配置指引，否则门禁判「用户可见的配置提示有
+    误导」。⇒ 已把「编辑 ~/.dsh-edge-agent/edge.json 的 llm.local 段 / 密钥写进 secrets
+    段」字面写进那条报错（门禁按字面量抽文案 ⇒ 不能改成常量插值），内容与 pre-step 一致；
+  - 改道成功的审计行 `input-guard.reroute.local` 原本写在「LLM runtime 可用性检查」
+    **之前** ⇒ runtime 不可用时会留下一条「已改道」的**假记录**（与实际行为相反）
+    ⇒ 已挪到真正派发之前。
+
+### 六、留给主人的实测（等回话）
+
+在桌面 App 里：**切到边缘模式 ⇒ 模型选择器保持原样（不跳）⇒ 发一句话** ⇒ 期望
+
+1. 模型选择器**没有**变成 local-llm；
+2. 这一轮**没有被拒**（审计链里没有 `input-guard.blocked.model-selection`）；
+3. 审计链出现 `input-guard.reroute.local`，`from.provider` = 宿主选的那个云端
+   provider，`to.provider` = `local-llm`；
+4. 面板「答案出口」出现「会话选型 → 实际落点」。

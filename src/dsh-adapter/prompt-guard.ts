@@ -20,6 +20,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { PrivacyPolicyServiceImpl } from './privacy-policy.js'
 import { PII_RULES, redactString } from './pii-utils.js'
 import { loadEdgeConfig, localPool } from './edge-config.js'
+import { resolveEffectiveLocalModel } from './effective-model.js'
 // §7.125 (2026-10-27): the entry security check uses the SAME device-command
 // matcher as intent-router's Tier-0 — one vocabulary, one rule set, so the
 // two layers can never disagree about what counts as a device operation.
@@ -695,6 +696,23 @@ export class PromptGuardServiceImpl extends Service implements PromptGuardServic
       source: { kind: 'user' },
     })
 
+    // §7.179（2026-11-11）：**调用时**解析真正会跑的模型。
+    //
+    // 之前模型名只在 apply() 里跟 `llm.local.model` 走一次（§7.102）。DELEGATE
+    // 模式（llm.local.baseUrl 留空）下那个值是空的 ⇒ 模型名停在 Schema 默认
+    // `qwen3-4b`，而 wire 上真正跑的是 delegate 解析出来的宿主当前模型 ⇒ 面板
+    // 写着「模型 local-llm/qwen3-4b」而实际跑的是另一个模型（与实际行为相反）。
+    //
+    // ⇒ 这里按调用时求值（宿主的选择器随时可改）：直连池用它自己的 model；
+    // DELEGATE 池用委托解析链的结果。§7.176 的同一口径。解析链与
+    // local-llm-adapter 共用同一份（effective-model.ts → probeCloudTarget）。
+    const effective = await resolveEffectiveLocalModel(
+      this.ctx,
+      cfg.modelDetectionModel,
+      cfg.modelDetectionProvider,
+    )
+    const detectModel = effective.model
+
     // 3) Timeout via AbortController. Hard cap on the assembled response
     //    prevents a chatty model from chewing memory if the wire is alive
     //    but verbose.
@@ -704,7 +722,9 @@ export class PromptGuardServiceImpl extends Service implements PromptGuardServic
       sessionId,
       textLen: text.length,
       provider: cfg.modelDetectionProvider,
-      model: cfg.modelDetectionModel,
+      model: detectModel,
+      modelProvider: effective.provider ?? cfg.modelDetectionProvider,
+      modelSource: effective.source,
       timeoutMs: cfg.modelDetectionTimeoutMs,
       textPreview: redactString(text.slice(0, 60)).redacted,
     })
@@ -719,7 +739,7 @@ export class PromptGuardServiceImpl extends Service implements PromptGuardServic
     try {
       const streamRaw = this.llm.stream({
         provider: cfg.modelDetectionProvider,
-        model: cfg.modelDetectionModel,
+        model: detectModel,
         messages: [userMessage],
         system: systemPrompt,
         signal: controller.signal,
@@ -807,7 +827,8 @@ export class PromptGuardServiceImpl extends Service implements PromptGuardServic
         sessionId,
         durationMs,
         provider: cfg.modelDetectionProvider,
-        model: cfg.modelDetectionModel,
+        model: detectModel,
+        modelProvider: effective.provider ?? cfg.modelDetectionProvider,
         threats: parsed.threats,
         dataClass: parsed.dataClass,
         rationale: parsed.rationale,
@@ -826,7 +847,8 @@ export class PromptGuardServiceImpl extends Service implements PromptGuardServic
       sessionId,
       durationMs,
       provider: cfg.modelDetectionProvider,
-      model: cfg.modelDetectionModel,
+      model: detectModel,
+      modelProvider: effective.provider ?? cfg.modelDetectionProvider,
       dataClass: parsed.dataClass,
       chunks,
       textLen: text.length,

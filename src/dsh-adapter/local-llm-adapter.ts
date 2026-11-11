@@ -40,6 +40,7 @@ import {
 // cloud-llm-adapter 不 import 本模块 ⇒ 无环。
 import {
   CloudLlmDelegateAdapterImpl,
+  localPoolTargetCache,
   type AgentDefaultModelLike,
   type DelegateAccessors,
   type DelegateConfigLike,
@@ -424,16 +425,28 @@ class RealLocalAdapter extends LlmAdapter {
   }
 
   /**
-   * §7.106 Option A: the catalog (the desktop's model picker) is deliberately
-   * EMPTY — local-llm is privacy-pipeline plumbing (guard/intent internal
-   * stages + input-guard's per-turn downgrade route), not a user choice.
-   * dsh-llm documents the decoupling ("catalog membership does not constrain
-   * core routing", lib/index.js:2080): stream/resolve keep serving the route,
-   * and compaction reads its 16384 window off resolveModel's context (the
-   * §7.40 capacity lives there now — a hidden catalog can no longer carry it).
+   * §7.180: 直连池在模型目录里**如实声明它唯一会跑的那个模型**。
+   *
+   * §7.106 Option A 当初让目录恒空，理由是「local-llm 是隐私管线内部件，
+   * 不是给用户选的」—— 那条理由对**云池**成立（避免误选 cloud-llm/
+   * deepseek-chat，也避免 INVALID_CATALOG），对**本地池**不再成立：边缘
+   * 模式会话本来就该指向本地池，目录里没有它 ⇒ 宿主选择器只能显示
+   * 「请选择模型」（主人 2026-11-11 13:52 实测）。
+   *
+   * 直连池的 wire body 恒用 `this.defaultModel`（`options.model` 只是路由键
+   * `route=`）⇒ 目录里就只声明这一个 id，不多不少。
    */
   override listModels(_provider: string): Promise<readonly LlmModelInfo[]> {
-    return Promise.resolve([])
+    const id = this.defaultModel.trim()
+    if (id.length === 0) return Promise.resolve([])
+    // §7.180: 留审计行 —— 「宿主模型目录里 local-llm 声明了什么」是可查证的事实。
+    void this.auditLog?.log({
+      level: 'info',
+      kind: 'llm.local.catalog',
+      source: 'local-llm-adapter',
+      payload: { provider: this.providerName, model: id, mode: 'direct' },
+    }).catch(() => {})
+    return Promise.resolve([{ provider: this.providerName, id, name: id }])
   }
 
   override resolveModel(
@@ -869,6 +882,10 @@ async function applyDelegate(
     logger,
     undefined, // egress: the local pool never trims (§7.131 asymmetry)
     'local',   // poolKind: LOCAL 口径 —— 带全部历史 + 不脱敏
+    // §7.180: 共享的委托目标缓存 —— wire（stream）、模型目录（listModels）
+    // 与会话补钉（input-guard）读同一份目标 ⇒ 界面上写的 model id 就是
+    // 真正会跑的那个。
+    localPoolTargetCache,
   )
 
   // §7.100 hot-reload parity: host route churn (pi-ai replace / adapter

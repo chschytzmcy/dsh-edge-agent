@@ -13,6 +13,7 @@ import {
   CloudLlmDelegateAdapterImpl,
 } from '../../src/dsh-adapter/cloud-llm-adapter.ts'
 import { LOCAL_POOL_FORWARD_MARKER } from '../../src/dsh-adapter/host-llm-trace.ts'
+import { withInternalCaller } from '../../src/dsh-adapter/llm-internal-caller.ts'
 
 type Recorded = { provider: string; model: string }
 
@@ -383,5 +384,88 @@ describe('§7.171 — 本地池的 DELEGATE 模式', () => {
         && /llm\.local\.delegate=false/.test(String(err.message)),
     )
     assert.equal(llm.calls.length, 0)
+  })
+})
+
+/**
+ * §7.181 —— 委托出口行必须带判别字段（tools / internal）。
+ *
+ * 委托路径（`llm.{local,cloud}.delegate.*`）与直连路径（`llm.local.start` /
+ * `.end`）走的是同一个 `ctx.llm.stream`，在 adapter 眼里没有区别 —— 但
+ * 面板需要区分「主对话出网」与「安检 / 分类器的内部调用」，否则 §7.132
+ * 那个 bug 会在委托路径上原样复发（内部调用冒充答案出口）。
+ *
+ * 直连行早就带 `tools` / `internal`（`egressAuditFields`），委托行此前**不带**
+ * ⇒ 面板在 DELEGATE 下既认不出出口行、也分不出内部调用（§7.181 的现场：
+ * 明明作答了却写「路由未定」）。
+ */
+describe('§7.181 — 委托出口行的判别字段', () => {
+  const localCfg = (over: Record<string, unknown> = {}): any => ({
+    providers: ['local-llm'],
+    delegateEnabled: true,
+    ...over,
+  })
+  const selection = { provider: 'deepseek-official', model: 'dm' }
+  const accessors = (llm: any) => ({
+    llm,
+    getAgentDefaultModel: () => ({ currentSelection: () => selection }),
+  }) as any
+
+  it('主对话：delegate.resolved / delegate.end 都带 tools 件数，且无 internal 标记', async () => {
+    const entries: any[] = []
+    const auditLog = { log: async (e: any) => { entries.push(e) } }
+    const llm = mkLlm(['deepseek-official'])
+    const d = new CloudLlmDelegateAdapterImpl(
+      localCfg(), accessors(llm), auditLog, undefined, undefined, undefined, 'local',
+    )
+    await drain(d.stream({
+      provider: 'local-llm', model: 'm', messages: [], sessionId: 's1',
+      tools: [1, 2, 3],
+    } as any))
+
+    const resolved = entries.find(e => e.kind === 'llm.local.delegate.resolved')
+    const end = entries.find(e => e.kind === 'llm.local.delegate.end')
+    assert.ok(resolved, `必须有 delegate.resolved 行: ${entries.map(e => e.kind).join(',')}`)
+    assert.ok(end, `必须有 delegate.end 行: ${entries.map(e => e.kind).join(',')}`)
+    assert.equal(resolved.payload.tools, 3, 'delegate.resolved 必须带 tools 件数')
+    assert.equal(end.payload.tools, 3, 'delegate.end 必须带 tools 件数')
+    assert.equal(resolved.payload.internal, undefined, '主对话不得带 internal 标记')
+    assert.equal(end.payload.internal, undefined, '主对话不得带 internal 标记')
+  })
+
+  it('内部调用：委托行带 internal 标记且 tools=0（面板据此排除）', async () => {
+    const entries: any[] = []
+    const auditLog = { log: async (e: any) => { entries.push(e) } }
+    const llm = mkLlm(['deepseek-official'])
+    const d = new CloudLlmDelegateAdapterImpl(
+      localCfg(), accessors(llm), auditLog, undefined, undefined, undefined, 'local',
+    )
+    const options = withInternalCaller(
+      { provider: 'local-llm', model: 'm', messages: [], sessionId: 's2' } as any,
+      'prompt-guard',
+    )
+    await drain(d.stream(options))
+
+    const resolved = entries.find(e => e.kind === 'llm.local.delegate.resolved')
+    const end = entries.find(e => e.kind === 'llm.local.delegate.end')
+    assert.ok(resolved && end, '内部调用也必须落委托行')
+    assert.equal(resolved.payload.internal, 'prompt-guard')
+    assert.equal(end.payload.internal, 'prompt-guard')
+    assert.equal(resolved.payload.tools, 0, '内部调用不得带工具')
+    assert.equal(end.payload.tools, 0, '内部调用不得带工具')
+  })
+
+  it('委托行带池（from）与真实落点（toProvider/toModel），供面板显示', async () => {
+    const entries: any[] = []
+    const auditLog = { log: async (e: any) => { entries.push(e) } }
+    const llm = mkLlm(['deepseek-official'])
+    const d = new CloudLlmDelegateAdapterImpl(
+      localCfg(), accessors(llm), auditLog, undefined, undefined, undefined, 'local',
+    )
+    await drain(d.stream({ provider: 'local-llm', model: 'm', messages: [], sessionId: 's3' } as any))
+    const resolved = entries.find(e => e.kind === 'llm.local.delegate.resolved')
+    assert.equal(resolved.payload.from, 'local-llm', '必须带池名')
+    assert.equal(resolved.payload.toProvider, 'deepseek-official', '必须带真实落点 provider')
+    assert.equal(resolved.payload.toModel, 'dm', '必须带真实落点 model')
   })
 })

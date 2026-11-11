@@ -1229,6 +1229,68 @@ export function probeCloudTarget(
   return null
 }
 
+/**
+ * §7.180 (2026-11-11): 委托目标的**共享缓存**。
+ *
+ * 背景（主人实测 2026-11-11 13:52，桌面 App）：边缘模式会话在宿主的模型
+ * 选择器里显示「请选择模型」。宿主 `buildModelCatalog` 会把 `listModels()`
+ * 返回空数组的 provider **整组剔掉**（`groups.filter(g => g.models.length > 0)`），
+ * 而本地池此前恒返回空目录（§7.106 Option A）⇒ 本地池根本不在目录里，
+ * 选择器自然找不到与会话选择匹配的那一项（`currentChoice` 为 undefined）。
+ *
+ * 修法不是「目录里随便写个名字」，而是让三处**读同一份委托目标**：
+ *
+ *   - wire（`stream()`）：委托目标 → `target.model ?? firstModelId(target)`；
+ *   - 目录（`listModels()`）：同一个目标 → 同一条 wire model id；
+ *   - 补钉（input-guard）：同一个目标 → 同一个 id。
+ *
+ * ⇒ 宿主选择器上显示的名字 = 真正会跑的那个模型（§7.176 口径）。
+ *
+ * 条目按「委托旋钮」分键，并校验 `llm` 服务身份：换一个 llm 服务实例
+ * （测试里的假 llm、宿主重连后的新实例）各自解析，不会串味。
+ */
+export class DelegateTargetCache {
+  private readonly entries = new Map<string, { llm: unknown; target: CloudDelegateTarget | null }>()
+
+  /**
+   * 缓存键：只跟委托旋钮有关 —— 两个自有池互相排除（§7.171 递归护栏），
+   * 所以 `providers` 不影响解析结果，不必进键。
+   */
+  static key(cfg: DelegateConfigLike): string {
+    return [
+      cfg.delegateEnabled === false ? 'off' : 'on',
+      (cfg.delegateProvider ?? '').trim(),
+      (cfg.delegateModel ?? '').trim(),
+    ].join('|')
+  }
+
+  /** 命中返回目标（含 null = 已探到「没有可用目标」）；未命中返回 undefined。 */
+  get(llm: unknown, cfg: DelegateConfigLike): CloudDelegateTarget | null | undefined {
+    const entry = this.entries.get(DelegateTargetCache.key(cfg))
+    if (entry === undefined) return undefined
+    if (entry.llm !== llm) return undefined
+    return entry.target
+  }
+
+  set(llm: unknown, cfg: DelegateConfigLike, target: CloudDelegateTarget | null): void {
+    this.entries.set(DelegateTargetCache.key(cfg), { llm, target })
+  }
+
+  /** 宿主路由拓扑变了（`llm/adapters-updated`）⇒ 丢掉全部条目。 */
+  clear(): void {
+    this.entries.clear()
+  }
+}
+
+/**
+ * §7.180: **本地池**共享的那一份委托目标缓存。
+ *
+ * wire（local-llm-adapter 的 DELEGATE 分支）、目录（`listModels()`）与会话
+ * 补钉（input-guard）三处都读它 ⇒ 三处永远说同一个模型。
+ * 云池不共用（§7.106：云池在目录里隐身，没有第二个消费方）。
+ */
+export const localPoolTargetCache = new DelegateTargetCache()
+
 export class CloudLlmDelegateAdapterImpl extends LlmAdapter {
   private readonly providersList: string[]
   private readonly cfg: DelegateConfigLike
@@ -1249,8 +1311,14 @@ export class CloudLlmDelegateAdapterImpl extends LlmAdapter {
    */
   private readonly poolKind: 'local' | 'cloud'
 
-  /** Cached probe result (undefined = not probed yet; null = probed, none). */
-  private targetCache: CloudDelegateTarget | null | undefined
+  /**
+   * §7.180: 委托目标缓存。
+   *
+   * 默认每实例一份（云池：目录里隐身，没有第二个消费方）；本地池改用
+   * `localPoolTargetCache` —— wire / 目录 / 会话补钉共用一份 ⇒ 三处永远
+   * 说同一个模型。
+   */
+  private readonly targetCache: DelegateTargetCache
   /** provider → first advertised model id, so stream() never re-fetches lists. */
   private readonly modelIdCache = new Map<string, string>()
 
@@ -1263,6 +1331,11 @@ export class CloudLlmDelegateAdapterImpl extends LlmAdapter {
     egress?: CloudEgressGuard,
     /** §7.171: 本地池 = 'local'（不裁剪）；云池 = 'cloud'（默认，裁剪）。 */
     poolKind: 'local' | 'cloud' = 'cloud',
+    /**
+     * §7.180: 委托目标缓存。默认每实例一份；本地池传入共享的
+     * `localPoolTargetCache`，让 wire / 目录 / 会话补钉共用同一份目标。
+     */
+    targetCache: DelegateTargetCache = new DelegateTargetCache(),
   ) {
     super()
     this.providersList = [...config.providers]
@@ -1273,6 +1346,7 @@ export class CloudLlmDelegateAdapterImpl extends LlmAdapter {
     this.logger = logger
     this.egress = egress
     this.poolKind = poolKind
+    this.targetCache = targetCache
   }
 
   private audit(level: 'debug' | 'info' | 'warn' | 'error' | 'security', kind: string, payload: Record<string, unknown>): void {
@@ -1300,17 +1374,27 @@ export class CloudLlmDelegateAdapterImpl extends LlmAdapter {
 
   /** `llm/adapters-updated` sink: drop cached target + model ids so the
    *  next call re-probes the new topology (host route churn is normal —
-   *  llm-pi-ai itself re-registers via handle.replace on settings edits). */
+   *  llm-pi-ai itself re-registers via handle.replace on settings edits).
+   *  §7.180: 本地池传进来的是**共享**缓存 ⇒ 这里一清，目录与补钉也跟着
+   *  重新解析，三处仍然同源。 */
   invalidateTopology(): void {
-    this.targetCache = undefined
+    this.targetCache.clear()
     this.modelIdCache.clear()
   }
 
+  /**
+   * §7.180: 委托目标（带缓存）。
+   *
+   * 命中共享缓存 ⇒ 与目录（`listModels()`）与会话补钉（input-guard）
+   * 拿到的是**同一个对象** ⇒ wire 上跑的模型 id 与界面上写的 id 必然一致。
+   */
   private resolveTarget(): CloudDelegateTarget | null {
-    if (this.targetCache === undefined) {
-      this.targetCache = probeCloudTarget(this.accessors, this.cfg)
-    }
-    return this.targetCache
+    const llm = this.accessors.llm
+    const cached = this.targetCache.get(llm, this.cfg)
+    if (cached !== undefined) return cached
+    const target = probeCloudTarget(this.accessors, this.cfg)
+    this.targetCache.set(llm, this.cfg, target)
+    return target
   }
 
   get providers(): string[] {
@@ -1321,13 +1405,33 @@ export class CloudLlmDelegateAdapterImpl extends LlmAdapter {
     return { id: provider, name: provider }
   }
 
-  /** §7.106 Option A: see the base adapter's listModels — the delegate route
-   *  is deliberately invisible in the catalog (a proxy of the host's own
-   *  selection has nothing to advertise of its own). `stream()`/`resolveModel`
-   *  keep working; `firstModelId` reads the TARGET provider's catalog via the
-   *  registry, which is unaffected by what this route advertises. */
-  override listModels(_provider: string): Promise<readonly LlmModelInfo[]> {
-    return Promise.resolve([])
+  /**
+   * §7.180: **本地池**在模型目录里如实声明它真正会跑的那一个模型。
+   *
+   * 云池（`poolKind === 'cloud'`）保持 §7.106 Option A：目录恒空 —— 避免用户
+   * 误选 `cloud-llm/deepseek-chat`，也避免 INVALID_CATALOG。
+   *
+   * 本地池相反：边缘模式会话就该指向本地池，目录里没有它 ⇒ 宿主选择器只能
+   * 显示「请选择模型」（主人 13:52 实测）。这里声明的 id 与 wire 上真正跑的
+   * 那个**同源**（同一个委托目标 + 同一个 firstModelId 回填）⇒ 选择器上
+   * 写的名字 = 真正会跑的模型（§7.176）。
+   */
+  override async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
+    if (this.poolKind !== 'local') return []
+    const target = this.resolveTarget()
+    if (!target) return []
+    const id = await this.resolveWireModel(target)
+    if (id === undefined) return []
+    // §7.180: 留审计行 —— 「宿主模型目录里 local-llm 声明了什么」是可查证的事实
+    // （主人桌面复测时对照面板与审计链即可）。
+    this.audit('info', 'llm.local.catalog', {
+      provider,
+      model: id,
+      target: target.provider,
+      targetSource: target.source,
+    })
+    // 宿主 dsh-llm 会校验 `model.provider === provider`（INVALID_CATALOG）。
+    return [{ provider, id, name: id }]
   }
 
   override async resolveModel(
@@ -1375,6 +1479,20 @@ export class CloudLlmDelegateAdapterImpl extends LlmAdapter {
     }
   }
 
+  /**
+   * §7.180: wire 上真正会跑的 model id —— 与 `listModels()` 同一份口径。
+   *
+   * `target.model` 是委托解析链给定的 id；探针步没定 model 时取该 provider
+   * 的第一个 model id（adapter 的既有口径）。解析出来的 id **回填进缓存
+   * 目标** ⇒ 目录、补钉与 wire 三处共享同一个 id（`target` 是缓存里那个
+   * 对象本身，回填对三方同时可见）。
+   */
+  private async resolveWireModel(target: CloudDelegateTarget): Promise<string | undefined> {
+    const id = target.model ?? (await this.firstModelId(target))
+    if (id !== undefined && target.model === undefined) target.model = id
+    return id
+  }
+
   override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
     const target = this.resolveTarget()
     if (!target) {
@@ -1402,7 +1520,7 @@ export class CloudLlmDelegateAdapterImpl extends LlmAdapter {
       )
     }
 
-    const wireModel = target.model ?? (await this.firstModelId(target)) ?? options.model
+    const wireModel = (await this.resolveWireModel(target)) ?? options.model
     const sessionId = (options as { sessionId?: string }).sessionId ?? 'unknown'
 
     // Orphan-tool-call wash (2026-08-31 fix, same rationale as direct mode):
@@ -1458,6 +1576,10 @@ export class CloudLlmDelegateAdapterImpl extends LlmAdapter {
       source: target.source,
       sessionId,
       messageCount: forwardMessages.length,
+      // §7.181: 判别字段（tools 件数 + 内部调用标记）—— 与直连池的
+      // `llm.local.start` 同款。没有它，面板分不出「主对话出网」与「安检 /
+      // 分类器的内部调用」（两者走的是同一条委托路径）。
+      ...egressAuditFields(options),
       historyDropped: egressDropped,
       egressReplacements,
       egressSanitized,
@@ -1533,6 +1655,8 @@ export class CloudLlmDelegateAdapterImpl extends LlmAdapter {
         sawText,
         sawToolCall,
         finishKind,
+        // §7.181: 同 `delegate.resolved` —— 判别字段（tools/internal）。
+        ...egressAuditFields(options),
       })
       try {
         this.logger?.info?.(

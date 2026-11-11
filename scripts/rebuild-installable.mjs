@@ -95,14 +95,23 @@ function readJson(path) {
 // Entries may carry a `!` prefix (npm's negation, e.g. "!config/edge.json"):
 // those describe what must NOT reach the **npm tarball**. The installable
 // bundle built here is a LOCAL artifact — the desktop profile mounts it
-// through a junction and the runtime config (config/edge.json, with the
-// operator's real endpoints) has to travel with it — so the whole config
-// directory is copied and the negation is deliberately not applied here.
-// The distributable tarballs (npm pack, `make package`) exclude it.
+// through a junction — so the whole config directory is copied and the
+// negation is deliberately not applied here.
+//
+// §7.182 (2026-11-11): the negation is now applied to the LOCAL artifact as
+// well. The operator's config has exactly one home — `~/.dsh-edge-agent/
+// edge.json` — and the runtime no longer reads a bundle-local copy ⇒ an
+// installable carrying `config/edge.json` would ship plaintext API keys in
+// a file nothing reads. `config/edge.example.json` (the blank-secret
+// template) and `config/privacy-policy.json` (the enforced policy) still
+// ship — they are the bundle's OWN files, not the operator's.
 function shippedEntries(pkg) {
   const list = Array.isArray(pkg.files) && pkg.files.length > 0 ? pkg.files : ['lib']
   return list.filter((entry) => !entry.startsWith('!'))
 }
+
+/** Files inside a shipped directory that must never be staged (§7.182). */
+const OPERATOR_CONFIG_FILES = ['edge.json']
 
 let pkg
 try {
@@ -142,6 +151,12 @@ for (const variant of VARIANTS) {
       continue
     }
     cpSync(src, join(staging, entry), { recursive: true })
+    // §7.182: the operator's own config must not travel with the artifact.
+    if (entry === 'config') {
+      for (const f of OPERATOR_CONFIG_FILES) {
+        rmSync(join(staging, 'config', f), { force: true })
+      }
+    }
   }
 
   // 2. The cordis patch variant this bundle ships.

@@ -23,13 +23,34 @@
  * file itself, so a file that ships inside the bundle works identically in
  * every profile.
  *
- * Lookup order (first hit wins):
- *   1. <bundle root>/config/edge.json  — resolved relative to this module,
- *      so it works for the CLI (repo checkout) and for the desktop (the
- *      bundle is copied into the profile's node_modules).
- *   2. ~/.dsh-edge-agent/edge.json      — the installed-override location
- *      (same convention as ~/.dsh-edge-agent/privacy-policy.json).
- *   3. built-in defaults                — see DEFAULT_* below.
+ * Lookup order (first hit wins) — §7.182 (2026-11-11, operator ruling):
+ *   1. <bundle root>/config/edge.json      — the INSTALLED bundle's own config
+ *      directory. "插件装在哪，配置就在哪" — the user opens the plugin folder
+ *      and finds the file they are supposed to edit. (§7.182: in a SOURCE
+ *      CHECKOUT this candidate is SKIPPED — see isSourceCheckout() below —
+ *      because the repository's config/ directory is no longer a supported
+ *      drop point.)
+ *   2. ~/.dsh-edge-agent/edge.json         — the operator's home copy. Survives
+ *      a reinstall, a profile deletion, and every install channel (npm / git
+ *      / tarball), so it is the落点 for anything long-lived.
+ *   (no third candidate — the shipped template is NOT read at runtime; the
+ *    template's values live in DEFAULT_EDGE_CONFIG below, so "no config file"
+ *    means exactly what the template used to mean.)
+ *
+ * §7.182 (operator ruling): **the repository's config/ directory is no longer
+ * a supported drop point for the live config.** Why:
+ *   - it holds the operator's plaintext API keys, and a git checkout is the
+ *     one place where they can leak into history (§7.178 deleted every such
+ *     local config);
+ *   - the npm / git / tarball channels never had that file anyway (the
+ *     packaging gates exclude `config/edge.json` on purpose), so it was never
+ *     a cross-channel location;
+ *   - a source checkout and an installed bundle resolve to the SAME path
+ *     (`edgeBundleRoot()` walks up from this module), so the ruling is
+ *     enforced by isSourceCheckout() — in a checkout, candidate #1 is
+ *     skipped and the runtime reads the same home copy the desktop does.
+ * ⇒ One config, two legal落点: the installed bundle's own config dir (where
+ *   the user looks) and `~/.dsh-edge-agent/edge.json` (where it survives).
  *
  * The loader is deliberately read-only and synchronous: config is read once
  * at plugin apply() time. Hot reload is the caller's job (privacy-policy
@@ -128,6 +149,11 @@ export interface EdgeStage {
 }
 
 export interface EdgeJevConfig {
+  /** §7.182 (2026-11-11, owner ruling): the jev decision-model tier is
+   *  **OFF by default**. It is an optional accelerator that needs a local
+   *  decision-model service on 127.0.0.1:8001 (or a Bailian MaaS key);
+   *  with no config file it must not be probed at all. Turn it on
+   *  explicitly with `jev.enabled: true`. */
   enabled?: boolean
   url?: string
   /** §7.112 (2026-10-25): backend kind. 'local' = the ONNX /predict
@@ -245,7 +271,12 @@ export interface EdgeThreatConfig {
 }
 
 export interface EdgeWebSearchConfig {
+  /** §7.182 (2026-11-11, owner ruling): the Tavily tier is **OFF by
+   *  default** ⇒ out of the box only the DeepSeek tier
+   *  (secrets.deepseekApiKey) is on the chain. Opt in with
+   *  `webSearch.tavilyEnabled: true`. */
   tavilyEnabled?: boolean
+  /** §7.182: the 博查 AI tier is **OFF by default** (same rule). */
   bochaEnabled?: boolean
 }
 
@@ -305,10 +336,15 @@ export const DEFAULT_EDGE_CONFIG: EdgeConfig = {
     cloud: { delegate: true },
   },
   stages: {
-    guard: { provider: 'local-llm', enabled: true, timeoutMs: 20000, maxInput: 2000 },
+    // §7.182: 60000 (not 20000/30000) — the shipped template used to supply
+    // this value and it was the candidate #3 fallback; the template is no
+    // longer a runtime candidate, so its deployment values live HERE now.
+    // Without this, "no config file" would silently shrink the guard's and
+    // the classifier's per-call timeout by 3x / 2x.
+    guard: { provider: 'local-llm', enabled: true, timeoutMs: 60000, maxInput: 2000 },
     intent: {
       provider: 'local-llm',
-      timeoutMs: 30000,
+      timeoutMs: 60000,
       confidenceThreshold: 0.6,
       maxInput: 2000,
       recentLimit: 3,
@@ -321,10 +357,15 @@ export const DEFAULT_EDGE_CONFIG: EdgeConfig = {
       fallbackKeywords: [],
       // §7.124: 内置词表已覆盖常见家电；此处是 operator 追加面。
       deviceCommands: { devices: [], actions: [] },
+      // §7.115: the LLM classifier is the fallback tier (jev skips go here).
+      llmFallback: true,
     },
   },
   jev: {
-    enabled: true,
+    // §7.182 (2026-11-11, owner ruling): OFF by default. jev is an optional
+    // accelerator that needs a local decision-model service on :8001 ⇒ with
+    // no config file it must not be probed. Opt in with jev.enabled=true.
+    enabled: false,
     url: 'http://127.0.0.1:8001',
     timeoutMs: 2500,
     confidenceThreshold: 0.85,
@@ -334,6 +375,20 @@ export const DEFAULT_EDGE_CONFIG: EdgeConfig = {
     bootProbeTimeoutMs: 2000,
     breakerProbeMs: 5000,
     probeTimeoutMs: 1000,
+    // §7.182: the template used to carry these and was the runtime fallback;
+    // it is no longer a candidate ⇒ they live here now (the service-level
+    // `??` literals agree with these values — see intent-router.ts).
+    provider: 'local',
+    model: 'decision-model-preview',
+    authScheme: 'raw',
+    path: '/systemone',
+    localAdoptFloor: 0.5,
+    // §7.182: `apiKeyRef` is deliberately NOT folded in. The template points
+    // it at `secrets.bailianApiKey`, a slot that only exists once the
+    // operator fills it — with the template as a runtime candidate that made
+    // every start log "密钥引用指向不存在的槽位" (the §7.171 noise). A code
+    // default must not carry a reference to a slot it cannot fill: jev's
+    // default provider is the local ONNX one, which needs no key at all.
   },
   functionCallExternal: {
     // Code-level fallback = the historical Schema defaults (function-call-
@@ -341,13 +396,16 @@ export const DEFAULT_EDGE_CONFIG: EdgeConfig = {
     // as the 15000 ms needle timeout live in config/edge.json instead.
     enabled: false,
     url: 'http://127.0.0.1:8081',
-    timeoutMs: 10000,
+    // §7.182: the template's deployment values moved here (the template is no
+    // longer a runtime candidate) ⇒ "no config file" still means what the
+    // template used to mean.
+    timeoutMs: 15000,
     confidenceThreshold: 0.5,
     breakerTtlMs: 30000,
     bootProbeEnabled: true,
     bootProbeTimeoutMs: 2000,
     breakerProbeMs: 5000,
-    probeTimeoutMs: 2000,
+    probeTimeoutMs: 1000,
   },
   privacy: {
     inputGuardEnabled: true,
@@ -379,7 +437,10 @@ export const DEFAULT_EDGE_CONFIG: EdgeConfig = {
   storage: {},
   etscli: { timeoutMs: 30000 },
   threat: { cloudRate: 20, blockLevel: 'critical' },
-  webSearch: { tavilyEnabled: true, bochaEnabled: true },
+  // §7.182 (2026-11-11, owner ruling): Tavily / 博查 are OFF by default ⇒
+  // out of the box the web-search chain is DeepSeek-only
+  // (secrets.deepseekApiKey). Opt in per tier.
+  webSearch: { tavilyEnabled: false, bochaEnabled: false },
   agent: {
     persona: 'You are edge-agent, a privacy-first AI assistant running on the user\'s device.',
     localToolsWritable: true,
@@ -409,29 +470,72 @@ export function edgeBundleRoot(): string {
   return resolve(here, '..', '..')
 }
 
-/** Candidate paths, in priority order. */
-export function edgeConfigCandidates(): string[] {
+/**
+ * Is the bundle root a SOURCE CHECKOUT (this repository) rather than an
+ * installed bundle?
+ *
+ * §7.182 (2026-11-11): the repository's `config/` directory is no longer a
+ * supported drop point for the live config — it is where plaintext API keys
+ * would live inside a git checkout. An installed bundle (npm / git / tarball
+ * / local directory) carries `lib/` and `config/` but never `src/`, so the
+ * two are told apart reliably:
+ *
+ *   · source checkout  → `src/dsh-adapter/` exists  → candidate #1 SKIPPED
+ *   · installed bundle → no `src/` tree             → candidate #1 ACTIVE
+ *
+ * ⇒ In a checkout the runtime reads the SAME home copy the desktop does
+ *   (`~/.dsh-edge-agent/edge.json`), so dev and production cannot diverge.
+ */
+export function isSourceCheckout(bundleRoot: string = edgeBundleRoot()): boolean {
+  return existsSync(join(bundleRoot, 'src', 'dsh-adapter'))
+}
+
+/**
+ * Candidate paths, in priority order — **exactly two** (§7.182).
+ *
+ *   1. the INSTALLED bundle's own `config/edge.json` — where the user looks
+ *      ("插件装在哪，配置就在哪"); skipped in a source checkout (see
+ *      isSourceCheckout());
+ *   2. `~/.dsh-edge-agent/edge.json` — the durable落点: survives a reinstall,
+ *      a profile deletion, and every install channel.
+ *
+ * There is NO third candidate. The shipped template (`config/edge.example.json`)
+ * used to be candidate #3; §7.182 dropped it, and its values were folded into
+ * DEFAULT_EDGE_CONFIG instead ⇒ "no config file" still means exactly what the
+ * template used to mean. The template file itself keeps shipping — it is what
+ * an operator copies from, not a runtime input.
+ */
+export function edgeConfigCandidates(
+  bundleRoot: string = edgeBundleRoot(),
+  homeDir: string = homedir(),
+): string[] {
   // §7.102: DSH_EDGE_CONFIG_FILE=off disables file-based configuration
-  // entirely. Unit tests set it so a developer's local config/edge.json
-  // (real endpoints, real API keys) cannot leak into the assertions — the
-  // suite must be reproducible on any machine.
+  // entirely. Unit tests set it so a developer's local edge.json (real
+  // endpoints, real API keys) cannot leak into the assertions — the suite must
+  // be reproducible on any machine.
   if (typeof process !== 'undefined' && process.env?.DSH_EDGE_CONFIG_FILE === 'off') {
     return []
   }
-  const bundleRoot = edgeBundleRoot()
-  const home = homedir()
-  return [
-    join(bundleRoot, 'config', 'edge.json'),
-    join(home, '.dsh-edge-agent', 'edge.json'),
-    // The shipped template is the last resort: it carries the same shape
-    // with blank secrets and the documented defaults, so a fresh checkout
-    // still boots with a coherent configuration.
-    join(bundleRoot, 'config', 'edge.example.json'),
-  ]
+  // §7.182: EXACTLY two candidates, in this order:
+  //   1. <安装目录>/config/edge.json — 顺位 1（插件装在哪，配置就在哪）
+  //   2. ~/.dsh-edge-agent/edge.json — 顺位 2（重装 / 删 profile 都活着）
+  // 顺位 1 不存在才轮到顺位 2（loadEdgeConfig 按顺序命中第一个存在的文件）。
+  // 插件目录下的 edge.example.json **永远不是候选** —— 它只是给人抄的模板。
+  // bundleRoot / homeDir 可注入 ⇒ 门禁能在临时目录上验证真实优先级，
+  // 而不必往运维的真 home 里写文件。
+  const candidates: string[] = []
+  if (!isSourceCheckout(bundleRoot)) {
+    candidates.push(join(bundleRoot, 'config', 'edge.json'))
+  }
+  candidates.push(join(homeDir, '.dsh-edge-agent', 'edge.json'))
+  return candidates
 }
 
 /** Path of the file that was actually loaded, or undefined when defaults
- *  are in use. Exposed for diagnostics / audit. */
+ *  are in use. Exposed for diagnostics / audit.
+ *
+ *  §7.182: 命中的是两档候选里的哪一个（顺位 1 插件目录 / 顺位 2 home）；
+ *  模板 edge.example.json 永远不会是命中项。 */
 export function edgeConfigPath(): string | undefined {
   return cachedPath
 }
@@ -825,7 +929,7 @@ export function applyEnvOverrides(cfg: EdgeConfig): EdgeConfig {
  * Load the effective configuration. Cached after the first call — callers
  * that need a re-read can call resetEdgeConfigCache().
  */
-export function loadEdgeConfig(force = false): EdgeConfig {
+export function loadEdgeConfig(force = false, candidates?: string[]): EdgeConfig {
   if (cached && !force) return cached
   // force 快速路径：文件指纹（mtime+size）与 env 覆盖值都没变 → 直接回
   // 缓存。语义不变 —— force 想要的是"看到配置的最新值"，指纹比对恰好
@@ -841,7 +945,10 @@ export function loadEdgeConfig(force = false): EdgeConfig {
       }
     }
   }
-  for (const candidate of edgeConfigCandidates()) {
+  // §7.182: 候选表默认两档（顺位 1 插件目录 / 顺位 2 home），顺序即优先级 ——
+  // 第一个**存在且能解析**的文件胜出；顺位 1 不存在才落到顺位 2。
+  // 插件目录下的 edge.example.json 不在候选表里，任何情况下都不会被读到。
+  for (const candidate of candidates ?? edgeConfigCandidates()) {
     if (!existsSync(candidate)) continue
     try {
       const raw = readFileSync(candidate, 'utf-8')

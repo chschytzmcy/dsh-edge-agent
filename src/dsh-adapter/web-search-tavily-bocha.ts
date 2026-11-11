@@ -101,18 +101,21 @@ export class TavilyBochaFallbackProvider implements WebSearchProvider {
      * them: the tiers were gated purely on "is the key present". An operator
      * who wanted DeepSeek Search as the backend had no way to say so; every
      * search burned two 401 round-trips on the way down the chain to it.
-     * Defaults to enabled (the shipped behaviour), so an unset config keeps
-     * the three-tier chain.
+     * §7.182 (2026-11-11, owner ruling): the shipped default is **OFF** for
+     * both tiers ⇒ out of the box only the DeepSeek tier is on the chain.
+     * An unset switch therefore means DISABLED (opt-in, not opt-out).
      */
     private readonly tiers: { tavilyEnabled?: boolean; bochaEnabled?: boolean } = {},
   ) {}
 
   private get tavilyEnabled(): boolean {
-    return this.tiers.tavilyEnabled !== false
+    // §7.182: unset = disabled (the shipped default is off).
+    return this.tiers.tavilyEnabled === true
   }
 
   private get bochaEnabled(): boolean {
-    return this.tiers.bochaEnabled !== false
+    // §7.182: unset = disabled (the shipped default is off).
+    return this.tiers.bochaEnabled === true
   }
 
   /**
@@ -332,8 +335,8 @@ export async function apply(ctx: Context, _config: Config): Promise<void> {
   }))
 
   const provider = new TavilyBochaFallbackProvider(tavilyKey, bochaKey, dsKey, dsProvider, {
-    // §7.107: the per-tier switches, finally read. Default = enabled, so an
-    // unset config keeps the three-tier chain.
+    // §7.107: the per-tier switches, finally read. §7.182: default =
+    // disabled ⇒ an unset config keeps only the DeepSeek tier on the chain.
     tavilyEnabled: cfg.webSearch?.tavilyEnabled,
     bochaEnabled: cfg.webSearch?.bochaEnabled,
   })

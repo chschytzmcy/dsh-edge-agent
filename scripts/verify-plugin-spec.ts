@@ -117,6 +117,11 @@ for (const file of sources) {
   // 裁剪）。Imported by input-guard; never inserted by a cordis patch row, not in
   // package.json exports.
   if (base === 'host-egress-guard') continue
+  // §7.179: 内部阶段「真正会跑的模型」的解析器（直连池 / DELEGATE 委托链，
+  // 复用 cloud-llm-adapter 导出的 probeCloudTarget）。Imported by
+  // prompt-guard.ts / intent-router.ts; never inserted by a cordis patch row,
+  // not in package.json exports.
+  if (base === 'effective-model') continue
   if (base === 'plugin' || base === 'index') continue
   const content = readFileSync(file, 'utf8')
 
