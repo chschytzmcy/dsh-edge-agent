@@ -223,7 +223,10 @@
     "cordis.yml",
     "presets",
     "CHANGELOG.md",
-    "!config/edge.json"
+    "!config/edge.json",
+    "!config/edge.json.*",
+    "!config/*.bak*",
+    "!config/.DS_Store"
   ],
   "engines": {
     "node": "^22.19 || >=24",

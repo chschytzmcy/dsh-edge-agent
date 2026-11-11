@@ -26,6 +26,7 @@ import { fileURLToPath } from 'node:url'
 import { parse as parseYaml } from 'yaml'
 
 import { bundlePatchDeclaration, variantByDir } from './_bundle-variants.mjs'
+import { CONFIG_NEGATIONS, configShipViolations, describeConfigViolation } from './_config-ship-policy.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const INSTALLABLE = process.env.INSTALLABLE_DIR
@@ -192,6 +193,33 @@ function verifyBundle(dir) {
       + `（当前：${JSON.stringify(actualFiles)}）⇒ \`pnpm add file:<目录>\` 走 pack 路径时`
       + '会把本机 config/edge.json 里的明文 API key 拷进 node_modules。',
     )
+  }
+  // 1e. §7.189: the npm-side exclusions must be present too — the live
+  //     config's BACKUP (`edge.json.bak-<timestamp>`, same plaintext keys) and
+  //     editor junk slip past an exact-name negation. The npm channel and the
+  //     local staging channel are two different file-list computations, so
+  //     both need the rule.
+  const missingNegations = CONFIG_NEGATIONS.filter((n) => !actualFiles.includes(n))
+  if (missingNegations.length > 0) {
+    throw new Error(
+      `${relative(ROOT, dir)}: package.json#files 缺少排除项 `
+      + `${missingNegations.join(' / ')}（当前：${JSON.stringify(actualFiles)}）`
+      + '⇒ npm pack 通道会把活配置的备份（同一份明文 API key）与编辑器垃圾一起发出去。',
+    )
+  }
+  // 1f. §7.189: the staged config/ directory must hold ONLY the allowlisted
+  //     files — the installable directory is mounted by the desktop profile
+  //     through a link:, so anything in here lands in the user's node_modules.
+  {
+    const stagedConfig = readdirSync(configDir)
+    const violations = configShipViolations(stagedConfig.map((f) => `config/${f}`))
+    if (violations.length > 0) {
+      throw new Error(
+        `${relative(ROOT, dir)}: config/ 里有不该出货的文件：`
+        + `${violations.map((v) => describeConfigViolation(v)).join('；')} `
+        + '⇒ 桌面 profile 通过 link: 挂载这个目录，它会直接进用户的 node_modules。',
+      )
+    }
   }
   // Whichever config is present must be valid JSON with the expected shape.
   for (const candidate of [edgeConfig, edgeExample]) {

@@ -10,6 +10,8 @@
  */
 import { readFile } from 'node:fs/promises'
 
+import { configShipViolations, describeConfigViolation } from './_config-ship-policy.mjs'
+
 const input = await new Promise((resolve, reject) => {
   let value = ''
   process.stdin.setEncoding('utf8')
@@ -79,6 +81,19 @@ const leaked = FORBIDDEN_IN_PACKAGE.filter((path) => packed.has(path))
 if (leaked.length > 0) {
   throw new Error(
     `package would ship plaintext credentials: ${leaked.join(', ')}. `
+    + 'Add them to .npmignore (npm pack ignores .gitignore when .npmignore exists).',
+  )
+}
+
+// §7.189: the exact-name list above cannot see the live config's BACKUP —
+// `config/edge.json.bak-<timestamp>` carries the same plaintext keys (measured
+// 2026-11-11: 5 real API keys) and slips past any `config/edge.json` rule —
+// nor editor junk like `config/.DS_Store`. Check the whole config/ subtree
+// against the shipping allowlist instead.
+const configViolations = configShipViolations([...packed])
+if (configViolations.length > 0) {
+  throw new Error(
+    `package would ship ${configViolations.map((v) => describeConfigViolation(v)).join('；')}. `
     + 'Add them to .npmignore (npm pack ignores .gitignore when .npmignore exists).',
   )
 }

@@ -45,6 +45,7 @@ import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { BUNDLE_VARIANTS, bundlePatchDeclaration } from './_bundle-variants.mjs'
+import { isShippableConfigFile } from './_config-ship-policy.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const DIST = join(ROOT, 'dist')
@@ -385,7 +386,13 @@ export function stageVariant(variant, destDir, { keepSecretConfig = false } = {}
     for (const f of readdirSync(configSrc)) {
       // §7.182: the operator's config never travels from the REPOSITORY —
       // the repo's config/ directory is no longer a supported drop point.
-      if (f === 'edge.json') continue
+      //
+      // §7.189: 按**白名单**拷，不再按精确文件名排除。旧的 `f === 'edge.json'`
+      // 挡不住它的兄弟 `edge.json.bak-<时间戳>`（同一份明文的备份）——
+      // 实测那份备份带着 5 个真 API key 进了 tarball / installable /
+      // npm-stage 三个发布面。白名单在 scripts/_config-ship-policy.mjs，
+      // 与 rebuild-installable.mjs 共用同一份。
+      if (!isShippableConfigFile(f)) continue
       cpSync(join(configSrc, f), join(destDir, 'config', f), { recursive: true })
     }
   }

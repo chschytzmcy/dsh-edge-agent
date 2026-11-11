@@ -29,6 +29,8 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { CONFIG_NEGATIONS, configShipViolations, describeConfigViolation } from './_config-ship-policy.mjs'
+
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const STAGE_DIR = join(ROOT, 'dist', '.npm-stage')
 const VARIANT_DIR = join(ROOT, 'dist', 'installable', 'dsh-edge-agent-desktop-safe')
@@ -158,6 +160,22 @@ if (process.argv.includes('--selftest')) {
   }
   if (existsSync(join(STAGE_DIR, 'config', 'edge.json'))) {
     fail('暂存目录里有 config/edge.json —— 明文凭据会被发到 registry')
+  }
+  // 5b. §7.189: 光看 `config/edge.json` 不够 —— 它的**兄弟**
+  //     `edge.json.bak-<时间戳>` 装的是同一份明文密钥（实测 2026-11-11，
+  //     5 个真 API key 进了暂存目录 ⇒ 差点发到 registry），`.DS_Store` 这类
+  //     垃圾同理。按**白名单**查，漏网的形状就都挡住了。
+  const stagedConfigDir = join(STAGE_DIR, 'config')
+  if (existsSync(stagedConfigDir)) {
+    const stagedConfigFiles = listFiles(stagedConfigDir).map((f) => `config/${f}`)
+    for (const v of configShipViolations(stagedConfigFiles)) {
+      fail(`暂存目录里含 ${describeConfigViolation(v)} —— 它会被发到 registry`)
+    }
+  }
+  // 5c. §7.189: npm 通道的排除项不能被摘掉（两条通道各算各的文件清单）。
+  const missingNegations = CONFIG_NEGATIONS.filter((n) => !files.includes(n))
+  if (missingNegations.length > 0) {
+    fail(`清单的 files 缺少排除项 ${missingNegations.join(' / ')} —— npm pack 会把活配置的备份一起发出去`)
   }
 
   // 6. 不该出现的目录

@@ -28,6 +28,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { BUNDLE_VARIANTS, bundlePatchDeclaration } from './_bundle-variants.mjs'
+import { isShippableConfigFile } from './_config-ship-policy.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const DIST = join(ROOT, 'dist', 'installable')
@@ -110,9 +111,17 @@ function shippedEntries(pkg) {
   return list.filter((entry) => !entry.startsWith('!'))
 }
 
-/** Files inside a shipped directory that must never be staged (§7.182). */
-const OPERATOR_CONFIG_FILES = ['edge.json']
-
+/**
+ * Files inside a shipped directory that must never be staged (§7.182).
+ *
+ * §7.189: this used to be a one-element list (`['edge.json']`) — an exact
+ * filename. That does not cover the live config's SIBLINGS: the backup
+ * `edge.json.bak-<timestamp>` (written by edge-config-from-env.ts) carries the
+ * same plaintext keys and was measured riding into the tarball, the
+ * installable directory and the npm staging dir. The rule is now an
+ * ALLOWLIST shared with the other producer (_pack-core.mjs stageVariant) via
+ * scripts/_config-ship-policy.mjs.
+ */
 let pkg
 try {
   pkg = readJson(join(ROOT, 'package.json'))
@@ -152,9 +161,12 @@ for (const variant of VARIANTS) {
     }
     cpSync(src, join(staging, entry), { recursive: true })
     // §7.182: the operator's own config must not travel with the artifact.
+    // §7.189: 按**白名单**留文件（不是按名排除）—— 活配置的备份
+    // `edge.json.bak-<时间戳>` 装的是同一份明文密钥，按名排除挡不住它。
     if (entry === 'config') {
-      for (const f of OPERATOR_CONFIG_FILES) {
-        rmSync(join(staging, 'config', f), { force: true })
+      for (const f of readdirSync(join(staging, 'config'))) {
+        if (isShippableConfigFile(f)) continue
+        rmSync(join(staging, 'config', f), { force: true, recursive: true })
       }
     }
   }

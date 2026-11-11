@@ -45,6 +45,8 @@ import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { configShipViolations, describeConfigViolation } from './_config-ship-policy.mjs'
+
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const DIST = join(ROOT, 'dist')
 
@@ -195,6 +197,15 @@ export function auditTarball(tarballPath, installableDir, { expectSecretConfig =
     notes.push('tarball 里没有 config/edge.example.json（空密钥模板）—— 装完用户拿不到模板')
   }
 
+  // ── 5b. §7.189: config/ 里只允许出货**白名单**上的文件 ──────────────────
+  //      光看 `config/edge.json` 在不在是不够的：它的**兄弟** `edge.json.bak-<时间戳>`
+  //      装的是同一份明文密钥（实测 2026-11-11，那份备份带着 5 个真 API key
+  //      进了 tarball / installable / npm-stage 三个发布面）。同理 `.DS_Store`
+  //      这类编辑器垃圾也不该出货。
+  for (const v of configShipViolations(tarball.files, { allowSecretConfig: expectSecretConfig })) {
+    failures.push(`tarball 里含 ${describeConfigViolation(v)} —— 产物不得夹带它`)
+  }
+
   // ── 6. scripts / devDependencies must be gone ────────────────────────────
   if (manifest.scripts !== undefined) {
     failures.push('tarball 的 package.json 还带 scripts —— 目录/tarball 依赖的 prepare 会在安装时触发并要求构建授权')
@@ -337,6 +348,22 @@ function selftest() {
     const t = mk('demo-missing', GOOD_FILES, GOOD_MANIFEST)
     const r = auditTarball(t, join(ROOT_TMP, 'nonexistent'), { expectSecretConfig: true })
     expect('DEMO 包缺 config/edge.json ⇒ 报失败', r.failures.some((f) => f.includes('DEMO')), true)
+  }
+
+  // 6d. §7.189: the live config's BACKUP is caught too — an exact-name check
+  //     (`config/edge.json`) misses it, and that is how 5 real API keys
+  //     reached the tarball on 2026-11-11.
+  {
+    const t = mk('withbak', { ...GOOD_FILES, 'config/edge.json.bak-20261029-220133': '{}' }, GOOD_MANIFEST)
+    const r = auditTarball(t, join(ROOT_TMP, 'nonexistent'))
+    expect('含 config/edge.json.bak-* ⇒ 报失败', r.failures.some((f) => f.includes('edge.json.bak-20261029-220133')), true)
+  }
+
+  // 6e. §7.189: editor junk is caught too.
+  {
+    const t = mk('withdsstore', { ...GOOD_FILES, 'config/.DS_Store': 'x' }, GOOD_MANIFEST)
+    const r = auditTarball(t, join(ROOT_TMP, 'nonexistent'))
+    expect('含 config/.DS_Store ⇒ 报失败', r.failures.some((f) => f.includes('.DS_Store')), true)
   }
 
   // 7. missing engines.dsh is caught.
