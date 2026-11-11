@@ -66,7 +66,7 @@ dsh-edge-agent 的架构分为**四层**：
 
 ## 🔌 插件树
 
-dsh-edge-agent 由 **22 个核心插件 + 1 个可选 http-api** 组成（原 §头部曾称"19+1"已过时）。所有插件都遵循 Cordis 的 `name` + `inject` + `Config` + `apply` 模式。具体 `inject` 依赖见 [第 2 章 §0](#0-插件分类dsh-原生-vs-dsh-edge-agent) 表（基于 `grep "export const inject" src/dsh-adapter/*.ts` 实测）。
+dsh-edge-agent 由 **29 个适配器插件 + 1 个可选 http-api** 组成（口径 = `scripts/verify-plugin-spec.ts` 的「29 adapter plugins scanned」；`package.json#exports` 共 **37 条** subpath —— 多出来的是 client 半边与非插件入口）。所有插件都遵循 Cordis 的 `name` + `inject` + `Config` + `apply` 模式。具体 `inject` 依赖见 [第 2 章 §0](#0-插件分类dsh-原生-vs-dsh-edge-agent) 表（基于 `grep "export const inject" src/dsh-adapter/*.ts` 实测）。
 
 ### 依赖关系图
 
@@ -209,6 +209,27 @@ src/
 
 通过 `verify-adapter-boundary.ts` 脚本在 CI 中强制检查。
 
+## 🌳 三棵 patch 树与 scope 隔离规则
+
+bundle 落到磁盘上是**三棵**互不相干的树，装的时候别搞混：
+
+| 树 | 文件 | 装什么 | 跟着谁走 |
+|---|---|---|---|
+| 宿主树顶层 | `cordis.desktop-safe.patch.yml` / `cordis.patch.yml` | 宿主行覆盖 + 4 行强制 insert | 进程级，整机生效 |
+| **preset 子树** | `presets/edge*.patch.yml` | 本项目**行为插件行** | **只跟着「边缘模式」工作方式走** |
+| profile skin | `profiles/<name>/cordis.patch.yml` | 压顶层（headless profile 在这里加 HTTP 监听器） | 跟着那个 profile |
+
+**顶层 patch 为什么只有 4 行 insert**（`dsh-edge-agent` / `file-logger` / `audit-log` /
+`desktop-cookie-janitor`）：一行都不是「方便」留下的，是**宿主机制逼的** —— 宿主的
+client-modules 只扫宿主 Loader 的 entries（Edge tab 的浏览器半边只能从这里被发现）；
+裸包名行 inject `auditLog` 且 `file-logger` 要先占住 `fileLogger` 服务名 ⇒ 必须在
+root realm；welcome 握手发生在任何工作方式选定之前 ⇒ 修 431 的插件必须在 preset 之外。
+
+⚠️ **preset 子树的 service 对宿主树行不可见**（cordis scope 隔离，§7.152）—— 顶层
+patch 里插一行**依赖 preset 服务**的插件，会**永远 pending** 并让 boot 硬失败
+（症状：`1 entry did not activate` + `pending (waiting for services: …)`）。
+⇒ 宿主树行**不能反向依赖** preset 子树提供的 service。
+
 ## 📦 最小部署清单：bundle 在任意 profile 跑起来需要什么
 
 > 依据：§7.55/§7.56/§7.59 部署验证（清单各项均实机核过）；同步语义 = nested 包每次 install 与 repo diff-then-copy（§7.57）。逐轮验证记录与 boot 签名存档 `docs/PROGRESS.md` §7.55-§7.59，本文不携过程。
@@ -219,7 +240,7 @@ dsh-edge-agent 是 profile-agnostic 的 Cordis bundle：它"能不能装上"与�
 
 | # | 文件 | 位置 | 作用 |
 |---|---|---|---|
-| 1 | `package.json` | `~/.dsh/profiles/<p>/node_modules/@dsh-edge/dsh-edge-agent/` | bundle 身份卡：`name`/`version`；**`exports` 29 个 subpath 映射**（patch 里每个插件 `name: '…/file-logger'` 靠它解析到实现文件）；**`dsh.bundle.patch` 指针**（告诉 DSH 去哪读装配清单） |
+| 1 | `package.json` | `~/.dsh/profiles/<p>/node_modules/@dsh-edge/dsh-edge-agent/` | bundle 身份卡：`name`/`version`；**`exports` 37 条 subpath 映射**（其中 29 条对应适配器插件；patch 里每个插件 `name: '…/file-logger'` 靠它解析到实现文件）；**`dsh.bundle.patch` 指针**（告诉 DSH 去哪读装配清单） |
 | 2 | `cordis.patch.yml` | 同上 | 装配说明书：10 个 config 覆盖 + 30 个 disable + 17 个插件 insert。⚠️ §7.59 实测修正：指针在而文件缺是 **boot 硬失败**（`failed to read overlay …ENOENT`），不是"静默一个都不 mount"；"死 JS 躺 node_modules"只有 ④ 未注册时成立 |
 | 3 | `lib/**/*.js` | 同上 | 插件实现本体（tsc 产物）。⚠️ 目录名误导：tsconfig `outDir: "lib/types"`，运行时 `.js` 实际就在 `lib/types/dsh-adapter/*.js`；每模块三份产物，Node 只读 `.js`（`.d.ts` 服务 `types` 条件、`.map` 仅调试定位） |
 | 4 | profile 注册 | `~/.dsh/profiles/<p>/package.json` → `dsh.profile.bundles` 数组追加包名 | 唯一入口开关：不列入 bundles，DSH 启动时不加载本包 |

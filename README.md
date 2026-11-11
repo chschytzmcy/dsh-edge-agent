@@ -19,54 +19,20 @@ PTC / 极简四种工作方式之外，边缘模式 = 标准模式 + 本项目�
 
 ## 📥 在 DSH 上加载本插件
 
-### 一、加载模型：DSH 怎么认一个 bundle
+### 一、它是怎么被宿主认出来的（速览）
 
-装之前先理解这 5 步 —— 后面所有排障都落在这条链上。
+宿主只认**包名**：profile 的 `package.json` → `dsh.profile.bundles[]` 里追加包名 ⇒
+宿主的 bundle 加载器读这个包自己的 `package.json#dsh.bundle.patch` ⇒ 按插件行的
+`inject` 依赖图实例化 ⇒ 插件通过**事件钩子 / Service / Provider** 三种挂法接进 DSH 流程。
 
-```
-① profile 的 package.json → dsh.profile.bundles[] 里追加包名
-   └─ 唯一开关：不在这数组里 = 整包不加载（是「没装」，不是「装了没生效」）
-        ↓
-② 宿主对每个 bundle 读它自己的 package.json → dsh.bundle.patch
-   └─ 本包是【数组】，两份一起加载：
-        ├─ [0] ./cordis.desktop-safe.patch.yml   顶层 patch：宿主行覆盖 + 4 行宿主强制 insert
-        └─ [1] ./presets/edge.desktop-safe.patch.yml  preset：「边缘模式」工作方式的插件行（独立 scope）
-        ↓
-③ 插件行的 name 是个子路径 → 查本包 package.json#exports（37 条）→ 定位实现文件
-   └─ 例：name: '…/dsh-edge-agent/file-logger' → exports['./file-logger'] → lib/…/file-logger.js
-        ↓
-④ cordis 按每个插件的 inject 依赖图实例化
-   └─ inject 只能加不能减 ⇒ 少点一行 → 插件 ACTIVE 但一条都不拦（见「三层语义」）
-        ↓
-⑤ 插件通过三种挂法接进 DSH 流程
-   ├─ 事件钩子   ctx.on('agent/pre-step' | 'llm/stream' | 'tools/pre-execute' | …)
-   ├─ Service    ctx.reflect.provide('promptGuard' | 'auditLog' | …)
-   └─ Provider   ctx.llm.registerAdapter(['cloud-llm'], …) / ctx.web.registerSearchProvider(…)
-```
+**两个变体**：`desktop-safe`（只 insert、不改写宿主默认；**本文所有通道都装它**）与
+`full`（顶层 patch 改写 persona / approval / sandbox 等宿主全局，给「独立部署自有
+profile」的场景用）。
 
-> **两个变体**：`desktop-safe`（上面这个，只 insert、不改写宿主默认）与 `full`
-> （顶层 patch 改写 persona / approval / sandbox / session root 等宿主全局）。
-> **本文所有通道都用 `desktop-safe`** —— 桌面版四通道装的是
-> `dist/installable/dsh-edge-agent-desktop-safe`，独立 profile 走
-> `deploy-profile.sh`（同样是 desktop-safe + 该 profile 自己的 skin overlay）。
-> `full` 变体是给「独立部署一个自有 profile」的场景的。
-
-**顶层 patch 为什么只有 4 行 insert**（`dsh-edge-agent` / `file-logger` / `audit-log` /
-`desktop-cookie-janitor`）：一行都不是「方便」留下的，是**宿主机制逼的** —— 宿主的
-client-modules 只扫宿主 Loader 的 entries（Edge tab 的浏览器半边只能从这里被发现）；
-裸包名行 inject `auditLog` 且 `file-logger` 要先占住 `fileLogger` 服务名 ⇒ 必须在
-root realm；welcome 握手发生在任何工作方式选定之前 ⇒ 修 431 的插件必须在 preset 之外。
-
-**三棵树各装什么**：
-
-| 树 | 文件 | 装什么 | 跟着谁走 |
-|---|---|---|---|
-| 宿主树顶层 | `cordis.desktop-safe.patch.yml` / `cordis.patch.yml` | 宿主行覆盖 + 4 行强制 insert | 进程级，整机生效 |
-| **preset 子树** | `presets/edge*.patch.yml` | 本项目**行为插件行** | **只跟着「边缘模式」工作方式走** |
-| profile skin | `profiles/<name>/cordis.patch.yml` | 压顶层（headless profile 在这里加 HTTP 监听器） | 跟着那个 profile |
-
-⚠️ **preset 子树的 service 对宿主树行不可见**（cordis scope 隔离）—— 顶层 patch 里插一行
-依赖 preset 服务的插件，会永远 pending 并让 boot 硬失败（§7.152 原样）。
+> 机制细节（三棵 patch 树各装什么、顶层为什么只有 4 行 insert、scope 隔离规则、
+> 插件行的完整挂点）见 [`docs/architecture.md`](docs/architecture.md)、
+> [`docs/plugin-mount-points.md`](docs/plugin-mount-points.md) 与
+> [`docs/load-into-local-dsh.md`](docs/load-into-local-dsh.md)。
 
 ### 二、桌面版（主路径）：Plugins → Add plugin
 
@@ -80,8 +46,7 @@ DSH 桌面 App 侧边栏的 **Plugins → Add plugin** 支持四个通道。**�
 | **C npm 包名** | `@dsh-edge/dsh-edge-agent` | 否 | 否 | 预构建 | 否 | 走 `updateBundle` |
 | **D tarball 路径** | `…/x.tar.gz` 绝对路径 | 否 | 否 | pnpm store 冻结副本 | 否 | ❌ 须卸载重装 |
 
-四条通道在宿主里是**同一段代码**（`install-spec.ts` 解析四种形态，一律 `pnpm add <spec>`）。
-差别全在本仓的作者侧义务：
+四条通道在宿主里是**同一段代码**（一律 `pnpm add <spec>`），差别全在本仓的作者侧义务：
 
 - **A 本地目录**（本机开发调试）
   ```bash
@@ -105,11 +70,8 @@ DSH 桌面 App 侧边栏的 **Plugins → Add plugin** 支持四个通道。**�
   `pnpm install` 是用 shell 跑的；宿主自己调 pnpm 用的是 App 自带那支）。
 
 - **C npm 包名**（发布给公众）—— 装的是**预构建**包，不需要构建授权、不需要 PATH 上有
-  pnpm。⚠️ **包目前仍未发布到 registry**（registry 上查无此包）⇒ 这条通道要等第一次发布之后才成立。
-  发布链**本身已经就绪**（`npm run publish:npm` 一条命令走完构建 + 全部门禁 + 发布），
-  缺的是**作者侧**：npm 上拥有 `@dsh-edge` scope 的账号/组织 + 发布凭据。
-  详见 [`docs/deploy-npm.md`](docs/deploy-npm.md)；注册账号与办凭据的逐步操作见
-  [`docs/npm-account-setup.md`](docs/npm-account-setup.md)。
+  pnpm。**包已发布**：`@dsh-edge/dsh-edge-agent@0.1.1`（2026-11-11 上线）⇒ 这条通道
+  现在直接可用。详见 [`docs/deploy-npm.md`](docs/deploy-npm.md)。
 
 - **D tarball 路径**（离线分发）——
   ```bash
@@ -123,17 +85,15 @@ DSH 桌面 App 侧边栏的 **Plugins → Add plugin** 支持四个通道。**�
 
 ```bash
 npm run build:macos -- --deploy-profile=dsh-edge-agent   # 或 build:linux
-npm run build:macos -- --deploy-profile=dsh-web           # 官方 Web UI (:3080) + IM 机器人
-npm run build:macos -- --deploy-profile=dsh-tui           # 终端
 ```
 
 一条命令做完整件事：build + 装 bundle + 同步配置 + 重启 + 验活。HTTP API 监听 `:21017`
-（`/v1/chat`，GET `/v1/health`）。
+→（`/v1/chat`，GET `/v1/health`）。
 
 > ⚠️ **Windows 只有桌面版**：桌面 App 独占 `desktop` profile（`managed exclusively by the
 > Electron application`），CLI 碰不了 ⇒ Windows 上没有独立 headless profile 这条路。
 
-### 四、加载后自检：**mount ≠ active ≠ enforced**
+### 四、装完自检：**mount ≠ active ≠ enforced**
 
 「装上了」分三层，**boot 不报错只证明前两层**：
 
@@ -160,17 +120,8 @@ dsh --profile <profile> --dump-config \
 |---|---|
 | `profile is not mounted` / 插件行根本不在 `--dump-config` | ① 没进 `dsh.profile.bundles` |
 | `1 entry did not activate` + `pending (waiting for services: …)` | ④ inject 闭包不齐 —— 补齐被点名插件的传递依赖 |
-| 插件行在、但会话里什么也不拦 | ③ scope 隔离：preset 子树的 service 对宿主树行不可见 / 当前会话是**标准模式**（不是边缘模式） |
-| 桌面版没有 Edge tab | `lib/client.js` 没构建 —— `prepare` 链里漏了 `build:client`（静默失败，无报错） |
-
-### 五、完整文档
-
-| 想知道 | 看哪 |
-|---|---|
-| 每个插件挂在哪 / 三种挂法 | [`docs/plugin-mount-points.md`](docs/plugin-mount-points.md) |
-| 装配面全貌 / 三棵树 / 最小必需集 | [`docs/architecture.md`](docs/architecture.md) |
-| 每个文件装了什么 | [`docs/deploy-minimal-files.md`](docs/deploy-minimal-files.md) |
-| 隐私链路的判定表 / 配置清单 | [`docs/privacy-policy.md`](docs/privacy-policy.md) |
+| 插件行在、但会话里什么也不拦 | ③ scope 隔离（**宿主树行不能反向依赖 preset 子树的 service**，§7.152）/ 当前会话是**标准模式**（不是边缘模式） |
+| 桌面版没有 Edge tab | `lib/client.js` 没构建 —— `prepare` 链里漏了 `build:client`（**静默失败，无报错**） |
 
 ---
 
@@ -196,15 +147,12 @@ dsh --profile <profile> --dump-config \
 
 配置只有**一个文件**：`edge.json`。所有 profile 读同一份，不依赖环境变量。
 
-**两个合法落点**（§7.182）：插件装在哪，配置就在哪 —— 但要活过重装，就写 home。
+### 配置落点（两个，没有第三个）
 
-```bash
-# 顺位 1：装好后的插件目录里（打开就能看到能改的那个）
-C:\Users\<你>\.dsh\profiles\desktop\node_modules\@dsh-edge\dsh-edge-agent\config\edge.json
-
-# 顺位 2：home（跨通道、跨重装、删 profile 都活着）★ 推荐
-C:\Users\<你>\.dsh-edge-agent\edge.json
-```
+| 顺位 | 路径 | 说明 |
+|---|---|---|
+| 1 | `<插件目录>/config/edge.json` | 装好后在 App 里就能找到的那份 |
+| 2 | `~/.dsh-edge-agent/edge.json` | 跨通道、跨重装、删 profile 都活着 ★ **推荐** |
 
 要改配置就抄模板过去填：
 
@@ -213,30 +161,18 @@ mkdir -p ~/.dsh-edge-agent
 cp config/edge.example.json ~/.dsh-edge-agent/edge.json
 ```
 
-**先说结论：`secrets` 和 `llm` 都不是必填。** 桌面版装法下，`edge.json` 写成
-`{}` 也能正常跑 —— 两个池都会**转发宿主 GUI 里选中的模型**，凭据全归宿主，
-edge 侧一个 secret 都不碰：
+> **仓库的 `config/` 目录不放活配置**（§7.182）—— npm / git / tarball 三条通道的产物里
+> **本来就没有** `config/edge.json`（打包时按设计排除）。仓库那份
+> `config/edge.example.json` 只是**给你抄的模板**，模板里的部署值已并入代码默认值
+> ⇒「没配置文件」与「照模板抄」行为一致。
 
-```json
-{}
-```
-
-查找顺序（与 profile 无关，代码现状）：
-
-```
-1. <bundle>/config/edge.json         ← 顺位 1：插件目录里那份（用户找得到）
-2. ~/.dsh-edge-agent/edge.json       ← 顺位 2：home 那份（重装也活着）★ 推荐
-```
-
-> **仓库的 `config/` 目录不再放活配置**（§7.182）—— 不再往
-> `<repo>/config/edge.json` 写东西：它含明文 key，且 npm / git / tarball 三条通道的
-> 产物里**本来就没有**这个文件（打包时按设计排除）。仓库那份
-> `config/edge.example.json` 仍然随产物发布，但它只是**给你抄的模板**，不是运行时候选
-> —— 模板里的部署值已并入代码默认值，所以「没配置文件」与「照模板抄」行为一致。
+**先说结论：`secrets` 和 `llm` 都不是必填。** 桌面版装法下，`edge.json` 写成 `{}`
+也能正常跑 —— 两个池都会**转发宿主 GUI 里选中的模型**，凭据全归宿主，edge 侧一个
+secret 都不碰。
 
 ### 两个池怎么配
 
-`llm.local` 与 `llm.cloud` 现在**完全对称**：
+`llm.local` 与 `llm.cloud` **完全对称**：
 
 | `llm.<池>.baseUrl` | `llm.<池>.delegate` | 行为 |
 |---|---|---|
@@ -244,7 +180,7 @@ edge 侧一个 secret 都不碰：
 | 留空 | `true`（默认）| **DELEGATE** —— 转发宿主选中的提供商（凭据归宿主，edge 侧不碰 secret）|
 | 留空 | `false` | **不注册路由** —— LOCAL 意图 fail-closed 报错 |
 
-也就是说：**不填 `baseUrl` 不等于「没模型」**，而是「用宿主 GUI 里选的那个模型」。
+⇒ 也就是说：**不填 `baseUrl` 不等于「没模型」**，而是「用宿主 GUI 里选的那个模型」。
 
 ```jsonc
 {
@@ -286,45 +222,30 @@ edge 侧一个 secret 都不碰：
 > ⚠️ 两池的**出网口径不同**：云池只带「之前上过云的历史」；本地池带**全部**历史
 > （§7.131 的不对称规则）。本地池走 delegate 时同样按这个口径 —— 已知边界见
 > [`docs/privacy-policy.md`](docs/privacy-policy.md#已知边界)。
-
+>
 > ⚠️ `config/edge.json` 含**明文 API key**，绝不能提交到 git（已在 `.gitignore` 里，
-> `.npmignore` 也排除了它 ⇒ 不会进 npm 包）。
-> 完整配置清单（16 类配置项 + 路由行为约定）见
+> `.npmignore` 也排除了它 ⇒ 不会进 npm 包）。完整配置清单见
 > [`docs/privacy-policy.md`](docs/privacy-policy.md#配置清单)。
 
 ### 边缘模式的模型从哪来（选型不动 + 出网那一跳改道）
 
-宿主 0.2.2-rc.1 起，**路由只由会话级 `modelSelection` 决定** —— 在
-`agent/request` 里改写 provider/model 会被宿主的 `prepareRequest()` 判非法并抛错。
-§7.184 起，本包**不再改写会话选型**：宿主模型选择器里显示什么，就一直是什么。
+宿主 0.2.2-rc.1 起，**路由只由会话级 `modelSelection` 决定** —— 在 `agent/request` 里
+改写 provider/model 会被宿主的 `prepareRequest()` 判非法并抛错。§7.184 起，本包
+**不再改写会话选型**：宿主模型选择器里显示什么，就一直是什么。
 
 | 情况 | 结果 |
 |---|---|
-| 进入边缘模式 | **选型一个字都不改**（§7.184）—— 选择器保持主人选的那个，不跳 |
-| 本轮判定为 LOCAL、但会话选的 provider 不是本地 provider | 这一轮在**出网那一跳**被**改道**到本地池（provider 与 model 都换）⇒ 这一轮仍然留在设备上，**不再被拒收**（§7.184） |
-| 本轮判定为 CLOUD | 不改道 —— 本轮就是要出网的（脱敏 + 只带云段历史，§7.131） |
+| 进入边缘模式 | **选型一个字都不改** —— 选择器保持你选的那个，不跳 |
+| 本轮判定为 LOCAL、但会话选的 provider 不是本地 provider | 这一轮在**出网那一跳**被**改道**到本地池（provider 与 model 都换）⇒ 这一轮仍然留在设备上，**不再被拒收** |
+| 本轮判定为 CLOUD | 不改道 —— 本轮就是要出网的（脱敏 + 只带云段历史） |
 | 改道改不动（本地路由不存在 / 解析不到本地模型 / 宿主 LLM runtime 不可用） | **fail-closed 抛错**，绝不放行到可能上云的 provider |
-| 宿主模型选择器（输入框下方）里看到什么 | 本地池**如实声明**它真正会跑的那**一个**模型（§7.180）—— 直连池 = 池自己的 model id；DELEGATE = 委托目标的 model id。宿主目录会剔掉「空目录的 provider」，不声明就没有这一项、选择器只能显示「请选择模型」。云池仍在目录里隐身（避免误选 `cloud-llm/deepseek-chat`） |
+| 宿主模型选择器里看到什么 | 本地池**如实声明**它真正会跑的那**一个**模型 —— 直连池 = 池自己的 model id；DELEGATE = 委托目标的 model id（§7.180）|
 
-> 判一个会话到底用了哪个 provider，唯一权威是**审计链**：
-> `input-guard.reroute.local`（改道发生，带 `from` = 被改掉的原选型、
-> `to` = 实际落点）/ `input-guard.reroute.blocked`（改不动，fail-closed）。
->
-> 面板上的「答案出口」一栏会把两边都写出来：**「会话选型 → 实际落点」**
-> （§7.184）—— 选型是你选的那个，实际跑的是本地池那个，两件事都摆出来。
->
-> 面板上的「模型」一行显示的是**这一轮真正会跑**的模型（DELEGATE 下 = 委托
-> 解析出来的宿主模型与它的落点 provider），不是配置里的默认值 —— 详见
-> [`docs/PROGRESS.md` §7.179](docs/PROGRESS.md)。
->
-> §7.180 起，**wire 上跑的模型、宿主模型目录里声明的那一项、改道过去的
-> model id** 三者是同一个 id（共用同一份委托目标缓存）⇒ 界面上写的名字不会
-> 跟实际跑的不一致。
->
-> 面板上的「答案出口」一栏**认得 DELEGATE 出口行**（`llm.*.delegate.*`）——
-> 直连池与 DELEGATE 池都能显示「池 + 模型」，不会在明明作答时写「路由未定」
-> （§7.181）。LOCAL / CLOUD 的判据仍是**哪个池**（§7.130）；DELEGATE 下额外多
-> 一行「真实落点」，如实说明这一轮转发去了哪儿。
+判一次会话到底用了哪个 provider，**唯一权威是审计链**：`input-guard.reroute.local`
+（改道发生，带 `from` = 被改掉的原选型、`to` = 实际落点）/ `input-guard.reroute.blocked`
+（改不动，fail-closed）。面板的「答案出口」一栏会把两边都摆出来 ——
+**「会话选型 → 实际落点」**；LOCAL / CLOUD 的判据是**哪个池**（§7.130），DELEGATE 下
+额外多一行「真实落点」。详见 [`docs/privacy-policy.md`](docs/privacy-policy.md)。
 
 ---
 
@@ -333,8 +254,9 @@ edge 侧一个 secret 都不碰：
 | 文档 | 内容 |
 |---|---|
 | [`docs/README.md`](docs/README.md) | **文档总索引**（每份一句说明 + 状态） |
-| [`docs/architecture.md`](docs/architecture.md) | 架构主文档：四层模型 / Realm / 插件开发 / 威胁模型 |
+| [`docs/architecture.md`](docs/architecture.md) | 架构主文档：四层模型 / Realm / 插件开发 / 威胁模型 / 三棵 patch 树 |
 | [`docs/plugin-mount-points.md`](docs/plugin-mount-points.md) | 插件挂点表：每个插件的真实挂点 + 三种挂法 |
+| [`docs/deploy-minimal-files.md`](docs/deploy-minimal-files.md) | 每个文件装了什么 / 最小部署清单 |
 | [`docs/privacy-policy.md`](docs/privacy-policy.md) | 隐私链路单一权威文档：策略 + 判定表 + 配置清单 + 审计 + 行为契约 |
 | [`docs/deploy-github.md`](docs/deploy-github.md) | 从 GitHub 仓库地址安装 |
 | [`docs/deploy-npm.md`](docs/deploy-npm.md) | 从 npm 包名安装 + 发布链排障 |
@@ -363,7 +285,12 @@ npm run publish:npm -- --yes --tag     # 发完打 v<version> tag（再 git push
 ```
 
 前置：`npm login` 一次（凭据写在 `~/.npmrc`；PATH 上要有 `pnpm`）。
-不带 `--yes` **永远不会碰 registry**。详见 [`docs/deploy-npm.md`](docs/deploy-npm.md)。
+不带 `--yes` **永远不会碰 registry**。
+
+> ⚠️ **「publish 报成功」≠「包已经能装」**：npm 现在把 bypass-2FA token 的直发也收进了
+> 分级发布（staged publishing）—— 包名先被占位版 `0.0.0-stage` 占住，真实版本要等放行。
+> **判据**：`npm view <pkg> version` 返回 `0.0.0-stage` = 还卡着，返回真实版本号 = 已上线。
+> 详见 [`docs/deploy-npm.md`](docs/deploy-npm.md) §8.1.2。
 
 > ⚠️ **`build` 的步骤顺序不能省**：门禁验的是**产物**不是源码 —— `compile` 只重建 Node
 > 半侧，`lib/client.js` 来自 `build:client`（esbuild），`dist/installable/` 来自
