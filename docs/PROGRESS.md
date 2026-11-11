@@ -20164,3 +20164,281 @@ CI 那条路（`publish.yml` 直接跑 `pnpm publish --provenance`）不受影�
 - 主人手上三件仍待办：trusted publisher、WebAuthn 2FA、轮换三个明文 key。
 
 
+---
+
+## §7.189 部署通道绝不夹带 edge.json（主人裁决）+ npm 包装上后「边缘模式」失踪的根因（2026-11-11）
+
+主人这一轮的三句话，串起来是同一件事的三个面：
+
+> 「先把当前的上库，并保存进度文档」
+>
+> 「部署最新发布的npm包，但模式里没有 边缘模式」
+>
+> 「这个文件在部署的时候不应该部署过去」
+
+第三条是**不变量**：**`edge.json`（任何形态）都不随产物走** —— 配置是运维自己的
+事，不是交付物的一部分。这条以前只在 `.gitignore` / `.npmignore` 里以**精确文件名**
+的形式存在，产物侧只是"抄一份 config 目录、顺手跳过 `edge.json`"，于是**备份文件
+和编辑器垃圾**从旁边溜了过去。
+
+### 〇、主人第二句的现象与第三句的裁决，先各自记清楚
+
+| 症状 | 事实 |
+|---|---|
+| 「模式里没有 边缘模式」| 桌面版 UI 的「新任务 Agent 预设」下拉里确实没有这条 |
+| 「这个文件在部署的时候不应该部署过去」| `config/edge.json` 的**备份**带着 **5 个真 API key**，实测进了 tarball / installable / npm 暂存三个发布面 |
+
+### 一、发布通道夹带明文密钥：实测与根因
+
+**实测（2026-11-11 22:03）**：仓库 `config/` 里躺着一份
+`edge.json.bak-20261029-220133`（`edge-config-from-env.ts` 写出的备份，装的是同一份
+明文密钥）。三个发布面全带上了它：
+
+```
+tar -tzf dist/dsh-edge-agent-desktop-safe.tar.gz | grep config/
+  package/config/edge.example.json
+  package/config/privacy-policy.json
+  package/config/edge.json.bak-20261029-220133     ← 夹带
+ls dist/installable/dsh-edge-agent-desktop-safe/config/   ← 同样夹带
+ls dist/.npm-stage/config/                               ← 同样夹带
+```
+
+**里面的东西**（只报键名与长度，值一律不落纸面）：
+
+| 键 | 长度 | 性质 |
+|---|---|---|
+| `secrets.edgeApiKey` | 15 | 占位符 |
+| `secrets.deepseekApiKey` | 35 | **真凭据**（`sk-` 前缀）|
+| `secrets.dashscopeApiKey` | 116 | **真凭据**（`sk-` 前缀）|
+| `secrets.aliyuntokenplanApiKey` | 114 | **真凭据**（`sk-` 前缀）|
+| `secrets.tavilyApiKey` | 27 | **真凭据** |
+| `secrets.bochaApiKey` | 25 | **真凭据**（`sk-` 前缀）|
+
+⇒ **5 个真 API key 在本地产物里躺了一天**。
+
+**根因不是「谁忘了排除」，是排除写成了精确文件名**：
+
+```js
+// scripts/_pack-core.mjs（stageVariant）与 scripts/rebuild-installable.mjs
+if (f === 'edge.json') continue        // ← 按名排除
+for (const f of OPERATOR_CONFIG_FILES) // ← ['edge.json']，也是按名
+```
+
+按名排除挡不住它的**兄弟**：`edge.json.bak-<时间戳>`（同一份明文的备份）、`.DS_Store`。
+§7.154 已经在 `.gitignore` 里补过同样的教训（`config/edge.json.bak-*`），但那条规则
+**只管 git**，管不到 staging。
+
+### 二、为什么已发布的 0.1.1 / 0.1.2 是干净的（反事实实验）
+
+先别急着庆幸，做一次反事实：
+
+**实验一 —— registry 上已发布的包**（`npm pack @dsh-edge/dsh-edge-agent@0.1.1/0.1.2`
+下载后逐条目）：
+
+```
+0.1.1 → package/config/edge.example.json, package/config/privacy-policy.json
+0.1.2 → package/config/edge.example.json, package/config/privacy-policy.json
+```
+
+**干净。** 原因：**那份备份从未进过 git**（`.gitignore` 覆盖 `config/edge.json.bak-*`）
+⇒ CI 是全新 checkout ⇒ registry 包里不可能有它。
+
+**实验二 —— 反事实**（把 `package.json#files` 换回旧清单，只留 `!config/edge.json`，
+在 checkout 里放一个**假的** `config/edge.json.bak-selftest`）：
+
+```
+$ npm pack --dry-run --json
+config/edge.example.json
+config/edge.json.bak-selftest        ← 旧清单下 npm pack 照样把它打进去
+config/privacy-policy.json
+```
+
+⇒ **挡住它的是本次新增的 `files` 排除项，不是 npm 自己。**
+（`.DS_Store` 是 npm-packlist 的 always-ignored 名单项，`*.bak*` 不是。）
+
+⇒ 结论：**泄漏只发生在本地产物（`dist/`）**，registry 上没漏；但只要有人从这台机器
+`pnpm publish`，就会漏。**门禁必须堵住这一条，而不是靠「CI 恰好是干净 checkout」。**
+
+### 三、修法：单一事实源 + 四道门禁
+
+**① 单一事实源**（新建 `scripts/_config-ship-policy.mjs`）：
+
+- `SHIPPABLE_CONFIG_FILES = ['edge.example.json', 'privacy-policy.json']` ——
+  **白名单**，不是黑名单：`config/` 里任何新落进来的文件（备份、垃圾、临时导出）
+  默认**不出货**，要出货得显式加进白名单；
+- `CONFIG_NEGATIONS = ['!config/edge.json', '!config/edge.json.*', '!config/*.bak*',
+  '!config/.DS_Store']` —— npm 通道（`package.json#files`）那一侧的排除式。
+
+**② 两个生产者改用同一份白名单**：
+
+- `scripts/_pack-core.mjs` 的 `stageVariant()`（tarball 通道）；
+- `scripts/rebuild-installable.mjs`（installable 目录通道）；
+  —— 此前是两个生产者各写各的排除逻辑（§7.162 记过「两个生产者、两份白名单」的病）。
+
+**③ `package.json#files` 补齐排除项**（npm 通道）。
+
+**④ 四道门禁各自验自己的产物**（门禁验的是产物，不是源码）：
+
+| 门禁 | 新增的判据 |
+|---|---|
+| `verify-tarball` | tarball 的 `config/` 条目必须**逐个在白名单里**（含 DEMO 的 `edge.json` 例外）|
+| `verify-installable` | installable 目录的 `config/` 同上；且 `files` 必须含全部 `CONFIG_NEGATIONS` |
+| `verify-npm-stage` | npm 暂存目录的 `config/` 同上；且清单的 `files` 必须含全部 `CONFIG_NEGATIONS` |
+| `verify-package` | `npm pack --dry-run` 的文件清单里，`config/` 逐个查白名单 |
+
+`verify-tarball` 还补了两条自证断言（`.bak` 与 `.DS_Store` 各一条）—— 门禁必须能
+**证伪**，否则它只是装饰。
+
+### 四、实证：checkout 里放假配置，四条通道仍然不带它
+
+```
+$ printf '{"_probe":"dummy"}' > config/edge.json
+$ printf '{"_probe":"dummy"}' > config/edge.json.bak-probe
+$ node scripts/rebuild-installable.mjs && node scripts/run.mjs pack:tarball && node scripts/run.mjs stage:npm
+tarball  : package/config/{edge.example.json, privacy-policy.json}
+installable: {edge.example.json, privacy-policy.json}
+npm-stage : {edge.example.json, privacy-policy.json}
+npm pack  : config/{edge.example.json, privacy-policy.json}
+```
+
+⇒ **「部署不带 edge.json」这条不变量现在是证死的**，不依赖「checkout 恰好干净」。
+
+（探针文件已撤除；`config/edge.json` 留在 checkout 里时，`verify-installable` 本来就
+会红 —— 这也是对的：仓库里不该躺着活配置。）
+
+### 五、「模式里没有 边缘模式」的根因：热装切换期的 provider id 重复注册
+
+主人 21:52 的操作记录（`~/Library/Application Support/@deepseek-ai/dsh-desktop/
+plugin-operations/operations.jsonl`）：
+
+```
+21:52:33  install  @dsh-edge/dsh-edge-agent  version=0.1.2   （npm 包）
+21:52:38  bundle  @dsh-edge/dsh-edge-agent  enabled=true
+```
+
+**同一秒**（21:52:38.886），桌面版 ops log 里：
+
+```
+ERROR [web-search-tavily-bocha] WebError: a web provider with id
+      "tavily-bocha-fallback" is already registered
+  作用域链：#web-search-tavily-bocha → #edge-stack → #agent-preset-registry → #include
+  栈帧：/cy/code/dsh-edge-agent/dist/installable/…/web-search-tavily-bocha.js:284
+```
+
+栈帧指向**本地 installable** ⇒ 那一刻**旧副本还活着、新 npm 包已经挂上** ⇒ 同一个
+provider id 注册了两次。
+
+**为什么这一行失败会让「边缘模式」整个消失**：宿主
+`@deepseek-ai/dsh-agent-preset-registry` 的 `mountPreset()` 里
+
+```js
+const audit = await auditRows(tree)
+if (audit.failed.length > 0) throw new Error(audit.failed.join("\n"))
+```
+
+⇒ **preset 的 `config.plugins` 里任意一行起不来，整条 preset 挂载失败** ⇒ 设置页上
+「边缘模式」就没了。**一个瞬时的 id 冲突，能干掉整个工作方式。**
+
+**修法**（`src/dsh-adapter/web-search-tavily-bocha.ts`）：与 `local-llm-adapter` /
+`cloud-llm-adapter` **同一范式** —— 重复注册时**让位**（不抛），因为 id 是本插件的
+常量，注册表里已有的那一个与我们等价。
+
+- 判定走 `err.code === 'WEB_DUPLICATE_PROVIDER'`（宿主 `HarnessError` 自带 code，
+  宿主源码明写「route on this, never by parsing message」）；
+- 让位**不留痕**是不行的 ⇒ 同时写 `ctx.logger.error` 与审计事件
+  `web.search.registration.duplicate`（审计走 `ctx.get('auditLog')` **延迟注入**，
+  不写进 `inject` 数组 —— `inject` 是硬依赖，声明它等于要求 cordis 等到 auditLog
+  就绪才起我们这一行）；
+- 别的错误**照抛**（不吞）。
+
+新增 4 条单测（让位不抛 / 让位留痕 / 别的错误照抛 / 判定靠 code 不靠 message）。
+
+**修完后的实况**（22:2x 重启桌面版）：
+
+```
+$ node scripts/probe-desktop-preset-roster.mjs "http://127.0.0.1:50461/?token=…"
+preset                 default  name
+standard               YES
+ptc                    -
+minimal                -
+cordis                 -
+edge                   -        边缘模式
+edge preset: healthy, isDefault=false
+```
+
+桌面版 UI 的「新任务 Agent 预设」下拉里**「边缘模式」在**（点它，seat 变成
+「边缘模式」）⇒ **npm 0.1.2 包本身是好的**，之前看不见是热装切换期的瞬态。
+
+### 六、主人裁决「这个文件应该不存在」：我把它移走了 —— 并更正我自己的一处错误描述
+
+**来历**（三条独立证据一致）：
+
+| 项 | 值 |
+|---|---|
+| `~/.dsh-edge-agent/edge.json` 的 birth / mtime / ctime | **2026-11-11 21:56:26**（同一刻 ⇒ **新建**，非修改）|
+| 内容 | 仓库 checkout 里那份 10-29 版 `config/edge.json`，7550 B，sha256 `9542cba1…` |
+| 放置者 | **本会话的 agent**，按 §7.182「活配置只有两档落点」把 checkout 那份 `cp` 到顺位 2（chmod 600），再把 checkout 那份 `mv` 到 `~/cy/config-backups/`（**没删**）|
+
+审计链 `config.loaded` 认领了它：`21:57:09` 与 `22:08:49` 两次都命中
+`~/.dsh-edge-agent/edge.json`；`21:52:38` 那次命中的是 `edge.example.json`
+（**模板** —— 那一刻顺位 1/2 都还不存在）。
+
+**主人的裁决**：整个移走。已执行 —— `mv` 到
+`~/cy/config-backups/edge.json.from-home-20261111-215626`，sha256 与另外两份备份
+**逐字节相同**（`edge.json-20261029`、`edge.json.from-checkout-20261029`）⇒ 随时可还原。
+
+**⇒ 这里要更正我自己先前的一句话。** 我给主人的选项描述写的是「本地路由不注册 ⇒
+边缘模式 fail-closed」。**这是错的。** 实测（22:20:31 无配置会话）：
+
+```
+config.loaded     path = "(defaults — no config file found)"
+llm.local.catalog {"provider":"local-llm","model":"deepseek-v4.1-flash",
+                    "target":"qwen-token-plan-cn","targetSource":"selection"}
+```
+
+`llm.local.delegate` 的**默认值就是 `true`**（`edge-config.ts:335`）⇒ 没配端点 =
+**委托宿主 provider**，**路由照样注册** ⇒ **不是 fail-closed**。
+
+**真实后果**：LOCAL 轮次被改道到 `local-llm` ⇒ DELEGATE ⇒ 转发给宿主当前那条
+provider = `qwen-token-plan-cn`（**云端**，来自 profile 的 `agent-default-model`）；
+而本地池按 §7.131 带**全部**历史 ⇒ 整段未脱敏对话出网。
+
+对照 22:17:50（**有**配置时）的同一段：
+
+```
+input-guard.reroute.local → to: {provider: local-llm, model: qwen3.8-flash}   mode=direct
+```
+
+⇒ 那时是**真本地端点**；现在（无配置）是**委托云端**。
+
+### 七、遗留（待主人裁决，不擅自改）
+
+**DELEGATE 委托到云端时，闸门不拦。** `input-guard` 的
+`dispatchRerouted()` 只用 `localAvailable()`（问「`local-llm` 路由在不在」），
+**DELEGATE 模式下该路由是在的** ⇒ 放行；`mode` 只写进审计行，不参与判定。
+
+这不是漏写，而是**上游有意的产品决定**：`tests/unit/input-guard-local-reroute.test.ts:249`
+明确断言「DELEGATE 池 ⇒ 改道过去的 model 是委托落点那个」。⇒ **改它 = 改产品语义**，
+需要主人拍板（选项：DELEGATE 的委托目标按 model-router 的 realm 判定，非 LOCAL 就
+fail-closed 拒收）。
+
+**在主人的裁决落地之前，本机的实际状态是**：`~/.dsh-edge-agent/edge.json` 不存在
+⇒ 边缘模式的 LOCAL 轮次会委托给宿主 provider `qwen-token-plan-cn`（云端）。
+⇒ **要回到「真本地」，本地端点得重新有地方放**（插件目录顺位 1，或别的运维自选位置）
+—— 但按主人的部署不变量，**它不能由部署带过去**。
+
+### 八、门禁与证据（本轮全绿）
+
+| 项 | 结果 |
+|---|---|
+| `vitest run tests/unit` | **1606 passed \| 2 skipped**（81 文件；较上轮 +4 = 新增的让位测试）|
+| `eslint src tests/unit scripts` | **0 error** / 59 warning |
+| `tsc -p tsconfig.json --noEmit` | exit 0 |
+| `tsc -p tsconfig.client.json --noEmit` | exit 0 |
+| `node scripts/run.mjs verify:build` | **exit 0**（28 道门禁全绿，含新增的四道 config 白名单判据）|
+| `node scripts/verify-doc-links.mjs` | exit 0 |
+| 桌面版名册探针 | `edge 边缘模式` **healthy**，UI 下拉可见可选 |
+| registry 反查 | 0.1.1 / 0.1.2 均**不含** `config/edge.json*` |
+
+**没做的**：没有发新的 npm 版本（本轮改动只在仓库里）。要把它送到主人手上的
+npm 包，需要发 **0.1.3** —— 那是对外可见动作，等主人指示。
