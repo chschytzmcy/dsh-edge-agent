@@ -291,9 +291,9 @@ git push origin v0.1.1     # ← 这一步才触发 publish.yml
 
 ### 8.1.1 本地发布路径（§7.172 新增，第一次发布走这条）
 
-CI 那条链是「代码上去了之后才跑」的 —— 而 npm 这条链**从来没被走通过**（本仓至今
-0 个 tag、registry 上查无此包）。第一次发布不该拿 CI 当试验品，所以给了一条
-**发布前**的本地路径：
+CI 那条链是「代码上去了之后才跑」的 —— 而 npm 这条链**在 2026-11-11 才第一次被走通**
+（此前本仓 0 个 tag、registry 上查无此包）。第一次发布不该拿 CI 当试验品，所以给了一条
+**发布前**的本地路径（**这条路径已经真跑通过一次**，见 §8.1.2）：
 
 ```bash
 npm run publish:npm                    # 构建 + 全部门禁 + dry-run（安全默认，不发）
@@ -306,11 +306,15 @@ npm run publish:npm -- --yes --tag     # 发完打 v<version> tag（再 git push
 1. **工作树必须干净**（`--allow-dirty` 可强行越过）—— 发出去的必须是 git 里有的东西；
 2. **registry 预检**：这个版本发过没有？发过 ⇒ 立刻停（不浪费一次构建 + 门禁）；
 3. **认证预检**（仅真发时）：`NPM_TOKEN` / `NODE_AUTH_TOKEN` / `~/.npmrc` / 仓库
-   `.npmrc` 里有没有 token？**没有就立刻停**（实测 3 秒）—— 不能等构建链 + 24 道
-   门禁跑完才在 `pnpm publish` 那一步才发现没登录；
+   `.npmrc` 里有没有 token？**没有就立刻停**（实测 3 秒）—— 不能等构建链 + 27 道
+   门禁跑完才在 `pnpm publish` 那一步才发现没登录。
+   ⚠️ **两种 token 行都要认**（§7.185 实测踩过）：`npm login --auth-type=web` 写进
+   `~/.npmrc` 的是**带 registry 前缀**的 `//registry.npmjs.org/:_authToken=…`；只认
+   不带前缀的 `_authToken=` 会给出**假阴性**（明明 `npm whoami` 有身份、token 也在，
+   预检却报「没找到凭据」）。自证：`npm run publish:npm -- --selftest`；
 4. **canonical 构建链**（`compile → typecheck:client → build:client → build:installable
    → pack:tarball`）—— 与 CI **一字不差**；
-5. **全部门禁**（`verify:build`，25 项，验的是**产物**）；
+5. **全部门禁**（`verify:build`，**27 项**，验的是**产物**）；
 6. **`pnpm publish --dry-run`** —— **默认不发**，只把「将要发出去的东西」摊开给你看。
 
 ⇒ **不带 `--yes` 永远不会碰 registry。** 这是这个脚本的默认值，也是它能被信任的原因。
@@ -332,6 +336,33 @@ pnpm publish --access public --ignore-scripts --no-git-checks [--provenance|--no
 - `--ignore-scripts`：让 `prepare` 不要在发布步里**重跑一遍** compile+build:client ——
   Build 步产出的 `lib/` 已经过了 `verify:build`，发出去的应该是**门禁验过的那个**。
 
+### 8.1.2 「publish 报成功」≠「包已经能装」（staged publishing，2026-11-11 实测）
+
+第一次真发布（0.1.1）实测：`pnpm publish` 打印
+`✅ Published package @dsh-edge/dsh-edge-agent@0.1.1`、退出码 0 —— 但**那一刻
+registry 上还装不了这个包**：
+
+| 探针 | 刚发完 | 约 6 分钟后 |
+|---|---|---|
+| `npm view <pkg> version` | **404** | `0.1.1` |
+| packument `GET /@dsh-edge%2fdsh-edge-agent` | **404** | **200**，`versions = 0.0.0-stage, 0.1.1` |
+| `GET /-/package/<pkg>/dist-tags` | `{"latest":"0.1.1"}` | 同左 |
+| `GET /<pkg>/0.1.1`（版本文档） | **200**（fileCount 238） | 同左 |
+| `npm access list packages dsh-edge` | `@dsh-edge/dsh-edge-agent: read-write` | 同左 |
+
+⇒ npm 现在把**「用 bypass-2FA token 直接发布」也收进了分级发布（staged publishing）**：
+包名先被占位版 `0.0.0-stage` 占住（占位 tarball 的 package.json 直说
+`"stub": true, "description": "Temporary package placeholder for staged publishing"`），
+真实版本进待批队列。**这次是自动放行**（约 6 分钟）；也可能需要人在 npmjs.com 的
+**Staged Packages** 页点 Approve，或 `npm stage approve <stage-id>`（要求 npm ≥ 11.15，
+且仍需一次 2FA 挑战 —— TOTP 已被 npm 移除 ⇒ 本机 CLI 这条路走不通，浏览器才可行）。
+
+**判据**：`npm view <pkg> version` 返回 `0.0.0-stage` ⇒ 还卡在审批；返回真实版本号 ⇒
+已上线。`versions` 里留着 `0.0.0-stage` 是**正常的占位残留** ⇒ 判据看
+`dist-tags.latest` 指向谁。
+
+官方文档：[Staged publishing for npm packages](https://docs.npmjs.com/staged-publishing)。
+
 ### 8.2 环节与报错对照
 
 | 环节 | 报错首行 | 含义 / 怎么办 |
@@ -351,6 +382,7 @@ pnpm publish --access public --ignore-scripts --no-git-checks [--provenance|--no
 | `pnpm publish`（版本已存在） | `409 Conflict - PUT ... - Cannot publish over the previously published versions: 0.1.1` | 改版本号再发 |
 | `pnpm publish`（**CI，detached HEAD**） | `Error: ERR_PNPM_GIT_UNKNOWN_BRANCH` + `× The Git HEAD may not attached to any branch, but your "publish-branch" is set to "master|main"` | **实测（2026-11-10）**：CI 在 tag push 时必然 detached HEAD ⇒ 必须加 `--no-git-checks`（§7.172） |
 | `pnpm publish`（**首次发布带 provenance**） | pnpm 的 provenance 生成器抛错（registry 答 `{"public":false}`） | 首次发布**不能**带 `--provenance` ⇒ 由 `publish-decision.mjs` 判定（§8.5.1） |
+| `pnpm publish`（**报成功但装不了**） | **无报错**（退出码 0）⇒ 但 `npm view <pkg> version` 返 **404** 或 `0.0.0-stage` | npm 的 **staged publishing**：真实版本在待批队列，要等放行（或在 npmjs.com 的 Staged Packages 页点 Approve）—— 判据见 §8.1.2 |
 | `pnpm publish`（Windows 上跑不起来） | `退出码 null（进程没起来）` | `pnpm`/`npm` 在 Windows 上是 `.cmd` shim，Node 20.12+ 拒绝 spawn ⇒ 要按裸名走 shell（§8.1.1） |
 
 > §7.172 起，**「版本已存在」在 CI 上不再是一个错误**：publish job 会先看 registry，
@@ -423,13 +455,13 @@ node scripts/verify-ci-build-chain.mjs --selftest  # 自证 + 反向证伪（11 
 `verify:npm-decision` 把它们**都跑一遍**（不联网：判定表用注入的假探针，stdout
 契约用连不上的端口）⇒ 在**每一次 push** 上就能发现它们坏了，而不是等到推 tag。
 
-### 8.5 真正发布成功需要哪些条件（逐条核对，2026-11-10 核实）
+### 8.5 真正发布成功需要哪些条件（逐条核对，2026-11-10 核实；2026-11-11 发布实况回填）
 
 | # | 条件 | 状态 | 备注 |
 |---|---|---|---|
-| 1 | npmjs.com 账号 | ❓ | 需要主人在 registry 上有账号 —— **名字必须正好是 `dsh-edge`**（npm 的 scope 名 = 账号/组织名）；逐步操作见 [`npm-account-setup.md`](npm-account-setup.md) |
-| 2 | scope `@dsh-edge` 可用 | ✅ | registry 上查无此 scope ⇒ 未被占用；首次发布会创建它 |
-| 3 | 认证：`NPM_TOKEN`（**granular access token**，publish 权限、Bypass 2FA、≤90 天） | ❓ | **classic token 已于 2025-12 被 npm 撤销**，只能用 granular |
+| 1 | npmjs.com 账号 + 组织 `dsh-edge` | ✅ **已建**（2026-11-11 实测 `/-/org/dsh-edge/package` → HTTP 200） | 账号 `chschytzmcy`，是该组织成员（角色含 publish）；逐步操作见 [`npm-account-setup.md`](npm-account-setup.md) |
+| 2 | scope `@dsh-edge` 可用 | ✅ **已由我们自己占用** | 2026-11-11 首次发布时创建（`npm access list packages dsh-edge` → `@dsh-edge/dsh-edge-agent: read-write`） |
+| 3 | 认证：`NPM_TOKEN`（**granular access token**，publish 权限、Bypass 2FA、≤90 天） | ✅ **已在用** | `~/.npmrc` 里是 granular token（`//registry.npmjs.org/:_authToken=…`）；`npm profile get` 返 **403**（token 只授权了这个 scope，符合预期）。**classic token 已于 2025-12 被 npm 撤销**，只能用 granular |
 | 3′ | 或 OIDC **Trusted Publishing**（不要 token） | ✅ **可用** | **pnpm 11.7.0 自己实现了 OIDC 交换**（`crates/publish/src/oidc/*`）⇒ **不需要 npm CLI ≥ 11.5.1**，也**不需要升 Node**（CI 是 Node 22.20 + pnpm 11.7.0）。**§7.172 修正了旧结论** |
 | 4 | `publishConfig.access: "public"` | ✅ | scoped 包默认 restricted，必须显式 public |
 | 5 | `repository.url` 与发布位置**精确匹配**（大小写敏感） | ✅ | **§7.156 已从 SSH 形式改成 `https://github.com/chschytzmcy/dsh-edge-agent.git`** |
@@ -441,7 +473,7 @@ node scripts/verify-ci-build-chain.mjs --selftest  # 自证 + 反向证伪（11 
 | 11 | `files` 白名单 | ✅ | 235 文件 / 69 入口（2026-11-10 实测） |
 | 12 | `dsh.bundle.patch` 列出的文件在包里 | ✅ | 两个 patch 都在白名单里 |
 | 13 | `engines.dsh` 声明 | ✅ | `>=0.2.1-rc.2` |
-| 14 | 版本未被占用 | ✅ | `0.1.1` 未发过（registry 上查无此包） |
+| 14 | 版本未被占用 | ✅ **0.1.1 已发布**（2026-11-11） | 下一版必须改 `package.json#version`（同一版本不能重发）；tag `v0.1.1` 已推 origin |
 | 15 | tag ↔ `package.json#version` 一致 | ✅ | §7.156 加了断言 |
 | 16 | 真密钥不在包里 | ✅ | `.npmignore` + `files` **双重**排除 `config/edge.json` |
 | 17 | `CHANGELOG.md` 存在 + 含当前版本 + 在 `files` 里 | ✅ | §7.172 补的（npm **不会**自动带它） |
@@ -451,9 +483,19 @@ node scripts/verify-ci-build-chain.mjs --selftest  # 自证 + 反向证伪（11 
 | 21 | 发布决策门禁 | ✅ | §7.172：`verify:npm-decision`（链内第 23 位）—— 判定表 + stdout 契约的自证 |
 | 22 | 包名一致性门禁 | ✅ | §7.173：`verify:package-name`（链内第 21 位）—— 包名副本与 `package.json#name` 交叉比对 |
 
-⇒ **剩下的只有两件是主人手上的**（**2026-11-10 主人已裁决走哪条**，见下）：
+⇒ **原来的两件（2026-11-10 的待办）在 2026-11-11 都已落地**（组织建好、token 在位、
+`0.1.1` 已发布，见 §8.1.2）。**现在剩下的是这两件新的主人手上的事**：
 
-1. **在 npmjs.com 建一个叫 `dsh-edge` 的组织**，并把主人自己的
+1. **登记 trusted publisher**（浏览器：包页面 → Settings → Trusted Publisher）——
+   `dsh-edge` / `chschytzmcy/dsh-edge-agent` / `publish.yml`。**不做 ⇒ 2027-01 起
+   CI 发不了**（token 直发被移除）。
+2. **账号 2FA** —— npm 已移除 TOTP 注册通道 ⇒ 只能挂 WebAuthn 安全密钥
+   （Windows Hello 的 PIN / 指纹 / 人脸即可）；详见
+   [`npm-account-setup.md`](npm-account-setup.md) §5。
+
+下面是 2026-11-10 的裁决与当时的待办（**均已完成**，留档）：
+
+1. ✅ **在 npmjs.com 建一个叫 `dsh-edge` 的组织**，并把主人自己的
    npm 账号加为**成员**（角色需含 publish）。
    ⇒ **口径（2026-11-10 裁决）**：走**组织**，不走同名的「机器人式」用户账号 ——
    对外的 scope 名不变、凭据是主人本人的、还能邀请别人一起发。
@@ -464,9 +506,9 @@ node scripts/verify-ci-build-chain.mjs --selftest  # 自证 + 反向证伪（11 
    > create an organization with the name of the scope that you'd like to publish to
    > **or be added to an existing organization** with the appropriate permissions.
 
-   （名字可用性已查实：registry 上**无同名组织**、该 scope 下**无任何包**。）
-2. **发布凭据** —— 首次发布用 granular access token（见 §8.5.2），发完之后登记
-   trusted publisher（Owner 填这个组织）改走 OIDC。
+   （名字可用性当时已查实：registry 上**无同名组织**、该 scope 下**无任何包**。）
+2. ✅ **发布凭据** —— 首次发布用 granular access token（见 §8.5.2），发完之后登记
+   trusted publisher（Owner 填这个组织）改走 OIDC。**trusted publisher 还没登记**（见本节开头）。
 
 拿到之后，本地发一次就够（**不用改任何代码** —— 包名/对外标识一个字都不动）：
 
@@ -475,6 +517,8 @@ npm login --scope=@dsh-edge   # 用主人自己的账号；scope 钉到组织
 npm run publish:npm -- --yes --tag
 git push origin v0.1.1         # 触发 CI；它会看到版本已发 ⇒ 跳过 publish，只建 Release
 ```
+
+> **2026-11-11 就是这三条走通的**（`0.1.1` 已上线，tag `v0.1.1` 已推）。
 
 > **为什么组织方案不需要改任何代码**：scope 仍是 `@dsh-edge`
 > ⇒ `package.json#name`、patch 行、preset、文档、门禁里那 **181 处 / 45 个文件**
