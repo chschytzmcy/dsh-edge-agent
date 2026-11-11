@@ -345,7 +345,58 @@ export async function apply(ctx: Context, _config: Config): Promise<void> {
   const webCtx = ctx as Context & {
     web: { registerSearchProvider(p: WebSearchProvider): void }
   }
-  webCtx.web.registerSearchProvider(provider)
+  try {
+    webCtx.web.registerSearchProvider(provider)
+  } catch (err: any) {
+    // §7.189 (2026-11-11): 同一个 id 被占用，**不该**拖垮整条 preset。
+    //
+    // 实测（桌面 App 日志 2026-11-11 21:52:38.886）：
+    //   ERROR [web-search-tavily-bocha] WebError: a web provider with id
+    //     "tavily-bocha-fallback" is already registered
+    //   作用域链：#web-search-tavily-bocha → #edge-stack →
+    //             #agent-preset-registry → #include
+    //
+    // 这一行失败 ⇒ 宿主 dsh-agent-preset-registry 的 mountPreset() 直接
+    // throw（audit.failed 非空 ⇒ 整条 preset 挂载失败）⇒「边缘模式」这个
+    // 工作方式从设置页消失 ⇒ 主人看到的症状是「部署了 npm 包，模式里却
+    // 没有边缘模式」（2026-11-11 实测）。
+    //
+    // 触发场景是**热装切换**：桌面端插件管理器把旧副本换成本 npm 包时，
+    // 旧实例还没卸载，新实例已经挂上 ⇒ 同一个 id 注册两次。
+    //
+    // 对策：与 local-llm-adapter / cloud-llm-adapter 同一范式 ——
+    // 重复注册时**让位**（不抛），因为 id 是本插件的常量，注册表里已有的那
+    // 一个与我们等价（同样的 provider 类、同样的 key 来源）。
+    //
+    // 判定走 `err.code`：宿主 HarnessError 自带 code 字段，且宿主源码明确
+    // 写着「route on this, never by parsing message」（dsh-llm HarnessError）。
+    if (err?.code !== 'WEB_DUPLICATE_PROVIDER') throw err
+    ctx.logger?.error?.(
+      `[web-search-tavily-bocha] provider id "${TAVILY_BOCHA_PROVIDER_ID}" 已被注册 `
+      + '（本插件的另一个实例 —— 多半是桌面端热装切换时旧副本尚未卸载）；'
+      + '本实例让位，不重复注册。',
+    )
+    // 让位是「发生了一件事」⇒ 必须留痕，不能静悄悄。
+    // auditLog 走**延迟注入**（ctx.get），不写进 inject 数组：inject 是
+    // cordis 的硬依赖，声明它等于要求 cordis 等到 auditLog 就绪才起我们
+    // 这一行（§7.175/§7.176 的教训：闸门不该因服务次序而缺席）。
+    try {
+      const auditLog = ctx.get?.('auditLog') as
+        | { log?: (entry: unknown) => Promise<unknown> }
+        | undefined
+      void auditLog?.log?.({
+        level: 'warn',
+        kind: 'web.search.registration.duplicate',
+        source: 'web-search-tavily-bocha',
+        payload: {
+          providerId: TAVILY_BOCHA_PROVIDER_ID,
+          error: String(err?.message ?? err),
+        },
+      })?.catch?.(() => {})
+    } catch {
+      // 审计不可用也不影响让位 —— 但日志那一行已经记过，不算静悄悄。
+    }
+  }
 }
 
 export default { name, inject, apply }

@@ -24,6 +24,7 @@ import { afterEach, beforeEach, describe, it } from 'vitest'
 import {
   TAVILY_BOCHA_PROVIDER_ID,
   TavilyBochaFallbackProvider,
+  apply,
 } from '../../src/dsh-adapter/web-search-tavily-bocha.ts'
 import { DeepSeekSearchProvider } from '@deepseek-ai/dsh-web-search-deepseek'
 import { WebError } from '@deepseek-ai/dsh-web'
@@ -407,5 +408,81 @@ describe('TavilyBochaFallbackProvider', () => {
         }),
     )
     assert.equal(aborted, true)
+  })
+})
+
+// ── §7.189: apply() 的重复注册让位 ───────────────────────────────────
+//
+// 背景（2026-11-11 实测，桌面 App 日志 21:52:38.886）：
+//   ERROR [web-search-tavily-bocha] WebError: a web provider with id
+//     "tavily-bocha-fallback" is already registered
+//   作用域链：#web-search-tavily-bocha → #edge-stack → #agent-preset-registry
+//
+// 宿主 dsh-agent-preset-registry 的 mountPreset() 里，audit.failed 非空 ⇒
+// 整条 preset 挂载失败 ⇒「边缘模式」从设置页消失。
+// ⇒ 这一行必须**让位**（不抛），否则一个瞬时的 id 冲突能干掉整个工作方式。
+
+describe('apply() —— provider id 被占用时让位（§7.189）', () => {
+  const config = { reserved: {} }
+
+  function makeCtx(register: () => void) {
+    const logged: Array<{ level: string; message: string }> = []
+    const audited: unknown[] = []
+    const ctx = {
+      web: { registerSearchProvider: register },
+      logger: {
+        error: (message: string) => { logged.push({ level: 'error', message }) },
+        warn: (message: string) => { logged.push({ level: 'warn', message }) },
+        info: () => {},
+      },
+      get: (name: string) =>
+        name === 'auditLog'
+          ? { log: async (entry: unknown) => { audited.push(entry) } }
+          : undefined,
+    }
+    return { ctx: ctx as unknown as Parameters<typeof apply>[0], logged, audited }
+  }
+
+  it('id 已被占用 ⇒ 不抛错，让位，且留下日志与审计痕迹', async () => {
+    const { ctx, logged, audited } = makeCtx(() => {
+      throw new WebError(
+        `a web provider with id "${TAVILY_BOCHA_PROVIDER_ID}" is already registered`,
+        'WEB_DUPLICATE_PROVIDER',
+      )
+    })
+    await assert.doesNotReject(() => apply(ctx, config))
+    assert.equal(logged.length, 1, '让位必须留下一条日志，不许静悄悄')
+    assert.match(logged[0].message, /已被注册/u)
+    assert.equal(audited.length, 1, '让位必须留下一条审计记录')
+    assert.equal(
+      (audited[0] as { kind?: string }).kind,
+      'web.search.registration.duplicate',
+    )
+  })
+
+  it('别的错误照抛（不吞）', async () => {
+    const { ctx, logged } = makeCtx(() => { throw new Error('boom') })
+    await assert.rejects(() => apply(ctx, config), /boom/u)
+    assert.equal(logged.length, 0)
+  })
+
+  it('不重复时正常注册，且不留痕迹', async () => {
+    let registered = 0
+    const { ctx, logged, audited } = makeCtx(() => { registered++ })
+    await apply(ctx, config)
+    assert.equal(registered, 1)
+    assert.equal(logged.length, 0)
+    assert.equal(audited.length, 0)
+  })
+
+  it('判定走 err.code，不靠 message 文本（宿主要求）', async () => {
+    // 同一条 message，但 code 不是 WEB_DUPLICATE_PROVIDER ⇒ 照抛。
+    const { ctx } = makeCtx(() => {
+      throw new WebError(
+        `a web provider with id "${TAVILY_BOCHA_PROVIDER_ID}" is already registered`,
+        'WEB_PROVIDER_UNAVAILABLE',
+      )
+    })
+    await assert.rejects(() => apply(ctx, config))
   })
 })
