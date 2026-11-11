@@ -71,6 +71,19 @@
  * ⇒ 本脚本**只在这个版本已经发过一次之后**才加 `--provenance`；首次发布走不带
  * 徽章的那支（发得出去）。详见 `scripts/registry-version.mjs` 的文件头。
  *
+ * **⚠️ §7.188 再加一维：环境。** 「要不要带」与「带得了带不了」是两件事 ——
+ * pnpm 的 provenance 生成器**只在受支持的 CI 里**能工作（GitHub Actions / GitLab CI）。
+ * 本机跑 `pnpm publish --provenance` 必炸（实测 2026-11-11 发 0.1.2 时撞到）：
+ *
+ * ```
+ * Error: ERR_PNPM_PROVENANCE_UNSUPPORTED_PROVIDER
+ *   × Automatic provenance generation is not supported for this CI provider
+ * ```
+ *
+ * ⇒ 本脚本的判定 = **「判定说带」AND「环境带得了」**；不在 CI 里一律 `--no-provenance`
+ * （本地拿不到徽章，但发得出去）。CI 那条路（`publish.yml`）不受影响 ——
+ * 它在 GitHub Actions 里，环境这一维是满足的。
+ *
  * ## 关于 pnpm 的 git 检查（`--no-git-checks`）
  *
  * `pnpm publish` 默认会做 git 检查（工作树干净 + HEAD 挂在 `master|main` 上）。
@@ -140,6 +153,32 @@ const REGISTRY = opt('--registry', 'https://registry.npmjs.org')
 /* ── 自证（--selftest）：认证预检的判定表 ─────────────────────────────────── */
 
 /**
+ * pnpm 能不能生成**溯源徽章**（provenance）？
+ *
+ * §7.188 实测踩到（2026-11-11 发 0.1.2 时）：pnpm 的 provenance 生成器只支持少数
+ * 几个 CI 提供商（GitHub Actions / GitLab CI）。在**本机**跑
+ * `pnpm publish --provenance` 必炸：
+ *
+ * ```
+ * Error: ERR_PNPM_PROVENANCE_UNSUPPORTED_PROVIDER
+ *   × Automatic provenance generation is not supported for this CI provider
+ * ```
+ *
+ * 而「要不要带 provenance」这个判定（`decideProvenance`）只看**仓库公开性**与
+ * **registry 上的可见性** —— 第一次发布之后（包已存在且公开）它就判「带」。
+ * ⇒ 本机发 0.1.2 时正好撞上这个组合：**判定说带，环境说带不了**。
+ *
+ * ⇒ 环境这一维必须单独判：不在受支持的 CI 里 ⇒ 一律 `--no-provenance`。
+ * （CI 那条路 `publish.yml` 直接跑 `pnpm publish --provenance`，它在 GitHub Actions
+ *  里，环境这一维是满足的 ⇒ 两边行为一致，只是本地拿不到徽章。）
+ */
+function provenanceEnv(env = process.env) {
+  if (env.GITHUB_ACTIONS === 'true') return { capable: true, reason: 'GitHub Actions' }
+  if (env.GITLAB_CI === 'true') return { capable: true, reason: 'GitLab CI' }
+  return { capable: false, reason: '不在受支持的 CI 里（pnpm 只能在 CI 生成溯源徽章）' }
+}
+
+/**
  * `--selftest`：把「凭据检测」这张判定表自己证一遍。
  *
  * 为什么单独立一个入口：认证预检是**「能不能发出去」**这件事的守门人 ——
@@ -169,6 +208,12 @@ function selftest() {
   expect('空值', hasLiteralToken('_authToken=\n'), false)
   expect('无关行', hasLiteralToken('registry=https://registry.npmjs.org/\n'), false)
   expect('空文件', hasLiteralToken(''), false)
+
+  // 5. §7.188：溯源徽章（provenance）**只能在受支持的 CI 里**生成。
+  expect('本机环境不支持 provenance', provenanceEnv({}).capable, false)
+  expect('GitHub Actions 支持', provenanceEnv({ GITHUB_ACTIONS: 'true' }).capable, true)
+  expect('GitLab CI 支持', provenanceEnv({ GITLAB_CI: 'true' }).capable, true)
+  expect('GITHUB_ACTIONS=false 不算', provenanceEnv({ GITHUB_ACTIONS: 'false' }).capable, false)
 
   if (failures > 0) {
     console.error(`\nselftest FAILED: ${failures} assertion(s)`)
@@ -377,8 +422,11 @@ if (!SKIP_REGISTRY) {
     }
   })()
   const decision = await decideProvenance(NAME, { repositoryIsPublic: repoIsPublic, registry: REGISTRY })
-  provenance = decision.provenance
-  console.log(`  · provenance: ${provenance ? '带（会有溯源徽章）' : '不带'} —— ${decision.reason}`)
+  const env = provenanceEnv()
+  // §7.188：判定（要不要带）与环境（带得了带不了）**是两维** —— 必须同时满足。
+  provenance = decision.provenance && env.capable
+  const provenanceReason = decision.provenance && !env.capable ? env.reason : decision.reason
+  console.log(`  · provenance: ${provenance ? '带（会有溯源徽章）' : '不带'} —— ${provenanceReason}`)
 }
 
 /* ── 第 1 步：canonical 构建链（与 CI 一字不差）───────────────────────── */
