@@ -14,7 +14,7 @@
  *   2. 跑**完整的 canonical 构建链**（与 CI 一字不差 —— `verify-ci-build-chain`
  *      门禁就管这件事）；
  *   3. **认证预检**（仅 `--yes`；离线读 `.npmrc` / 环境变量，找不到 token 就停）；
- *   4. 跑**全部 24 道门禁**（验的是**产物**，不是源码）；
+ *   4. 跑**全部 27 道门禁**（验的是**产物**，不是源码）；
  *   4. `pnpm publish --dry-run` —— **默认不发**，只把「将要发出去的东西」摊开给你看；
  *   5. 真的发要显式加 `--yes`。
  *
@@ -26,6 +26,7 @@
  * ```bash
  * npm run publish:npm                    # 构建 + 门禁 + dry-run（安全默认，不发）
  * npm run publish:npm -- --yes           # 真发
+ * npm run publish:npm -- --selftest       # 认证预检的判定表自证（离线、不碰凭据）
  * npm run publish:npm -- --yes --tag     # 发完打 v<version> tag 并推上去
  * ```
  *
@@ -40,7 +41,7 @@
  * ```
  *
  * 真发布（`--yes`）会先做一次**认证预检**（离线读文件，3 秒内出结果）：找不到
- * token 就直接停 —— 而不是等构建链 + 24 道门禁跑完才在最后一步失败。
+ * token 就直接停 —— 而不是等构建链 + 27 道门禁跑完才在最后一步失败。
  *
  * ## 关于 provenance（溯源徽章）
  *
@@ -122,6 +123,51 @@ const TAG = flag('--tag')
 const ALLOW_DIRTY = flag('--allow-dirty')
 const SKIP_REGISTRY = flag('--skip-registry-check')
 const REGISTRY = opt('--registry', 'https://registry.npmjs.org')
+
+/* ── 自证（--selftest）：认证预检的判定表 ─────────────────────────────────── */
+
+/**
+ * `--selftest`：把「凭据检测」这张判定表自己证一遍。
+ *
+ * 为什么单独立一个入口：认证预检是**「能不能发出去」**这件事的守门人 ——
+ * 一旦它给出**假阴性**（明明有凭据却说没有），主人就会在最后一步才看到失败，
+ * 那正是这个预检存在的理由（2026-11-11 实测踩过：带 registry 前缀的 token 行
+ * 被漏认 ⇒ 第一次发布被自己挡住）。
+ *
+ * 纯离线、纯只读、不碰真实凭据（用例里的 token 都是假的）。
+ */
+function selftest() {
+  let failures = 0
+  const expect = (label, actual, wanted) => {
+    const ok = actual === wanted
+    if (!ok) failures++
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${label} — expected ${wanted}, got ${actual}`)
+  }
+
+  console.log('publish-npm --selftest')
+
+  // 1. 不带前缀的写法（CI / 手写 .npmrc 常见）。
+  expect('无前缀 _authToken', hasLiteralToken('_authToken=npm_fake\n'), true)
+  // 2. 带 registry 前缀的写法 —— `npm login --auth-type=web` 实际写的就是它。
+  expect('带前缀 //registry.npmjs.org/:_authToken', hasLiteralToken('//registry.npmjs.org/:_authToken=npm_fake\n'), true)
+  // 3. 占位符不是字面量 ⇒ 真正的值在环境变量里 ⇒ 预检不认（由 env 分支接住）。
+  expect('占位符 ${NPM_TOKEN}', hasLiteralToken('//registry.npmjs.org/:_authToken=${NPM_TOKEN}\n'), false)
+  // 4. 空值 / 无关行 / 空文件都不算凭据。
+  expect('空值', hasLiteralToken('_authToken=\n'), false)
+  expect('无关行', hasLiteralToken('registry=https://registry.npmjs.org/\n'), false)
+  expect('空文件', hasLiteralToken(''), false)
+
+  if (failures > 0) {
+    console.error(`\nselftest FAILED: ${failures} assertion(s)`)
+    process.exit(2)
+  }
+  console.log('\nselftest OK —— 带前缀 / 不带前缀的 token 行都认得出来')
+}
+
+if (flag('--selftest')) {
+  selftest()
+  process.exit(0)
+}
 
 const manifest = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
 const NAME = manifest.name
@@ -327,7 +373,7 @@ if (!SKIP_REGISTRY) {
 /**
  * 真发布前的**认证预检** —— 纯离线读文件，**不调 npm、不联网**。
  *
- * 为什么要有：真发布要跑完 canonical 构建链 + 24 道门禁（好几分钟）才轮到
+ * 为什么要有：真发布要跑完 canonical 构建链 + 27 道门禁（好几分钟）才轮到
  * `pnpm publish`；若那时才发现「没登录」，前面那几十分钟全白跑。
  *
  * 找 token 的四个来源（与 npm/pnpm 的实际查找顺序一致）：
@@ -355,10 +401,26 @@ function findAuthSources() {
   return found
 }
 
-/** `.npmrc` 里有没有**字面量** token（`${NPM_TOKEN}` 这种占位符不算）。 */
+/**
+ * `.npmrc` 里有没有**字面量** token（`${NPM_TOKEN}` 这种占位符不算）。
+ *
+ * ## 为什么带 registry 前缀的写法也要认（2026-11-11 实测修的 bug）
+ *
+ * `npm login --auth-type=web` 往 `~/.npmrc` 里写的是**带前缀**的那一行：
+ *
+ * ```
+ * //registry.npmjs.org/:_authToken=npm_xxxxxxxx
+ * ```
+ *
+ * 当时的正则只认**不带前缀**的 `_authToken=`（`^\s*_authToken\s*=`）⇒ **假阴性**
+ * ⇒ 明明 `npm whoami` 有身份、`~/.npmrc` 里有 token，预检却报「没找到凭据」
+ * ⇒ 第一次发布被自己的预检挡在门外。
+ *
+ * ⇒ 现在两种写法都认：`(//registry/:)?_authToken=`。
+ */
 function hasLiteralToken(text) {
   for (const line of text.split(/\r?\n/u)) {
-    const m = line.match(/^\s*_authToken\s*=\s*(.+?)\s*$/u)
+    const m = line.match(/^\s*(?:\/\/[^\s=]*:)?_authToken\s*=\s*(.+?)\s*$/u)
     if (!m) continue
     const value = m[1].trim()
     if (value.length === 0) continue
@@ -372,7 +434,7 @@ if (YES) {
   const sources = findAuthSources()
   if (sources.length === 0) {
     console.error('\n✗ 没找到 npm 凭据 —— 这一趟真发布会在**最后一步**才失败，')
-    console.error('  前面的 canonical 构建链 + 25 道门禁全白跑。')
+    console.error('  前面的 canonical 构建链 + 27 道门禁全白跑。')
     console.error('\n  补救（方案 B：主人自己的账号 + npmjs.com 上那个同名账号/组织的成员身份）：')
     console.error('    npm login --scope=@dsh-edge')
     console.error('\n  或把 granular token 写进 ~/.npmrc / 存成环境变量 NPM_TOKEN。')
