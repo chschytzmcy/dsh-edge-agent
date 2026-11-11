@@ -31,6 +31,7 @@ import { describe, it } from 'vitest'
 
 import { InputGuardServiceImpl } from '../../src/dsh-adapter/input-guard.ts'
 import type { Config } from '../../src/dsh-adapter/input-guard.ts'
+import { LOCAL_POOL_FORWARD_MARKER } from '../../src/dsh-adapter/host-llm-trace.ts'
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
@@ -310,5 +311,101 @@ describe('handleLlmStream — §7.184 改道失败必须 fail-closed', () => {
     const blocked = audit.entries.find(e => e.kind === 'input-guard.reroute.blocked')
     assert.ok(blocked)
     assert.equal((blocked.payload as any).reason, 'llm-runtime-unavailable')
+  })
+})
+
+// ── §7.191 本地池 DELEGATE 转发的防自锁 ──────────────────────────────────────
+
+/**
+ * §7.191（2026-11-12）：本地池的 **DELEGATE 转发**不能被改道。
+ *
+ * §7.184 那句「重新派发回来的那趟 provider 已是本地池 ⇒ 天然不再改道
+ * （防自锁）」**只在直连池下成立**。DELEGATE 池（§7.171）把请求转给**宿主的
+ * 目标路由**（如 `qwen-token-plan-cn`）⇒ 回来那一趟的 provider 不是本地池 ⇒
+ * 「provider !== localProvider」判据失效 ⇒
+ *
+ *   改道 → 本地池 → 委托（provider 换回宿主目标）→ 再进 waterfall → 再改道 → …
+ *
+ * ⇒ **无限乒乓**。实测（2026-11-12 桌面版）：递归 123 万次，JS 堆 4GB 爆掉，
+ * 整机 OOM abort；意图分类器的 LLM 调用 5 次全挂（0/5），安检 5/6 挂。
+ *
+ * 判据必须是**转发标记**（`LOCAL_POOL_FORWARD_MARKER`）—— 转发后 provider 是
+ * 宿主的目标路由，与「用户直接选了那个模型」在 provider 维度无法区分；裁剪
+ * 路径（`hostEgressGuard.plan()`，§7.171）早就在用同一个标记。
+ */
+describe('handleLlmStream — §7.191 本地池的 DELEGATE 转发不会被无限改道', () => {
+  it('本地池转发（带转发标记）⇒ 不改道，直接放行', async () => {
+    const audit = fakeAuditLog()
+    const calls: Array<{ provider?: string; model?: string }> = []
+    const ctx = fakeCtx({ llm: fakeLlmRuntime(calls) })
+    const svc = new TestGuard(ctx as any, defaultConfig(), 'delegate', audit.api)
+    armEdgeSession(svc, 's1', 'LOCAL')
+
+    // 这一趟就是本地池的 DELEGATE 转发：provider 已是宿主的目标路由，
+    // 并带着 §7.171 的转发标记。
+    await drain(svc.handleLlmStream(
+      {
+        sessionId: 's1',
+        provider: 'qwen-token-plan-cn',
+        model: 'deepseek-v4.1-flash',
+        messages: [],
+        [LOCAL_POOL_FORWARD_MARKER]: true,
+      } as any,
+      async function* () { yield { type: 'text-delta', index: 0, text: 'ok' } },
+    ))
+
+    assert.equal(calls.length, 0, '本地池自己的转发不能再被改道（否则就是无限乒乓）')
+    const reroute = audit.entries.find(e => e.kind === 'input-guard.reroute.local')
+    assert.equal(reroute, undefined, '本地池转发不该留下改道审计行')
+  })
+
+  it('本地池转发与改道不会形成无限乒乓（防自锁的第二判据）', async () => {
+    const audit = fakeAuditLog()
+    const calls: Array<{ provider?: string; model?: string }> = []
+    let depth = 0
+    // holder：假的宿主 runtime 要回调 svc.handleLlmStream（模拟委托转发），
+    // 而 svc 又要用到这个 runtime ⇒ 循环依赖，用一个可变的 holder 串起来。
+    const holder: { svc?: InputGuardServiceImpl } = {}
+    // 假的宿主 LLM runtime：**模拟本地池的 DELEGATE 转发** ——
+    // 回到宿主的 llm/stream，provider 换成宿主目标路由，并带转发标记。
+    const ctx = fakeCtx({
+      llm: {
+        listProviders: () => [{ id: 'qwen-token-plan-cn', name: 'qwen-token-plan-cn' }],
+        listModels: async (provider: string) => (
+          provider === 'qwen-token-plan-cn'
+            ? [{ provider, id: 'deepseek-v4.1-flash', name: 'deepseek-v4.1-flash' }]
+            : []
+        ),
+        stream(options: any) {
+          calls.push({ provider: options?.provider, model: options?.model })
+          if (++depth > 5) {
+            throw new Error('§7.191 防自锁失效：本地池转发被反复改道（无限乒乓）')
+          }
+          return holder.svc!.handleLlmStream(
+            {
+              ...options,
+              provider: 'qwen-token-plan-cn',
+              model: 'deepseek-v4.1-flash',
+              [LOCAL_POOL_FORWARD_MARKER]: true,
+            } as any,
+            async function* () { yield { type: 'text-delta', index: 0, text: 'ok' } },
+          )
+        },
+      },
+    })
+    holder.svc = new TestGuard(ctx as any, defaultConfig(), 'delegate', audit.api)
+    const svc = holder.svc
+    armEdgeSession(svc, 's1', 'LOCAL')
+
+    // 主对话那一跳：provider 是宿主选的那个 ⇒ 该改道（LOCAL 轮次）。
+    await drain(svc.handleLlmStream(
+      { sessionId: 's1', provider: 'qwen-token-plan-cn', model: 'deepseek-v4.1-flash', messages: [] } as any,
+      async function* () { yield { type: 'text-delta', index: 0, text: 'ok' } },
+    ))
+
+    assert.ok(calls.length <= 1, `改道只能发生一次（实际 ${calls.length} 次）—— 第二次就是乒乓`)
+    assert.equal(calls[0]!.provider, 'local-llm', '第一次改道是换成本地池')
+    const reroutes = audit.entries.filter(e => e.kind === 'input-guard.reroute.local')
+    assert.equal(reroutes.length, 1, '改道审计行只能有一条')
   })
 })

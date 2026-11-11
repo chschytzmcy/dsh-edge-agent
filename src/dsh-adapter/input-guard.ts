@@ -69,7 +69,7 @@ import type { HostCallRequest } from './host-llm-trace.js'
 // 轮次走的是**宿主原生 provider**（桌面 GUI 选的模型），压根不进
 // cloud-llm-adapter ⇒ adapter 里的 §7.131 裁剪一次都没跑过。守卫补在
 // `llm/stream` waterfall 上 —— 真正的出网那一跳。
-import { HostEgressGuard, type HostEgressPlan } from './host-egress-guard.js'
+import { HostEgressGuard, isLocalPoolForward, type HostEgressPlan } from './host-egress-guard.js'
 import { sessionIdField } from './session-attribution.js'
 
 export const name = 'input-guard'
@@ -473,6 +473,12 @@ export class InputGuardServiceImpl extends Service {
    * 重新派发会再进一次 waterfall ⇒ 那趟的 provider 已是本地池 ⇒ 天然不再改道
    * （**防自锁**），且本地池按 §7.131 带**全部**历史（本地池不出网，不裁）。
    *
+   * §7.191（2026-11-12）更正：上面那句「provider 已是本地池 ⇒ 天然不再改道」
+   * **只在直连池下成立**。DELEGATE 池（§7.171）会把请求转给宿主的目标路由
+   * ⇒ 回来那一趟的 provider 不是本地池 ⇒ 防自锁失效 ⇒ 无限乒乓 ⇒ OOM。
+   * ⇒ 防自锁现在有**两个**判据：provider 名（直连池）+ 转发标记
+   * （`LOCAL_POOL_FORWARD_MARKER`，DELEGATE 池）—— 见 `needsLocalReroute`。
+   *
    * fail-closed：改不动（本地路由不存在 / 解析不到 model id / 宿主 LLM runtime
    * 不可用）⇒ **抛错**，绝不放行到可能上云的 provider。
    */
@@ -482,6 +488,22 @@ export class InputGuardServiceImpl extends Service {
     options: { provider?: unknown; [key: string]: unknown },
     state: StepSanitizationState,
   ): boolean {
+    // §7.191（2026-11-12）：**本地池自己的 DELEGATE 转发**不改道。
+    //
+    // 上面那句注释「重新派发回来的那趟 provider 已是本地池 ⇒ 天然不再改道
+    // （防自锁）」**只在直连池下成立**。DELEGATE 池（§7.171）会把请求转给
+    // **宿主的目标路由**（如 `qwen-token-plan-cn`）⇒ 回来那一趟的 provider
+    // 不是本地池 ⇒ 「provider !== localProvider」判据失效 ⇒ 改道 → 本地池 →
+    // 再委托 → 再改道 ⇒ **无限乒乓**。
+    //
+    // 实测（2026-11-12 桌面版）：递归 123 万次，JS 堆 4GB 爆掉，整机
+    // OOM abort；意图分类器的 LLM 调用 5 次全挂（0/5），安检 5/6 挂。
+    //
+    // 判据用**转发标记**（`LOCAL_POOL_FORWARD_MARKER`）而不是 provider 名：
+    // 转发后 provider 是宿主的目标路由，与「用户直接选了那个模型」在
+    // provider 维度无法区分 —— 唯一的区别在发起方。裁剪路径
+    // （`hostEgressGuard.plan()`，§7.171）早就在用同一个标记。
+    if (isLocalPoolForward(options)) return false
     // 只对「本轮必须留在设备上」的轮次改道。CLOUD / SANITIZED 轮次按设计就是
     // 要出网的（脱敏 + 只带云段历史），不改道。
     if (this.turnCategory.get(state.sessionId) !== 'LOCAL') return false

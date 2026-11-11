@@ -20648,3 +20648,179 @@ src/dsh-adapter/prompt-guard.ts`）：
 
 **没做的**：没有发新的 npm 版本（本轮改动只在仓库里）。要把它送到主人手上的
 npm 包，需要发 **0.1.3** —— 那是对外可见动作，等主人指示。
+
+## §7.191 根因落地：本地池的 DELEGATE 转发被**无限改道**（2026-11-12）
+
+### 〇、承接 §7.190：那一节留的「根因未定位」，本节定位了
+
+§7.190 把「阶段可以永久卡死整轮」修掉了（时限收口），但**根因没找到**，当时
+记的是「意图分类器的 LLM 调用 0/5 成功」。
+
+本节把它挖到底了，并且发现了一个比「卡死」更严重的问题：**这个递归会把宿主
+进程撑到 4GB 堆爆掉、整机 OOM abort。**
+
+### 一、新的硬证据：整机 OOM（不是卡死，是崩）
+
+2026-11-11 23:02:19 桌面版新实例启动（**已带 §7.190 的修复**），23:02:24
+那一轮走到意图分类器的委托调用，然后：
+
+```
+[12924:0x120008b0000]  116636 ms: Scavenge (during sweeping) 3956.3 (4083.9) -> 3927.0 (4083.9) MB ...
+FATAL ERROR: MarkCompactCollector: young object promotion failed Allocation failed - JavaScript heap out of memory
+```
+
+4GB JS 堆在约 60 秒内吃光 —— **正好是意图判定那 60 秒时限的窗口**。
+
+### 二、定位方法：临时探针（已撤除，不入库）
+
+不靠猜，做了三步**可复现的对照实验**（探针只打进桌面版已装包，**不进仓库**，
+实验结束已还原；原件备份在 `~/cy/config-backups/desktop-lib-backup-*`）：
+
+1. 探针 A：启动后 12 秒调 `ctx.intentRouter.classify('ping', { sessionId: 'probe-session' })`
+   ⇒ **776ms 成功**（`llm-classified:local`）—— 意图分类器的 LLM 调用**不是坏的**；
+2. 探针 B：同上，但先给 `probe-session` **造一个 stepState** ⇒ 仍然成功（976ms），
+   并且 `handleLlmStream` 的埋点显示只进了 **2 层**（本地池那一跳 + 委托回来那一跳）；
+3. 探针 C：同上，再把 `turnCategory` 设成 `'LOCAL'`（模拟「同一会话的下一轮」，
+   因为它按 sessionId 持久、跨轮次保留）⇒ **无限递归**。
+
+**⇒ 触发条件是 `turnCategory === 'LOCAL'`，不是 stepState。**
+
+### 三、拍到的无限乒乓（探针 C 的输出，节选）
+
+```
+[1] ENTER provider=local-llm          sid=probe-session lpf=false
+[1] needsLocalReroute=false turnCat=LOCAL
+[2] ENTER provider=qwen-token-plan-cn  sid=probe-session lpf=true    ← 本地池的委托转发回来了
+[2] needsLocalReroute=true  turnCat=LOCAL                             ← 被改道
+[3] ENTER provider=local-llm          sid=probe-session lpf=true
+[3] needsLocalReroute=false turnCat=LOCAL
+[4] ENTER provider=qwen-token-plan-cn  sid=probe-session lpf=true
+[4] needsLocalReroute=true  turnCat=LOCAL                             ← 又被改道
+[5] ... [6] ... [7] ... [9] ...
+```
+
+探针在 50 秒内写了 **1,236,240 行** —— 每一轮改道 = 一次重新派发 = 一次新的
+委托 = 一次新的瀑布流进入 ⇒ 内存与调用栈一起涨 ⇒ OOM。
+
+（证据摘录存 `~/cy/config-backups/probe-evidence-infinite-recursion.log`。）
+
+### 四、根因：防自锁判据**只在直连池下成立**
+
+`input-guard.ts` 的 `needsLocalReroute()`（§7.184 引入）原判据：
+
+```ts
+if (this.turnCategory.get(state.sessionId) !== 'LOCAL') return false
+const provider = typeof options.provider === 'string' ? options.provider : ''
+if (provider.length === 0) return false
+return provider !== this.config.localProvider      // ← 「防自锁」
+```
+
+配套注释写着：「重新派发会再进一次 waterfall ⇒ 那趟的 provider 已是本地池 ⇒
+**天然不再改道**（防自锁）」。
+
+**这句话只在直连池下成立。** DELEGATE 池（§7.171）把请求转给**宿主的目标路由**
+（`qwen-token-plan-cn`）⇒ 回来那一趟的 provider **不是**本地池 ⇒ 判据失效 ⇒
+
+```
+改道 → 本地池 → 委托（provider 换成宿主目标）→ 再进瀑布流 → 再改道 → …
+```
+
+**⇒ 无限乒乓。**
+
+### 四之二、修复后的实盘复验（同一场景，同一支探针）
+
+部署修复后重跑探针 C（`turnCategory=LOCAL` + stepState）：
+
+```
+[1] ENTER provider=local-llm         lpf=false rr=false
+[2] ENTER provider=qwen-token-plan-cn lpf=true  rr=false    ← 委托转发回来了，rr=false ⇒ 不改道
+[CLASSIFY-PROBE] DONE in 905ms -> {"category":"LOCAL","confidence":0.6,"rationale":"llm-classified:local"}
+```
+
+**一共 5 行输出。** 同一场景，修复前是 50 秒内 123 万行无限递归 + 4GB OOM。
+
+（复验时还踩到一个坑，值得记：上一轮那个**还在无限递归的旧实例**没被
+`osascript quit` 收掉，它按路径重开 `/tmp/probe-out.log` 继续写，把新实例的
+输出整个淹掉 —— 差点误判成「修复无效」。判据要用**进程启动时间**核对，
+不能只看文件内容。）
+
+关键的一步是**本地池的转发标记被漏掉了**：`CloudLlmDelegateAdapterImpl` 在
+`poolKind === 'local'` 时给请求打上 `LOCAL_POOL_FORWARD_MARKER`（§7.171 专门
+加的，值 `__edgeLocalPoolForward`），**裁剪路径**（`hostEgressGuard.plan()`）
+认这个标记 ⇒ 不裁；而**改道路径**压根没认 ⇒ 把「自己发起的转发」当成
+「用户直接选了那个模型」⇒ 改道。
+
+> 这也解释了为什么现象时有时无：`turnCategory` 按 sessionId 持久（LRU），
+> **同一会话的下一轮**才带上上一轮的 `'LOCAL'` ⇒ 首轮不中、后续轮次中。
+> 也解释了 22:16 那轮（有配置、直连池）为什么完全正常。
+
+### 五、修法：防自锁加**第二个**判据
+
+```ts
+// §7.191：本地池自己的 DELEGATE 转发不改道。
+if (isLocalPoolForward(options)) return false
+```
+
+用**转发标记**而不是 provider 名：转发后 provider 是宿主的目标路由，与「用户
+直接选了那个模型」在 provider 维度无法区分 —— 唯一的区别在发起方。裁剪路径
+早就在用同一个标记，现在两条路径口径一致。
+
+`isLocalPoolForward` 从 `host-egress-guard.ts` 引入（§7.171 就在那儿）。
+
+### 六、反事实：这些测试在修复前是**真的失败**的
+
+新增 2 条用例（`tests/unit/input-guard-local-reroute.test.ts`）：
+
+- 「本地池转发（带转发标记）⇒ 不改道，直接放行」；
+- 「本地池转发与改道不会形成无限乒乓（防自锁的第二判据）」—— 假宿主 runtime
+  会像本地池那样**再进一次** `handleLlmStream`（带转发标记），超过 5 层就抛。
+
+`git stash push -- src/dsh-adapter/input-guard.ts` 后跑：
+
+```
+× 本地池转发（带转发标记）⇒ 不改道，直接放行
+  → 本地池自己的转发不能再被改道（否则就是无限乒乓）
+× 本地池转发与改道不会形成无限乒乓（防自锁的第二判据）
+  → §7.191 防自锁失效：本地池转发被反复改道（无限乒乓）
+```
+
+修复后：**10 passed**。
+
+### 七、这一节**做了什么**、**没做什么**（诚实边界）
+
+**做了**：
+
+- 意图分类器（与安检）的内部 LLM 调用**不再无限递归** ⇒ 不再挂死、不再 OOM；
+- DELEGATE 模式下这一跳**第一次真正跑通**（探针 B 实测 976ms 出 `llm-classified:local`）；
+- 顺手更正了 §7.184 那句**只在直连池成立**的注释。
+
+**没做**：
+
+- **没有**改 DELEGATE 的产品语义（委托到云端 provider 这件事本身没变）——
+  「委托目标是云端时闸门要不要 fail-closed」仍是待裁决项（§7.189 七节）；
+- **没有**动 60 秒时限（属产品语义）；不过 §7.190 的时限现在更像是**兜底**，
+  而不是唯一防线；
+- 探针**只用来定位**，已全部撤除；进仓库的只有修复 + 2 条回归测试。
+
+### 八、门禁与证据（本轮全绿）
+
+| 检查 | 结果 |
+|---|---|
+| `vitest run tests/unit` | **1617 passed \| 2 skipped**（82 文件，较上轮 +2） |
+| `eslint src tests/unit scripts` | **0 error** / 59 warning（未新增） |
+| `tsc -p tsconfig.json --noEmit` | exit 0 |
+| `tsc -p tsconfig.client.json --noEmit` | exit 0 |
+| `node scripts/run.mjs verify:build` | exit 0（28 道全绿） |
+| `node scripts/verify-doc-links.mjs` | exit 0 |
+| 反事实（stash 掉修复） | 2 条新用例**均失败**，错误文案直指「无限乒乓」 |
+| 实盘探针（同场景：`turnCategory=LOCAL` + stepState） | 修复前 **1,236,240 行**递归 + 4GB OOM；修复后**只进 2 层**、**905ms** 出 `llm-classified:local` |
+
+### 九、遗留（待主人裁决，不擅自改）
+
+1. **DELEGATE 委托到云端时闸门是否 fail-closed**（上游
+   `tests/unit/input-guard-local-reroute.test.ts:249` 有意断言当前行为 ⇒ 改它
+   = 改产品语义）；
+2. **配置放哪**：主人已裁决「部署不带 edge.json」，但运维自己的配置放哪还没定；
+3. **是否发 0.1.3**：本轮的「发布面加固 + provider 让位 + 超时收口 + 本节的
+   递归根因」都只在仓库里，要送到主人手上的 npm 包需要发 0.1.3 ——
+   对外可见动作，等主人指示。
