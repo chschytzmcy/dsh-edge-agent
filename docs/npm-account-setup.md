@@ -1,18 +1,21 @@
 # npm 账号/组织注册与发布凭据办理（scope `@dsh-edge`）
 
-> 状态：**⛔ 阻塞在手工步骤**（2026-11-10，§7.173）。仓库侧**全部就绪**——
-> 包名已定 `@dsh-edge/dsh-edge-agent`、发布脚本已通、门禁已绿、25 项构建链全过；
-> 缺的**只有三件作者侧的东西**，而其中第一件（注册）**只能由账号持有人本人做**
-> （邮箱验证 + 2FA）。
+> 状态：**✅ 已发布 `0.1.1`**（2026-11-11，§7.185）。三件作者侧的事都做完了：
+> 组织 `dsh-edge` 已建、凭据已用、第一次发布已上线（registry 侧实测：`versions =
+> 0.0.0-stage, 0.1.1`，`dist-tags.latest = 0.1.1`，npm 通道实装通过）。
 >
-> | # | 缺什么 | 谁做 | 状态 |
+> | # | 原来缺什么 | 谁做 | 状态 |
 > |---|---|---|---|
-> | 1 | npmjs.com 上拥有 `@dsh-edge` scope 的**账号或组织** | **主人**（本文件 §2–§4） | ⛔ 未做 |
-> | 2 | 发布凭据：granular token，**或**登记 trusted publisher 改走 OIDC | **主人**（本文件 §5–§6） | ⛔ 未做 |
-> | 3 | 执行第一次发布 | **我**（`npm run publish:npm -- --yes --tag`） | ⏸ 等 1、2 |
+> | 1 | npmjs.com 上拥有 `@dsh-edge` scope 的**账号或组织** | **主人**（本文件 §2–§4） | ✅ 已建（实测 `/-/org/dsh-edge/package` → HTTP 200） |
+> | 2 | 发布凭据：granular token，**或**登记 trusted publisher 改走 OIDC | **主人**（本文件 §5–§6） | ✅ token 已在 `~/.npmrc`；**trusted publisher 还没登记** |
+> | 3 | 执行第一次发布 | **我**（`npm run publish:npm -- --yes`） | ✅ 已上线 0.1.1（tag `v0.1.1`） |
 >
-> 账号名 / 组织名**必须正好是 `dsh-edge`**——原因见 §1。scope 目前**空闲**
-> （实测证据见 §1.2），但 npm 是**先到先得**：注册完请尽快真发一版（§10 的坑 1）。
+> **还剩两件事**（都要主人本人在浏览器里点）：
+> ① 在包页面登记 **trusted publisher**（§8）—— 不做，2027-01 起 CI 发不了；
+> ② 账号 2FA：**npm 已移除 TOTP 注册通道**，只剩 WebAuthn 安全密钥（§5）。
+>
+> 账号名 / 组织名**必须正好是 `dsh-edge`**——原因见 §1；npm 是**先到先得**，现在已真发一版
+> （§10 的坑 1 不再适用）。
 
 ## 0. 一句话
 
@@ -96,11 +99,19 @@
 
 路径 **https://www.npmjs.com/settings/two-factor-auth**：
 
-- 选 **Authenticator App**（TOTP，Google Authenticator / 1Password / Aegis 都行）
-- 扫码 → 把 6 位码填回去 → **立刻把 recovery code 存下来**
-- 不要选 SMS
+> ⚠️ **2026-11-11 实测更正**：npm 已经**移除了 TOTP（Authenticator App）的注册通道** ——
+> `npm profile enable-2fa auth-and-writes` 仍走 otpauth:// 生成路径，但 **registry 端点返
+> 404**：`Adding a new TOTP 2FA is no longer supported`。⇒ **别再走「扫码装 TOTP」这条路**
+> （本文件此前的版本写的就是它，那是已失效的旧口径）。
+>
+> 现在账号 2FA **只剩 WebAuthn 安全密钥**一种：Yubikey / Thetis / Feitian 等硬件钥匙，
+> **以及 Windows Hello**（PIN / 指纹 / 人脸）—— Windows Hello 本身就是 WebAuthn 认证器，
+> Windows 11 的「手机当安全钥匙」也算。
+>
+> 浏览器端的交互式 2FA 验证（挂 trusted publisher、改 2FA 配置）在 WebAuthn 下**完全可用**；
+> 但 **CLI 的 `--otp` 只吃 TOTP 六位码** ⇒ 账号走 WebAuthn 后，经典 token 在 CLI 上发不了版。
 
-没开 2FA 的话发布会被拒。
+没开 2FA 的话发布会被拒（npm 要求账号开着 2FA，或用勾了 Bypass 2FA 的 granular token）。
 
 ## 6. 签发发布凭据
 
@@ -152,6 +163,33 @@ npm run publish:npm -- --yes --tag
 
 细节见 [`deploy-npm.md`](deploy-npm.md) §8.1.1 与 §8.2。
 
+### 7.1 ⚠️ 实测：「发布报成功」≠「包已经能装」（staged publishing）
+
+2026-11-11 实测：`pnpm publish` 打印
+**`✅ Published package @dsh-edge/dsh-edge-agent@0.1.1`**、退出码 0 —— 但**那一刻
+registry 上还装不了这个包**：
+
+| 探针 | 刚发完 | 约 6 分钟后 |
+|---|---|---|
+| `npm view <pkg> version` | **404** | `0.1.1` |
+| packument（`GET /@dsh-edge%2fdsh-edge-agent`） | **404** | **200**，versions = `0.0.0-stage, 0.1.1` |
+| `GET /-/package/<pkg>/dist-tags` | `{"latest":"0.1.1"}` | 同左 |
+| `GET /<pkg>/0.1.1`（版本文档） | 200（fileCount 238） | 同左 |
+
+⇒ npm 现在把**「用 bypass-2FA token 直接发布」也收进了分级发布（staged publishing）**：
+包名先被一个占位版 `0.0.0-stage` 占住，真实版本进待批队列。占位版是公开可装的，
+真实版本要等放行 —— 这次实测是**自动放行**（等了约 6 分钟）；也可能需要人在 npmjs.com
+的 **Staged Packages** 页点 Approve，或 `npm stage approve <stage-id>`（后者要求
+npm ≥ 11.15，且仍需过一次 2FA 挑战）。
+
+**判据**：`npm view <pkg> version` 返回 `0.0.0-stage` ⇒ 还卡着；返回真实版本号 ⇒ 已上线。
+
+> 本机 npm 是 **11.6.2** ⇒ **没有** `npm stage` 子命令；要手动批准得用 `npx npm@12`，
+> 而 npm 12 的 `stage approve` 仍要 2FA 挑战（TOTP 已被移除 ⇒ CLI 这条路对本机走不通，
+> 浏览器点 Approve 才可行）。
+
+官方文档：[Staged publishing for npm packages](https://docs.npmjs.com/staged-publishing)。
+
 ## 8. 首次发布之后：登记 trusted publisher
 
 **这一步不做，CI 迟早发不了**（2027-01 起 token 直发被移除）。
@@ -177,6 +215,11 @@ npm run publish:npm -- --yes --tag
    （npm 政策：用户名的控制权**极不可能**转让）。
 3. **首次发布不要带 `--provenance`**（见 §7）。另外 npm 对新账号有冷启动审核期
    （几小时到几天不等），那是正常流程，不是出错。
+4. **「publish 报成功」不等于「包已经能装」** —— 见 §7.1：先 `npm view <pkg> version`
+   确认返回值不是 `0.0.0-stage`，再去装。
+5. **「占位版 0.0.0-stage 会一直留在 versions 里」** —— 它是注册时留下的占位残留
+   （本次实测：`versions = 0.0.0-stage, 0.1.1`，`latest = 0.1.1`）⇒ 看到它别慌，
+   **判据看 `dist-tags.latest` 指向谁**。
 
 ## 10. 仓库侧已经就绪的部分
 

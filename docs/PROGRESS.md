@@ -19741,3 +19741,82 @@ needsLocalReroute(options, state):
 不出来」）。§7.179–§7.184 那一大摊本来就还没提交 ⇒ **先提交（`8df1e61`）再发**，
 不是绕过检查。主人 19:2x 在问卷里选了「提交并推 origin/main，再发 0.1.1」+「打完
 tag 推上去」。
+
+### 四、发布实况：0.1.1 已上线（2026-11-11 19:31–19:37）
+
+**结论先说**：第一次真发布**成功**，`@dsh-edge/dsh-edge-agent@0.1.1` 已在 npm 上可装。
+中间踩了两个坑，都已留档。
+
+#### 4.1 坑一：认证预检假阴性（已修，见本节 §二）
+
+修完重跑，发布链一路绿：
+
+```
+  ✓ 版本 0.1.1 未发过（包在 registry 上还不存在）
+  · provenance: 不带 —— 首次发布：包在 registry 上还不存在 ⇒ …
+  ✓ 找到 npm 凭据（~/.npmrc）
+  …（构建链 + 27 道门禁全过）
+  $ pnpm publish --access public --ignore-scripts --no-git-checks --registry https://registry.npmjs.org --no-provenance
+  📦 @dsh-edge/dsh-edge-agent@0.1.1 → https://registry.npmjs.org/
+  ✅ Published package @dsh-edge/dsh-edge-agent@0.1.1
+```
+
+#### 4.2 坑二：「publish 报成功」≠「包已经能装」（npm 的 staged publishing）
+
+`pnpm` 报 ✅、退出码 0 ⇒ 但紧接着的核验全部打脸：
+
+| 探针 | 刚发完 | 约 6 分钟后 |
+|---|---|---|
+| `npm view @dsh-edge/dsh-edge-agent version` | **404** | `0.1.1` |
+| packument `GET /@dsh-edge%2fdsh-edge-agent` | **404** | **200**，versions = `0.0.0-stage, 0.1.1` |
+| `GET /-/package/<pkg>/dist-tags` | `{"latest":"0.1.1"}` | 同左 |
+| `GET /<pkg>/0.1.1`（版本文档） | **200**，fileCount 238、unpackedSize 1886761 | 同左 |
+| `npm access list packages dsh-edge` | `@dsh-edge/dsh-edge-agent: read-write` | 同左 |
+
+⇒ npm 现在把**「用 bypass-2FA token 直接发布」也收进了分级发布（staged publishing）**：
+包名先被占位版 `0.0.0-stage` 占住（那个占位 tarball 的 package.json 直说
+`"stub": true, "description": "Temporary package placeholder for staged publishing"`），
+真实版本进待批队列。**这次是自动放行**（等了约 6 分钟）；也可能需要人在 npmjs.com 的
+**Staged Packages** 页点 Approve。
+
+**判据**（同时写进 `docs/npm-account-setup.md` §7.1 与 §9）：
+
+- `npm view <pkg> version` 返回 `0.0.0-stage` ⇒ 还卡在审批；
+- 返回真实版本号 ⇒ 已上线；
+- `versions` 里同时留着 `0.0.0-stage` 是**正常的占位残留** ⇒ 判据看 `dist-tags.latest`。
+
+本机 npm 是 11.6.2 ⇒ **没有** `npm stage` 子命令；要手动批准得 `npx npm@12`，而它仍要
+2FA 挑战（TOTP 已被 npm 移除 ⇒ 本机 CLI 这条路走不通，浏览器点 Approve 才可行）。
+
+#### 4.3 发布物的核验（装之前先看的东西）
+
+- 官方 tarball `GET /@dsh-edge/dsh-edge-agent/-/dsh-edge-agent-0.1.1.tgz` ⇒ **601299 B /
+  238 个条目**，与 `verify:package` 门禁报的「238 files」一致；
+- 关键文件齐全：`package.json` / `README.md` / `lib/client.js` /
+  `lib/dsh-adapter/input-guard.js` / `config/edge.example.json` / `config/privacy-policy.json`；
+- **没有** `config/edge.json`（主人的活配置）、没有 `.npmrc` / `.env`、没有 `node_modules/`；
+- 模板里 `secrets` 段八个槽位**全为空**（只有 `_comment` 有字）；全包扫 `npm_` / `sk-` /
+  `tvly-` / `LTAI` 四种密钥形态：**零命中**；
+- **npm 通道实装通过**：临时目录 `npm install @dsh-edge/dsh-edge-agent@0.1.1` ⇒ 31 个包，
+  插件实体齐全，`dsh.bundle.patch` 指向 `cordis.desktop-safe.patch.yml` +
+  `presets/edge.desktop-safe.patch.yml`（**只发 safe 变体**，§7.173 的口径）。
+
+#### 4.4 留下的 git 事实
+
+| 事项 | 值 |
+|---|---|
+| §7.179–§7.184 的提交 | `8df1e61`（51 files，+4407/−840） |
+| §7.185 认证预检修复的提交 | `3e7d1f2` |
+| tag | `v0.1.1` → `3e7d1f2dd38b92334c1de8bedcc9e246c0e48511`（已推 origin） |
+| 仓库提交总数 / 区间 | 512 次提交、2026-08-18 → 2026-11-11 |
+
+### 五、留给主人的三件事（等回话）
+
+1. **挂 trusted publisher**（浏览器）：包页面
+   https://www.npmjs.com/package/@dsh-edge/dsh-edge-agent/settings/access
+   ⇒ Trusted Publisher：`dsh-edge` / `chschytzmcy/dsh-edge-agent` / `publish.yml`。
+   不做 ⇒ 2027-01 起 CI 发不了（token 直发被移除）。
+2. **账号 2FA**：npm 已移除 TOTP 注册通道 ⇒ 只能挂 WebAuthn 安全密钥
+   （**Windows Hello 就行**：PIN / 指纹 / 人脸）。详见 `docs/npm-account-setup.md` §5。
+3. **轮换三个明文 key**（`deepseekApiKey` / `dashscopeApiKey` / `alitokenplanApiKey`）——
+   它们曾被回显进 `reports/tool-outputs`。
