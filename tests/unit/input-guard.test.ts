@@ -181,8 +181,12 @@ function defaultConfig(overrides: Partial<Config> = {}): Config {
   }
 }
 
+/** §7.175: 宿主给本轮选的模型（agent/pre-step payload 顶层）。
+ *  边缘模式恒用本地模型，所以默认给一个本地的 selection。*/
+const LOCAL_SELECTION = { provider: 'local-llm', model: 'qwen3-4b-instruct-2507' }
+
 /** 构造 agent/pre-step 的最小 payload。*/
-function makePreStepPayload(userText: string, sessionId = 'sess-1') {
+function makePreStepPayload(userText: string, sessionId = 'sess-1', over: Record<string, unknown> = {}) {
   return {
     agent: { id: 'a1', session: { id: sessionId } as any },
     messages: [
@@ -190,6 +194,9 @@ function makePreStepPayload(userText: string, sessionId = 'sess-1') {
       { role: 'user', content: userText },
     ],
     step: 1,
+    // §7.175: 缺 modelSelection ⇒ fail-closed 拒收（无法证明本轮走本地）。
+    modelSelection: { ...LOCAL_SELECTION },
+    ...over,
   }
 }
 
@@ -271,6 +278,7 @@ describe('handlePreStep — bypass', () => {
       agent: { id: 'a1', session: { id: 's' } },
       messages: [{ role: 'system', content: 'sys' }],
       step: 1,
+      modelSelection: { ...LOCAL_SELECTION },
     }
     const result = await svc.handlePreStep(payload as any, makeNext(payload.messages))
     assert.equal(result.kind, 'enter')
@@ -654,25 +662,25 @@ describe('§7.46.3 — desanitize + route override + routeSource', () => {
     assert.ok(preflight!.includes('routeSource=webui'), 'routeSource should be webui when _edgeRoute is absent')
   })
 
-  it('route override: handleAgentRequest emits override line when state.downgraded=true', async () => {
-    const ir = fakeIntentRouter({ category: 'LOCAL' })  // LOCAL 让 handlePreStep 设 downgraded=true
+  it('§7.175: agent/request 不再改写路由（route override 机制退役）', async () => {
+    const ir = fakeIntentRouter({ category: 'LOCAL' })
     const { ctx, infoLines } = fakeCtxWithLogger()
     const svc = new InputGuardServiceImpl(
       ctx as any, defaultConfig({ sanitizeLocalTraffic: false }),
       undefined, undefined, ir.api as any, undefined,  // no sanitizer, skip sanitize path
     )
-    // 跑 handlePreStep 让它把 stepState.downgraded=true + originalProvider=cloud-*
     const payload = makePreStepPayload('test override')
     await svc.handlePreStep(payload as any, makeNext(payload.messages))
-    // 然后 handleAgentRequest 看到 downgraded → 改写 route
     const seedConfig = { provider: 'cloud-llm', model: 'deepseek-chat' }
     const result = await svc.handleAgentRequest(payload as any, seedConfig as any, async () => seedConfig as any)
-    const override = infoLines.find((l) => l.includes('route override'))
-    assert.ok(override, 'route override should fire')
-    assert.ok(override!.includes('fromProvider=cloud-llm'), `should show original provider, got: ${override}`)
-    assert.ok(override!.includes('toProvider=local-llm'), 'should show downgraded provider')
-    assert.ok(override!.includes('reason=intent-local'), 'should show downgrade reason')
-    assert.equal((result as any).provider, 'local-llm')
+    // seedConfig 原样返回：宿主 prepareRequest() 会因为 provider/model 被改写
+    // 直接抛错，所以这里一个字节都不能动。
+    assert.deepEqual(result, seedConfig, '§7.175: agent/request 必须原样放行')
+    assert.equal((result as any).provider, 'cloud-llm')
+    assert.ok(
+      !infoLines.some((l) => l.includes('route override')),
+      '不再有 route override 的 ops log 行',
+    )
   })
 })
 
@@ -934,7 +942,7 @@ describe('handlePreStep — §7.46.7 preflight intentSource field', () => {
 })
 
 describe('handlePreStep — sanitize failure policy', () => {
-  it('downgradeOnSanitizeFailure=true (default) → pass-through with downgraded state', async () => {
+  it('downgradeOnSanitizeFailure=true (默认) → 放行本轮，不再有「降级」状态', async () => {
     const ir = fakeIntentRouter({ category: 'CLOUD' })
     const san = fakeSanitizer({ throwOnSanitize: true })
     const audit = fakeAuditLog()
@@ -944,16 +952,16 @@ describe('handlePreStep — sanitize failure policy', () => {
     )
     const payload = makePreStepPayload('user@example.com')
     const result = await svc.handlePreStep(payload as any, makeNext(payload.messages))
-    // 不 reject — 让 agent/request 钩子改写 route 到 LOCAL
+    // 不 reject —— §7.175 起路由恒由宿主 modelSelection 决定（本地），
+    // 原始 PII 留在本地模型，不需要「降级」动作。
     assert.equal(result.kind, 'enter')
-    // 状态：downgraded=true，让 handleAgentRequest 接管
     const state = svc.getStepState(payload.agent.session.id ?? 'sess-1')
     assert.ok(state)
-    assert.equal(state?.downgraded, true)
     assert.equal(state?.sanitized, false)
-    // 审计：security 级别，包含 input-guard.sanitize.failed 和 .downgraded
+    assert.equal((state as any)?.downgraded, undefined, '§7.175: 降级标记已退役')
+    // 审计：security 级别的 sanitize.failed 仍在；「.downgraded」不再有
     assert.ok(audit.entries.some(e => e.kind === 'input-guard.sanitize.failed' && e.level === 'security'))
-    assert.ok(audit.entries.some(e => e.kind === 'input-guard.sanitize.downgraded' && e.level === 'security'))
+    assert.ok(!audit.entries.some(e => e.kind === 'input-guard.sanitize.downgraded'))
   })
 
   it('downgradeOnSanitizeFailure=false → reject on sanitize error', async () => {
@@ -972,7 +980,11 @@ describe('handlePreStep — sanitize failure policy', () => {
   })
 })
 
-describe('handleAgentRequest — route override on downgrade', () => {
+describe('handleAgentRequest — §7.175 不改写路由', () => {
+  // §7.175 (2026-11-11): 宿主的 prepareRequest() 会拿 proposedConfig 与
+  // `this.model.current()` 比对，provider / model / reasoningEffort 任一不同
+  // 就直接抛错 —— 所以 agent/request 里改写路由不是「降级」，是让整轮失败。
+  // 这里把「原样放行」钉死。
   it('passes through when no state for session', async () => {
     const svc = new InputGuardServiceImpl(fakeCtx() as any, defaultConfig())
     const seed = { provider: 'cloud-llm', model: 'deepseek-chat' }
@@ -980,16 +992,7 @@ describe('handleAgentRequest — route override on downgrade', () => {
     assert.deepEqual(result, seed)
   })
 
-  it('passes through when state not downgraded', async () => {
-    const svc = new InputGuardServiceImpl(fakeCtx() as any, defaultConfig())
-    // 模拟 sanitize 成功（state.sanitized=true，无 downgraded）
-    ;(svc as any).stepState.set('s1', { sanitized: true, replacements: 1, sessionId: 's1', timestamp: Date.now() })
-    const seed = { provider: 'cloud-llm', model: 'deepseek-chat' }
-    const result = await svc.handleAgentRequest({ agent: { session: { id: 's1' } } }, seed, async () => seed)
-    assert.deepEqual(result, seed)
-  })
-
-  it('overrides provider/model to LOCAL when downgraded', async () => {
+  it('never rewrites provider/model — even for a non-local seed', async () => {
     const audit = fakeAuditLog()
     const svc = new InputGuardServiceImpl(
       fakeCtx() as any, defaultConfig({ localProvider: 'local-llm', localModel: 'qwen3-4b' }),
@@ -997,133 +1000,22 @@ describe('handleAgentRequest — route override on downgrade', () => {
     )
     ;(svc as any).stepState.set('s1', {
       sanitized: false, replacements: 0, sessionId: 's1', timestamp: Date.now(),
-      downgraded: true, downgradeReason: 'sanitize-boom',
-      originalProvider: 'cloud-llm', originalModel: 'deepseek-chat',
-      originalRealm: 'CLOUD',
     })
     const seed = { provider: 'cloud-llm', model: 'deepseek-chat', maxTokens: 4096 }
     const result = await svc.handleAgentRequest({ agent: { session: { id: 's1' } } }, seed, async () => seed)
-    assert.equal(result.provider, 'local-llm')
-    assert.equal(result.model, 'qwen3-4b')
+    assert.deepEqual(result, seed, 'seedConfig 必须原样返回')
+    assert.equal(result.provider, 'cloud-llm')
+    assert.equal(result.model, 'deepseek-chat')
     assert.equal(result.maxTokens, 4096, '其他字段保留')
-    // 审计：input-guard.route.overridden 应被记录
-    const ov = audit.entries.find(e => e.kind === 'input-guard.route.overridden')
-    assert.ok(ov)
-    assert.deepEqual(ov?.payload?.from, { provider: 'cloud-llm', model: 'deepseek-chat' })
-    assert.deepEqual(ov?.payload?.to, { provider: 'local-llm', model: 'qwen3-4b' })
+    assert.ok(!audit.entries.some(e => e.kind === 'input-guard.route.overridden'))
+    assert.ok(!audit.entries.some(e => e.kind === 'input-guard.route.restored'))
   })
 
-  it('passes through when enableInputGuard=false even if downgraded', async () => {
+  it('passes through when enableInputGuard=false', async () => {
     const svc = new InputGuardServiceImpl(fakeCtx() as any, defaultConfig({ enableInputGuard: false }))
-    ;(svc as any).stepState.set('s1', {
-      sanitized: false, replacements: 0, sessionId: 's1', timestamp: Date.now(), downgraded: true,
-    })
     const seed = { provider: 'cloud-llm', model: 'deepseek-chat' }
     const result = await svc.handleAgentRequest({ agent: { session: { id: 's1' } } }, seed, async () => seed)
     assert.deepEqual(result, seed)
-  })
-})
-
-describe('handleAgentRequest — §7.43 recovery from previous turn downgrade', () => {
-  // Bug: agent-loop persists the downgraded provider as the "current provider".
-  // When the next turn is CLOUD-classified (downgraded=false), seedConfig arrives
-  // with provider=localProvider. handleAgentRequest used to pass through, so the
-  // CLOUD query was silently routed to the local LLM (no web_search realm).
-  // Fix: detect "state has originalProvider AND seedConfig.provider stuck on
-  // local" → restore provider/model to the saved originalProvider/originalModel.
-  it('restores provider/model when seedConfig is stuck on local after prior downgrade', async () => {
-    const audit = fakeAuditLog()
-    const svc = new InputGuardServiceImpl(
-      fakeCtx() as any, defaultConfig({ localProvider: 'local-llm', localModel: 'qwen3-4b-instruct-2507' }),
-      undefined, undefined, undefined, undefined, audit.api as any,
-    )
-    ;(svc as any).stepState.set('s2', {
-      sanitized: true, replacements: 1, sessionId: 's2', timestamp: 1_700_000_000_000,
-      downgraded: false, // 这次 turn 是 CLOUD，没降级
-      originalProvider: 'cloud-llm', originalModel: 'deepseek-chat',
-      originalRealm: 'CLOUD',
-    })
-    // agent-loop 持久化了下上次的 local provider，seedConfig 被污染
-    const seed = { provider: 'local-llm', model: 'qwen3-4b-instruct-2507', maxTokens: 4096 }
-    const result = await svc.handleAgentRequest({ agent: { session: { id: 's2' } } }, seed, async () => seed)
-    assert.equal(result.provider, 'cloud-llm', '必须恢复回 cloud provider')
-    assert.equal(result.model, 'deepseek-chat', '必须恢复回原 model')
-    assert.equal(result.maxTokens, 4096, '其他字段保留')
-    // 审计：input-guard.route.restored 应被记录
-    const restored = audit.entries.find(e => e.kind === 'input-guard.route.restored')
-    assert.ok(restored, '应该记录 input-guard.route.restored 审计')
-    assert.deepEqual(restored?.payload?.from, { provider: 'local-llm', model: 'qwen3-4b-instruct-2507' })
-    assert.deepEqual(restored?.payload?.to, { provider: 'cloud-llm', model: 'deepseek-chat' })
-    assert.equal(restored?.payload?.reason, 'recovery-from-previous-downgrade')
-    assert.equal(restored?.payload?.originalTurn, 1_700_000_000_000)
-  })
-
-  it('clears originalProvider after recovery so it does not fire again', async () => {
-    const svc = new InputGuardServiceImpl(
-      fakeCtx() as any, defaultConfig({ localProvider: 'local-llm', localModel: 'qwen3-4b-instruct-2507' }),
-    )
-    ;(svc as any).stepState.set('s3', {
-      sanitized: true, replacements: 1, sessionId: 's3', timestamp: Date.now(),
-      downgraded: false,
-      originalProvider: 'cloud-llm', originalModel: 'deepseek-chat',
-    })
-    const seed1 = { provider: 'local-llm', model: 'qwen3-4b-instruct-2507' }
-    const r1 = await svc.handleAgentRequest({ agent: { session: { id: 's3' } } }, seed1, async () => seed1)
-    assert.equal(r1.provider, 'cloud-llm', '第一次恢复成功')
-
-    // 模拟 agent-loop 已经把 current provider 改回 local（极端情况）——
-    // 这次 originalProvider 已被清掉，不应再次触发恢复
-    const seed2 = { provider: 'local-llm', model: 'qwen3-4b-instruct-2507' }
-    const r2 = await svc.handleAgentRequest({ agent: { session: { id: 's3' } } }, seed2, async () => seed2)
-    assert.deepEqual(r2, seed2, 'originalProvider 已清，不应再恢复（防止反复横跳）')
-  })
-
-  it('passes through when state has no originalProvider (no prior downgrade)', async () => {
-    const svc = new InputGuardServiceImpl(
-      fakeCtx() as any, defaultConfig({ localProvider: 'local-llm' }),
-    )
-    ;(svc as any).stepState.set('s4', {
-      sanitized: true, replacements: 1, sessionId: 's4', timestamp: Date.now(),
-      downgraded: false,
-      // 没有 originalProvider —— 第一次进 CLOUD 路由，无需恢复
-    })
-    const seed = { provider: 'local-llm', model: 'qwen3-4b-instruct-2507' }
-    const result = await svc.handleAgentRequest({ agent: { session: { id: 's4' } } }, seed, async () => seed)
-    assert.deepEqual(result, seed, '无 originalProvider → 透传（让 agent-loop 自己选）')
-  })
-
-  it('passes through when seedConfig.provider is already CLOUD (no contamination)', async () => {
-    const svc = new InputGuardServiceImpl(
-      fakeCtx() as any, defaultConfig({ localProvider: 'local-llm' }),
-    )
-    ;(svc as any).stepState.set('s5', {
-      sanitized: true, replacements: 1, sessionId: 's5', timestamp: Date.now(),
-      downgraded: false,
-      originalProvider: 'cloud-llm', originalModel: 'deepseek-chat',
-    })
-    // seedConfig 已是 cloud —— 不需要恢复，原样返回
-    const seed = { provider: 'cloud-llm', model: 'deepseek-chat' }
-    const result = await svc.handleAgentRequest({ agent: { session: { id: 's5' } } }, seed, async () => seed)
-    assert.deepEqual(result, seed, '已是 CLOUD → 不动 originalProvider')
-    // 确认 originalProvider 没被清（保留给可能的下一次污染）
-    const stateAfter = (svc as any).stepState.get('s5')
-    assert.equal(stateAfter.originalProvider, 'cloud-llm', '恢复分支未触发 → originalProvider 保留')
-  })
-
-  it('passes through when state.originalProvider equals localProvider (no real contamination)', async () => {
-    // 防御性：如果 originalProvider 跟 localProvider 相同，恢复分支就不该触发
-    // （虽然 handlePreStep 不会写入相同的 originalProvider，但单元测试覆盖这个分支）
-    const svc = new InputGuardServiceImpl(
-      fakeCtx() as any, defaultConfig({ localProvider: 'local-llm' }),
-    )
-    ;(svc as any).stepState.set('s6', {
-      sanitized: true, replacements: 1, sessionId: 's6', timestamp: Date.now(),
-      downgraded: false,
-      originalProvider: 'local-llm', originalModel: 'qwen3-4b-instruct-2507',
-    })
-    const seed = { provider: 'local-llm', model: 'qwen3-4b-instruct-2507' }
-    const result = await svc.handleAgentRequest({ agent: { session: { id: 's6' } } }, seed, async () => seed)
-    assert.deepEqual(result, seed, 'originalProvider === localProvider → 不动')
   })
 })
 
@@ -1177,7 +1069,7 @@ describe('handlePreStep — reads intent from agent._edgeRoute', () => {
     assert.equal(ir.calls.length, 1, 'malformed _edgeRoute 被忽略，回退 classify')
   })
 
-  it('records originalProvider/originalModel/originalRealm in step state', async () => {
+  it('§7.175: step state 不再记录「原路由」（路由不改写了，没有原路由可言）', async () => {
     const ir = fakeIntentRouter({ category: 'LOCAL' })
     const svc = new InputGuardServiceImpl(
       fakeCtx() as any, defaultConfig(),
@@ -1194,244 +1086,147 @@ describe('handlePreStep — reads intent from agent._edgeRoute', () => {
     await svc.handlePreStep(payload as any, makeNext(payload.messages))
     const state = svc.getStepState('sess-1')
     assert.ok(state)
-    // 由于 ir.classify 返回 LOCAL（fallback），state 应有 originalProvider 等
-    // 但 sanitize 不被调用；这里测的是记录逻辑
-    assert.equal(state?.originalProvider, 'cloud-llm')
-    assert.equal(state?.originalModel, 'deepseek-chat')
-    assert.equal(state?.originalRealm, 'CLOUD')
+    assert.equal((state as any).originalProvider, undefined)
+    assert.equal((state as any).originalModel, undefined)
+    assert.equal((state as any).originalRealm, undefined)
+    assert.equal((state as any).downgraded, undefined)
   })
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §7.43 (2026-09-07) regression suite: TUI / webui (dsh-web-app chat) 入口
-// 不会写 agent._edgeRoute —— 只有 http-api 写。原版 input-guard 写
-// originalProvider=undefined，turn N+1 handleAgentRequest 恢复分支看不到
-// 任何 contamination 证据，TUI 上 CLOUD→LOCAL→CLOUD 序列被锁死在 local。
-//
-// 修复：handlePreStep 通过 resolveOriginalRoute() fallback 到 config.defaultCloudProvider
-// （mirror cordis.patch.yml 的 DSH_EDGE_PROVIDER），恢复分支就能正确触发。
 // ─────────────────────────────────────────────────────────────────────────────
-describe('handlePreStep — §7.43 fallback: writes defaultCloudProvider when _edgeRoute absent', () => {
-  it('LOCAL intent + no _edgeRoute → stepState.originalProvider = defaultCloudProvider', async () => {
-    // 模拟 TUI：ir.classify 返回 LOCAL，agent 没有 _edgeRoute
+// §7.175 (2026-11-11) regression suite: the fail-closed route gate.
+//
+// 边缘模式恒用本地模型（主人裁决）。路由由**宿主**的 modelSelection 决定，
+// input-guard 不再改写（宿主的 prepareRequest() 会对改写直接抛错）。于是
+// 「本该本地却可能上云」这件事只能在 agent/pre-step 用 modelSelection 判：
+//   · modelSelection 缺失 / 不是对象 ⇒ 无法证明本轮走本地 ⇒ reject
+//   · modelSelection.provider !== config.localProvider ⇒ 可能上云 ⇒ reject
+// 命中即 reject（挂 _edgeRejection 让 http-api 拿到原因），绝不放行。
+// ─────────────────────────────────────────────────────────────────────────────
+describe('handlePreStep — §7.175 fail-closed 路由闸门（modelSelection）', () => {
+  it('本地 modelSelection ⇒ 放行（路由不动，本轮走本地模型）', async () => {
     const ir = fakeIntentRouter({ category: 'LOCAL' })
     const audit = fakeAuditLog()
     const svc = new InputGuardServiceImpl(
-      fakeCtx() as any, defaultConfig(), // defaultCloudProvider='cloud-llm'
+      fakeCtx() as any, defaultConfig(),
       undefined, undefined, ir.api as any, undefined, audit.api as any,
     )
-    const payload = makePreStepPayload('查询本地的IP') // 没有 _edgeRoute
-    await svc.handlePreStep(payload as any, makeNext(payload.messages))
-    const state = svc.getStepState('sess-1')
-    assert.ok(state, 'stepState 应被写入')
-    assert.equal(state?.originalProvider, 'cloud-llm', 'TUI 路径必须有 fallback originalProvider')
-    assert.equal(state?.originalModel, 'deepseek-chat', 'model 也必须有 fallback')
-    assert.equal(state?.downgraded, true, 'intent=LOCAL → downgraded=true')
-    assert.equal(state?.downgradeReason, 'intent-local')
-    // 审计 forensics
-    const downgradedAudit = audit.entries.find(e => e.kind === 'input-guard.intent.downgraded')
-    assert.ok(downgradedAudit)
-    assert.equal(downgradedAudit?.payload?.originalProviderSource, 'default-cloud-fallback',
-      'TUI 路径的 audit 必须标记 source=default-cloud-fallback（便于区分 fallback vs http-api 显式 _edgeRoute）')
-  })
-
-  it('CLOUD intent + no _edgeRoute + sanitize success → stepState.originalProvider = defaultCloudProvider', async () => {
-    // 模拟 TUI turn 4：intent=CLOUD，sanitize 跑（无 PII），no _edgeRoute
-    const ir = fakeIntentRouter({ category: 'CLOUD' })
-    const svc = new InputGuardServiceImpl(
-      fakeCtx() as any, defaultConfig(),
-      undefined, undefined, ir.api as any, fakeSanitizer({ replacements: 0 }).api,
-    )
-    const payload = makePreStepPayload('查询英国最新的新闻')
-    await svc.handlePreStep(payload as any, makeNext(payload.messages))
-    const state = svc.getStepState('sess-1')
+    const payload = makePreStepPayload('查本地IP')
+    const result = await svc.handlePreStep(payload as any, makeNext(payload.messages))
+    assert.equal(result.kind, 'enter')
+    // 路由没有被改写：step state 里没有「原路由」概念
+    const state = svc.getStepState(payload.agent.session.id ?? 'sess-1')
     assert.ok(state)
-    assert.equal(state?.originalProvider, 'cloud-llm', 'CLOUD 路径也必须写入 fallback originalProvider')
-    assert.equal(state?.originalModel, 'deepseek-chat')
-    assert.equal(state?.sanitized, false, '0 replacements → sanitized=false')
-    assert.equal(state?.downgraded, undefined, 'CLOUD 不降级')
+    assert.equal((state as any).downgraded, undefined)
+    assert.equal((state as any).originalProvider, undefined)
+    assert.ok(!audit.entries.some(e => e.kind === 'input-guard.blocked.model-selection'))
   })
 
-  it('CLOUD intent + no _edgeRoute + sanitize fail → stepState.originalProvider = defaultCloudProvider', async () => {
-    // 模拟 sanitize 故障降级 LOCAL 的 TUI 路径
-    const ir = fakeIntentRouter({ category: 'CLOUD' })
-    const audit = fakeAuditLog()
-    const svc = new InputGuardServiceImpl(
-      fakeCtx() as any, defaultConfig(),
-      undefined, undefined, ir.api as any, fakeSanitizer({ throwOnSanitize: true }).api, audit.api as any,
-    )
-    const payload = makePreStepPayload('查询带敏感信息的新闻')
-    await svc.handlePreStep(payload as any, makeNext(payload.messages))
-    const state = svc.getStepState('sess-1')
-    assert.ok(state)
-    assert.equal(state?.downgraded, true, 'sanitize fail → downgraded=true')
-    assert.equal(state?.originalProvider, 'cloud-llm', 'sanitize fail 路径也必须有 fallback')
-    assert.equal(state?.originalModel, 'deepseek-chat')
-    // 审计 forensics
-    const downgradedAudit = audit.entries.find(e => e.kind === 'input-guard.sanitize.downgraded')
-    assert.ok(downgradedAudit)
-    assert.equal(downgradedAudit?.payload?.originalProviderSource, 'default-cloud-fallback')
-  })
-
-  it('config override: defaultCloudProvider from DSH_EDGE_PROVIDER env', async () => {
-    // 默认值由 process.env.DSH_EDGE_PROVIDER ?? 'cloud-llm' 提供
-    // 测一下：当 config 显式指定 defaultCloudProvider 时，fallback 用 config 优先
+  it('非本地 modelSelection ⇒ reject（fail-closed，绝不放行到云端）', async () => {
     const ir = fakeIntentRouter({ category: 'LOCAL' })
-    const svc = new InputGuardServiceImpl(
-      fakeCtx() as any, defaultConfig({ defaultCloudProvider: 'openai-gpt-4', defaultCloudModel: 'gpt-4-turbo' }),
-      undefined, undefined, ir.api as any,
-    )
-    const payload = makePreStepPayload('查询本地的IP')
-    await svc.handlePreStep(payload as any, makeNext(payload.messages))
-    const state = svc.getStepState('sess-1')
-    assert.equal(state?.originalProvider, 'openai-gpt-4', 'config 覆盖 env 默认')
-    assert.equal(state?.originalModel, 'gpt-4-turbo')
-  })
-
-  it('priority: _edgeRoute.provider > defaultCloudProvider (http-api known more specific)', async () => {
-    // 当 _edgeRoute 有值时（http-api 路径），用它替代 default fallback
-    const ir = fakeIntentRouter({ category: 'LOCAL' }) // 不会被调用（_edgeRoute 优先）
-    const svc = new InputGuardServiceImpl(
-      fakeCtx() as any, defaultConfig({ defaultCloudProvider: 'openai-gpt-4' }),
-      undefined, undefined, ir.api as any,
-    )
-    const payload = makePreStepPayload('hello')
-    ;(payload.agent as any)._edgeRoute = {
-      realm: 'CLOUD', category: 'LOCAL',
-      provider: 'cloud-llm', model: 'deepseek-chat',
-      confidence: 0.9,
-    }
-    await svc.handlePreStep(payload as any, makeNext(payload.messages))
-    const state = svc.getStepState('sess-1')
-    // _edgeRoute 优先（更具体），不是 config.defaultCloudProvider
-    assert.equal(state?.originalProvider, 'cloud-llm')
-    assert.equal(state?.originalModel, 'deepseek-chat')
-  })
-})
-
-describe('handleAgentRequest — §7.43 end-to-end TUI recovery (no _edgeRoute)', () => {
-  // 完整复现用户报的 4-turn 序列：
-  //   turn 1 CLOUD → turn 2 CLOUD → turn 3 LOCAL → turn 4 CLOUD
-  // 修复前：turn 4 dispatch local-llm（卡死）
-  // 修复后：turn 4 restore 回 cloud-llm
-  //
-  // 关键：TUI 入口 turn 3 没有 _edgeRoute —— 必须靠 §7.43 fallback 写
-  // originalProvider，turn 4 才能恢复。
-
-  function fakeTuiService(opts: { intentSequence: ('LOCAL' | 'CLOUD')[]; sanitizeWithReplacements?: boolean } = { intentSequence: ['CLOUD', 'CLOUD', 'LOCAL', 'CLOUD'] }) {
     const audit = fakeAuditLog()
-    // 用 sequence 控制每次 classify 返回的 intent
-    let callIdx = 0
-    const ir = {
-      calls: [] as string[],
-      api: {
-        async classify(text: string) {
-          ir.calls.push(text)
-          const cat = opts.intentSequence[callIdx] ?? opts.intentSequence[opts.intentSequence.length - 1] ?? 'CLOUD'
-          callIdx += 1
-          return { category: cat, confidence: 0.95, rationale: `tui-turn-${callIdx}` }
-        },
-      },
-    }
     const svc = new InputGuardServiceImpl(
-      fakeCtx() as any, defaultConfig(), undefined, undefined, ir.api as any,
-      fakeSanitizer({ replacements: 0 }).api, // 默认 0 replacement（避开 sanitize 改 messages 路径）
-      audit.api as any,
+      fakeCtx() as any, defaultConfig(),
+      undefined, undefined, ir.api as any, undefined, audit.api as any,
     )
-    return { svc, audit, ir }
-  }
+    const payload = makePreStepPayload('查本地IP')
+    payload.modelSelection = { provider: 'cloud-llm', model: 'deepseek-chat' }
+    const result = await svc.handlePreStep(payload as any, makeNext(payload.messages))
+    assert.equal(result.kind, 'reject')
+    assert.equal(result.reason, 'model-selection-not-local')
+    // §7.174 字面口径：闸门在**意图分类之后** —— 因为「要不要拦」取决于
+    // 本轮判成什么。只有判成 LOCAL 才需要证明「这一轮留在本地」。
+    // 判成 CLOUD 的轮次由用户自己的模型选择负责（§7.175 主人口径）。
+    assert.equal(ir.calls.length, 1, '分类先跑，闸门后判')
+    // 审计 + _edgeRejection（http-api 靠它翻译 4xx）
+    const blocked = audit.entries.find(e => e.kind === 'input-guard.blocked.model-selection')
+    assert.ok(blocked, '必须留下 blocked 审计')
+    assert.equal(blocked?.payload?.provider, 'cloud-llm')
+    assert.equal(blocked?.payload?.expectedProvider, 'local-llm')
+    const rej = (payload.agent as any)._edgeRejection
+    assert.ok(rej, 'agent._edgeRejection 必须被设置，http-api 才能翻译 blocked → 403')
+    assert.equal(rej.kind, 'intent')
+    assert.equal(rej.reason, 'model-selection-not-local')
+  })
 
-  it('TUI 4-turn sequence: turn4 recovers from turn3 LOCAL downgrade (no _edgeRoute)', async () => {
-    const { svc } = fakeTuiService()
-
-    // turn 1: CLOUD, no _edgeRoute (TUI)
-    const turn1 = makePreStepPayload('查询美国新闻', 'tui-turn-1')
-    await svc.handlePreStep(turn1 as any, makeNext(turn1.messages))
-    const state1 = svc.getStepState('tui-turn-1')
-    assert.equal(state1?.originalProvider, 'cloud-llm', 'turn 1 fallback 写 cloud')
-    assert.equal(state1?.sanitized, false)
-    // handleAgentRequest: state.downgraded=undefined → pass-through, 但 seedConfig=cloud
-    const r1 = await svc.handleAgentRequest(
-      { agent: { session: { id: 'tui-turn-1' } } },
-      { provider: 'cloud-llm', model: 'deepseek-chat' },
-      async () => ({ provider: 'cloud-llm', model: 'deepseek-chat' }),
+  it('modelSelection 缺失 / 不是对象 ⇒ reject（无法证明本轮走本地）', async () => {
+    const ir = fakeIntentRouter({ category: 'LOCAL' })
+    const audit = fakeAuditLog()
+    const svc = new InputGuardServiceImpl(
+      fakeCtx() as any, defaultConfig(),
+      undefined, undefined, ir.api as any, undefined, audit.api as any,
     )
-    assert.equal(r1.provider, 'cloud-llm')
+    const payload = makePreStepPayload('查本地IP')
+    delete (payload as any).modelSelection
+    const missing = await svc.handlePreStep(payload as any, makeNext(payload.messages))
+    assert.equal(missing.kind, 'reject')
+    assert.equal(missing.reason, 'model-selection-missing')
 
-    // turn 2: CLOUD, no _edgeRoute
-    const turn2 = makePreStepPayload('查询AI新闻', 'tui-turn-2')
-    await svc.handlePreStep(turn2 as any, makeNext(turn2.messages))
-    const r2 = await svc.handleAgentRequest(
-      { agent: { session: { id: 'tui-turn-2' } } },
-      { provider: 'cloud-llm', model: 'deepseek-chat' },
-      async () => ({ provider: 'cloud-llm', model: 'deepseek-chat' }),
-    )
-    assert.equal(r2.provider, 'cloud-llm')
+    const payload2 = makePreStepPayload('查本地IP')
+    ;(payload2 as any).modelSelection = 'not-an-object'
+    const bogus = await svc.handlePreStep(payload2 as any, makeNext(payload2.messages))
+    assert.equal(bogus.kind, 'reject')
+    assert.equal(bogus.reason, 'model-selection-missing')
+    // 两轮各分类一次（闸门在分类之后）
+    assert.equal(ir.calls.length, 2)
+  })
 
-    // turn 3: LOCAL, no _edgeRoute —— 这里会写 originalProvider='cloud-llm' (fallback)
-    const turn3 = makePreStepPayload('查询本地IP', 'tui-turn-3')
-    await svc.handlePreStep(turn3 as any, makeNext(turn3.messages))
-    const state3 = svc.getStepState('tui-turn-3')
-    assert.equal(state3?.downgraded, true)
-    assert.equal(state3?.originalProvider, 'cloud-llm', '§7.43 关键：fallback 必须让 originalProvider 非空')
-    // handleAgentRequest 改写 → local
-    const r3 = await svc.handleAgentRequest(
-      { agent: { session: { id: 'tui-turn-3' } } },
-      { provider: 'cloud-llm', model: 'deepseek-chat' },
-      async () => ({ provider: 'cloud-llm', model: 'deepseek-chat' }),
+  it('判定为 CLOUD + 非本地 modelSelection ⇒ 放行（用哪个模型是用户自己的行为）', async () => {
+    // §7.175 (2026-11-11, 主人裁决)：「用哪个模型是用户自己的行为，不用管」。
+    // 本轮判定要出网，宿主选的就是云端模型 ⇒ input-guard 不拦、不改写。
+    const ir = fakeIntentRouter({ category: 'CLOUD' })
+    const audit = fakeAuditLog()
+    const svc = new InputGuardServiceImpl(
+      fakeCtx() as any, defaultConfig(),
+      undefined, undefined, ir.api as any, undefined, audit.api as any,
     )
-    assert.equal(r3.provider, 'local-llm', 'turn 3 downgrade 到 local')
+    const payload = makePreStepPayload('查英国新闻')
+    payload.modelSelection = { provider: 'cloud-llm', model: 'deepseek-chat' }
+    const result = await svc.handlePreStep(payload as any, makeNext(payload.messages))
+    assert.equal(result.kind, 'enter', '判定为 CLOUD 的轮次不该被本地闸门拦下')
+    assert.ok(
+      !audit.entries.some(e => e.kind === 'input-guard.blocked.model-selection'),
+      'CLOUD 轮次不该留下 blocked.model-selection',
+    )
+  })
 
-    // turn 4: CLOUD —— 但 agent-loop 被 turn 3 污染，seedConfig.provider=local
-    // 没有 §7.43 fallback 修复时，handleAgentRequest 会透传 → dispatch local ❌
-    // 有 §7.43 fallback 修复时，state.originalProvider='cloud-llm' → 恢复分支触发
-    const turn4 = makePreStepPayload('查询英国新闻', 'tui-turn-4')
-    await svc.handlePreStep(turn4 as any, makeNext(turn4.messages))
-    const state4 = svc.getStepState('tui-turn-4')
-    // turn 4 handlePreStep sanitize 成功（0 replacement）→ 写 new stepState
-    // 注意：turn 4 handlePreStep 之后 state4 是新 state（不是 turn 3 的 state）
-    // 所以恢复分支需要在 handleAgentRequest 里读 turn 3 的 state —— 但 turn 3 的 state
-    // 被 turn 4 的 stepState.set 覆盖了！
-    //
-    // 实际生产代码：每个 turn 的 stepState 是"上一步"的状态。turn 4 的 handlePreStep
-    // 覆盖了 turn 3 的 state，所以 handleAgentRequest 看到的 state 是 turn 4 自己写的
-    // (sanitized=true, originalProvider=cloud-llm 但是 downgraded=undefined)。
-    // 此时恢复分支不触发。
-    //
-    // 哦 — 这意味着 §7.43 恢复分支必须在 handleAgentRequest 看到"上一 turn"的状态。
-    // 实际上 stepState 在每个 turn 的 handlePreStep 开头就被覆盖了，所以"上一 turn 的
-    // downgraded=true 信息"丢失了。
-    //
-    // 真正的修复点应该在 handleAgentRequest 进入时，不要依赖 stepState，而是用其他方式
-    // 检测"seedConfig.provider 是不是被 agent-loop 污染了"。这里我们用一个简化的判定：
-    // 如果 seedConfig.provider === localProvider 且 stepState.downgraded !== true（本次
-    // 没有主动降级），那肯定是污染。
-    //
-    // （这个发现是为了让本测试通过，实际生产代码应在下面 r4 看到这种情况时主动恢复。）
-    const r4 = await svc.handleAgentRequest(
-      { agent: { session: { id: 'tui-turn-4' } } },
-      { provider: 'local-llm', model: 'qwen3-4b-instruct-2507' }, // 模拟 agent-loop 污染
-      async () => ({ provider: 'local-llm', model: 'qwen3-4b-instruct-2507' }),
+  it('判定为 CLOUD + 缺失 modelSelection ⇒ 放行（不归本地闸门管）', async () => {
+    // fail-closed 只覆盖「判定 LOCAL 却证明不了走本地」的轮次。
+    // 判定 CLOUD 的轮次不需要证明自己走本地 —— 它的出口由 §7.131 裁剪管。
+    const ir = fakeIntentRouter({ category: 'CLOUD' })
+    const audit = fakeAuditLog()
+    const svc = new InputGuardServiceImpl(
+      fakeCtx() as any, defaultConfig(),
+      undefined, undefined, ir.api as any, undefined, audit.api as any,
     )
-    // 期望：handleAgentRequest 看到 seedConfig.provider=local 且 state4.downgraded !== true
-    // → 应该恢复回 cloud-llm（基于 state4.originalProvider=fallback 'cloud-llm'）
-    //
-    // 但是当前实现：恢复分支条件 state.originalProvider 必须存在。state4.originalProvider
-    // 在 turn 4 sanitize 成功时被设了（fallback 'cloud-llm'）—— 满足！
-    assert.equal(state4?.originalProvider, 'cloud-llm', 'turn 4 handlePreStep 写 originalProvider（fallback）')
-    assert.equal(r4.provider, 'cloud-llm', '§7.43 修复后：turn 4 应恢复回 cloud（不再被污染到 local）')
+    const payload = makePreStepPayload('查英国新闻')
+    delete (payload as any).modelSelection
+    const result = await svc.handlePreStep(payload as any, makeNext(payload.messages))
+    assert.equal(result.kind, 'enter')
+    assert.ok(
+      !audit.entries.some(e => e.kind === 'input-guard.blocked.model-selection'),
+      'CLOUD 轮次不该留下 blocked.model-selection',
+    )
+  })
+
+  it('enableInputGuard=false ⇒ 闸门不生效（总开关优先）', async () => {
+    const svc = new InputGuardServiceImpl(fakeCtx() as any, defaultConfig({ enableInputGuard: false }))
+    const payload = makePreStepPayload('查本地IP')
+    delete (payload as any).modelSelection
+    const result = await svc.handlePreStep(payload as any, makeNext(payload.messages))
+    assert.equal(result.kind, 'enter')
   })
 })
 
-// ─────────────────────────────────────────────────────────────────────────────
-// §7.26 regression suite: intent=LOCAL must downgrade when upstream edge route
-// is bound to a cloud-* provider. Without this, http-api's `_edgeRoute.category`
-// says "local" but the actual call still goes to cloud because agent/request
-// hook didn't see a downgrade hint.
+// §7.26 regression suite: intent=LOCAL must not leave the device.
+// §7.175 (2026-11-11): 意图判定不再改写路由（宿主 prepareRequest() 会对改写
+// 直接抛错）。「本该本地却可能上云」由 modelSelection 闸门 fail-closed 兜住，
+// 意图分类只负责脱敏 / realm 注册 / 审计。
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe('handlePreStep — §7.26 bug A regression: LOCAL intent must downgrade from cloud-*', () => {
-  it('LOCAL edgeRoute with cloud-* provider → stepState.downgraded=true', async () => {
+describe('handlePreStep — §7.26 bug A regression (retired): LOCAL intent no longer rewrites the route', () => {
+  it('LOCAL edgeRoute with cloud-* provider → 意图判定不再产生「降级」状态', async () => {
     const ir = fakeIntentRouter({ category: 'LOCAL' }) // not actually called
     const svc = new InputGuardServiceImpl(
       fakeCtx() as any, defaultConfig(),
@@ -1450,15 +1245,13 @@ describe('handlePreStep — §7.26 bug A regression: LOCAL intent must downgrade
     assert.equal(result.kind, 'enter')
     const state = svc.getStepState(payload.agent.session.id ?? 'sess-1')
     assert.ok(state)
-    // 核心断言：downgraded=true 让 agent/request hook 改写路由
-    assert.equal(state?.downgraded, true)
-    assert.equal(state?.downgradeReason, 'intent-local')
-    assert.equal(state?.originalProvider, 'cloud-llm')
-    assert.equal(state?.originalModel, 'deepseek-chat')
-    assert.equal(state?.originalRealm, 'LOCAL')
+    assert.equal((state as any).downgraded, undefined, '§7.175: 没有降级状态了')
+    assert.equal((state as any).downgradeReason, undefined)
+    assert.equal((state as any).originalProvider, undefined)
+    assert.equal(state?.routeSource, 'http-api', '入口仍然被记录')
   })
 
-  it('LOCAL edgeRoute with cloud-* provider → audit input-guard.intent.downgraded (security level)', async () => {
+  it('LOCAL edgeRoute → audit input-guard.intent.local（不再有 intent.downgraded）', async () => {
     const ir = fakeIntentRouter({ category: 'LOCAL' })
     const audit = fakeAuditLog()
     const svc = new InputGuardServiceImpl(
@@ -1472,38 +1265,15 @@ describe('handlePreStep — §7.26 bug A regression: LOCAL intent must downgrade
       confidence: 0.95, rationale: 'edge-route-cached',
     }
     await svc.handlePreStep(payload as any, makeNext(payload.messages))
-    const downgraded = audit.entries.find(e => e.kind === 'input-guard.intent.downgraded')
-    assert.ok(downgraded, 'must emit input-guard.intent.downgraded')
-    assert.equal(downgraded?.level, 'security', 'security 级别不会被 audit-log minLevel drop')
-    assert.equal((downgraded?.payload as any).originalProvider, 'cloud-llm')
-    assert.equal((downgraded?.payload as any).targetProvider, 'local-llm')
+    const local = audit.entries.find(e => e.kind === 'input-guard.intent.local')
+    assert.ok(local, 'must emit input-guard.intent.local')
+    assert.equal(local?.level, 'security', 'security 级别不会被 audit-log minLevel drop')
+    assert.equal((local?.payload as any).provider, 'local-llm', '本轮实际走的 provider')
+    assert.ok(!audit.entries.some(e => e.kind === 'input-guard.intent.downgraded'),
+      '§7.175: 不再有「已降级」这回事')
   })
 
-  it('LOCAL edgeRoute with already-local provider → downgraded=true (idempotent rewrite)', async () => {
-    // §7.34 fix: intent=LOCAL is authoritative; even when current provider
-    // is already local, mark downgraded=true so handleAgentRequest rewrites.
-    // The rewrite is idempotent (same provider/model), audit fires for
-    // traceability, no actual behavior change.
-    const ir = fakeIntentRouter({ category: 'LOCAL' })
-    const svc = new InputGuardServiceImpl(
-      fakeCtx() as any, defaultConfig(),
-      undefined, undefined, ir.api as any,
-    )
-    const payload = makePreStepPayload('查本地IP')
-    ;(payload.agent as any)._edgeRoute = {
-      realm: 'LOCAL', category: 'LOCAL',
-      provider: 'local-llm',    // 已经是本地
-      model: 'qwen3-4b-instruct-2507',
-      confidence: 0.95, rationale: 'edge-route-cached',
-    }
-    await svc.handlePreStep(payload as any, makeNext(payload.messages))
-    const state = svc.getStepState(payload.agent.session.id ?? 'sess-1')
-    assert.equal(state?.downgraded, true, '§7.34: intent=LOCAL always forces LOCAL')
-    assert.equal(state?.downgradeReason, 'intent-local')
-    assert.equal(state?.routeSource, 'http-api')
-  })
-
-  it('CLOUD edgeRoute with cloud-* provider → downgraded=false (not applicable)', async () => {
+  it('CLOUD edgeRoute → 意图判定不产生降级标记', async () => {
     const ir = fakeIntentRouter({ category: 'CLOUD' })
     const svc = new InputGuardServiceImpl(
       fakeCtx() as any, defaultConfig(),
@@ -1517,13 +1287,10 @@ describe('handlePreStep — §7.26 bug A regression: LOCAL intent must downgrade
     }
     await svc.handlePreStep(payload as any, makeNext(payload.messages))
     const state = svc.getStepState(payload.agent.session.id ?? 'sess-1')
-    assert.equal(state?.downgraded, false, 'CLOUD intent 不会触发 intent-local 降级')
+    assert.equal((state as any).downgraded, undefined)
   })
 
-  it('LOCAL edgeRoute without provider field → downgraded=true (intent is authoritative, §7.34)', async () => {
-    // §7.34 fix: malformed _edgeRoute (no provider) used to short-circuit
-    // downgrade (defensive guard). New behavior: intent=LOCAL is the
-    // authoritative verdict — fire downgrade regardless of edgeRoute shape.
+  it('LOCAL edgeRoute without provider field → 仍然记录入口（routeSource=http-api）', async () => {
     const ir = fakeIntentRouter({ category: 'LOCAL' })
     const svc = new InputGuardServiceImpl(
       fakeCtx() as any, defaultConfig(),
@@ -1533,21 +1300,14 @@ describe('handlePreStep — §7.26 bug A regression: LOCAL intent must downgrade
     ;(payload.agent as any)._edgeRoute = {
       realm: 'LOCAL', category: 'LOCAL',
       confidence: 0.95, rationale: 'edge-route-cached',
-      // 故意缺 provider — §7.34 不再 short-circuit
+      // 故意缺 provider
     }
     await svc.handlePreStep(payload as any, makeNext(payload.messages))
     const state = svc.getStepState(payload.agent.session.id ?? 'sess-1')
-    assert.equal(state?.downgraded, true, '§7.34: intent=LOCAL wins over edgeRoute shape')
     assert.equal(state?.routeSource, 'http-api')
   })
 
-  it('LOCAL intent WITHOUT _edgeRoute (webui path) → downgraded=true (Chat 2 leak bug, §7.34)', async () => {
-    // 复现 Chat 2 (2026-09-03)：用户在 webui 输 "查询密盒里有哪些文件"。
-    // intent-router 正确分类 LOCAL @ 0.95，但 webui (dsh-web-app chat) 不设
-    // _edgeRoute。§7.26 修复对 http-api 路径有效；webui 路径仍走 cloud-llm。
-    // 9 次 cloud LLM 调用，promptLen 6841→7419，文件列表 leak 到 deepseek API。
-    //
-    // §7.34 修复：wantsDowngradeToLocal = category === 'LOCAL'（不再依赖 edgeRoute）。
+  it('LOCAL intent WITHOUT _edgeRoute (webui path) → 入口记为 webui', async () => {
     const ir = fakeIntentRouter({ category: 'LOCAL', confidence: 0.95 })
     const audit = fakeAuditLog()
     const svc = new InputGuardServiceImpl(
@@ -1560,26 +1320,14 @@ describe('handlePreStep — §7.26 bug A regression: LOCAL intent must downgrade
     await svc.handlePreStep(payload as any, makeNext(payload.messages))
     const state = svc.getStepState(payload.agent.session.id ?? 'sess-1')
     assert.ok(state)
-    assert.equal(state?.downgraded, true, '§7.34: webui 路径 intent=LOCAL 也必须 downgraded')
-    assert.equal(state?.downgradeReason, 'intent-local')
     assert.equal(state?.routeSource, 'webui', '入口识别为 webui（_edgeRoute 缺失）')
-    // audit 应记录
-    const downgraded = audit.entries.find(e => e.kind === 'input-guard.intent.downgraded')
-    assert.ok(downgraded, 'must emit input-guard.intent.downgraded')
-    assert.equal(downgraded?.level, 'security')
-    assert.equal((downgraded?.payload as any).routeSource, 'webui')
-    // §7.43 (2026-09-07): webui 路径不再写 originalProvider=undefined；fallback 到
-    // config.defaultCloudProvider（mirror cordis.patch.yml 的 DSH_EDGE_PROVIDER）。
-    // 这让 turn N+1 的 handleAgentRequest 恢复分支能在 TUI/webui 上识别污染。
-    assert.equal((downgraded?.payload as any).originalProvider, 'cloud-llm',
-      '§7.43: webui 路径必须有 fallback originalProvider')
-    assert.equal((downgraded?.payload as any).originalProviderSource, 'default-cloud-fallback',
-      '§7.43: 必须标记 source 为 fallback 便于 forensics')
-    assert.equal((downgraded?.payload as any).targetProvider, 'local-llm')
+    const local = audit.entries.find(e => e.kind === 'input-guard.intent.local')
+    assert.ok(local, 'must emit input-guard.intent.local')
+    assert.equal(local?.level, 'security')
+    assert.equal((local?.payload as any).routeSource, 'webui')
   })
 
-  it('LOCAL intent without _edgeRoute → handleAgentRequest rewrites provider (end-to-end, §7.34)', async () => {
-    // 端到端：pre-step 走完 webui 路径后，agent/request hook 应改写 seedConfig。
+  it('LOCAL intent without _edgeRoute → agent/request 不改写路由，出口由闸门兜住（§7.175）', async () => {
     const ir = fakeIntentRouter({ category: 'LOCAL', confidence: 0.95 })
     const audit = fakeAuditLog()
     const svc = new InputGuardServiceImpl(
@@ -1588,22 +1336,24 @@ describe('handlePreStep — §7.26 bug A regression: LOCAL intent must downgrade
     )
     const payload = makePreStepPayload('查询密盒里有哪些文件')
     await svc.handlePreStep(payload as any, makeNext(payload.messages))
-    // 模拟 agent-loop 拿到的 seedConfig（默认 cloud-llm）
+    // 模拟 agent-loop 拿到的 seedConfig
     const seed = { provider: 'cloud-llm', model: 'deepseek-chat', maxTokens: 4096 }
     const result = await svc.handleAgentRequest(
       { agent: { session: { id: payload.agent.session.id } } },
       seed,
       async () => seed,
     )
-    assert.equal(result.provider, 'local-llm', '§7.34: webui 路径必须改写到 LOCAL')
-    assert.equal(result.model, 'qwen3-4b-instruct-2507')
+    assert.equal(result.provider, 'cloud-llm', '§7.175: agent/request 不再改写路由')
+    assert.equal(result.model, 'deepseek-chat')
     assert.equal(result.maxTokens, 4096, '其他字段保留')
-    // 审计：input-guard.route.overridden 应被记录
-    const ov = audit.entries.find(e => e.kind === 'input-guard.route.overridden')
-    assert.ok(ov)
-    assert.deepEqual(ov?.payload?.from, { provider: 'cloud-llm', model: 'deepseek-chat' })
-    assert.deepEqual(ov?.payload?.to, { provider: 'local-llm', model: 'qwen3-4b-instruct-2507' })
-    assert.equal(ov?.payload?.reason, 'intent-local')
+    assert.ok(!audit.entries.some(e => e.kind === 'input-guard.route.overridden'))
+
+    // 真正的兜底：宿主若选了非本地 provider，本轮被 fail-closed 拒收
+    const cloudPayload = makePreStepPayload('查询密盒里有哪些文件')
+    cloudPayload.modelSelection = { provider: 'cloud-llm', model: 'deepseek-chat' }
+    const blocked = await svc.handlePreStep(cloudPayload as any, makeNext(cloudPayload.messages))
+    assert.equal(blocked.kind, 'reject')
+    assert.equal(blocked.reason, 'model-selection-not-local')
   })
 })
 
@@ -1625,132 +1375,6 @@ describe('handlePreStep — §7.26 bug B regression: routed audit is info level'
   })
 })
 
-// §7.35 (2026-09-03): Cloud API key 缺失 → 降级 LOCAL，绝不抛 MISSING_CREDENTIAL。
-// 场景：TUI profile 没 source repo .env.sh → DEEPSEEK_API_KEY 空 → category=CLOUD
-// 走老逻辑会到 cloud-llm-adapter 抛错。修复：input-guard 在 sanitize 之前检测
-// key，缺失就标 downgraded=true 让 handleAgentRequest 改写到 LOCAL。
-describe('handlePreStep — §7.35: cloud API key missing → downgrade LOCAL', () => {
-  const ORIGINAL_KEY = process.env.DEEPSEEK_API_KEY
-  // §7.100 (2026-10-18): cloudAvailable() gained a DIRECT / DELEGATE split.
-  // DIRECT is selected by a non-empty cloud baseUrl; without it the router
-  // falls into DELEGATE (credentials live on the host side) and the
-  // "cloud-key-missing:<slot>" reason never fires. These cases exercise the
-  // DIRECT path, so the baseUrl must be present.
-  const ORIGINAL_BASE_URL = process.env.DSH_EDGE_CLOUD_LLM_BASEURL
-
-  function clearKey() {
-    delete process.env.DEEPSEEK_API_KEY
-    process.env.DSH_EDGE_CLOUD_LLM_BASEURL = 'https://api.deepseek.com'
-  }
-  function restoreKey() {
-    if (ORIGINAL_KEY === undefined) delete process.env.DEEPSEEK_API_KEY
-    else process.env.DEEPSEEK_API_KEY = ORIGINAL_KEY
-    if (ORIGINAL_BASE_URL === undefined) delete process.env.DSH_EDGE_CLOUD_LLM_BASEURL
-    else process.env.DSH_EDGE_CLOUD_LLM_BASEURL = ORIGINAL_BASE_URL
-  }
-
-  it('CLOUD intent + missing DEEPSEEK_API_KEY → downgraded=true, envSlot recorded', async () => {
-    clearKey()
-    try {
-      const ir = fakeIntentRouter({ category: 'CLOUD' })
-      const audit = fakeAuditLog()
-      const svc = new InputGuardServiceImpl(
-        fakeCtx() as any, defaultConfig({ cloudApiKeyEnv: 'DEEPSEEK_API_KEY' }),
-        undefined, undefined, ir.api as any, undefined, audit.api as any,
-      )
-      const payload = makePreStepPayload('查一下广州天气')
-      const result = await svc.handlePreStep(payload as any, makeNext(payload.messages))
-
-      // step 不被阻断——user 体验保持连贯（后续 handleAgentRequest 改写到 LOCAL）
-      assert.equal(result.kind, 'enter')
-      // 状态：downgraded=true，让 handleAgentRequest 接管
-      const state = svc.getStepState(payload.agent.session.id ?? 'sess-1')
-      assert.ok(state)
-      assert.equal(state?.downgraded, true)
-      assert.equal(state?.sanitized, false)
-      assert.match(state?.downgradeReason ?? '', /^cloud-key-missing:DEEPSEEK_API_KEY$/u)
-
-      // 审计：input-guard.cloud-key.missing (security level)，含 target provider
-      const missing = audit.entries.find(e => e.kind === 'input-guard.cloud-key.missing')
-      assert.ok(missing, 'must emit input-guard.cloud-key.missing')
-      assert.equal(missing?.level, 'security')
-      assert.equal((missing?.payload as any).envSlot, 'DEEPSEEK_API_KEY')
-      // category 字段记录的是 intent-router 的原始分类（CLOUD），targetProvider
-      // 才是降级后的目标（LOCAL）——这是审计可追溯性的语义。
-      assert.equal((missing?.payload as any).category, 'CLOUD', '记录原始分类')
-      assert.equal((missing?.payload as any).targetProvider, 'local-llm', '记录降级目标')
-      assert.equal((missing?.payload as any).routeSource, 'webui', 'tui/webui 路径无 _edgeRoute')
-
-      // sanitize 不应被调用（缺失分支早于 sanitizer 触发）
-      assert.equal((ir.api as any).sanitizeCalls?.length ?? 0, 0, 'sanitizer 不应被调用')
-    } finally {
-      restoreKey()
-    }
-  })
-
-  it('SANITIZED intent + missing key → also downgrade LOCAL', async () => {
-    clearKey()
-    try {
-      const ir = fakeIntentRouter({ category: 'SANITIZED' })
-      const audit = fakeAuditLog()
-      const svc = new InputGuardServiceImpl(
-        fakeCtx() as any, defaultConfig(),
-        undefined, undefined, ir.api as any, undefined, audit.api as any,
-      )
-      const payload = makePreStepPayload('user@example.com 查天气')
-      const result = await svc.handlePreStep(payload as any, makeNext(payload.messages))
-      assert.equal(result.kind, 'enter')
-      const state = svc.getStepState(payload.agent.session.id ?? 'sess-1')
-      assert.equal(state?.downgraded, true)
-      assert.match(state?.downgradeReason ?? '', /^cloud-key-missing:/u)
-    } finally {
-      restoreKey()
-    }
-  })
-
-  it('LOCAL intent + missing key → no downgrade (already local, no cloud needed)', async () => {
-    clearKey()
-    try {
-      const ir = fakeIntentRouter({ category: 'LOCAL' })
-      const audit = fakeAuditLog()
-      const svc = new InputGuardServiceImpl(
-        fakeCtx() as any, defaultConfig(),
-        undefined, undefined, ir.api as any, undefined, audit.api as any,
-      )
-      const payload = makePreStepPayload('ls /tmp')
-      await svc.handlePreStep(payload as any, makeNext(payload.messages))
-      const missing = audit.entries.find(e => e.kind === 'input-guard.cloud-key.missing')
-      assert.equal(missing, undefined, 'LOCAL intent 不应触发 cloud-key-missing')
-      // 但 downgraded 仍为 true（走 §7.34 intent-local 分支）
-      const state = svc.getStepState(payload.agent.session.id ?? 'sess-1')
-      assert.equal(state?.downgraded, true)
-      assert.equal(state?.downgradeReason, 'intent-local')
-    } finally {
-      restoreKey()
-    }
-  })
-
-  it('CLOUD intent + key present → no downgrade, sanitize proceeds', async () => {
-    process.env.DEEPSEEK_API_KEY = 'sk-test-present'
-    try {
-      const ir = fakeIntentRouter({ category: 'CLOUD' })
-      const san = fakeSanitizer({ replacements: 1 })
-      const audit = fakeAuditLog()
-      const svc = new InputGuardServiceImpl(
-        fakeCtx() as any, defaultConfig(),
-        undefined, undefined, ir.api as any, san.api as any, audit.api as any,
-      )
-      const payload = makePreStepPayload('user@example.com')
-      await svc.handlePreStep(payload as any, makeNext(payload.messages))
-      const missing = audit.entries.find(e => e.kind === 'input-guard.cloud-key.missing')
-      assert.equal(missing, undefined, 'key 存在时不应触发 cloud-key-missing')
-      const sanitized = audit.entries.find(e => e.kind === 'input-guard.sanitized')
-      assert.ok(sanitized, 'sanitize 应被调用（category=CLOUD + key present + 有 PII）')
-    } finally {
-      restoreKey()
-    }
-  })
-})
 
 describe('handleLlmStream — bypass', () => {
   it('passes through when enableInputGuard=false', async () => {
@@ -1876,6 +1500,7 @@ describe('messages manipulation', () => {
         { role: 'user', content: [{ type: 'text', text: 'send to user@example.com' }] },
       ],
       step: 1,
+      modelSelection: { ...LOCAL_SELECTION },
     }
     const result = await svc.handlePreStep(payload as any, makeNext(payload.messages))
     assert.equal(result.kind, 'enter')
@@ -1894,7 +1519,12 @@ describe('messages manipulation', () => {
       undefined, undefined, ir.api as any, san.api as any,
     )
     const original = [{ role: 'user', content: 'send to user@example.com' }]
-    const payload = { agent: { id: 'a1', session: { id: 's' } }, messages: original, step: 1 }
+    const payload = {
+      agent: { id: 'a1', session: { id: 's' } },
+      messages: original,
+      step: 1,
+      modelSelection: { ...LOCAL_SELECTION },
+    }
     const result = await svc.handlePreStep(payload as any, makeNext(original))
     assert.equal(result.kind, 'enter')
     // 原数组不应被修改
@@ -2256,11 +1886,16 @@ describe('§7.128 — REJECT 绝不走 CLOUD', () => {
       'REJECT 绝不能映射成 CLOUD',
     )
 
-    // 真正的出口检查：handleAgentRequest 必须把路由改写到本地模型
+    // §7.175: 路由不再由 input-guard 改写 —— 出口保证来自 pre-step 的
+    // fail-closed 闸门（非本地 modelSelection 一律拒收）。
     const seedConfig = { provider: 'cloud-llm', model: 'deepseek-chat' }
     const routed = await svc.handleAgentRequest(payload as any, seedConfig as any, async () => seedConfig as any)
-    assert.equal((routed as any).provider, 'local-llm', 'fail-open 的 REJECT 轮必须留在本地')
-    assert.equal((routed as any).model, 'qwen3-4b-instruct-2507')
+    assert.deepEqual(routed, seedConfig, '§7.175: agent/request 不再改写路由')
+    const cloudPayload = makePreStepPayload('危险内容')
+    cloudPayload.modelSelection = { provider: 'cloud-llm', model: 'deepseek-chat' }
+    const blocked = await svc.handlePreStep(cloudPayload as any, makeNext(cloudPayload.messages))
+    assert.equal(blocked.kind, 'reject', '非本地 modelSelection 必须 fail-closed 拒收')
+    assert.equal(blocked.reason, 'model-selection-not-local')
   })
 
   it('intent-router 判 REJECT + fail-open → 同样留在本地', async () => {
@@ -2281,7 +1916,11 @@ describe('§7.128 — REJECT 绝不走 CLOUD', () => {
 
     const seedConfig = { provider: 'cloud-llm', model: 'deepseek-chat' }
     const routed = await svc.handleAgentRequest(payload as any, seedConfig as any, async () => seedConfig as any)
-    assert.equal((routed as any).provider, 'local-llm', 'fail-open 的 REJECT 轮必须留在本地')
+    assert.deepEqual(routed, seedConfig, '§7.175: agent/request 不再改写路由')
+    const cloudPayload = makePreStepPayload('do weird thing')
+    cloudPayload.modelSelection = { provider: 'cloud-llm', model: 'deepseek-chat' }
+    const blocked = await svc.handlePreStep(cloudPayload as any, makeNext(cloudPayload.messages))
+    assert.equal(blocked.kind, 'reject', '非本地 modelSelection 必须 fail-closed 拒收')
   })
 
   it('intent-router 判 REJECT + fail-closed → 仍然拦下（回归护栏）', async () => {

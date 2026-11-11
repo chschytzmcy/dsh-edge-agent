@@ -387,7 +387,7 @@ rsync -a --delete lib/ "$N/lib/"           # ③
 | 插件 | 文件 | `inject` 数组 | 作用 |
 |------|------|--------------|------|
 | **intent-router** | `intent-router.ts` | `['llm', 'auditLog']` | 意图分类 → LOCAL / CLOUD 路由（v2：被 input-guard 编排） |
-| **input-guard** | `input-guard.ts` | `['promptGuard', 'privacyPolicy', 'intentRouter', 'sanitizer', 'auditLog']` | **v2 编排器**（2026-08-29 引入）：注册 3 个全局 hook（`agent/pre-step` + `agent/request` + `llm/stream`），统一 http-api / Web UI / dsh-im 三入口的隐私管线 |
+| **input-guard** | `input-guard.ts` | `['promptGuard', 'privacyPolicy', 'intentRouter', 'sanitizer', 'auditLog']` | **v2 编排器**（2026-08-29 引入）：注册 4 个 hook（`agent/pre-step` + `agent/request` + `llm/stream` + `agent/created`；§7.136 起只有 `llm/stream` 带 `{ global: true }`），统一 http-api / Web UI / dsh-im 三入口的隐私管线 |
 | **plugin-host** | `plugin-host.ts` | `['agents', 'sessions']` | 第三方插件宿主（Community Consensus grant） |
 | **http-api** | `http-api.ts` | `['agents', 'intentRouter', 'auditLog', 'tdBus', 'realmSkillBridge', 'edgeTools']` | HTTP 接入（POST /v1/chat, SSE 流，:21017） |
 
@@ -913,7 +913,7 @@ sequenceDiagram
 | `cloud-llm-adapter` | `ctx.llm` | 继承 `LlmAdapter`，注册 `stream()` |
 | `model-router` | `ctx.llm` | 调用 `resolveRoute()`，选择 adapter |
 | `intent-router` | `ctx.llm`, `ctx.auditLog` | 调用 `generate()` 做意图分类 |
-| `input-guard` | `ctx.promptGuard`, `ctx.privacyPolicy`, `ctx.intentRouter`, `ctx.sanitizer`, `ctx.auditLog` | v2 编排器：3 个全局 waterfall hook（`agent/pre-step` + `agent/request` + `llm/stream`），调用各服务做正向 + 反向 + 路由改写 |
+| `input-guard` | `ctx.promptGuard`, `ctx.privacyPolicy`, `ctx.intentRouter`, `ctx.sanitizer`, `ctx.auditLog` | v2 编排器：4 个 waterfall hook（`agent/pre-step` + `agent/request` + `llm/stream` + `agent/created`），调用各服务做正向 + 反向；**§7.175 起 `agent/request` 不再改路由**（只放行），路由闸门在 `agent/pre-step` 里 fail-closed 判定 |
 | `sanitizer-pipeline` | `ctx.privacyPolicy`, `ctx.auditLog` | 调用 `sanitize()` / `desanitize()` |
 | `prompt-guard` | `ctx.privacyPolicy`, `ctx.auditLog`, `ctx.llm` | 调用 `checkInput()`；模型辅助检测走 `ctx.llm.stream()` |
 | `http-api` | `ctx.agents`, `ctx.intentRouter`, `ctx.auditLog`, `ctx.tdBus`, `ctx.realmSkillBridge`, `ctx.edgeTools` | 调用 `agents.create()` / `agent.followup()`；订阅 `session/event`；读 `_edgeRejection` 翻译 HTTP 状态 |
@@ -1216,7 +1216,7 @@ dsh-edge-agent 同时对外暴露**三个用户入口**，明确分工：
 2026-08-29 合并的 `input-guard`（commit `eaec70b`）把 http-api 内的脱敏/防护逻辑**上移到 agent-loop 的全局 hook**：
 
 - `agent/pre-step` — pre-flight prompt-guard + privacy-policy + intent-route + sanitize
-- `agent/request` — sanitize failure → downgrade to LOCAL
+- `agent/request` — §7.175 起**只放行不改路由**（seedConfig 原样返回）；脱敏失败不再「降级路由」，改由 `agent/pre-step` 的 fail-closed 闸门保证本轮不出网
 - `llm/stream` — desanitize 占位符回 PII
 
 这条 hook 链对所有走 agent-loop 的入口一视同仁：

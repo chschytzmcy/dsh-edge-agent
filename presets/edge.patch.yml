@@ -87,6 +87,46 @@
         description: 标准模式 + 本项目的端侧隐私能力（意图判定 / 路由决策 / PII 脱敏 / Realm 闸门）
         order: 5
         plugins:
+          # §7.175（2026-11-11）：这里**故意没有** `agent-default-model` 行；
+          # §7.176（2026-11-11）起，本地模型默认值改由**本 preset 内的
+          # input-guard** 给出（见下面 edge-stack 组里的 input-guard 行）。
+          #
+          # 实测（桌面 App 日志 2026-11-11 10:24 / 10:26，两次启动一致）：
+          #   WARN [agent-preset-registry] agent preset edge:
+          #     agent-default-model (@deepseek-ai/dsh-agent-default-model):
+          #     service "agentDefaultModel" has been registered at <AgentDefaultModelConfig>
+          # ⇒ 加了这一行，**整个边缘模式 preset 挂载失败**（设置页那张卡显示
+          # 「加载失败」），Edge 模式用不了。
+          #
+          # 根因：宿主 dsh-base/cordis.patch.yml L90-94 已经在 **host scope** 声明了
+          # 同一个插件（provider: deepseek-official / model: deepseek-flash）；该插件
+          # 用 `super(ownerContext, "agentDefaultModel")` 注册 cordis service，
+          # 而这个 service 名**跨 scope 唯一** ⇒ preset scope 再声明一次 ⇒ 撞名。
+          #
+          # ⚠️ 本文件此前写的理由（「service 注册在插件所在 scope，scope 查找就近 ⇒
+          # preset 内就近拿到这一行、遮蔽 host scope 的全局默认」）是**推断，实测证伪**
+          # —— 真正的读取方是 host scope 的那份：
+          # `dsh-api-session-controller` 的 `agentOptions()` 读 `this.ctx.agentDefaultModel`，
+          # preset scope 里那份即使不撞名也**没有读者**。
+          #
+          # §7.176：为什么由 input-guard 给默认值，而不是这一行：
+          #   1. 宿主 0.2.2-rc.1 起，路由只由**会话级** modelSelection 决定
+          #      （`agent/request` 里改写会被 prepareRequest() 判非法并抛错）；
+          #   2. 桌面 GUI 建的 agent，其 agentOptions 来自 host scope 的
+          #      agentDefaultModel（宿主自带的云端模型）⇒ 边缘模式默认会跑云端；
+          #   3. 本地路由 local-llm 在模型目录里隐身（§7.106 Option A：它是管线
+          #      内部件，不是用户可选项）⇒ GUI 里**选不到**它，用户没法手动纠正；
+          #   ⇒ 只能由 preset 侧把会话选择钉成 local-llm。input-guard 用的是宿主
+          #      自己的合规入口 `agent.model.select()`（agent-loop 的
+          #      applyConfiguredRoute() 也是这么写的），**不动**宿主的全局默认 ——
+          #      `sessionController.selectModel()` 会顺手 `saveSelection()` 改全局，
+          #      那样会波及同 profile 的标准模式。
+          #
+          # 主人裁决（2026-11-11）：**npm 包里不会带本地模型配置**（config/edge.json
+          # 被 `files` 白名单排除）⇒ local-llm 走 DELEGATE（§7.171）转发宿主
+          # provider ⇒ 装上就能用（先用 dsh 自带的云端模型），而 provider 身份仍是
+          # local-llm ⇒ §7.175 的 fail-closed 闸门照样放行。
+          # 实测记录见 docs/PROGRESS.md §7.175 / §7.176。
           - id: persona
             name: '@deepseek-ai/dsh-persona'
             config:
@@ -484,6 +524,14 @@
                   # functionCallExternalProbeTimeoutMs: !!js parseInt(process.env.DSH_EDGE_FUNCTION_CALL_EXTERNAL_PROBE_TIMEOUT_MS ?? '2000', 10)
               - id: input-guard
                 name: '@dsh-edge/dsh-edge-agent/input-guard'
+                # §7.176 (2026-11-11): 本行是**边缘模式本地模型默认值的给出点**。
+                # 宿主 0.2.2-rc.1 起路由只由会话级 modelSelection 决定，而 GUI 建的
+                # agent 默认取 host scope 的 agentDefaultModel（宿主自带云端模型），
+                # local-llm 又在模型目录里隐身（§7.106 Option A，GUI 选不到）⇒
+                # 只能由本 preset 侧把会话选择钉成 local-llm。input-guard 监听
+                # `agent/created`，用宿主的合规入口 `agent.model.select()` 写会话级
+                # 选择；不动宿主的全局默认（那会波及同 profile 的标准模式）。
+                # 详见 docs/PROGRESS.md §7.176。
                 # §7.123 (2026-10-27): realmSkillBridge was missing here while
                 # input-guard.ts:35-39 declares it MANDATORY ("必须 inject realmSkillBridge，
                 # 否则 this.ctx.realmSkillBridge 永远 undefined"). With it absent,
@@ -498,5 +546,6 @@
                   #   enableInputGuard          → 全局 hook 开关
                   #   rejectOnPolicyViolation   → 攻击 / privacy-policy REJECT 阻断 step
                   #   downgradeOnSanitizeFailure → sanitize 失败降级 LOCAL（fail-closed）
-                  #   localModel                → 降级目标 model，跟随 LOCAL 池
+                  #   localModel                → 本地池的 model id，跟随 LOCAL 池
+                  #                              （§7.176 起还兼作边缘模式会话的默认 model）
                   sanitizeLocalTraffic: false

@@ -142,7 +142,11 @@ const INTERNAL_KINDS: ReadonlySet<string> = new Set([
  *  (see walkthrough §6). Unlisted kinds are ignored — the store only
  *  carries what the panels render. */
 const PANEL_BY_KIND: Array<{ match: (kind: string) => boolean; panel: EdgePanel }> = [
-  { match: k => k.startsWith('intent.') || k === 'input-guard.intent.downgraded', panel: 'intent' },
+  // §7.175 (2026-11-11): `input-guard.intent.downgraded` 退役（路由改写
+  // 机制整体撤掉），取代它的是 `input-guard.intent.local` —— 本轮判定为
+  // LOCAL 时记下的**实际用的** provider/model。它是意图裁决的一环 ⇒ 进
+  // intent 面板（此前 `intent.downgraded` 也在这一档）。
+  { match: k => k.startsWith('intent.') || k === 'input-guard.intent.local', panel: 'intent' },
   {
     match: k =>
       k === 'http.chat.route'

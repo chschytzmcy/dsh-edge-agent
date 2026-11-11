@@ -202,19 +202,25 @@ describe('flow panel — §7.121 raw judgment data', () => {
     assert.ok(out.includes('[EMAIL_2]'), `placeholder missing: ${out}`)
   })
 
-  it('routing: shows the machine reason code next to the translated reason', () => {
+  it('routing: names the model the turn actually used (§7.175)', () => {
+    // §7.175 (2026-11-11): 路由改写机制退役 —— `input-guard.route.overridden`
+    // 不再产生，面板也没有「从 → 到」的改写证据行可显示了。
+    // 取而代之的是 `input-guard.intent.local`：判定 LOCAL 时记下的**实际
+    // 用的** provider/model。路由节点必须显示它 —— operator 要能一眼看出
+    // 这一轮到底走了哪个模型。
     const rows = [
       row('input-guard.routed', { category: 'LOCAL', edgeRouteUsed: false, routeSource: 'webui' }, 'interception'),
-      row('input-guard.route.overridden', {
-        from: { provider: 'qwen-token-plan-cn', model: 'qwen3.8-flash' },
-        to: { provider: 'local-llm', model: 'MiniMax-M3.1-Flash' },
+      row('input-guard.intent.local', {
+        category: 'LOCAL',
         reason: 'intent-local',
-      }, 'interception'),
+        routeSource: 'webui',
+        provider: 'local-llm',
+        model: 'MiniMax-M3.1-Flash',
+      }, 'intent'),
     ]
     const out = render(rows)
-    assert.ok(out.includes('意图判定为本地'), `translated reason missing: ${out}`)
-    assert.ok(out.includes('机器码'), `code label missing: ${out}`)
-    assert.ok(out.includes('intent-local'), `machine code missing: ${out}`)
+    assert.ok(out.includes('local-llm/MiniMax-M3.1-Flash'), `model in use missing: ${out}`)
+    assert.ok(out.includes('LOCAL'), `category missing: ${out}`)
   })
 
   it('threat watch: reports how many signals were inspected when calm', () => {

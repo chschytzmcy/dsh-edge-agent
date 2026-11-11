@@ -48,9 +48,12 @@ export const DEFAULT_SESSIONS = join(homedir(), '.dsh', 'sessions')
 const CAPABILITY_EVENTS = {
   'input-guard.routed': '意图落地 / Realm 登记',
   'input-guard.session-realm.registered': 'Realm 登记',
-  'input-guard.route.overridden': '路由改写（宿主模型 → 本项目路由）',
-  'input-guard.intent.downgraded': '意图降级（云 → 本地）',
-  'input-guard.selection.restored': '路由还原',
+  // §7.175 (2026-11-11): 路由改写机制退役 —— `route.overridden` /
+  // `intent.downgraded` / `selection.restored` 三者都不再产生。取代它们
+  // 的是 `intent.local`（判定 LOCAL 时实际用的模型）与
+  // `blocked.model-selection`（判定 LOCAL 却选了云端 ⇒ fail-closed 拒收）。
+  'input-guard.intent.local': '意图判定为本地（实际用的模型）',
+  'input-guard.blocked.model-selection': '本地闸门拒收（选了云端模型）',
   'input-guard.blocked.attack': '攻击拦截',
   'input-guard.blocked.policy': '策略拦截',
   'input-guard.sanitized': 'PII 脱敏生效',

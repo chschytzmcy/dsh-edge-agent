@@ -127,7 +127,7 @@ export DSH_EDGE_LOG_ROOT="$DSH_HOME/log"
 启动成功时 audit 里会有：
 
 ```text
-input-guard.hook.registered      (agent/pre-step, llm/stream, agent/request)
+input-guard.hook.registered      (agent/pre-step, llm/stream, agent/request, agent/created)
 external.hook.registered
 http.started                      { host, port }
 ```
@@ -573,6 +573,77 @@ npm run build:tarball                   # 编译 + 打包 + 门禁 → dist/dsh-
 
 完整指南（含宿主链路、产物字段、门禁与排障）见
 [`deploy-tarball.md`](deploy-tarball.md)。
+
+### 8.10 §7.175：包名（scope）改名后，已部署 profile 必须同步的 4 处
+
+> 2026-11-11 实测：本仓的包名从 `@deepseek-harness-edge-agent/dsh-edge-agent`
+> 改成 **`@dsh-edge/dsh-edge-agent`**（scope 迁到 npm 组织 `@dsh-edge`）。
+>
+> **代码改完 ≠ 装好了。** 已部署的 profile 里有 **4 处**写着包名，
+> 漏改任何一处，宿主都不会挂载这个 bundle —— 而且四种症状各不相同，
+> 没有一种会直说「包名变了」。
+
+| # | 文件 | 字段 | 漏改的症状 |
+|---|---|---|---|
+| 1 | `<profile>/package.json` | `dependencies["@dsh-edge/dsh-edge-agent"]` | 宿主解析不到这个依赖 → 插件整体不加载，profile 起来了但没这个插件 |
+| 2 | `<profile>/package.json` | `dsh.profile.bundles[]` | 依赖在、bundle 不在 bundles 列表 → 隐私栈**一行都不挂**（最容易误判成「插件装了但没生效」） |
+| 3 | `<profile>/pnpm-lock.yaml` | `importers['.'].dependencies['@dsh-edge/dsh-edge-agent']` | lockfile 与 package.json 打架 → `pnpm install` 报 "Already up to date"，但装的是旧代码 |
+| 4 | `<profile>/pnpm-workspace.yaml` | `allowBuilds` 白名单 | 将来走 git 源安装时 pnpm 拒跑构建脚本 → 装上了但半残 |
+
+**第 4 处的键不是单纯包名** —— 是 `<包名>@<source>` 的全量形式，git 源要写两条（http + ssh）：
+
+```yaml
+nodeLinker: hoisted
+autoInstallPeers: false
+allowBuilds:
+  "@dsh-edge/dsh-edge-agent@git+https://github.com/chschytzmcy/dsh-edge-agent.git": true
+  "@dsh-edge/dsh-edge-agent@git+ssh://git@github.com/chschytzmcy/dsh-edge-agent.git": true
+```
+
+#### 改名时的完整动作（按这个顺序）
+
+1. **先把旧 scope 的目录挪走** —— pnpm 不会自己清理同位置的旧包，
+   留着会和新包同时出现在 `node_modules/` 里：
+
+   ```bash
+   mv ~/.dsh/profiles/<profile>/node_modules/@deepseek-harness-edge-agent \
+      ~/.dsh/profiles/<profile>/node_modules/@deepseek-harness-edge-agent.old-<ts>
+   ```
+
+2. 改第 1、2 处（同一个 `package.json` 里的两个字段）。
+3. **重建 lockfile** —— pnpm 会自己改写第 3 处，离线即可，不需要联网：
+
+   ```bash
+   cd ~/.dsh/profiles/<profile> && pnpm install --offline
+   ```
+
+4. 改第 4 处（`pnpm-workspace.yaml`）。
+5. **核对装的是新产物**（sha256 与仓库产物逐字一致）：
+
+   ```bash
+   shasum -a 256 ~/.dsh/profiles/<profile>/node_modules/@dsh-edge/dsh-edge-agent/lib/client.js \
+     <repo>/dist/installable/dsh-edge-agent-desktop-safe/lib/client.js
+   ```
+
+6. **扫旧 scope 残留**（期望 0 命中）：
+
+   ```bash
+   grep -rn "deepseek-harness-edge-agent" ~/.dsh/profiles \
+     --include=*.json --include=*.yaml --include=*.yml
+   ```
+
+#### 两个 profile 的差异
+
+| | 桌面 profile | headless profile |
+|---|---|---|
+| 路径 | `~/.dsh/profiles/desktop` | `~/.dsh/profiles/dsh-edge-agent` |
+| node_modules 布局 | `nodeLinker: hoisted` | pnpm isolated（`node_modules/.pnpm/`） |
+| bundles 列表 | base / web-app / dsh-context / 本包 | base / 本包 |
+| 额外要同步 | —— | profile 自己的 `cordis.patch.yml` overlay 也要同步包名 |
+
+> **回滚点**：改名动过的每个 profile 都留一份
+> `package.json.bak-<ts>` / `pnpm-lock.yaml.bak-<ts>`，
+> 以及第 1 步移开的旧目录本身 —— 它就是旧版的完整副本。
 
 ## 9. 验证安装
 

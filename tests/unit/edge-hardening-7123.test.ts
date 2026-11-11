@@ -94,17 +94,15 @@ function multiTurnPayload() {
       { role: 'user', content: '再确认一下 bob@example.com 能不能收到' },
     ],
     step: 2,
+    // §7.175: 宿主给本轮选的模型（payload 顶层）。缺它 ⇒ fail-closed 拒收。
+    modelSelection: { provider: 'local-llm', model: 'qwen3-4b-instruct-2507' },
   }
 }
 
 describe('§7.123 — input-guard sanitizes EVERY user message', () => {
-  // The §7.100 cloud-availability probe runs BEFORE the sanitize step and
-  // downgrades a CLOUD verdict to LOCAL when the cloud pool is unreachable —
-  // and the sanitize step only runs on the CLOUD/SANITIZED path. The fake
-  // ctx has no live llm registry, so the probe falls back to the §7.35
-  // credential check: a DEEPSEEK_API_KEY must be present for the turn to
-  // stay on the cloud path. Set it explicitly so the test does not depend
-  // on ambient environment state (§7.117).
+  // §7.175: 「云端不可用 → 降级 LOCAL」这条路径退役了（input-guard 不再改写
+  // 路由，也不再探云池），脱敏步骤按意图分类照常跑。这里保留 key 的设置
+  // 只是为了让 fixture 与环境无关，不影响行为。
   const KEY = 'DEEPSEEK_API_KEY'
   let saved: string | undefined
 

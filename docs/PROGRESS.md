@@ -18365,3 +18365,284 @@ headless 侧稳定落盘。
 - ✅ 两处 preset 对齐宿主的改动已落码、已实机验证；
 - ❌ **轮次仍会失败**（断链③），按主人裁决另做「底座」；
 - ❌ armed 行在桌面侧不稳定（第四节，根因未定位）。
+
+---
+
+## §7.178 收尾：产物一致性、临时脚本清理与两处凭据残留（2026-11-11）
+
+### 一、桌面 App 占用 installable ⇒ 重建走 in-place（会打断桌面 profile 的链接）
+
+`npm run build:installable` 重建 `dist/installable/dsh-edge-agent-desktop-safe` 时，
+**桌面 App 正在运行**会锁住该目录 ⇒ 脚本降级为 **in-place 同步**（不换目录 inode），
+并在末尾告警：
+
+```
+warning: dsh-edge-agent-desktop-safe is locked (running desktop App?) — in-place sync instead of atomic swap
+WARNING: profile "desktop" holds @dsh-edge/dsh-edge-agent.old-20261111005709 under
+         node_modules/.ignored/ — pnpm saw the link break and set the package aside.
+```
+
+⇒ 桌面 profile 的 pnpm 在链接断裂时把旧副本**挪进 `node_modules/.ignored/`**。
+实测结论：**活动链接没坏**（`node_modules/@dsh-edge/dsh-edge-agent` 仍指向
+`dist/installable/dsh-edge-agent-desktop-safe`，profile 的 `package.json` 依赖声明
+也在），被挪走的是**历史副本**。
+
+**正确做法**：先按 PID 停桌面 App ⇒ 重建（此时走原子 swap，不再 in-place）⇒ 再起桌面。
+本轮按此顺序做完，重启后实测：审计链里**只有一套** input-guard 钩子、preset 名册
+`edge｜可组合`、新建边缘模式会话 `input-guard.model.defaulted`（local-llm /
+qwen3.8-flash / source=local-pool）。
+
+### 二、`.ignored/` 里的搁置副本带着**明文凭据**
+
+被挪进 `node_modules/.ignored/` 的旧 scope 副本
+（`@deepseek-harness-edge-agent.old-20261110132654/dsh-edge-agent`）里含
+`config/edge.json`，**6 个明文 key 全在**（edgeApiKey / deepseekApiKey /
+dashscopeApiKey / alitokenplanApiKey / tavilyApiKey / bochaApiKey）。
+
+它们**不参与装载**（名字解析不到、目录名带 `.old-` 后缀、`.ignored` 以点开头），
+但属于凭据的额外落盘副本 ⇒ 应清。
+
+### 三、本轮清理
+
+- ✅ 仓库内 **77 个** `.tmp-*` 临时探针脚本全部删除（`rm --`，逐条列明目标）。
+  这些是查宿主 asar / 铸 cookie / 探 preset / 重建调用链用的一次性脚本，
+  不留档（查到的结论已写进 §7.175-§7.177 与源码注释）。
+- ⛔ **工作区外**的三处删除**做不了**：本机 `rm` 的受信任执行器只接受工作区内的
+  目标，对工作区外路径直接拒（`Windows trash execution rejected a target outside
+  the workspace`）。**不绕过**（不换 `Remove-Item`、不写内联脚本）—— 改为列出精确
+  路径交主人执行（见本节末尾）。
+
+### 四、要主人手动清理的三处（含凭据）
+
+| 路径 | 为什么该删 |
+|---|---|
+| `C:\Users\cheng\.dsh\profiles\desktop\node_modules\.ignored\@deepseek-harness-edge-agent.old-20261110132654` | 旧 scope 的搁置副本，**含 6 个明文 key** |
+| `C:\Users\cheng\.dsh\profiles\desktop\node_modules\.ignored\@dsh-edge\dsh-edge-agent.old-20261111005709` | 同一包的旧副本，无凭据但占空间、容易误认成「在用的那份」 |
+| `C:\Users\cheng\.dsh-edge-agent\desktop-cookies.json` | 本轮探针导出的**宿主鉴权 cookie**（可直接复用宿主会话） |
+
+另有 `C:\Users\cheng\.dsh-edge-agent\edge.json.bak-20261030T025751`
+（10-30 的配置备份，含旧凭据）—— 待主人定：留作回滚还是一并清掉。
+
+### 五、本轮最终状态
+
+- ✅ safe 变体（桌面 / npm 常态）复核通过，构建链 + **25 道门禁全绿**（exit 0）；
+- ✅ §7.175 / §7.176 已写进 PROGRESS，README / CHANGELOG / architecture /
+  plugin-mount-points / privacy-policy / load-into-local-dsh 的**过时表述已改正**
+  （原文写「`agent/request` 把 provider/model 改写到 LOCAL」，与现在的代码相反）；
+- ⏸ full 变体（`:21017` + `POST /v1/chat`）本轮不验证（主人改口径）；
+- ⏸ npm 首次发布 `@dsh-edge/dsh-edge-agent@0.1.1` 待主人授权 commit/push。
+
+
+---
+
+## §7.175 退役 `agent/request` 的路由改写，改成 `agent/pre-step` 的 fail-closed 闸门（2026-11-11）
+
+### 〇、这一节解决什么
+
+§7.174 的断链③留下的坑：宿主 `dsh-agent-loop@0.2.2-rc.1` 起，**路由只由会话级
+`modelSelection` 决定**，`agent/request` 里改写 provider / model 会被
+`prepareRequest()` 判非法并**抛错**（lib/index.js:1000-1001）。而我们的
+§7.46 起那套「LOCAL 轮在 `agent/request` 里把路由改写成 local-llm」正好撞在这条校验上
+⇒ 那一轮直接失败。
+
+主人裁决（2026-11-10）：**边缘模式恒用本地模型**，路由由**会话级选择**给定，
+不用逐轮改写。2026-11-11 补充裁决：**用哪个模型是用户自己的行为，别管** ——
+闸门只拦「本该留在设备、却可能被送出去」的那一种。
+
+### 一、改了什么（`src/dsh-adapter/input-guard.ts`）
+
+1. **退役改写**：`handleAgentRequest()` 现在只 `return seedConfig`（一个字节都不改）。
+   监听器本身**保留**（`agent/request` 仍注册），为的是把「不改路由」这条契约钉死在
+   代码里 —— 它现在是一条可被 review 的断言，而不是一段被删掉的记忆。
+2. **新闸门**：`handlePreStep()` 在意图分类之后加一段 fail-closed 判定（源码 L1408-1445）：
+
+   | 本轮判定 | 会话级 modelSelection | 结果 |
+   |---|---|---|
+   | `LOCAL` | provider **等于**本地 provider | 放行 |
+   | `LOCAL` | provider **不等于**本地 provider | **reject**（`reason=model-selection-not-local`） |
+   | `LOCAL` | 取不到 modelSelection | **reject**（`reason=model-selection-missing`） |
+   | `CLOUD` | 任意 | 放行（用哪个模型是用户自己的行为） |
+
+   命中即 reject（**绝不「放行到云端再说」**），并把原因挂到 `agent._edgeRejection`
+   （`attachRejection`）—— agent-loop 翻译成 blocked 时会丢掉 reason 字符串，
+   http-api 只能靠这张小抄拿到原因。
+
+3. **本地路由缺失也 fail-closed**：宿主选了本地 provider、但本地路由没注册时，
+   这一轮必然失败。此时既不能改路由（宿主抛错），也不能放行到云端 ⇒
+   明确报错 + 可操作的配置指引（审计 `input-guard.local.route-missing`）。
+
+4. **退役 §7.106 的「降级后恢复 GUI 模型选择」监听器** —— 它恢复的是「被改写掉的原
+   路由」，而改写本身已经不存在了：路由恒由宿主的 modelSelection 决定，GUI 显示的
+   就是用户真正选中的那个。
+
+5. **脱敏失败语义随之改写**：`downgradeOnSanitizeFailure` 不再表示「降级路由」，
+   只表示「脱敏失败要不要拦下这一轮」（true=放行、原始 PII 留本地；false=REJECT）。
+
+### 二、连带清理（避免留下与实际行为相反的陈述）
+
+- `src/client/flowPanel.tsx`、`src/dsh-adapter/edge-context-view.ts`、
+  `scripts/probe-session-audit.mjs`：退役事件的引用；
+- `src/client/i18n.ts`：清 7 条孤儿 i18n key（en + zh）；
+- `tests/unit/input-guard-selection-restore.test.ts`：**删除**（测的就是被退役的恢复逻辑）；
+- 其余三份 input-guard 测试改写到新口径；
+- 文档：`docs/architecture.md`（3 处）、`docs/plugin-mount-points.md`（2 处）、
+  `docs/privacy-policy.md`（2 处）、`docs/load-into-local-dsh.md`（1 处）
+  —— 原文写的是「`agent/request` 把 provider/model 改写到 LOCAL」，现在这句话与代码
+  相反，全部改正。
+
+### 三、验证
+
+- `npx tsc -p tsconfig.json --noEmit` ⇒ EXIT=0；
+- `npx vitest run tests/unit` ⇒ **75 files / 1546 passed / 2 skipped**；
+- `npm run build`（compile → typecheck:client → build:client → build:installable →
+  pack:tarball → verify:build，25 道门禁）⇒ 全绿（exit 0）。
+
+---
+
+## §7.176 边缘模式的会话默认模型：由 preset 内的 input-guard 用宿主合规入口给出（2026-11-11）
+
+### 〇、为什么不能用 §7.174 裁决里的「preset 级 `agent-default-model` 行」
+
+§7.174 的裁决写的是「本地模型默认值由 preset 级 `agent-default-model` 行给出」。
+**实测这条路走不通**（桌面 App 日志，2026-11-11 10:24 / 10:26，两次启动一致）：
+
+```
+WARN [agent-preset-registry] agent preset edge:
+  agent-default-model (@deepseek-ai/dsh-agent-default-model):
+  service "agentDefaultModel" has been registered at <AgentDefaultModelConfig>
+```
+
+⇒ 加了这一行，**整个边缘模式 preset 挂载失败**（设置页那张卡显示「加载失败」）。
+
+**根因**：宿主 `dsh-base/cordis.patch.yml` L90-94 已经在 **host scope** 声明了同一个
+插件；该插件用 `super(ownerContext, "agentDefaultModel")` 注册 cordis service，
+而这个 service 名**跨 scope 唯一** ⇒ preset scope 再声明一次 ⇒ 撞名。
+
+> ⚠️ 此前写进 preset 注释里的理由（「service 注册在插件所在 scope，scope 查找就近 ⇒
+> preset 内就近拿到这一行、遮蔽 host scope 的全局默认」）是**推断，实测证伪** ——
+> 真正的读取方是 host scope 的那份（`dsh-api-session-controller` 的 `agentOptions()`
+> 读 `this.ctx.agentDefaultModel`），preset scope 里那份即使不撞名也**没有读者**。
+> 这一条已写进 preset 文件的注释，避免下一个人再按错误理由加回那一行。
+
+### 一、宿主契约（源码实证）
+
+| 事实 | 位置 |
+|---|---|
+| `preStep()` **先**取 `const selection = this.model.current()`，再跑 waterfall ⇒ waterfall 里改选型对当轮无效 | `dsh-agent-loop` L671 |
+| `prepareRequest()` 比对 provider / model / effort，与本轮 selection 不符即抛错 | 同上 L1000-1001 |
+| `AgentModel.current()` = `recordedSelection()`（pending ?? lastUsed）?? `options`；`options` = 建 agent 时的 agentOptions | `dsh-agent/lib/types/model-selection.js` |
+| `AgentModel.select()` 写**会话级** `model/selection` 事件 | 同上 |
+| 宿主自己的 `applyConfiguredRoute()` 就是用 `agent.model.select()` 写选择 ⇒ **合规入口** | `dsh-agent-loop` L1380-1391 |
+| `sessionController.selectModel()` 会顺手 `agentDefaultModel.saveSelection()` ⇒ 改**宿主全局默认**，波及同 profile 的标准模式 ⇒ **不用它** | `dsh-api-session-controller` |
+
+### 二、为什么「用户自己纠正」这条路也堵着
+
+- 桌面 GUI 建的 agent，其 agentOptions 来自 **host scope** 的 `agentDefaultModel`
+  （宿主自带云端模型）⇒ 边缘模式默认会跑云端；
+- `local-llm` 在模型目录里**隐身**（§7.106 Option A：它是管线内部件，不是用户可选项，
+  `listModels` 恒空）⇒ **GUI 里选不到它**，用户没法手动纠正。
+
+⇒ 只能由 preset 侧把会话选择钉成 local-llm。
+
+### 三、实现（`src/dsh-adapter/input-guard.ts`）
+
+1. 新增导出纯函数 `resolveEdgeDefaultSelection(localProvider, localModel, hostModel, delegate)`：
+
+   | 模式 | 钉的 model | 审计里的 `source` |
+   |---|---|---|
+   | 直连（配了 `llm.local.baseUrl`） | 本地池自己的 model id | `local-pool` |
+   | DELEGATE（没配端点，§7.171） | **宿主当前选的模型 id** | `host-delegate` |
+
+   DELEGATE 模式下 wire 上真正跑的就是宿主那个模型 ⇒ 这里用宿主那个 id，
+   **不写一个跟实际不符的名字**（面板上显示的就是真名）。
+
+2. 新增导出纯函数 `shouldProvisionEdgeModel(recorded, options)`：**显式选择优先** ——
+   recorded 与 agentOptions 不一致 ⇒ 用户（或子 agent 的调用方）明确选过 ⇒ 不动它。
+   「与 agentOptions 相同」不算显式选择（那是宿主把 agentOptions 回显成
+   `model/selection` 的结果）。
+
+3. `handleAgentCreated(payload)`：读 `payload.agent.model`（宿主 setup 与 announce
+   共用同一对象）→ 判显式选择 → `localAvailable()` 判路由存在（kill switch 时**不钉**，
+   交给 §7.175 的闸门报错）→ `model.select({provider, model})`；审计
+   `input-guard.model.defaulted` / `.default-skipped` / `.default-failed`。
+   **任何异常全吞**（`agent/created` 的监听器抛错会让**整个 agent 创建失败** ——
+   宿主 dsh-agent 的 announce()：listener failure rejects）。
+
+4. `apply()` 里注册 `agent/created` 监听器：**scope 绑定、不带 `{ global: true }`**。
+   事件由宿主 dsh-agent 的 `announce()` 派发，载体是 `scopeTarget(agent, agent)`
+   （agent 自己的 scope key）；作用域过滤规则（`dsh-scope#scopeTarget`）：「监听器自己的
+   scope tag 必须是派发 scope 或其**祖先**」⇒ 绑到边缘模式的 agent 会触发，绑到标准模式
+   的不会 ⇒ **标准模式仍是纯宿主**。
+
+5. 新增测试 `tests/unit/input-guard-edge-model.test.ts`（17 例：纯函数 8 +
+   handleAgentCreated 6 + apply 接线 3）。
+
+### 四、实测证据（桌面 App，当前构建）
+
+| 场景 | 审计链 |
+|---|---|
+| 自动恢复的会话（已有显式 local-llm 选择） | `input-guard.model.default-skipped {reason:"explicit-selection", provider:"local-llm", model:"qwen3.8-flash"}` |
+| 宿主 RPC 新建的边缘模式会话（`agentPreset=edge`） | `input-guard.model.defaulted {provider:"local-llm", model:"qwen3.8-flash", source:"local-pool", delegate:false}` |
+
+preset 名册：`edge（边缘模式）｜ order 5 ｜ 可组合`（**不 broken**）。
+
+### 五、npm 包的口径（主人裁决 2026-11-11）
+
+**npm 包里不会带本地模型配置**（`config/edge.json` 被 `files` 白名单排除）⇒
+`local-llm` 走 DELEGATE（§7.171）转发宿主 provider ⇒ **装上就能用**（先用 dsh 自带的
+云端模型），而 provider 身份仍是 `local-llm` ⇒ §7.175 的 fail-closed 闸门照样放行。
+
+---
+
+## §7.177 safe 变体复核 + full 变体 `:21017` 未监听的真因（2026-11-11）
+
+### 〇、本节起因
+
+主人指令：「修复 headless profile 与 full preset 的重复注册，让 `:21017` 启动并完成一轮
+`POST /v1/chat` 实测」，随后改口径：「**先不验证 full 模式，重点关注 safe**」。
+本节记两件事：① safe 变体的复核结论；② full 变体 `:21017` 未监听的**真因**
+（不是我们 bundle 的重复注册问题）。
+
+### 一、safe 变体复核（桌面 App，当前构建，12:08 重启）
+
+| 检查项 | 结果 |
+|---|---|
+| 启动日志里的重复注册 | **无** —— 10:24 那批 `already registered`（local-llm / tavily-bocha / agentDefaultModel）**不复现** |
+| preset 挂载 | **无 pending / did not activate / broken** |
+| 审计链里的 hook 注册 | 只有**一套**（`agent/pre-step` / `llm/stream` / `agent/request` / `agent/created` 各一次）⇒ 无重复挂载 |
+| preset 名册 | `edge（边缘模式）｜ order 5 ｜ 可组合` |
+| 新建边缘模式会话 | `input-guard.model.defaulted {provider:"local-llm", model:"qwen3.8-flash", source:"local-pool"}` |
+
+**为什么不再重复**：桌面 profile 的 host-tree overlay 里，`agent-default-model` 是
+**config 覆盖**（`- id: agent-default-model` + `config:`，覆盖宿主已有行的配置），
+**不是新行** ⇒ 不构成第二次 `provide('agentDefaultModel')`。safe bundle 往宿主树只插
+**4 行**（`dsh-edge-agent` 裸包名 / `file-logger` / `audit-log` / `desktop-cookie-janitor`），
+其余全在 preset 的隔离 realm 里。旧 scope 的残留
+（`node_modules/@deepseek-harness-edge-agent.old-20261110132654`）已被 pnpm 挪进
+`.ignored/` 且是空目录 ⇒ 不参与装载。
+
+### 二、full 变体 `:21017` 未监听的真因（在宿主 CLI 这一侧）
+
+实测路径：`dsh-desktop-host/lib/cli.js --profile dsh-edge-agent` 启动 headless ⇒
+
+- **宿主子进程的命令行里的 profile 目录是 `~/.dsh/profiles/desktop`**（不是
+  `dsh-edge-agent`）；命令形状与桌面 App 自己拉起的 host 一模一样；
+- 桌面 profile 的 `cordis.yml` 被**重写**（`prepareProfile` 会写根配置）；
+- 审计链 `config.loaded` 的 `path` 指向
+  `dist/installable/dsh-edge-agent-desktop-safe/config/edge.json`
+  —— 那是**桌面 profile 的 link 目标**，不是 headless profile 装的那份 full。
+
+⇒ 那次 headless 启动**实际跑的是桌面 profile**：加载的是 desktop-safe bundle
+（不含 `http-api` 行）⇒ `:21017` 从未监听。**不是重复注册**，也不是我们的 patch
+互相撞名。（宿主为什么把 `--profile` 落到 desktop profile —— 内部原因未定位；
+本节只记录可复核的外部事实。）
+
+### 三、这一节的状态
+
+- ✅ safe 变体（桌面 / npm 常态）复核通过：干净启动、preset 可组合、边缘模式会话
+  真被钉到 local-llm；
+- ⏸ full 变体（自带 `:21017` 的独立 profile）**本轮不验证**（主人改口径），
+  `:21017` 与 `POST /v1/chat` 实测顺延；
+- 📌 宿主 `session/prompt` 的 strict codec 形状仍未解（8 种写法全被
+  `gateway/input-invalid: wire field "request" failed boundary validation` 拒）⇒
+  无法用宿主 RPC 跑活体对话。

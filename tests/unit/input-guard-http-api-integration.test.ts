@@ -33,6 +33,9 @@ import type { Config as GuardConfig } from '../../src/dsh-adapter/input-guard.ts
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
+/** §7.175: 边缘模式恒用本地模型 —— modelRouter 解析到的 provider。*/
+let routeProvider = 'local-llm'
+
 function mockReq(body: any, urlPath = '/v1/chat', headers: Record<string, string> = {}): any {
   const ee = new EventEmitter()
   ;(ee as any).method = 'POST'
@@ -134,6 +137,23 @@ function makeCordisCtx() {
     },
     reflect: { provide: () => () => {} },
     provide: () => () => {},
+    /**
+     * §7.175: 边缘模式恒用本地模型 —— modelRouter 把任何请求都解析到本地池
+     * （preset 的 agent-default-model 钉的就是 local-llm）。测试可以把它切到
+     * 云端，用来验证 input-guard 的 fail-closed 闸门。
+     */
+    get(name: string) {
+      if (name === 'modelRouter') {
+        return {
+          resolve: (_p: string) => ({
+            provider: routeProvider,
+            model: routeProvider === 'local-llm' ? 'qwen3-4b-instruct-2507' : 'deepseek-chat',
+          }),
+          isAvailable: () => true,
+        }
+      }
+      throw new Error(`no service ${name}`)
+    },
     /**
      * Waterfall: each handler is called (payload, ...args, next). When a
      * handler calls `next()`, it should advance to the next handler (or the
@@ -237,7 +257,9 @@ describe('input-guard ↔ http-api integration', () => {
   let intentRouter: any
 
   beforeEach(() => {
-    // §7.35 (2026-09-03): 默认设 DEEPSEEK_API_KEY，避免被"缺 key 降级 LOCAL"短路
+    // §7.175: 边缘模式恒用本地模型（preset 的 agent-default-model 钉住
+    // local-llm），modelRouter 把任何解析都落到本地池。
+    routeProvider = 'local-llm'
     process.env.DEEPSEEK_API_KEY = 'sk-test-integration-default'
     ctx = makeCordisCtx()
     audit = { entries: [], log: async (e: any) => { audit.entries.push(e) } }
@@ -271,13 +293,18 @@ describe('input-guard ↔ http-api integration', () => {
         const followup = async (msg: any) => {
           // Phase 1: pre-step — input-guard sanitizes the user message
           const preStepPayload = {
-            agent: {
-              id: sessionId,
-              session,
-              _edgeRoute: handle.agent._edgeRoute,
-            },
+            // 宿主里 payload.agent 就是 agent 本体（fused wrapper 注入），
+            // 所以 input-guard 挂的 _edgeRejection 落在 http-api 读的那个对象上。
+            agent: handle.agent,
             messages: [...session.events.filter((e: any) => e.type === 'user/message').map((e: any) => e.data), msg],
             step: 1,
+            // §7.175: 宿主给本轮选的模型 —— payload **顶层**的 modelSelection。
+            // 宿主里它就是 agents.create() 传下来的 provider/model（agent-loop 的
+            // `this.model.current()`），所以这里跟 agentOptions 保持一致。
+            modelSelection: {
+              provider: agentOptions.provider,
+              model: agentOptions.model,
+            },
           }
           let decision: any
           try {
@@ -458,9 +485,9 @@ describe('input-guard ↔ http-api integration', () => {
     assert.equal(parsed.result, '收到：读本地文件 13812345678')
   })
 
-  // ── downgrade path ──────────────────────────────────────────────────────
+  // ── sanitize failure path ────────────────────────────────────────────────
 
-  it('sanitize 抛错 → 通过 agent/request 降级到 LOCAL（user 仍得到响应）', async () => {
+  it('sanitize 抛错 → 本轮放行（§7.175：不再有「降级」，路由恒为本地）', async () => {
     // Force sanitizer to throw
     sanitizer.api.sanitize = async () => { throw new Error('sanitize-boom') }
 
@@ -473,28 +500,79 @@ describe('input-guard ↔ http-api integration', () => {
     assert.equal(cap.status, 200, '应返回 200（不是 reject）')
     const parsed = JSON.parse(cap.body)
 
-    // agents.create 收到的仍是原始 CLOUD route（http-api 不感知降级）
+    // agents.create 拿到的是边缘模式的本地路由
     assert.equal(agentsCreateCalls.length, 1)
-    assert.equal(agentsCreateCalls[0].agentOptions.provider, 'cloud-llm')
+    assert.equal(agentsCreateCalls[0].agentOptions.provider, 'local-llm')
 
-    // 但 LLM 实际调用用的是 agent/request waterfall 的 result（input-guard 已改写为 LOCAL）
+    // agent/request **不改写**路由 —— 它拿到什么就是什么
     assert.equal(llmCallLog.length, 1)
-    assert.equal(llmCallLog[0].route.provider, 'local-llm',
-      'agent/request 把 route 改写到 LOCAL provider')
+    assert.equal(llmCallLog[0].route.provider, 'local-llm')
     assert.equal(llmCallLog[0].route.model, 'qwen3-4b-instruct-2507')
 
-    // LLM 收到原文（不脱敏，LOCAL 不上云）
+    // LLM 收到原文（不脱敏，本轮走本地模型）
     const sentText = llmCallLog[0].messages[0].content[0].text
-    assert.equal(sentText, 'alice@example.com', 'LOCAL 路径原文透传')
+    assert.equal(sentText, 'alice@example.com', '本地路径原文透传')
 
-    // 审计：sanitize.failed + sanitize.downgraded + route.overridden
+    // 审计：sanitize.failed 仍在；「.downgraded」/route.overridden 退役
     const kinds = audit.entries.map((e: any) => e.kind)
     assert.ok(kinds.includes('input-guard.sanitize.failed'))
-    assert.ok(kinds.includes('input-guard.sanitize.downgraded'))
-    assert.ok(kinds.includes('input-guard.route.overridden'))
+    assert.ok(!kinds.includes('input-guard.sanitize.downgraded'))
+    assert.ok(!kinds.includes('input-guard.route.overridden'))
 
     // user 仍得到响应（不是空 result）
-    assert.ok(parsed.result.length > 0, '降级后 user 仍得到非空响应')
+    assert.ok(parsed.result.length > 0, '放行后 user 仍得到非空响应')
+  })
+
+  it('§7.175: 判定 LOCAL 但宿主选了云端模型 ⇒ 403 fail-closed（绝不放行到云端）', async () => {
+    // §7.175 (2026-11-11) 主人口径：「用哪个模型是用户自己的行为，不用管」
+    // ⇒ 闸门**只在判定为 LOCAL 时**生效：这一轮按端侧策略必须留在设备上，
+    // 而宿主选中的 provider 不是本地 provider ⇒ 原文会被带出设备 ⇒ 拒收。
+    //
+    // 这里的场景：intent 判成 LOCAL，但 modelRouter 把这一轮解析到了
+    // cloud-llm（宿主/GUI 侧选了云端模型）。这是唯一需要 fail-closed 的组合。
+    intentRouter.classify = async () => ({
+      category: 'LOCAL', confidence: 0.95, targetRealm: 'local', rationale: 'classified:local',
+    })
+    routeProvider = 'cloud-llm'
+
+    const { svc, llmCallLog } = buildHttpApi()
+    const req = mockReq({ message: '读本地文件' })
+    const { res, cap } = mockRes()
+
+    await (svc as any).handleRequest(req, res)
+
+    assert.equal(cap.status, 403, '判定 LOCAL 却选了云端模型 ⇒ 必须被拒收')
+    const parsed = JSON.parse(cap.body)
+    assert.equal(parsed.error, 'Request rejected')
+    assert.equal(parsed.rejection.reason, 'model-selection-not-local')
+    assert.equal(parsed.rejection.status, 403)
+    assert.equal(llmCallLog.length, 0, '被拒的轮次不得发出 LLM 调用')
+
+    const blocked = audit.entries.find((e: any) => e.kind === 'input-guard.blocked.model-selection')
+    assert.ok(blocked, '必须留下 blocked.model-selection 审计')
+    assert.equal(blocked.payload.provider, 'cloud-llm')
+  })
+
+  it('§7.175: 判定 CLOUD + 宿主选云端模型 ⇒ 放行（不拦用户的模型选择）', async () => {
+    // 反向组合：这一轮判定要出网，宿主选的就是云端模型 ⇒ input-guard 不拦。
+    // 出口由 §7.131 的历史裁剪管（不是本地历史不上云）。
+    intentRouter.classify = async () => ({
+      category: 'CLOUD', confidence: 0.92, targetRealm: 'cloud', rationale: 'classified:cloud',
+    })
+    routeProvider = 'cloud-llm'
+
+    const { svc, llmCallLog } = buildHttpApi()
+    const req = mockReq({ message: '查询英国新闻' })
+    const { res, cap } = mockRes()
+
+    await (svc as any).handleRequest(req, res)
+
+    assert.equal(cap.status, 200, '判定 CLOUD + 云端模型 ⇒ 不该被拦')
+    assert.equal(llmCallLog.length, 1, '正常放行并发出 LLM 调用')
+    assert.ok(
+      !audit.entries.some((e: any) => e.kind === 'input-guard.blocked.model-selection'),
+      'CLOUD 轮次不该留下 blocked.model-selection',
+    )
   })
 
   // ── attack path ─────────────────────────────────────────────────────────

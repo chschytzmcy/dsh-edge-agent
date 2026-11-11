@@ -515,7 +515,7 @@ sanitizer 的映射表存的是**明文 PII**（还原必须用到），因此�
 | Hook | 时机 | 作用域 | 内部动作 | 输出 |
 |---|---|---|---|---|
 | `agent/pre-step` | 每步进入 | 边缘模式 preset 的 scope | 攻击检测 → 策略预检 → 意图分类 → 脱敏 | decision（改写 messages 或 reject） |
-| `agent/request` | 组装 LLM 请求 | 边缘模式 preset 的 scope | 检查降级标记，把 provider/model 改写到 LOCAL | AgentRequestConfig |
+| `agent/request` | 组装 LLM 请求 | 边缘模式 preset 的 scope | §7.175 起**只放行**：seedConfig 原样返回，不改 provider/model | AgentRequestConfig |
 | `llm/stream` | 流式输出 text-delta | 全局 | 脱敏会话还原占位符；未脱敏会话做输出掩码 | 流式 chunk |
 
 前两个是 **scope 绑定**：宿主按 scope 链向上派发，本插件的 scope 在边缘模式 preset 下，
@@ -527,11 +527,19 @@ sanitizer 的映射表存的是**明文 PII**（还原必须用到），因此�
 `WeakMap<Session>`：pre-step 拿到的是 agent 的 session 对象，llm/stream 拿到的是
 请求信封上的 sessionId 字符串，不是同一个引用。
 
-## 5.3 降级语义
+## 5.3 脱敏失败语义
 
-**脱敏失败 → 降级 LOCAL**（`downgradeOnSanitizeFailure`，默认开启）：
-标记 `downgraded`，不阻断 step，原始 PII 原样留在本地，`agent/request` 把路由改写到
-本地模型。此时从一开始就没脱敏，也不存在需要还原的占位符。
+**§7.175 起不再有「降级路由」这回事**：宿主 `dsh-agent-loop@0.2.2-rc.1` 的
+`prepareRequest()` 会把 `agent/request` 返回的配置与本轮固定的 modelSelection
+逐项比对，provider / model / reasoningEffort 任一不同就**直接抛错** ——
+在 `agent/request` 里改路由不是「降级到本地」，是让整轮失败。
+
+现在 `downgradeOnSanitizeFailure`（默认开启）只表示「脱敏失败要不要拦下这一轮」：
+
+- `true`（默认）：放行本轮，messages 原样保留。路由恒为宿主的 modelSelection
+  （边缘模式恒为本地模型，由 `agent/pre-step` 的 fail-closed 闸门保证），原始 PII
+  留在本地模型，不出境；此时从一开始就没脱敏，也不存在需要还原的占位符。
+- `false`：REJECT step，user 看到空 result（保守策略）。
 
 关闭该开关时改为 fail-closed：直接 REJECT step，用户看到空结果。
 

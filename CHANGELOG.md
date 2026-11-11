@@ -39,8 +39,8 @@ Edge tab。装法细节见 [`docs/deploy-github.md`](docs/deploy-github.md) /
 - **意图识别**（intent-router）—— 设备正则 → 决策模型 → LLM 分类器 → 规则层
   四级阶梯，实体护栏与云闸两道后处理闸收口；
 - **脱敏**（sanitizer + pii-utils）—— 10 类 PII，可逆占位符，出网前替换、回程还原；
-- **编排层**（input-guard）—— 挂 `agent/pre-step` / `agent/request` / `llm/stream`
-  三个 hook，谁都绕不过；
+- **编排层**（input-guard）—— 挂 `agent/pre-step` / `agent/request` / `llm/stream` /
+  `agent/created` 四个 hook，谁都绕不过；
 - **Realm 闸门**—— LOCAL/CLOUD realm 分离，skill 与工具按 realm 放行；
 - **威胁总线**（td-bus）—— 云请求速率 / 连续脱敏失败 / 权限拒绝 / 端点失联
   四档阈值，逐级升到 block。
@@ -58,6 +58,22 @@ Edge tab。装法细节见 [`docs/deploy-github.md`](docs/deploy-github.md) /
 出网口径**不对称**（这是裁决，不是 bug）：云池只带「之前上过云的历史」；本地池带
 **全部**历史。出网那一跳由 `host-egress-guard` 兜底裁剪（挂在 `llm/stream`
 waterfall 上）。
+
+### 边缘模式的模型路由（fail-closed）
+
+宿主 0.2.2-rc.1 起，**路由只由会话级 `modelSelection` 决定** —— 在
+`agent/request` 里改写 provider/model 会被宿主的 `prepareRequest()` 判非法并
+抛错。因此本包：
+
+- **边缘模式会话的默认模型**由 preset 内的 input-guard 在 `agent/created` 时
+  用宿主的合规入口 `agent.model.select()` 钉成 `local-llm`（用户明确选过别的
+  就**不插手**）；
+- **fail-closed 闸门**：本轮判定为 LOCAL、而会话选的 provider 不是本地 provider
+  ⇒ **直接拒绝这一轮**（不放行到可能上云的 provider）；判定为 CLOUD ⇒ 放行
+  （用哪个模型是用户自己的行为）。
+
+npm 包**不带** `config/edge.json` ⇒ 没配本地端点时 `local-llm` 走 DELEGATE
+（转发宿主提供商），但 provider 身份仍是 `local-llm` ⇒ 闸门照常放行、装上即用。
 
 ### 配置
 

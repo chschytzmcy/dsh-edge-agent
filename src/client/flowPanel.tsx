@@ -381,15 +381,21 @@ function sanitizeNode(rows: EdgeRow[], category: string | undefined): FlowNode {
 
 function routeNode(rows: EdgeRow[]): FlowNode {
   const routed = latest(rows, r => r.kind === 'input-guard.routed')
-  const overridden = latest(rows, r => r.kind === 'input-guard.route.overridden')
+  // §7.175 (2026-11-11): `input-guard.route.overridden` **退役** ——
+  // 路由改写机制整体撤掉了（宿主的 prepareRequest() 会对被改写的
+  // provider/model 直接抛错），所以面板不再有「从 → 到」的改写证据行。
+  //
+  // 取代它的是两件事：
+  //   · `input-guard.intent.local` —— 本轮判定为 LOCAL 时记下宿主**实际
+  //     选的** provider/model（那就是本轮真正用的模型）。
+  //   · `input-guard.blocked.model-selection` —— 判定 LOCAL 却选了云端模型
+  //     ⇒ fail-closed 拒收（已被下面的 blocked 分支覆盖）。
+  const intentLocal = latest(rows, r => r.kind === 'input-guard.intent.local')
   const blocked = latest(rows, r => /^input-guard\.blocked\./.test(r.kind))
-  const missing = latest(rows, r => /route-missing|cloud-key\.missing|cloud\.unavailable/.test(r.kind))
-  // §7.107: the guard re-announces the rewrite on every answer step, and
-  // those later rows are local→local no-ops. Only a row that actually
-  // CHANGES the model counts — otherwise the panel showed the no-op and
-  // hid the one rewrite that mattered (host model → local model).
-  // The newest CHANGING row wins; a turn with only no-ops has no rewrite.
-  const realOverride = latest(rows, r => r.kind === 'input-guard.route.overridden' && !sameModel(r, 'from', 'to'))
+  // §7.175: `cloud-key.missing` / `cloud.unavailable` 随「云端不可用 → 降级
+  // LOCAL」一起退役（边缘模式恒用本地模型，云池不参与路由判定）。
+  // `route-missing` 还在 —— 那是「本地路由没注册」（§7.171），语义不同。
+  const missing = latest(rows, r => /route-missing/.test(r.kind))
   if (blocked !== undefined) {
     // Evidence = classification metadata ONLY (reason/riskLevel/rationale).
     // The payload's `preview` can carry raw user text (audit stays local);
@@ -410,26 +416,20 @@ function routeNode(rows: EdgeRow[]): FlowNode {
   if (missing !== undefined) return { label: tr('flow.route'), tone: 'warn', detail: tr('flow.route.fallback'), sub: [`${tr('flow.lbl.cause')} ${str(field(missing, 'reason'))}`] }
   if (routed !== undefined) {
     const cat = str(field(routed, 'category'))
-    const forced = realOverride !== undefined && realOverride.ts >= routed.ts - 2000
     const sub: string[] = []
-    if (realOverride !== undefined) {
-      sub.push(`${tr('flow.lbl.rewrite')} ${str(field(realOverride, 'from.provider'))}/${str(field(realOverride, 'from.model'))} → ${str(field(realOverride, 'to.provider'))}/${str(field(realOverride, 'to.model'))}`)
-      const rawReason = str(field(realOverride, 'reason'))
-      sub.push(`${tr('flow.lbl.reason')} ${reasonLabel(rawReason)}`)
-      // §7.121: 原始判断数据 —— 改写的**机器原因码**（intent-local /
-      // policy-rule / …）。译文只给人看，对账要靠机器码。
-      if (rawReason !== '?' && rawReason !== reasonLabel(rawReason)) {
-        sub.push(`${tr('flow.lbl.code')} ${rawReason}`)
+    // §7.175: 路由不再被改写 ⇒ 「实际用的模型」就是宿主选的那个。
+    // `input-guard.intent.local` 带 provider/model（判定 LOCAL 的那一轮）。
+    if (intentLocal !== undefined) {
+      const provider = str(field(intentLocal, 'provider'))
+      const model = str(field(intentLocal, 'model'))
+      if (provider !== '?' || model !== '?') {
+        sub.push(`${tr('flow.lbl.route')} ${provider}/${model}`)
       }
     }
     sub.push(`${tr('flow.lbl.entry')} ${str(field(routed, 'routeSource'))} · ${tr('flow.lbl.pool')} ${routed.payload.edgeRouteUsed === true ? tr('flow.lbl.used') : tr('flow.lbl.hostOwn')}`)
-    // §7.121: 原始判断数据 —— 改写前的**原始路由来源**（宿主的默认模型
-    // 从哪来）。没有它就看不出「为什么本来要上云」。
-    const originalSource = str(field(routed, 'originalProviderSource'))
-    if (originalSource !== '?') sub.push(`${tr('flow.lbl.origSource')} ${originalSource}`)
     return {
       label: tr('flow.route'), tone: 'ok',
-      detail: forced ? `${cat} · ${tr('flow.route.forced')}` : `${cat} · ${tr('flow.route.kept')}`,
+      detail: `${cat} · ${tr('flow.route.kept')}`,
       sub,
     }
   }
@@ -437,29 +437,9 @@ function routeNode(rows: EdgeRow[]): FlowNode {
   return { label: tr('flow.route'), tone: 'wait', detail: tr('flow.wait'), sub: [] }
 }
 
-/** True when a route-override row does not actually change the model.
- *
- *  The host flattens the row's nested `from`/`to` objects one level deep
- *  (`from.provider`, `from.model`, … — edge-context-view.ts safePayload),
- *  so the comparison reads those dotted keys, not the parent objects. */
-function sameModel(r: EdgeRow, fromKey: string, toKey: string): boolean {
-  const fp = field(r, `${fromKey}.provider`)
-  const fm = field(r, `${fromKey}.model`)
-  const tp = field(r, `${toKey}.provider`)
-  const tm = field(r, `${toKey}.model`)
-  if (fp === undefined && fm === undefined && tp === undefined && tm === undefined) return false
-  return str(fp) === str(tp) && str(fm) === str(tm)
-}
-
-/** Machine reason codes → operator language. */
-function reasonLabel(reason: string): string {
-  switch (reason) {
-    case 'intent-local': return tr('flow.reason.intentLocal')
-    case 'intent-sanitized': return tr('flow.reason.intentSanitized')
-    case 'policy-rule': return tr('flow.reason.policyRule')
-    default: return reason
-  }
-}
+/** §7.175 (2026-11-11): `sameModel()` 与 `reasonLabel()` 随路由改写机制
+ *  一起退役 —— 前者比较改写前后的 provider/model，后者翻译改写的机器
+ *  原因码（intent-local / policy-rule / …）。改写没了，两者都没有读者。*/
 
 const intentStarted = (rows: EdgeRow[]): boolean => rows.some(r => r.kind.startsWith('intent.classify.'))
 

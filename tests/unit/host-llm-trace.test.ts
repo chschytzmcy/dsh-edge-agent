@@ -96,6 +96,8 @@ function makePreStepPayload(userText: string, sessionId = 'sess-1') {
       { role: 'user', content: userText },
     ],
     step: 1,
+    // §7.175: 宿主给本轮选的模型（payload 顶层）。缺它 ⇒ fail-closed 拒收。
+    modelSelection: { provider: 'local-llm', model: 'qwen3-4b-instruct-2507' },
   }
 }
 

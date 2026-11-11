@@ -66,6 +66,40 @@ while (stdRows.length > 0 && stdRows[stdRows.length - 1] === '') stdRows.pop()
 const countRows = stdRows.filter((l) => /^ {10}- id: /.test(l)).length
 console.log(`extracted ${countRows} standard plugin rows`)
 
+// ── §7.175（2026-11-11）：preset 里**没有** agent-default-model 行 ─────────
+//
+// 这一段曾经定义了一行 `agent-default-model`（provider=local-llm），本意是
+// 「preset scope 自带一份，遮蔽 host scope 的全局默认（deepseek-official）」。
+// **实测证伪**，那一行已被移除：
+//
+//   WARN [agent-preset-registry] agent preset edge:
+//     agent-default-model (@deepseek-ai/dsh-agent-default-model):
+//     service "agentDefaultModel" has been registered at <AgentDefaultModelConfig>
+//
+// 根因：宿主 dsh-base/cordis.patch.yml L90-94 已经在 **host scope** 声明了同一
+// 个插件；该插件用 `super(ownerContext, "agentDefaultModel")` 注册 cordis service，
+// 而 service 名**跨 scope 唯一** ⇒ preset scope 再声明一次 ⇒ 撞名 ⇒
+// **整个 edge preset 挂载失败**。
+//
+// 真正的读取方在 host scope：`dsh-api-session-controller` 的 `agentOptions()` 读
+// `this.ctx.agentDefaultModel` —— preset scope 里那份即使不撞名也**没有读者**。
+//
+// §7.176（2026-11-11）：本地模型默认值改由 **preset 内的 input-guard** 给出 ——
+// 它监听 `agent/created`，用宿主的合规入口 `agent.model.select()` 把会话级
+// modelSelection 钉成 local-llm。为什么不能靠这一行：
+//   1. 宿主 0.2.2-rc.1 起路由只由**会话级** modelSelection 决定；
+//   2. GUI 建的 agent 默认取 host scope 的 agentDefaultModel（宿主自带云端模型）；
+//   3. local-llm 在模型目录里隐身（§7.106 Option A）⇒ GUI 里选不到，用户没法纠正。
+//
+// 主人裁决（2026-11-11）：**npm 包里不会带本地模型配置**（config/edge.json 被
+// `files` 白名单排除）⇒ local-llm 在未配端点时走 DELEGATE（§7.171）转发宿主
+// provider ⇒ 装上就能用（先用 dsh 自带的云端模型），provider 身份仍是 local-llm
+// ⇒ §7.175 的 fail-closed 闸门照样放行。
+//
+// 实测记录见 docs/PROGRESS.md §7.175 / §7.176。
+const EDGE_DEFAULT_MODEL_ROWS = '' // 保留名字：提醒后来者这里曾经放过一行、为什么不能放
+
+
 const header = `# ── 边缘模式 preset（§7.135）──────────────────────────────────────────
 #
 # 宿主 DSH 的「Agent Preset」机制：preset 是一份 cordis insert patch，声明

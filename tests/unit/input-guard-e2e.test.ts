@@ -7,7 +7,7 @@
  *   1. PII round-trip: text → sanitize (pre-step) → agent → desanitize (stream)
  *   2. Multiple PII types (phone + email) in one message
  *   3. Deduplication: same PII across turns maps to same placeholder
- *   4. Sanitize fails → downgrade state set → handleAgentRequest rewrites route
+ *   4. Sanitize fails → 放行本轮（§7.175 起不再有「降级」，路由恒为本地）
  *   5. Sanitize fails + downgradeOnSanitizeFailure=false → reject
  *   6. Stream chunks: placeholder split across chunks gets desanitized
  *   7. Stream chunks: no sanitization state → chunks pass through
@@ -138,6 +138,9 @@ function makePayload(text: string, sessionId: string, edgeRoute?: { realm: strin
       { role: 'user', content: text },
     ],
     step: 1,
+    // §7.175: 宿主给本轮选的模型（payload 顶层）。边缘模式恒用本地模型；
+    // 缺它 ⇒ fail-closed 拒收（无法证明本轮走本地）。
+    modelSelection: { provider: 'local-llm', model: 'qwen3-4b-instruct-2507' },
   }
 }
 
@@ -276,8 +279,8 @@ describe('input-guard E2E — PII round-trip', () => {
   })
 })
 
-describe('input-guard E2E — downgrade semantics', () => {
-  it('sanitize throws + downgradeOnSanitizeFailure=true → state.downgraded, route rewritten to LOCAL', async () => {
+describe('input-guard E2E — sanitize failure semantics (§7.175)', () => {
+  it('sanitize throws + downgradeOnSanitizeFailure=true → 放行本轮，路由不动', async () => {
     const san = makeFakeSanitizer({ throwOnSanitize: true })
     const audit = fakeAuditLog()
     const svc = new InputGuardServiceImpl(
@@ -289,40 +292,35 @@ describe('input-guard E2E — downgrade semantics', () => {
       realm: 'CLOUD', category: 'CLOUD',
       provider: 'cloud-llm', model: 'deepseek-chat',
     })
-    // pre-step：sanitize 抛错，但 downgrade=true → pass-through + 标记降级
+    // pre-step：sanitize 抛错 → 放行（原文保留，本轮走本地模型）
     const decision = await svc.handlePreStep(
       payload as any,
       async () => ({ kind: 'enter', messages: [...payload.messages] }),
     )
-    assert.equal(decision.kind, 'enter', '不 reject — 让 handleAgentRequest 改写路由')
-    assert.equal((decision.messages![1] as any).content, 'alice@example.com', '原文保留 — LOCAL 无需脱敏')
+    assert.equal(decision.kind, 'enter', '不 reject — 边缘模式恒走本地模型，原始 PII 不出境')
+    assert.equal((decision.messages![1] as any).content, 'alice@example.com', '原文保留 — 本地无需脱敏')
 
-    // state.downgraded=true
+    // §7.175: 没有「降级」状态了
     const state = svc.getStepState(sessionId)
     assert.ok(state)
-    assert.equal(state?.downgraded, true)
-    assert.equal(state?.originalProvider, 'cloud-llm')
-    assert.equal(state?.originalModel, 'deepseek-chat')
-    assert.equal(state?.originalRealm, 'CLOUD')
+    assert.equal((state as any).downgraded, undefined)
+    assert.equal((state as any).originalProvider, undefined)
+    assert.equal(state?.sanitized, false)
 
-    // handleAgentRequest：改写 route 到 LOCAL
+    // handleAgentRequest：原样放行（不改路由）
     const seed = { provider: 'cloud-llm', model: 'deepseek-chat', maxTokens: 4096 }
     const result = await svc.handleAgentRequest(
       { agent: { session: { id: sessionId } } },
       seed,
       async () => seed,
     )
-    assert.equal(result.provider, 'local-llm')
-    assert.equal(result.model, 'qwen3-4b-instruct-2507')
+    assert.deepEqual(result, seed, '§7.175: agent/request 不改写路由')
     assert.equal(result.maxTokens, 4096, '其他字段保留')
 
-    // 审计：security 级别，包含 sanitize.failed + sanitize.downgraded + route.overridden
+    // 审计：security 级别的 sanitize.failed 仍在；「.downgraded」/route.overridden 退役
     assert.ok(audit.entries.some(e => e.kind === 'input-guard.sanitize.failed' && e.level === 'security'))
-    assert.ok(audit.entries.some(e => e.kind === 'input-guard.sanitize.downgraded' && e.level === 'security'))
-    const routeAudit = audit.entries.find(e => e.kind === 'input-guard.route.overridden')
-    assert.ok(routeAudit)
-    assert.equal(routeAudit?.payload?.from?.provider, 'cloud-llm')
-    assert.equal(routeAudit?.payload?.to?.provider, 'local-llm')
+    assert.ok(!audit.entries.some(e => e.kind === 'input-guard.sanitize.downgraded'))
+    assert.ok(!audit.entries.some(e => e.kind === 'input-guard.route.overridden'))
   })
 
   it('sanitize throws + downgradeOnSanitizeFailure=false → reject', async () => {
@@ -355,7 +353,7 @@ describe('input-guard E2E — downgrade semantics', () => {
     assert.deepEqual(result, seed)
   })
 
-  it('sanitize unavailable (no sanitizer injected) → downgrade path 也工作', async () => {
+  it('sanitize unavailable (no sanitizer injected) → 放行本轮，无降级标记', async () => {
     const audit = fakeAuditLog()
     const svc = new InputGuardServiceImpl(
       fakeCtx() as any, defaultConfig({ downgradeOnSanitizeFailure: true }),
@@ -370,11 +368,10 @@ describe('input-guard E2E — downgrade semantics', () => {
       async () => ({ kind: 'enter', messages: [...payload.messages] }),
     )
     // sanitizer 未注入：shouldSanitize=true 但 sanitizer 不可用 → 进 no-sanitize 分支
-    // state.sanitized=false，但**没有** downgraded 标记（因为从未尝试 sanitize）
     assert.equal(result.kind, 'enter')
     const state = svc.getStepState('down-3')
-    // §7.26 fix: downgraded 字段总是被显式设置；CLOUD + cloud-* 路径 = false
-    assert.equal(state?.downgraded, false)
+    assert.equal(state?.sanitized, false)
+    assert.equal((state as any).downgraded, undefined)
   })
 })
 
@@ -797,6 +794,7 @@ describe('input-guard E2E — edge cases', () => {
       agent: { id: 'a1', session: { id: 'empty' }, _edgeRoute: { realm: 'CLOUD', category: 'CLOUD', provider: 'cloud-llm', model: 'deepseek-chat' } },
       messages: [{ role: 'user', content: '' }],
       step: 1,
+      modelSelection: { provider: 'local-llm', model: 'qwen3-4b-instruct-2507' },
     }
     const decision = await svc.handlePreStep(
       payload as any,
@@ -863,9 +861,9 @@ describe('input-guard E2E — edge cases', () => {
   })
 })
 
-describe('input-guard E2E — full downgrade round-trip', () => {
-  it('sanitize throws → pre-step marks downgraded → agent/request rewrites → LOCAL route', async () => {
-    // 验证完整的"故障 → 降级"语义链
+describe('input-guard E2E — §7.175 全链路（本地模型 + 不改路由）', () => {
+  it('sanitize 失败 → 放行本地模型 → agent/request 原样放行 → 流式原文透传', async () => {
+    // §7.175: 「故障 → 降级」链退役了。现在是「故障 → 放行（路由恒为本地）」。
     const san = makeFakeSanitizer({ throwOnSanitize: true })
     const audit = fakeAuditLog()
     const svc = new InputGuardServiceImpl(
@@ -887,38 +885,36 @@ describe('input-guard E2E — full downgrade round-trip', () => {
     )
     assert.equal(preStepDecision.kind, 'enter')
     assert.equal((preStepDecision.messages![1] as any).content, 'alice@example.com',
-      '原文保留 — LOCAL LLM 不需要脱敏')
+      '原文保留 — 本轮走本地模型，不需要脱敏')
 
     // ─ Phase 2: agent/request（模拟 agent-loop 的 buildRequest 阶段）
-    const seed = { provider: 'cloud-llm', model: 'deepseek-chat', maxTokens: 4096 }
+    const seed = { provider: 'local-llm', model: 'qwen3-4b-instruct-2507', maxTokens: 4096 }
     const reqResult = await svc.handleAgentRequest(
       { agent: { session: { id: sessionId } } },
       seed,
       async () => seed,
     )
-    assert.equal(reqResult.provider, 'local-llm', 'route 改写到 LOCAL')
-    assert.equal(reqResult.model, 'qwen3-4b-instruct-2507')
+    assert.deepEqual(reqResult, seed, '§7.175: agent/request 不改写路由')
 
     // ─ Phase 3: llm/stream — sanitized=false，所以不调 desanitize
-    // 模拟 LOCAL LLM 的响应流（无占位符，因为没脱敏）
+    // 模拟本地模型的响应流（无占位符，因为没脱敏）
     const chunks = [
       { type: 'text-delta', text: '邮箱地址是 alice@example.com' },
       { type: 'done', done: true },
     ]
     const out = await collect(svc.handleLlmStream({ sessionId }, () => streamFrom(chunks)))
     const textDelta = out.find(c => c.type === 'text-delta') as any
-    assert.equal(textDelta.text, '邮箱地址是 alice@example.com', 'LOCAL 路径 → 原文透传')
+    assert.equal(textDelta.text, '邮箱地址是 alice@example.com', '本地路径 → 原文透传')
 
-    // ─ 审计：完整链路都被记录
+    // ─ 审计：sanitize 失败留痕；「降级 / 改写」不再有
     const kinds = audit.entries.map(e => e.kind)
     assert.ok(kinds.includes('input-guard.sanitize.failed'))
-    assert.ok(kinds.includes('input-guard.sanitize.downgraded'))
-    assert.ok(kinds.includes('input-guard.route.overridden'))
+    assert.ok(!kinds.includes('input-guard.sanitize.downgraded'))
+    assert.ok(!kinds.includes('input-guard.route.overridden'))
 
-    // ─ stepState 应仍保留原 route 信息，供响应体/上游观测
+    // ─ stepState 不再带「原路由」
     const finalState = svc.getStepState(sessionId)
-    assert.equal(finalState?.downgraded, true)
-    assert.equal(finalState?.originalProvider, 'cloud-llm')
-    assert.equal(finalState?.originalRealm, 'CLOUD')
+    assert.equal((finalState as any)?.downgraded, undefined)
+    assert.equal((finalState as any)?.originalProvider, undefined)
   })
 })

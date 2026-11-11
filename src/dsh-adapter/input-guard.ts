@@ -5,8 +5,14 @@
  * 事件链上，让所有入口（http-api / Web UI / CLI / SDK / 未来的 WebSocket
  * 或 gRPC）自动统一走同一套管线。谁也无法绕过。
  *
- * 正向（agent/pre-step）：攻击检测 → 策略判定 → 意图分类 → 脱敏
+ * 正向（agent/pre-step）：fail-closed 路由闸门 → 攻击检测 → 策略判定 →
+ *   意图分类 → 脱敏
  * 反向（llm/stream）：对 text-delta chunk 流式反脱敏
+ *
+ * §7.175 (2026-11-11): 路由改写退役。边缘模式恒用本地模型，路由由宿主的
+ * modelSelection 决定；input-guard 不再改写 provider/model（宿主的
+ * prepareRequest() 会对改写直接抛错），改为在 agent/pre-step 用
+ * modelSelection 做 fail-closed 校验：证明不了本地 ⇒ 拒收，绝不放行到云端。
  *
  * 设计详见：docs/input-guard-design.md
  *
@@ -30,10 +36,8 @@ import {
 } from './input-guard-messages.js'
 import { assistantProviderHistogram } from './cloud-egress.js'
 
-// §7.100: 复用 cloud-llm-adapter 的委托探针（同一条解析链，保证
-// "input-guard 认为能不能上云" 与 "adapter stream 时实际找不找得到目标"
-// 永不打架。adapter 侧 fail → 这里也会提前降级，不会出现"放行后静默空回复"。
-import { probeCloudTarget } from './cloud-llm-adapter.js'
+// §7.175 (2026-11-11): 路由改写退役后，input-guard 不再探云池
+// （cloud-llm-adapter 的委托探针 probeCloudTarget 也就不再需要了）。
 import { loadEdgeConfig, localPool } from './edge-config.js'
 import { containsCredential } from './pii-utils.js'
 // §7.144: 宿主 provider 那一跳的 trace（delegate 出去的云池调用不在任何
@@ -83,8 +87,8 @@ export const inject = [
   //     装载完才起 input-guard，还会把 model-router 拉进最小部署形态的
   //     依赖闭包（那里根本没有 local-llm / cloud-llm，model-router 只是空
   //     catalog，查它没有意义）。
-  //   - 同样刻意不 inject llm：那会让 cloudAvailable() 的 delegate 探针
-  //     首次真正生效，改变云侧判定语义——不在本次修复范围内。
+  //   - 同样刻意不 inject llm：宿主 llm registry 会让「云侧判定」多一条
+  //     数据源，而边缘模式恒用本地模型（§7.175），云侧判定已退役。
   //
   // NB: 注释里不要用单引号包 service 名 —— 任何「扫 inject 数组原文」的
   // 依赖闭包检查都会把注释里的引号名误当成依赖。
@@ -98,32 +102,36 @@ export interface Config {
   /** 攻击检测 / privacy-policy REJECT → 阻断 step（user 行为不端）。
    *  false = 仅审计 + 放行（fail-open on policy；不推荐）。*/
   rejectOnPolicyViolation: boolean
-  /** Sanitize 失败 → 降级 LOCAL 路由（系统故障而非 user 错）。
-   *  通过 agent/request hook 改写 provider/model，原始 PII 留在本地。
-   *  false = REJECT step（user 看到空 result）。
-   *  默认 true — 隐私优先 + 服务可用。*/
+  /** Sanitize 失败 → 是否阻断本轮（系统故障而非 user 错）。
+   *
+   *  §7.175 (2026-11-11): 曾经这个开关表示「降级到 LOCAL 路由」——
+   *  input-guard 在 agent/request 里改写 provider/model。**改写已经退役**
+   *  （宿主的 prepareRequest() 会因为改写直接抛错），路由恒由宿主的
+   *  modelSelection 决定。现在它只表示「脱敏失败要不要拦下这一轮」：
+   *  false = REJECT step（user 看到空 result）；true = 放行。
+   *  默认 true — 边缘模式恒走本地模型，原始 PII 不出境。*/
   downgradeOnSanitizeFailure: boolean
-  /** 降级目标 provider / model。必须与本地 LLM adapter 注册名一致。*/
+  /** 本地 provider 名。必须与本地 LLM adapter 注册名一致，也是 §7.175
+   *  fail-closed 闸门认定的「本地」：宿主 modelSelection.provider 必须等于
+   *  它，否则本轮被拒（绝不放行到可能上云的 provider）。*/
   localProvider: string
   localModel: string
   /** 2026-09-03 §7.35: Cloud adapter 读 key 的 env slot 名。
    *  与 cloud-llm-adapter.Config.apiKeyEnv 默认一致（'DEEPSEEK_API_KEY'），
    *  也尊重 cordis.patch.yml:41 的 DSH_EDGE_CLOUD_KEY_ENV 覆盖。
-   *  当 category=CLOUD|SANITIZED 但该 env slot 为空时，input-guard 不会
-   *  走 sanitize（避免 sanitize 完发现根本送不出去、浪费算力），而是直接
-   *  标记 downgraded=true 让 handleAgentRequest 把路由改写到 LOCAL——
-   *  与"脱敏失败降级 LOCAL"对称：都是"系统配置缺失/故障，绝不上云"。*/
+   *
+   *  §7.175 (2026-11-11): **input-guard 不再消费本项**。边缘模式恒用本地
+   *  模型（主人裁决），云池不参与任何路由判定；「云端不可用 → 降级 LOCAL」
+   *  那条路径随路由改写一起退役。本项保留在 schema 里只是为了不破坏既有
+   *  配置文件（cloud-llm-adapter 仍按自己的同名项读它）。*/
   cloudApiKeyEnv: string
   /** 2026-09-07 §7.43 fix: TUI / dsh-web-app chat 入口不会写 agent._edgeRoute
    *  （只有 http-api 写），所以 handlePreStep 拿不到"如果没降级本来会路由到
-   *  哪个 provider"。原来一直写 originalProvider=undefined，turn N+1 的
-   *  handleAgentRequest 恢复分支因此不会触发，TUI 上 CLOUD→LOCAL→CLOUD 序列
-   *  会被污染（session 20a78b87 turn 4 '查询英国最新的新闻' 实测）。
+   *  哪个 provider"。曾用作「降级前原路由」的 fallback。
    *
-   *  这里提供 fallback：env 镜像 cordis.patch.yml 的 DSH_EDGE_PROVIDER /
-   *  DSH_EDGE_MODEL（与上游 agent-loop 的"current provider"默认一致），
-   *  让 handlePreStep 即使没 _edgeRoute 也能写出一个可用的 originalProvider。
-   *  优先级：edgeRoute?.provider > defaultCloudProvider（http-api 已知更具体）。*/
+   *  §7.175 (2026-11-11): 降级机制退役后本项**不再被 input-guard 读取**
+   *  （路由恒由宿主的 modelSelection 决定）。保留在 schema 里只是为了不
+   *  破坏既有配置文件。*/
   defaultCloudProvider: string
   defaultCloudModel: string
 }
@@ -264,16 +272,8 @@ export interface StepSanitizationState {
   sessionId: string
   /** 时间戳，便于陈旧检查。*/
   timestamp: number
-  /** Sanitize 失败后通过 agent/request 降级到 LOCAL 时的标记。*/
-  downgraded?: boolean
-  /** 原始 CLOUD provider/model（用于审计 + 让 http-api 看到原始路由被替换）。*/
-  originalProvider?: string
-  originalModel?: string
-  originalRealm?: string
-  /** Sanitize 失败原因（审计 + 调试）。*/
-  downgradeReason?: string
   /** 入口路径（'http-api' = _edgeRoute 已设；'webui' = 未设）。
-   *  §7.34 修复：webui 路径也要按 intent=LOCAL 改写。*/
+   *  §7.175 起它只描述「这一轮的路由决策从哪来」，不再用于改写路由。*/
   routeSource?: 'http-api' | 'webui'
 }
 
@@ -315,11 +315,65 @@ interface AgentRequestConfig {
 }
 
 /**
+ * §7.176 (2026-11-11): 宿主 `AgentModel` 的最小形状。
+ *
+ * 宿主 dsh-agent 的 `AgentModel`（dsh-agent/lib/types/model-selection.js）：
+ *   - `current()` = 已记录的选择 ?? agentOptions；
+ *   - `select(selection)` = 往会话里写一条 `model/selection` 事件（会话级、
+ *     持久化、宿主的合规入口）；
+ *   - `recordedSelection()` = 会话里已记录的选择（pending ?? lastUsed）；
+ *   - `options` = 建 agent 时传入的 agentOptions。
+ */
+interface AgentModelLike {
+  select?: (selection: { provider: string; model: string }) => void
+  recordedSelection?: () => { provider?: string; model?: string } | null | undefined
+  options?: { provider?: string; model?: string }
+}
+
+/**
+ * §7.176: 边缘模式会话的默认模型 —— provider 恒为本地池，model 分直连/委托两种。
+ *
+ * 直连池（配了 `llm.local.baseUrl`）⇒ wire 上跑的就是本地池自己的 model id；
+ * DELEGATE 模式（没配端点，§7.171）⇒ wire 上真正跑的是**宿主当前选的模型**
+ * ⇒ 这里用宿主那个 id，不写一个跟实际不符的名字（面板上显示的就是真名）。
+ */
+export function resolveEdgeDefaultSelection(
+  localProvider: string,
+  localModel: string,
+  hostModel: string | undefined,
+  delegate: boolean,
+): { provider: string; model: string; source: 'local-pool' | 'host-delegate' } {
+  const provider = localProvider
+  if (!delegate) return { provider, model: localModel, source: 'local-pool' }
+  const host = typeof hostModel === 'string' ? hostModel.trim() : ''
+  if (host.length > 0) return { provider, model: host, source: 'host-delegate' }
+  return { provider, model: localModel, source: 'local-pool' }
+}
+
+/**
+ * §7.176: 该不该由 preset 把会话选择钉到本地池。
+ *
+ * 显式选择优先：会话里已经记过一次**不同于 agentOptions** 的选择 ⇒ 那是用户
+ * （或子 agent 的调用方）明确选的 ⇒ 不动它。
+ * 「与 agentOptions 相同」不算显式选择 —— 那是宿主把 agentOptions 回显成
+ * `model/selection` 的结果（agent-loop 的 applyConfiguredRoute），不是用户选的。
+ */
+export function shouldProvisionEdgeModel(
+  recorded: { provider?: string; model?: string } | null | undefined,
+  options: { provider?: string; model?: string } | undefined,
+): boolean {
+  if (!recorded || typeof recorded.provider !== 'string' || recorded.provider.length === 0) return true
+  if (!options || typeof options.provider !== 'string' || options.provider.length === 0) return false
+  return recorded.provider === options.provider && recorded.model === options.model
+}
+
+/**
  * input-guard 服务。
  *
  * 三个全局 hook：
- *   - `agent/pre-step`（正向）：攻击 → 策略 → 分类 → 脱敏（含降级标记）
- *   - `agent/request`（路由改写）：sanitize 失败时把 CLOUD 改写为 LOCAL
+ *   - `agent/pre-step`（正向）：**fail-closed 路由闸门** → 攻击 → 策略 →
+ *     分类 → 脱敏
+ *   - `agent/request`（只读放行）：§7.175 起**不再改写** provider/model
  *   - `llm/stream`（反向）：对 text-delta chunk 流式反脱敏
  *
  * 跨 hook 状态用 Map<sessionId, StepSanitizationState> 维护。
@@ -366,116 +420,10 @@ export class InputGuardServiceImpl extends Service {
    */
   private readonly hostEgressGuard: HostEgressGuard
 
-  /** §7.35 (2026-09-03): 检查 cloud LLM adapter 的 API key 是否就位。
-   *  缺失时不抛异常，而是让 handlePreStep 把 category=CLOUD|SANITIZED
-   *  降级到 LOCAL——与"sanitize 失败降级 LOCAL"对称（系统侧故障/配置缺失
-   *  永远不应让 user 的 PII 上云）。
-   *  返回 false 表示"就算想上云也上不了"，调用方应降级到 LOCAL。*/
-  private hasCloudCredentials(): boolean {
-    const slot = this.config.cloudApiKeyEnv
-    if (typeof slot !== 'string' || slot.length === 0) return false
-    // §7.102: the credential may live in config/edge.json (secrets.*) rather
-    // than in process.env — the desktop GUI has no .env chain. The slot name
-    // is matched against the secrets map first, then the env slot.
-    const fromConfig = (() => {
-      try {
-        const secrets = loadEdgeConfig(true).secrets as Record<string, unknown> | undefined
-        const v = secrets?.[slot]
-        return typeof v === 'string' ? v : undefined
-      } catch { return undefined }
-    })()
-    if (fromConfig !== undefined && fromConfig.length > 0) return true
-    if (typeof process === 'undefined' || !process.env) return false
-    const value = process.env[slot]
-    // ── §7.35 DEBUG (2026-09-03) ─────────────────────────────────────────
-    // Surface runtime state so we can diagnose the false-positive TUI
-    // downgrade (process.env had DEEPSEEK_API_KEY 35 chars / credentials
-    // yaml also synced, but hasCloudCredentials still returned false).
-    // Cheap info log, gated by plugin start (avoid noise on every pre-step).
-    if (this.ctx) {
-      const dsKeys = Object.keys(process.env).filter((k) => k.includes('DEEPSEEK'))
-      const v = typeof value === 'string' ? value : undefined
-      // Try reading via ctx.get('credentials') to compare env vs DSH creds store.
-      // §7.100 fix: CredentialProvider 没有 .get(name)——§7.35 那次调试因此恒
-      // 报 'no-get'。正确表面是 .describe(ref)（返回配置状态，secret 不出口）。
-      const credsState = (() => {
-        try {
-          const creds = this.ctx.get?.('credentials') as { describe?: (k: string) => unknown } | undefined
-          const d = creds?.describe?.(slot)
-          return d && typeof d === 'object' ? 'described' : 'no-describe'
-        } catch {
-          return 'no-credentials-service'
-        }
-      })()
-      this.ctx.logger?.info?.(
-        `[input-guard] hasCloudCredentials: slot=${slot} envValueLen=${typeof v === 'string' ? v.length : 'undefined'} dsEnvKeys=[${dsKeys.join(',')}] credentialsService=${credsState}`,
-      )
-    }
-    return typeof value === 'string' && value.length > 0
-  }
-
   /**
-   * §7.100: "云池现在到底可用吗" —— 取代单一 hasCloudCredentials，覆盖两种模式。
-   *
-   * 模式判定镜像 cordis.patch.yml cloud-llm-adapter 行的 baseUrl 链
-   * (`DSH_EDGE_CLOUD_LLM_BASEURL || DEEPSEEK_BASE_URL || ''`)：
-   *   - 非空 → DIRECT：行为与 §7.35 完全一致（env slot 有 key 才可用）。
-   *   - 空   → DELEGATE：云池 = 宿主 profile 提供商，用 probeCloudTarget
-   *     同一条链探一次（env override > agentDefaultModel selection > live
-   *     route）。`DSH_EDGE_CLOUD_DELEGATE=false`（LOCAL-only 部署的显式开关）
-   *     → 直接判不可用，恢复 §7.35"降级 LOCAL"语义。
-   *   - 老上游（无 listProviders）→ 回退 DIRECT 的 key 检查，行为不回归。
-   * 任何一档都不看 secret 内容——delegate 模式的凭据归宿主 adapter。
-   */
-  private cloudAvailable(): { ok: boolean; mode: 'direct' | 'delegate'; reason: string } {
-    const directBaseUrl = (process.env.DSH_EDGE_CLOUD_LLM_BASEURL ?? '').trim().length > 0
-      || (process.env.DEEPSEEK_BASE_URL ?? '').trim().length > 0
-    if (directBaseUrl) {
-      return this.hasCloudCredentials()
-        ? { ok: true, mode: 'direct', reason: 'direct-key-present' }
-        : { ok: false, mode: 'direct', reason: `cloud-key-missing:${this.config.cloudApiKeyEnv}` }
-    }
-    // DELEGATE 模式
-    if ((process.env.DSH_EDGE_CLOUD_DELEGATE ?? '').trim() === 'false') {
-      return { ok: false, mode: 'delegate', reason: 'cloud-delegate-disabled' }
-    }
-    let llm: unknown
-    try {
-      llm = this.ctx?.get?.('llm')
-    } catch {
-      llm = undefined
-    }
-    const llmAny = llm as {
-      listProviders?(): Array<{ id: string }>
-      stream?: unknown
-      listModels?: unknown
-    } | undefined
-    if (!llmAny || typeof llmAny.listProviders !== 'function') {
-      // 老上游 / fake ctx 没有 listProviders：回退 §7.35 key 检查（不崩、语义旧）。
-      return this.hasCloudCredentials()
-        ? { ok: true, mode: 'delegate', reason: 'legacy-fallback-key-present' }
-        : { ok: false, mode: 'delegate', reason: 'cloud-unavailable:legacy-no-key-and-no-registry' }
-    }
-    let getAgentDefaultModel: () => any
-    try {
-      getAgentDefaultModel = () => (this.ctx?.get?.('agentDefaultModel') as any) ?? undefined
-    } catch {
-      getAgentDefaultModel = () => undefined
-    }
-    const target = probeCloudTarget(
-      { llm: llmAny as any, getAgentDefaultModel },
-      {
-        providers: ['cloud-llm'],
-        delegateProvider: process.env.DSH_EDGE_CLOUD_DELEGATE_PROVIDER ?? '',
-        delegateModel: process.env.DSH_EDGE_CLOUD_DELEGATE_MODEL ?? '',
-        delegateEnabled: true,
-      },
-    )
-    return target
-      ? { ok: true, mode: 'delegate', reason: `delegate-target:${target.provider}:${target.source}` }
-      : { ok: false, mode: 'delegate', reason: 'cloud-unavailable:no-host-route-selected-or-live' }
-  }
-
+   * §7.175 (2026-11-11): 「云池现在到底可用吗」的探针（§7.35 / §7.100）随
+   * 路由改写一起退役 —— 边缘模式恒用本地模型（主人裁决），云池不参与任何
+   * 路由判定。留着它只会把「云端不可用」报成「路由缺失」。*/
   /**
    * §7.171 (2026-11-10): "本地路由现在到底可用吗" —— local-llm 有两种上线方式：
    * 配置了 `llm.local.baseUrl` → 直连自有池；没配置 → DELEGATE 模式（转发宿主
@@ -507,6 +455,120 @@ export class InputGuardServiceImpl extends Service {
         : { ok: false, reason: `local-route-missing:${provider}` }
     } catch {
       return { ok: true, reason: 'legacy-router-unreadable' }
+    }
+  }
+
+  /**
+   * §7.176: 本地池现状 —— DIRECT（配了 `llm.local.baseUrl`）还是 DELEGATE
+   * （没配端点，转发宿主提供商，§7.171）。
+   *
+   * protected 而不是 private：单测子类化覆写它，不必依赖机器上那份
+   * `~/.dsh-edge-agent/edge.json` 的真实内容。
+   */
+  protected localPoolMode(): 'direct' | 'delegate' {
+    try {
+      return localPool().baseUrl ? 'direct' : 'delegate'
+    } catch {
+      return 'delegate'
+    }
+  }
+
+  /**
+   * §7.176 (2026-11-11): 宿主当前选中的模型 id。
+   *
+   * DELEGATE 模式下 wire 上真正跑的是它（local-llm-adapter 的委托解析链第 2 步：
+   * `agentDefaultModel.currentSelection()`）⇒ 边缘模式默认选择要写同一个名字，
+   * 否则面板上显示的模型跟实际发出去的不是一个。
+   *
+   * 读的是 **host scope** 那份 `agentDefaultModel`（preset scope 里没有第二份 ——
+   * §7.175 实测：preset 里再声明 `agent-default-model` 行会撞 service 名，整个
+   * preset 挂载失败）。
+   */
+  private hostDefaultModel(): string | undefined {
+    try {
+      const svc = (this.ctx as unknown as {
+        get?: (name: string) => unknown
+      }).get?.('agentDefaultModel') as
+        | { currentSelection?: () => { provider?: string; model?: string } | undefined }
+        | undefined
+      const sel = svc?.currentSelection?.()
+      return typeof sel?.model === 'string' && sel.model.length > 0 ? sel.model : undefined
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * §7.176 (2026-11-11): **边缘模式的会话默认模型** —— 把会话级 modelSelection
+   * 钉到本地池。
+   *
+   * 为什么需要它（宿主 0.2.2-rc.1 起的硬约束）：
+   *   1. 路由**只能**由会话级 modelSelection 决定 —— `agent/request` 里改写
+   *      provider/model 会被 `prepareRequest()` 判为非法并抛错（§7.175）。
+   *   2. 桌面 GUI 建的 agent，其 agentOptions 来自 host scope 的
+   *      `agentDefaultModel`（宿主自带的云端模型）⇒ 边缘模式的会话默认会跑到云端。
+   *   3. 本地路由 `local-llm` 在模型目录里隐身（§7.106 Option A：local-llm 是
+   *      管线内部件，不是用户可选项）⇒ GUI 里**选不到**它 ⇒ 用户没法手动纠正。
+   *   ⇒ 只能由 preset 侧（边缘模式 scope）把会话选择钉成 local-llm —— 这正是
+   *      主人裁决里「本地模型默认值由 preset 级给出（不是 UI 手动选）」在新宿主
+   *      契约下的落地方式。
+   *
+   * 用的是宿主自己的合规入口 `agent.model.select()`（agent-loop 的
+   * applyConfiguredRoute() 也是这么写的：往会话写一条 `model/selection` 事件）。
+   * **不用** `sessionController.selectModel()`：它会顺手
+   * `agentDefaultModel.saveSelection()` —— 把宿主**全局**默认也改成 local-llm，
+   * 波及同 profile 的标准模式（§7.175 的教训：preset 只能声明自己的东西）。
+   *
+   * 边界：
+   *   - 用户显式选过模型 ⇒ 不动（显式选择优先于 preset 默认）；
+   *   - 本地路由不存在（`llm.local.delegate=false` 的 kill switch）⇒ 不钉 ——
+   *     让 §7.175 的 fail-closed 闸门按「路由缺失」报可操作的错；
+   *   - 任何异常都吞掉并审计 —— `agent/created` 的监听器抛错会让**整个 agent
+   *     创建失败**（宿主 dsh-agent announce()：a listener failure rejects）。
+   */
+  handleAgentCreated(payload: unknown): void {
+    try {
+      const agent = (payload as { agent?: { id?: string; session?: { id?: string }; model?: AgentModelLike } } | null | undefined)?.agent
+      const model = agent?.model
+      if (!model || typeof model.select !== 'function') return
+      const sessionId = agent?.session?.id ?? agent?.id ?? 'unknown'
+
+      const recorded = typeof model.recordedSelection === 'function' ? model.recordedSelection() : undefined
+      if (!shouldProvisionEdgeModel(recorded, model.options)) {
+        this.audit('info', 'input-guard.model.default-skipped', {
+          sessionId,
+          reason: 'explicit-selection',
+          provider: recorded?.provider,
+          model: recorded?.model,
+        })
+        return
+      }
+
+      const local = this.localAvailable()
+      if (!local.ok) {
+        this.audit('info', 'input-guard.model.default-skipped', { sessionId, reason: local.reason })
+        return
+      }
+
+      // §7.171: 没配端点 = DELEGATE 模式（本地路由转发宿主提供商）。
+      const delegate = this.localPoolMode() === 'delegate'
+      const selection = resolveEdgeDefaultSelection(        this.config.localProvider,
+        this.config.localModel,
+        this.hostDefaultModel(),
+        delegate,
+      )
+      model.select({ provider: selection.provider, model: selection.model })
+      this.audit('info', 'input-guard.model.defaulted', {
+        sessionId,
+        provider: selection.provider,
+        model: selection.model,
+        source: selection.source,
+        delegate,
+      })
+    } catch (error) {
+      this.audit('warn', 'input-guard.model.default-failed', {
+        reason: error instanceof Error ? error.message : String(error),
+      })
     }
   }
 
@@ -974,36 +1036,25 @@ export class InputGuardServiceImpl extends Service {
   }
 
   /**
-   * §7.43 (2026-09-07): 解析"原始 provider/model/realm"，作为 stepState.originalProvider
-   *  的值写入，供 turn N+1 handleAgentRequest 的 recovery 分支使用。
+   * §7.175 (2026-11-11): 读宿主给本轮选的模型（agent/pre-step payload **顶层**
+   *  的 `modelSelection`）。
    *
-   *  优先级：http-api 写入的 _edgeRoute（更具体，知道是哪个 cloud 模型）
-   *          > TUI/webui 默认 fallback（mirror cordis.patch.yml 的 DSH_EDGE_PROVIDER）
+   *  宿主契约（dsh-agent-loop 0.2.2-rc.1，实测 app.asar）：
+   *  `preStep` 里 `const selection = this.model.current()`，再以
+   *  `waterfall('agent/pre-step', { messages, ...position, signal, modelSelection: selection })`
+   *  派发 —— `modelSelection` 在 payload 顶层，形状 `{ provider, model, reasoningEffort? }`。
    *
-   *  没有 fallback 时，TUI 上的 CLOUD→LOCAL→CLOUD 序列会被污染：
-   *    turn N  (LOCAL)   → handlePreStep 写 originalProvider=undefined
-   *    turn N+1 (CLOUD)  → handleAgentRequest 看到 originalProvider=undefined，跳过恢复
-   *                      → return seedConfig（已被 agent-loop 锁成 local）
-   *                      → dispatch local-llm ❌
-   *  用 fallback 后 turn N 写 originalProvider='cloud-llm'，
-   *  turn N+1 恢复分支能正确识别并强制 restore 回 cloud-llm。
-   *
-   *  返回 source 字段用于审计 forensics —— 'edge-route' 表示 http-api 设过，
-   *  'default-cloud-fallback' 表示我们用 config 默认值兜底（用户没明示偏好）。*/
-  private resolveOriginalRoute(edgeRoute: AgentEdgeRoute | undefined): {
-    provider: string | undefined
-    model: string | undefined
-    realm: AgentEdgeRoute['realm'] | undefined
-    source: 'edge-route' | 'default-cloud-fallback'
-  } {
-    if (edgeRoute && typeof edgeRoute.provider === 'string' && typeof edgeRoute.model === 'string') {
-      return { provider: edgeRoute.provider, model: edgeRoute.model, realm: edgeRoute.realm, source: 'edge-route' }
-    }
+   *  返回 undefined = **拿不到**（缺失 / 不是对象 / provider 不是非空字符串）
+   *  ⇒ 无法证明本轮走本地 ⇒ 调用方必须 fail-closed。
+   */
+  private readModelSelection(payload: unknown): { provider: string; model?: string } | undefined {
+    const raw = (payload as { modelSelection?: unknown } | null | undefined)?.modelSelection
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined
+    const sel = raw as { provider?: unknown; model?: unknown }
+    if (typeof sel.provider !== 'string' || sel.provider.length === 0) return undefined
     return {
-      provider: this.config.defaultCloudProvider,
-      model: this.config.defaultCloudModel,
-      realm: undefined, // 没有 _edgeRoute 时无从知道"原 realm 是什么"；CLOUD 是合理推断但不强写
-      source: 'default-cloud-fallback',
+      provider: sel.provider,
+      model: typeof sel.model === 'string' ? sel.model : undefined,
     }
   }
 
@@ -1014,6 +1065,10 @@ export class InputGuardServiceImpl extends Service {
       messages: ReadonlyArray<Record<string, unknown>>
       step: number
       signal?: AbortSignal
+      /** §7.175: 宿主给本轮选的模型 —— payload **顶层**的
+       *  `{ provider, model, reasoningEffort? }`（dsh-agent-loop 0.2.2-rc.1）。
+       *  缺失 ⇒ 无法证明本轮走本地 ⇒ fail-closed 拒收。*/
+      modelSelection?: unknown
     },
     next: () => Promise<{ kind: string; messages?: ReadonlyArray<Record<string, unknown>>; reason?: string }>,
   ): Promise<{ kind: string; messages?: ReadonlyArray<Record<string, unknown>>; reason?: string }> {
@@ -1032,6 +1087,19 @@ export class InputGuardServiceImpl extends Service {
     }
 
     const sessionId = payload.agent.session.id ?? 'unknown'
+
+    // §7.175 (2026-11-11): fail-closed 路由闸门挪到了**意图分类之后**（见下方
+    // 「§7.175 fail-closed 闸门」注释块）—— 它要拿 category 当条件，而 category
+    // 在这一段之后才定下来。
+    //
+    // 为什么不能放在分类之前：闸门的口径是「本轮判定为 LOCAL，却选了非本地
+    // provider ⇒ 这一轮会把原文带出设备 ⇒ 拒收」。判定为 LOCAL 这件事本身
+    // 要先分类才知道。
+    //
+    // 分类之前跑的东西都是**本地**的（prompt-guard 与 intent-router 的分类器
+    // 都跑 local-llm-adapter，见 edge preset 的「Internal LLM stages never
+    // target cloud-llm」），所以挪后不会让任何东西先出网。
+
     // 注意：next() 后 decision.messages 可能包含 dsh-agent-instructions 注入的
     // 运行上下文（user-role），会"覆盖"在真实用户消息之上。我们要处理的
     // 是原始 payload.messages 里的最后一条 user 消息。
@@ -1336,6 +1404,93 @@ export class InputGuardServiceImpl extends Service {
     // 上一段已把 REJECT 降级为 LOCAL，这里是第二道保险：万一将来又有一条
     // 路径把 REJECT 塞进 category，它也不会被映射成出网。
     targetRealm = category === 'CLOUD' ? 'CLOUD' : 'LOCAL'
+
+    // ── §7.175 (2026-11-11): fail-closed 路由闸门 ──────────────────────────
+    //
+    // 口径（主人裁决 2026-11-10「边缘模式恒用本地模型」，2026-11-11 补充
+    // 「用哪个模型是用户自己的行为，别管」）：
+    //
+    //   · 本轮**判定为 LOCAL**（按端侧策略这一轮必须留在设备上），而宿主选的
+    //     provider **不是本地 provider** ⇒ 这一轮会把原文带出设备 ⇒
+    //     **reject**（fail-closed）。
+    //     宿主选的 provider 来自 `agents.create({agentOptions.provider})`，
+    //     改不了（宿主的 prepareRequest() 会对被改写的 provider/model 直接
+    //     抛错，见 handleAgentRequest）⇒ 只能拒，不能改。
+    //   · 反过来「判定要出网、但用户选的是本地模型」**不拦** —— 用哪个模型
+    //     是用户自己的行为，input-guard 不替用户做这个决定（§7.174 字面口径：
+    //     「本轮 realm 判 LOCAL 而 selection 不是本地模型 ⇒ reject」）。
+    //   · modelSelection 拿不到 ⇒ 无法证明这一轮留在本地 ⇒ 按 fail-closed 拒
+    //     （只在判定为 LOCAL 时才需要证明它）。
+    //
+    // 命中即 reject（绝不「放行到云端再说」），并把原因挂到
+    // agent._edgeRejection —— agent-loop 翻译成 blocked 时会丢掉 reason
+    // 字符串，http-api 只能靠这张小抄拿到原因（见 attachRejection）。
+    //
+    // §7.175: 读一次，后面两处都用它（闸门 + `intent.local` 审计行）。
+    const selection = this.readModelSelection(payload)
+    if (category === 'LOCAL') {
+      const selectionIsLocal = selection !== undefined && selection.provider === this.config.localProvider
+      if (!selectionIsLocal) {
+        const reason = selection ? 'model-selection-not-local' : 'model-selection-missing'
+        this.audit('security', 'input-guard.blocked.model-selection', {
+          sessionId,
+          reason,
+          category,
+          provider: selection?.provider,
+          model: selection?.model,
+          expectedProvider: this.config.localProvider,
+        })
+        this.attachRejection(payload.agent, { kind: 'intent', reason })
+        return { kind: 'reject', reason }
+      }
+
+      // 本地路由必须真的存在（§7.171）：宿主选了本地 provider，但路由没
+      // 注册时这一轮必然失败。此时**不能**改写路由（宿主会抛错），也**不能**
+      // 放行到云端 —— fail-closed：明确报错，并给出可操作的配置指引。
+      //
+      // 这一段只在「判定为 LOCAL」时跑 ⇒ 报错文案里那句「本轮 intent 判定为
+      // LOCAL」是真的（§7.174 的门禁 verify-config-hints.mjs 也按这句字面量
+      // 抽取本提示）。反向情形（判定为 CLOUD、但用户选了本地模型）不归这里管。
+      const local = this.localAvailable()
+      if (!local.ok) {
+        this.audit('security', 'input-guard.local.route-missing', {
+          sessionId,
+          reason: local.reason,
+          provider: this.config.localProvider,
+        })
+        try {
+          this.ctx?.logger?.error?.(
+            `[input-guard] local route unavailable sessionId=${sessionId} provider=${this.config.localProvider} reason=${local.reason} — refusing to fall back to a non-local route`,
+          )
+        } catch { /* debug only */ }
+        throw new Error(
+          `input-guard: 本轮 intent 判定为 LOCAL（宿主 modelSelection 指向 "${this.config.localProvider}"），按隐私裁决必须使用本地模型，`
+          + `但本地路由 "${this.config.localProvider}" 不可用（${local.reason}）。`
+          + `为避免本地数据/PII 出境，已阻止本轮上云。`
+          // §7.159 (2026-10-30): the old hint pointed at DSH_EDGE_LOCAL_LLM_BASEURL
+          // and called keyRef "an env-slot name". Both were wrong for the person
+          // who actually hits this:
+          //
+          //   · the desktop GUI starts the host WITHOUT sourcing any .env, so
+          //     process.env has no DSH_EDGE_* — the hint was unfollowable
+          //     (measured on a clean Windows device: the operator set the env
+          //     var and the route still did not register);
+          //   · since §7.102 the pool lives in config/edge.json and `keyRef`
+          //     is the LITERAL key under that file's `secrets` section, not the
+          //     name of an environment variable.
+          //
+          // So: point at the file first, keep the env vars as the fallback
+          // for headless profiles that CAN set them.
+          + `请配置本地 LLM 端点：编辑 ~/.dsh-edge-agent/edge.json 的 llm.local 段，`
+          + `填 baseUrl（OpenAI 兼容端点，必须含 /v1）与 model；`
+          + `端点需要鉴权时，把密钥写进同一文件的 secrets 段，`
+          + `并把 llm.local.keyRef 指向那个键名（keyRef 是 secrets 里的键名，不是环境变量名）。`
+          + `若能设置进程环境变量，也可用 DSH_EDGE_LOCAL_LLM_BASEURL / DSH_EDGE_LOCAL_LLM_MODEL / `
+          + `DSH_EDGE_LOCAL_LLM_KEY_ENV 覆盖，但桌面 GUI 启动的宿主读不到它们。`,
+        )
+      }
+    }
+
     const routeSource: 'http-api' | 'webui' = edgeRouteUsed ? 'http-api' : 'webui'
     // §7.87.13.2 (2026-09-21): 'policy-classified' added — matchRouting result
     // overrode LLM/edgeRoute (see §7.87.13.2 comment block above). Distinct
@@ -1393,96 +1548,36 @@ export class InputGuardServiceImpl extends Service {
       }
     }
 
-    // §7.35 (2026-09-03): Cloud API key 缺失 → 降级 LOCAL，绝不抛 MISSING_CREDENTIAL。
-    // 场景：TUI profile 没 source repo .env.sh → DEEPSEEK_API_KEY 空。
-    // user 走 dsh-tui chat 触发意图分类（intent-router 不读 _edgeRoute，因为
-    // dsh-tui 跟 dsh-web-app/dsh-web-ui 同源、不挂 _edgeRoute），如果分到 CLOUD
-    // （含敏感问题 / 跨域查询等），cloud-llm-adapter 会在 stream 阶段抛
-    // MISSING_CREDENTIAL → user 看到 error，体验断裂。
+    // §7.175 (2026-11-11): 「云端不可用 → 降级 LOCAL」这条路径退役了。
     //
-    // 与"脱敏失败降级 LOCAL"对称：都属于"系统侧故障 / 配置缺失"，绝不让 user
-    // 的 PII 上云（即便没 PII，强制上云也会失败）。这里把"key 缺失"视为
-    // 与"sanitize 失败"等价的降级触发，category=CLOUD|SANITIZED 都走 LOCAL。
+    // 它当年唯一的用途是**改写路由**（agent/request 里把 provider 换成
+    // local-llm）。现在路由由宿主的 modelSelection 决定、input-guard 不再
+    // 改写，而且 §7.175 的 fail-closed 闸门已经把「本轮要派发到非本地
+    // provider」的轮次全部拒掉 —— 能跑到这里的轮次，路由恒为本地。
     //
-    // 关键：早于 sanitize 执行——避免 sanitize 跑完一遍才发现根本送不出去，
-    // 既浪费算力又让 user 看到延迟。降级后 messages 不动（LOCAL LLM 不上云，
-    // 不需要脱敏），由 handleAgentRequest 改写 route。
-    const cloudAvail = (category === 'CLOUD' || category === 'SANITIZED')
-      ? this.cloudAvailable()
-      : null
-    if ((category === 'CLOUD' || category === 'SANITIZED') && cloudAvail && !cloudAvail.ok) {
-      const hasRawEdgeRoute = typeof (payload.agent as { _edgeRoute?: unknown })?._edgeRoute !== 'undefined'
-      const routeSource: 'http-api' | 'webui' = hasRawEdgeRoute ? 'http-api' : 'webui'
-      const original = this.resolveOriginalRoute(edgeRoute) // §7.43: 用 fallback 让 TUI 也能写 originalProvider
-      // §7.100: direct 模式保留原 event kind（历史 dashboard/grep 不破）；
-      // delegate 模式用新 kind + mode/reason 字段，两步 grep 可定位。
-      this.audit('security', cloudAvail.mode === 'direct' ? 'input-guard.cloud-key.missing' : 'input-guard.cloud.unavailable', {
-        sessionId, category, mode: cloudAvail.mode, reason: cloudAvail.reason,
-        envSlot: this.config.cloudApiKeyEnv,
-        originalProvider: original.provider,
-        originalModel: original.model,
-        originalRealm: original.realm,
-        originalProviderSource: original.source, // §7.43 forensics
-        routeSource,
-        targetProvider: this.config.localProvider,
-        targetModel: this.config.localModel,
-      })
-      this.putStepState(sessionId, {
-        sanitized: false, replacements: 0, sessionId, timestamp: Date.now(),
-        downgraded: true,
-        downgradeReason: cloudAvail.reason,
-        originalProvider: original.provider,
-        originalModel: original.model,
-        originalRealm: original.realm,
-        routeSource,
-      })
-      return decision
-    }
+    // 所以云池通不通已经不影响本轮（它根本不会被用到），既不降级、也不
+    // 跳过脱敏：`shouldSanitize` 仍按意图分类决定，下面照常脱敏。
 
     // 4. 脱敏（仅 CLOUD 路径，或显式开启 LOCAL）
     const shouldSanitize = category === 'CLOUD' || category === 'SANITIZED' || this.config.sanitizeLocalTraffic
     if (!shouldSanitize || !this.sanitizer) {
-      // 2026-09-03 §7.26 + 2026-09-03 §7.34 fix. intent=category=LOCAL means
-      // the user's request is fully resolvable on-device (file/local/system
-      // query) — PII must not egress. Two entry points feed into pre-step:
-      //   - http-api: sets _edgeRoute (provider='cloud-llm', category='LOCAL').
-      //     §7.26 covered this; wantsDowngradeToLocal=true → rewrite.
-      //   - webui (dsh-web-app chat): does NOT set _edgeRoute; default provider
-      //     is cloud-llm from cordis.patch.yml. Without §7.34 fix,
-      //     intent=LOCAL only changes audit events but the actual LLM call still
-      //     goes to cloud, leaking file content (observed: 9 cloud calls, 6841
-      //     → 7419 promptLen for "查询密盒里有哪些文件", 2026-09-03).
-      //
-      // §7.34 fix: drop the `edgeRoute.provider.startsWith('cloud-')` guard.
-      // intent=LOCAL is the authoritative verdict — when it fires, force LOCAL
-      // regardless of how the request entered (http-api cached route / webui
-      // direct chat / any future transport). If current provider is already
-      // local, the rewrite in handleAgentRequest is idempotent (same provider/model).
+      // §7.175: 意图分类不再决定路由 —— 路由恒为宿主的 modelSelection
+      // （本地，由上面的 fail-closed 闸门保证）。这里保留的只有两件事：
+      // 记下这一轮的状态，以及把「意图判定为 LOCAL」记进审计。
       //
       // routeSource='http-api' when _edgeRoute was set on agent (even malformed;
       // raw presence = http-api wrote it). 'webui' when _edgeRoute absent.
-      const wantsDowngradeToLocal = category === 'LOCAL'
       const hasRawEdgeRoute = typeof (payload.agent as { _edgeRoute?: unknown })?._edgeRoute !== 'undefined'
       const routeSource: 'http-api' | 'webui' = hasRawEdgeRoute ? 'http-api' : 'webui'
-      const original = this.resolveOriginalRoute(edgeRoute) // §7.43: TUI 不设 _edgeRoute 时用 fallback
       this.putStepState(sessionId, {
         sanitized: false, replacements: 0, sessionId, timestamp: Date.now(),
-        downgraded: wantsDowngradeToLocal,
-        downgradeReason: wantsDowngradeToLocal ? 'intent-local' : undefined,
-        originalProvider: original.provider,
-        originalModel: original.model,
-        originalRealm: original.realm,
         routeSource,
       })
-      if (wantsDowngradeToLocal) {
-        this.audit('security', 'input-guard.intent.downgraded', {
+      if (category === 'LOCAL') {
+        this.audit('security', 'input-guard.intent.local', {
           sessionId, category, reason: 'intent-local', routeSource,
-          originalProvider: original.provider,
-          originalModel: original.model,
-          originalRealm: original.realm,
-          originalProviderSource: original.source, // §7.43 forensics
-          targetProvider: this.config.localProvider,
-          targetModel: this.config.localModel,
+          provider: selection?.provider,
+          model: selection?.model,
         })
       }
       return decision
@@ -1492,8 +1587,8 @@ export class InputGuardServiceImpl extends Service {
     // 替换了几个 PII / 多久 / 失败原因"在 ops log 里可见。start 在
     // `sanitizer.sanitize()` 之前 emit；done 在 success 分支 emit（含
     // replacementCount 和是否替换文本）；wireError 字段跟
-    // cloud/local-llm-adapter §7.46.1 done 行对齐。失败/降级由外层
-    // catch（handlePreStep 原结构）继续处理 sanitize-failed audit + 路由降级。
+    // cloud/local-llm-adapter §7.46.1 done 行对齐。失败由外层
+    // catch（handlePreStep 原结构）继续处理 sanitize-failed audit。
     const sanitizeStart = Date.now()
     // §7.123 (2026-10-27): sanitize EVERY user message, not just the last.
     // The agent loop ships the whole conversation to the model, so a PII
@@ -1524,7 +1619,6 @@ export class InputGuardServiceImpl extends Service {
         sanitizedByIndex.set(um.index, result.sanitizedText)
       }
       const replacements = totalReplacements
-      const original = this.resolveOriginalRoute(edgeRoute) // §7.43: TUI 不设 _edgeRoute 时用 fallback
       const sanitizeDurationMs = Date.now() - sanitizeStart
       if (replacements > 0) {
         // 用 index（来自 payload.messages）替换 decision.messages 里对应的
@@ -1533,9 +1627,6 @@ export class InputGuardServiceImpl extends Service {
         const newMessages = replaceUserTextsAt(decision.messages ?? payload.messages, sanitizedByIndex)
         this.putStepState(sessionId, {
           sanitized: true, replacements, sessionId, timestamp: Date.now(),
-          originalProvider: original.provider,
-          originalModel: original.model,
-          originalRealm: original.realm,
         })
         this.audit('info', 'input-guard.sanitized', {
           sessionId, replacementCount: replacements, category,
@@ -1556,9 +1647,6 @@ export class InputGuardServiceImpl extends Service {
       // 没替换：状态标记 sanitized=false
       this.putStepState(sessionId, {
         sanitized: false, replacements: 0, sessionId, timestamp: Date.now(),
-        originalProvider: original.provider,
-        originalModel: original.model,
-        originalRealm: original.realm,
       })
       // §7.46.2: sanitize done 行 (success, no replacement) — sanitizer 跑了一
       // 遍但没替换；区别 outcome=clean 跟 outcome=replaced
@@ -1571,15 +1659,15 @@ export class InputGuardServiceImpl extends Service {
     } catch (err: any) {
       // ── sanitize 失败 ────────────────────────────────────────
       // 系统故障（不是 user 行为不端）。两条路径：
-      //   - downgradeOnSanitizeFailure=true (默认)：通过 agent/request 钩子
-      //     把 provider/model 改写到 LOCAL，让原始 PII 留在本地。step 不被
-      //     阻断，user 体验"路由悄悄切到本地"，可用性 + 隐私兼顾。
+      //   - downgradeOnSanitizeFailure=true (默认)：放行本轮。§7.175 起
+      //     这里**不再有「降级」** —— 路由恒为宿主的 modelSelection（本地，
+      //     由 fail-closed 闸门保证），原始 PII 留在本地模型，不出境。
       //   - downgradeOnSanitizeFailure=false：REJECT step，user 看到空
-      //     result（保守降级，配置可选）。
+      //     result（保守策略，配置可选）。
       const reason = err?.message ?? String(err)
       const sanitizeDurationMs = Date.now() - sanitizeStart
       // §7.46.2: sanitize failed 行 — 让 operator 在 ops log 看到失败原因 +
-      // duration，外层 catch 仍按原逻辑处理 audit + 路由降级。
+      // duration，外层 catch 仍按原逻辑处理 audit。
       try {
         this.ctx?.logger?.info?.(
           `[input-guard] sanitize failed sessionId=${sessionId} category=${category} durationMs=${sanitizeDurationMs} wireError=${reason}`,
@@ -1597,33 +1685,28 @@ export class InputGuardServiceImpl extends Service {
         return { kind: 'reject', reason: 'sanitizer-failed' }
       }
 
-      // 标记降级：让后续 agent/request 钩子把 route 改写到 LOCAL。
-      // messages 不修改（保留原文，LOCAL LLM 不上云无需脱敏）。
-      const original = this.resolveOriginalRoute(edgeRoute) // §7.43: TUI 不设 _edgeRoute 时用 fallback
+      // 放行：messages 不修改（保留原文）—— 本轮走本地模型，不出境。
       this.putStepState(sessionId, {
         sanitized: false, replacements: 0, sessionId, timestamp: Date.now(),
-        downgraded: true, downgradeReason: reason,
-        originalProvider: original.provider,
-        originalModel: original.model,
-        originalRealm: original.realm,
-      })
-      this.audit('security', 'input-guard.sanitize.downgraded', {
-        sessionId, error: reason, category,
-        originalProvider: original.provider,
-        originalModel: original.model,
-        originalRealm: original.realm,
-        originalProviderSource: original.source, // §7.43 forensics
-        targetProvider: this.config.localProvider,
-        targetModel: this.config.localModel,
       })
       return decision
     }
   }
 
-  /** 路由改写 hook：agent/request handler。
-   *  在 agent-loop 的 buildRequest 阶段被调用，允许改写 provider/model。
-   *  当 handlePreStep 因 sanitize 失败标记了 stepState.downgraded，
-   *  本钩子把请求改写到本地 LLM，原始 PII 不会离开设备。
+  /** `agent/request` handler —— §7.175 起**只放行，不改路由**。
+   *
+   *  为什么不再改写：宿主 dsh-agent-loop 的 prepareRequest() 会拿
+   *  `proposedConfig` 与 `this.model.current()`（宿主给本轮选的模型）比对，
+   *  provider / model / reasoningEffort 任一不同就**直接抛错**。所以在
+   *  agent/request 里改写 provider/model 不是「降级到本地」，而是让整轮
+   *  直接失败。
+   *
+   *  现在：路由恒由宿主的 modelSelection 决定，边缘模式恒为本地模型
+   *  （主人裁决 2026-11-10）；「本该本地却可能上云」的判定与 fail-closed
+   *  拦截都在 handlePreStep 里做（见那里的 modelSelection 闸门）。
+   *
+   *  这里保留这个 handler 只为把「不改路由」这条契约钉死：seedConfig 原样
+   *  返回，一个字节都不改。
    *
    *  注意 DSH waterfall 契约：监听器真实签名是 `(payload, next)`，
    *  其中 `payload` 已被 dsh-agent 的 fused wrapper 注入 `agent` 字段
@@ -1635,175 +1718,7 @@ export class InputGuardServiceImpl extends Service {
     seedConfig: AgentRequestConfig,
     next: () => Promise<AgentRequestConfig>,
   ): Promise<AgentRequestConfig> {
-    if (!this.config.enableInputGuard) return seedConfig
-
-    // sessionId 来自 fused wrapper 注入的 payload.agent.session.id
-    const sessionId = payload?.agent?.session?.id
-    if (!sessionId) return seedConfig
-
-    const state = this.stepState.get(sessionId)
-    if (state?.downgraded) {
-      // 改写前先确认本地路由存在。
-      //
-      // 背景：local-llm 的路由存在与否取决于配置（§7.171）：配了
-      // `llm.local.baseUrl` → 直连自有池；没配 → DELEGATE 模式（转发宿主
-      // 提供商），路由照样注册。只有 `llm.local.delegate=false`（kill switch）
-      // 才让路由不存在。intent=LOCAL 必须走本地模型（隐私裁决），
-      // 但目标路由不存在时，把 provider 改写成 local-llm 只会得到一条
-      // 必然失败的请求——实测是打到本机 8080 上一个无关的鉴权 daemon，
-      // 报 HTTP 401 "Missing bearer token"，完全无法指导用户。
-      //
-      // 这里 fail-closed：本地路由缺失 → 明确报错并阻止上云。绝不放行到
-      // 云端（那会把本地数据/PII 送出设备），也不伪造一条会 401 的路由。
-      const local = this.localAvailable()
-      if (!local.ok) {
-        this.audit('security', 'input-guard.local.route-missing', {
-          sessionId,
-          reason: local.reason,
-          targetProvider: this.config.localProvider,
-          targetModel: this.config.localModel,
-          downgradeReason: state.downgradeReason,
-          originalProvider: state.originalProvider,
-          originalModel: state.originalModel,
-        })
-        try {
-          this.ctx?.logger?.error?.(
-            `[input-guard] local route unavailable sessionId=${sessionId} provider=${this.config.localProvider} reason=${local.reason} — refusing to fall back to the cloud route`,
-          )
-        } catch { /* debug only */ }
-        throw new Error(
-          `input-guard: 本轮 intent 判定为 LOCAL，按隐私裁决必须使用本地模型，`
-          + `但本地路由 "${this.config.localProvider}" 不可用（${local.reason}）。`
-          + `为避免本地数据/PII 出境，已阻止本轮上云。`
-          // §7.159 (2026-10-30): the old hint pointed at DSH_EDGE_LOCAL_LLM_BASEURL
-          // and called keyRef "an env-slot name". Both were wrong for the person
-          // who actually hits this:
-          //
-          //   · the desktop GUI starts the host WITHOUT sourcing any .env, so
-          //     process.env has no DSH_EDGE_* — the hint was unfollowable
-          //     (measured on a clean Windows device: the operator set the env
-          //     var and the route still did not register);
-          //   · since §7.102 the pool lives in config/edge.json and `keyRef`
-          //     is the LITERAL key under that file's `secrets` section, not the
-          //     name of an environment variable.
-          //
-          // So: point at the file first, keep the env vars as the fallback
-          // for headless profiles that CAN set them.
-          + `请配置本地 LLM 端点：编辑 ~/.dsh-edge-agent/edge.json 的 llm.local 段，`
-          + `填 baseUrl（OpenAI 兼容端点，必须含 /v1）与 model；`
-          + `端点需要鉴权时，把密钥写进同一文件的 secrets 段，`
-          + `并把 llm.local.keyRef 指向那个键名（keyRef 是 secrets 里的键名，不是环境变量名）。`
-          + `若能设置进程环境变量，也可用 DSH_EDGE_LOCAL_LLM_BASEURL / DSH_EDGE_LOCAL_LLM_MODEL / `
-          + `DSH_EDGE_LOCAL_LLM_KEY_ENV 覆盖，但桌面 GUI 启动的宿主读不到它们。`,
-        )
-      }
-      // 改写 route 到 LOCAL。maxTokens 等其他字段保留，但 §7.106 (2026-10-22)
-      // 起剥离 reasoningEffort：ollama / OpenAI-compatible 本地模型不声明支持
-      // 思考档位，把云端选择携带的 `high` 原样带进 local-llm，prepareCall 会
-      // 直接抛 `provider "local-llm" model "qwen3.8:27b" does not support
-      // reasoning effort "high"`，整轮失败（桌面实测）。LOCAL 语义本就是
-      // "用本地能力答"，档位随本地服务端默认，无需继承云端意图。
-      const { reasoningEffort: _droppedEffort, ...seedRest } = seedConfig
-      const downgraded: AgentRequestConfig = {
-        ...seedRest,
-        provider: this.config.localProvider,
-        model: this.config.localModel,
-      }
-      // §7.46.3 (2026-09-12): 路由改写在 ops log 留一行 — 让 operator
-      // grep sessionId 就能看到 "原本 cloud-llm / cloud-deepseek
-      // → 实际走 local-llm / qwen3-4b-instruct-2507 + reason"，不
-      // 用翻 audit JSONL。配合 preflight intent 行的 routeSource +
-      // category 形成完整 trace。
-      try {
-        this.ctx?.logger?.info?.(
-          `[input-guard] route override sessionId=${sessionId} fromProvider=${seedConfig.provider} fromModel=${seedConfig.model} toProvider=${downgraded.provider} toModel=${downgraded.model} reason=${state.downgradeReason ?? 'unknown'}`,
-        )
-      } catch { /* debug only */ }
-      this.audit('info', 'input-guard.route.overridden', {
-        sessionId,
-        from: { provider: seedConfig.provider, model: seedConfig.model },
-        to: { provider: downgraded.provider, model: downgraded.model },
-        reason: state.downgradeReason,
-      })
-      // §7.106 (2026-10-22): pre-step 写的 originalProvider 可能是回退占位
-      // （'cloud-llm/deepseek-chat'，originalProviderSource=default-cloud-fallback）
-      // ——webui 路径 pre-step 读不到 seed 的真实路由。seedConfig 才是用户此刻
-      // 真实的选择，turn-end 的 selection-restore 只允许回写这个值：占位符在
-      // 方案 A 后指向隐藏路由，restore 必失败（实测 restore-failed
-      // "Select an available model"）。seed 本来就是 local 时不覆盖（无 restore 意义）。
-      if (
-        typeof seedConfig.provider === 'string'
-        && seedConfig.provider.length > 0
-        && seedConfig.provider !== this.config.localProvider
-      ) {
-        state.originalProvider = seedConfig.provider
-        if (typeof seedConfig.model === 'string' && seedConfig.model.length > 0) {
-          state.originalModel = seedConfig.model
-        }
-      }
-      return downgraded
-    }
-
-    // §7.43 (2026-09-07): Recovery from a previous turn's downgrade.
-    //
-    // Background: handleAgentRequest is an `agent/request` waterfall listener.
-    // The upstream agent-loop builds seedConfig by reading the agent's
-    // "current provider" — which it persists across turns. When we returned
-    // a downgraded config in a prior turn (e.g. turn N intent=LOCAL), that
-    // downgraded provider stuck on the agent. On turn N+1 (intent=CLOUD),
-    // handlePreStep correctly writes state.downgraded=false, but seedConfig
-    // arriving here still has provider=localProvider. handleAgentRequest
-    // would then return seedConfig unchanged → agent-loop dispatches the
-    // CLOUD-classified query to the LOCAL LLM, where web_search is in a
-    // different realm (and qwen3-4b often hallucinates empty replies when
-    // asked for something it doesn't know how to fetch).
-    //
-    // Observed: session 20a78b87 turn 4 ('查询英国最新的新闻') was classified
-    // CLOUD by intent-router (confidence 0.99), input-guard.session-realm
-    // correctly registered CLOUD, but actual LLM call was local-llm
-    // (audit shows `local-llm-adapter llm.local.start messageCount=26`,
-    // no `route.overridden` event — confirming handleAgentRequest was a
-    // pass-through with seedConfig.provider already stuck on local).
-    //
-    // Fix: when not downgrading THIS turn, AND we have a saved
-    // originalProvider from a prior downgrade AND current seedConfig is
-    // pointing at the local provider, restore to originalProvider. This is
-    // the symmetric inverse of the override above.
-    if (
-      state?.originalProvider &&
-      typeof state.originalProvider === 'string' &&
-      state.originalProvider !== this.config.localProvider &&
-      seedConfig.provider === this.config.localProvider
-    ) {
-      const restored: AgentRequestConfig = {
-        ...seedConfig,
-        provider: state.originalProvider,
-        model: state.originalModel ?? seedConfig.model,
-      }
-      // §7.46.3: 路由恢复（前一 turn downgrade 后这一 turn 回到原始 cloud）
-      try {
-        this.ctx?.logger?.info?.(
-          `[input-guard] route restore sessionId=${sessionId} fromProvider=${seedConfig.provider} fromModel=${seedConfig.model} toProvider=${restored.provider} toModel=${restored.model} reason=recovery-from-previous-downgrade`,
-        )
-      } catch { /* debug only */ }
-      this.audit('info', 'input-guard.route.restored', {
-        sessionId,
-        from: { provider: seedConfig.provider, model: seedConfig.model },
-        to: { provider: restored.provider, model: restored.model },
-        reason: 'recovery-from-previous-downgrade',
-        originalTurn: state.timestamp,
-      })
-      // Clear originalProvider after recovery so we don't keep restoring
-      // even when the agent-loop itself has moved past the contamination.
-      // Next downgrade will re-set it via handlePreStep.
-      this.putStepState(sessionId, {
-        ...state,
-        originalProvider: undefined,
-        originalModel: undefined,
-      })
-      return restored
-    }
-
+    // §7.175: 不改路由。seedConfig 原样返回。
     return seedConfig
   }
 
@@ -1929,8 +1844,8 @@ export class InputGuardServiceImpl extends Service {
     // scope 里 ⇒ 直取 `ctx.llm` 会**直接抛**
     // `cannot get property "llm" without inject`（15:54 实机：整轮处理失败）。
     //
-    // 同文件的 `cloudAvailable()` 早就是用 `this.ctx.get?.('llm')` 取 runtime
-    // 的（§7.100 的 delegate 探针靠它跑通）—— 这里跟它同款。
+    // 同文件的 `localAvailable()` 用 `this.ctx.get?.('modelRouter')` 取 runtime
+    // —— 这里跟它同款。
     const llm = (() => {
       try {
         return (this.ctx as unknown as {
@@ -2364,35 +2279,6 @@ async function flushBuffer(
   return await sanitizer.desanitize(safePrefix, sessionId)
 }
 
-/**
- * §7.106: decide what (if anything) to restore as the session's model
- * selection when a turn ends after an input-guard downgrade. The host
- * persists the effective request header as the user's "current model"
- * (session-controller/src/agent.ts: `picked` first, else `requestHeader()`),
- * so a rewrite to local-llm leaves the GUI stale — shown as `local-llm`
- * while the route was visible, blank after Option A hid it. A restore fires
- * only for a genuinely downgraded turn whose original route was a foreign
- * (non-local) provider/model pair; missing pieces or an already-local
- * original must not touch the selection.
- */
-export function selectionRestoreTarget(
-  state: StepSanitizationState | undefined,
-  localProvider: string,
-): { provider: string; model: string } | undefined {
-  if (state?.downgraded !== true) return undefined
-  const provider = state.originalProvider
-  const model = state.originalModel
-  if (typeof provider !== 'string' || provider.length === 0 || provider === localProvider) return undefined
-  // §7.106 (2026-10-23): 'cloud-llm' is EDGE's own (now catalog-hidden) pool
-  // route — both the pre-step default-cloud-fallback placeholder and a
-  // policy route-applied rewrite can land there. Restoring it always fails
-  // the catalog check ("Select an available model" — observed 09:49) and it
-  // is never a genuine user selection, so skip instead of writing garbage.
-  if (provider === 'cloud-llm') return undefined
-  if (typeof model !== 'string' || model.length === 0) return undefined
-  return { provider, model }
-}
-
 export async function apply(ctx: Context, config: Config): Promise<() => Promise<void>> {
   // §7.102: the guard switches come from config/edge.json (privacy.*).
   // The cordis patch row no longer reads process.env — the desktop GUI
@@ -2409,9 +2295,9 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
       ;(config as { downgradeOnSanitizeFailure: boolean }).downgradeOnSanitizeFailure = privacy.sanitizeDowngradeEnabled
     }
   }
-  // §7.102: the downgrade target model follows the LOCAL pool declared in
-  // config/edge.json (llm.local.model). The file is the single source of
-  // truth — the cordis patch row no longer carries local-LLM config.
+  // §7.102: the LOCAL pool's model follows config/edge.json (llm.local.model).
+  // The file is the single source of truth — the cordis patch row no longer
+  // carries local-LLM config.
   const localModel = localPool().model
   if (localModel && config.localModel !== localModel) {
     ctx.logger?.info?.(`[input-guard] localModel from config/edge.json: ${config.localModel} → ${localModel}`)
@@ -2420,6 +2306,8 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
   // §7.35 (2026-09-03): 运行时尊重 DSH_EDGE_CLOUD_KEY_ENV 覆盖。
   // Schema default 在模块加载时求值；如果用户在 apply() 之后才 export env，
   // 这里补一刀。跟 cordis.patch.yml:41 的 !!js 表达式保持一致。
+  // §7.175: input-guard 已不再消费 cloudApiKeyEnv（云池不参与路由判定），
+  // 这里只是把 schema 默认值同步成运行期的实际值，便于排查时看日志一致。
   if (process.env.DSH_EDGE_CLOUD_KEY_ENV && process.env.DSH_EDGE_CLOUD_KEY_ENV !== config.cloudApiKeyEnv) {
     ctx.logger?.info?.(`[input-guard] cloudApiKeyEnv override: ${config.cloudApiKeyEnv} → ${process.env.DSH_EDGE_CLOUD_KEY_ENV}`)
     ;(config as { cloudApiKeyEnv: string }).cloudApiKeyEnv = process.env.DSH_EDGE_CLOUD_KEY_ENV
@@ -2531,14 +2419,20 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
     })
     if (d2) disposers.push(d2)
 
-    // 路由改写：agent/request。
+    // agent/request —— §7.175 起只放行，不改路由。
     //
-    // 当 handlePreStep 因 sanitize 失败标记了 stepState.downgraded，
-    // 这里把 provider/model 从 CLOUD 改写到 LOCAL，原始 PII 不离开设备。
+    // 曾经这里把 provider/model 从 CLOUD 改写到 LOCAL（降级）。现在不行：
+    // 宿主 dsh-agent-loop 的 prepareRequest() 会拿 proposedConfig 与
+    // `this.model.current()` 比对，provider / model / reasoningEffort 任一
+    // 不同就直接抛错 —— 改写不是「降级」，是让整轮失败。
+    //
+    // 路由恒由宿主的 modelSelection 决定（边缘模式恒为本地模型），「本该
+    // 本地却可能上云」的 fail-closed 拦截在 handlePreStep 里做。
+    //
     // agent-loop 的 contract：监听器真实签名是 `(payload, next)`，
     // payload 由 dsh-agent 的 fused wrapper 注入了 `agent` 字段
     // （dispatch.js#agentEvents）。next() 返回 chain 默认的 seedConfig。
-    // 我们必须先 await next() 拿到 seedConfig 再决定是否改写，不能跳过。
+    // 我们必须先 await next() 拿到 seedConfig 再传下去，不能跳过。
     //
     // §7.136：同 agent/pre-step —— 不带 global，靠 scope 过滤只在边缘模式生效。
     const d3 = on('agent/request', async (payload: any, next: any) => {
@@ -2554,60 +2448,27 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
     })
     if (d3) disposers.push(d3)
 
-    // §7.106 (2026-10-22): after a downgrade turn, restore the SESSION's model
-    // selection. The host treats the last committed request header as the
-    // user's current model (session-controller/src/agent.ts: `current` reads
-    // `picked` first, else `session.requestHeader()`), so every rewrite to
-    // local-llm leaves the GUI stale — it used to display `local-llm` (a
-    // visible pollution) and, since Option A hid the edge plumbing routes,
-    // the same stale seed renders as an empty "请选择模型". On turn/end of a
-    // downgraded turn we call sessionController.selectModel with the original
-    // user selection recorded in the step state: that installs an explicit
-    // `picked` (which outranks the header fallback) and appends the durable
-    // `model/selection` event. Execution routing is unaffected — the next
-    // turn's pre-step re-decides from scratch.
+    // §7.175: §7.106 的「降级后恢复 GUI 模型选择」监听器退役 —— 它恢复的是
+    // 「被改写掉的原路由」，而改写本身已经不存在了：路由恒由宿主的
+    // modelSelection 决定，GUI 显示的就是用户真正选中的那个。
+
+    // §7.176: 边缘模式的会话默认模型 —— 把会话级 modelSelection 钉到本地池。
     //
-    // Deferred inject: headless profiles never compose the controller —
-    // then the restore simply never fires (no GUI to pollute) and the §7.43
-    // request-level restore keeps covering route stickiness.
-    let sessionController: { selectModel?: (request: Record<string, unknown>) => Promise<unknown> } | undefined
-    ctx.inject(['sessionController'], (raw: any) => {
-      sessionController = raw?.sessionController
-    })
-    const d4 = on('session/event', (session: any, event: any) => {
-      try {
-        if (event?.type !== 'turn/end') return
-        const sid = typeof session?.id === 'string' ? session.id : undefined
-        if (sid === undefined) return
-        const target = selectionRestoreTarget(service.getStepState(sid), config.localProvider)
-        if (target === undefined) return
-        const { provider, model } = target
-        const select = sessionController?.selectModel
-        if (typeof select !== 'function') return
-        void Promise.resolve(select.call(sessionController, { sessionId: sid, provider, model }))
-          .then(() => {
-            void auditLog?.log?.({
-              level: 'info',
-              kind: 'input-guard.selection.restored',
-              source: 'input-guard',
-              payload: { sessionId: sid, provider, model },
-            })
-          })
-          .catch((error: unknown) => {
-            void auditLog?.log?.({
-              level: 'warn',
-              kind: 'input-guard.selection.restore-failed',
-              source: 'input-guard',
-              payload: { sessionId: sid, provider, model, error: String(error) },
-            })
-          })
-      } catch { /* a failing restore must never touch event dispatch */ }
+    // 事件由宿主 dsh-agent 的 announce() 派发，载体是 `scopeTarget(agent, agent)`
+    // （agent 自己的 scope key）⇒ 作用域过滤规则（dsh-scope#scopeTarget）：
+    // 「监听器自己的 scope tag 必须是派发 scope 或其祖先」。本插件挂在边缘模式
+    // preset 的 scope 链上（cordis:group 只建 realm，不换 scope tag）⇒ 绑到
+    // 边缘模式的 agent 会触发，绑到标准模式的 agent 不会 ⇒ 标准模式仍是纯宿主。
+    //
+    // 与 agent/pre-step 同一个 ctx ⇒ 生效范围一致。
+    const d4 = on('agent/created', (payload: any) => {
+      service.handleAgentCreated(payload)
     })
     void auditLog?.log?.({
       level: 'info',
       kind: 'input-guard.hook.registered',
       source: 'input-guard',
-      payload: { event: 'session/event(turn/end)', global: false, disposerReturned: typeof d4 === 'function' },
+      payload: { event: 'agent/created', scopedTo: 'agent-preset', disposerReturned: typeof d4 === 'function' },
     })
     if (d4) disposers.push(d4)
   }

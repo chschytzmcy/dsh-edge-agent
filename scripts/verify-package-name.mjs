@@ -112,6 +112,49 @@ export const THIRD_PARTY_SCOPES = [
   '@deepseek-harness-tui',
 ]
 
+/**
+ * **已退役**的 scope（历史值）：本仓 2026-11-10 把包 scope 从
+ * `@deepseek-harness-edge-agent` 迁到 `@dsh-edge`（§7.173）。
+ *
+ * 为什么允许它们出现在 `docs/` 下：改名迁移指南**必须写出旧 scope 是什么**
+ * —— 否则读者无从判断自己的已部署 profile 是不是需要改
+ * （`docs/load-into-local-dsh.md` §8.10 的「4 处要同步」就是这件事）。
+ * 这些字面量是**历史记录**，不是当前用法。
+ *
+ * 豁免范围严格受限（§7.175 补）：
+ *   · 只在 `docs/` 下的文件里放行；
+ *   · 只放行下面这张表里的 scope（其它陌生 scope 在 docs 里照样红）；
+ *   · 代码 / 配置（`cordis.patch.yml` / `presets/` / `src/` / `scripts/` …）
+ *     里出现一律照旧报错 —— 那才是真正会让插件静默挂不上的漂移。
+ */
+export const RETIRED_SCOPES = ['@deepseek-harness-edge-agent']
+
+/**
+ * 这个 scope 是不是「已退役的旧 scope 的一次提及」。
+ *
+ * 除了精确相等，还认一种形态：迁移文档里的「旧目录改名」写法
+ * `@<retired>.old-<timestamp>`（scope 的合法字符集含 `.` 与 `-`，
+ * 所以扫描出来的是 `@deepseek-harness-edge-agent.old-`）。
+ *
+ * @param {string} s - 扫描到的 scope 串（含 @）
+ * @param {Iterable<string>} retired - 已退役 scope 集合
+ */
+export function isRetiredScopeMention(s, retired) {
+  for (const r of retired) {
+    if (s === r) return true
+    if (s.startsWith(r + '.old')) return true
+  }
+  return false
+}
+
+/**
+ * 这个文件是不是文档（迁移指南所在的地方）。
+ * @param {string} rel - 仓库相对路径
+ */
+export function isDocPath(rel) {
+  return rel.startsWith('docs/')
+}
+
 function escapeRe(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
@@ -127,6 +170,7 @@ export function checkPackageName(input) {
   const { files, facts } = input
   const copySites = input.copySites ?? COPY_SITES
   const thirdParty = new Set(input.thirdParty ?? THIRD_PARTY_SCOPES)
+  const retired = new Set(input.retiredScopes ?? RETIRED_SCOPES)
   const failures = []
 
   if (!facts) {
@@ -166,11 +210,17 @@ export function checkPackageName(input) {
   ]
 
   for (const f of files) {
+    // §7.175: 文档里的「已退役 scope 的一次提及」不算漂移 —— 迁移指南必须
+    // 写出旧 scope 是什么，否则读者无从判断自己的 profile 要不要改。
+    // 代码 / 配置里出现旧 scope 仍然是漂移（插件会静默挂不上）⇒ 不豁免。
+    const docExempt = isDocPath(f.rel)
+
     ownRe.lastIndex = 0
     let m
     while ((m = ownRe.exec(f.text)) !== null) {
       const s = '@' + m[1]
       if (s !== scope) {
+        if (docExempt && isRetiredScopeMention(s, retired)) continue
         failures.push({
           code: 'E-OWN-SCOPE-DRIFT',
           where: f.rel,
@@ -185,6 +235,7 @@ export function checkPackageName(input) {
         const s = '@' + m[1]
         if (s === scope) continue
         if (thirdParty.has(s)) continue
+        if (docExempt && isRetiredScopeMention(s, retired)) continue
         failures.push({
           code,
           where: f.rel,
@@ -325,6 +376,39 @@ function runSelfTest() {
   ok('事实源非法时 fail-closed', (() => {
     const r = checkPackageName({ files: good, facts: null })
     return r.failures.length > 0 && r.failures[0].code === 'E-NAME-FORMAT'
+  })())
+
+  // ── §7.175 豁免：已退役 scope 在 docs/ 下不算漂移 ──────────────────────
+  //
+  // 迁移指南必须写出旧 scope 是什么（否则读者判断不了自己的 profile 要不要
+  // 改）。豁免**严格受限**，下面四条逐条把它钉住。
+  const RETIRED = RETIRED_SCOPES[0]
+  const docWithRetired = good.concat([
+    { rel: 'docs/migrate.md', text: '旧包名是 ' + RETIRED + '/' + facts.base + '\n' },
+    { rel: 'docs/migrate2.md', text: 'mv node_modules/' + RETIRED + ' node_modules/' + RETIRED + '.old-2026\n' },
+  ])
+
+  ok('docs/ 里提及已退役 scope 不误报', codes(docWithRetired).length === 0)
+
+  ok('已退役 scope 出现在代码/配置里仍然被抓到', (() => {
+    const bad = good.map((f) =>
+      f.rel === 'cordis.patch.yml' ? { ...f, text: f.text.replace(facts.scope + '/', RETIRED + '/') } : f,
+    )
+    return codes(bad).includes('E-OWN-SCOPE-DRIFT')
+  })())
+
+  ok('docs/ 里出现陌生 scope 仍然被抓到（豁免只认已退役那几个）', (() => {
+    const bad = docWithRetired.concat([
+      { rel: 'docs/other.md', text: '别的包 ' + OTHER + '/' + facts.base + '\n' },
+    ])
+    return codes(bad).includes('E-OWN-SCOPE-DRIFT')
+  })())
+
+  ok('非 docs 目录的已退役 scope 仍然被抓到', (() => {
+    const bad = good.concat([
+      { rel: 'src/x.ts', text: 'const p = "' + RETIRED + '/' + facts.base + '"\n' },
+    ])
+    return codes(bad).includes('E-OWN-SCOPE-DRIFT')
   })())
 
   ok('JSDoc 标签 / Makefile 配方不误报', (() => {

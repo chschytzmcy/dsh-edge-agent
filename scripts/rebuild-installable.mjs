@@ -219,18 +219,53 @@ for (const variant of VARIANTS) {
   //    App picks the new code up on restart. A clean atomic swap still
   //    happens whenever the lock is absent (POSIX always; Windows with the
   //    app quit).
+  //
+  //    §7.175 (2026-11-11): 两步 swap 现在**各自**降级。
+  //    此前只给「第一步（挪走旧目录）」配了降级，第二步（接上新目录）
+  //    是一次裸 renameSync —— 它 EPERM 时（同一个活句柄！）整个脚本
+  //    抛出，而**旧目录已经被挪走了** ⇒ `dist/installable/<variant>/`
+  //    根本不存在 ⇒ 桌面 profile 的 `link:`/JUNCTION **悬空** ⇒
+  //    Edge tab 静默消失（实测 2026-11-11 10:20）。
+  //    现在两步都有降级路径，且**任何分支结束时 target 路径必然存在**
+  //    （第二步失败 ⇒ 用旧目录恢复 + 就地同步，绝不留悬空 link）。
   const retired = join(DIST, `.${variant.dir}.retired`)
   rmSync(retired, { recursive: true, force: true })
   let inPlace = false
-  if (existsSync(target) && !renameDirWithRetry(target, retired)) {
-    console.warn(`  warning: ${variant.dir} is locked (running desktop App?) — in-place sync instead of atomic swap`)
+  let movedAside = false
+  if (existsSync(target)) {
+    if (renameDirWithRetry(target, retired)) {
+      movedAside = true
+    } else {
+      console.warn(`  warning: ${variant.dir} is locked (running desktop App?) — in-place sync instead of atomic swap`)
+    }
+  }
+  if (!movedAside) {
+    // 旧目录挪不走（活句柄）⇒ 就地同步：target 路径不动，link 持续有效。
     syncEntriesInPlace(staging, target)
     rmSync(staging, { recursive: true, force: true })
     inPlace = true
+  } else if (!renameDirWithRetry(staging, target)) {
+    // 旧目录挪走了，但新的接不上（同一个活句柄卡在第二步）。
+    // ⇒ 先把旧目录恢复回 target（link 立刻重新有效，绝不悬空），
+    //    再就地同步新内容。
+    console.warn(`  warning: ${variant.dir} staging rename failed — restoring the previous directory, then in-place sync`)
+    if (renameDirWithRetry(retired, target)) {
+      syncEntriesInPlace(staging, target)
+      rmSync(staging, { recursive: true, force: true })
+      inPlace = true
+    } else {
+      console.error(`  error: could not restore ${variant.dir} — the link: target is now dangling.`)
+      console.error(`         手工恢复：把 ${retired} 改名为 ${target}`)
+      process.exit(1)
+    }
   }
   if (!inPlace) {
-    renameSync(staging, target)
     rmSync(retired, { recursive: true, force: true })
+  }
+  // 不变式：target 路径必须存在（桌面 profile 的 link: 指向它）。
+  if (!existsSync(target)) {
+    console.error(`  error: ${variant.dir} is missing after the swap — the link: target would dangle.`)
+    process.exit(1)
   }
 
   console.log(`  built ${variant.dir} (patch=${variant.patchField}, version=${variantPkg.version}${inPlace ? ', in-place' : ''})`)

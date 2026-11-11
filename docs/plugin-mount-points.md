@@ -60,7 +60,7 @@ const dispose = this.cordisCtx.on('session/event', (session, event) => {
 // src/dsh-adapter/input-guard.ts（§7.136：前两个去掉 { global: true }）
 const d1 = on('agent/pre-step', handler)                 // 正向: 攻击→策略→分类→脱敏（scope 绑定）
 const d2 = on('llm/stream',    handler, { global: true }) // 反向: 反脱敏 text-delta（事件无 scope 载体）
-const d3 = on('agent/request', handler)                  // 路由改写: sanitize失败 CLOUD→LOCAL（scope 绑定）
+const d3 = on('agent/request', handler)                  // §7.175 起只放行，不改路由（scope 绑定）
 ```
 
 **softInject 5 个 service**(input-guard.ts:1544-1548):
@@ -500,7 +500,7 @@ http-api ──inject──► [agents, intentRouter, auditLog, tdBus, realmSkil
        │              └─ inject: [auditLog, skills]
        │              └─ softService: ctx.edgeTools (打 realm tag)
        │
-  agent/request ──► input-guard (改写 provider/model: CLOUD → LOCAL)
+  agent/request ──► input-guard (§7.175 起只放行：不改 provider/model)
        │
   llm/stream ──► input-guard (反脱敏 text-delta, ctx.sanitizer.desanitize)
        │

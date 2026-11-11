@@ -274,6 +274,23 @@ edge 侧一个 secret 都不碰：
 > 完整配置清单（16 类配置项 + 路由行为约定）见
 > [`docs/privacy-policy.md`](docs/privacy-policy.md#配置清单)。
 
+### 边缘模式的模型从哪来（fail-closed）
+
+宿主 0.2.2-rc.1 起，**路由只由会话级 `modelSelection` 决定** —— 在
+`agent/request` 里改写 provider/model 会被宿主的 `prepareRequest()` 判非法并抛错。
+所以边缘模式的模型是这样定的：
+
+| 情况 | 结果 |
+|---|---|
+| 边缘模式新建会话、用户没明确选过模型 | input-guard 在 `agent/created` 时用宿主的合规入口 `agent.model.select()` 钉成 `local-llm`（配了本地端点就用本地池的模型，没配就按 DELEGATE 用宿主当前模型） |
+| 用户**明确选过**别的模型 | **不插手** —— 用用户选的那个 |
+| 本轮判定为 LOCAL、会话选的 provider 不是本地 provider | **直接拒绝这一轮**（不放行到可能上云的 provider） |
+| 本轮判定为 CLOUD | 放行（用哪个模型是用户自己的行为） |
+
+> 判一个会话到底用了哪个 provider，唯一权威是**审计链**：
+> `input-guard.model.defaulted` / `input-guard.model.default-skipped` /
+> `input-guard.blocked.model-selection`。
+
 ---
 
 ## 📚 文档
