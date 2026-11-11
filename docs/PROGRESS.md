@@ -18432,6 +18432,56 @@ dashscopeApiKey / alitokenplanApiKey / tavilyApiKey / bochaApiKey）。
 - ⏸ full 变体（`:21017` + `POST /v1/chat`）本轮不验证（主人改口径）；
 - ⏸ npm 首次发布 `@dsh-edge/dsh-edge-agent@0.1.1` 待主人授权 commit/push。
 
+### 六、主人卸载插件后的清理（2026-11-11 12:42 起）
+
+主人在桌面版 Plugins 里卸载了本插件，指令：「把剩余的也清理下」。实测与处置：
+
+**卸载流程自己清掉的**（不必再管）：
+
+| 项 | 状态 |
+|---|---|
+| 桌面 profile `package.json#dependencies` 里的本包 | 已移除 |
+| 桌面 profile `dsh.profile.bundles` 里的本包 | 已移除 |
+| 桌面 profile `pnpm-lock.yaml` 里的本包 | 已移除（lock 只剩 dsh-context + zod） |
+| `~/.dsh-edge-agent/`（运行期数据根：审计链 / ops log / storage / sessions / `edge.json` / `edge.json.bak-20261030T025751` / 探针 cookie） | **整个目录已被卸载流程删除** |
+
+**本轮我清掉的**（仓库内，`rm --` 可用）：
+
+- `config/edge.json`（本地配置，含 6 个明文 key）—— 主人裁决「三份全清」；
+- `dist/installable/dsh-edge-agent-desktop-safe/config/edge.json`（同一份配置的副本）；
+- `dist/installable/dsh-edge-agent-full/config/edge.json`（同上）；
+- `dist/dsh-edge-agent-{desktop-safe,full}-DEMO.tar.gz`（**内嵌真实明文 key**，
+  构建脚本自己就标了「勿分发」）；
+- `dist/.edge-config-from-env.selftest/`（门禁 selftest 的临时目录；里面的
+  `operator-secret-value` 是脚本写死的**假值**，不是真 key）。
+
+**清空本地配置后的行为变化**（如实记录）：`config/edge.example.json` 里
+`llm.local.baseUrl` 是**空串** ⇒ 按 §7.171 走 **DELEGATE**（`local-llm` 转发宿主
+profile 已配置的提供商），**不是**直连 `127.0.0.1:8080`（那是 `cordis.yml` 里
+独立运行时的行内默认值，shipped 模板不走那条）。⇒ 重装插件后：
+
+- provider 身份仍是 `local-llm` ⇒ §7.175 的 fail-closed 闸门照常放行；
+- §7.176 仍把边缘模式会话默认钉到 `local-llm`；
+- 但 wire 上真正跑的是**宿主 GUI 选中的模型**（桌面 profile 当前是
+  `qwen-token-plan-cn/deepseek-v4.1-flash`），不是先前的本地 token-plan 端点
+  （`https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1` +
+  `qwen3.8-flash`）。要回到那个端点，主人重建
+  `~/.dsh-edge-agent/edge.json` 并填回自己的 key 即可。
+
+**工作区外、本机 `rm` 拒收的**（受信任执行器只收工作区内目标 ⇒ 交主人手动执行）：
+
+```
+C:\Users\cheng\.dsh\profiles\desktop\node_modules\@dsh-edge                      （只剩一个指向 installable 的链接）
+C:\Users\cheng\.dsh\profiles\desktop\node_modules\@deepseek-harness-edge-agent.old-20261110132654  （空目录）
+C:\Users\cheng\.dsh\profiles\desktop\node_modules\.ignored\@deepseek-harness-edge-agent.old-20261110132654  （230 文件 / 1.65 MB，**含 6 个明文 key**）
+C:\Users\cheng\.dsh\profiles\desktop\node_modules\.ignored\@dsh-edge              （232 文件 / 1.72 MB，同包的旧副本）
+```
+
+**另一条值得记的机制**：桌面 App 正在运行时重建 `dist/installable/…` 会锁住目录
+⇒ 重建降级为 in-place 同步 ⇒ 桌面 profile 的 pnpm 认为链接断了 ⇒ 把旧副本挪进
+`node_modules/.ignored/`。**每次重建都可能多攒一份搁置副本**（每份都带一份
+`config/edge.json`）⇒ 重装前先扫一遍 `.ignored/`。
+
 
 ---
 
