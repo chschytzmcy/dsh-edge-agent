@@ -379,6 +379,17 @@ export function stageVariant(variant, destDir, { keepSecretConfig = false } = {}
   for (const f of ['cordis.yml', 'cordis.patch.yml', 'cordis.desktop-safe.patch.yml']) {
     cpSync(join(ROOT, f), join(destDir, f), { recursive: true })
   }
+  // §7.207: README 也进 tar 包 ——
+  // tar 包是**直接发给用户**的产物（GitHub Release 资产，桌面端粘 URL 就装），
+  // 它必须带着**当前**的 README（怎么装 / 怎么配 / 怎么验）。
+  // 之前只有 npm 包带 README（npm 永远自动带 README/LICENSE，前提是目录里有），
+  // 于是「git release 也包含最新 README」这句话在 tar 包上是假的。
+  // ⇒ 门禁 `verify:tarball` 第 8 条盯着：tarball 里必须有 README.md，且与仓库根
+  // 逐字节一致（改完 README 忘了重建 tar 包 ⇒ 门禁红）。
+  const readmeSrc = join(ROOT, 'README.md')
+  if (existsSync(readmeSrc)) {
+    cpSync(readmeSrc, join(destDir, 'README.md'))
+  }
 
   const configSrc = join(ROOT, 'config')
   if (existsSync(configSrc)) {

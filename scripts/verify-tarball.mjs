@@ -29,7 +29,10 @@
 //      `prepare` would run at install time and demand build approval);
 //   7. the manifest agrees with `dist/installable/<variant>/package.json` on the
 //      fields that matter — this is the anti-staleness check: a tarball built
-//      before a manifest change fails here.
+//      before a manifest change fails here;
+//   8. §7.207: the tarball carries a README.md, and it is byte-identical to the
+//      repository's — "the shipped README is the current README" must not be a
+//      coincidence that can silently rot.
 //
 // Run via:
 //   node scripts/verify-tarball.mjs             # audit the real artifacts
@@ -237,6 +240,31 @@ export function auditTarball(tarballPath, installableDir, { expectSecretConfig =
     }
   }
 
+  // ── 8. §7.207: the tarball must carry the CURRENT README ────────────────
+  //    The git release channel (§7.201) hands these tarballs to users directly
+  //    — if the README is missing or stale, the package page and the release
+  //    asset tell two different stories.
+  const repoReadme = join(ROOT, 'README.md')
+  if (!tarball.files.includes('README.md')) {
+    failures.push(
+      'tarball 里没有 README.md —— §7.207: tar 包是直接发给用户的产物（GitHub Release 资产），'
+      + '它必须带着**当前**的 README（README.md 已在 package.json#files 白名单里）',
+    )
+  } else if (!existsSync(repoReadme)) {
+    notes.push('仓库根没有 README.md ⇒ 跳过 README 内容比对')
+  } else {
+    const shipped = tarball.read('README.md')
+    const current = readFileSync(repoReadme, 'utf8')
+    if (shipped !== current) {
+      failures.push(
+        'tarball 里的 README.md 与仓库根的不一致 ⇒ 出货的是**陈旧** README'
+        + `（包内 ${shipped.length} 字节 vs 仓库 ${current.length} 字节）—— 重新构建`,
+      )
+    } else {
+      notes.push(`README.md 与仓库一致（${current.length} 字节）`)
+    }
+  }
+
   notes.push(`条目 ${tarball.files.length} 个`)
   return { failures, notes }
 }
@@ -275,6 +303,8 @@ function selftest() {
     'cordis.desktop-safe.patch.yml': '[]\n',
     'presets/edge.desktop-safe.patch.yml': '[]\n',
     'config/edge.example.json': '{}\n',
+    // §7.207: the shipped README must be the repository's, byte for byte.
+    'README.md': readFileSync(join(ROOT, 'README.md'), 'utf8'),
   }
   const GOOD_MANIFEST = {
     name: '@dsh-edge/dsh-edge-agent',
@@ -398,6 +428,21 @@ function selftest() {
     writeFileSync(join(installable, 'package.json'), JSON.stringify({ ...GOOD_MANIFEST, version: '0.1.1-desktop-safe' }))
     const r = auditTarball(t, installable)
     expect('版本与 installable 目录不一致 ⇒ 报失败', r.failures.some((f) => f.includes('陈旧产物')), true)
+  }
+
+  // 11. §7.207: a tarball WITHOUT the README is caught, and one with a STALE
+  //     README is caught too — "the shipped README is the current README"
+  //     must be enforced, not assumed.
+  {
+    const { 'README.md': _omit, ...files } = GOOD_FILES
+    const t = mk('noreadme', files, GOOD_MANIFEST)
+    const r = auditTarball(t, join(ROOT_TMP, 'nonexistent'))
+    expect('缺 README.md ⇒ 报失败', r.failures.some((f) => f.includes('README.md')), true)
+  }
+  {
+    const t = mk('stalereadme', { ...GOOD_FILES, 'README.md': '# 旧 README\n' }, GOOD_MANIFEST)
+    const r = auditTarball(t, join(ROOT_TMP, 'nonexistent'))
+    expect('README 与仓库不一致 ⇒ 报失败', r.failures.some((f) => f.includes('陈旧')), true)
   }
 
   rmSync(ROOT_TMP, { recursive: true, force: true })

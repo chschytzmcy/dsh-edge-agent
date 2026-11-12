@@ -22405,3 +22405,70 @@ git tag v0.1.4  →  publish.yml
 - **没有**改 npm 上**已发布**的 0.1.4（包页还是旧 README）⇒ **下一个版本**的包页才变。
 
 ---
+
+## §7.207 发 0.1.5：把「最新的 README」同时装进两条发布面（2026-11-12）
+
+### 一、主人的要求
+
+> 「重新发布版本，包括 git release 和 npm，包含最新的 readme」
+
+### 二、为什么是 0.1.5 而不是「重发 0.1.4」
+
+npm 的**已发布版本不可覆盖**（重发同一版本必 403/409）⇒ 「重新发布」只能是**新版本**。
+本版内容 = 0.1.4 之后的全部改动（§7.202 发布链修复 + §7.203–§7.206 的 README 重排）。
+
+### 三、关键一步：README 原先**不在** tar 包里
+
+| 出货面 | 0.1.4 时的内容 | 变化 |
+|---|---|---|
+| **npm 包**（241 文件）| 变体 239 + **README** + LICENSE —— npm **永远自动带** README/LICENSE（前提是目录里有）| README **内容更新** ✔ |
+| **tar 包 / installable 目录**（238 文件）| 变体目录本身 —— **不含 README** | **README 进来了**（239 文件） |
+
+⇒ 「git release 也包含最新的 README」这句话在 0.1.4 上是**假的**（tar 包里压根没有 README）。
+⇒ 修法：`README.md` 进 `package.json#files` 白名单 ——
+`scripts/rebuild-installable.mjs` 的 `shippedEntries()` 就是从 `pkg.files` 取出货条目
+（**单一事实源**），所以变体目录 / tar 包 / npm 暂存目录**三处同时**带上它。
+
+⇒ npm 包的**文件数不变（仍 241）**：`verify:npm-stage` 的期望集合是
+「变体文件 ∪ {README.md, LICENSE}」—— 集合不重复计数，README 本来就在里面。
+
+### 三之二、门禁当场抓到的一件事：`files` 白名单**不决定拷哪些文件**
+
+第一次只改了 `package.json#files` 就去跑构建 ⇒ **新门禁直接红了**：
+
+```
+verify-tarball: dist\dsh-edge-agent-desktop-safe.tar.gz 不合格：
+  - tarball 里没有 README.md —— §7.207: tar 包是直接发给用户的产物…
+```
+
+**根因**：仓库里有**两个生产者**，各有一套拷贝清单：
+
+| 生产者 | 产出 | 拷贝哪些文件由谁决定 |
+|---|---|---|
+| `scripts/rebuild-installable.mjs` | `dist/installable/<变体>/`（⇒ npm 包内容）| `shippedEntries(pkg)` = **`pkg.files`** ✔ 白名单驱动 |
+| `scripts/_pack-core.mjs#stageVariant` | `dist/<变体>.tar.gz`（⇒ GitHub Release 资产）| **硬编码清单**（lib / presets / 3 个 yml / config 白名单）—— `files` 只被**写进清单**，不决定拷贝 |
+
+⇒ §7.162 那句「`files` 是单一事实源」说的是**清单里的 `files` 字段**，**不是**
+「两个生产者的拷贝清单」—— 这两件事当时被当成了一件事。
+⇒ 修法：在 `stageVariant` 里**显式**拷 `README.md`（并写明为什么）。
+
+⇒ **这正是新门禁的用处**：没有它，这次会「构建全绿 → 发出去一份没有 README 的 tar 包」，
+而 npm 包与 tar 包的 README 还不一致 ⇒ 用户从两条通道拿到的东西不一样。
+
+### 四、门禁：新增一条断言把这件事钉住
+
+`scripts/verify-tarball.mjs` 新增第 8 项检查：
+
+- tarball 里**必须有** `README.md`；
+- 且它必须与**仓库根的 README 逐字节一致** ⇒ 「出货的 README = 最新的 README」
+  不是碰巧，是被门禁守着的（否则改完 README 忘了重建 tar 包，就会悄悄发出去一份旧的）。
+
+自证新增 2 条反证（缺 README ⇒ 红；README 与仓库不一致 ⇒ 红）。
+
+### 五、这一节**没有**做的事
+
+- **没有**改任何**运行时**代码 ⇒ **0.1.5 的运行时行为与 0.1.4 完全相同**；
+- **没有**改 npm 的发布方式（仍是本机 `publish:npm --yes --tag` + CI 的两个面）；
+- **没有**动 `docs/` 里的正式文档。
+
+---
