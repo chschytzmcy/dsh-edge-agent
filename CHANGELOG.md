@@ -11,10 +11,38 @@
 
 ## [Unreleased]
 
+**「本地池其实是委托出去的」这件事，从审计行里的一个字段变成了一等 security 事件；
+并多了一个默认关闭的开关，让它可以被彻底堵住。**
+（2026-11-12，§7.210）
+
+### 你会看到什么变化
+
+- 判定为「本地」的轮次会被改道到本地池。**但本地池留空（默认）时是 DELEGATE**
+  —— 转发宿主模型，也就是**这一轮其实出了设备**。
+  以前这件事只表现为审计行里的一个 `mode: 'delegate'` 字段；现在审计链里会多一条
+  **独立的一等 security 级事件**：`input-guard.reroute.delegate-egress`
+  （带 `from` / `to` / `reason` / `blocked`）。grep `security` 或 `egress` 都能搜到。
+- 想彻底杜绝这种出网，两条路：
+  1. 在 `~/.dsh-edge-agent/edge.json` 的 `llm.local` 段填上 `baseUrl`（直连自有池）；
+  2. 或把 `llm.local.requireLocalEndpoint` 设成 `true` —— DELEGATE 时该轮按
+     fail-closed **拒收**（宁可不答，也不出网）。
+- **默认 `false`** ⇒ 既有行为一个字没改（DELEGATE 照常放行，只是多了那条审计事件）。
+- ⚠️ 别把 `requireLocalEndpoint` 一上来就开成 `true`：默认形态就是 DELEGATE，
+  那样会让边缘模式全线不可用。
+
+### 测试与门禁
+
+- 新增 `tests/unit/input-guard-delegate-egress.test.ts`（9 条）：默认档零行为变化 /
+  security 事件 / 严格档拒收且不派发 / 被拒时不留「改道了」的假记录 / 直连池不受影响。
+- `verify:config-hints` 扩了 3 组断言：新提示文案与旧文案受同一套纪律约束、
+  必须点名 `requireLocalEndpoint`、模板里的默认值必须是 `false`（自证 14 → 17 条）。
+
+### 上一轮（§7.209）
+
 **safe 变体与 npm 包不再携带 full 变体的补丁；出货文件集改为按变体派生。**
 （2026-11-12，§7.209）
 
-### 出货内容的变化（运行时行为一字未改）
+#### 出货内容的变化（运行时行为一字未改）
 
 - **npm 包与 safe 变体的 tar 包里不再有 full 变体的两个补丁**（`cordis.patch.yml`
   20,482 B + `presets/edge.patch.yml` 35,972 B，合计 **56,454 B**）：那两个文件与
@@ -27,21 +55,21 @@
 - ⚠️ **已发布的 5 个 npm 版本（0.1.1 – 0.1.5）仍然带着 full 补丁** ——
   npm 版本不可覆盖，要等**下一个版本**发布才会消。
 
-### 排障指引改口（这行以前会把 safe 用户带进 full 行为）
+#### 排障指引改口（这行以前会把 safe 用户带进 full 行为）
 
 - `docs/desktop-troubleshooting.md` §7 教的「手动 cp `cordis.patch.yml` 到嵌套包根」
   改成「cp **本变体自己的**补丁」（safe = `cordis.desktop-safe.patch.yml`，
   full = `cordis.patch.yml`）。以前照做 ⇒ safe 静默切成 full（改写模型/人设/审批/
   沙箱/会话根/http-api）；现在 safe 的包里**根本没有**那个文件可 cp。
 
-### 门禁：加了三项「变体纯净度」断言（门禁道数仍是 31）
+#### 门禁：加了三项「变体纯净度」断言（门禁道数仍是 31）
 
 - `verify:installable` 第 2d 项、`verify:npm-stage` 第 5d 项、`verify:tarball` 第 10 条
   （含 2 条反向自证）—— 本变体**不得**携带别的变体的补丁。
 - 出货文件集改由 `scripts/_bundle-variants.mjs` **单一派生**（`variantFiles` /
   `variantExports`），四个出货写入点全部改走它，删掉了两处硬编码清单。
 
-### 文档：不再写会漂的出货数字
+#### 文档：不再写会漂的出货数字
 
 - `lib/` 下每个模块出 3 个产物 ⇒ 「包里几个文件」每改一次代码就变。原先写死的
   「238 文件 / 37 个 `exports` 入口」**早就在漂**（registry 上已是 241）。

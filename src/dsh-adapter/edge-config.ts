@@ -118,6 +118,18 @@ export interface EdgeLlmPool {
   delegateProvider?: string
   /** Delegate 模式：wire model 覆盖（压过宿主选择 / 探针模型）。 */
   delegateModel?: string
+  /**
+   * §7.210 (2026-11-12): 「本地」必须落在**直连端点**上。
+   *
+   * 默认 **false**（零行为变化）：本地池没配 `baseUrl` 时是 DELEGATE（转发宿主
+   * provider，§7.171）⇒ LOCAL 轮次改道过去其实**出网**。上游**有意**放行这个
+   * 语义（`tests/unit/input-guard-local-reroute.test.ts` 有单测断言）⇒ 改它等于
+   * 改产品语义 ⇒ 主人拍板前**不改语义**，只做可见化（一条 security 级审计事件）。
+   *
+   * true = **opt-in 严格档**：DELEGATE ⇒ fail-closed 拒收（这一轮不出网）。
+   * 审计侧无论开关如何都会记 `input-guard.reroute.delegate-egress`。
+   */
+  requireLocalEndpoint?: boolean
 }
 
 /**
@@ -1140,6 +1152,8 @@ export function localPool(cfg: EdgeConfig = loadEdgeConfig()): {
   delegate: boolean
   delegateProvider?: string
   delegateModel?: string
+  /** §7.210: DELEGATE 时是否 fail-closed 拒收（默认 false —— 零行为变化）。 */
+  requireLocalEndpoint: boolean
 } {
   const pool = cfg.llm?.local ?? {}
   return {
@@ -1152,6 +1166,9 @@ export function localPool(cfg: EdgeConfig = loadEdgeConfig()): {
     delegate: pool.delegate ?? true,
     delegateProvider: pool.delegateProvider || undefined,
     delegateModel: pool.delegateModel || undefined,
+    // §7.210: 默认 false —— DELEGATE 仍照常放行（既有语义），只是多留一条
+    // security 级审计事件；operator 显式写 true 才切到严格档。
+    requireLocalEndpoint: pool.requireLocalEndpoint ?? false,
   }
 }
 

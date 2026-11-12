@@ -55,6 +55,10 @@ const CAPABILITY_EVENTS = {
   // 与 `reroute.local`（这一轮被改道到本地池，带 from/to）。
   'input-guard.intent.local': '意图判定为本地',
   'input-guard.reroute.local': '出网那一跳改道到本地池（选型不动）',
+  // §7.210 (2026-11-12): DELEGATE 出网 —— 本地池是委托态（转发宿主模型）时，
+  // 改道过去其实**出了设备**。以前只是 `reroute.local` 行里的一个 mode 字段，
+  // 现在是独立的一等 security 级事件。
+  'input-guard.reroute.delegate-egress': 'DELEGATE 出网（本地池转发宿主模型 = 这一轮其实出了设备）',
   'input-guard.reroute.blocked': '改道失败（fail-closed，绝不放行到云端）',
   'input-guard.blocked.attack': '攻击拦截',
   'input-guard.blocked.policy': '策略拦截',

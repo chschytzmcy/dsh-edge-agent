@@ -22847,3 +22847,99 @@ verify（如再有精力的话）」—— **一直没做**。
   所以 `verify:doc-gate-count` 的道数不用动。
 
 ---
+
+## §7.210 DELEGATE 出网：从「审计行里的一个字段」升级成「一等 security 事件」＋ 可选严格档（2026-11-12）
+
+### 一、先把待裁决项说准（它是 §7.190 七节那条，不是「云端不可用」）
+
+§7.190 的「七、遗留（待主人裁决，不擅自改）」原文：
+
+> **DELEGATE 委托到云端时，闸门不拦。** `input-guard` 的 `dispatchRerouted()` 只用
+> `localAvailable()`（问「`local-llm` 路由在不在」），**DELEGATE 模式下该路由是在的**
+> ⇒ 放行；`mode` 只写进审计行，不参与判定。
+> 这不是漏写，而是**上游有意的产品决定**：`tests/unit/input-guard-local-reroute.test.ts`
+> 明确断言「DELEGATE 池 ⇒ 改道过去的 model 是委托落点那个」。⇒ **改它 = 改产品语义**。
+
+⇒ 所以待裁决的**不是**「云端不可用怎么办」，而是「**本该留在设备上的这一轮，在本地池
+是 DELEGATE（转发宿主模型）时要不要拦**」。
+
+⇒ **主人未拍板前不改语义**（上游有单测断言）。本轮做两件**不改变语义**的事：
+**① 可见化 ② 一个默认关闭的 opt-in 开关**。
+
+### 二、可见化：`input-guard.reroute.delegate-egress`（一等、security 级）
+
+以前「这一轮其实出网了」这件事，在审计链里长这样：
+
+```json
+{"kind":"input-guard.reroute.local","level":"info","payload":{"from":{…},"to":{…},"mode":"delegate"}}
+```
+
+—— 它是**一行 info 级事件里的一个 `mode` 字段**。后果：grep `security` 找不到、grep
+`egress` 找不到、面板上认不出、ops log 里混在普通流水事件里。
+
+现在**同一个位置**多留一条**独立的一等事件**：
+
+```json
+{"kind":"input-guard.reroute.delegate-egress","level":"security",
+ "payload":{"from":{…},"to":{…},"reason":"local-pool-delegate","blocked":false}}
+```
+
+- `level` = `security`（⇒ 审计链里按 severity 一眼筛得出来）；
+- `reason` = `local-pool-delegate`（为什么这条会出现）；
+- `blocked` = 这一轮**有没有被拒**（默认 `false`；严格档下是 `true`）；
+- `from` / `to` 与同轮的 `reroute.local` 行**同源**（同一份 `effective.model`）⇒ 可对账。
+
+**落点**：`src/dsh-adapter/input-guard.ts` 的 `dispatchRerouted()`，**放在
+`reroute.local` 审计行之前** —— 被严格档挡下时不能留下「改道了」的记录（本文件一直
+避免这种假记录，见同函数里 runtime 不可用那段）。
+
+**只对 LOCAL 轮次成立**：`dispatchRerouted()` 只在 `needsLocalReroute()` 为真时被调用
+（§7.191 的双判据）⇒ CLOUD / SANITIZED 轮次（本来就要出网）**不会**产生这条事件。
+
+### 三、opt-in 严格档：`llm.local.requireLocalEndpoint`（默认 `false`）
+
+- **落位**：`edge.json` 的 `llm.local` 段（**操作员的文件**），与 `llm.local.delegate`
+  并列。**不是** input-guard 的 cordis `Config` —— 那个由 preset yml 决定，操作员要开
+  严格档不该去改 `node_modules` 里的 yml。
+- **默认 `false`**（`edge-config.ts`：`pool.requireLocalEndpoint ?? false`）⇒
+  **零行为变化**：DELEGATE 照常改道、照常出网，只是多留一条 security 审计行。
+- **`true`** ⇒ DELEGATE 时该轮按 **fail-closed 拒收**：不派发（绝不出去）+ 留
+  `input-guard.reroute.blocked`（`reason: 'local-endpoint-required'`）+ 抛一段带
+  配置指引的错误（与 §7.159 那段同一套纪律：点名 `~/.dsh-edge-agent/edge.json` /
+  `llm.local` / `secrets` / keyRef 是**键名**不是环境变量名）。
+- **⚠️ 默认不能是 `true`**：默认形态就是 DELEGATE（没配 `edge.json`）⇒ 无条件拒会让
+  **默认部署全线不可用**。这一点由门禁钉住（见下）。
+
+### 四、门禁与测试
+
+| 项 | 结果 |
+|---|---|
+| 新单测 `tests/unit/input-guard-delegate-egress.test.ts` | **9 条全过**：默认档照常改道 / 留 security 事件 / 不留 blocked / 严格档拒收且不派发 / 严格档不留「改道了」的假记录 / 严格档不误伤直连池 / 直连池零噪声 / 配置接线（配了生效、没配是 false、空配置是 false）|
+| `verify:config-hints` 扩展 | 抽成 `extractHintByMarker()`（按标记取某一段提示）+ 新增 `auditDelegateHint()`（同一套纪律 + 必须点名 `requireLocalEndpoint`）+ 新增 `auditEdgeExample()`（模板里必须有该键且默认必须是 `false`）⇒ 自证 14 → **17** 条 |
+| `vitest run tests/unit` | **83 文件 / 1636 passed / 2 skipped**（本轮新增 1 文件 9 测试）|
+| `eslint src tests/unit scripts` | **0 error / 60 warning**（warning 数与 §7.209 那轮相同）|
+| `node scripts/run.mjs verify:build` | **exit 0**（**31** 道门禁全绿 —— §7.210 **没有**新增道数，是加进已有门禁）|
+
+事件登记：`scripts/probe-session-audit.mjs` 的 `CAPABILITY_EVENTS` 加了一条中文说明
+（否则探针输出里是一串裸 kind）。
+
+### 五、文档
+
+- `docs/privacy-policy.md` §7.1 配置清单：新增 `llm.local.requireLocalEndpoint` 一行 +
+  一段「本地池留空时『留在设备上』有个缺口」的说明（**隐私链路的单一权威**）；
+- `config/edge.example.json`：`llm.local` 段新增 `"requireLocalEndpoint": false` +
+  `_comment` 里写清两种语义；
+- `README.md`：在「边缘模式的路由语义」后加一段警告（默认形态会出网 + 两条杜绝路径）。
+
+### 六、这一节**没有**做的事
+
+- **没有**改「DELEGATE 放行」这个语义本身 —— 上游有单测断言
+  （`tests/unit/input-guard-local-reroute.test.ts`），改它 = 改产品语义 ⇒ 等主人拍板
+  （§7.190 七节给的那个选项「委托目标按 realm 判定，非 LOCAL 就 fail-closed」**本轮没做**）；
+- **没有**把严格档设成默认 —— 默认形态是 DELEGATE ⇒ 无条件拒 = 默认部署全线不可用；
+- **没有**让严格档影响 CLOUD / SANITIZED 轮次 —— 那些轮次按设计就是要出网的；
+- **没有**给 Edge 面板加这一条事件的专门 UI —— 面板仍靠 `reroute.local` 行显示改道，
+  新事件在审计链 / ops log 里可查（`probe-session-audit.mjs` 已登记中文说明）；
+- **没有**新增门禁道数（仍是 31 道）。
+
+---

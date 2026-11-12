@@ -65,6 +65,12 @@ export interface LocalPoolShape {
   delegate?: boolean
   delegateProvider?: string
   delegateModel?: string
+  /**
+   * §7.210 (2026-11-12): true = 本地池是 DELEGATE 时 fail-closed 拒收。
+   * 默认 false（零行为变化）；input-guard 用它决定「DELEGATE 出网」是
+   * 只记审计还是直接拒收。
+   */
+  requireLocalEndpoint?: boolean
 }
 
 /** ctx 上取宿主服务的软读法（读不到就是 undefined，不抛）。 */

@@ -603,9 +603,62 @@ export class InputGuardServiceImpl extends Service {
       )
     }
 
+    // ── §7.210 (2026-11-12): DELEGATE 出网 —— 一等审计事件 + opt-in 严格档 ──
+    //
+    // 背景：intent=LOCAL 的轮次会被改道到本地池（§7.184）。但本地池**默认**
+    // 是 DELEGATE（没配 `llm.local.baseUrl` ⇒ 转发宿主 provider，§7.171）
+    // ⇒ 改道过去其实**出网**了 —— 而 intent=LOCAL 的承诺是「这一轮留在设备上」。
+    //
+    // 上游**有意**放行这个语义（`tests/unit/input-guard-local-reroute.test.ts`
+    // 有单测断言 DELEGATE 池照常改道）⇒ 改它 = 改产品语义 ⇒ 主人未拍板前
+    // **不改语义**，只做两件事：
+    //
+    //   1. **可见化**：以前这只是一行 info 级审计里的 `mode: 'delegate'` 字段
+    //      —— grep 'security' 找不到、grep 'egress' 也找不到、面板里也认不出
+    //      ⇒ 升级成**独立的 security 级审计事件**。
+    //   2. **opt-in 严格档**：`llm.local.requireLocalEndpoint=true` ⇒ DELEGATE
+    //      时 fail-closed 拒收。默认 false ⇒ **零行为变化**。
+    //
+    // 位置：放在 `reroute.local` 审计行**之前** —— 被严格档挡下时不能留下
+    // 「改道了」的记录（本文件一直避免这种假记录，见上面 runtime 不可用那段）。
+    if (!shape.baseUrl) {
+      const strict = shape.requireLocalEndpoint === true
+      this.audit('security', 'input-guard.reroute.delegate-egress', {
+        ...sessionIdField(state.sessionId),
+        from: { provider: fromProvider, model: fromModel },
+        to: { provider: this.config.localProvider, model: effective.model },
+        // 为什么不写「转给谁」：DELEGATE 的落点是宿主当前选中的 provider
+        // （§7.180 的委托解析链），input-guard 这一层未必拿得到 ⇒ 不写不知道的事。
+        reason: 'local-pool-delegate',
+        blocked: strict,
+      })
+      if (strict) {
+        this.audit('security', 'input-guard.reroute.blocked', {
+          ...sessionIdField(state.sessionId),
+          provider: fromProvider,
+          model: fromModel,
+          reason: 'local-endpoint-required',
+        })
+        throw new Error(
+          'input-guard: 本轮 intent 判定为 LOCAL（必须留在设备上），但本地池处于 DELEGATE 模式'
+          + '（~/.dsh-edge-agent/edge.json 的 llm.local 段没有 baseUrl）'
+          + '⇒ 改道会把请求转给宿主模型，也就是出网。'
+          + '当前 llm.local.requireLocalEndpoint=true ⇒ 本轮按 fail-closed 拒收（不出网）。'
+          // §7.159 门禁按**源码字面量**抽配置指引（verify-config-hints.mjs 取文件里
+          // 第一个「本轮 intent 判定为 LOCAL」所在的 throw）⇒ 这段指引必须字面写
+          // 在这里，不能改成常量插值。
+          + '请配置本地 LLM 端点：编辑 ~/.dsh-edge-agent/edge.json 的 llm.local 段，'
+          + '填 baseUrl（OpenAI 兼容端点，必须含 /v1）与 model；'
+          + '端点需要鉴权时，把密钥写进同一文件的 secrets 段，'
+          + '并把 llm.local.keyRef 指向那个键名（keyRef 是 secrets 里的键名，不是环境变量名）。'
+          + '（要恢复「本地池可委托」的旧语义，把 llm.local.requireLocalEndpoint 设为 false。）',
+        )
+      }
+    }
+
     // 审计行放在**真正派发之前**（runtime 不可用时上面的 blocked 已经抛了
     // ⇒ 不会出现「审计说改道了、其实没改」的假记录）。
-        this.audit('info', 'input-guard.reroute.local', {
+    this.audit('info', 'input-guard.reroute.local', {
       ...sessionIdField(state.sessionId),
       from: { provider: fromProvider, model: fromModel },
       to: { provider: this.config.localProvider, model: effective.model },

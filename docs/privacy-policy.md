@@ -1118,6 +1118,24 @@ checkout 里最不该待的东西。
 | `llm.local.delegate` | `true` | `false` = kill switch：路由不注册，LOCAL 意图 fail-closed（内部阶段降级到关键词/正则档） |
 | `llm.local.delegateProvider` | （自动） | 显式锁定委托目标路由 id |
 | `llm.local.delegateModel` | （跟随宿主选择） | 委托 wire model override |
+| `llm.local.requireLocalEndpoint` | `false` | §7.210：**DELEGATE 时是否 fail-closed 拒收**。默认 `false` = 维持既有语义（照常放行，只多留一条 security 级审计事件）；`true` = 严格档，DELEGATE 时该轮**拒收**（绝不出网）。⚠️ 默认开着会把「本地池留空 = DELEGATE」的默认部署**全部拒收** ⇒ 边缘模式全线不可用 ⇒ 除非你要的就是这个，否则先填 `llm.local.baseUrl` |
+
+> **§7.210（2026-11-12）：本地池留空时，「留在设备上」这件事有个缺口。**
+>
+> intent=LOCAL 的轮次会被**改道**到本地池（§7.184），但本地池留空 = DELEGATE =
+> 转发宿主模型 ⇒ 改道过去其实**出网**了。这个放行是**上游有意**的
+> （`tests/unit/input-guard-local-reroute.test.ts` 有单测断言）⇒ 改它等于改产品
+> 语义 ⇒ 主人未拍板前**不改语义**，只做两件事：
+>
+> 1. **可见化**：DELEGATE 出网现在留一条**独立的一等 security 级**审计事件
+>    `input-guard.reroute.delegate-egress`（以前只是 `input-guard.reroute.local`
+>    行里的一个 `mode: 'delegate'` 字段 —— grep `security` 找不到、grep `egress`
+>    也找不到、面板上也认不出）；
+> 2. **可选严格档**：`llm.local.requireLocalEndpoint=true` ⇒ DELEGATE 时该轮按
+>    fail-closed **拒收**（默认 `false`，**零行为变化**）。
+>
+> ⇒ 要彻底杜绝「本地池委托出去」，两条路：填 `llm.local.baseUrl`（直连自有池），
+> 或开 `requireLocalEndpoint`（宁可不答，也不出网）。
 
 配了 `llm.local.baseUrl` 时，`local-llm-adapter` 走真实 OpenAI 兼容端点。
 端点指向任一 llama.cpp / vLLM / Ollama / DashScope 实例：
