@@ -623,4 +623,24 @@ describe('§7.197: Tier-3 走主机凭据（apply() 真接线）', () => {
     await apply(host.ctx, config)
     assert.equal(host.provider().available(), false)
   })
+
+  it('宿主服务在 apply() 之后才就位 ⇒ 照样用得上（通道是惰性取值）', async () => {
+    // 宿主的插件装载顺序不保证 credentials 在我们 apply() 之前就绪。
+    // 若在 apply() 时把服务抓死，迟注册的那条路就永远丢了 ⇒ 通道必须惰性取值。
+    let ready = false
+    const host = makeHostCtx({
+      credentials: {
+        resolve: async () => (ready ? { value: 'sk-late-host-store' } : undefined),
+      },
+    })
+    // apply() 那一刻，宿主还没把凭据服务交出来（之后才交）。
+    const originalGet = (host.ctx as unknown as { get: (name: string) => unknown }).get
+    ;(host.ctx as unknown as { get: (name: string) => unknown }).get = (name: string) =>
+      name === 'credentials' && !ready ? undefined : originalGet(name)
+    await apply(host.ctx, config)
+    ready = true
+    await host.provider().search({ query: 'q', maxResults: 5 })
+    const headers = capturedCalls[0].init.headers as Record<string, string>
+    assert.equal(headers['x-api-key'], 'sk-late-host-store', '迟就位的凭据服务也必须被用上')
+  })
 })

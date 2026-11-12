@@ -108,14 +108,19 @@ const DEEPSEEK_API_KEY_REF = 'DEEPSEEK_API_KEY'
  *   - `account`：DeepSeek 账号服务（`ctx.deepseekAccount`）—— 账号登录令牌。
  *
  * 全部可选：宿主没提供就退回到我们自己的 edge.json / 进程环境。
+ *
+ * ⚠️ 三个通道都是**惰性取值**（返回函数的引用，而不是服务本身）：
+ * 宿主的插件装载顺序不保证「credentials / deepseekAccount 在我们 apply() 之前
+ * 就已就位」⇒ 在 apply() 时把服务抓死，迟注册的那条路就永远丢了。
+ * 上游 `web-search-deepseek` 也是**每次搜索**才 `ctx.get(...)` 的。
  */
 export interface DeepSeekCredentialPlane {
   /** 宿主凭据服务：`resolve(ref)` → `{ value }`。 */
-  credentials?: { resolve(ref: ReturnType<typeof credentialRef>): Promise<{ value: string } | undefined> }
+  credentials?: () => { resolve(ref: ReturnType<typeof credentialRef>): Promise<{ value: string } | undefined> } | undefined
   /** 启动环境快照：`get(name)` → `{ value }`。 */
-  launchEnv?: { get(name: string): { value: string } | undefined }
+  launchEnv?: () => { get(name: string): { value: string } | undefined } | undefined
   /** DeepSeek 账号服务：`resolveToken(endpoint)` → 令牌字符串。 */
-  account?: { resolveToken(endpoint: string): Promise<string | undefined> }
+  account?: () => { resolveToken(endpoint: string): Promise<string | undefined> } | undefined
   /** 当前会话的 provider 路由（判断是不是 `deepseek-account`）。 */
   routeProvider?: () => string | undefined
 }
@@ -209,11 +214,11 @@ export class TavilyBochaFallbackProvider implements WebSearchProvider {
     const plane = this.credentialPlane
     // 主机凭据服务 / DeepSeek 账号服务：解析是**异步**的 ⇒ 只能判「有没有这个通道」。
     // 少了它们，账号模型与主机凭据里的 key 就永远轮不到（§7.197 的主因）。
-    if (plane.credentials || plane.account) return true
+    if (plane.credentials?.() || plane.account?.()) return true
     // 启动环境是**同步**的 ⇒ 直接判那把 key 在不在。
     // 注意 `launchEnvironmentOf(ctx)` 永远返回一个快照（process.env 兜底），
     // 所以不能拿「快照存在」当判据 —— 那样 available() 恒为 true。
-    const fromLaunchEnv = plane.launchEnv?.get(DEEPSEEK_API_KEY_REF)?.value?.trim()
+    const fromLaunchEnv = plane.launchEnv?.()?.get(DEEPSEEK_API_KEY_REF)?.value?.trim()
     return Boolean(fromLaunchEnv)
   }
 
@@ -439,9 +444,13 @@ export async function apply(ctx: Context, _config: Config): Promise<void> {
   // 模型」这件事，对搜索没有任何影响 —— 模型是 DeepSeek 的，搜索却用不上
   // DeepSeek 的凭据。现在按上游同款接上。
   const plane: DeepSeekCredentialPlane = {
-    credentials: ctx.get('credentials') as DeepSeekCredentialPlane['credentials'],
-    launchEnv: launchEnvironmentOf(ctx),
-    account: ctx.get('deepseekAccount') as DeepSeekCredentialPlane['account'],
+    credentials: () => ctx.get('credentials') as
+      | { resolve(ref: ReturnType<typeof credentialRef>): Promise<{ value: string } | undefined> }
+      | undefined,
+    launchEnv: () => launchEnvironmentOf(ctx),
+    account: () => ctx.get('deepseekAccount') as
+      | { resolveToken(endpoint: string): Promise<string | undefined> }
+      | undefined,
     routeProvider: () => currentRouteProvider(ctx),
   }
 
@@ -454,15 +463,15 @@ export async function apply(ctx: Context, _config: Config): Promise<void> {
   const dsProvider = new DeepSeekSearchProvider(() => ({
     resolveAccountToken: async (endpoint: string) => {
       if (plane.routeProvider?.() !== DEEPSEEK_ACCOUNT_PROVIDER) return undefined
-      const token = await plane.account?.resolveToken(endpoint)
+      const token = await plane.account?.()?.resolveToken(endpoint)
       return token && token.length > 0 ? token : undefined
     },
     resolveApiKey: async () => {
       if (dsKey) return dsKey
-      const fromCredentials = await plane.credentials?.resolve(credentialRef(DEEPSEEK_API_KEY_REF))
+      const fromCredentials = await plane.credentials?.()?.resolve(credentialRef(DEEPSEEK_API_KEY_REF))
       const credentialValue = fromCredentials?.value?.trim()
       if (credentialValue) return credentialValue
-      const fromLaunchEnv = plane.launchEnv?.get(DEEPSEEK_API_KEY_REF)?.value?.trim()
+      const fromLaunchEnv = plane.launchEnv?.()?.get(DEEPSEEK_API_KEY_REF)?.value?.trim()
       if (fromLaunchEnv) return fromLaunchEnv
       return process.env.DEEPSEEK_API_KEY
     },
