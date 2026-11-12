@@ -258,6 +258,16 @@ jobs:
     # §7.46.9: 21 节点 ops log 覆盖 + 3 重点用例（mibao/news/local-ip）回归。
     # §7.86(2026-09-18): web profile bootstrap —— dsh-edge bundle 注册 + cordis.patch.yml 同步。
     # 单 profile dsh-edge 架构(§7.69)后,这里 bootstrap 一次就够 opslog 用了。
+    #
+    # §7.198: secret 放在 **job 级 env**（不是 step 级）——
+    # GitHub 明确禁止在 `if:` 条件里直接引用 `secrets`（文档原话：不能把 secrets
+    # 直接用在 if 条件里）⇒ 那样写会让**整个 workflow 文件被判无效**：
+    # run 的名字会变成文件路径（".github/workflows/ci.yml"）、jobs 为空、
+    # 整条 CI 直接挂，而且**看不出原因**（实测 run #151 就是这样）。
+    # ⇒ 正确写法：secret 进 job 级 env，step 的 `if:` 用 `env.` 上下文引用。
+    env:
+      DSH_EDGE_API_KEY: ${{ secrets.DSH_EDGE_API_KEY }}
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -332,10 +342,9 @@ jobs:
       # 里放的是真 key；没有真 key 时脚本自己就写明「云端用例会 FAIL」。
       # ⇒ 没配 secret 时**明说并跳过**那一步（job 里那步显示 skipped，不是假绿），
       # 配了 secret 才跑真回归。
+      # ⚠️ `if:` 里用 `env.` 上下文（**不是** `secrets.`）—— 见本 job 头部的说明：
+      # GitHub 禁止在 if 条件里直接引用 secrets，那样会让整个 workflow 文件无效。
       - name: 检查 e2e 凭据（缺 secret ⇒ 明说并跳过回归，不假装绿）
-        env:
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          DSH_EDGE_API_KEY: ${{ secrets.DSH_EDGE_API_KEY }}
         run: |
           if [ -z "${DEEPSEEK_API_KEY:-}" ] || [ -z "${DSH_EDGE_API_KEY:-}" ]; then
             echo "::warning::ops log 覆盖回归需要两个 Actions secret：DEEPSEEK_API_KEY 与 DSH_EDGE_API_KEY（仓库 Settings → Secrets and variables → Actions）。没有它们，脚本只能用假 key，云端用例会必然失败 —— 所以**回归那一步这次跳过**，而不是假绿。"
@@ -344,7 +353,7 @@ jobs:
           fi
 
       - name: Run ops log coverage regression (3 重点用例)
-        if: ${{ secrets.DEEPSEEK_API_KEY != '' && secrets.DSH_EDGE_API_KEY != '' }}
+        if: ${{ env.DEEPSEEK_API_KEY != '' && env.DSH_EDGE_API_KEY != '' }}
         env:
           EDGE_API_KEY: ${{ secrets.DSH_EDGE_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}

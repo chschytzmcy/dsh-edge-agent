@@ -47,7 +47,11 @@
 //   3. that chain matches package.json#scripts.build — the local build and
 //      the CI build must not drift apart;
 //   4. every script name the chain references actually exists in
-//      package.json#scripts.
+//      package.json#scripts;
+//   5. §7.198: no `if:` condition may reference `secrets.` — GitHub forbids
+//      secrets directly in if conditions, and doing it invalidates the WHOLE
+//      workflow file (the run shows the file path as its name and has no
+//      jobs ⇒ the whole CI dies with no log and no annotation to read).
 //
 // A dropped step in a workflow turns this script red BEFORE the push,
 // instead of after.
@@ -109,6 +113,30 @@ export function extractJob(workflow, jobName) {
   const after = workflow.slice(match.index + match[0].length)
   const next = /^[ \t]{2}[A-Za-z][\w-]*:[ \t]*$/m.exec(after)
   return next ? after.slice(0, next.index) : after
+}
+
+/**
+ * §7.198: GitHub **禁止在 `if:` 条件里直接引用 `secrets`** ——
+ * 那样写会让**整个 workflow 文件被判无效**：
+ *   - run 的名字变成文件路径（".github/workflows/ci.yml"），不是 workflow 的 `name:`；
+ *   - jobs 列表为空（一个 job 都没起来）；
+ *   - 整条 CI 直接挂，而且**看不出原因**（没有 log、没有注解 —— 实测 run #151）。
+ *
+ * 正确写法：secret 进 **job 级 env**，step 的 `if:` 用 `env.` 上下文引用
+ * （`env` 上下文在 step 级 if 里是可用的，`secrets` 不是）。
+ *
+ * 这道检查放在这里，是因为本门禁本来就是「读两个 workflow 文件」的地方 ——
+ * 同一个文件里的另一类「CI 挂了但看不出为什么」的坑，一并挡住。
+ *
+ * @param {string} workflowText
+ * @returns {string[]} the offending `if:` expressions (empty when sound)
+ */
+export function findSecretInIf(workflowText) {
+  const problems = []
+  for (const m of workflowText.matchAll(/^[ \t]*(?:-[ \t]+)?if:[ \t]*(.+)$/gmu)) {
+    if (/\bsecrets\./u.test(m[1])) problems.push(m[1].trim())
+  }
+  return problems
 }
 
 /**
@@ -320,6 +348,27 @@ function selftest() {
     expect('失败信息点名 pack:tarball', r.failures.some((f) => f.includes('pack:tarball')), true)
   }
 
+  // 9. §7.198: `if:` 里引用 secrets ⇒ 整个 workflow 文件无效（GitHub 限制）。
+  {
+    const bad = [
+      'name: fixture',
+      'on: push',
+      'jobs:',
+      '  build:',
+      '    steps:',
+      '      - name: a step',
+      "        if: ${{ secrets.DEEPSEEK_API_KEY != '' }}",
+      '        run: echo hi',
+      '',
+    ].join('\n')
+    const problems = findSecretInIf(bad)
+    expect('if: 里引用 secrets ⇒ 报 1 项', problems.length, 1)
+    expect('问题里点名 secrets.', problems[0].includes('secrets.'), true)
+
+    const good = bad.replace("secrets.DEEPSEEK_API_KEY", 'env.DEEPSEEK_API_KEY')
+    expect('改成 env. 上下文 ⇒ 无问题', findSecretInIf(good).length, 0)
+  }
+
   if (failures > 0) {
     console.error(`\nselftest FAILED: ${failures} assertion(s)`)
     process.exit(2)
@@ -354,6 +403,16 @@ if (args.includes('--selftest')) {
     const result = auditJob(workflow, target.job, scripts)
     for (const f of result.failures) {
       failures.push(`${target.file}: ${f}`)
+    }
+    // §7.198: `if:` 条件里引用 secrets ⇒ GitHub 判整个文件无效 ⇒ CI 全挂，
+    // 而且**看不出原因**（run 名字变成文件路径、jobs 为空、没有 log）。
+    for (const expr of findSecretInIf(workflow)) {
+      failures.push(
+        `${target.file}: an \`if:\` condition references \`secrets.\` (${expr}) — GitHub forbids`
+        + ' secrets directly in if conditions, and it invalidates the WHOLE workflow file'
+        + ' (the run shows the file path as its name and has no jobs). Put the secret in a'
+        + ' job-level `env:` and reference it as `env.<NAME>` in the condition.',
+      )
     }
     audited.push(`${target.file}(${target.job})`)
   }
