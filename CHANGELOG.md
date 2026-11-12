@@ -29,6 +29,17 @@
 
 > 这一段**只改发布链**，不进 npm 包（`scripts/` 与 `docs/` 都不在 `files` 白名单里）。
 
+### README 再收瘦（182 → 175 行）
+
+- 删掉「publish 报成功 ≠ 包已经能装」那段**对客户无用**的发布链说明
+  （含分级发布的 `0.0.0-stage` 占位版）—— 它还**写错了**：staged publishing 期间
+  `npm view <pkg> version` 返回的是**上一个真实版本**，正确判据是 `versions` 数组里
+  有没有出现新版本；
+- 删掉 `npm run publish:npm` 三条命令与 `npm login` 前置，收成一行指向
+  [`docs/deploy-npm.md`](docs/deploy-npm.md) §8。
+
+> 客户要的部分（怎么装、`edge.json` 怎么配、装完怎么自检、能力与隐私口径）一件没少。
+
 ---
 
 ## [0.1.4] — 2026-11-12

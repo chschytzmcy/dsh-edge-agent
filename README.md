@@ -44,7 +44,7 @@ approval / sandbox 等全局设置。
 |---|---|---|
 | `llm.local.baseUrl` | 空 ⇒ **DELEGATE** | `local-llm` 路由**照样注册**，但它转发宿主模型 —— 不是「没模型」|
 | `llm.cloud.baseUrl` | 空 ⇒ **DELEGATE** | 云池同样转发宿主模型 |
-| `stages.intent.provider` | `local-llm` | 意图判定钉在本地池上 ⇒ 端点留空时它**跑宿主模型** ⇒ **待检测的用户原文也会上行**（§7.171 的已知边界）|
+| `stages.intent.provider` | `local-llm` | 意图判定钉在本地池上 ⇒ 端点留空时它**跑宿主模型** ⇒ **待检测的用户原文也会上行**（已知边界）|
 | `stages.intent.timeoutMs` | `60000` | 意图判定那一次调用的超时窗口是 **60 秒** |
 | `stages.guard.timeoutMs` | `60000` | 同上 |
 | `llm.local.delegate` | `true` | 要「不注册本地路由」必须显式写 `false`（kill switch）|
@@ -144,7 +144,7 @@ dsh --profile <profile> --dump-config | grep -cE 'input-guard|file-logger|intent
 | **🚦 Realm 三级闸门** | ✅ | LOCAL → SANITIZED → CLOUD；缺件即降级本地 |
 | **🚨 威胁检测** | ✅ | `td-bus` 滑动窗口 + 分级 + 隔离；超阈值返回 503 |
 | **📜 审计与可追溯** | ✅ | 追加式 JSONL 审计链 + ops log（PII + 密钥双重脱敏）|
-| **🔌 插件化** | ✅ | 按 subpath 导出（**37 条**），`verify:*` 门禁锁死装配面 |
+| **🔌 插件化** | ✅ | 按 subpath 导出（**37 条**入口）|
 | **🌐 零信任通信** | 🚧 | OHTTP 网关为**桩实现**；当前云端通道走标准 TLS |
 | **🔑 TEE / 远程证明** | 🚧 | `tcm` / `attestation` 为**桩实现** |
 
@@ -161,22 +161,15 @@ dsh --profile <profile> --dump-config | grep -cE 'input-guard|file-logger|intent
 | [`docs/desktop-troubleshooting.md`](docs/desktop-troubleshooting.md) | 桌面版排障手册 |
 | [`docs/PROGRESS.md`](docs/PROGRESS.md) | 实施进度档案（§7.x 全量历史）|
 
-### 开发与发布
+### 开发
 
 ```bash
 pnpm install
 pnpm run build      # compile → typecheck:client → build:client → build:installable → pack:tarball → verify:build
 pnpm test
-
-npm run publish:npm                    # 构建 + 门禁 + dry-run（**默认不发**）
-npm run publish:npm -- --yes           # 真发
-npm run publish:npm -- --yes --tag     # 发完打 v<version> tag
 ```
 
-前置：`npm login` 一次（凭据写在 `~/.npmrc`；PATH 上要有 `pnpm`）。
-不带 `--yes` **永远不会碰 registry**。
-
-> ⚠️ **「publish 报成功」≠「包已经能装」**：分级发布（staged publishing）下包名先被
-> 占位版 `0.0.0-stage` 占住。**判据**：`npm view <pkg> version` 返回 `0.0.0-stage` = 还卡着。
+发布链（`npm run publish:npm`、分级发布的判据、CI 的两个发布面）见
+[`docs/deploy-npm.md`](docs/deploy-npm.md) §8。
 
 MIT License. 详见 [LICENSE](LICENSE)。
