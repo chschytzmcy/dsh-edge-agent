@@ -381,6 +381,55 @@ function verifyBundle(dir) {
     throw new Error(`${relative(ROOT, dir)}: presets/ contains no .json files`)
   }
 
+  // 5. §7.208: package.json#exports 里指向**资源文件**（yml/json/md/txt）的条目，
+  //    它的目标必须真的在这个目录里。
+  //
+  //    这条补的是 dev-notes/cordis-rc021-patch-loader.md §Bug3 记的那个真事故：
+  //    v3 的 installable package.json 写着
+  //      "./cordis.desktop-safe.patch.yml": "./cordis.patch.yml"
+  //    而那个目录里**只有** cordis.desktop-safe.patch.yml ⇒ 桌面启动时
+  //      failed to read overlay .../cordis.patch.yml: ENOENT
+  //    ⇒ boot **硬失败**（不是「静默一个都不 mount」）。
+  //
+  //    当时只查了 `dsh.bundle.patch` 指向的文件在不在，**没查相邻的 export entry**
+  //    ⇒ dev-note 里留了这条建议（"如再有精力的话"）一直没做。
+  //    现在补上：凡是 exports 里指向非 JS 文件的条目，目标必须在盘上。
+  //
+  //    为什么只查非 JS 文件：exports 里的 30 多条代码入口指向 lib/ 下的 .js/.d.ts，
+  //    那批由 `verify:package`（npm pack 视角）覆盖；而**资源文件**这一类
+  //    （3 条 .yml + package.json）没有任何一道门禁管过 —— 正是出事的那些。
+  {
+    const missing = []
+    for (const [key, value] of Object.entries(pkg.exports ?? {})) {
+      const targets = []
+      if (typeof value === 'string') {
+        targets.push(value)
+      } else if (value && typeof value === 'object') {
+        for (const cond of Object.values(value)) {
+          if (typeof cond === 'string') targets.push(cond)
+          else if (cond && typeof cond === 'object') {
+            for (const inner of Object.values(cond)) {
+              if (typeof inner === 'string') targets.push(inner)
+            }
+          }
+        }
+      }
+      for (const target of targets) {
+        if (!/\.(?:ya?ml|json|md|txt)$/u.test(target)) continue
+        const rel = target.replace(/^\.\//u, '')
+        if (!existsSync(join(dir, rel))) missing.push(`${key} → ${target}`)
+      }
+    }
+    if (missing.length > 0) {
+      throw new Error(
+        `${relative(ROOT, dir)}: package.json#exports 指向的资源文件不在包里：\n`
+        + missing.map((s) => `    - ${s}`).join('\n')
+        + '\n  （dev-notes/cordis-rc021-patch-loader.md §Bug3：指针在而文件缺 = 宿主启动时'
+        + ' "failed to read overlay …ENOENT" —— boot 硬失败，不是静默降级）',
+      )
+    }
+  }
+
   return {
     bundle: pkg.name,
     version: pkg.version,

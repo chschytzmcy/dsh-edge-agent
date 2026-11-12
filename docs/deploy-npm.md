@@ -270,7 +270,8 @@ pnpm --dir "$env:USERPROFILE\.dsh\profiles\desktop" add "@dsh-edge/dsh-edge-agen
 | `CHANGELOG.md` 存在且**含当前版本** | `publish.yml` 前置清单第 3 条 | 已在 `files` 白名单里 | ✅ |
 
 **这张表现在是机器检查的** —— §7.172 加了 `scripts/verify-npm-publish.mjs`，
-把上表里**能离线机器判定**的那 11 条逐条变成断言，已接进 `verify:build`（链内第 22 位）：
+把上表里**能离线机器判定**的那 11 条逐条变成断言，已接进 `verify:build` 链
+（`verify:npm-publish`，链内第 25 位）：
 
 > 「包名可发」那一行查的是 **registry 的实时状态**，离线判不了（脚本全程不联网），
 > 所以它不在断言里 —— 但它**不是可选项**：第一次发布之前它就是 ❌。
@@ -357,7 +358,7 @@ npm run publish:npm -- --yes --tag     # 发完打 v<version> tag（再 git push
 1. **工作树必须干净**（`--allow-dirty` 可强行越过）—— 发出去的必须是 git 里有的东西；
 2. **registry 预检**：这个版本发过没有？发过 ⇒ 立刻停（不浪费一次构建 + 门禁）；
 3. **认证预检**（仅真发时）：`NPM_TOKEN` / `NODE_AUTH_TOKEN` / `~/.npmrc` / 仓库
-   `.npmrc` 里有没有 token？**没有就立刻停**（实测 3 秒）—— 不能等构建链 + 29 道
+   `.npmrc` 里有没有 token？**没有就立刻停**（实测 3 秒）—— 不能等构建链 + 31 道
    门禁跑完才在 `pnpm publish` 那一步才发现没登录。
    ⚠️ **两种 token 行都要认**（§7.185 实测踩过）：`npm login --auth-type=web` 写进
    `~/.npmrc` 的是**带 registry 前缀**的 `//registry.npmjs.org/:_authToken=…`；只认
@@ -365,7 +366,7 @@ npm run publish:npm -- --yes --tag     # 发完打 v<version> tag（再 git push
    预检却报「没找到凭据」）。自证：`npm run publish:npm -- --selftest`；
 4. **canonical 构建链**（`compile → typecheck:client → build:client → build:installable
    → pack:tarball → stage:npm`）—— 与 CI **一字不差**；
-5. **全部门禁**（`verify:build`，**29 项**，验的是**产物**）；
+5. **全部门禁**（`verify:build`，**31 项**，验的是**产物**）；
 6. **`pnpm publish --dry-run`** —— **默认不发**，只把「将要发出去的东西」摊开给你看。
 
 ⇒ **不带 `--yes` 永远不会碰 registry。** 这是这个脚本的默认值，也是它能被信任的原因。
@@ -537,10 +538,11 @@ node scripts/verify-ci-build-chain.mjs --selftest  # 自证 + 反向证伪（11 
 `config/edge.json` 确实被排除、`prepare` 跑的是 compile+build:client、`main`+`types`
 确实在包里。
 
-它已接进 `package.json#scripts.verify:build`（链内第 22 位）⇒ **CI 每次 push 都会跑它** ⇒
+它已接进 `package.json#scripts.verify:build`（`verify:npm-publish`，链内第 25 位）
+⇒ **CI 每次 push 都会跑它** ⇒
 「漏了哪条发布义务」在合并前就被拦下，而不是等到推了 tag 才炸。
 
-**§7.172 还加了第二道门禁** `verify:npm-decision`（链内第 23 位）—— 它守的是
+**§7.172 还加了第二道门禁** `verify:npm-decision`（链内第 26 位）—— 它守的是
 **发布决策本身**。理由很硬：`registry-version.mjs` 与 `publish-decision.mjs`
 **只在 CI 的 publish job 里跑**（`publish.yml` 的 Decide 步）⇒ build job 里的任何
 门禁都够不着它们 ⇒ 一旦判错方向：
@@ -577,12 +579,12 @@ node scripts/verify-ci-build-chain.mjs --selftest  # 自证 + 反向证伪（11 
 | 17 | `CHANGELOG.md` 存在 + 含当前版本 + 在 `files` 里 | ✅ | §7.172 补的（npm **不会**自动带它） |
 | 18 | pnpm 的 git 检查不挡路 | ✅ | §7.172：CI 在 tag push 时是 detached HEAD ⇒ 必须 `--no-git-checks`（**实测**） |
 | 19 | 首次发布**不带** `--provenance` | ✅ | §7.172：`decideProvenance` 判定（实测 visibility 端点答 200 `{"public":false}`） |
-| 20 | 发布就绪门禁 | ✅ | §7.172：`verify:npm-publish`（链内第 22 位） |
-| 21 | 发布决策门禁 | ✅ | §7.172：`verify:npm-decision`（链内第 23 位）—— 判定表 + stdout 契约的自证 |
-| 22 | 包名一致性门禁 | ✅ | §7.173：`verify:package-name`（链内第 21 位）—— 包名副本与 `package.json#name` 交叉比对 |
+| 20 | 发布就绪门禁 | ✅ | §7.172：`verify:npm-publish`（链内第 25 位） |
+| 21 | 发布决策门禁 | ✅ | §7.172：`verify:npm-decision`（链内第 26 位）—— 判定表 + stdout 契约的自证 |
+| 22 | 包名一致性门禁 | ✅ | §7.173：`verify:package-name`（链内第 24 位）—— 包名副本与 `package.json#name` 交叉比对 |
 | 23 | **发布清单不含不在包里的东西** | ✅ | §7.188：`stage:npm` 暂存目录 + `verify:npm-stage`（链内第 27 位）—— 清单里不得有 `scripts` / `devDependencies` / `packageManager` |
 | 24 | **`--provenance` 只在受支持的 CI 里带** | ✅ | §7.188：pnpm 的 provenance 生成器**只在 CI 里**能工作 ⇒ 本机一律 `--no-provenance`（实测 `ERR_PNPM_PROVENANCE_UNSUPPORTED_PROVIDER`） |
-| 25 | **发布前置条件有门禁守着** | ✅ | §7.193：`verify:npm-readiness`（链内第 29 位）—— 9 项静态断言（OIDC 前提 / 发布路径形状 / tag↔version）+ token 字面量扫描 + **人工核对清单**（2FA 与 trusted publisher 机器查不了，如实报「查不了」而非假装查过） |
+| 25 | **发布前置条件有门禁守着** | ✅ | §7.193：`verify:npm-readiness`（链内第 28 位）—— 9 项静态断言（OIDC 前提 / 发布路径形状 / tag↔version）+ token 字面量扫描 + **人工核对清单**（2FA 与 trusted publisher 机器查不了，如实报「查不了」而非假装查过） |
 
 ⇒ **原来的两件（2026-11-10 的待办）在 2026-11-11 都已落地**（组织建好、token 在位、
 `0.1.1` / `0.1.2` 已发布，见 §8.1.2）。**现在剩下的是这两件新的主人手上的事

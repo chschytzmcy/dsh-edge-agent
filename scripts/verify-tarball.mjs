@@ -33,6 +33,9 @@
 //   8. §7.207: the tarball carries a README.md, and it is byte-identical to the
 //      repository's — "the shipped README is the current README" must not be a
 //      coincidence that can silently rot.
+//   9. §7.208: the same for CHANGELOG.md — the two producers (rebuild-installable
+//      for npm, stageVariant for the tarball) have independent file sets, and
+//      CHANGELOG.md was in one of them only.
 //
 // Run via:
 //   node scripts/verify-tarball.mjs             # audit the real artifacts
@@ -265,6 +268,34 @@ export function auditTarball(tarballPath, installableDir, { expectSecretConfig =
     }
   }
 
+  // ── 9. §7.208: the tarball must carry the CURRENT CHANGELOG ───────────────
+  //    The same shape of hole as §7.207's README: the tarball channel is a
+  //    distributable artefact of its own, and its producer (`stageVariant`) has
+  //    a hand-written copy list that is NOT the npm producer's `pkg.files`.
+  //    CHANGELOG.md was in the npm package only ⇒ git-release users got no
+  //    changelog while npm users did ⇒ the two channels told different stories
+  //    about the same version.
+  const repoChangelog = join(ROOT, 'CHANGELOG.md')
+  if (!tarball.files.includes('CHANGELOG.md')) {
+    failures.push(
+      'tarball 里没有 CHANGELOG.md —— §7.208: tar 包是直接发给用户的产物（GitHub Release 资产），'
+      + '变更记录必须跟 README 一样跟着走（npm 用户拿得到，git release 用户拿不到 ⇒ 两条出货面不等价）',
+    )
+  } else if (!existsSync(repoChangelog)) {
+    notes.push('仓库根没有 CHANGELOG.md ⇒ 跳过 CHANGELOG 内容比对')
+  } else {
+    const shipped = tarball.read('CHANGELOG.md')
+    const current = readFileSync(repoChangelog, 'utf8')
+    if (shipped !== current) {
+      failures.push(
+        'tarball 里的 CHANGELOG.md 与仓库根的不一致 ⇒ 出货的是**陈旧**变更记录'
+        + `（包内 ${shipped.length} 字节 vs 仓库 ${current.length} 字节）—— 重新构建`,
+      )
+    } else {
+      notes.push(`CHANGELOG.md 与仓库一致（${current.length} 字节）`)
+    }
+  }
+
   notes.push(`条目 ${tarball.files.length} 个`)
   return { failures, notes }
 }
@@ -305,6 +336,8 @@ function selftest() {
     'config/edge.example.json': '{}\n',
     // §7.207: the shipped README must be the repository's, byte for byte.
     'README.md': readFileSync(join(ROOT, 'README.md'), 'utf8'),
+    // §7.208: same rule for the changelog.
+    'CHANGELOG.md': readFileSync(join(ROOT, 'CHANGELOG.md'), 'utf8'),
   }
   const GOOD_MANIFEST = {
     name: '@dsh-edge/dsh-edge-agent',
@@ -445,13 +478,28 @@ function selftest() {
     expect('README 与仓库不一致 ⇒ 报失败', r.failures.some((f) => f.includes('陈旧')), true)
   }
 
+  // 12. §7.208: a tarball WITHOUT the CHANGELOG is caught, and one with a
+  //     STALE changelog is caught too — the two channels must ship the same
+  //     release notes, not "npm has them, the tarball doesn't".
+  {
+    const { 'CHANGELOG.md': _omit, ...files } = GOOD_FILES
+    const t = mk('nochangelog', files, GOOD_MANIFEST)
+    const r = auditTarball(t, join(ROOT_TMP, 'nonexistent'))
+    expect('缺 CHANGELOG.md ⇒ 报失败', r.failures.some((f) => f.includes('CHANGELOG.md')), true)
+  }
+  {
+    const t = mk('stalechangelog', { ...GOOD_FILES, 'CHANGELOG.md': '# 旧变更记录\n' }, GOOD_MANIFEST)
+    const r = auditTarball(t, join(ROOT_TMP, 'nonexistent'))
+    expect('CHANGELOG 与仓库不一致 ⇒ 报失败', r.failures.some((f) => f.includes('陈旧')), true)
+  }
+
   rmSync(ROOT_TMP, { recursive: true, force: true })
 
   if (failures > 0) {
     console.error(`\nselftest FAILED: ${failures} assertion(s)`)
     process.exit(2)
   }
-  console.log('\nselftest OK — 门禁能抓住缺 preset 层 / 缺 client.js / 含密钥 / 陈旧产物，也能放过正确的形状')
+  console.log('\nselftest OK — 门禁能抓住缺 preset 层 / 缺 client.js / 含密钥 / 陈旧产物 / 缺或陈旧的 README 与 CHANGELOG，也能放过正确的形状')
 }
 
 /* ── entry ───────────────────────────────────────────────────────────────── */

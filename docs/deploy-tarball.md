@@ -463,9 +463,11 @@ verify:build 链：       … verify:installable → verify:tarball
 在桌面 App 的 **Plugins → Add plugin** 里粘**那个 URL** 就能装：
 
 ```
-https://github.com/chschytzmcy/dsh-edge-agent/releases/download/v0.1.4/dsh-edge-agent-desktop-safe.tar.gz
-https://github.com/chschytzmcy/dsh-edge-agent/releases/download/v0.1.4/dsh-edge-agent-full.tar.gz
+https://github.com/chschytzmcy/dsh-edge-agent/releases/download/<tag>/dsh-edge-agent-desktop-safe.tar.gz
+https://github.com/chschytzmcy/dsh-edge-agent/releases/download/<tag>/dsh-edge-agent-full.tar.gz
 ```
+
+> `<tag>` = 当前发布版本（如 `v0.1.5`）—— 以 Releases 页上最新那个为准，不要写死。
 
 ⇒ **免构建授权、免 PATH 上的 pnpm**（与 npm 通道同一套好处，见
 [`deploy-npm.md`](deploy-npm.md) §6.4），但**不需要 registry**。
@@ -511,16 +513,16 @@ if (/^https?:\/\//i.test(spec)) {
 
 | 变体 | tar 包 | 清单版本 | `dsh.bundle.patch` | 用途 |
 |---|---|---|---|---|
-| safe | `dsh-edge-agent-desktop-safe.tar.gz` | `0.1.4-desktop-safe` | `cordis.desktop-safe.patch.yml` + `presets/edge.desktop-safe.patch.yml` | **不重写宿主默认值**（模型/人设/审批/沙箱/会话根/http-api 都留着）|
-| full | `dsh-edge-agent-full.tar.gz` | `0.1.4-full` | `cordis.patch.yml` + `presets/edge.patch.yml` | 与独立的 `dsh-edge` profile 同款行为（**改写宿主默认值**）|
+| safe | `dsh-edge-agent-desktop-safe.tar.gz` | `<version>-desktop-safe` | `cordis.desktop-safe.patch.yml` + `presets/edge.desktop-safe.patch.yml` | **不重写宿主默认值**（模型/人设/审批/沙箱/会话根/http-api 都留着）|
+| full | `dsh-edge-agent-full.tar.gz` | `<version>-full` | `cordis.patch.yml` + `presets/edge.patch.yml` | 与独立的 `dsh-edge` profile 同款行为（**改写宿主默认值**）|
 
 ⇒ **npm 通道发的是 safe**；**full 只有 git 发布这一条路**（这是它第一次有对外分发渠道）。
 
 ### 8.5 发布链（谁发的、谁验的）
 
 ```
-git tag v0.1.4  →  publish.yml
-                    ├─ job `npm`     → 构建 → verify:build（29 道门禁）→ pnpm publish
+git tag v<version>  →  publish.yml
+                    ├─ job `npm`     → 构建 → verify:build（31 道门禁）→ pnpm publish
                     └─ job `release` → 构建 → verify:tarball → 建 Release，挂两个 tar 包
 ```
 

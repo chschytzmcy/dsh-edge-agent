@@ -390,6 +390,25 @@ export function stageVariant(variant, destDir, { keepSecretConfig = false } = {}
   if (existsSync(readmeSrc)) {
     cpSync(readmeSrc, join(destDir, 'README.md'))
   }
+  // §7.208: CHANGELOG.md 也进 tar 包 ——
+  //
+  // 起因是「两个生产者」这件事：出货面有两个**各自独立**的生产者
+  //   · rebuild-installable.mjs（→ npm 包）  出货条目由 package.json#files 驱动
+  //   · _pack-core.mjs#stageVariant（→ tar 包）是**硬编码拷贝清单**
+  // ⇒ `files` 只写进清单、**不决定** tar 包拷哪些文件 ⇒ 两边的文件集会长得不一样。
+  // §7.207 已经证过一次：README 只在 npm 包里（npm 永远自动带 README/LICENSE），
+  // 于是「git release 也包含最新 README」在 tar 包上是假的。
+  //
+  // CHANGELOG 是同一个洞的第二个实例（实测：变体目录 240 文件 / npm 包 241 /
+  // tar 包 239 —— 差的那一个就是 CHANGELOG.md）⇒ git release 通道的用户拿不到
+  // 变更记录，而 npm 用户拿得到 ⇒ 两条出货面讲的还是同一个故事。
+  //
+  // ⇒ 门禁 `verify:tarball` 第 9 条盯着：tarball 里必须有 CHANGELOG.md，
+  // 且与仓库根逐字节一致（改了 CHANGELOG 忘了重建 tar 包 ⇒ 门禁红）。
+  const changelogSrc = join(ROOT, 'CHANGELOG.md')
+  if (existsSync(changelogSrc)) {
+    cpSync(changelogSrc, join(destDir, 'CHANGELOG.md'))
+  }
 
   const configSrc = join(ROOT, 'config')
   if (existsSync(configSrc)) {

@@ -2,8 +2,8 @@
 /**
  * verify-npm-stage.mjs — §7.188：验「要发给 registry 的那个包」摆对了没有。
  *
- * 门禁链的第 28 道（`verify:build` 链上倒数第二道；第 29 道是 §7.193 的
- * `verify:npm-readiness`）。它验的是**暂存目录**
+ * 它在 `verify:build` 链上的**下一道**是 §7.193 的 `verify:npm-readiness`
+ * （发布前置条件那道）。它验的是**暂存目录**
  * （`dist/.npm-stage/`），不是源码 —— 与 `verify:tarball` / `verify:installable`
  * 同一个纪律：**门禁验的是产物**。
  *

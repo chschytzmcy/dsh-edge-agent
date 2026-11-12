@@ -176,7 +176,7 @@ $env:NPM_TOKEN = 'npm_xxxxxxxx'
 ```
 
 仓库里的 `scripts/publish-npm.mjs` 会离线读 `NPM_TOKEN` / `NODE_AUTH_TOKEN` /
-`~/.npmrc` / 仓库 `.npmrc`；**找不到凭据会在 3 秒内拦停**，不会白跑一遍构建 + 29 道门禁。
+`~/.npmrc` / 仓库 `.npmrc`；**找不到凭据会在 3 秒内拦停**，不会白跑一遍构建 + 31 道门禁。
 
 ## 7. 发第一版
 
@@ -186,7 +186,7 @@ $env:NPM_TOKEN = 'npm_xxxxxxxx'
 npm run publish:npm -- --yes --tag
 ```
 
-这条命令会依次跑：canonical 构建链（compile → typecheck → build → pack → stage）→ **29 道门禁**
+这条命令会依次跑：canonical 构建链（compile → typecheck → build → pack → stage）→ **31 道门禁**
 → 认证预检 → `pnpm publish --access public --ignore-scripts --no-git-checks`。
 
 - 首次发布**不带** `--provenance`（包还不存在时 visibility 端点答 200
@@ -321,11 +321,11 @@ npm view @dsh-edge/dsh-edge-agent versions --json   # 推 tag 后看新版本有
 | 部分 | 状态 | 出处 |
 |---|---|---|
 | 包名 `@dsh-edge/dsh-edge-agent` | ✅ 已定并全仓统一（47 文件 / 244 处） | `docs/PROGRESS.md` §7.173 |
-| 包名一致性门禁（25 项链的第 21 位） | ✅ 16 条自证 + 反向证伪 | `scripts/verify-package-name.mjs` |
+| 包名一致性门禁（31 项链的第 24 位） | ✅ 16 条自证 + 反向证伪 | `scripts/verify-package-name.mjs` |
 | 本地一键发布脚本 | ✅ 端到端跑通（dry-run） | `scripts/publish-npm.mjs` |
 | CI 发布链 + 决策（跳过已发版 / 首次不带 provenance） | ✅ 门禁全绿 | `.github/workflows/publish.yml` |
 | 首次发布的 provenance 判定 | ✅ 实测：visibility 端点答 200 `{"public":false}` | `scripts/registry-version.mjs` |
-| **发布前置门禁**（OIDC 路径就绪 + token 字面量扫描 + 人工核对清单） | ✅ 门禁链第 29 道 | `scripts/verify-npm-readiness.mjs` |
+| **发布前置门禁**（OIDC 路径就绪 + token 字面量扫描 + 人工核对清单） | ✅ 门禁链第 28 道 | `scripts/verify-npm-readiness.mjs` |
 
 ## 12. 发布前置门禁：`verify:npm-readiness`
 

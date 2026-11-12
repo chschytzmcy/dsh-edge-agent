@@ -22498,3 +22498,219 @@ verify-tarball: dist\dsh-edge-agent-desktop-safe.tar.gz 不合格：
 **本机**：profile 升到 0.1.5（README 一致），桌面 App 于 **17:28:57** 重启加载。
 
 ---
+
+## §7.208 把「CI 发不了 npm」查到日志级，并给「文档口径漂移」装上机器看守（2026-11-12）
+
+### 一、主人的话
+
+> 「当前项目还有哪些问题，分析下」
+> 「先不考虑开通 2fa 的事情，先考虑其他的。」
+
+⇒ 本轮 = **只读分析** + **把不依赖主人裁决的那部分真做掉**。主人裁决项（safe 包里的
+full 补丁、input-guard 的 fail-closed 口径）已列成问卷，等回复再动。
+
+### 二、本轮的总账
+
+| 分析报告里的条目 | 本轮处置 |
+|---|---|
+| P1-1 CI 的 npm 面发不了 | **查到日志级根因**（见三）—— 但修它要挂 trusted publisher ⇒ 主人暂缓 |
+| P1-2 npm token 11-18 到期 | **到期日复核出来了**（见三之二）—— 处置仍是主人的浏览器三件事 |
+| P1-3 e2e 真回归恒 skipped | **没动**（要 Actions secret，主人没给） |
+| P2-4 safe 包带 full 惰性 patch | **没动**（待主人裁决，已发问卷） |
+| P2-5 门禁数写错 8 处 | **做了**：改成机器看守（见四），真漂移共 12 处 |
+| P2-6 tar 包缺 CHANGELOG | **做了**（见五） |
+| P2-7 deploy-tarball 停在 v0.1.4 | **做了**（见七） |
+| P2-8 v0.1.1–0.1.3 无 Release | **没做**（要先构建旧版本资产，见「没做的事」） |
+| P3-9 §7.202 错误码未取证 | **做了**（见三） |
+| P3-10 exports 交叉校验未做 | **做了**（见六） |
+
+### 三、§7.202 的悬案结案：run #4 attempt 1 的错误码是 **404**，不是 409
+
+§7.202 如实记着「失败那一步的具体错误码（409 还是 401）本轮未取证 —— 该步是裸 shell 跑
+`pnpm publish`，不发 `::error::` 注解，匿名 API 取到的注解正文为空，runner log 需登录」。
+
+**本轮取到了。** 取法：Windows 凭据管理器里 `git:https://github.com` 那条凭据
+（`gho_` token，**只在内存变量里用，不落盘、不回显**）⇒ 调 GitHub API 取 run #4
+attempt 1 的 job 列表 ⇒ 定位失败 job（`publish to npm`，id=131037815772）⇒ 下载该 job
+的日志（API 302 到 blob，脚本里手动跟 302、不带 Authorization 头再取）。
+
+日志尾部（原文节选）：
+
+```
+NODE_AUTH_TOKEN:                                              ← 空字符串
+GET https://run-actions-1-azure-eastus.actions.githubusercontent.com/.../idtoken/... 200 293ms
+[WARN] Skipped OIDC: ERR_PNPM_AUTH_TOKEN_EXCHANGE: Failed token exchange request
+       with body message: Unknown error (status code 404)
+📦 @dsh-edge/dsh-edge-agent@0.1.4 → https://registry.npmjs.org/
+[E404] 404 Not Found - PUT https://registry.npmjs.org/@dsh-edge%2fdsh-edge-agent - Not found
+pnpm: 404 Not Found - PUT ...
+##[error]Process completed with exit code 1.
+```
+
+**⇒ 结论要改一处：**
+
+1. **错误码是 404**，不是 409、也不是 401。
+2. **真实根因是「两条腿同时空」**：
+   - OIDC 腿：GitHub 侧正常（`id-token: write` 生效，OIDC token **200** 拿到），
+     但 registry 的 token 交换端点返 **404** ⇒ npm 上**没有为这个包配 trusted publisher**
+     ⇒ pnpm 记 `ERR_PNPM_AUTH_TOKEN_EXCHANGE` 并降级为「Skipped OIDC」继续往下走；
+   - token 腿：`NODE_AUTH_TOKEN:` 是**空字符串** ⇒ `secrets.NPM_TOKEN` **不存在**；
+   - ⇒ 最终的 PUT 是**匿名**请求 ⇒ npm 回 **404 Not Found**（匿名 PUT 报 404 而不是 401）。
+3. **§7.202 的「传播延迟」诊断本身仍成立**：decide 步发生在 `07:27:05Z`，而本机
+   `15:26:35` 发布成功、registry `15:28:06` 才可见 ⇒ decide 确实落在了那个 ≈91 秒的
+   窗口里 ⇒ 判「未发过」⇒ skip=false。**但那只是「让它去发」的原因，不是「让它红」的原因。**
+4. ⇒ **§7.202 的修复（decide 等窗口 + 409 当成功）只解决了「让 CI 去发」，
+   没有解决「CI 能不能发」。** run #4 attempt 2 全绿的真实原因是 decide 判
+   `skip=true` ⇒ **Publish 步直接 skipped** ⇒ 凭据问题**根本没被触发**。
+   ⇒ 下一次真要发的时候（首发新版本 ⇒ registry 上必然没有这一版 ⇒ decide 必然
+   skip=false），CI 仍会以**同样的 404** 失败。
+5. **附带的好消息**：CI 的 OIDC 通道已实测走到最后一步（GitHub 发 token 成功、
+   pnpm 发交换请求、`ERR_PNPM_AUTH_TOKEN_EXCHANGE` 是 pnpm 自己的错误码）⇒
+   仓库侧的准备工作（`id-token: write` + pnpm 11.7.0 自己实现 OIDC 交换）**是对的**，
+   缺的只是 npm 上那一条连接 —— 也就是主人暂缓的那件事。
+
+### 三之二、npm token 的到期日：能查了（更正 §7.202 记的「查不了」）
+
+上一轮记的是「`registry /-/npm/v1/tokens` 对 granular token 返回空对象，今天无法用
+机器复核到期日」。**本轮找到了能查的那条路**：`npm token list --json` **带 `expiry` 字段**
+（普通 `npm token list` 不显示它；registry 那个端点对 granular token 也不返回它）。
+
+实测档案（密钥已打码）：
+
+| 字段 | 值 |
+|---|---|
+| name | `dsh-edge-first-publish` |
+| description | 「首次发布 @dsh-edge/dsh-edge-agent；bypass 2FA；**迁 trusted publisher 后作废**」 |
+| **expiry** | **2026-11-18T01:43:55.681Z**（= 北京时间 2026-11-18 09:43） |
+| created | 2026-11-11T01:43:55.785Z |
+| bypass_2fa | `true` |
+| permissions | `package: write` + `org: write` |
+| scopes | `@dsh-edge`（type: package） |
+
+⇒ 距 2026-11-12 21:10 还剩 **5 天 12 小时**。
+
+**一个容易误判的点（实测）**：`npm profile get` 返 **403 Forbidden**，
+**不是 token 失效** —— 那是 bypass-2FA token 被限制做账号治理/身份操作
+（同一条 npm notice：`npm tokens that bypass 2FA are being restricted for account
+changes and direct publishing`）。`npm whoami` 现在成功返回 `chschytzmcy` ⇒ token 当前有效。
+
+### 四、新门禁 `verify:doc-gate-count`（链内第 31 道）：文档里的门禁数必须等于链内实际道数
+
+**问题**：链里实际 30 道，而 `docs/` 里有 **8 处**写着 29、`scripts/publish-npm.mjs` 里还有
+**4 处**（那 4 处是主人每次发版都会看到的终端输出）。全仓搜「30 道门禁」= **0 命中**
+⇒ **从来没有一份文档写对过这个数**。
+
+**根因（不是「忘了写」，是「没人看守」）**：
+
+- `verify:doc-links` 只查文档树的**可达性 + 断链**；
+- `verify:ci-build-chain` 只查**构建链**的步骤完整性；
+- 其余各道门禁查的是**产物**；
+- ⇒ 「文档里写的数字与实际一致」这件事**结构性无人看守**。
+
+**口径**（`scripts/verify-doc-gate-count.mjs`）：
+
+- **总数主张**：出现「N 道/项/个门禁」或「门禁 … N 道/项/个」⇒ N 必须等于链长；
+- **位次主张**：出现「第 N 道/位/项」且**同一行点名了某个门禁**⇒ 该门禁在链里的实际
+  位次必须等于 N；
+- 「第 N …」但没点名门禁 ⇒ 记 note，不判失败（「第 16 道门禁」这类历史叙述不该把门禁打红）；
+- **扫描范围**：`docs/*.md`（顶层）+ `README.md` + `scripts/*.mjs`（顶层）+ workflows；
+  **排除** `docs/PROGRESS.md`（§7.x 历史记录）与 `docs/TEST-REPORT.md`（历史报告），
+  排除理由写在脚本里（写出来就是为了让人能推翻它）；
+- **门禁不扫自己**：它的自证 fixture 里**故意**写着错的数（29 / 3 之类）。
+
+**自证 14 条**（正确总数放过 / 错误总数抓住且点名行号 / 链内门禁名+错位次抓住 /
+链内门禁名+对位次放过 / 没点名门禁不判失败 / 无关数字不误判 / 跨行主张能抓 /
+排除文件不参与扫描 …）。
+
+**它当场抓出 12 处真漂移**（我手工只数出 8 处 —— 位次表里的过期数字是手工漏掉的）：
+
+| 位置 | 原来写的 | 实际 |
+|---|---|---|
+| `docs/deploy-npm.md` `verify:npm-publish` | 第 22 位 | 第 **25** 位 |
+| `docs/deploy-npm.md` `verify:npm-decision` | 第 23 位 | 第 **26** 位 |
+| `docs/deploy-npm.md` `verify:package-name` | 第 21 位 | 第 **24** 位 |
+| `docs/deploy-npm.md` `verify:npm-readiness` | 第 29 位 | 第 **28** 位 |
+| `docs/npm-account-setup.md` | 「**25** 项链的第 21 位」 | **31** 项链的第 **24** 位 |
+| `docs/npm-account-setup.md` | 「门禁链第 29 道」 | 第 **28** 道 |
+| `docs/deploy-npm.md` ×2 / `deploy-tarball.md` / `load-into-local-dsh.md` / `npm-account-setup.md` ×2 | 「29 道门禁」 | **31** |
+| `scripts/publish-npm.mjs` ×4 | 「29 道门禁」 | **31** |
+
+**门禁自己也抓了三类误报并修掉**（这三条也是它自己的设计约束，记在这里）：
+
+1. **自指**：门禁自己的 fixture 里写着错的数 ⇒ 把自己排除出扫描范围；
+2. **跨行配对**：第一版按「整篇文本就近配对」，结果 `deploy-npm.md:273` 的「第 22 位」
+   被**下一行**的 `verify:npm-publish` 认领 ⇒ 报了一条假失败 ⇒ 改成**位次主张只与
+   同一行里最近的门禁名配对**；
+3. **量词歧义**：「门禁（9 项静态断言）」里的 9 项说的是**断言条数**不是门禁数 ⇒
+   总数主张加负向断言（单位后面跟着「断言/自证/条/文件/处」的不算门禁数）。
+
+### 五、tar 包补 CHANGELOG.md：两个生产者的文件集对齐
+
+**根因是 §7.207 那个根因的第二个实例**：出货面有**两个各自独立的生产者** ——
+`rebuild-installable.mjs`（→ npm 包）由 `package.json#files` 驱动，
+`_pack-core.mjs#stageVariant`（→ tar 包）是**硬编码拷贝清单** ⇒ `files` 只写进清单、
+**不决定** tar 包拷哪些文件。
+
+实测（2026-11-12）：变体目录 **240** 文件 / npm 包 **241** / tar 包 **239** ⇒ 差的那一个
+就是 `CHANGELOG.md`（只在变体目录与 npm 包里）⇒ **git release 通道的用户拿不到变更记录**，
+而 npm 用户拿得到 ⇒ 两条出货面讲的还是同一个故事。
+
+- 修法：`stageVariant` 显式拷 `CHANGELOG.md`（与 README 同一段代码块）；
+- 门禁：`scripts/verify-tarball.mjs` 新增**第 9 条** —— tarball 必须有 `CHANGELOG.md`
+  且与仓库根**逐字节一致**；自证 +2 条反证（缺 CHANGELOG / CHANGELOG 陈旧）；
+- 实测：两个 tar 包从 239 → **240** 条目，README 与 CHANGELOG 均与仓库根逐字节一致。
+
+### 六、exports ↔ 资源文件存在性：补上 dev-note 留了三年的那条建议
+
+`docs/dev-notes/cordis-rc021-patch-loader.md` §Bug3 记的是 v3 的真事故：installable 的
+package.json 写着 `"./cordis.desktop-safe.patch.yml": "./cordis.patch.yml"`，而那个目录里
+**只有** `cordis.desktop-safe.patch.yml` ⇒ 桌面启动时
+`failed to read overlay .../cordis.patch.yml: ENOENT` ⇒ **boot 硬失败**（不是「静默一个都
+不 mount」）。当时只查了 `dsh.bundle.patch` 指向的文件在不在，**没查相邻的 export entry**
+⇒ dev-note 里留了「值得在 verify-patch-surface.ts 里追一条 export 字段与文件存在性交叉
+verify（如再有精力的话）」—— **一直没做**。
+
+- 落点：`scripts/verify-installable.mjs` 第 5 项（它审的正是**出货的 installable 目录**，
+  而 `dsh.bundle.patch` 的存在性检查本来就在那儿）；
+- 口径：`package.json#exports` 里凡是指向**非 JS 文件**（yml/yaml/json/md/txt）的条目，
+  目标必须真的在盘上（代码入口那 30 多条由 `verify:package` 在 npm pack 视角覆盖）；
+- **端到端反证已跑**：把变体 package.json 的 `exports["./presets/edge.patch.yml"]` 指向一个
+  不存在的文件 ⇒ 门禁**红**并点名该条目 ⇒ 还原 ⇒ 绿。
+
+### 七、`docs/deploy-tarball.md` 去掉 v0.1.4 硬编码
+
+5 处写死的版本号改成模板（§7.206 的 README 已经用 `<tag>` 模板，这里跟上）：
+
+- §8.1 的两个示例 URL → `<tag>`（并加一行说明「以 Releases 页最新那个为准，不要写死」）；
+- §8.4 变体表的「清单版本」→ `<version>-desktop-safe` / `<version>-full`；
+- §8.5 的 `git tag v0.1.4` → `git tag v<version>`。
+
+### 八、这一节**没有**做的事
+
+- **没有**改任何**运行时**代码 ⇒ 0.1.5 的运行时行为与 0.1.4 完全相同，本轮改动只碰
+  产物内容、门禁与文档；
+- **没有**开账号 2FA、**没有**挂 trusted publisher（主人明说先不做）⇒
+  CI 的 npm 面**仍然发不了包**，且 §三 的结论是：下次真要发时它仍会以 404 失败；
+- **没有**给 Actions 补 `DEEPSEEK_API_KEY` / `DSH_EDGE_API_KEY` ⇒ e2e 真回归**仍然恒 skipped**；
+- **没有**剔掉 npm 包里的 full 变体惰性 patch（待主人裁决）；
+- **没有**动 input-guard 的 fail-closed 口径（待主人裁决；那个 worker 的实现没落地，
+  且自报会让云路由整轮 403）；
+- **没有**给 `v0.1.1`–`v0.1.3` 补建 GitHub Release（要先从旧 tag 构建当期 tar 资产，
+  且旧版本本身有已知缺陷 ⇒ 价值/成本比不高，留给主人决定）；
+- **没取到的证据**：只下载了 run #4 attempt 1 **失败 job 那一份**日志，decide 步的完整
+  stdout 没有逐行细看；本机 token **到期后**的行为没验（不能拿真 token 去试）。
+
+### 九、留给主人的事（顺序不能反）
+
+1. **浏览器三件事**：开 2FA（WebAuthn / Windows Hello）→ 挂 trusted publisher
+   （`Organization or user`=`chschytzmcy`、`Repository`=`chschytzmcy/dsh-edge-agent`、
+   `Workflow filename`=`publish.yml`、**勾上「npm publish」**；**配完 48 小时内要推一次
+   tag**，否则作废）→ 轮换三个明文 key。
+   ⇒ 挂好之后，验证 CI 那条腿活了的最干净办法是：**下一个版本不在本机发**，直接推 tag
+   让 CI 用 OIDC 发（那一次 decide 必然 skip=false，正好是要跑的路径）。
+2. **给 Actions 补两个 secret** ⇒ 把 e2e 真回归从「恒 skipped」变成常态门禁。
+3. **裁决** safe 包剔不剔 full 补丁、input-guard 的 fail-closed 口径（已发问卷）。
+4. 本机 npm token **2026-11-18 09:43（北京时间）到期** ⇒ 在那之前必须走完第 1 条，
+   否则 npm 面停摆（且 2027-01 起 token 直发被官方移除）。
+
+---
