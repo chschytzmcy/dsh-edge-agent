@@ -155,12 +155,26 @@ jobs:
       - name: Run unit tests (JSON reporter for count assertion)
         run: |
           VITEST_EXIT=0
-          pnpm test -- --run --reporter=json --outputFile=/tmp/vitest.json || VITEST_EXIT=$?
+          pnpm test -- --run --reporter=json --outputFile=/tmp/vitest.json \
+            > /tmp/vitest.out 2> /tmp/vitest.err || VITEST_EXIT=$?
           echo "vitest exit=${VITEST_EXIT}"
           # §7.198: 报告没写出来 ⇒ 计数门禁无从判定 ⇒ 这一步直接红，并把
-          # vitest 的退出码带进注解（公开 API 可读，不必登录看 log）。
+          # **现场**（退出码 + stdout/stderr 尾部 + 目录清单）写进注解 ——
+          # 注解是公开可读的，不必登录看 log。
           if [ ! -f /tmp/vitest.json ]; then
-            echo "::error::vitest 没有写出 /tmp/vitest.json（vitest exit=${VITEST_EXIT}）—— 计数门禁无法判定"
+            {
+              echo "vitest exit=${VITEST_EXIT}"
+              echo "--- stdout tail ---"
+              tail -20 /tmp/vitest.out 2>/dev/null || echo "(no stdout)"
+              echo "--- stderr tail ---"
+              tail -20 /tmp/vitest.err 2>/dev/null || echo "(no stderr)"
+              echo "--- /tmp listing ---"
+              ls -la /tmp 2>/dev/null | head -20 || echo "(no /tmp)"
+              echo "--- tool versions ---"
+              node --version
+              pnpm --version
+            } > /tmp/vitest.diag 2>&1 || true
+            echo "::error::vitest 没有写出 /tmp/vitest.json —— 计数门禁无法判定（诊断见下）%0A$(cat /tmp/vitest.diag)"
             exit 1
           fi
 
@@ -297,8 +311,8 @@ jobs:
 
       - name: Start dsh web profile (background)
         env:
-          EDGE_API_KEY: test-secret-key
-          DEEPSEEK_API_KEY: test-fake-deepseek-key-for-opslog-fixture
+          EDGE_API_KEY: ${{ secrets.DSH_EDGE_API_KEY || 'test-secret-key' }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY || 'test-fake-deepseek-key-for-opslog-fixture' }}
           DSH_EDGE_HTTP_PORT: '21017'
         run: |
           cd "$HOME/.dsh/profiles/web"
@@ -313,12 +327,37 @@ jobs:
             sleep 1
           done
 
-      - name: Run ops log coverage regression (3 重点用例)
+      # §7.198: 这个 job 需要**真凭据**才能真正跑通 ——
+      # `scripts/e2e-ops-log-coverage.sh` 的 .env（gitignored，仓库里没有）
+      # 里放的是真 key；没有真 key 时脚本自己就写明「云端用例会 FAIL」。
+      # ⇒ 没配 secret 时**明说并跳过**那一步（job 里那步显示 skipped，不是假绿），
+      # 配了 secret 才跑真回归。
+      - name: 检查 e2e 凭据（缺 secret ⇒ 明说并跳过回归，不假装绿）
         env:
-          EDGE_API_KEY: test-secret-key
-          DEEPSEEK_API_KEY: test-fake-deepseek-key-for-opslog-fixture
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          DSH_EDGE_API_KEY: ${{ secrets.DSH_EDGE_API_KEY }}
+        run: |
+          if [ -z "${DEEPSEEK_API_KEY:-}" ] || [ -z "${DSH_EDGE_API_KEY:-}" ]; then
+            echo "::warning::ops log 覆盖回归需要两个 Actions secret：DEEPSEEK_API_KEY 与 DSH_EDGE_API_KEY（仓库 Settings → Secrets and variables → Actions）。没有它们，脚本只能用假 key，云端用例会必然失败 —— 所以**回归那一步这次跳过**，而不是假绿。"
+          else
+            echo "e2e 凭据齐备 ⇒ 跑真回归"
+          fi
+
+      - name: Run ops log coverage regression (3 重点用例)
+        if: ${{ secrets.DEEPSEEK_API_KEY != '' && secrets.DSH_EDGE_API_KEY != '' }}
+        env:
+          EDGE_API_KEY: ${{ secrets.DSH_EDGE_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           DSH_EDGE_HTTP_PORT: '21017'
-        run: bash scripts/e2e-ops-log-coverage.sh
+        run: |
+          set +e
+          bash scripts/e2e-ops-log-coverage.sh 2>&1 | tail -60
+          E2E_EXIT=${PIPESTATUS[0]}
+          set -e
+          if [ "$E2E_EXIT" -ne 0 ]; then
+            echo "::error::ops log 覆盖回归失败（exit=${E2E_EXIT}）"
+            exit 1
+          fi
 
       - name: Upload ops log for debugging
         if: always()
