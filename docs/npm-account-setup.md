@@ -259,9 +259,23 @@ npm view @dsh-edge/dsh-edge-agent versions --json
 
 | 字段 | 填什么 |
 |---|---|
-| Organization or user | `dsh-edge`（路线 A 填**组织**，路线 B 填**账号**） |
+| Organization or user | **`chschytzmcy`**（**主人自己的账号**） |
 | Repository | `chschytzmcy/dsh-edge-agent` |
 | Workflow filename | `publish.yml` |
+
+> ⚠️ **2026-11-12 实测更正**：这一格早先写的是 `dsh-edge`，那是 §2 **路线 A**
+> （建一个同名**组织** `dsh-edge`）才该填的值，**与本仓实际状态不符**。
+> 实测证据：
+>
+> - `npm whoami` → **`chschytzmcy`**（发版用的就是这个账号）；
+> - `GET https://registry.npmjs.org/-/org/dsh-edge` → **404 `does not exist`**
+>   ⇒ npm 上**没有**叫 `dsh-edge` 的组织；
+> - `GET https://registry.npmjs.org/@dsh-edge%2fdsh-edge-agent` → `maintainers` =
+>   **`[{"name":"chschytzmcy", …}]`** ⇒ 包的 owner 就是 `chschytzmcy`。
+>
+> ⇒ `@dsh-edge` 只是**主人账号名下的一个 scope 名**，不是组织。
+> ⇒ trusted publisher 必须挂在**包真正的主人**（`chschytzmcy`）名下；
+> 填 `dsh-edge` 会指向一个不存在的组织，校验必然过不去。
 
 | 勾选项 | 填什么 |
 |---|---|

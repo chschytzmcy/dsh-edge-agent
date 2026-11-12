@@ -21959,3 +21959,62 @@ publish.yml: `run: pnpm test -- --run` forwards vitest flags through `pnpm test 
 
 
 ---
+
+## §7.200 trusted publisher 的账号名填错了：`dsh-edge` 不存在，包的主人是 `chschytzmcy`（2026-11-12）
+
+### 一、发现的时机
+
+准备让主人去浏览器挂 trusted publisher（挂完 48 小时内必须推一次 tag，
+否则配置作废）⇒ 动手前先把「那一格到底填什么」**核实一遍** ——
+结果发现仓库里写的**是错的**。
+
+### 二、三条实测证据（互相独立）
+
+| 查什么 | 怎么查 | 结果 |
+|---|---|---|
+| 发版用的是哪个账号 | `npm whoami`（本机，凭据有效） | **`chschytzmcy`** |
+| npm 上有没有叫 `dsh-edge` 的**组织** | `GET https://registry.npmjs.org/-/org/dsh-edge` | **404 `does not exist`** ⇒ **没有这个组织** |
+| 包的 owner 是谁 | `GET https://registry.npmjs.org/@dsh-edge%2fdsh-edge-agent` | `maintainers` = **`[{"name":"chschytzmcy","email":…}]`** |
+
+⇒ **`@dsh-edge` 只是主人账号名下的一个 scope 名，不是组织。**
+
+### 三、错在哪：文档还停在 §2 的「路线 A/B」分支文案
+
+`docs/npm-account-setup.md` §2 给了两条注册路线：
+
+- **路线 A**：个人账号 `chschytzmcy` + **另建同名组织 `dsh-edge`**；
+- **路线 B**：直接注册**用户名 = `dsh-edge`** 的个人账号。
+
+而 §8 的 trusted publisher 表格写的是：
+
+```
+| Organization or user | `dsh-edge`（路线 A 填组织，路线 B 填账号） |
+```
+
+⇒ 这句话**只在 A、B 两条路上都成立**；而本仓实际走的是**第三条**：
+**个人账号名叫 `chschytzmcy`，scope 叫 `@dsh-edge`（≠ 账号名）** ——
+§2 的文案里根本没有这一条，于是 §8 照抄了 `dsh-edge`。
+
+⇒ 主人照着填 ⇒ 挂到**一个不存在的组织**上 ⇒ **校验不过**，而 npm 只会说
+「校验失败」，**看不出是账号名填错**（这正是主人那条「不写与实际行为相反的陈述」
+的红线所在）。
+
+### 四、修法：账号名做成**单一事实源**，门禁核对清单与文档一致
+
+- `scripts/verify-npm-readiness.mjs` 新增导出常量 **`NPM_OWNER = 'chschytzmcy'`**
+  （注释里带上上面三条实测证据），人工核对清单里那句「填什么」改为引它；
+- `docs/npm-account-setup.md` §8 表格改为 **`chschytzmcy`**（**主人自己的账号**），
+  并附实测依据与更正说明；
+- 新增 `checkOwnerAgreement()`：**清单里必须出现 `NPM_OWNER`**、
+  **不许把 `dsh-edge` 当账号/组织名**、**文档里必须出现 `NPM_OWNER`** ——
+  三条一起把「同一件事写两遍」的漂移堵死（§7.200 的成因正是写了两遍）。
+  自证新增 **5 条断言**（该脚本共 20 条），并把「清单与文档一致 ✓」打进门禁输出。
+
+### 五、这一节**没有**做的事
+
+- **没有**碰主人的 npm 账号设置（没开 2FA、没挂 trusted publisher）—— 那是主人在
+  浏览器里点的三件事，本节只把**填什么**改对；
+- **没有**发 npm 包 ⇒ 版本仍是 0.1.3；
+- **没有**改 scope 名（`@dsh-edge` 是别人先占的、抢不动；本仓本来就用自己的账号发）。
+
+---

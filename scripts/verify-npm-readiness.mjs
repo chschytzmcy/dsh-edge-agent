@@ -272,6 +272,55 @@ export function describeRegistryState({ pkg, vis, currentVersion }) {
  *   - trusted publisher：`/-/npm/v1/trusted-publishers` 与
  *     `/-/npm/v1/trusted-publishers/<pkg>` 匿名与带认证访问都是 404 ⇒ 没有可查端点。
  */
+/**
+ * §7.200: **包真正的主人**（trusted publisher 的 "Organization or user" 该填谁）。
+ *
+ * 实测事实（2026-11-12，匿名只读 + 本机 `npm whoami`）：
+ *   - `npm whoami` → **`chschytzmcy`**（发版用的就是这个账号）；
+ *   - `GET https://registry.npmjs.org/-/org/dsh-edge` → **404 `does not exist`**
+ *     ⇒ npm 上**没有**叫 `dsh-edge` 的**组织**；
+ *   - `GET https://registry.npmjs.org/@dsh-edge%2fdsh-edge-agent` →
+ *     `maintainers` = **`[{"name":"chschytzmcy", …}]`** ⇒ 包的 owner 就是它。
+ *
+ * ⇒ `@dsh-edge` 只是**主人账号名下的一个 scope 名**，不是组织。
+ *
+ * 早先的指引（文档 §8 与本清单）写的是「填 `dsh-edge`」—— 那是 §2 **路线 A**
+ * （另建同名组织）才成立的值，与本仓实际状态不符 ⇒ 主人照着填会被挡，
+ * 而且**看不出原因**（npm 只说校验不过）。⇒ 账号名做成**单一事实源**，
+ * 清单与文档都引它，门禁核对两边一致。
+ */
+export const NPM_OWNER = 'chschytzmcy'
+
+/**
+ * 核对「trusted publisher 该填哪个账号」这件事在**清单**与**文档**里是否一致。
+ *
+ * @param {string} checklistText MANUAL_CHECKLIST 拼出来的文本
+ * @param {string} docText docs/npm-account-setup.md 全文
+ * @returns {string[]} the problems (empty when sound)
+ */
+export function checkOwnerAgreement(checklistText, docText) {
+  const problems = []
+  if (!checklistText.includes(NPM_OWNER)) {
+    problems.push(
+      `trusted publisher 清单里没有出现包主人 \`${NPM_OWNER}\` —— 填错账号名会挂不上`
+      + '（§7.200 实测：npm whoami 与包 maintainers 都是它）。',
+    )
+  }
+  if (/(?:Organization or user|user)[=: ]+\s*dsh-edge\b/iu.test(checklistText)) {
+    problems.push(
+      'trusted publisher 清单里把 `dsh-edge` 当成账号/组织名 —— §7.200 实测：npm 上'
+      + ' 没有这个组织（/-/org/dsh-edge → 404），包主人是 `' + NPM_OWNER + '`。',
+    )
+  }
+  if (!docText.includes(NPM_OWNER)) {
+    problems.push(
+      `docs/npm-account-setup.md 里没有出现包主人 \`${NPM_OWNER}\` —— 文档与清单会漂移`
+      + '（这正是 §7.200 那条错误指引的成因：同一件事写了两遍）。',
+    )
+  }
+  return problems
+}
+
 export const MANUAL_CHECKLIST = [
   {
     what: '账号 2FA（WebAuthn / Windows Hello）',
@@ -284,7 +333,7 @@ export const MANUAL_CHECKLIST = [
     why: '2027-01 起 bypass-2FA token 失去直发权 ⇒ CI 必须走 OIDC。仓库侧已就位（id-token: write + pnpm 11.7.0 自己换 token），缺的是 npm 上那条连接。',
     where: 'https://www.npmjs.com/package/@dsh-edge/dsh-edge-agent/settings/access',
     cannot: 'registry 上没有可查端点：/-/npm/v1/trusted-publishers* 匿名与带认证都是 404',
-    extra: '填 Organization or user=dsh-edge、Repository=chschytzmcy/dsh-edge-agent、Workflow filename=publish.yml；须勾上「npm publish」（2026-09-03 后新建的连接默认只允许 staged publish）；配完 48 小时内要推一次 tag，否则校验不过、配置作废。',
+    extra: '填 Organization or user=chschytzmcy（包真正的主人；实测 npm whoami = chschytzmcy、registry 上 /-/org/dsh-edge → 404 ⇒ 没有叫 dsh-edge 的组织、@dsh-edge 只是 chschytzmcy 名下的 scope）、Repository=chschytzmcy/dsh-edge-agent、Workflow filename=publish.yml；须勾上「npm publish」（2026-09-03 后新建的连接默认只允许 staged publish）；配完 48 小时内要推一次 tag，否则校验不过、配置作废。',
   },
 ]
 
@@ -444,6 +493,16 @@ function selftest() {
     expect('2FA 那项引用了 npm trust 的原文', MANUAL_CHECKLIST[0].why.includes('must'), true)
   }
 
+  // 11. §7.200: trusted publisher 的账号名 —— 清单与文档一致，且是包真正的主人
+  {
+    const checklistText = MANUAL_CHECKLIST.map((c) => `${c.what} ${c.why} ${c.where} ${c.cannot} ${c.extra ?? ''}`).join('\n')
+    expect('清单里出现了包主人', checklistText.includes(NPM_OWNER), true)
+    expect('清单里没把 dsh-edge 当账号', checkOwnerAgreement(checklistText, `x ${NPM_OWNER} y`).length, 0)
+    expect('清单里把 dsh-edge 当账号 ⇒ 报 1 项', checkOwnerAgreement(checklistText.replace(NPM_OWNER, 'dsh-edge'), `x ${NPM_OWNER} y`).length > 0, true)
+    expect('清单里没有包主人 ⇒ 报 1 项', checkOwnerAgreement('Organization or user=whoever', `x ${NPM_OWNER} y`).length, 1)
+    expect('文档里没有包主人 ⇒ 报 1 项', checkOwnerAgreement(checklistText, '文档里什么都没写').length, 1)
+  }
+
   if (failures > 0) {
     console.error(`\nselftest FAILED: ${failures} assertion(s)`)
     process.exit(2)
@@ -514,6 +573,23 @@ if (args.includes('--selftest')) {
     console.log(`        去哪 : ${c.where}`)
     console.log(`        为何查不了 : ${c.cannot}`)
     if (c.extra) console.log(`        注意 : ${c.extra}`)
+  }
+
+  // ⑤ §7.200: trusted publisher 该填的账号名 —— 清单与文档必须一致，
+  //    且必须是**包真正的主人**（实测：npm 上没有 dsh-edge 这个组织）。
+  {
+    const checklistText = MANUAL_CHECKLIST.map((c) => `${c.what} ${c.why} ${c.where} ${c.cannot} ${c.extra ?? ''}`).join('\n')
+    let docText = ''
+    try {
+      docText = readFileSync(join(ROOT, 'docs', 'npm-account-setup.md'), 'utf8')
+    } catch {
+      failures.push('缺 docs/npm-account-setup.md —— 人工核对清单指向它，文档不能没有')
+    }
+    if (docText) {
+      const problems = checkOwnerAgreement(checklistText, docText)
+      for (const p of problems) failures.push(p)
+      console.log(`  包主人账号名 : ${NPM_OWNER}（清单与文档一致 ✓）`)
+    }
   }
 
   console.log(`  失败 : ${failures.length}`)
