@@ -153,7 +153,16 @@ jobs:
         run: pnpm run compile
 
       - name: Run unit tests (JSON reporter for count assertion)
-        run: pnpm test -- --run --reporter=json --outputFile=/tmp/vitest.json || true
+        run: |
+          VITEST_EXIT=0
+          pnpm test -- --run --reporter=json --outputFile=/tmp/vitest.json || VITEST_EXIT=$?
+          echo "vitest exit=${VITEST_EXIT}"
+          # §7.198: 报告没写出来 ⇒ 计数门禁无从判定 ⇒ 这一步直接红，并把
+          # vitest 的退出码带进注解（公开 API 可读，不必登录看 log）。
+          if [ ! -f /tmp/vitest.json ]; then
+            echo "::error::vitest 没有写出 /tmp/vitest.json（vitest exit=${VITEST_EXIT}）—— 计数门禁无法判定"
+            exit 1
+          fi
 
       - name: Assert test count
         run: |
@@ -161,7 +170,7 @@ jobs:
           TOTAL=$(node -e "const r=require('/tmp/vitest.json'); console.log(r.numTotalTests)")
           PASSED=$(node -e "const r=require('/tmp/vitest.json'); console.log(r.numPassedTests)")
           FAILED=$(node -e "const r=require('/tmp/vitest.json'); console.log(r.numFailedTests)")
-          SKIPPED=$(node -e "const r=require('/tmp/vitest.json'); console.log(r.numSkippedTests)")
+          SKIPPED=$(node -e "const r=require('/tmp/vitest.json'); console.log(r.numPendingTests ?? 0)")
           echo "Total: $TOTAL, Passed: $PASSED, Failed: $FAILED, Skipped: $SKIPPED"
           if [ "$FAILED" -ne 0 ]; then
             echo "::error::单元测试有 $FAILED 个 FAIL——PR block。"
@@ -248,7 +257,10 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: '22.20'
+          # §7.198: 这个 job 要跑宿主 DSH CLI（`@deepseek-ai/dsh`），而它发布的
+          # engines 是 **node >= 24.9.0** ⇒ 用 22.20 装它/跑它都不对。
+          # 本仓自己的 engines 是 `^22.19 || >=24` ⇒ 这个 job 用 24.13.0 合法。
+          node-version: '24.13.0'
           cache: 'pnpm'
 
       - name: Install dependencies
@@ -258,7 +270,15 @@ jobs:
         run: pnpm run compile
 
       - name: Install DSH CLI
-        run: npm install -g @deepseek-ai/dsh
+        run: |
+          set +e
+          npm install -g @deepseek-ai/dsh 2>&1 | tail -40
+          DSH_INSTALL_EXIT=${PIPESTATUS[0]}
+          set -e
+          if [ "$DSH_INSTALL_EXIT" -ne 0 ]; then
+            echo "::error::npm install -g @deepseek-ai/dsh 失败（exit=${DSH_INSTALL_EXIT}）"
+            exit 1
+          fi
 
       - name: Bootstrap DSH web profile (含 dsh-edge-agent bundle)
         run: |
