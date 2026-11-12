@@ -101,7 +101,11 @@ export async function probePackage(name, { registry = DEFAULT_REGISTRY, timeoutM
   if (!res.ok && res.status !== 0) return { state: 'unknown', status: res.status, error: res.error }
   if (res.status === 0) return { state: 'unknown', status: 0, error: res.error }
   const versions = res.body && typeof res.body === 'object' ? Object.keys(res.body.versions ?? {}) : []
-  return { state: 'present', versions, status: res.status }
+  // §7.193：`dist-tags` 与 `versions` 在**同一个响应**里 ⇒ 不额外发请求。
+  // 它是「latest 指向谁」的唯一来源 —— 而 §7.193 实测证明：`latest` 不是上线判据，
+  // 「versions 里有没有新版本」才是（staged publishing 期间 latest 仍指上一个真实版本）。
+  const distTags = res.body && typeof res.body === 'object' ? (res.body['dist-tags'] ?? {}) : {}
+  return { state: 'present', versions, distTags, status: res.status }
 }
 
 /**

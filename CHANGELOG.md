@@ -9,6 +9,68 @@
 
 ---
 
+## [Unreleased]
+
+**把「发版前置条件」从口头记忆变成门禁，并修掉两处与实测相反的文档口径。**
+（2026-11-11，§7.193）
+
+### 对使用者的影响
+
+**没有行为变化** —— 装出来的包与 0.1.2 完全一致（226 个 `lib/` 文件逐字节相同）。
+这一段改的是**发布链本身**与**文档口径**。
+
+### 修掉的两处「与实际行为相反」
+
+- **staged publishing 的上线判据**：旧文档写「`npm view <pkg> version` 返回 `0.0.0-stage`
+  ⇒ 还卡着」—— 实测**不是这样**：发 0.1.2 时它返回的是**上一个真实版本 `0.1.1`**。
+  ⇒ 正确判据是**看 `versions` 数组里有没有出现新版本**（`npm view <pkg> versions --json`）。
+  拿旧判据会**误判成「已上线」**，进而提前推 tag、让 CI 撞 409。
+- **trusted publisher 的前置**：旧文档只说「去包页登记 trusted publisher」，
+  没写**账号必须已经开着 2FA**。npm 官方 `npm trust` 文档写明 trusted publisher 要求
+  **账号级 2FA**，且**不接受**勾了 bypass 的 granular token ⇒ **顺序是「先开 2FA →
+  再挂 trusted publisher」**。
+
+### 新的第 29 道门禁：`verify:npm-readiness`
+
+- **9 项静态断言**（全离线、只读）：`publish.yml` 有 `id-token: write`、被 `v*` tag 触发、
+  publish 步骤 cwd 是 `dist/.npm-stage`、命令带 `--access public` / `--ignore-scripts` /
+  `--no-git-checks`、`--provenance` 与 `--no-provenance` 两条分支都在、有 tag↔version 断言、
+  真的有 `pnpm publish`；
+- **token 字面量扫描**：git 追踪的文件里不得出现 npm token 的字面量；
+- **`--online`** 才查 registry 实况（匿名只读），**网络失败不算失败**；
+- **机器查不了的事，如实报「查不了」**：账号 2FA 状态（CLI 实测 403）与 trusted publisher
+  是否已挂（registry 无可查端点）—— 每次 CI 都打印「去哪确认、为什么机器查不了」。
+
+### 行为修复：边缘模式「发请求卡住」
+
+> ⚠️ **npm 上的 0.1.2 不含这个修复**（实测拆包确认：0.1.2 的 `input-guard.js` 不含
+> `isLocalPoolForward` 判据，也没有 `llm-drain-deadline`）⇒ 停在 0.1.2 的用户仍会遇到。
+> 下一版（0.1.3）包含。
+
+**症状**：桌面版加载插件 → 边缘模式发请求 → 一直「等待」，LLM 调用 0 次，**不报错**。
+**触发条件**：没有 `edge.json`（两池都落到 DELEGATE 转发模式）+ 宿主有可选模型 +
+边缘模式 + 同会话第二轮。
+
+**根因**：本地池的 DELEGATE 转发回来那一趟，provider 变成了宿主的目标路由；
+`input-guard` 的改道判据只认 provider 名、**不认「这是本地池自己发起的转发」**
+⇒ 那趟又被改道 ⇒ 乒乓 ⇒ 递归吃内存 ⇒ **请求根本没走到网络层** ⇒ promise 永不 settle
+⇒ 所以表现是「卡住」而不是「报错」。
+
+**修复**（§7.190 / §7.191 / §7.192）：改道判据加**转发标记**
+（`__edgeLocalPoolForward`）—— 本地池自己的转发不再被改道；另加时限收口
+（`llm-drain-deadline`）与「本地没配模型就取 DSH 配置的模型」。
+
+**验证（本机 Windows 实盘，四轮独立冷启动、可复现）**：
+
+| | 改道跳数 | 审计 `reroute` 次数 | 真实网络请求 | 收口 |
+|---|---|---|---|---|
+| 修复前（npm 0.1.1） | **41**（打满探针上限） | **20** | **0**（没出网） | 探针中止（≈500ms） |
+| 修复后（当前构建） | **3** | **1** | REQ + RESP | ✅ 27–55ms |
+
+四轮的原始输出与复现步骤见 [`docs/PROGRESS.md`](docs/PROGRESS.md) §7.194。
+
+---
+
 ## [0.1.2] — 2026-11-11
 
 **修三处「写的东西与实际行为不一致」，并把 README 收瘦。** 2026-08-18 → 2026-11-11。

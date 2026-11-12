@@ -14,9 +14,9 @@
  *   2. 跑**完整的 canonical 构建链**（与 CI 一字不差 —— `verify-ci-build-chain`
  *      门禁就管这件事）；
  *   3. **认证预检**（仅 `--yes`；离线读 `.npmrc` / 环境变量，找不到 token 就停）；
- *   4. 跑**全部 28 道门禁**（验的是**产物**，不是源码）；
- *   4. `pnpm publish --dry-run` —— **默认不发**，只把「将要发出去的东西」摊开给你看；
- *   5. 真的发要显式加 `--yes`。
+ *   4. 跑**全部 29 道门禁**（验的是**产物**，不是源码）；
+ *   5. `pnpm publish --dry-run` —— **默认不发**，只把「将要发出去的东西」摊开给你看；
+ *   6. 真的发要显式加 `--yes`。
  *
  * ⇒ **不带 `--yes` 永远不会碰 registry。** 这一条是这个脚本的默认值，也是它能
  * 第一次就被信任的原因。
@@ -53,7 +53,7 @@
  * ```
  *
  * 真发布（`--yes`）会先做一次**认证预检**（离线读文件，3 秒内出结果）：找不到
- * token 就直接停 —— 而不是等构建链 + 28 道门禁跑完才在最后一步失败。
+ * token 就直接停 —— 而不是等构建链 + 29 道门禁跑完才在最后一步失败。
  *
  * ## 关于 provenance（溯源徽章）
  *
@@ -434,7 +434,7 @@ if (!SKIP_REGISTRY) {
 /**
  * 真发布前的**认证预检** —— 纯离线读文件，**不调 npm、不联网**。
  *
- * 为什么要有：真发布要跑完 canonical 构建链 + 27 道门禁（好几分钟）才轮到
+ * 为什么要有：真发布要跑完 canonical 构建链 + 29 道门禁（好几分钟）才轮到
  * `pnpm publish`；若那时才发现「没登录」，前面那几十分钟全白跑。
  *
  * 找 token 的四个来源（与 npm/pnpm 的实际查找顺序一致）：
@@ -495,7 +495,7 @@ if (YES) {
   const sources = findAuthSources()
   if (sources.length === 0) {
     console.error('\n✗ 没找到 npm 凭据 —— 这一趟真发布会在**最后一步**才失败，')
-    console.error('  前面的 canonical 构建链 + 27 道门禁全白跑。')
+    console.error('  前面的 canonical 构建链 + 29 道门禁全白跑。')
     console.error('\n  补救（方案 B：主人自己的账号 + npmjs.com 上那个同名账号/组织的成员身份）：')
     console.error('    npm login --scope=@dsh-edge')
     console.error('\n  或把 granular token 写进 ~/.npmrc / 存成环境变量 NPM_TOKEN。')

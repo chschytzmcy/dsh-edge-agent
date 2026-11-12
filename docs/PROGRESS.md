@@ -20163,9 +20163,6 @@ CI 那条路（`publish.yml` 直接跑 `pnpm publish --provenance`）不受影�
   （那是一次独立的产品决定）；
 - 主人手上三件仍待办：trusted publisher、WebAuthn 2FA、轮换三个明文 key。
 
-
----
-
 ## §7.189 部署通道绝不夹带 edge.json（主人裁决）+ npm 包装上后「边缘模式」失踪的根因（2026-11-11）
 
 主人这一轮的三句话，串起来是同一件事的三个面：
@@ -20929,3 +20926,342 @@ const fallbackModel = isLocal
 
 **没做的**：没有发新的 npm 版本（本轮改动只在仓库里）。要送到主人手上的
 npm 包，需要发 **0.1.3** —— 对外可见动作，等主人指示。
+
+## §7.193 发布前置条件门禁化：查实 npm 的 2FA / trusted publisher 现状，纠正两处与实测相反的文档口径（2026-11-11）
+
+### 触发：主人问「发布到 npm 需要什么和执行什么命令，为什么之前说要 enable 2fa」
+
+答这个问题的时候去查了 npm 官方文档与 registry ⇒ **查出两件必须写进仓库的事**：
+
+1. **仓库里有两处文档口径与实际行为相反**（staged publishing 的上线判据、trusted
+   publisher 的 2FA 前置）；
+2. **主人自己拍板的顺序建议是错的** —— 我先前建议「先挂 trusted publisher，再开 2FA」，
+   而 npm 官方文档写的是**反过来**。
+
+主人的裁决：**「基于优化」** ⇒ 范围 = **修文档 + 把发布前置条件做成挂进 `verify:build`
+的常驻门禁**（ask_user 确认过，取了三个选项里的第三项）。
+
+### 一、查实：npm 现在的发版凭据三条路，各是什么状态
+
+| 路线 | 凭据 | 状态 | 能力边界（实测） |
+|---|---|---|---|
+| **A. 本机 CLI 直发** | `~/.npmrc` 里的 granular token | ✅ 现在能用 | 能发版；**不能做账号治理**；2027-01 起失去直发权 |
+| **B. CI trusted publishing（OIDC）** | 不要 token，用 GitHub Actions 的 OIDC 身份 | ⬜ **还没挂** | 仓库侧已就位（`id-token: write` + pnpm 11.7.0 自己换 token） |
+| **C. 交互式 `npm publish --otp`** | TOTP 六位码 | ❌ 走不通 | npm 已删 TOTP 注册通道 ⇒ CLI 永远拿不到码 |
+
+**实测证据**（2026-11-11）：
+
+```
+$ npm whoami
+chschytzmcy
+
+$ npm access list packages dsh-edge
+@dsh-edge/dsh-edge-agent: read-write
+
+$ npm token list
+Publish token npm_WYPu...YJEv… with id 5aaa9d created 2026-11-11
+
+$ npm profile get
+npm notice npm tokens that bypass 2FA are being restricted for account changes and
+           direct publishing. Learn how to prepare: https://gh.io/npm-gat-bypass2fa-deprecation
+npm error code E403
+npm error 403 403 Forbidden - GET https://registry.npmjs.org/-/npm/v1/user
+```
+
+⇒ **现成这个 token 勾了 bypass**：账号没开 2FA，而发布照样成功 ⇒ 按 npm 的规则
+「Publishing requires either: 2FA enabled on your account, OR a granular access token with
+bypass 2FA enabled」，只能是 token 带了 bypass。`npm profile get` 被 403 正是
+「bypass token 从 2026-08 起不能做账号身份/治理动作」的现场证据 —— 两件事互相印证。
+
+**推论（重要）**：**开了 2FA 之后，本机这个 token 照发不误** —— npm 规则明写
+「bypass 2FA 会绕过账号级与包级的 2FA 要求」。死的只是 `--otp` 那条交互式路。
+（先前记的「开 2FA 后 classic token 在 CLI 上发不了版」**只对没勾 bypass 的 token 成立**，
+本仓这个勾了。）
+
+### 二、纠正：**顺序是「先开 2FA → 再挂 trusted publisher」**（我先前说反了）
+
+npm 官方 `npm trust` 文档（`docs.npmjs.com/cli/v12/commands/npm-trust`）的 Prerequisites
+原文：
+
+> **2FA enabled on account**: Two-factor authentication must be enabled at the account
+> level. Even if it's not currently enabled, you must enable it to use trust commands.
+> Supported authentication methods: Granular Access Tokens (GAT) with the
+> **bypass 2FA option are not supported**.
+
+⇒ **挂 trusted publisher 本身就要求账号已开 2FA**，而且**不能用**勾了 bypass 的 token
+去做这件事 ⇒ 我先前建议的顺序（先挂 publisher 再开 2FA）**会卡住**。
+
+**另外两条实测出来的操作细节**（同源，见 `docs/npm-account-setup.md` §8）：
+
+- 新建的 Trusted Publisher 连接**默认只允许 staged publish**，要 direct publish
+  **必须显式勾上「npm publish」**（2026-09-03 起的新行为），不勾 CI 会被拒；
+- 新建的连接**必须在 48 小时内完成首次发布**才算校验通过并绑定，逾期作废（只能删了重建）。
+
+### 三、机器查不了的那两件事（实测，不是推测）
+
+| 想查的 | 实测 | 结论 |
+|---|---|---|
+| 账号的 2FA 状态 | `npm profile get` → **403 Forbidden**（`GET /-/npm/v1/user`），同一响应挂着 registry 横幅「bypass tokens are being restricted for account changes and direct publishing」 | **CLI 读不到自己的 2FA 状态** |
+| trusted publisher 是否已挂 | `GET /-/npm/v1/trusted-publishers` 与 `/-/npm/v1/trusted-publishers/<pkg>`：**匿名 404、带认证也 404** | registry 上**没有**可查端点 |
+
+⇒ 机器唯一能做的就是**每次 CI 都把「要人工确认什么、去哪确认、为什么机器查不了」
+打印出来**。**查不了就报「查不了」，不假装查过。**
+
+### 四、新门禁：`verify:npm-readiness`（链内第 29 道）
+
+`scripts/verify-npm-readiness.mjs` —— 挂进 `verify:build`（`verify:npm-stage` 之后）。
+
+**静态断言（9 项，全离线、只读、不联网）**：
+
+1. `publish.yml` 有 `id-token: write`（OIDC 的前提）—— 缺了 ⇒ trusted publishing 永远
+   用不了 ⇒ 2027-01 后 CI 再也发不了版；
+2. 被 `v*` tag 触发；
+3. publish 步骤 cwd 是 `dist/.npm-stage`（本地 dry-run 与 CI 真发同一目录、同一命令）；
+4. 命令带 `--access public`；
+5. 命令带 `--ignore-scripts`（产物已过门禁，别再跑一遍 prepare）；
+6. 命令带 `--no-git-checks`（tag push 是 detached HEAD ⇒ 否则每推一次 tag 死一次）；
+7. `--provenance` 与 `--no-provenance` **两条分支都在**（本机带不了徽章、CI 要带）；
+8. 有 tag↔version 断言；
+9. 真的有 `pnpm publish`。
+
+外加**token 字面量扫描**：git 追踪的文件里不得出现 npm token 的字面量
+（`npm_` + ≥30 字符；`npm_fake` 这类占位符**不**误伤 —— `publish-npm.mjs` 自证里就有它）。
+
+**联网部分只在 `--online` 跑**（匿名只读），且**网络失败不算失败**
+（`state: unknown`，退出码仍为 0）—— 离线也要能跑，不能因 registry 抖动卡住 CI。
+⇒ 判据用 `versions` 里有没有新版本（§5 与 §7.188 的实测）。
+
+**自证**：26 条断言，含**反向证伪**（把缺陷造出来，门禁必须报出来；造回去必须放过）。
+自证里有一处**当场抓出了我自己写错的东西**：第一版断言「9 项」写成了「8 项」，
+门禁报 `FAIL … expected 8, got 9` ⇒ 已改成**按标签集合断言**（集合才是「守哪几条」，
+条数只是集合大小）。
+
+### 五、文档修正（两处「与实际行为相反」）
+
+1. **staged publishing 的上线判据**：`docs/npm-account-setup.md` §7 与
+   `docs/deploy-npm.md` §8.1.2 原写「`npm view <pkg> version` 返回 `0.0.0-stage` ⇒
+   还卡着」⇒ **与实测相反**（发 0.1.2 时它返回的是**上一个真实版本 `0.1.1`**，
+   拿它当判据会**误判成「已上线」**）⇒ 改成**唯一判据：看 `versions` 数组里有没有
+   新版本**，并把 0.1.2 的实测两列（发完那一刻 / 约 5 分钟后）连同「推 tag 前先确认
+   新版本已在 versions 里」一起写进去。
+2. **trusted publisher 的 2FA 前置**：§8 补上「账号必须已开 2FA、bypass token 不被支持、
+   顺序不能反」，并补「须勾 npm publish」「48 小时内要推 tag」「首次发布用不了
+   trusted publisher（包得先存在）」。
+
+顺带：门禁计数 28 → **29**（`package.json#verify:build` 链 + `CHANGELOG.md` /
+`docs/deploy-npm.md` / `docs/npm-account-setup.md` / `docs/load-into-local-dsh.md` /
+`scripts/publish-npm.mjs` / `scripts/verify-npm-stage.mjs`）。
+**`CHANGELOG.md` 的 `[0.1.2]` 条目里的「28 道门禁」不动** —— 那是那一版的真实历史；
+新改动写进新增的 `[Unreleased]` 段。
+
+### 六、验证
+
+| 项 | 结果 |
+|---|---|
+| `node scripts/verify-npm-readiness.mjs --selftest` | **26 条断言全 PASS**（含 6 组反向证伪） |
+| `node scripts/verify-npm-readiness.mjs`（真实树） | **PASS** —— 9 项 OIDC 就绪全过；token 字面量扫描 360 个文件**无**字面量 |
+| `node scripts/verify-npm-readiness.mjs --online` | **PASS**，退出码 0 —— registry 实况：3 个版本、public、latest 0.1.2、当前版本 0.1.2 **已在 versions 里** |
+| `npm run build`（全链） | 见下 |
+
+### 七、还没做的（不写成已完成）
+
+- **主人手上两件浏览器的事**（顺序不能反）：**先开账号 2FA**（WebAuthn / Windows Hello）
+  → **再挂 trusted publisher**（须勾「npm publish」，48 小时内推一次 tag）；
+- **轮换三个明文 key**（`deepseekApiKey` / `dashscopeApiKey` / `alitokenplanApiKey`）——
+  与本节无关，仍待办；
+- npm 包里 `full` 变体的两个惰性 patch 文件仍在（§7.188 的遗留，独立的产品决定）。
+
+
+---
+
+## §7.194 本机 Windows 实盘对照验证（修复前 / 修复后）—— 无限改道复现与修复生效
+
+> 日期：2026-11-12。主机：Windows（win32 10.0.26200 x64），宿主 DSH 桌面版
+> `C:\Users\cheng\AppData\Local\Programs\DeepSeek Harness\DeepSeek Harness.exe`，
+> 插件宿主运行时 Node **v24.21.0**。
+> 起因：主人指令「那在本机 windows 上也有这个问题是吧，那先在本机 windows 上充分验证后上库」。
+
+### 一、要验证的到底是什么
+
+主人 macOS 上看到的症状是：**桌面版加载插件 → 边缘模式发请求 → 卡住**（面板一直「等待」、
+LLM 调用 0 次、不报错）。§7.190–§7.192 已定位到根因是**无限改道**（本地池 DELEGATE 转发
+回来那趟又被改道 ⇒ 乒乓 ⇒ 递归爆内存 ⇒ promise 永不 settle）。
+
+§7.190/191/192 的证据都是**代码层 + 单测层**的（`isLocalPoolForward` 判据、
+`raceWithDeadline` 时限收口、DSH 配置取模型）。本节补上**实盘层**：在**本机 Windows**
+上把同一个场景跑起来，修复前 / 修复后各跑两轮，拿到**可量化、可复现、对照明确**的证据。
+
+### 二、为什么不用 http-api（探针法）
+
+本机 desktop profile 的 http-api **没启用**（默认端口 21017 无监听；宿主只监听 54393），
+已装包 0.1.1 里 `http-api.js` 存在但服务未起 ⇒ 走 http-api 既要起服务又要造鉴权，
+且**测不到真正的卡点**（卡点在 `llm/stream` waterfall 内部）。
+
+改用**进程内探针法**：把探针注入已装包的 `lib/dsh-adapter/input-guard.js` ⇒ 宿主启动
+后自动跑一遍 ⇒ 把结果写成 JSON ⇒ 读文件。好处：① 不碰主人的任何配置；② 能**逐跳**记录
+waterfall 的每一次派发（这才能量化「改道了多少次」）；③ **带上限**，把无限改道掐在 40 跳，
+**不会**把宿主撑到 4GB OOM。
+
+### 三、探针设计（含 v1 的三处真缺陷）
+
+探针做三件事：
+
+1. **计数 + 上限**：给 `handleLlmStream` 包一层，计数并记录每次派发的
+   `provider` / `model` / 是否带转发标记 `__edgeLocalPoolForward`；超过 **LIMIT=40**
+   主动抛错中止。
+2. **造触发条件**：`setStepState(sessionId)` + `setTurnCategory(sessionId, 'LOCAL')`
+   （= 真实场景的「同会话第二轮」，§7.191 探针 C 同一姿势）。
+3. **真发一次请求**：`ctx.get('llm').stream({provider, model, messages, sessionId})`。
+
+**v1 的三处真缺陷**（都会导致「假阴性」，已全部修掉；记在这里是因为最终证据的可信度
+建立在它们之上）：
+
+| v1 写法 | 为什么不行 | v2 改法 |
+|---|---|---|
+| `ctx.get('input-guard')` 取服务 | 本仓库源码里**从没有**这个取法（只有 `ctx.get('llm')` / `ctx.get('agentDefaultModel')` 有先例）⇒ 真机上大概率取不到 | 在 input-guard 的 `apply` 作用域里**直接捕获** `service`（那行 `new InputGuardServiceImpl(...)` 在 0.1.1 与修复版逐字相同） |
+| 用 `intentRouter.classify()` 触发 | 分类器自己的 provider 就是 `local-llm` ⇒ `provider !== localProvider` **恒假** ⇒ 根本触发不了改道 | 读 `ctx.get('agentDefaultModel').currentSelection()` 取**宿主当前选型**（= 真实场景第一跳），退路 `llm.listProviders()`，再退路 `cloud-llm` |
+| 调度失败不留痕 | 探针没跑与「跑了但没触发」分不开 | apply 时立刻写 `{phase:'scheduled'}` 心跳 |
+
+### 四、场景（等价于主人 macOS 上的真实场景）
+
+| 维度 | 本轮取值 | 出处 |
+|---|---|---|
+| 配置形态 | **无 `edge.json` 效果** ⇒ 两池 `delegate: true` | `DSH_EDGE_CONFIG_FILE=off`（`edge-config.ts:512-518`）⇒ 落进 `DEFAULT_EDGE_CONFIG`（`:335-336`） |
+| 主人 `~/.dsh-edge-agent/edge.json` | **原样未动**（全程没读改它） | 用 env 切 DELEGATE，不碰文件 |
+| 触发 provider | `qwen-token-plan-cn` / `deepseek-v4.1-flash`（`source: selection`） | 宿主 GUI 当前选型 |
+| 轮次类别 | `turnCategory='LOCAL'` + stepState | = 同会话第二轮 |
+| 池形态 | 本地池 DELEGATE ⇒ 转发宿主目标路由 | §7.171 |
+
+### 五、修复前实盘（npm 0.1.1）—— 无限改道完整复现
+
+装 npm 上的 **0.1.1**（238 文件）＋探针，冷启动桌面版跑一轮。逐跳记录：
+
+| 跳数 | provider | 转发标记 `fwd` |
+|---|---|---|
+| 1 | `qwen-token-plan-cn` | false ← 首跳（宿主选型） |
+| 2 | `local-llm` | false ← **被改道**到本地池 |
+| 3 | `qwen-token-plan-cn` | **true** ← DELEGATE 转发回来那一跳 |
+| 4 | `local-llm` | **true** ← 标记被无视 ⇒ **又被改道** |
+| 5…41 | 严格 `local-llm` ↔ `qwen-token-plan-cn` 交替 | **true** |
+
+⇒ 探针在第 **41** 跳（**504ms**）打满上限并主动中止：
+`aborted: {reason:'reroute-limit-exceeded', limit:40, seen:40}`。
+**没有上限的话它会一直转下去** —— 这就是主人看到的「卡住」。
+
+**审计链独立印证**（`~/.dsh-edge-agent/audit/audit.plain.jsonl`，同一窗口 **80** 条）：
+
+- `input-guard.reroute.local` × **20**（每条都是 `from: qwen-token-plan-cn` → `to: local-llm`，
+  `mode: delegate`、`via: selection`）
+- `llm.local.delegate.resolved` × 20、`llm.local.egress` × 20、`llm.local.delegate.end` × 20
+  ⇒ **严格 1:1:1:1 的完整循环**（改道 → 委托解析 → 出网准备 → 委托结束 → 再改道）
+
+**关键证据（根因的直接实证）**：n ≥ 3 的每一跳**都带** `__edgeLocalPoolForward` 标记，
+而 0.1.1 的 `input-guard` **压根不认这个标记** ⇒ 转发回来的那趟被当成「用户直接选的模型」
+⇒ 继续改道。最小差异面：
+
+| | `isLocalPoolForward` 的定义 | input-guard 是否用 |
+|---|---|---|
+| 0.1.1 | `host-egress-guard.js:116`（在） | **不 import、不调用**（只在 egress 守卫 `:197` 用） |
+| 修复版 | 同上 | `input-guard.js:53` import、`:274` 短路返回 false |
+
+⇒ **两版都会打转发标记，差别只在 input-guard 认不认** —— 缺陷面就是一个判断。
+
+### 六、修复后实盘（当前构建）—— 收口
+
+装当前仓库构建（`dist/.npm-stage/`，241 文件，含 `llm-drain-deadline.js`）＋同一份探针，
+同样冷启动、同样的场景：
+
+| 跳数 | provider | 转发标记 |
+|---|---|---|
+| 1 | `qwen-token-plan-cn` | false |
+| 2 | `local-llm` | false ← 改道一次 |
+| 3 | `qwen-token-plan-cn` | **true** ← DELEGATE 转发回来 ⇒ **不再改道**（标记被认） |
+
+**3 跳结束，55ms 收口**，审计链 **6** 条：`reroute.local` × **1**、`delegate.resolved` × 1、
+`egress` × 1、`delegate.end` × 1、`llm.trace.index` × **2**（REQ + RESP）。
+
+### 七、四轮对照（每轮都是独立冷启动，场景完全相同）
+
+| 轮次 | 包 | 改道跳数 | 审计 reroute | **真实网络 trace（REQ/RESP）** | 收口 |
+|---|---|---|---|---|---|
+| before#1 | npm **0.1.1** | **41**（打满上限） | **20** | **0** | 探针中止（504ms） |
+| before#2 | npm **0.1.1** | **41** | **20** | **0** | 探针中止（496ms） |
+| after#1 | 当前构建 | **3** | **1** | 2 | ✅ 55ms |
+| after#2 | 当前构建 | **3** | **1** | 2 | ✅ 27ms |
+
+⇒ **两两可复现**，不是偶然。
+
+### 八、为什么症状是「卡住」而不是「报错」（本轮新证据）
+
+修复前窗口里 **`llm.trace.index` = 0 条** —— **请求根本没走到网络层**：递归在 adapter
+真正发出去之前就吃掉了栈与堆 ⇒ promise 永不 settle ⇒ `await` / `for await` 两阶段永久挂 ⇒
+60 秒 abort 只是通知、没有东西被唤醒 ⇒ `intent.llm.timeout` **0 次** ⇒ 面板永远显示
+「等待 / LLM 调用 0」。
+
+修复后窗口有 **`REQ`（bodyBytes=424, promptLength=4）→ `RESP`（bodyBytes=257, durationMs=3）**
+⇒ 请求**真的出网并回来了** ⇒ 症状从「永久挂起」变成「正常收口」。
+
+这与 §7.190 的结论（「递归吃内存 ⇒ 请求没走到网络层 ⇒ promise 永不 settle」）在**同一台
+机器上**得到了直接印证，不再只是代码推断。
+
+### 九、上游返回 error 不影响对照（如实记）
+
+修复后那一趟的上游 RESP 是 `finishReason: "error"`（257 字节错误体，3ms）。
+**这与本缺陷无关**：修复前 20 次 `llm.local.delegate.end` 全部 `resultLen: 0` /
+`sawText: false`，两轮的上游调用**都没拿到文本** ⇒ 合成探针请求（单条 `ping` 消息 + 宿主
+选型里的 `deepseek-v4.1-flash`）本身拿不到有效回答。**两轮一致**，故不影响对照结论；
+本节**不**把这个 error 写成「已解决」。
+
+### 十、平台无关性（本轮补强）
+
+修复路径的 5 个文件里**平台相关行 = 0**（§7.190 结论），而本轮的复现与验证**就跑在这台
+Windows 上** ⇒ 「macOS 桌面版卡住」与「Windows 桌面版同样卡住」是**同一个缺陷**，
+差异只在**配置形态**（有没有 `edge.json` ⇒ 直连池 vs DELEGATE 池），不在操作系统。
+
+### 十一、怎么复现（可复制）
+
+```powershell
+# 1) 打探针包（工作区内，gitignored）
+node "C:\Users\cheng\GolandProjects\gitlab\dsh-edge-agent\dist\probe\inject-probe-v2.mjs" "<包目录>" "<输出json绝对路径>"
+node "C:\Users\cheng\GolandProjects\gitlab\dsh-edge-agent\dist\probe\set-version.mjs" "<包目录>" "0.1.1-probe"
+npm pack "<包目录>" --pack-destination "C:\Users\cheng\GolandProjects\gitlab\dsh-edge-agent\dist\probe\v2-tgz" --ignore-scripts
+
+# 2) 装进 profile（唯一能写 profile 的路径）
+pnpm --dir "C:\Users\cheng\.dsh\profiles\desktop" add "<探针 tarball 绝对路径>"
+
+# 3) 带 env 冷启动（Electron 单实例会复用旧实例、丢掉 env ⇒ 必须先退干净）
+$env:DSH_EDGE_CONFIG_FILE='off'
+$env:DSH_EDGE_PROBE_OUT='C:\Users\cheng\GolandProjects\gitlab\dsh-edge-agent\dist\probe\out-before.json'
+$env:DSH_EDGE_PROBE_DELAY_MS='15000'
+Start-Process "C:\Users\cheng\AppData\Local\Programs\DeepSeek Harness\DeepSeek Harness.exe"
+
+# 4) 读结果（约 20–25s 后落盘）
+Get-Content "C:\Users\cheng\GolandProjects\gitlab\dsh-edge-agent\dist\probe\out-before.json" -Raw
+
+# 5) 还原
+pnpm --dir "C:\Users\cheng\.dsh\profiles\desktop" add "@dsh-edge/dsh-edge-agent@0.1.1"
+```
+
+产物（`dist/probe/`，**gitignored**）：`inject-probe-v2.mjs`、`set-version.mjs`、
+`v2-before/`（npm 0.1.1 解包）、`v2-after/`（当前构建）、`v2-tgz/`（两个探针 tarball）、
+`out-before.json` / `out-before2.json` / `out-after.json` / `out-after2.json`（四轮原始输出）。
+
+### 十二、环境已复原（如实记）
+
+| 项 | 状态 |
+|---|---|
+| profile 依赖 | 已还原为 `@dsh-edge/dsh-edge-agent@0.1.1`（npm 版） |
+| 已装包 | 0.1.1，**已核验不含探针**（`__edgeProbeInstalled` 命中数 = 0） |
+| 主人 `~/.dsh-edge-agent/edge.json` | **原样未动** |
+| 桌面版 | 已用**真实配置**（不带任何 probe env）重启，插件正常加载（`config.loaded` / `input-guard.hook.registered` / `llm.local.catalog` 均在） |
+| 审计链 | 本轮探针事件带 `sessionId: probe-session`，可与主人真实会话区分 |
+
+### 十三、这一节**没有**做到的事
+
+- **没有**做 GUI 层的手动发消息验证（桌面版 GUI 交互未自动化）⇒ 验证的是**机制**与
+  **请求链路**，不是「主人在界面点一下会不会卡」；
+- **没有**深查上游 `finishReason=error` 的成因（两轮一致、与本缺陷无关）；
+- **没有**提交、**没有**发 0.1.3（等主人明确指令）；
+- 探针包只在**本机 profile** 用过，**没有**进过 npm 通道。
+
+---

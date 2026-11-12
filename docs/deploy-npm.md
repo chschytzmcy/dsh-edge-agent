@@ -356,7 +356,7 @@ npm run publish:npm -- --yes --tag     # 发完打 v<version> tag（再 git push
 1. **工作树必须干净**（`--allow-dirty` 可强行越过）—— 发出去的必须是 git 里有的东西；
 2. **registry 预检**：这个版本发过没有？发过 ⇒ 立刻停（不浪费一次构建 + 门禁）；
 3. **认证预检**（仅真发时）：`NPM_TOKEN` / `NODE_AUTH_TOKEN` / `~/.npmrc` / 仓库
-   `.npmrc` 里有没有 token？**没有就立刻停**（实测 3 秒）—— 不能等构建链 + 28 道
+   `.npmrc` 里有没有 token？**没有就立刻停**（实测 3 秒）—— 不能等构建链 + 29 道
    门禁跑完才在 `pnpm publish` 那一步才发现没登录。
    ⚠️ **两种 token 行都要认**（§7.185 实测踩过）：`npm login --auth-type=web` 写进
    `~/.npmrc` 的是**带 registry 前缀**的 `//registry.npmjs.org/:_authToken=…`；只认
@@ -364,7 +364,7 @@ npm run publish:npm -- --yes --tag     # 发完打 v<version> tag（再 git push
    预检却报「没找到凭据」）。自证：`npm run publish:npm -- --selftest`；
 4. **canonical 构建链**（`compile → typecheck:client → build:client → build:installable
    → pack:tarball → stage:npm`）—— 与 CI **一字不差**；
-5. **全部门禁**（`verify:build`，**28 项**，验的是**产物**）；
+5. **全部门禁**（`verify:build`，**29 项**，验的是**产物**）；
 6. **`pnpm publish --dry-run`** —— **默认不发**，只把「将要发出去的东西」摊开给你看。
 
 ⇒ **不带 `--yes` 永远不会碰 registry。** 这是这个脚本的默认值，也是它能被信任的原因。
@@ -414,19 +414,26 @@ registry 上还装不了这个包**：
 **Staged Packages** 页点 Approve，或 `npm stage approve <stage-id>`（要求 npm ≥ 11.15，
 且仍需一次 2FA 挑战 —— TOTP 已被 npm 移除 ⇒ 本机 CLI 这条路走不通，浏览器才可行）。
 
-**判据**：`npm view <pkg> version` 返回 `0.0.0-stage` ⇒ 还卡在审批；返回真实版本号 ⇒
-已上线。`versions` 里留着 `0.0.0-stage` 是**正常的占位残留** ⇒ 判据看
-`latest`（或 `versions` 里有没有真实版本）。
+**判据**（§7.193 实测更正，**唯一正确的一条**）：**看 `versions` 里有没有出现新版本**
+—— `npm view <pkg> version` 与 `dist-tags.latest` 在放行前返回的都是**上一个真实版本**
+（发 0.1.2 时是 `0.1.1`），拿它们当判据会**误判成「已上线」**。`versions` 里留着
+`0.0.0-stage` 是**正常的占位残留**，不用管它。
+
+```bash
+npm view @dsh-edge/dsh-edge-agent versions --json
+# ⇒ 数组里出现新版本号 ⇒ 已上线
+```
 
 > **⚠️ 第二次发布同样会被 staged（0.1.2 实测）**：发 0.1.2 时 `pnpm publish` 同样打印
 > `✅ Published`、退出码 0，而那一刻 `npm view` 仍返回 **`0.1.1`**（上一个真实版本），
 > `versions` 里**还没有** `0.1.2`；约 5 分钟后才变成
 > `versions = 0.0.0-stage, 0.1.1, 0.1.2` / `latest = 0.1.2`。
-> ⇒ **判据要写成「`versions` 里有没有出现新版本」，不能只看 `latest`**（staged 期间
-> `latest` 指的是上一个真实版本，不是占位版）。
 > ⇒ **推 tag 之前先确认新版本已经在 `versions` 里** —— 否则 CI 的 publish job 会以为
 > 「该版本还没发过」而真去发一遍，撞 409。
-`dist-tags.latest` 指向谁。
+>
+> 这条判据已经**写进门禁**：`npm run verify:npm-readiness -- --online` 会把
+> `versions` / `latest` /「当前版本是否已在 versions 里」一起打出来，并在未上线时
+> 显式提醒别推 tag（§8.5 第 25 行）。
 
 官方文档：[Staged publishing for npm packages](https://docs.npmjs.com/staged-publishing)。
 
@@ -449,7 +456,7 @@ registry 上还装不了这个包**：
 | `pnpm publish`（版本已存在） | `409 Conflict - PUT ... - Cannot publish over the previously published versions: 0.1.1` | 改版本号再发 |
 | `pnpm publish`（**CI，detached HEAD**） | `Error: ERR_PNPM_GIT_UNKNOWN_BRANCH` + `× The Git HEAD may not attached to any branch, but your "publish-branch" is set to "master|main"` | **实测（2026-11-10）**：CI 在 tag push 时必然 detached HEAD ⇒ 必须加 `--no-git-checks`（§7.172） |
 | `pnpm publish`（**首次发布带 provenance**） | pnpm 的 provenance 生成器抛错（registry 答 `{"public":false}`） | 首次发布**不能**带 `--provenance` ⇒ 由 `publish-decision.mjs` 判定（§8.5.1） |
-| `pnpm publish`（**报成功但装不了**） | **无报错**（退出码 0）⇒ 但 `npm view <pkg> version` 返 **404** 或 `0.0.0-stage` | npm 的 **staged publishing**：真实版本在待批队列，要等放行（或在 npmjs.com 的 Staged Packages 页点 Approve）—— 判据见 §8.1.2 |
+| `pnpm publish`（**报成功但装不了**） | **无报错**（退出码 0）⇒ 但 `versions` 里还没有新版本（`npm view <pkg> version` 仍返回**上一个真实版本**，不是占位版） | npm 的 **staged publishing**：真实版本在待批队列，要等放行（或在 npmjs.com 的 Staged Packages 页点 Approve）—— 判据见 §8.1.2 |
 | `pnpm publish`（Windows 上跑不起来） | `退出码 null（进程没起来）` | `pnpm`/`npm` 在 Windows 上是 `.cmd` shim，Node 20.12+ 拒绝 spawn ⇒ 要按裸名走 shell（§8.1.1） |
 
 > §7.172 起，**「版本已存在」在 CI 上不再是一个错误**：publish job 会先看 registry，
@@ -551,16 +558,23 @@ node scripts/verify-ci-build-chain.mjs --selftest  # 自证 + 反向证伪（11 
 | 22 | 包名一致性门禁 | ✅ | §7.173：`verify:package-name`（链内第 21 位）—— 包名副本与 `package.json#name` 交叉比对 |
 | 23 | **发布清单不含不在包里的东西** | ✅ | §7.188：`stage:npm` 暂存目录 + `verify:npm-stage`（链内第 27 位）—— 清单里不得有 `scripts` / `devDependencies` / `packageManager` |
 | 24 | **`--provenance` 只在受支持的 CI 里带** | ✅ | §7.188：pnpm 的 provenance 生成器**只在 CI 里**能工作 ⇒ 本机一律 `--no-provenance`（实测 `ERR_PNPM_PROVENANCE_UNSUPPORTED_PROVIDER`） |
+| 25 | **发布前置条件有门禁守着** | ✅ | §7.193：`verify:npm-readiness`（链内第 29 位）—— 9 项静态断言（OIDC 前提 / 发布路径形状 / tag↔version）+ token 字面量扫描 + **人工核对清单**（2FA 与 trusted publisher 机器查不了，如实报「查不了」而非假装查过） |
 
 ⇒ **原来的两件（2026-11-10 的待办）在 2026-11-11 都已落地**（组织建好、token 在位、
-`0.1.1` 已发布，见 §8.1.2）。**现在剩下的是这两件新的主人手上的事**：
+`0.1.1` / `0.1.2` 已发布，见 §8.1.2）。**现在剩下的是这两件新的主人手上的事
+（顺序不能反）**：
 
-1. **登记 trusted publisher**（浏览器：包页面 → Settings → Trusted Publisher）——
-   `dsh-edge` / `chschytzmcy/dsh-edge-agent` / `publish.yml`。**不做 ⇒ 2027-01 起
-   CI 发不了**（token 直发被移除）。
-2. **账号 2FA** —— npm 已移除 TOTP 注册通道 ⇒ 只能挂 WebAuthn 安全密钥
-   （Windows Hello 的 PIN / 指纹 / 人脸即可）；详见
-   [`npm-account-setup.md`](npm-account-setup.md) §5。
+1. **先开账号 2FA**（浏览器：npmjs.com/settings/two-factor-auth）——
+   npm 已移除 TOTP 注册通道 ⇒ 只能挂 WebAuthn 安全密钥（Windows Hello 的 PIN /
+   指纹 / 人脸即可）。**这一步是第 2 步的前置**：npm 官方 `npm trust` 文档写明 trusted
+   publisher 要求账号级 2FA，且不接受勾了 bypass 的 granular token。
+2. **再登记 trusted publisher**（浏览器：包页面 → Settings → Trusted Publisher）——
+   `dsh-edge` / `chschytzmcy/dsh-edge-agent` / `publish.yml`，**并勾上「npm publish」**
+   （2026-09-03 后新建的连接默认只允许 staged publish）。**不做 ⇒ 2027-01 起 CI 发不了**
+   （token 直发被移除）；**配完 48 小时内要推一次 tag**，否则配置作废。
+
+详见 [`npm-account-setup.md`](npm-account-setup.md) §5（2FA）、§8（trusted publisher）、
+§12（这两件为什么机器查不了、门禁怎么提醒）。
 
 下面是 2026-11-10 的裁决与当时的待办（**均已完成**，留档）：
 

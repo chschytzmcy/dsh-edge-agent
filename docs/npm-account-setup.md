@@ -1,18 +1,23 @@
 # npm 账号/组织注册与发布凭据办理（scope `@dsh-edge`）
 
-> 状态：**✅ 已发布 `0.1.1`**（2026-11-11，§7.185）。三件作者侧的事都做完了：
-> 组织 `dsh-edge` 已建、凭据已用、第一次发布已上线（registry 侧实测：`versions =
-> 0.0.0-stage, 0.1.1`，`dist-tags.latest = 0.1.1`，npm 通道实装通过）。
+> 状态：**✅ 已发布 0.1.2**（2026-11-11，§7.185 / §7.188）。三件作者侧的事都做完了：
+> 组织 `dsh-edge` 已建、凭据已用、发布已上线（registry 侧实测：`versions =
+> 0.0.0-stage, 0.1.1, 0.1.2`，`dist-tags.latest = 0.1.2`，npm 通道实装通过）。
 >
 > | # | 原来缺什么 | 谁做 | 状态 |
 > |---|---|---|---|
 > | 1 | npmjs.com 上拥有 `@dsh-edge` scope 的**账号或组织** | **主人**（本文件 §2–§4） | ✅ 已建（实测 `/-/org/dsh-edge/package` → HTTP 200） |
-> | 2 | 发布凭据：granular token，**或**登记 trusted publisher 改走 OIDC | **主人**（本文件 §5–§6） | ✅ token 已在 `~/.npmrc`；**trusted publisher 还没登记** |
-> | 3 | 执行第一次发布 | **我**（`npm run publish:npm -- --yes`） | ✅ 已上线 0.1.1（tag `v0.1.1`） |
+> | 2 | 发布凭据：granular token，**或**登记 trusted publisher 改走 OIDC | **主人**（本文件 §5–§6） | ✅ token 已在 `~/.npmrc`（能发版）；**trusted publisher 还没登记** |
+> | 3 | 执行第一次发布 | **我**（`npm run publish:npm -- --yes`） | ✅ 已上线 0.1.1 / 0.1.2（tag `v0.1.1` / `v0.1.2`） |
 >
-> **还剩两件事**（都要主人本人在浏览器里点）：
-> ① 在包页面登记 **trusted publisher**（§8）—— 不做，2027-01 起 CI 发不了；
-> ② 账号 2FA：**npm 已移除 TOTP 注册通道**，只剩 WebAuthn 安全密钥（§5）。
+> **还剩两件事**（都要主人本人在浏览器里点，**顺序不能反**）：
+> ① **先开账号 2FA**（§5）—— npm 官方 `npm trust` 文档写明：trusted publisher **要求账号
+> 已经开着 2FA**，且**不接受**勾了 bypass 的 granular token ⇒ 不开 2FA 就挂不上；
+> ② **再挂 trusted publisher**（§8）—— 不做，2027-01 起 CI 发不了（token 直发被移除）。
+>
+> 这两件机器都查不了（实测：`npm profile get` → 403；registry 没有 trusted-publisher
+> 端点），所以**已经做成门禁**：`npm run verify:npm-readiness` 每次 CI 都会把
+> 「要人工确认什么、去哪确认、为什么机器查不了」打印出来（§12）。
 >
 > 账号名 / 组织名**必须正好是 `dsh-edge`**——原因见 §1；npm 是**先到先得**，现在已真发一版
 > （§10 的坑 1 不再适用）。
@@ -109,9 +114,37 @@
 > Windows 11 的「手机当安全钥匙」也算。
 >
 > 浏览器端的交互式 2FA 验证（挂 trusted publisher、改 2FA 配置）在 WebAuthn 下**完全可用**；
-> 但 **CLI 的 `--otp` 只吃 TOTP 六位码** ⇒ 账号走 WebAuthn 后，经典 token 在 CLI 上发不了版。
+> 但 **CLI 的 `--otp` 只吃 TOTP 六位码** ⇒ 账号走 WebAuthn 后，**交互式** `npm publish
+> --otp` 在 CLI 上走不通。
+>
+> ⚠️ **但「开了 2FA 就发不了版」是错的**（2026-11-11 查实）：npm 的规则是
+> 「bypass 2FA 的 token 会绕过账号级与包级的 2FA 要求」，所以**现成那个勾了 bypass 的
+> granular token 照发不误**（0.1.1 / 0.1.2 就是它发的）。死的只是 `--otp` 那条交互式路。
 
 没开 2FA 的话发布会被拒（npm 要求账号开着 2FA，或用勾了 Bypass 2FA 的 granular token）。
+
+### 5.1 为什么 2FA 不只是「硬要求」，还是**下一步的前置**（§7.193 查实）
+
+npm 官方 `npm trust` 文档（`docs.npmjs.com/cli/v12/commands/npm-trust`）的 Prerequisites
+原文：
+
+> **2FA enabled on account**: Two-factor authentication must be enabled at the account
+> level. Even if it's not currently enabled, you must enable it to use trust commands.
+> Supported authentication methods: Granular Access Tokens (GAT) with the
+> **bypass 2FA option are not supported**.
+
+⇒ **挂 trusted publisher（§8）之前必须先开账号 2FA**，而且**不能用**勾了 bypass 的 token
+去做这件事。⇒ **顺序是：先开 2FA → 再挂 trusted publisher**（反过来会卡住）。
+
+### 5.2 为什么这两件事**只能人来做**（实测，不是推测）
+
+| 想查的东西 | 实测结果 | 出处 |
+|---|---|---|
+| 账号的 2FA 状态 | `npm profile get` → **`403 Forbidden - GET /-/npm/v1/user`**（同一响应挂着 registry 横幅「npm tokens that bypass 2FA are being restricted for account changes and direct publishing」）⇒ bypass token 做不了账号治理动作，**读不到自己的 2FA 状态** | 2026-11-11 实测 |
+| trusted publisher 是否已挂 | `GET /-/npm/v1/trusted-publishers` 与 `GET /-/npm/v1/trusted-publishers/<pkg>`：**匿名 404、带认证也 404** ⇒ registry 上**没有**可查端点 | 2026-11-11 实测 |
+
+⇒ 这两件已经做成**门禁里的固定提醒**：`npm run verify:npm-readiness` 每次 CI 都会打印
+「去哪确认、为什么机器查不了」（§12）。**机器查不了的事，机器就不假装查过。**
 
 ## 6. 签发发布凭据
 
@@ -143,7 +176,7 @@ $env:NPM_TOKEN = 'npm_xxxxxxxx'
 ```
 
 仓库里的 `scripts/publish-npm.mjs` 会离线读 `NPM_TOKEN` / `NODE_AUTH_TOKEN` /
-`~/.npmrc` / 仓库 `.npmrc`；**找不到凭据会在 3 秒内拦停**，不会白跑一遍构建 + 28 道门禁。
+`~/.npmrc` / 仓库 `.npmrc`；**找不到凭据会在 3 秒内拦停**，不会白跑一遍构建 + 29 道门禁。
 
 ## 7. 发第一版
 
@@ -153,7 +186,7 @@ $env:NPM_TOKEN = 'npm_xxxxxxxx'
 npm run publish:npm -- --yes --tag
 ```
 
-这条命令会依次跑：canonical 构建链（compile → typecheck → build → pack → stage）→ **28 道门禁**
+这条命令会依次跑：canonical 构建链（compile → typecheck → build → pack → stage）→ **29 道门禁**
 → 认证预检 → `pnpm publish --access public --ignore-scripts --no-git-checks`。
 
 - 首次发布**不带** `--provenance`（包还不存在时 visibility 端点答 200
@@ -182,7 +215,30 @@ registry 上还装不了这个包**：
 的 **Staged Packages** 页点 Approve，或 `npm stage approve <stage-id>`（后者要求
 npm ≥ 11.15，且仍需过一次 2FA 挑战）。
 
-**判据**：`npm view <pkg> version` 返回 `0.0.0-stage` ⇒ 还卡着；返回真实版本号 ⇒ 已上线。
+### 7.1 判据：**看 `versions` 里有没有新版本**（§7.193 实测更正）
+
+⚠️ **本文件此前的版本把判据写成「`npm view <pkg> version` 返回 `0.0.0-stage` ⇒ 还卡着」——
+那是错的**，发 0.1.2 时就被实测打掉了：
+
+| 探针 | 发完 0.1.2 的那一刻 | 约 5 分钟后 |
+|---|---|---|
+| `npm view <pkg> version` | **`0.1.1`**（**上一个真实版本**，不是占位版） | `0.1.2` |
+| `dist-tags.latest` | `0.1.1` | `0.1.2` |
+| packument 的 `versions` | `0.0.0-stage, 0.1.1` | `0.0.0-stage, 0.1.1, 0.1.2` |
+
+⇒ **占位版只在「包名刚被占住」那一次出现**，之后 `npm view <pkg> version` 与
+`dist-tags.latest` 返回的都是**上一个真实版本** ⇒ 拿它们当判据会**误判成「已上线」**。
+
+**正确判据（唯一）**：
+
+```bash
+npm view @dsh-edge/dsh-edge-agent versions --json
+# ⇒ 数组里出现新版本号 ⇒ 已上线
+```
+
+这条已经**写进门禁**：`npm run verify:npm-readiness -- --online` 会把 `versions`、
+`latest`、以及「当前版本是否已在 versions 里」一起打出来，并**显式提示**未上线时不要
+推 tag（否则 CI 的 publish job 会以为「还没发过」而真发一遍，撞 409）。
 
 > 本机 npm 是 **11.6.2** ⇒ **没有** `npm stage` 子命令；要手动批准得用 `npx npm@12`，
 > 而 npm 12 的 `stage approve` 仍要 2FA 挑战（TOTP 已被移除 ⇒ CLI 这条路对本机走不通，
@@ -194,6 +250,10 @@ npm ≥ 11.15，且仍需过一次 2FA 挑战）。
 
 **这一步不做，CI 迟早发不了**（2027-01 起 token 直发被移除）。
 
+> ⚠️ **前置：账号必须已经开着 2FA**（§5.1）。npm 官方 `npm trust` 文档明写 trusted
+> publisher 要求账号级 2FA，且**不接受**勾了 bypass 的 granular token ⇒
+> **顺序是「先开 2FA（§5）→ 再挂这里」，反过来会卡住**。
+
 包页面 **https://www.npmjs.com/package/@dsh-edge/dsh-edge-agent/settings/access**
 登记 **Trusted Publisher**：
 
@@ -203,8 +263,28 @@ npm ≥ 11.15，且仍需过一次 2FA 挑战）。
 | Repository | `chschytzmcy/dsh-edge-agent` |
 | Workflow filename | `publish.yml` |
 
+| 勾选项 | 填什么 |
+|---|---|
+| 允许的动作 | **必须勾上「npm publish」**（direct publish）—— 2026-09-03 之后新建的连接**默认只允许 staged publish**，不勾 CI 会被拒 |
+
 登记后 CI 用 **OIDC** 自动换短期凭据：**不需要任何 token**，也不受 2027 退场影响。
 （pnpm 11.7.0 自己实现了 OIDC 交换 ⇒ 不需要 npm CLI ≥ 11.5.1，也不需要升 Node。）
+
+> ⏰ **配完 48 小时内要推一次 tag**：新建的 Trusted Publisher 配置要完成首次发布才算
+> 校验通过并绑定，逾期作废（只能删掉重建）。⇒ 挂完就推一个 tag，别挂着不动。
+>
+> ⚠️ **首次发布用不了 trusted publisher**：npm 不支持给「还没发布过」的包预配连接
+> （配置入口挂在包自己的设置页上，包不存在就没有那个页面）。本包已发过 0.1.1 / 0.1.2，
+> 所以**现在就可以挂**——§7 那一段已经是历史，不是当前状态。
+
+### 8.1 怎么验挂上了
+
+```bash
+npm view @dsh-edge/dsh-edge-agent versions --json   # 推 tag 后看新版本有没有进 versions
+# 或直接看 CI：推 tag → publish job 应当用 OIDC 换到 token，不需要 secrets.NPM_TOKEN
+```
+
+仓库侧是否已为 OIDC 路径做好准备，由门禁守着：`npm run verify:npm-readiness`（§12）。
 
 ## 9. 三个坑
 
@@ -215,11 +295,12 @@ npm ≥ 11.15，且仍需过一次 2FA 挑战）。
    （npm 政策：用户名的控制权**极不可能**转让）。
 3. **首次发布不要带 `--provenance`**（见 §7）。另外 npm 对新账号有冷启动审核期
    （几小时到几天不等），那是正常流程，不是出错。
-4. **「publish 报成功」不等于「包已经能装」** —— 见 §7.1：先 `npm view <pkg> version`
-   确认返回值不是 `0.0.0-stage`，再去装。
+4. **「publish 报成功」不等于「包已经能装」** —— 见 §7.1：**看 `versions` 里有没有新版本**
+   （不是 `npm view <pkg> version`，也不是 `latest` —— 实测它们在放行前返回的是
+   **上一个真实版本**，会误判成「已上线」）。
 5. **「占位版 0.0.0-stage 会一直留在 versions 里」** —— 它是注册时留下的占位残留
-   （本次实测：`versions = 0.0.0-stage, 0.1.1`，`latest = 0.1.1`）⇒ 看到它别慌，
-   **判据看 `dist-tags.latest` 指向谁**。
+   （实测：`versions = 0.0.0-stage, 0.1.1, 0.1.2`，`latest = 0.1.2`）⇒ 看到它别慌，
+   **判据看 `versions` 数组里有没有新版本**（§7.1）。
 
 ## 10. 仓库侧已经就绪的部分
 
@@ -230,6 +311,31 @@ npm ≥ 11.15，且仍需过一次 2FA 挑战）。
 | 本地一键发布脚本 | ✅ 端到端跑通（dry-run） | `scripts/publish-npm.mjs` |
 | CI 发布链 + 决策（跳过已发版 / 首次不带 provenance） | ✅ 门禁全绿 | `.github/workflows/publish.yml` |
 | 首次发布的 provenance 判定 | ✅ 实测：visibility 端点答 200 `{"public":false}` | `scripts/registry-version.mjs` |
+| **发布前置门禁**（OIDC 路径就绪 + token 字面量扫描 + 人工核对清单） | ✅ 门禁链第 29 道 | `scripts/verify-npm-readiness.mjs` |
+
+## 12. 发布前置门禁：`verify:npm-readiness`
+
+发版有三段前置条件，其中**两段机器查不了**（§5.2）。这门禁的分工是：
+
+| 前置条件 | 机器能查吗 | 谁管 |
+|---|---|---|
+| 仓库侧是否为 OIDC 路径准备好了 | ✅ 能 | **门禁**（9 项静态断言） |
+| 账号是否开了 2FA | ❌ 不能（`npm profile get` → 403） | 人 —— 门禁每次打印提醒 |
+| trusted publisher 是否已挂 | ❌ 不能（registry 无可查端点） | 人 —— 门禁每次打印提醒 |
+
+```bash
+npm run verify:npm-readiness              # 静态断言 + 人工核对清单（离线、只读）
+npm run verify:npm-readiness -- --online  # 再加 registry 实况（匿名只读）
+npm run verify:npm-readiness:selftest     # 自证 + 反向证伪（不联网）
+```
+
+**静态断言（9 项，全离线）**：`publish.yml` 有 `id-token: write` / 被 `v*` tag 触发 /
+publish 步骤 cwd 是 `dist/.npm-stage` / 命令带 `--access public` `--ignore-scripts`
+`--no-git-checks` / `--provenance` 与 `--no-provenance` 两条分支都在 / 有 tag↔version
+断言 / 真的有 `pnpm publish`；外加**仓库里没有 npm token 的字面量**（扫 git 追踪的文件）。
+
+**联网部分只有 `--online` 才跑**，且**网络失败不算失败**（`state: unknown`，退出码仍为 0）
+—— 离线也要能跑，不能因为 registry 抖动卡住 CI。
 
 ## 11. 相关文档
 
