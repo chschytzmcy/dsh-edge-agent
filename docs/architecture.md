@@ -9692,20 +9692,39 @@ realm 桥只在 CLOUD realm 下放行，只有 §7.107 允许出网的那些轮�
 ### search 的策略：一条三档 fail-down 链
 
 `web` row 选中的 provider 永远是本仓的 aggregator
-（`tavily-bocha-fallback`），上游的 `deepseek-official` row 被禁用（两个
-可用 provider 会让 seam 报 `WEB_PROVIDER_AMBIGUOUS`）。chain 内部：
+（`tavily-bocha-fallback`）。chain 内部：
 
 | 档 | provider | 在链上的条件 | 失败时 |
 |---|---|---|---|
 | 1 | Tavily | `webSearch.tavilyEnabled` 为 true（**§7.182 默认关闭**）**且** `secrets.tavilyApiKey` 在 | warn → 落下一档 |
 | 2 | 博查 AI | `webSearch.bochaEnabled` 为 true（**§7.182 默认关闭**）**且** `secrets.bochaApiKey` 在 | warn → 落下一档 |
-| 3 | **DeepSeek** | `secrets.deepseekApiKey` 在 | `WEB_PROVIDER_UNAVAILABLE` |
+| 3 | **DeepSeek** | **有凭据通道**（见下表） | `WEB_PROVIDER_UNAVAILABLE` |
+
+> §7.198 订正：上游 `deepseek-official` row 被禁用的**原理由**（两个可用 provider
+> ⇒ seam 报 `WEB_PROVIDER_AMBIGUOUS`）只成立于**没配 `web.searchProvider`** 时；
+> 我们配了 id ⇒ 宿主 seam 走「配了 id」那条分支，只看这一个 provider。
+> ⇒ 上游那个 provider 被禁用，真正的影响是**它那条主机同款的凭据解析我们得自己接**
+> （下表）。
 
 两条独立的门：**开关**决定这一档在不在链上，**key** 决定这一档能不能
 真答。没 key 的档直接跳过，一次请求都不发。一档成功就停——不是三档
 都查。DeepSeek 档走官方 server-side 检索（`web_search_20250305`），自带
-引用来源。凭据全部取自 `config/edge.json`，**不依赖 `DEEPSEEK_API_KEY`
-环境变量**——GUI 起的桌面和 CLI 起的 profile 行为一致。
+引用来源。
+
+**DeepSeek 档的凭据解析（§7.198，与上游 `web-search-deepseek` 同款）**：
+
+| 顺位 | 来源 | 说明 |
+|---|---|---|
+| ① | DeepSeek **账号令牌** | 仅当当前会话的 provider 路由 = `deepseek-account`；认证头 `x-dsh-auth-token` |
+| ② | `config/edge.json` `secrets.deepseekApiKey` | 操作者显式配置优先 |
+| ③ | **主机凭据服务** `ctx.credentials.resolve('DEEPSEEK_API_KEY')` | 桌面端「Web search」设置页写进去的那把 |
+| ④ | **启动环境** `launchEnvironmentOf(ctx).get('DEEPSEEK_API_KEY')` | 启动器导出的 env |
+| ⑤ | 进程环境 `DEEPSEEK_API_KEY` | 兜底 |
+
+⇒ 「DSH 里配的就是 DeepSeek 模型」现在**真的**能直接用 deepseek search：
+模型走账号路由时用账号登录（①），否则用主机凭据服务里那把 key（③）。
+`available()` 判「有没有凭据通道」而不是「此刻有没有 key」——凭据解析是**异步
+且按路由**的，同步判据做不到；没有凭据时搜索会给出点名四条来源的可执行提示。
 
 ## 3. 入口架构：单 profile 端口统一 + §7.107 双 profile
 

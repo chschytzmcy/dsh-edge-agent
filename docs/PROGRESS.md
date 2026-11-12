@@ -21449,7 +21449,7 @@ tag、不重发 npm 包、不改包内容。
 
 ### 七、实测结果
 
-**（推送后的实况记录，见下方续记）**
+**（推送后的实况记录，见 §7.197 续记）**
 
 ### 八、顺带记下的一条未来风险（这次没修）
 
@@ -21470,5 +21470,254 @@ annotation 里还有一条 **notice** 级原文：
   → 轮换三个明文 key）；
 - 「DELEGATE 到云端时闸门是否 fail-closed」仍是**待裁决**项（§7.189 / §7.190 遗留）；
 - npm 包里 `full` 变体的两个惰性 patch 文件仍在（独立的产品决定，主人未拍板）。
+
+---
+
+## §7.197 CI 修好「顺序」之后，才第一次真正看见后面还有两道红（2026-11-12）
+
+> 2026-11-12。§7.196 的顺序修好后，CI 第一次跑到了 `Verify` 步 —— 于是暴露出
+> **第二层问题**：本仓的门禁链在 CI 上一次都没跑过（§7.196 四），里面藏着
+> 一道**只在 npm 10 上会炸**的门禁。
+
+### 一、三次推送的实测结果
+
+| 提交 | 内容 | run | 结果 |
+|---|---|---|---|
+| `fa9f73c` | §7.196：pnpm/action-setup 提前 + 升 node24 版 action | #146 | **build & verify 红**（Verify 步） |
+| `7f90476` | 门禁失败发 `::error::` 注解（§7.197 二） | #147 | **build & verify 红**（Verify 步），但**注解里直接点名了失败的门禁** |
+| `b158b41` | 修 `verify:package`（§7.197 三） | #148 | **build & verify 绿** ✅ / unit tests (windows) 绿 ✅ / 另外两个 job 仍红 |
+
+run #146 一到 `Verify` 步就红，但**看不出是哪道门禁** —— 因为：
+
+- GitHub 的 job log 下载要 **admin 权限**（匿名 API 返 `403 Must have admin
+  rights to Repository.`）；
+- 网页上的 log 又要求**登录**；
+- 注解里只有一句 `Process completed with exit code 1.`，**没有门禁名**。
+
+⇒ 一道门禁失败 ⇒ 外部**无法定位**。这对「CI 从没绿过」的仓库尤其致命：
+每次红都要人去翻 log。
+
+### 二、于是让门禁自己说话：`run.mjs` 发 `::error::` 注解（`7f90476`）
+
+`scripts/run.mjs` 改成把子进程输出接过来（照旧转发给人看），失败时发一条
+GitHub Actions 注解：
+
+```text
+::error title=gate failed::gate verify:package failed (exit code 1)%0A…输出尾巴…
+```
+
+- 注解是**公开可读**的：`GET /repos/{owner}/{repo}/check-runs/{id}/annotations`
+  匿名就能取到 ⇒ **不必登录、不必 admin** 就能知道是哪道门禁红的；
+- 注解里只放失败门禁的输出尾巴（2000 字符），并且过一遍凭据脱敏
+  （`npm_…` / `gh?_…` / `sk-…`）—— 门禁不该回显凭据，注解也不该；
+- 退出码原样透传，链在失败处停下（fail-closed）。
+
+⇒ run #147 的注解原文（实拉）：
+
+```text
+gate verify:package failed (exit code 1)
+> @dsh-edge/dsh-edge-agent@0.1.3 prepare
+> node scripts/run.mjs compile build:client
+
+<anonymous_script>:1
+> compile: node scripts/clean-lib.mjs && tsc -p tsconfig.json
+^
+SyntaxError: Unexpected token '>', "> compile:"... is not valid JSON
+    at file:///home/runner/work/dsh-edge-agent/dsh-edge-agent/scripts/verify-package.mjs:23:22
+```
+
+### 三、`verify:package` 的根因：npm 10 的 `npm pack` **无视** `--ignore-scripts`
+
+门禁当时是 `npm pack --dry-run --json --ignore-scripts | node scripts/verify-package.mjs`，
+而 `verify-package.mjs` 直接 `JSON.parse(整条 stdin)` ⇒ stdout 里只要混进
+**任何一个非 JSON 字符**就炸。
+
+**为什么 CI 上混进了东西、本机没有**（源码级核对）：
+
+| | `pacote/lib/dir.js` 的 `#prepareDir()` | 后果 |
+|---|---|---|
+| **npm 10.9.4**（Node 22.20 自带，**CI 用的就是它**） | **没有** `if (this.opts.ignoreScripts) return` ⇒ 只要 `package.json` 里有 `scripts.prepare` 就照跑 | `prepare`（= `node scripts/run.mjs compile build:client`）的 stdout 混进同一条流 |
+| **npm 11.6.2**（本机，Node 24.13 自带） | 多了一行 `if (this.opts.ignoreScripts) { return }` ⇒ prepare 不跑 | stdout 干净 ⇒ 门禁通过 |
+
+⇒ **同一个 `--ignore-scripts`，两代 npm 行为不同** ⇒ 这就是「本地全绿、CI 全红」。
+
+本机复现（用 npx 装 npm@10.9.4，命令一字不改）：
+
+```text
+> compile: node scripts/clean-lib.mjs && tsc -p tsconfig.json
+cleaned C:\Users\cheng\GolandProjects\gitlab\dsh-edge-agent\lib\
+> build:client: node scripts/build-client.mjs
+[build-client] lib/client.js = 52 KB (module-loader format, id=@dsh-edge/dsh-edge-agent)
+[                      ← 从这里开始才是 JSON
+```
+
+修法：**不再假设 stdout 是纯 JSON**。`verify-package.mjs` 新增
+`extractPackReport()` —— 在输出里找「第一个能解析、**且长得像 pack 报告**」
+的 JSON 值（噪声里混着 `[1,2,3]` 这种合法 JSON 数组时也不能被它骗过去）；
+找不到就抛错（fail-closed），绝不猜。配套自证 7 条（纯 JSON / npm 10 噪声 /
+JSON 后有噪声 / 对象形状 / 噪声里的合法 JSON / 纯垃圾 / 空输出），
+**每次跑门禁都先跑一遍自证**。npm 10 下端到端复测：
+
+```text
+verify-package selftest OK
+package surface OK (241 files, 69 entry targets)
+```
+
+### 四、run #148 的余下两个红 job（**从没在 CI 上跑过的那两个**）
+
+| job | 挂在哪一步 | 已知事实 |
+|---|---|---|
+| `unit tests (48 files)` | `Assert test count` | 那一步读 `/tmp/vitest.json`；**注解里没有门禁名** ⇒ 它是在 `node -e "require('/tmp/vitest.json')"` 这一步就炸了 ⇒ **报告文件没写出来**。上一步 `pnpm test … \|\| true` 把 vitest 自己的失败吞了，所以看不到 vitest 的真实退出码。 |
+| `ops log coverage (3 cases)` | `Install DSH CLI` | `npm install -g @deepseek-ai/dsh`。该包 `engines` 是 **node >= 24.9.0**，而 runner 是 **Node 22.20**。本机用 `npm@10.9.4 install --node-version=22.20.0 --dry-run` 实测：npm 只**警告**不失败 ⇒ 不是硬因，真因待下一次 run 的诊断注解。 |
+
+⇒ 本次一并做的三件事（都是「让下一次能看出真相」的改造）：
+
+1. `Run unit tests` 步不再 `|| true` 吞掉退出码；报告文件不存在 ⇒ 直接红，
+   并把 vitest 的退出码写进注解；
+2. `Assert test count` 步顺手修正一个笔误：vitest 2.1.9 的 JSON 里**没有**
+   `numSkippedTests`（skipped 记在 `numPendingTests`）⇒ 改用 `numPendingTests`；
+3. `e2e-opslog` job 的 Node 从 `22.20` 换成 `24.13.0` —— **这个 job 要跑宿主
+   DSH CLI，而它的 engines 是 node >= 24.9.0**（本仓自己的 engines 是
+   `^22.19 || >=24` ⇒ 用 24 合法）；同时 `Install DSH CLI` 步失败时把
+   npm 的输出尾部与退出码写进注解。
+
+### 五、这一节**没有**做的事
+
+- npm 包内容、版本号（仍是 0.1.3）没变，也没有重发；
+- 那两个 job 到底为什么红，**等下一次 run 的诊断注解**（本节只把「看不见」变成「看得见」）；
+- `publish.yml` 的 publish job 仍**没被验证过**（要推 tag 才会跑，§7.196 的连带后果仍在）。
+
+---
+
+## §7.198 `web_search` 报「registered but unavailable」：Tier-3 没接主机的凭据（2026-11-12）
+
+> 2026-11-12。主人报上来：桌面版里问「查询最新的美国新闻」，网页搜索失败，
+> 错误原文 `Error: configured web provider "tavily-bocha-fallback" is
+> registered but unavailable`；主人的判断是「我用的是 DSH 里配的 DeepSeek
+> 模型，应该可以直接用 deepseek search」。
+
+### 一、错误来自宿主 seam，含义是「搜索**根本没发生**」
+
+宿主 `dsh-web` 的 provider 选择语义（从 `app.asar` 里实拉 `dsh-web/lib/index.js`
+的源码逐行核对）：
+
+```text
+- 配了 id、注册了、available() 为 true  → 用它
+- 配了 id、没注册                      → WEB_PROVIDER_CONFIGURED_MISSING
+- 配了 id、注册了、available() 为 false → WEB_PROVIDER_CONFIGURED_UNAVAILABLE  ← 本次
+- 没配 id、只有一个可用 provider        → 用它
+- 没配 id、多个可用 provider            → WEB_PROVIDER_AMBIGUOUS
+- 没配 id、没有可用 provider            → WEB_PROVIDER_UNAVAILABLE
+```
+
+本仓的 patch 把 `web.searchProvider` 固定成 `tavily-bocha-fallback` ⇒ **配了 id**
+⇒ 走第 3 条 ⇒ 我们的 provider 说「我不可用」⇒ 宿主直接拒绝，**一次 HTTP 都没发**。
+
+⇒ 顺带纠正一条旧注释：`cordis.patch.yml` 里「两 plugin 同 enabled ⇒ AMBIGUOUS」
+的说法只成立于**没配 id** 时；我们配了 id，AMBIGUOUS 根本轮不到。
+
+### 二、`available()` 为什么是 false（本机实测）
+
+我们这条链的判据是：
+
+```ts
+available() = (tavilyEnabled && tavilyKey) || (bochaEnabled && bochaKey) || dsKey
+```
+
+而三把 key 的来源只有「我们自己的」：`config/edge.json` 的
+`secrets.tavilyApiKey` / `secrets.bochaApiKey` / `secrets.deepseekApiKey`（或同名 env）。
+
+**本机实测（2026-11-12）**：
+
+| 候选落点 | 实况 |
+|---|---|
+| 仓库 `config/edge.json` | 不存在（只有 `edge.example.json` + `privacy-policy.json`） |
+| 已装包 `C:\Users\cheng\.dsh\profiles\desktop\node_modules\@dsh-edge\dsh-edge-agent\config\edge.json` | 不存在 |
+| `C:\Users\cheng\.dsh-edge-agent\edge.json` | **不存在**（该目录下只有 `audit\` 与 `log\`） |
+| 全盘搜 `edge*.json`（用户目录 4 层深） | 0 命中 |
+
+⇒ 三把 key 全空 ⇒ `available()` false ⇒ 主人看到的那句报错。
+
+### 三、更深一层：上游是「主机同款」解析，我们是「自己一间屋」
+
+上游 `web-search-deepseek`（同样从 `app.asar` 实拉源码）的解析顺序：
+
+1. **账号令牌** —— 仅当当前会话的 provider 路由是 `deepseek-account`，
+   令牌由 `ctx.deepseekAccount.resolveToken(endpoint)` 给，认证头是
+   `x-dsh-auth-token`；
+2. **API key** —— `ctx.credentials.resolve('DEEPSEEK_API_KEY')`（**主机凭据服务**，
+   桌面端「Web search」设置页写进去的 key 就在这里），拿不到再退到启动环境
+   `launchEnvironmentOf(ctx)`。
+
+**我们一条都没接**（我们的 Tier-3 只有 `resolveApiKey: async () => dsKey`，
+`dsKey` 只来自自己的 edge.json / env）⇒ 主人的判断「我配的就是 DeepSeek 模型，
+应该直接能用 deepseek search」**在实现上不成立**：模型是 DeepSeek 的，
+搜索却用不上 DeepSeek 的凭据。
+
+本机凭据库实况（`C:\Users\cheng\.dsh\.credentials.yaml`，只看键名不看值）：
+
+```text
+refs:
+  MINIMAX_CN_API_KEY      → 有（DSH 里配的模型在用的那条）
+  QWEN_TOKEN_PLAN_CN_API_KEY → 有
+records:
+  deepseek-account-platform/default → 有（DeepSeek **账号登录**，不是 API key）
+```
+
+⇒ 主机手里**没有** `DEEPSEEK_API_KEY`；但**有** DeepSeek 账号登录 ——
+而账号令牌只在**模型路由是 `deepseek-account`** 时才会被上游用上。
+
+### 四、修法：Tier-3 的凭据解析按上游来（`src/dsh-adapter/web-search-tavily-bocha.ts`）
+
+凭据解析顺序（新的）：
+
+| 顺位 | 来源 | 说明 |
+|---|---|---|
+| ① | **DeepSeek 账号令牌** | 仅当当前会话路由 = `deepseek-account`（`ctx.agents.currentInitiator()?.session.requestContext()?.provider`） |
+| ② | 我们自己的 `secrets.deepseekApiKey` | 操作者显式配置优先（edge.json / env） |
+| ③ | **主机凭据服务** `ctx.credentials.resolve('DEEPSEEK_API_KEY')` | 桌面端设置页写的那把 |
+| ④ | **启动环境** `launchEnvironmentOf(ctx).get('DEEPSEEK_API_KEY')` | 启动器导出的 env |
+| ⑤ | 进程环境 `DEEPSEEK_API_KEY` | 兜底 |
+
+另外两处改动：
+
+- **`available()` 不再拿「此刻有没有 key」当硬门槛** —— 凭据解析是**异步且按路由**
+  的，同步判据做不到。改成判「**有没有凭据通道**」：有主机凭据服务 / 账号服务
+  ⇒ 可用（搜索时再解析）；启动环境是同步的 ⇒ 直接判那把 key 在不在
+  （注意 `launchEnvironmentOf(ctx)` 永远返回一个快照 —— process.env 兜底 ——
+  所以不能拿「快照存在」当判据）。
+- **没有凭据时给可执行提示**：上游抛 `WEB_PROVIDER_CREDENTIAL_MISSING`，
+  但那句话里的修复路径指的是上游插件的配置项 ⇒ 我们翻译成自己的
+  `WEB_PROVIDER_UNAVAILABLE`（code 不变，兼容既有断言），文案点名四条来源。
+
+配套单测 **5 条**（`tests/unit/web-search-tavily-bocha.test.ts`，新增
+`§7.197: Tier-3 走主机凭据（apply() 真接线）`）—— 驱动的是 **`apply()` 的真接线**，
+不是把接线抄一份到测试里（抄一遍的话，接线本身坏掉时测试还是绿的）：
+
+1. 主机凭据服务里有 key ⇒ 请求带 `x-api-key: <该 key>`，且按 credential ref 查；
+2. 路由是 `deepseek-account` ⇒ 请求带 `x-dsh-auth-token`，**且不带** `x-api-key`；
+3. 不是账号路由 ⇒ **不用**账号令牌，退回 API key；
+4. 一把凭据都没有 ⇒ `available()` 仍为 true（不再硬拒），搜索时抛可执行提示，
+   且**一次请求都不发**；
+5. 宿主一个通道都没有 ⇒ `available()` 为 false（保持旧语义）。
+
+本仓单测：**24/24 绿**（该文件）；全仓门禁 **29 道全绿 EXIT=0**。
+
+### 五、主人这台机器上**立刻**能生效的办法（两条，都不用改代码）
+
+1. **切到 DeepSeek 账号模型**：账号登录（`deepseek-account-platform/default`）
+   已经在库里 ⇒ 修好之后，**走 `deepseek-account` 路由的会话**会自动用账号令牌搜；
+2. **给主机存一把 `DEEPSEEK_API_KEY`**：桌面端「Plugins > Built-in plugin settings >
+   Web search」写入即可（那是主机凭据服务，§7.198 四 ③ 号顺位）⇒ 修好之后我们的
+   Tier-3 会直接捡起来。
+
+> ⚠️ 这两条都**依赖 §7.198 的修复进到已装的包**（当前本机装的是 0.1.3，
+> 里面**还没有**这个修复）⇒ 需要发一版。发版属对外可见动作，等主人点头。
+
+### 六、这一节**没有**做的事
+
+- **没有**改任何凭据、**没有**新建 `edge.json`、**没有**动主人的模型配置；
+- npm 包版本仍是 0.1.3（**还没发**），本节的修复在 `main` 上，未进任何已装版本；
+- 「DELEGATE 到云端时闸门是否 fail-closed」仍是待裁决项（§7.189 / §7.190 遗留）。
 
 ---

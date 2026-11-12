@@ -40,10 +40,42 @@
  * (HTTP non-2xx, malformed JSON, AbortError) is logged and the next tier
  * takes over. Final WebError `WEB_PROVIDER_UNAVAILABLE` only fires when ALL
  * three tiers fail or are unavailable.
+ *
+ * §7.197 (2026-11-12): Tier-3 的凭据解析改成**与上游同款**（主机凭据服务 +
+ * DeepSeek 账号登录），不再只认我们自己的 edge.json。
+ *
+ * 症状（桌面版实测 2026-11-12 12:46）：`web_search` 报
+ *   `Error: configured web provider "tavily-bocha-fallback" is registered but unavailable`
+ * 那是宿主 seam 的 `WEB_PROVIDER_CONFIGURED_UNAVAILABLE`（dsh-web
+ * `resolveProvider()`：配置了 provider id、注册了，但 `available()` 为 false）。
+ *
+ * 根因两层：
+ *   1. `available()` 只认「我们自己的」三样东西：edge.json 的
+ *      `secrets.tavilyApiKey` / `bochaApiKey` / `deepseekApiKey`（或同名 env）。
+ *      而这台机器上**根本没有 edge.json**（仓库、已装包、`~/.dsh-edge-agent/`
+ *      都没有）⇒ 三样全空 ⇒ `available()` false ⇒ seam 直接拒绝，搜索根本没发生。
+ *   2. 更深一层：就算有 edge.json，我们的 Tier-3 也**只认我们自己的 key** ——
+ *      上游 `web-search-deepseek` 是「账号令牌（仅 `deepseek-account` 路由）
+ *      → 主机凭据服务 `ctx.credentials.resolve('DEEPSEEK_API_KEY')`
+ *      → 启动环境」三条路，我们一条都没接。
+ *      ⇒ 主人「我在 DSH 里配的就是 DeepSeek 模型，应该直接能用 deepseek search」
+ *      这个预期，被我们的实现挡在了门外：**模型是 DeepSeek 的，搜索却用不上
+ *      DeepSeek 的凭据**。
+ *
+ * 修法：Tier-3 的凭据解析按上游的顺序来 ——
+ *   ① DeepSeek 账号令牌（仅当当前会话的 provider 路由是 `deepseek-account`）
+ *   ② 我们自己的 edge.json `secrets.deepseekApiKey`（操作者显式配置优先）
+ *   ③ 主机凭据服务 `ctx.credentials.resolve('DEEPSEEK_API_KEY')`
+ *   ④ 启动环境 `launchEnvironmentOf(ctx).get('DEEPSEEK_API_KEY')`
+ *   ⑤ 进程环境 `DEEPSEEK_API_KEY`
+ * 并且 `available()` 不再拿「此刻有没有 key」当硬门槛（凭据解析是**异步且按路由**
+ * 的，同步判据做不到）—— 改成判「有没有凭据通道」。
  */
 
 import { WebError, type WebSearchProvider, type WebSearchRequest, type WebSearchResult } from '@deepseek-ai/dsh-web'
 import { DeepSeekSearchProvider } from '@deepseek-ai/dsh-web-search-deepseek'
+import { credentialRef } from '@deepseek-ai/dsh-credentials'
+import { launchEnvironmentOf } from '@deepseek-ai/dsh-launch-environment'
 import type { Context } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
 import { loadEdgeConfig } from './edge-config.js'
@@ -55,6 +87,38 @@ const TAVILY_ENDPOINT = 'https://api.tavily.com/search'
 // 旧域名持任何 key 都会 403 quota 错误,实际是路由不可达伪装成 quota)。
 const BOCHA_ENDPOINT = 'https://api.bochaai.com/v1/web-search'
 const DEEPSEEK_DEFAULT_BASE_URL = 'https://api.deepseek.com/anthropic/v1'
+
+/**
+ * 宿主把「DeepSeek 账号」当作 provider 路由注册时的 id（上游
+ * `web-search-deepseek` 的 `ACCOUNT_PROVIDER`）。只有当前会话走这条路由，
+ * 搜索才用账号登录（`x-dsh-auth-token`）而不是 API key。
+ */
+export const DEEPSEEK_ACCOUNT_PROVIDER = 'deepseek-account'
+
+/** 凭据引用的名字（上游 `web-search-deepseek` 的 `apiKeyEnv` 默认值）。 */
+const DEEPSEEK_API_KEY_REF = 'DEEPSEEK_API_KEY'
+
+/**
+ * 主机侧的**凭据通道**（§7.197）。
+ *
+ * 这三个通道都不是我们能自己造出来的，只能从宿主服务里拿：
+ *   - `credentials`：宿主凭据服务（`ctx.credentials`）—— 桌面端「Web search」
+ *     设置页写进去的 key 就在这里；
+ *   - `launchEnv`：启动环境快照（`launchEnvironmentOf(ctx)`）—— 启动器导出的 env；
+ *   - `account`：DeepSeek 账号服务（`ctx.deepseekAccount`）—— 账号登录令牌。
+ *
+ * 全部可选：宿主没提供就退回到我们自己的 edge.json / 进程环境。
+ */
+export interface DeepSeekCredentialPlane {
+  /** 宿主凭据服务：`resolve(ref)` → `{ value }`。 */
+  credentials?: { resolve(ref: ReturnType<typeof credentialRef>): Promise<{ value: string } | undefined> }
+  /** 启动环境快照：`get(name)` → `{ value }`。 */
+  launchEnv?: { get(name: string): { value: string } | undefined }
+  /** DeepSeek 账号服务：`resolveToken(endpoint)` → 令牌字符串。 */
+  account?: { resolveToken(endpoint: string): Promise<string | undefined> }
+  /** 当前会话的 provider 路由（判断是不是 `deepseek-account`）。 */
+  routeProvider?: () => string | undefined
+}
 
 /** Stable id for `ctx.web.searchProviderId` selection and audit messages. */
 export const TAVILY_BOCHA_PROVIDER_ID = 'tavily-bocha-fallback'
@@ -106,6 +170,12 @@ export class TavilyBochaFallbackProvider implements WebSearchProvider {
      * An unset switch therefore means DISABLED (opt-in, not opt-out).
      */
     private readonly tiers: { tavilyEnabled?: boolean; bochaEnabled?: boolean } = {},
+    /**
+     * §7.197: 主机侧凭据通道。用来做两件事 ——
+     *   1. `available()`：判断「有没有凭据通道」（而不是「此刻有没有 key」）；
+     *   2. Tier-3 的凭据解析（见 `apply()` 里造的 upstream provider thunk）。
+     */
+    private readonly credentialPlane: DeepSeekCredentialPlane = {},
   ) {}
 
   private get tavilyEnabled(): boolean {
@@ -119,22 +189,32 @@ export class TavilyBochaFallbackProvider implements WebSearchProvider {
   }
 
   /**
-   * Cheap local availability check; no network calls. Returns true iff any
-   * tier can serve — at least one of Tavily/Bocha/DeepSeek key set.
+   * Cheap local availability check; no network calls.
    *
-   * We deliberately do NOT delegate to `this.deepseek.available()` because
-   * upstream's check returns true whenever a `resolveApiKey` thunk is
-   * defined, regardless of whether the resolved key string is empty.
-   * Our caller may legitimately invoke us with `dsKey=undefined` (Tiers 1/2
-   * only config), so we must check the key string ourselves.
+   * §7.197: 判据从「此刻有没有 key」改成「**有没有凭据通道**」。
    *
-   * When ALL three are unavailable, `ctx.web` will filter us out and the
-   * seam will throw `WEB_PROVIDER_UNAVAILABLE` only if no other provider
-   * is registered as a fallback. (We always register this row, so an
-   * absent-key env is a no-op rather than an error.)
+   * 为什么不能继续用「此刻有没有 key」：Tier-3 的凭据解析是**异步且按路由**
+   * 的 —— 账号令牌只有当当前会话走 `deepseek-account` 路由时才存在，而
+   * `available()` 是同步方法、拿不到路由。拿「此刻没 key」当硬门槛的后果是
+   * 宿主 seam 在**搜索还没发生**时就拒绝（`WEB_PROVIDER_CONFIGURED_UNAVAILABLE`），
+   * 主人看到的只是一句「registered but unavailable」，既不知道该配什么，
+   * 也不知道「用 DeepSeek 账号模型就能搜」。
+   *
+   * 真正的凭据判定发生在搜索时（上游同款）：解析不到就抛
+   * `WEB_PROVIDER_CREDENTIAL_MISSING`（我们翻译成自己的可执行提示）。
    */
   available(): boolean {
-    return Boolean((this.tavilyEnabled && this.tavilyKey) || (this.bochaEnabled && this.bochaKey) || this.dsKey)
+    if ((this.tavilyEnabled && this.tavilyKey) || (this.bochaEnabled && this.bochaKey)) return true
+    if (this.dsKey) return true
+    const plane = this.credentialPlane
+    // 主机凭据服务 / DeepSeek 账号服务：解析是**异步**的 ⇒ 只能判「有没有这个通道」。
+    // 少了它们，账号模型与主机凭据里的 key 就永远轮不到（§7.197 的主因）。
+    if (plane.credentials || plane.account) return true
+    // 启动环境是**同步**的 ⇒ 直接判那把 key 在不在。
+    // 注意 `launchEnvironmentOf(ctx)` 永远返回一个快照（process.env 兜底），
+    // 所以不能拿「快照存在」当判据 —— 那样 available() 恒为 true。
+    const fromLaunchEnv = plane.launchEnv?.get(DEEPSEEK_API_KEY_REF)?.value?.trim()
+    return Boolean(fromLaunchEnv)
   }
 
   async search(request: WebSearchRequest, signal?: AbortSignal): Promise<WebSearchResult> {
@@ -165,19 +245,26 @@ export class TavilyBochaFallbackProvider implements WebSearchProvider {
     }
 
     // Tier 3 — DeepSeek (imported provider; uses native server-tool search).
-    // We gate on `this.dsKey` directly rather than `this.deepseek.available()`
-    // because upstream's available() returns true whenever a `resolveApiKey`
-    // thunk is defined, even when it resolves to an empty string.
-    if (this.dsKey) {
+    //
+    // §7.197: 凭据解析交给 upstream provider 自己做（账号令牌 → API key，
+    // 顺序与上游 `web-search-deepseek` 一致，见 `apply()` 里的 thunk）。
+    // 我们只在**一个凭据都没有**时把它翻译成自己的提示 —— 上游抛的是
+    // `WEB_PROVIDER_CREDENTIAL_MISSING`，那句话里的修复路径是上游插件的
+    // 配置项，对本仓的操作者不适用。
+    try {
       return await this.deepseek.search(request, signal)
+    } catch (err) {
+      if (err instanceof WebError && err.code === 'WEB_PROVIDER_CREDENTIAL_MISSING') {
+        throw new WebError(
+          'no web search credential is available: DeepSeek tier needs a credential, and none of the '
+          + 'four sources has one (config/edge.json secrets.deepseekApiKey / the host credentials '
+          + 'service (DEEPSEEK_API_KEY) / the launch environment / the DeepSeek account sign-in)',
+          'WEB_PROVIDER_UNAVAILABLE',
+          { cause: err },
+        )
+      }
+      throw err
     }
-
-    // All tiers failed or unavailable.
-    throw new WebError(
-      'all web search providers failed or none configured ' +
-        '(set TAVILY_API_KEY / BOCHA_API_KEY / DEEPSEEK_API_KEY in .env)',
-      'WEB_PROVIDER_UNAVAILABLE',
-    )
   }
 
   // ── Tier 1: Tavily ───────────────────────────────────────────────────────
@@ -308,6 +395,25 @@ export class TavilyBochaFallbackProvider implements WebSearchProvider {
  *
  * @param ctx - Cordis context with `ctx.web` available per `inject`.
  */
+/**
+ * 当前会话的 provider 路由（上游 `web-search-deepseek` 同款：
+ * `ctx.agents.currentInitiator()?.session.requestContext()?.provider`）。
+ *
+ * 只有它是 `deepseek-account` 时，搜索才用账号登录令牌。拿不到就返回
+ * undefined（⇒ 不走账号令牌）—— 拿不到不是错误，只是「这条路没有凭据」。
+ */
+function currentRouteProvider(ctx: Context): string | undefined {
+  try {
+    const agents = ctx.get('agents') as
+      | { currentInitiator?: () => { session?: { requestContext?: () => { provider?: string } } } | undefined }
+      | undefined
+    const route = agents?.currentInitiator?.()?.session?.requestContext?.()?.provider
+    return typeof route === 'string' ? route : undefined
+  } catch {
+    return undefined
+  }
+}
+
 export async function apply(ctx: Context, _config: Config): Promise<void> {
   // §7.102 (2026-10-21): the search keys come from config/edge.json
   // (secrets.tavilyApiKey / secrets.bochaApiKey / secrets.deepseekApiKey).
@@ -321,12 +427,45 @@ export async function apply(ctx: Context, _config: Config): Promise<void> {
   const dsKey = (secrets.deepseekApiKey ?? process.env.DEEPSEEK_API_KEY)?.trim() || undefined
   const dsBaseURL = process.env.DEEPSEEK_BASE_URL?.trim() || DEEPSEEK_DEFAULT_BASE_URL
 
-  // Construct upstream DeepSeek provider for Tier-3 fallback. We bypass its
-  // settings-section / credential-ref machinery because we read env vars
-  // ourselves (consistent with `local-llm-adapter` pattern). The provider
-  // class is stateless across calls — re-reading env on each `search()`.
+  // ── §7.197: 主机侧凭据通道 ────────────────────────────────────────────
+  //
+  // 上游 `web-search-deepseek` 是这样解析凭据的（已从 app.asar 里核对源码）：
+  //   ① 账号令牌 —— 仅当当前会话的 provider 路由是 `deepseek-account`，
+  //      令牌由 `ctx.deepseekAccount.resolveToken(endpoint)` 给；
+  //   ② API key —— `ctx.credentials.resolve('DEEPSEEK_API_KEY')`，
+  //      拿不到再退到启动环境 `launchEnvironmentOf(ctx)`。
+  //
+  // 我们原来一条都没接（只读自己的 edge.json），所以「DSH 里配的就是 DeepSeek
+  // 模型」这件事，对搜索没有任何影响 —— 模型是 DeepSeek 的，搜索却用不上
+  // DeepSeek 的凭据。现在按上游同款接上。
+  const plane: DeepSeekCredentialPlane = {
+    credentials: ctx.get('credentials') as DeepSeekCredentialPlane['credentials'],
+    launchEnv: launchEnvironmentOf(ctx),
+    account: ctx.get('deepseekAccount') as DeepSeekCredentialPlane['account'],
+    routeProvider: () => currentRouteProvider(ctx),
+  }
+
+  // Construct upstream DeepSeek provider for Tier-3 fallback. The provider
+  // class is stateless across calls — credentials are resolved per search.
+  //
+  // §7.197: `resolveAccountToken` / `resolveApiKey` 现在是**主机同款**的两条路：
+  // 账号令牌优先（且只在账号路由上），API key 依次是
+  // 我们自己的 edge.json → 主机凭据服务 → 启动环境 → 进程环境。
   const dsProvider = new DeepSeekSearchProvider(() => ({
-    resolveApiKey: async () => dsKey,
+    resolveAccountToken: async (endpoint: string) => {
+      if (plane.routeProvider?.() !== DEEPSEEK_ACCOUNT_PROVIDER) return undefined
+      const token = await plane.account?.resolveToken(endpoint)
+      return token && token.length > 0 ? token : undefined
+    },
+    resolveApiKey: async () => {
+      if (dsKey) return dsKey
+      const fromCredentials = await plane.credentials?.resolve(credentialRef(DEEPSEEK_API_KEY_REF))
+      const credentialValue = fromCredentials?.value?.trim()
+      if (credentialValue) return credentialValue
+      const fromLaunchEnv = plane.launchEnv?.get(DEEPSEEK_API_KEY_REF)?.value?.trim()
+      if (fromLaunchEnv) return fromLaunchEnv
+      return process.env.DEEPSEEK_API_KEY
+    },
     baseURL: dsBaseURL,
     model: 'deepseek-v4-flash',
     apiVersion: '2023-06-01',
@@ -339,7 +478,7 @@ export async function apply(ctx: Context, _config: Config): Promise<void> {
     // disabled ⇒ an unset config keeps only the DeepSeek tier on the chain.
     tavilyEnabled: cfg.webSearch?.tavilyEnabled,
     bochaEnabled: cfg.webSearch?.bochaEnabled,
-  })
+  }, plane)
   // The `web` seam is registered by `@deepseek-ai/dsh-tool-web` upstream;
   // it's not part of the stock `Context` interface, so cast narrowly.
   const webCtx = ctx as Context & {

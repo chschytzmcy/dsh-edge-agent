@@ -486,3 +486,141 @@ describe('apply() —— provider id 被占用时让位（§7.189）', () => {
     await assert.rejects(() => apply(ctx, config))
   })
 })
+
+// ── §7.197: Tier-3 的凭据解析改成「主机同款」 ─────────────────────────
+//
+// 症状（2026-11-12 12:46 桌面版实测，用户报上来的）：
+//   Error: configured web provider "tavily-bocha-fallback" is registered but unavailable
+//
+// 那是宿主 seam 的 `WEB_PROVIDER_CONFIGURED_UNAVAILABLE`：配置了 provider id、
+// 它也注册了，但 `available()` 返回 false ⇒ 搜索**根本没发生**。
+//
+// 根因：我们只认自己的 edge.json（secrets.deepseekApiKey / env DEEPSEEK_API_KEY）。
+// 这台机器上根本没有 edge.json ⇒ 一把 key 都没有 ⇒ available() false。
+// 更深一层：上游 `web-search-deepseek` 是「账号令牌 → 主机凭据服务 → 启动环境」
+// 三条路，我们一条没接 ⇒ 「DSH 里配的就是 DeepSeek 模型」对搜索毫无影响。
+//
+// 这一组测试驱动的是 **apply() 的真接线**（不是把接线抄一份到测试里）——
+// 抄一遍的话，接线本身坏掉时测试还是绿的。
+
+describe('§7.197: Tier-3 走主机凭据（apply() 真接线）', () => {
+  const config = { reserved: {} }
+  let savedConfigFileEnv: string | undefined
+
+  beforeEach(() => {
+    installFetchMock()
+    // 不读本机的 edge.json（主人机器上可能有真 key ⇒ 断言会飘）。
+    savedConfigFileEnv = process.env.DSH_EDGE_CONFIG_FILE
+    process.env.DSH_EDGE_CONFIG_FILE = 'off'
+    responderTable = [
+      deepseekResponder(200, {
+        content: [
+          {
+            type: 'web_search_tool_result',
+            content: [{ type: 'web_search_result', url: 'https://ds.example', title: 'DS' }],
+          },
+        ],
+      }),
+    ]
+  })
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+    if (savedConfigFileEnv === undefined) delete process.env.DSH_EDGE_CONFIG_FILE
+    else process.env.DSH_EDGE_CONFIG_FILE = savedConfigFileEnv
+  })
+
+  /** 一个最小宿主 ctx：凭据服务 / 账号服务 / 当前路由都按需给。 */
+  function makeHostCtx(opts: {
+    credentials?: { resolve(ref: string): Promise<{ value: string } | undefined> }
+    account?: { resolveToken(endpoint: string): Promise<string | undefined> }
+    route?: string
+  }) {
+    let registered: any
+    const ctx = {
+      web: { registerSearchProvider: (p: unknown) => { registered = p } },
+      logger: { error: () => {}, warn: () => {}, info: () => {} },
+      get: (name: string) => {
+        if (name === 'credentials') return opts.credentials
+        if (name === 'deepseekAccount') return opts.account
+        if (name === 'agents') {
+          return {
+            currentInitiator: () => ({
+              session: { requestContext: () => ({ provider: opts.route }) },
+            }),
+          }
+        }
+        return undefined
+      },
+    }
+    return {
+      ctx: ctx as unknown as Parameters<typeof apply>[0],
+      provider: () => registered,
+    }
+  }
+
+  it('主机凭据服务里有 DEEPSEEK_API_KEY ⇒ Tier-3 用它（x-api-key）', async () => {
+    const seen: string[] = []
+    const host = makeHostCtx({
+      credentials: {
+        resolve: async (ref: string) => {
+          seen.push(ref)
+          return { value: 'sk-from-host-store' }
+        },
+      },
+    })
+    await apply(host.ctx, config)
+    const result = await host.provider().search({ query: 'q', maxResults: 5 })
+    assert.equal(result.sources[0].url, 'https://ds.example')
+    assert.deepEqual(seen, ['DEEPSEEK_API_KEY'], '必须按 credential ref 查，而不是读文件')
+    const headers = capturedCalls[0].init.headers as Record<string, string>
+    assert.equal(headers['x-api-key'], 'sk-from-host-store')
+  })
+
+  it('当前路由是 deepseek-account ⇒ 用账号登录令牌（x-dsh-auth-token），不带 x-api-key', async () => {
+    const host = makeHostCtx({
+      account: { resolveToken: async () => 'tok-account-123' },
+      route: 'deepseek-account',
+      credentials: { resolve: async () => ({ value: 'sk-should-not-be-used' }) },
+    })
+    await apply(host.ctx, config)
+    await host.provider().search({ query: 'q', maxResults: 5 })
+    const headers = capturedCalls[0].init.headers as Record<string, string>
+    assert.equal(headers['x-dsh-auth-token'], 'tok-account-123')
+    assert.equal(headers['x-api-key'], undefined, '账号路由下不该再带 API key')
+  })
+
+  it('不是账号路由 ⇒ 不用账号令牌，退回 API key', async () => {
+    const host = makeHostCtx({
+      account: { resolveToken: async () => 'tok-account-123' },
+      route: 'qwen-token-plan-cn',
+      credentials: { resolve: async () => ({ value: 'sk-from-host-store' }) },
+    })
+    await apply(host.ctx, config)
+    await host.provider().search({ query: 'q', maxResults: 5 })
+    const headers = capturedCalls[0].init.headers as Record<string, string>
+    assert.equal(headers['x-dsh-auth-token'], undefined, '非账号路由不得使用账号令牌')
+    assert.equal(headers['x-api-key'], 'sk-from-host-store')
+  })
+
+  it('一把凭据都没有 ⇒ available() 仍为 true（不再硬拒），搜索时给可执行提示', async () => {
+    const host = makeHostCtx({ credentials: { resolve: async () => undefined } })
+    await apply(host.ctx, config)
+    const provider = host.provider()
+    assert.equal(provider.available(), true, '有凭据通道就不该在 seam 层被拒')
+    await assert.rejects(
+      () => provider.search({ query: 'q', maxResults: 5 }),
+      (err: unknown) =>
+        err instanceof WebError
+        && err.code === 'WEB_PROVIDER_UNAVAILABLE'
+        && /credentials service/u.test(err.message),
+    )
+    assert.equal(capturedCalls.length, 0, '没有凭据就不该真的发请求')
+  })
+
+  it('宿主一个通道都没有 ⇒ available() 为 false（保持旧语义）', async () => {
+    const host = makeHostCtx({})
+    await apply(host.ctx, config)
+    assert.equal(host.provider().available(), false)
+  })
+})
