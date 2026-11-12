@@ -21831,9 +21831,21 @@ pnpm test -- --run --reporter=json --outputFile=/tmp/vitest.json \
 | **runner 上（run #153）** | **症状证明 `--` 原样透传到了 vitest** |
 
 ⇒ **结论不是「pnpm 有 bug」，而是「靠 `--` 转发参数这件事本身不安全」**：
-去留取决于 pnpm 版本 + 调用方式 + runner 环境。runner 上具体是哪个 pnpm
-（`pnpm/action-setup@v6` 装的）当时拿不到（log 要登录），但这已经不影响修法 ——
-修法就是**不再依赖 `--`**。
+去留取决于 **pnpm 的分发渠道 / 调用的壳 / 调用方式**，不是版本。
+
+**版本这条假设已被排除**（2026-11-12 run #154 实测）：修完之后 CI 单测步发
+`::notice::` 记下了 runner 的工具链 ——
+
+```
+[notice] toolchain — node v22.20.0, pnpm 11.7.0
+```
+
+runner 上的 pnpm **也是 11.7.0**（`pnpm/action-setup@v6` 按 `version: 11.7.0` 装的），
+与本机全局 pnpm **同版本** ⇒ 「runner 装到了别的 pnpm 版本」这条猜测**不成立**；
+差别出在**分发渠道与壳**（runner 上是 action-setup 的 standalone 二进制 + `sh`，
+本机是 npm 装的 wrapper + cmd/PowerShell，npx 那条又是另一种入参路径）。
+⇒ 结论不变，而且更强：**同一份 pnpm、同一个版本，`--` 的去留都可能不同**
+⇒ 任何依赖 `--` 转发的写法都必须当成「随时会静默失效」。
 
 ### 三、本机复现（可重复，逐条同症状）
 
@@ -21921,8 +21933,29 @@ publish.yml: `run: pnpm test -- --run` forwards vitest flags through `pnpm test 
   （`version: 11.7.0` 原样保留）—— 修法不依赖 pnpm 版本；
 - **没有**给 e2e job 配 Actions secrets ⇒ `ops log coverage` 那一步仍然
   **skipped**（带 `::warning::` 明说，不假绿）；
-- **没有**发 npm 包 ⇒ §7.198 的 web_search 修复仍未进任何已装版本；
-- runner 上的 pnpm **具体是哪个版本**当时仍未取证（log 要登录）——
-  §7.199 的修法不依赖这个答案，但本节起 `::notice::` 会把版本记进公开注解。
+- **没有**发 npm 包 ⇒ §7.198 的 web_search 修复仍未进任何已装版本。
+
+### 九、修完之后的实测（run #154，sha `c80deb2`）
+
+**4 个 job 全绿**（此前 `unit tests` 从 run #51 / 2026-10-26 起就没有绿过一次）：
+
+| job | run #153 | run #154 |
+|---|---|---|
+| `build & verify` | success | success |
+| `unit tests (vitest suite, §7.199)` | **failure**（报告文件缺失） | **success** |
+| `unit tests (windows)` | success | success |
+| `ops log coverage (3 cases)` | success（回归步 skipped + warning） | success（同上，仍 skipped） |
+
+单测步的公开注解（证明计数门禁这次真的判了、且工具链版本留了痕）：
+
+```
+[notice] toolchain — node v22.20.0, pnpm 11.7.0
+[notice] "The ubuntu-latest label will migrate to Ubuntu 26 beginning October 19, 2026. …"
+```
+
+`ops log coverage` 那一步**仍然是 skipped** —— 因为仓库还没配
+`DEEPSEEK_API_KEY` / `DSH_EDGE_API_KEY` 两个 Actions secret ⇒ **没有假绿**，
+但也**说明 e2e 真回归至今没在 CI 上跑过一次**（主人配完 secret 才会跑）。
+
 
 ---
