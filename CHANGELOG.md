@@ -40,6 +40,14 @@
 
 > 客户要的部分（怎么装、`edge.json` 怎么配、装完怎么自检、能力与隐私口径）一件没少。
 
+### README 只留「用户怎么用」
+
+- 装这一节扩成**三条通道**各一段：① npm 包名 ② GitHub Release 上的预构建 tar 包
+  （粘 URL 即可，免构建授权 / 免 PATH 上的 pnpm / 免 registry）③ GitHub 地址或本地目录
+  —— 并把**怎么编译**（`pnpm install` + `pnpm run build`，产物在哪）写进通道③；
+- 移走维护者内容：`npm run publish:npm` 三条命令、`npm login` 前置、发布链指针、
+  文档表里的实施档案行（发布链全套仍在 [`docs/deploy-npm.md`](docs/deploy-npm.md) §8）。
+
 ---
 
 ## [0.1.4] — 2026-11-12

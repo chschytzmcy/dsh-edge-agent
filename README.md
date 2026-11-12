@@ -20,14 +20,40 @@ approval / sandbox 等全局设置。
 
 ## 📥 装
 
+### ① npm 包名（推荐：装预构建包）
+
 桌面版 DSH App：**Plugins → Add plugin** → 填包名 `@dsh-edge/dsh-edge-agent`
-（装预构建包，不需要构建授权、不需要 PATH 上有 pnpm）。
+—— **不需要构建授权、不需要 PATH 上有 pnpm**。
 
 > ⚠️ **装完必做两步**：① 点「**立即启用**」（GUI 不会自动启用）② **重启桌面 App**。
 > 否则包在 `dependencies` 里却不在 `dsh.profile.bundles` 里 ⇒ 启动不加载 ⇒ 右栏没有 Edge tab。
 
-另有三条通道（本地目录 / GitHub 地址 / tarball 路径）与独立 headless profile，
-见 [`docs/load-into-local-dsh.md`](docs/load-into-local-dsh.md)。
+### ② GitHub Release 上的预构建 tar 包（免 registry）
+
+在 [Releases 页](https://github.com/chschytzmcy/dsh-edge-agent/releases) 取最新版本的
+`dsh-edge-agent-desktop-safe.tar.gz`（或 `dsh-edge-agent-full.tar.gz`），
+在 **Plugins → Add plugin** 里粘它的 URL：
+
+```
+https://github.com/chschytzmcy/dsh-edge-agent/releases/download/<tag>/dsh-edge-agent-desktop-safe.tar.gz
+```
+
+宿主把这种 URL 判成 **tarball**（不是 git 仓库）⇒ 走 tarball 通道，
+**免构建授权、免 PATH 上的 pnpm、不需要 registry**。
+
+### ③ GitHub 地址 / 本地目录（要自己编译）
+
+这两条通道需要 PATH 上有 pnpm，宿主会在插件目录里跑构建。编译与完整步骤见
+[`docs/load-into-local-dsh.md`](docs/load-into-local-dsh.md) 与
+[`docs/deploy-github.md`](docs/deploy-github.md)：
+
+```bash
+pnpm install
+pnpm run build      # compile → typecheck:client → build:client → build:installable → pack:tarball → verify:build
+```
+
+产物：`dist/installable/<变体>/`（桌面 App 装的那份目录）与
+`dist/dsh-edge-agent-<变体>.tar.gz`（通道②能粘的那个 tar 包）。
 
 ---
 
@@ -45,8 +71,7 @@ approval / sandbox 等全局设置。
 | `llm.local.baseUrl` | 空 ⇒ **DELEGATE** | `local-llm` 路由**照样注册**，但它转发宿主模型 —— 不是「没模型」|
 | `llm.cloud.baseUrl` | 空 ⇒ **DELEGATE** | 云池同样转发宿主模型 |
 | `stages.intent.provider` | `local-llm` | 意图判定钉在本地池上 ⇒ 端点留空时它**跑宿主模型** ⇒ **待检测的用户原文也会上行**（已知边界）|
-| `stages.intent.timeoutMs` | `60000` | 意图判定那一次调用的超时窗口是 **60 秒** |
-| `stages.guard.timeoutMs` | `60000` | 同上 |
+| `stages.intent.timeoutMs` / `stages.guard.timeoutMs` | `60000` | 意图判定与护栏那两次调用的超时窗口是 **60 秒** |
 | `llm.local.delegate` | `true` | 要「不注册本地路由」必须显式写 `false`（kill switch）|
 
 ⇒ **想让「本地」真的是本地，必须填 `llm.local.baseUrl`**。
@@ -58,7 +83,7 @@ approval / sandbox 等全局设置。
 | 1 | `<插件目录>/config/edge.json` | 装好后在 App 里就能找到的那份 |
 | 2 | `~/.dsh-edge-agent/edge.json` | 跨通道、跨重装、删 profile 都活着 ★ **推荐** |
 
-> 三条发布通道的产物里**本来就没有** `config/edge.json`（打包时按设计排除）；
+> 各发布通道的产物里**本来就没有** `config/edge.json`（打包时按设计排除）；
 > 插件目录那份 `config/edge.example.json` 只是**给你抄的模板**。
 
 ### 怎么配（三步）
@@ -90,8 +115,6 @@ approval / sandbox 等全局设置。
 
 | 你没配的东西 | 结果 |
 |---|---|
-| 整个 `edge.json` | 两池都 DELEGATE ⇒ 实际是**同一个模型**（宿主选的那个）|
-| `llm.local.baseUrl` | `local-llm` 路由照样注册（转发宿主模型）|
 | `llm.local.keyRef` | 端点不鉴权 ⇒ 完全正常；端点要鉴权 ⇒ 401，报错会指名让你配 `keyRef` |
 | `secrets` 整段（**桌面版**）| **完全正常** —— 桌面版不挂 http-api，一个 secret 都不需要 |
 | `secrets.edgeApiKey`（**独立 HTTP profile**）| **必填** —— 没凭据**拒绝启动**（fail-closed）|
@@ -157,19 +180,8 @@ dsh --profile <profile> --dump-config | grep -cE 'input-guard|file-logger|intent
 | [`docs/README.md`](docs/README.md) | **文档总索引**（每份一句说明 + 状态）|
 | [`docs/architecture.md`](docs/architecture.md) | 架构主文档：四层模型 / Realm / 插件开发 / 威胁模型 / patch 树 |
 | [`docs/privacy-policy.md`](docs/privacy-policy.md) | 隐私链路单一权威：策略 + 判定表 + 配置清单 + 审计 + 行为契约 |
-| [`docs/deploy-npm.md`](docs/deploy-npm.md) | npm 包名安装 + 发布链排障 |
+| [`docs/deploy-npm.md`](docs/deploy-npm.md) | npm 通道：安装与排障 |
+| [`docs/deploy-tarball.md`](docs/deploy-tarball.md) | tar 包通道：安装与排障 |
 | [`docs/desktop-troubleshooting.md`](docs/desktop-troubleshooting.md) | 桌面版排障手册 |
-| [`docs/PROGRESS.md`](docs/PROGRESS.md) | 实施进度档案（§7.x 全量历史）|
-
-### 开发
-
-```bash
-pnpm install
-pnpm run build      # compile → typecheck:client → build:client → build:installable → pack:tarball → verify:build
-pnpm test
-```
-
-发布链（`npm run publish:npm`、分级发布的判据、CI 的两个发布面）见
-[`docs/deploy-npm.md`](docs/deploy-npm.md) §8。
 
 MIT License. 详见 [LICENSE](LICENSE)。
