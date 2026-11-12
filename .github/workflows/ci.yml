@@ -174,7 +174,14 @@ jobs:
               node --version
               pnpm --version
             } > /tmp/vitest.diag 2>&1 || true
-            echo "::error::vitest 没有写出 /tmp/vitest.json —— 计数门禁无法判定（诊断见下）%0A$(cat /tmp/vitest.diag)"
+            # ⚠️ GitHub 的 workflow command 是**单行**的：注解消息里出现换行，
+            # 那一行之后的全部内容就变成普通日志、**不进注解**。⇒ 整段诊断要
+            # 编码成一行（%0A = 换行，%25 = 字面 %）。
+            # 用 awk 而不是 tr/sed：tr 只能把换行换成一个字符（换成 `%`），
+            # 而 GNU sed 4.9 在「先 %25 再 N 循环」的组合下会把 %25 吞掉
+            # （本机 Git Bash 4.9 实测）⇒ 只有 awk 这条往返是对的。
+            DIAG=$(awk 'BEGIN{ORS=""} {gsub(/%/,"%25"); printf "%s%%0A", $0}' /tmp/vitest.diag 2>/dev/null)
+            echo "::error::vitest 没有写出 /tmp/vitest.json —— 计数门禁无法判定%0A${DIAG}"
             exit 1
           fi
 

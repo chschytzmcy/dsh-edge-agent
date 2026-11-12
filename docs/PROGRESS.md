@@ -21581,7 +21581,51 @@ package surface OK (241 files, 69 entry targets)
    `^22.19 || >=24` ⇒ 用 24 合法）；同时 `Install DSH CLI` 步失败时把
    npm 的输出尾部与退出码写进注解。
 
-### 五、这一节**没有**做的事
+### 五、run #151 的真相：`if:` 里引用 `secrets` ⇒ **整个 workflow 文件被判无效**
+
+run #149 的诊断注解说「vitest 没写出报告、退出码 0」；为此把 vitest 步的现场
+（stdout/stderr 尾部 + `/tmp` 清单 + 工具版本）写进注解的那个提交（`6a53f2b`）
+推上去之后，**run #151 变成另一种形状**：
+
+| 字段 | 值 |
+|---|---|
+| `name` | **`.github/workflows/ci.yml`**（不是 workflow 里的 `name: ci`） |
+| `jobs` | **空**（一个 job 都没起来） |
+| `conclusion` | failure |
+| `check-runs` | **0 条**（连注解都没有） |
+
+⇒ 这是 GitHub「**workflow 文件无效**」的经典症状：它读不出 `name:`，于是拿文件
+路径当名字；整个文件被拒 ⇒ 没有 job、没有任何注解、没有任何可读的失败原因。
+
+**根因**：GitHub **禁止在 `if:` 条件里直接引用 `secrets`**（官方文档原话：不能把
+secrets 直接用在 if 条件里）。我为了「secret 缺失时跳过那一步」写了
+
+```yaml
+if: ${{ secrets.DEEPSEEK_API_KEY != '' && secrets.DSH_EDGE_API_KEY != '' }}
+```
+
+⇒ 整个 workflow 文件被判无效 ⇒ 整条 CI 挂，而且**看不出原因**（本地 js-yaml 与
+`yaml` 两个解析器都解析通过 ⇒ 本地永远发现不了）。
+
+**正确写法**：secret 进 **job 级 env**，step 的 `if:` 用 `env.` 上下文引用
+（`env` 上下文在 step 级 if 里可用，`secrets` 不可用）：
+
+```yaml
+jobs:
+  e2e-opslog:
+    env:
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      DSH_EDGE_API_KEY: ${{ secrets.DSH_EDGE_API_KEY }}
+    steps:
+      - name: Run ops log coverage regression
+        if: ${{ env.DEEPSEEK_API_KEY != '' && env.DSH_EDGE_API_KEY != '' }}
+```
+
+**顺手做成门禁**（`scripts/verify-ci-build-chain.mjs`，§7.198）：两个 workflow 里
+**任何 `if:` 表达式都不得出现 `secrets.`**；自证两条（坏写法被抓、改成 `env.`
+上下文放行）。这条门禁挡的是「CI 挂了但从仓库这边完全看不出来」的那一类坑。
+
+### 六、这一节**没有**做的事
 
 - npm 包内容、版本号（仍是 0.1.3）没变，也没有重发；
 - 那两个 job 到底为什么红，**等下一次 run 的诊断注解**（本节只把「看不见」变成「看得见」）；
