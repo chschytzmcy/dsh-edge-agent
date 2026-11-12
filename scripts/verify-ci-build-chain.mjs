@@ -101,7 +101,7 @@ export const REQUIRED_BUILD_STEPS = ['compile', 'build:client', 'build:installab
  */
 const WORKFLOWS = [
   { file: 'ci.yml', job: 'build', required: true },
-  { file: 'publish.yml', job: 'npm', required: false },
+  { file: 'publish.yml', job: 'npm', required: false, npmFace: true },
 ]
 
 /**
@@ -328,6 +328,138 @@ export function auditUnitTestJob(workflowText) {
   return failures
 }
 
+/* ── §7.202：npm 发布面与「registry 传播延迟」的赛跑 ───────────────────── */
+
+/**
+ * 把 workflow 里所有 `run: |`（块状脚本）的正文抠出来。
+ *
+ * 为什么不能直接搜整个 job body：**注释里也会出现那些关键字**（比如「409 /
+ * EPUBLISHCONFLICT 当成功」这句解释就在注释里）⇒ 门禁会拿注释当实现。
+ * ⇒ 这里只取**真正的脚本正文**，并把 `#` 开头的行剔掉。
+ *
+ * @param {string} workflowText
+ * @returns {string[]} the block bodies
+ */
+export function extractRunBlocks(workflowText) {
+  const lines = workflowText.split(/\r?\n/u)
+  const blocks = []
+  for (let i = 0; i < lines.length; i++) {
+    if (!/^[ \t]*(?:-[ \t]+)?run:[ \t]*\|[+-]?[ \t]*$/u.test(lines[i])) continue
+    const indent = (lines[i].match(/^[ \t]*/u) ?? [''])[0].length
+    const body = []
+    for (let j = i + 1; j < lines.length; j++) {
+      const line = lines[j]
+      if (line.trim() === '') {
+        body.push(line)
+        continue
+      }
+      const lineIndent = (line.match(/^[ \t]*/u) ?? [''])[0].length
+      if (lineIndent <= indent) break
+      body.push(line)
+    }
+    blocks.push(body.join('\n'))
+  }
+  return blocks
+}
+
+/**
+ * §7.202: decide 步必须给 registry 的传播延迟留一个**等待窗口**。
+ *
+ * 实测（发 0.1.4，run #4）：本机 `pnpm publish` 报成功 15:26:35，而 registry 的
+ * `versions` 数组 **15:28:06** 才出现 0.1.4（≈91 秒）⇒ CI 的 decide 步正好
+ * 落在这个窗口里时，会判「未发过」⇒ 真的去 publish ⇒ 撞 409 / 无凭据 ⇒ job 红。
+ *
+ * ⇒ decide 步必须带 `--wait-seconds <正整数>`。
+ *
+ * @param {string} workflowText
+ * @returns {string[]} the problems (empty when sound)
+ */
+export function auditPublishDecideWait(workflowText) {
+  const failures = []
+  const body = extractJob(workflowText, 'npm')
+  if (body === null) return failures
+  const runLines = [...body.matchAll(/^[ \t]*(?:-[ \t]+)?run:[ \t]*(.+)$/gm)].map((m) => m[1])
+  const decision = runLines.find((line) => line.includes('publish-decision.mjs'))
+  if (!decision) {
+    failures.push(
+      'the `npm:` job does not run scripts/publish-decision.mjs — §7.202: the publish step'
+      + ' needs the skip/provenance decision, and the decision needs the propagation wait.',
+    )
+    return failures
+  }
+  const wait = /--wait-seconds[ \t]+(\d+)/u.exec(decision)
+  if (!wait) {
+    failures.push(
+      'scripts/publish-decision.mjs is called without `--wait-seconds` — §7.202: the'
+      + " registry's read path lags its write path by ~1-2 minutes (measured: published"
+      + ' 15:26:35 → visible in `versions` 15:28:06). Without a wait, the decide step'
+      + ' races that delay, judges "not published", and the job publishes a version the'
+      + ' registry already has.',
+    )
+  } else if (Number(wait[1]) <= 0) {
+    failures.push(
+      'scripts/publish-decision.mjs is called with `--wait-seconds 0` — §7.202: 0 means'
+      + ' "do not wait", which is exactly the racy behaviour the wait exists to remove.',
+    )
+  }
+  return failures
+}
+
+/**
+ * §7.202: publish 步必须把「这一版已经在 registry 上」当**成功**。
+ *
+ * 这是 §7.172 注释里写的「两条路径共存」的语义 —— 之前**只写在注释里、没实现**：
+ * 本机 `publish:npm --yes --tag` 发完再推 tag，CI 的 npm job 本该看到这一版已在
+ * 于是跳过；而 decide 步输给了传播延迟时，真撞上 409 是**预期结果**，不是故障。
+ *
+ * 但**别的错误必须仍然让 job 红**（401/403 = CI 没凭据，等等）⇒ 门禁同时要求：
+ *   - 认 409（EPUBLISHCONFLICT）⇒ 成功；
+ *   - 其它失败 ⇒ 发 `::error::` 注解 **且** 把退出码传出去。
+ *
+ * @param {string} workflowText
+ * @returns {string[]} the problems (empty when sound)
+ */
+export function auditPublishConflictHandling(workflowText) {
+  const failures = []
+  const blocks = extractRunBlocks(workflowText)
+  const publishBlock = blocks.find((b) => b.includes('pnpm publish'))
+  if (!publishBlock) {
+    failures.push(
+      'no `run:` block runs `pnpm publish` — §7.202: the publish step must handle'
+      + ' "version already published" (409) as success and report other failures.',
+    )
+    return failures
+  }
+  // 注释行不算实现
+  const code = publishBlock
+    .split(/\r?\n/u)
+    .filter((line) => !/^[ \t]*#/u.test(line))
+    .join('\n')
+
+  if (!/EPUBLISHCONFLICT|cannot publish over the previously published versions/u.test(code)) {
+    failures.push(
+      'the publish step does not treat "version already published" (409 / EPUBLISHCONFLICT)'
+      + ' as success — §7.202: the local path publishes first and the CI path follows the'
+      + ' tag, so a conflict there means the desired end state is already reached. Failing'
+      + ' it paints a successful release red.',
+    )
+  }
+  if (!/::error::/u.test(code)) {
+    failures.push(
+      'the publish step does not emit an `::error::` annotation when publishing fails —'
+      + ' §7.202: failures must stay loud AND readable without opening the runner log'
+      + ' (annotations are public).',
+    )
+  }
+  if (!/exit[ \t]+\$\{?status/u.test(code)) {
+    failures.push(
+      'the publish step does not propagate the publish exit code (`exit $status`) —'
+      + ' §7.202: a non-conflict failure must still turn the job red.',
+    )
+  }
+  return failures
+}
+
 /* ── self-proof + refutation ───────────────────────────────────────────── */
 
 /**
@@ -521,6 +653,87 @@ function selftest() {
     expect('没有 test job ⇒ 无失败', auditUnitTestJob('name: fixture\non: push\njobs:\n  build:\n    steps: []\n').length, 0)
   }
 
+  // 13. §7.202: decide 步必须带 `--wait-seconds`（且 > 0）。
+  {
+    const decideFixture = (runBody) => [
+      'name: fixture',
+      'on: push',
+      'jobs:',
+      '  npm:',
+      '    steps:',
+      '      - name: Decide',
+      '        id: decide',
+      `        run: ${runBody}`,
+      '',
+    ].join('\n')
+    expect(
+      'decide 带 --wait-seconds 180 ⇒ 无失败',
+      auditPublishDecideWait(decideFixture('node scripts/publish-decision.mjs --wait-seconds 180 >> "$GITHUB_OUTPUT"')).length,
+      0,
+    )
+    expect(
+      'decide 不带 --wait-seconds ⇒ 报 1 项',
+      auditPublishDecideWait(decideFixture('node scripts/publish-decision.mjs >> "$GITHUB_OUTPUT"')).length,
+      1,
+    )
+    expect(
+      'decide 的 --wait-seconds 是 0 ⇒ 报 1 项',
+      auditPublishDecideWait(decideFixture('node scripts/publish-decision.mjs --wait-seconds 0 >> "$GITHUB_OUTPUT"')).length,
+      1,
+    )
+    expect(
+      'decide 步整个不在 ⇒ 报 1 项',
+      auditPublishDecideWait('name: fixture\non: push\njobs:\n  npm:\n    steps: []\n').length,
+      1,
+    )
+  }
+
+  // 14. §7.202: publish 步必须认 409、发 `::error::`、把退出码传出去。
+  {
+    const publishFixture = (body) => [
+      'name: fixture',
+      'on: push',
+      'jobs:',
+      '  npm:',
+      '    steps:',
+      '      - name: Publish',
+      '        run: |',
+      ...body.split('\n').map((l) => '          ' + l),
+      '',
+    ].join('\n')
+    const GOOD = [
+      'pnpm publish --no-provenance --access public 2>&1 | tee ../publish.log',
+      'status=${PIPESTATUS[0]}',
+      'if [ "$status" -eq 0 ]; then exit 0; fi',
+      'if grep -qE "EPUBLISHCONFLICT|cannot publish over the previously published versions" ../publish.log; then',
+      '  echo "::notice::这一版已经在 registry 上"',
+      '  exit 0',
+      'fi',
+      'echo "::error::pnpm publish 失败 exit=$status"',
+      'exit $status',
+    ].join('\n')
+    expect('publish 步认 409 + 发注解 + 传退出码 ⇒ 无失败', auditPublishConflictHandling(publishFixture(GOOD)).length, 0)
+
+    // 反证 ①：没有 409 分支（注释里写了也不算）
+    const noConflict = GOOD.split('\n').filter((l) => !l.includes('grep -qE') && !l.includes('::notice::')).join('\n')
+    expect('publish 步不认 409 ⇒ 报 1 项', auditPublishConflictHandling(publishFixture(noConflict)).length, 1)
+
+    // 反证 ②：409 只出现在注释里 ⇒ 仍要报（注释不是实现）
+    const commented = GOOD.replace(
+      'if grep -qE "EPUBLISHCONFLICT|cannot publish over the previously published versions" ../publish.log; then',
+      '# 这里本来要认 EPUBLISHCONFLICT',
+    ).split('\n').filter((l) => !l.includes('::notice::')).join('\n')
+    expect('409 只写在注释里 ⇒ 仍报 1 项', auditPublishConflictHandling(publishFixture(commented)).length, 1)
+
+    // 反证 ③：失败时不发注解 ⇒ 报 1 项
+    const noAnnot = GOOD.replace('echo "::error::pnpm publish 失败 exit=$status"', 'echo "失败了"')
+    expect('失败时不发 ::error:: ⇒ 报 1 项', auditPublishConflictHandling(publishFixture(noAnnot)).length, 1)
+
+    // 反证 ④：不传退出码 ⇒ 报 1 项
+    const noExit = GOOD.replace('exit $status', 'exit 0')
+    expect('不传退出码 ⇒ 报 1 项', auditPublishConflictHandling(publishFixture(noExit)).length, 1)
+  }
+
   if (failures > 0) {
     console.error(`\nselftest FAILED: ${failures} assertion(s)`)
     process.exit(2)
@@ -586,6 +799,17 @@ if (isEntry) {
       }
       for (const f of auditUnitTestJob(workflow)) {
         failures.push(`${target.file}: ${f}`)
+      }
+      // §7.202: npm 发布面与「registry 传播延迟」的赛跑 ——
+      // decide 步必须等 registry 看得见这一版；publish 步必须把「已经发过了」
+      // 当成功（这正是 §7.172 注释里写的两条路径共存语义，之前只写在注释里）。
+      if (target.npmFace) {
+        for (const f of auditPublishDecideWait(workflow)) {
+          failures.push(`${target.file}: ${f}`)
+        }
+        for (const f of auditPublishConflictHandling(workflow)) {
+          failures.push(`${target.file}: ${f}`)
+        }
       }
       audited.push(`${target.file}(${target.job})`)
     }

@@ -46,6 +46,25 @@
  *     **不公开**处理（宁可少一个徽章）。
  *   - `NPM_REGISTRY` —— 默认 `https://registry.npmjs.org`。
  *
+ * ## `--wait-seconds`（§7.202，2026-11-12）
+ *
+ * registry 的**写路径**与**读路径**不同步：发布成功后，`GET /<name>` 的
+ * `versions` 数组要过 **~1–2 分钟**才看到这个新版本。
+ *
+ * 实测（2026-11-12 发 0.1.4）：本机 `pnpm publish` 15:26:35 报「✅ Published」，
+ * 而 registry 的 `versions` 数组 **15:28:06** 才出现 `0.1.4`（≈91 秒）。
+ * 期间 `npm view <pkg> versions` 里**看不到**这一版。
+ *
+ * ⇒ 「本机发完立刻推 tag」这条路径下，CI 的 decide 步**很可能正好落在这 91 秒
+ * 的窗口里** ⇒ 判「未发过」⇒ CI 真的去 publish ⇒ 而 registry 的**写路径**
+ * 早已拒收这一版（409）⇒ job 红。**实测 run #4 就是这样红的**（§7.202）。
+ *
+ * ⇒ `--wait-seconds N`：当「包存在、但这一版还不在 `versions` 里」时（这正是
+ * 传播延迟的 signature），最多等 N 秒再决定（每 15 秒重查一次）。默认 0 = 不等
+ * （保持既有行为与自证不变）。
+ *
+ * 「包压根不存在」（首次发布）时**不等** —— 那不是传播延迟，等也没有意义。
+ *
  * 退出码恒为 0 —— **决策失败不该让 job 红**：决策本身只影响「发不发 / 带不带
  * 徽章」，真正的发布错误由 publish 步骤自己报。
  */
@@ -117,6 +136,35 @@ function selftest() {
   expect('stderr 非空（人类可读的判断在 stderr 上）', (res.stderr ?? '').trim().length > 0, true)
   expect('stderr 不含 key=value 行（那是 stdout 的专属格式）', /^[a-z_]+=/mu.test(res.stderr ?? ''), false)
 
+  // §7.202: 传播延迟的判定表（纯函数、不联网）
+  {
+    expect(
+      '包存在但这一版不在 versions 里 ⇒ 该等（传播延迟的 signature）',
+      shouldWaitForVisibility({ state: 'absent', versions: ['0.1.1', '0.1.2'] }, 180),
+      true,
+    )
+    expect(
+      '包压根不存在（首次发布）⇒ 不等',
+      shouldWaitForVisibility({ state: 'absent' }, 180),
+      false,
+    )
+    expect(
+      '这一版已经在了 ⇒ 不等',
+      shouldWaitForVisibility({ state: 'published', versions: ['0.1.4'] }, 180),
+      false,
+    )
+    expect(
+      'registry 状态未知（网络失败）⇒ 不等',
+      shouldWaitForVisibility({ state: 'unknown' }, 180),
+      false,
+    )
+    expect(
+      '等待秒数为 0（默认）⇒ 不等',
+      shouldWaitForVisibility({ state: 'absent', versions: ['0.1.1'] }, 0),
+      false,
+    )
+  }
+
   if (failures > 0) {
     console.error(`\nselftest FAILED: ${failures} assertion(s)`)
     process.exit(2)
@@ -125,6 +173,46 @@ function selftest() {
 }
 
 const log = (msg) => process.stderr.write(`${msg}\n`)
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/* ── 参数 ────────────────────────────────────────────────────────────────── */
+
+const args = process.argv.slice(2)
+const opt = (name, fallback) => {
+  const i = args.indexOf(name)
+  return i >= 0 && args[i + 1] !== undefined ? args[i + 1] : fallback
+}
+
+/**
+ * 最多等多少秒去「等 registry 看到这一版」（§7.202）。默认 0 = 不等。
+ *
+ * 解析成数字且不为负；给成非数字时按 0 处理（不因为参数写错就等 3 分钟）。
+ */
+export const WAIT_SECONDS = Math.max(0, Number(opt('--wait-seconds', '0')) || 0)
+
+/** 重查间隔（秒）。15 秒 ≈ 传播延迟（91 秒）的 1/6，够细也不把 registry 刷爆。 */
+export const POLL_INTERVAL_MS = 15_000
+
+/**
+ * §7.202: 该不该为「registry 还没看到这一版」而等一等？
+ *
+ * **传播延迟的 signature** = 「包存在、但这一版还不在 `versions` 数组里」：
+ *   - 包**压根不存在**（`versions` 压根没有这个字段）⇒ 首次发布 ⇒ 等也没用；
+ *   - 状态 `unknown`（网络失败）⇒ 等也没用（重查同样会失败）；
+ *   - 已经 `published` ⇒ 不用等。
+ *
+ * 纯函数、不联网 ⇒ 自证可以直接断言它。
+ *
+ * @param {{state?: string, versions?: string[]}} probe `probeVersion` 的返回
+ * @param {number} waitSeconds 允许等待的秒数
+ * @returns {boolean}
+ */
+export function shouldWaitForVisibility(probe, waitSeconds) {
+  if (!(waitSeconds > 0)) return false
+  if (probe?.state !== 'absent') return false
+  return Array.isArray(probe.versions) && probe.versions.length > 0
+}
 
 if (process.argv.includes('--selftest')) {
   console.log('publish-decision --selftest')
@@ -135,7 +223,36 @@ if (process.argv.includes('--selftest')) {
 log(`publish-decision: ${NAME}@${VERSION}  registry=${REGISTRY}  visibility=${VISIBILITY || '(未知)'}`)
 
 // ── 决策 1：这个版本发过没有？────────────────────────────────────────────
-const versionProbe = await probeVersion(NAME, VERSION, { registry: REGISTRY })
+//
+// §7.202：「本机发完立刻推 tag」时，registry 的**读路径**可能还没追上
+// （实测：发布成功 → `versions` 里可见，≈91 秒）⇒ 这一版会被判成「未发过」
+// ⇒ CI 真的去 publish ⇒ 而**写路径**早已拒收它（409）⇒ job 红。
+// ⇒ 这里给它一个等待窗口（默认 0 = 不等；workflow 传 180）。
+let versionProbe = await probeVersion(NAME, VERSION, { registry: REGISTRY })
+
+if (shouldWaitForVisibility(versionProbe, WAIT_SECONDS)) {
+  log(
+    `  ⇒ 包存在、但版本 ${VERSION} 还没进 versions 数组`
+    + `（registry 传播延迟，§7.202）⇒ 最多等 ${WAIT_SECONDS}s`,
+  )
+  const deadline = Date.now() + WAIT_SECONDS * 1000
+  while (Date.now() < deadline) {
+    await sleep(POLL_INTERVAL_MS)
+    versionProbe = await probeVersion(NAME, VERSION, { registry: REGISTRY })
+    if (versionProbe.state === 'published') {
+      log(`  ⇒ 等到了：版本 ${VERSION} 已出现在 registry 上`)
+      break
+    }
+    if (versionProbe.state !== 'absent') {
+      log(`  ⇒ registry 状态变成「${versionProbe.state}」⇒ 不再等`)
+      break
+    }
+  }
+  if (versionProbe.state === 'absent') {
+    log(`  ⇒ 等满 ${WAIT_SECONDS}s 仍未看到这一版 ⇒ 按「未发过」处理，交给 publish 步骤自己报错`)
+  }
+}
+
 const skip = versionProbe.state === 'published'
 if (skip) {
   log(`  ⇒ 版本 ${VERSION} 已在 registry 上 ⇒ 跳过 publish（不会撞 409）`)

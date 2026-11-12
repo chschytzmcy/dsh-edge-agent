@@ -22139,3 +22139,107 @@ git tag v0.1.4  →  publish.yml
 - **没有**改宿主（release 资产 URL 判成 tarball 是宿主既有行为，本仓只是去用它）。
 
 ---
+
+## §7.202 发 0.1.4：两个发布面第一次同时出货，并撞上 registry 的「传播延迟」（2026-11-12）
+
+### 一、这一节是什么
+
+主人选「方案 2 = 一次发完」⇒ 2026-11-12 15:2x 把 0.1.4 完整发出去：
+**版本号 bump → CHANGELOG 改名 → 提交推送 → 本机发 npm → 推 tag → CI 建 Release**。
+
+### 二、两个发布面各自的实况（全部实测）
+
+| 面 | 谁做的 | 结果 |
+|---|---|---|
+| **npm** | 本机 `npm run publish:npm -- --yes --tag`（canonical 链 + 30 道门禁 + 真发） | ✅ 15:26:35 `pnpm publish` 打印 `✅ Published`；registry 的 `versions` **15:28:06** 才出现 0.1.4；`latest=0.1.4` |
+| **git**（GitHub Release） | CI `publish.yml` 的 `release` job（§7.201 新建的那条） | ✅ run #4 的 release job **9 步全 success**；Release v0.1.4 上挂上了两个 tar 包 |
+
+**Release 资产**（下载后逐个拆包核对）：
+
+| 资产 | 大小 | 清单版本 | `dsh.bundle.patch` |
+|---|---|---|---|
+| `dsh-edge-agent-desktop-safe.tar.gz` | 611,945 B | `@dsh-edge/dsh-edge-agent@0.1.4-desktop-safe` | `cordis.desktop-safe.patch.yml` + `presets/edge.desktop-safe.patch.yml` |
+| `dsh-edge-agent-full.tar.gz` | 611,860 B | `@dsh-edge/dsh-edge-agent@0.1.4-full` | `cordis.patch.yml` + `presets/edge.patch.yml` |
+
+**修复确实在出货包里**（拆包实测标记数）：
+
+| 标记（§7.198 的凭据解析） | npm 0.1.3 | npm 0.1.4 | Release 两个 tar 包 |
+|---|---|---|---|
+| `deepseek-account` | **0** | 6 | 各 6 |
+| `credentials.resolve` | **0** | 3 | 各 3 |
+| `launchEnvironmentOf` | **0** | 5 | 各 5 |
+
+⇒ npm 0.1.4 的 tarball 是 **241 个文件**（= 变体 239 + README + LICENSE），与 0.1.3 数量一致。
+
+### 三、run #4 为什么是红的（**唯一**一处红）
+
+- 步骤级结论：`publish to npm` job 的**第 12 步 `Publish` ⇒ failure**；
+  `git release (safe + full tarballs)` job ⇒ **全 success**。
+- **根因：registry 的「写路径」与「读路径」不同步。**
+  本机 15:26:35 发布成功，而 `GET /<name>` 的 `versions` 数组 **15:28:06** 才出现
+  0.1.4（≈**91 秒**的传播延迟；本机轮询实测：15:27:32 还没有、15:28:06 有了）。
+  CI 的 decide 步正好落在这个窗口里 ⇒ 判「未发过」⇒ `skip=false` ⇒ **CI 真的去
+  publish** ⇒ 而 registry 的**写路径**早已拒收这一版。
+
+  时间线（全部实测，无推测）：
+
+  | 时刻 | 事件 |
+  |---|---|
+  | 15:26:35 | 本机 `pnpm publish` 打印 `✅ Published` |
+  | 15:26:4x | 本机 `git push origin v0.1.4` |
+  | 15:27:22 | CI run #4 进入 in_progress（npm job 全程 1m 4s ⇒ decide 步落在 15:28:0x–15:28:2x） |
+  | 15:28:06 | registry 的 `versions` 里**第一次**出现 0.1.4 |
+
+  ⇒ decide 步查的时候 0.1.4 还「不在」⇒ `skip=false` ⇒ 撞车。
+
+- **没有取到的证据（如实记）**：失败那一步的**具体错误码**（409 还是 401）。
+  该步是**裸 shell** 跑 `pnpm publish`（不是 `scripts/run.mjs`）⇒ **不发
+  `::error::` 注解** ⇒ 匿名 API 取到的那 2 条注解**正文为空**；runner log 需要登录
+  才能看（实测浏览器未登录 GitHub）。
+  ⇒ 只能确定「**CI 的 npm job 在 Publish 步失败**」，**不能确定**是
+  「版本已存在（409）」还是「CI 没有 npm 凭据（401/403）」。
+  但两条路都指向同一个事实：**CI 里没有可用的 npm 凭据**（仓库没有 `NPM_TOKEN`
+  secret，trusted publisher 也还没在 npm 网页上挂 —— 那是主人待办 ②）⇒
+  这一版本来就只能靠本机路径发出去。
+
+### 四、修法：两道防线 + 门禁
+
+1. **`scripts/publish-decision.mjs` 新增 `--wait-seconds N`**
+   —— 「包存在、但这一版还不在 `versions` 里」正是传播延迟的 signature ⇒
+   最多等 N 秒（每 15 秒重查一次）。默认 **0**（不改既有行为、不改自证）。
+   「包压根不存在」（首次发布）**不等** —— 那不是传播延迟。
+2. **`publish.yml` 的 publish 步把「这一版已经在 registry 上」（409 / EPUBLISHCONFLICT）
+   当成功** —— 这正是 §7.172 注释里写的「两条路径共存」的语义，**之前只写在注释里、
+   没实现**。其它错误（401/403 等）**仍然让 job 红**，并发 `::error::` 注解
+   （公开可读）说明是什么问题 —— 静默放过才是危险的那种做法。
+3. **门禁** `scripts/verify-ci-build-chain.mjs` 新增 2 项检查（自证断言
+   **34 → 43**，新增 9 条）：
+   - decide 步必须带 `--wait-seconds` 且 **> 0**；
+   - publish 步必须**认 409**、必须**发 `::error::`**、必须**把退出码传出去**；
+   - 注释里写「409 / EPUBLISHCONFLICT」**不算**实现（反证：把实现删掉只留注释 ⇒
+     门禁仍要报）。
+4. **端到端验**（本地假 registry，`dist/probe/verify-wait-window.mjs`）：
+   假 registry 前两次不返回新版本、第三次才返回 ⇒ 决策脚本等了两个轮询间隔
+   （30 秒）后判 `skip=true` ⇒ 等待窗口真的会等，不是纸面承诺。
+
+### 五、这一节**没有**做的事
+
+- **没有**重跑 run #4（本机没有 `gh` CLI、拿不到 runner log；重跑一个**已经发布**的
+  tag 也不会让证据更清楚）⇒ **run #4 仍是红的**；
+- **没有**给 CI 配 npm 凭据（主人待办 ②：挂 trusted publisher，或加 `NPM_TOKEN`
+  secret）⇒ 在那之前，**npm 面只能靠本机路径**；
+- **没有**动 npm 包的内容（本节的改动都在 `scripts/` 与 `docs/` 里，**都不在 `files`
+  白名单**）⇒ 这些修复要**下一个版本**才进包；
+- **没有**改宿主的任何行为。
+
+### 六、留给主人的事（顺序不能反，见 `docs/npm-account-setup.md` §8）
+
+1. 开账号 2FA（**只走 WebAuthn / Windows Hello** —— npm 已删除 TOTP 注册通道）；
+2. 挂 trusted publisher（`Organization or user` = **`chschytzmcy`**、
+   `Repository` = `chschytzmcy/dsh-edge-agent`、`Workflow filename` = `publish.yml`，
+   **勾上「npm publish」**；配完 48 小时内要推一次 tag，否则作废）；
+3. 轮换三个明文 key（`deepseekApiKey` / `dashscopeApiKey` / `alitokenplanApiKey`）；
+4. 给 Actions 补两个 secret（`DEEPSEEK_API_KEY` / `DSH_EDGE_API_KEY`）⇒
+   `ops log coverage` 的 e2e 真回归至今一次没跑过。
+
+---

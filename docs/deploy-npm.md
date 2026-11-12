@@ -436,6 +436,29 @@ npm view @dsh-edge/dsh-edge-agent versions --json
 > `versions` / `latest` /「当前版本是否已在 versions 里」一起打出来，并在未上线时
 > 显式提醒别推 tag（§8.5 第 25 行）。
 
+### 8.1.3 「已经发过了」在 CI 侧怎么算成功（§7.202，2026-11-12）
+
+上面那条「推 tag 前先确认 `versions` 里看得见」在**本机发布路径**里其实很难做到：
+`npm run publish:npm -- --yes --tag` 是**发完立刻推 tag** 的，而 registry 的读路径
+要过 **~91 秒**才追上（实测：15:26:35 发布成功 → 15:28:06 `versions` 里才出现
+0.1.4）⇒ 等也是等，等完还是**赛跑**。
+
+⇒ 修在 CI 侧（两道防线，都在 `publish.yml`）：
+
+| 防线 | 做什么 | 为什么 |
+|---|---|---|
+| ① 判定步等窗口 | `scripts/publish-decision.mjs --wait-seconds 180`：「包存在、但这一版还不在 `versions` 里」时最多等 3 分钟（每 15 秒重查） | 「包存在但这一版不在」正是传播延迟的 signature；**首次发布**（包压根不存在）不等 |
+| ② 409 当成功 | publish 步捕获 `EPUBLISHCONFLICT` / `cannot publish over the previously published versions` ⇒ 视为成功（`::notice::`） | 「这一版已经在 registry 上」就是**这一版的目标状态** —— 撞它不该把一次成功的发版涂红 |
+
+**别的错误仍然让 job 红**（401/403 = CI 没有 npm 凭据，等等），并发 `::error::`
+注解说明是什么问题 —— 注解**公开可读**（匿名 `GET /repos/{owner}/{repo}/check-runs/{id}/annotations`
+就能取），不必登录也能定位失败。
+
+这两条都有门禁盯着（`scripts/verify-ci-build-chain.mjs` 的两项检查 + 9 条自证断言）。
+
+> ⚠️ **CI 的 npm 面仍然需要凭据**：在主人挂上 trusted publisher（或给仓库加
+> `NPM_TOKEN` secret）之前，**npm 面只能靠本机路径**；`release`（git）面不依赖它。
+
 官方文档：[Staged publishing for npm packages](https://docs.npmjs.com/staged-publishing)。
 
 ### 8.2 环节与报错对照
