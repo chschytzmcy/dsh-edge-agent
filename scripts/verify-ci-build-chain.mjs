@@ -83,8 +83,12 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
  * `dist/.npm-stage/`, and the publish job now runs `pnpm publish` **from that
  * directory** ⇒ a workflow that skipped the step would die at the Publish step
  * with "no such directory" instead of at the gate with a useful message.
+ *
+ * §7.201: exported so `verify-git-release.mjs` can require the SAME chain in
+ * the job that ships the tarballs (minus `stage:npm`, which is the npm
+ * staging) instead of keeping a second copy of the list.
  */
-const REQUIRED_BUILD_STEPS = ['compile', 'build:client', 'build:installable', 'pack:tarball', 'stage:npm']
+export const REQUIRED_BUILD_STEPS = ['compile', 'build:client', 'build:installable', 'pack:tarball', 'stage:npm']
 
 /**
  * The workflows that build artifacts for the gates, and the job in each that
@@ -527,70 +531,78 @@ function selftest() {
 /* ── entry ──────────────────────────────────────────────────────────────── */
 
 const args = process.argv.slice(2)
-if (args.includes('--selftest')) {
-  selftest()
-} else if (args.length > 0) {
-  console.error('usage: node scripts/verify-ci-build-chain.mjs [--selftest]')
-  process.exit(2)
-} else {
-  const scripts = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).scripts ?? {}
-  const failures = []
-  const audited = []
 
-  for (const target of WORKFLOWS) {
-    const path = join(ROOT, '.github', 'workflows', target.file)
-    if (!existsSync(path)) {
-      if (target.required) {
-        failures.push(`missing .github/workflows/${target.file}`)
-      } else {
-        console.log(`verify-ci-build-chain: ${target.file} not present — skipped`)
-        continue
+// 只在**直接执行**本文件时跑入口 —— 本文件导出函数给别的门禁用（§7.201：
+// `verify-git-release.mjs` 复用 REQUIRED_BUILD_STEPS），而顶层就审计 + process.exit
+// 会把 import 方的进程一起带走。
+const isEntry = process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+
+if (isEntry) {
+  if (args.includes('--selftest')) {
+    selftest()
+  } else if (args.length > 0) {
+    console.error('usage: node scripts/verify-ci-build-chain.mjs [--selftest]')
+    process.exit(2)
+  } else {
+    const scripts = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).scripts ?? {}
+    const failures = []
+    const audited = []
+
+    for (const target of WORKFLOWS) {
+      const path = join(ROOT, '.github', 'workflows', target.file)
+      if (!existsSync(path)) {
+        if (target.required) {
+          failures.push(`missing .github/workflows/${target.file}`)
+        } else {
+          console.log(`verify-ci-build-chain: ${target.file} not present — skipped`)
+          continue
+        }
       }
+      const workflow = readFileSync(path, 'utf8')
+      const result = auditJob(workflow, target.job, scripts)
+      for (const f of result.failures) {
+        failures.push(`${target.file}: ${f}`)
+      }
+      // §7.198: `if:` 条件里引用 secrets ⇒ GitHub 判整个文件无效 ⇒ CI 全挂，
+      // 而且**看不出原因**（run 名字变成文件路径、jobs 为空、没有 log）。
+      for (const expr of findSecretInIf(workflow)) {
+        failures.push(
+          `${target.file}: an \`if:\` condition references \`secrets.\` (${expr}) — GitHub forbids`
+          + ' secrets directly in if conditions, and it invalidates the WHOLE workflow file'
+          + ' (the run shows the file path as its name and has no jobs). Put the secret in a'
+          + ' job-level `env:` and reference it as `env.<NAME>` in the condition.',
+        )
+      }
+      // §7.199: vitest 参数靠 `pnpm test -- …` 转发 ⇒ pnpm 把字面 `--` 透传给脚本
+      // ⇒ vitest 把这些 flag 当位置过滤器丢弃 ⇒ **报告文件不生成、退出码仍是 0**
+      // （假绿：测试照跑，但计数门禁根本没判）。参数必须烤进 package.json 的脚本。
+      for (const line of findVitestArgForwarding(workflow)) {
+        failures.push(
+          `${target.file}: \`${line}\` forwards vitest flags through \`pnpm test -- …\` — §7.199:`
+          + ' pnpm may pass the literal `--` through, and vitest (cac) then treats'
+          + ' --reporter/--outputFile as POSITIONAL FILTERS ⇒ no JSON report, exit code still 0.'
+          + ' Put the flags in package.json#scripts["test:ci"] and call that script by name.',
+        )
+      }
+      for (const f of auditUnitTestJob(workflow)) {
+        failures.push(`${target.file}: ${f}`)
+      }
+      audited.push(`${target.file}(${target.job})`)
     }
-    const workflow = readFileSync(path, 'utf8')
-    const result = auditJob(workflow, target.job, scripts)
-    for (const f of result.failures) {
-      failures.push(`${target.file}: ${f}`)
-    }
-    // §7.198: `if:` 条件里引用 secrets ⇒ GitHub 判整个文件无效 ⇒ CI 全挂，
-    // 而且**看不出原因**（run 名字变成文件路径、jobs 为空、没有 log）。
-    for (const expr of findSecretInIf(workflow)) {
-      failures.push(
-        `${target.file}: an \`if:\` condition references \`secrets.\` (${expr}) — GitHub forbids`
-        + ' secrets directly in if conditions, and it invalidates the WHOLE workflow file'
-        + ' (the run shows the file path as its name and has no jobs). Put the secret in a'
-        + ' job-level `env:` and reference it as `env.<NAME>` in the condition.',
-      )
-    }
-    // §7.199: vitest 参数靠 `pnpm test -- …` 转发 ⇒ pnpm 把字面 `--` 透传给脚本
-    // ⇒ vitest 把这些 flag 当位置过滤器丢弃 ⇒ **报告文件不生成、退出码仍是 0**
-    // （假绿：测试照跑，但计数门禁根本没判）。参数必须烤进 package.json 的脚本。
-    for (const line of findVitestArgForwarding(workflow)) {
-      failures.push(
-        `${target.file}: \`${line}\` forwards vitest flags through \`pnpm test -- …\` — §7.199:`
-        + ' pnpm may pass the literal `--` through, and vitest (cac) then treats'
-        + ' --reporter/--outputFile as POSITIONAL FILTERS ⇒ no JSON report, exit code still 0.'
-        + ' Put the flags in package.json#scripts["test:ci"] and call that script by name.',
-      )
-    }
-    for (const f of auditUnitTestJob(workflow)) {
-      failures.push(`${target.file}: ${f}`)
-    }
-    audited.push(`${target.file}(${target.job})`)
-  }
 
-  for (const f of auditUnitTestScript(scripts)) {
-    failures.push(`package.json: ${f}`)
-  }
+    for (const f of auditUnitTestScript(scripts)) {
+      failures.push(`package.json: ${f}`)
+    }
 
-  if (failures.length > 0) {
-    console.error('verify-ci-build-chain: CI build chain is not sound:')
-    for (const f of failures) console.error(`  - ${f}`)
-    process.exit(1)
-  }
+    if (failures.length > 0) {
+      console.error('verify-ci-build-chain: CI build chain is not sound:')
+      for (const f of failures) console.error(`  - ${f}`)
+      process.exit(1)
+    }
 
-  console.log(
-    'verify-ci-build-chain OK '
-    + `(audited: ${audited.join(', ')}; required steps: ${REQUIRED_BUILD_STEPS.join(', ')})`,
-  )
+    console.log(
+      'verify-ci-build-chain OK '
+      + `(audited: ${audited.join(', ')}; required steps: ${REQUIRED_BUILD_STEPS.join(', ')})`,
+    )
+  }
 }

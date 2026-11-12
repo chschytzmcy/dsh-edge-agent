@@ -28,8 +28,13 @@ pnpm、不含任何密钥**（tarball 里没有 `config/edge.json`）。
 |---|---|---|---|---|---|---|
 | **npm 包名** | `@作者/插件名` | 否 | 否 | 冻结的 tarball | 否 | 升级走 `updateBundle` |
 | **tarball 路径** | `…/x.tar.gz` | 否 | 否 | **冻结副本** | **否** | **否**（要重装） |
+| **tarball URL** | `https://…/x.tar.gz` | 否 | 否 | **冻结副本** | **否** | **否**（要重装） |
 | GitHub 地址 | `https://github.com/o/r` | **是** | **是** | 现场编译 | 否 | 重装 |
 | 本地目录 | `C:\path\to\dir` | 否 | 否 | **符号链接** | **有** ⚠️ | **会** |
+
+> **tarball URL** 那一行是 §7.201 新增的发布面：`v*` tag 的 GitHub Release 上挂着
+> **safe 与 full 两个预构建 tar 包** ⇒ 粘 URL 就能装（免构建授权、免 registry）。
+> 详见 **§8**。
 
 四条通道在宿主里是**同一段代码**（`install-spec.ts:69-92` 解析出四种形态，
 `index.ts:930` 一律 `pnpm add <spec>`，cwd = profile 目录）。
@@ -447,3 +452,96 @@ verify:build 链：       … verify:installable → verify:tarball
 - [`privacy-policy.md`](privacy-policy.md) — 隐私策略 + 完整配置清单
 - [`desktop-troubleshooting.md`](desktop-troubleshooting.md) — 桌面版排障手册
 - [`architecture.md`](architecture.md) — 架构、Realm 模型、插件开发
+
+---
+
+## 8. 从 git 发布装（GitHub Release 资产 URL）—— §7.201
+
+### 8.1 一句话
+
+`v*` tag 推上去以后，GitHub Release 上会挂着**两个预构建 tar 包**；
+在桌面 App 的 **Plugins → Add plugin** 里粘**那个 URL** 就能装：
+
+```
+https://github.com/chschytzmcy/dsh-edge-agent/releases/download/v0.1.4/dsh-edge-agent-desktop-safe.tar.gz
+https://github.com/chschytzmcy/dsh-edge-agent/releases/download/v0.1.4/dsh-edge-agent-full.tar.gz
+```
+
+⇒ **免构建授权、免 PATH 上的 pnpm**（与 npm 通道同一套好处，见
+[`deploy-npm.md`](deploy-npm.md) §6.4），但**不需要 registry**。
+
+### 8.2 为什么这条通道以前不存在
+
+`publish.yml` 的 `release` job 建 GitHub Release 时**一个附件都没挂**：
+有 `generate_release_notes` 与 `fail_on_unmatched_files`，却**没有 `files:`** ——
+而 `fail_on_unmatched_files` 只有在挂了 `files:` 时才有意义 ⇒ 原意就是要挂，
+只是那行从来没人写。
+
+⇒ 后果：**两个变体的 tar 包都没有任何对外分发途径** ——
+npm 只发 safe 变体（§7.188：`stage:npm` 暂存的是 safe 变体），
+tar 包只存在于本地 `dist/`（已 gitignore）。
+⇒ **full 变体（`0.1.3-full`）此前根本没有任何分发渠道。**
+
+### 8.3 宿主把这种 URL 判成什么（实拉宿主源码，不是推测）
+
+宿主 `@deepseek-ai/dsh-plugin-manager` 的 `lib/types/install-spec.js`：
+
+```js
+const HOSTED_REPOSITORY_URL = /^https?:\/\/[^/]+\/[^/]+\/[^/#]+(?:\.git)?(?:#.*)?$/i;
+const TARBALL_SPEC = /\.(?:tgz|tar\.gz)(?:#.*)?$/i;
+
+const git = GIT_SHORTHAND.test(spec) || GIT_URL.test(spec) || HOSTED_REPOSITORY_URL.test(spec);
+if (git && !TARBALL_SPEC.test(spec)) return { kind: 'git', spec, host: gitHost(spec) };
+if (/^https?:\/\//i.test(spec)) {
+  if (TARBALL_SPEC.test(spec)) return { kind: 'tarball', spec, host: new URL(spec).host };
+  throw invalid(spec, 'a URL must point at a git repository or a tarball');
+}
+```
+
+- `HOSTED_REPOSITORY_URL` 只认 **host/段/段** 三段路径 ⇒ release 资产 URL
+  （`/owner/repo/releases/download/<tag>/<file>`）**路径段更多，不匹配** ⇒
+  不会被误判成 git 仓库；
+- 而它以 `.tar.gz` 结尾 ⇒ `TARBALL_SPEC` 命中 ⇒ 判成 **`kind: 'tarball'`**。
+
+⇒ **粘 URL 装预构建包，宿主走的是 tarball 通道**：装进 profile 的是 pnpm store
+里的**冻结副本**（改了 tarball 不会自动生效，要重装 —— §2.5），
+包里**不含** `config/edge.json`（§3.3）。
+
+### 8.4 两个变体的区别
+
+| 变体 | tar 包 | 清单版本 | `dsh.bundle.patch` | 用途 |
+|---|---|---|---|---|
+| safe | `dsh-edge-agent-desktop-safe.tar.gz` | `0.1.4-desktop-safe` | `cordis.desktop-safe.patch.yml` + `presets/edge.desktop-safe.patch.yml` | **不重写宿主默认值**（模型/人设/审批/沙箱/会话根/http-api 都留着）|
+| full | `dsh-edge-agent-full.tar.gz` | `0.1.4-full` | `cordis.patch.yml` + `presets/edge.patch.yml` | 与独立的 `dsh-edge` profile 同款行为（**改写宿主默认值**）|
+
+⇒ **npm 通道发的是 safe**；**full 只有 git 发布这一条路**（这是它第一次有对外分发渠道）。
+
+### 8.5 发布链（谁发的、谁验的）
+
+```
+git tag v0.1.4  →  publish.yml
+                    ├─ job `npm`     → 构建 → verify:build（29 道门禁）→ pnpm publish
+                    └─ job `release` → 构建 → verify:tarball → 建 Release，挂两个 tar 包
+```
+
+- 两个 job **互不依赖**（`release` 刻意**不**写 `needs: npm`）：
+  npm 面会在 registry 或 token 出问题时挂（首发 token 2026-11-18 到期，
+  2027-01 起 token 直发被移除），**git 面不能被它拖住**；
+- **谁发谁验**：tar 包在发它的那个 job 里过 `verify:tarball`（§5），
+  不是「别的 job 验过的产物」；
+- **附件逐个点名**，不用 `dist/*.tar.gz` 通配符 —— `*-DEMO.tar.gz` 里带着
+  运维的**明文 API key**（§3.5 / §7.182），而 release 是**公开**的
+  ⇒ 通配符是一次待发的凭据泄漏。
+
+门禁：`scripts/verify-git-release.mjs`（形状：变体齐 / 无通配符 / 自建自验 /
+不依赖 npm）＋ `scripts/verify-tarball.mjs`（内容：§5）。
+
+### 8.6 排障
+
+| 现象 | 原因 |
+|---|---|
+| `a URL must point at a git repository or a tarball` | URL 没以 `.tgz` / `.tar.gz` 结尾（或拼错了）|
+| `the tarball does not exist` | 版本 tag 不存在 ⇒ 先确认 Release 上确实有这一版 |
+| 装完没有 Edge tab | 与 §6 同一张表（忘点「立即启用」/ 缺 `lib/client.js` / preset 层缺席）|
+| 想要 full 的行为却装了 safe | 两个 URL 别搞混（§8.4）|
+

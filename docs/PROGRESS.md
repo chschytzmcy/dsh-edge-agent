@@ -22018,3 +22018,124 @@ publish.yml: `run: pnpm test -- --run` forwards vitest flags through `pnpm test 
 - **没有**改 scope 名（`@dsh-edge` 是别人先占的、抢不动；本仓本来就用自己的账号发）。
 
 ---
+
+## §7.201 补上**git 发布面**：GitHub Release 上挂 safe 与 full 两个预构建 tar 包（2026-11-12）
+
+### 一、主人的要求
+
+> 「增加本项目录git发布，发布safe和full tar包」
+
+### 二、动手前先查清的三件事（都不是推测）
+
+**① 仓库里现成的发布面是什么形状。** `publish.yml` 有两个 job：`npm`（发 registry）
+与 `release`（建 GitHub Release）。而 `release` job 是这样写的：
+
+```yaml
+- name: Create GitHub release
+  uses: softprops/action-gh-release@v2
+  with:
+    generate_release_notes: true
+    fail_on_unmatched_files: true
+```
+
+⇒ **`fail_on_unmatched_files` 存在，却没有 `files:`** —— 而这个开关只有在挂了
+`files:` 时才有意义 ⇒ **原意就是要挂附件，那行从来没人写**。
+
+**② 后果：两个变体都没有对外分发途径。**
+`npm` 发的是 `dist/.npm-stage/`（§7.188：**safe 变体** + README + LICENSE）⇒
+**full 变体（`0.1.3-full`）此前没有任何分发渠道**；而 tar 包只存在于本地 `dist/`
+（已 gitignore）。两个 tar 包确实每次 `pack:tarball` 都会重打（实测时间戳与
+字节数：`dsh-edge-agent-desktop-safe.tar.gz` 529,936 B、
+`dsh-edge-agent-full.tar.gz` 529,911 B）—— 只是**发不出去**。
+
+**③ 宿主会把 release 资产 URL 判成什么？** 从 `app.asar` 实拉
+`@deepseek-ai/dsh-plugin-manager/lib/types/install-spec.js`：
+
+```js
+const HOSTED_REPOSITORY_URL = /^https?:\/\/[^/]+\/[^/]+\/[^/#]+(?:\.git)?(?:#.*)?$/i;
+const TARBALL_SPEC = /\.(?:tgz|tar\.gz)(?:#.*)?$/i;
+
+const git = GIT_SHORTHAND.test(spec) || GIT_URL.test(spec) || HOSTED_REPOSITORY_URL.test(spec);
+if (git && !TARBALL_SPEC.test(spec)) return { kind: 'git', spec, host: gitHost(spec) };
+if (/^https?:\/\//i.test(spec)) {
+  if (TARBALL_SPEC.test(spec)) return { kind: 'tarball', spec, host: new URL(spec).host };
+  throw invalid(spec, 'a URL must point at a git repository or a tarball');
+}
+```
+
+- `HOSTED_REPOSITORY_URL` 只认 **host/段/段** 三段路径 ⇒ release 资产 URL
+  （`/owner/repo/releases/download/<tag>/<file>`）**路径段更多，不匹配**
+  ⇒ 不会被误判成 git 仓库；
+- 又以 `.tar.gz` 结尾 ⇒ `TARBALL_SPEC` 命中 ⇒ **`kind: 'tarball'`**。
+
+⇒ **粘 URL 就能装预构建包**（tarball 通道：免构建授权、免 PATH 上的 pnpm、
+免 registry —— 见 `deploy-npm.md` §6.4）。这条通道成立，不需要改宿主。
+
+### 三、修法：`release` job 变成**独立**的 git 发布面
+
+```
+git tag v0.1.4  →  publish.yml
+                    ├─ job `npm`     → 构建 → verify:build（29 道门禁）→ pnpm publish
+                    └─ job `release` → 构建 → verify:tarball → 建 Release，挂两个 tar 包
+```
+
+1. **`release` 刻意不写 `needs: npm`** —— npm 与 git 是**两个独立的发布面**：
+   npm 面会在 registry 或 token 出问题时挂（首发 token **2026-11-18 到期**，
+   2027-01 起 token 直发被移除），**git 面不能被它拖住**。
+   （原来的 `needs: npm` 就是这条耦合。）
+2. **自己建包**：canonical 链（`compile → typecheck:client → build:client →
+   build:installable → pack:tarball`，去掉 npm 专用的 `stage:npm`）——
+   新鲜 checkout 里既没有 `lib/` 也没有 `dist/`。
+3. **自己过门禁**：`node scripts/verify-tarball.mjs` ⇒ **谁发谁验**
+   （与 npm 面同一条规矩：ship exactly what the gates saw）。
+4. **附件逐个点名**：
+
+   ```yaml
+   files: |
+     dist/dsh-edge-agent-desktop-safe.tar.gz
+     dist/dsh-edge-agent-full.tar.gz
+   ```
+
+   **不用 `dist/*.tar.gz` 通配符** —— `*-DEMO.tar.gz` 里带着运维的**明文 API key**
+   （§7.182 / §7.160），而 release 是**公开**的 ⇒ 通配符是一次待发的凭据泄漏。
+5. **tag↔version 校验抽成脚本**（`scripts/verify-tag-version.mjs`）：原先是
+   npm job 里 6 行内联 bash；git 面发的是**同样带版本号的产物**
+   （`0.1.4-desktop-safe` / `0.1.4-full`）⇒ 也要同一条断言 ⇒ **一份实现**
+   （CHANGELOG 那次已经吃过「两份实现会漂移」的亏，§7.172）。
+
+### 四、新门禁 `scripts/verify-git-release.mjs`（§7.201）
+
+它管**形状**（内容由 `verify:tarball` 管），查 7 件事：
+
+1. 有一个 job 在建 GitHub Release；
+2. `files:` **逐个点名**了**每一个变体**的 tar 包 —— 变体表
+   （`scripts/_bundle-variants.mjs`）是单一事实源 ⇒ **加了变体就必须发布**；
+3. `files:` 里**不许有通配符**（DEMO 明文凭据那道闸）；
+4. `files:` 里不许有不认识的附件；
+5. `fail_on_unmatched_files` 必须在（缺文件要红，不要出一个空 release）；
+6. 该 job **自己建**（canonical 链）且**自己验**（`verify:tarball`）——
+   否则它会挂 tar 包它根本没建过的东西；
+7. 该 job **不许 `needs: npm`**（git 面不被 registry 拖住）。
+
+自证 **20 条断言**（9 组反例：漏变体 / 通配符 / 多余附件 / 不 fail-closed /
+不建 / 不验 / 依赖 npm / 没有 release job …），并接进 `verify:build` 链
+⇒ **门禁总数 29 → 30**。
+
+> 顺带修掉一个**潜在陷阱**：`verify-ci-build-chain.mjs` 与
+> `verify-npm-publish.mjs` 之类**导出函数**的门禁脚本，顶层就执行入口
+> （审计 + `process.exit`）⇒ **被 import 时会把调用方的进程一起带走**。
+> 本轮给 `verify-ci-build-chain.mjs` 加了「仅直接执行时才跑入口」的守卫，
+> `verify-git-release.mjs` 因此能安全地复用它的 `REQUIRED_BUILD_STEPS`
+> （**不复制第二份链步骤表**）。
+
+### 五、这一节**没有**做的事
+
+- **没有**推 tag、**没有**发 npm —— tag 推送是**对外可见动作**，等主人点头
+  （§7.201 的代码已就位，但没有 tag ⇒ CI 的 publish workflow 至今**一次都没跑过**，
+  这条链的**运行期**仍未取证；本节只把**静态形状**门禁住了）；
+- **没有**动 npm 通道（`stage:npm` 仍只发 safe 变体）；
+- **没有**决定 npm 包要不要剔掉 `full` 变体的两个惰性 patch 文件（独立产品决定，
+  主人未拍板）；
+- **没有**改宿主（release 资产 URL 判成 tarball 是宿主既有行为，本仓只是去用它）。
+
+---

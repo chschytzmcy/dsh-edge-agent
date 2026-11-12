@@ -52,6 +52,24 @@
 `scripts/verify-ci-build-chain.mjs` 加 3 项检查（挡「用 `--` 转发 vitest 参数」
 这种写法，自证从 9 组增到 12 组）。
 
+### 新增发布面：GitHub Release 上直接可装的预构建包
+
+`v*` tag 推上去以后，Release 上会挂着**两个预构建 tar 包**：
+
+```
+https://github.com/chschytzmcy/dsh-edge-agent/releases/download/v0.1.4/dsh-edge-agent-desktop-safe.tar.gz
+https://github.com/chschytzmcy/dsh-edge-agent/releases/download/v0.1.4/dsh-edge-agent-full.tar.gz
+```
+
+在桌面 App 的 **Plugins → Add plugin** 里粘 URL 就能装：**免构建授权、免 PATH 上的
+pnpm、不需要 registry**（宿主把这种 URL 判成 tarball，不是 git 仓库）。
+
+- **safe** 变体不重写宿主默认值（模型/人设/审批/沙箱/会话根/http-api 都留着）；
+- **full** 变体与独立的 `dsh-edge` profile 同款行为（改写宿主默认值）。
+  ⇒ npm 通道只发 safe，**full 只有这一条分发路**。
+
+详见 [`docs/deploy-tarball.md` §8](docs/deploy-tarball.md)。
+
 ### 对使用者的影响
 
 **出货文件的**数量**不变**（仍 241 个）—— 上面第一条是**行为修复**
