@@ -480,7 +480,7 @@ https://github.com/chschytzmcy/dsh-edge-agent/releases/download/v0.1.4/dsh-edge-
 ⇒ 后果：**两个变体的 tar 包都没有任何对外分发途径** ——
 npm 只发 safe 变体（§7.188：`stage:npm` 暂存的是 safe 变体），
 tar 包只存在于本地 `dist/`（已 gitignore）。
-⇒ **full 变体（`0.1.3-full`）此前根本没有任何分发渠道。**
+⇒ **full 变体（如 `0.1.3-full`）此前根本没有任何分发渠道。**
 
 ### 8.3 宿主把这种 URL 判成什么（实拉宿主源码，不是推测）
 

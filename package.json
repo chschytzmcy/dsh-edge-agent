@@ -1,6 +1,6 @@
 {
   "name": "@dsh-edge/dsh-edge-agent",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Edge-side private agent built on DSH Cordis plugin mechanism: TEE-secured, OHTTP-encrypted, multi-LLM-routed, zero-core-modification.",
   "license": "MIT",
   "repository": {
