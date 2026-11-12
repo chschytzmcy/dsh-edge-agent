@@ -22714,3 +22714,136 @@ verify（如再有精力的话）」—— **一直没做**。
    否则 npm 面停摆（且 2027-01 起 token 直发被官方移除）。
 
 ---
+
+## §7.209 变体纯净度：safe 变体与 npm 包不再携带 full 变体的两个惰性补丁（2026-11-12）
+
+> 主人裁决（问卷 Q1）：**safe 变体 / npm 包剔掉 full 变体的两个惰性 patch 文件**
+> （`cordis.patch.yml` 20,482 B + `presets/edge.patch.yml` 35,972 B，合计 **56,454 B**），
+> 并加一道「变体纯净度」门禁。
+
+### 一、根因：出货文件集一直是「同一份」，不是「按变体的」
+
+两个变体的补丁是**互斥**的（`scripts/_bundle-variants.mjs` 的变体表）：
+
+| 变体 | 宿主补丁 | 预设补丁 | 语义 |
+|---|---|---|---|
+| safe | `cordis.desktop-safe.patch.yml` | `presets/edge.desktop-safe.patch.yml` | **不**改写宿主默认值 |
+| full | `cordis.patch.yml` | `presets/edge.patch.yml` | **改写**宿主默认值 |
+
+但**出货文件集**（`package.json#files`）一直是**同一份**，而且写的是 `"presets"`（整个
+目录）+ 显式 `"cordis.patch.yml"` ⇒ **两个变体的出货目录里都躺着对方的补丁**。
+
+更深一层：单一事实源只覆盖到「**变体表**」（谁有哪些补丁），没覆盖到「**变体的文件集**」
+⇒ **四个出货写入点各写各的**：
+
+| 写入点 | 之前怎么拿文件清单 |
+|---|---|
+| `scripts/rebuild-installable.mjs` | 抄根清单的 `files` |
+| `scripts/_pack-core.mjs#stageVariant` | 抄根清单的 `files` **+ 硬编码三行拷贝** |
+| `scripts/_rebuild-installable.mjs` | 自带**第五份**硬编码清单 |
+| `scripts/build-desktop-bundle.sh` | 内嵌 node 块里又抄一遍 |
+
+⇒ 「出货文件集」这件事**当时有四份**口径。
+
+### 二、实测（改动前）
+
+- `dist/installable/dsh-edge-agent-desktop-safe/`（= npm 通道发的那份）里躺着
+  `cordis.patch.yml` 与 `presets/edge.patch.yml`；
+- SHA256 对比：**与仓库根的 full 版逐字节相同**
+  （`cordis.patch.yml` = `6093B61E0C99FCFB…`、`presets/edge.patch.yml` = `599D8D68A4E4A3CA…`）;
+- ⇒ **已发布的 5 个 npm 版本全部带着 full 补丁**（registry `dist.fileCount` 实测：
+  0.1.1 = 238、0.1.2 = 238、0.1.3 = 241、0.1.4 = 241、**0.1.5 = 241**，2026-11-12 查）。
+
+危害有三条：
+
+1. 与「safe = 不改写宿主默认值」的承诺**自相矛盾** —— 包里躺着一个专门改写宿主默认值的补丁；
+2. `docs/desktop-troubleshooting.md` §7 教的排障动作是「手动 cp `cordis.patch.yml` 到嵌套
+   包根」⇒ safe 用户照做就**静默切到 full 行为**（改写模型/人设/审批/沙箱/会话根/http-api）；
+3. npm 包把 full 补丁暴露成**公共子路径**（`./cordis.patch.yml`、`./presets/edge.patch.yml`）。
+
+### 三、改了什么
+
+1. **`scripts/_bundle-variants.mjs` 新增 4 个派生函数**（把「变体的文件集」也收进单一事实源）：
+   `allVariantPatchFiles()` / `foreignPatchFiles(variant)` / `variantFiles(pkg, variant)` /
+   `variantExports(exportsMap, variant)`。
+   - `variantFiles` 只做一件事：**去掉别的变体的补丁**，其余（含 `!config/edge.json`
+     等否定项）原样保留 —— 否定项**必须**留着（§7.162：`pnpm add file:<dir>` 会按
+     `files` 打这个目录，没有否定项 ⇒ 操作员的明文密钥会进 `node_modules`）；
+   - `variantExports` 去掉两种条目：**key 就是**那个补丁的，和**key 指向**那个补丁的
+     （v3 事故的形状：`"./cordis.desktop-safe.patch.yml": "./cordis.patch.yml"` ——
+     留着它就是「指针在而文件缺」⇒ boot 硬失败，dev-note §Bug3）。
+2. **根 `package.json#files` 改逐文件粒度**：`"presets"` 目录拆成
+   `presets/agent-preset-edge.json` / `presets/edge.desktop-safe.patch.yml` /
+   `presets/edge.patch.yml`（不拆开就没法「按变体剔」）。
+3. **四个写入点全部改走同一份派生**（删掉了 `_pack-core.mjs#stageVariant` 与
+   `_rebuild-installable.mjs` 里的硬编码清单）。
+4. **三道门禁**（题目要求的「变体纯净度」门禁 + 两处连带）：
+   - `scripts/verify-installable.mjs` **第 2d 项**：本变体不得携带别的变体的补丁；
+   - `scripts/verify-npm-stage.mjs` **第 5d 项**：npm 包不得携带 full 补丁；
+     连同 `exports` 基准从「仓库根」改成「**safe 变体**」（仓库根 37 条 ⇒ safe 35 条）；
+   - `scripts/verify-tarball.mjs` **第 10 条** + **2 条反向自证**
+     （safe 包带 full 补丁 ⇒ 报失败；full 包带 safe 补丁 ⇒ 报失败）。
+5. **三处被 §7.209 打破的旧断言**按新口径修正（否则门禁会误报）：
+   `verify-installable`（files 基准改「本变体派生清单」）、`verify-local-channel`（同上）、
+   `_verify-installable-edge.mjs`（必需文件按变体取；`edge-context-view` 行判据改成
+   「仓库源文件有 ⇒ 出货的也必须有」，且 preset 补丁优先）。
+
+### 四、实测（改动后）
+
+| 口径 | 改动前 | 改动后 |
+|---|---|---|
+| safe 变体目录里的补丁 | 4 个（含 full 那两个） | **2 个**（只剩自己的） |
+| full 变体目录里的补丁 | 4 个（含 safe 那两个） | **2 个**（只剩自己的） |
+| tar 包条目数 | 240 | **238** |
+| npm 暂存目录文件数 | 241 | **239** |
+| `exports` 条数（仓库根 / safe / full） | 37 / 37 / 37 | 37 / **35** / **36** |
+
+⇒ 全链 **31** 道门禁 EXIT=0。
+
+### 五、文档口径（顺手把会漂的数字拆了）
+
+本轮发现「文档里的出货数字」**早就在漂**：`docs/deploy-npm.md` 写「238 文件 / 37 个
+`exports` 入口」，而 registry 上早已是 241 —— 因为 `lib/` 下每个模块出 3 个产物
+（`.js` / `.d.ts` / `.d.ts.map`），**每改一次代码这个数就变** ⇒ 写死它等于写一句
+随时会变假的话。处理：
+
+- `README.md`：去掉「37 条」这个数（README 随包出货 ⇒ 写错的数会直接到用户面前），
+  改成「每个适配器一条入口，清单见 `package.json#exports`」；
+- `docs/deploy-npm.md` §7.1：改成「**规则 + 怎么问**」（`npm view … dist.fileCount` /
+  `npm pack --dry-run --json`），不再写死数；
+- `docs/deploy-npm.md` 装后核验表与前置清单第 11 项：同样改成「与 registry 一致」；
+- `docs/deploy-tarball.md` §8.4：补变体纯净度说明；
+- `docs/desktop-troubleshooting.md` §7：那条「手动 cp `cordis.patch.yml`」改成
+  「cp **本变体自己的**补丁」，并写明 cp 错变体的后果（**两个方向**都写：safe 里没有
+  full 的文件可 cp；full 环境里 cp safe 的补丁 ⇒ 改写宿主默认值的行会**静默消失**）。
+- 顺带修一句**门禁自己说的假话**：`verify:npm-stage` 的终端输出写着
+  「出货文件 239 个（= 变体 238 + **README + LICENSE**）」—— 但 README.md **早在
+  变体目录里**（§7.206 装进两条发布通道时拷进去的）⇒ 实际只比变体目录多 **LICENSE**
+  一个。**判定逻辑一直是对的**（`Set` 去重），只是那行字把 README 算了两遍 ⇒
+  改成**按实际差集**算（`= 变体 238 + LICENSE`）。
+
+### 六、顺带查到的既有事实（**不是**本轮造成的）
+
+- **`presets/edge.patch.yml`（full 变体）没有 `- id: edge-context-view` 行** ——
+  实测：`edge.patch.yml` 命中 **0** 行，`edge.desktop-safe.patch.yml` 命中 **6** 行
+  ⇒ 装 full 变体就没有 Edge 面板宿主那一半，只有 safe 变体有。
+  这是**既有**事实（不是 §7.209 造成的），本轮**没有**改它（改它 = 改 full 变体的语义，
+  不在裁决范围）。
+- **`docs/load-into-local-dsh.md` §3.2 的手工 recipe 缺文件**：它抄的是**仓库根清单**
+  （`dsh.bundle.patch` 声明的是 **safe** 的两个补丁）却只 `cp` 了 full 的
+  `cordis.patch.yml` ⇒ 嵌套目录里**缺**清单声明要读的两个文件（按 §7.59 与 dev-note
+  §Bug3 的口径 = boot 硬失败 `failed to read overlay …ENOENT`）。
+  这是**既有**问题（本轮改动不碰这条路径），本轮**没有**改它 —— 改法要先定这条 recipe
+  面向哪个变体，属于主人裁决范围之外。
+
+### 七、这一节**没有**做的事
+
+- **没有**改任何**运行时**代码 ⇒ 0.1.5 的运行时行为与 0.1.4 完全相同；
+- **没有**重发 npm ⇒ **已发布的 5 个版本仍然带着 full 补丁**（npm 版本不可覆盖），
+  要等**下一个版本**发布才会消；本机 token 2026-11-18 到期前得先把 §七 的三件事做完；
+- **没有**动 input-guard 的 fail-closed 口径（Q2，待主人拍板严格档）；
+- **没有**修上面第六节那两条既有事实（不在裁决范围）；
+- **没有**新增门禁道数（仍是 31 道）—— 变体纯净度是**加进已有门禁**的条目，不是新道数，
+  所以 `verify:doc-gate-count` 的道数不用动。
+
+---

@@ -27,7 +27,7 @@ import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { BUNDLE_VARIANTS, bundlePatchDeclaration } from './_bundle-variants.mjs'
+import { BUNDLE_VARIANTS, bundlePatchDeclaration, variantFiles, variantExports } from './_bundle-variants.mjs'
 import { isShippableConfigFile } from './_config-ship-policy.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -106,9 +106,13 @@ function readJson(path) {
 // a file nothing reads. `config/edge.example.json` (the blank-secret
 // template) and `config/privacy-policy.json` (the enforced policy) still
 // ship — they are the bundle's OWN files, not the operator's.
-function shippedEntries(pkg) {
-  const list = Array.isArray(pkg.files) && pkg.files.length > 0 ? pkg.files : ['lib']
-  return list.filter((entry) => !entry.startsWith('!'))
+// §7.209: 清单**按变体**派生 —— 别的变体的补丁文件不在本变体里。
+//   （safe 变体不再带 full 的 `cordis.patch.yml` / `presets/edge.patch.yml`；
+//     实测这两个文件与仓库根 full 版逐字节相同，合计 56,454 B。）
+//   否定项（`!config/edge.json` 等）在**清单**里保留（对打包有意义），
+//   在**拷贝**时跳过（对拷贝无意义）。
+function shippedEntries(pkg, variant) {
+  return variantFiles(pkg, variant).filter((entry) => !entry.startsWith('!'))
 }
 
 /**
@@ -153,7 +157,7 @@ for (const variant of VARIANTS) {
   mkdirSync(staging, { recursive: true })
 
   // 1. Ship the `files` list (lib, config, presets, ...).
-  for (const entry of shippedEntries(pkg)) {
+  for (const entry of shippedEntries(pkg, variant)) {
     const src = join(ROOT, entry)
     if (!existsSync(src)) {
       console.error(`  warning: ${entry} not found in repo — skipped`)
@@ -182,6 +186,10 @@ for (const variant of VARIANTS) {
   // 3. package.json — variant-specific name/version + patch field rewrite.
   const variantPkg = readJson(join(ROOT, 'package.json'))
   variantPkg.version = `${pkg.version}${variant.versionSuffix}`
+  // §7.209: 清单与 exports 都**按变体**收 —— 别的变体的补丁既不在盘上，
+  // 也不许被清单/exports 指向（否则是「指针在而文件缺」⇒ 宿主 boot 硬失败）。
+  variantPkg.files = variantFiles(pkg, variant)
+  variantPkg.exports = variantExports(variantPkg.exports, variant)
   if (!variantPkg.dsh) variantPkg.dsh = {}
   if (!variantPkg.dsh.bundle) variantPkg.dsh.bundle = {}
   // §7.135: the bundle carries TWO patch layers — the host-row overrides

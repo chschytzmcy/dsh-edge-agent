@@ -518,6 +518,16 @@ if (/^https?:\/\//i.test(spec)) {
 
 ⇒ **npm 通道发的是 safe**；**full 只有 git 发布这一条路**（这是它第一次有对外分发渠道）。
 
+> **§7.209（2026-11-12 起）：每个 tar 包只含自己变体的补丁。**
+> 两个变体的补丁**互斥**（safe = 不改写宿主默认值 / full = 改写宿主默认值），
+> 旧口径是「两个变体共用同一份 `files` 白名单」⇒ safe 的 tar 包里躺着 full 的
+> 补丁（实测 56,454 B = `cordis.patch.yml` 20,482 + `presets/edge.patch.yml` 35,972）。
+> 它不会被自动应用（宿主按 `package.json#dsh.bundle.patch` 取文件），但官方排障
+> 文档教的「手动 cp `cordis.patch.yml` 到嵌套包根」会让 safe 用户**静默切到
+> full 行为** ⇒ 该指引已改口（见 [`desktop-troubleshooting.md` §7](desktop-troubleshooting.md)）。
+> ⇒ 由 `verify:tarball` 第 10 条（含 2 条反向自证）+ `verify:installable` 第 2d 项
+> + `verify:npm-stage` 第 5d 项三道门禁钉死。
+
 ### 8.5 发布链（谁发的、谁验的）
 
 ```

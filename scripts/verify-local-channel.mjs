@@ -61,8 +61,10 @@
 // Read-only: writes nothing inside the repository.
 
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+import { variantByDir, variantFiles } from './_bundle-variants.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -150,11 +152,18 @@ function verifyInstallableWhitelists() {
       + `（当前 ${JSON.stringify(files)}）⇒ \`pnpm add file:<目录>\` 走 pack 路径时`
       + '会把本机 config/edge.json 里的明文 API key 拷进 node_modules。',
     )
+    // §7.209: 基准是**本变体**的派生清单，不是仓库根清单 ——
+    // 变体必须**不带**别的变体的补丁（safe 不带 full 的两个 yml）。
+    // 基准仍由同一份派生给出（scripts/_bundle-variants.mjs#variantFiles）。
+    const variant = variantByDir(basename(dir))
+    const expectedForVariant = variant
+      ? variantFiles(rootManifest, variant)
+      : rootManifest.files
     check(
-      JSON.stringify(files) === JSON.stringify(expected),
+      JSON.stringify(files) === JSON.stringify(expectedForVariant),
       `${rel}: package.json#files 是 ${JSON.stringify(files)}，`
-      + `但仓库根是 ${JSON.stringify(expected)} ⇒ 两条产出路径`
-      + '（rebuild-installable.mjs / _pack-core.mjs）的白名单漂移了。',
+      + `但${variant ? ` ${variant.dir} 变体的派生清单` : '仓库根'}是 ${JSON.stringify(expectedForVariant)} `
+      + '⇒ 两条产出路径（rebuild-installable.mjs / _pack-core.mjs）的白名单漂移了。',
     )
   }
   return dirs.length

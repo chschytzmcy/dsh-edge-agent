@@ -11,10 +11,49 @@
 
 ## [Unreleased]
 
+**safe 变体与 npm 包不再携带 full 变体的补丁；出货文件集改为按变体派生。**
+（2026-11-12，§7.209）
+
+### 出货内容的变化（运行时行为一字未改）
+
+- **npm 包与 safe 变体的 tar 包里不再有 full 变体的两个补丁**（`cordis.patch.yml`
+  20,482 B + `presets/edge.patch.yml` 35,972 B，合计 **56,454 B**）：那两个文件与
+  仓库根的 full 版**逐字节相同**，而 full 变体的语义是「**改写宿主默认值**」——
+  与 safe 通道「不重写宿主默认值」的承诺互斥。
+- 连带：`exports` 里指向这两个文件的公共子路径也一并去掉（仓库根清单 37 条 ⇒
+  **safe 变体 35 条**、full 变体 36 条）。
+- 两个 tar 包各 240 → **238** 个文件；npm 暂存目录 241 → **239** 个文件。
+- **运行时行为与 0.1.5 完全相同** —— 本轮只动产物内容、门禁与文档。
+- ⚠️ **已发布的 5 个 npm 版本（0.1.1 – 0.1.5）仍然带着 full 补丁** ——
+  npm 版本不可覆盖，要等**下一个版本**发布才会消。
+
+### 排障指引改口（这行以前会把 safe 用户带进 full 行为）
+
+- `docs/desktop-troubleshooting.md` §7 教的「手动 cp `cordis.patch.yml` 到嵌套包根」
+  改成「cp **本变体自己的**补丁」（safe = `cordis.desktop-safe.patch.yml`，
+  full = `cordis.patch.yml`）。以前照做 ⇒ safe 静默切成 full（改写模型/人设/审批/
+  沙箱/会话根/http-api）；现在 safe 的包里**根本没有**那个文件可 cp。
+
+### 门禁：加了三项「变体纯净度」断言（门禁道数仍是 31）
+
+- `verify:installable` 第 2d 项、`verify:npm-stage` 第 5d 项、`verify:tarball` 第 10 条
+  （含 2 条反向自证）—— 本变体**不得**携带别的变体的补丁。
+- 出货文件集改由 `scripts/_bundle-variants.mjs` **单一派生**（`variantFiles` /
+  `variantExports`），四个出货写入点全部改走它，删掉了两处硬编码清单。
+
+### 文档：不再写会漂的出货数字
+
+- `lib/` 下每个模块出 3 个产物 ⇒ 「包里几个文件」每改一次代码就变。原先写死的
+  「238 文件 / 37 个 `exports` 入口」**早就在漂**（registry 上已是 241）。
+  现在改成「规则 + 怎么问」（`npm view … dist.fileCount` / `npm pack --dry-run --json`），
+  README 里的条数也去掉了。
+
+### 上一轮（§7.208）
+
 **产物一致性与文档口径各补一道机器看守；并把「CI 发不了 npm」查到日志级。**
 （2026-11-12，§7.208）
 
-### 出货内容的变化（运行时行为一字未改）
+#### 出货内容的变化（运行时行为一字未改）
 
 - **tar 包（GitHub Release 资产）现在也带 `CHANGELOG.md`**（§7.208）：出货面有两个**各自
   独立**的生产者（npm 包走 `package.json#files`，tar 包走 `stageVariant` 的硬编码清单），
@@ -24,7 +63,7 @@
   **逐字节一致**（与 README 同一条纪律）。
 - **运行时行为与 0.1.5 完全相同** —— 本轮只动产物内容、门禁与文档。
 
-### 新门禁：文档里的门禁数必须等于链内实际道数（§7.208）
+#### 新门禁：文档里的门禁数必须等于链内实际道数（§7.208）
 
 - 新增第 31 道门禁 `verify:doc-gate-count`：核对 `docs/`、README、`scripts/`、workflows
   里写的门禁**总数**与**位次**是否与 `verify:build` 链一致。
@@ -33,7 +72,7 @@
   现有门禁没有一道管「数字口径」。
 - 门禁当场抓出 **12 处**真实漂移（含位次表里过期数字），已全部改正。
 
-### 补上一条留了三年的交叉校验（§7.208）
+#### 补上一条留了三年的交叉校验（§7.208）
 
 - `verify:installable` 新增第 5 项：`package.json#exports` 里指向**资源文件**的条目，
   目标必须真的在包里。补的是 `docs/dev-notes/cordis-rc021-patch-loader.md` §Bug3 记的

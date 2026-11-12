@@ -25,7 +25,7 @@ import { basename, dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parse as parseYaml } from 'yaml'
 
-import { bundlePatchDeclaration, variantByDir } from './_bundle-variants.mjs'
+import { bundlePatchDeclaration, foreignPatchFiles, variantByDir, variantFiles } from './_bundle-variants.mjs'
 import { CONFIG_NEGATIONS, configShipViolations, describeConfigViolation } from './_config-ship-policy.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -176,15 +176,27 @@ function verifyBundle(dir) {
   //     missing the negation. Whichever ran last decided whether a
   //     `file:<dir>` install leaked the key. One list, both producers.
   const rootManifest = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
-  const expectedFiles = rootManifest.files
+  // §7.209: 基准从「仓库根清单」改成「**本变体**的派生清单」。
+  //
+  //   原意（§7.162）是「两个生产者不要各说各话」⇒ 断言 installable 的
+  //   `files` 与仓库根逐字相同。§7.209 之后**逐字相同不再成立** ——
+  //   变体必须**不带**别的变体的补丁（safe 不带 full 的两个 yml）。
+  //   ⇒ 基准改成 `variantFiles(rootManifest, variant)`：**仍然是同一份派生**
+  //   （scripts/_bundle-variants.mjs），只是基准随变体走。
+  const variantForFiles = variantByDir(basename(dir))
+  const expectedFiles = variantForFiles
+    ? variantFiles(rootManifest, variantForFiles)
+    : rootManifest.files
   const actualFiles = pkg.files
   if (JSON.stringify(actualFiles) !== JSON.stringify(expectedFiles)) {
     throw new Error(
       `${relative(ROOT, dir)}: package.json#files 是 ${JSON.stringify(actualFiles)} `
-      + `但仓库根 package.json#files 是 ${JSON.stringify(expectedFiles)} `
+      + `但${variantForFiles ? ` ${variantForFiles.dir} 变体的派生清单` : '仓库根 package.json#files'} 是 `
+      + `${JSON.stringify(expectedFiles)} `
       + '⇒ 两条产出路径（rebuild-installable.mjs / _pack-core.mjs）的白名单漂移了。'
-      + 'installable 目录必须原样沿用根的白名单（含 "!config/edge.json"）：'
-      + '它决定 `pnpm add file:<目录>` 打出来的副本里会不会夹带明文 API key。',
+      + 'installable 目录必须沿用**本变体**的派生清单（含 "!config/edge.json"）：'
+      + '它决定 `pnpm add file:<目录>` 打出来的副本里会不会夹带明文 API key，'
+      + '也决定本变体会不会带着别的变体的补丁。',
     )
   }
   if (!Array.isArray(actualFiles) || !actualFiles.includes('!config/edge.json')) {
@@ -328,6 +340,28 @@ function verifyBundle(dir) {
         `${relative(ROOT, dir)}: package.json#dsh.bundle.patch is [${bundlePatches.join(', ')}] ` +
           `but the canonical declaration for ${variant.dir} is [${expected.join(', ')}] ` +
           '(scripts/_bundle-variants.mjs) — the packaging scripts and the canonical table have drifted',
+      )
+    }
+
+    // 2d. §7.209: 本变体**不得携带别的变体**的补丁文件。
+    //
+    //     两个变体的补丁是**互斥**的：safe = 不改写宿主默认值，
+    //     full = 改写宿主默认值（模型/人设/审批/沙箱/会话根/http-api）。
+    //     而出货文件集以前是**同一份** ⇒ safe 变体与 npm 包里都躺着 full 的
+    //     补丁（实测 56,454 B，与仓库根 full 版**逐字节相同**）。
+    //
+    //     它不会被自动应用（宿主按 `package.json#dsh.bundle.patch` 取文件）——
+    //     但 ① 与「safe 不改写宿主默认值」的承诺自相矛盾；
+    //     ② 官方排障文档教的「手动 cp cordis.patch.yml 到嵌套包根」
+    //        会让 safe 用户**静默切到 full 行为**。
+    const foreign = foreignPatchFiles(variant)
+    const carried = foreign.filter((f) => existsSync(join(dir, f)))
+    if (carried.length > 0) {
+      throw new Error(
+        `${relative(ROOT, dir)}: 本变体（${variant.dir}）携带了**别的变体**的补丁文件：`
+        + `${carried.join(', ')} —— 变体的补丁是互斥的（safe=不改写宿主默认值 / `
+        + `full=改写宿主默认值）⇒ 出货文件集必须按变体区分`
+        + '（scripts/_bundle-variants.mjs#variantFiles）',
       )
     }
   }

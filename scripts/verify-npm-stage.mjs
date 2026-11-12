@@ -31,10 +31,14 @@ import { dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { CONFIG_NEGATIONS, configShipViolations, describeConfigViolation } from './_config-ship-policy.mjs'
+import { foreignPatchFiles, variantByDir, variantExports } from './_bundle-variants.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const STAGE_DIR = join(ROOT, 'dist', '.npm-stage')
 const VARIANT_DIR = join(ROOT, 'dist', 'installable', 'dsh-edge-agent-desktop-safe')
+
+/** npm 通道发的是哪个变体（§7.209：变体的补丁互斥 ⇒ npm 通道 = safe）。 */
+const NPM_VARIANT = variantByDir('dsh-edge-agent-desktop-safe')
 
 /** 递归列出目录下所有文件（相对路径，正斜杠）。 */
 export function listFiles(dir, base = dir) {
@@ -51,7 +55,13 @@ export function listFiles(dir, base = dir) {
  * 「应该出货的文件集合」= 变体目录里的全部文件 + README + LICENSE。
  *
  * README / LICENSE 是 npm **永远自动带**的（前提是目录里有），所以它们不在
- * 变体目录里，但一定在包里。
+ * `files` 白名单里也一定在包里。
+ *
+ * §7.209 更正：README.md **已经在变体目录里**了（§7.206 把它装进两条发布通道，
+ * `rebuild-installable.mjs` 会拷进变体目录）⇒ 这个集合实际只比变体目录多
+ * **LICENSE** 一个。Set 会去重，所以**判定逻辑一直是对的**；但下面那句注释和
+ * 终端输出都把 README 算了两遍（实测输出「= 变体 238 + README + LICENSE」
+ * 却只有 239 个）⇒ 一句与实际不符的话，按 §7.209 一并改准。
  */
 export function expectedShipSet(variantFiles) {
   const set = new Set(variantFiles)
@@ -149,10 +159,19 @@ if (process.argv.includes('--selftest')) {
   if (!manifest.peerDependencies || Object.keys(manifest.peerDependencies).length === 0) fail('清单没有 peerDependencies')
   if (manifest.publishConfig?.access !== 'public') fail('清单没有 publishConfig.access=public ⇒ 会发成 private')
 
-  // 4. exports 与仓库根一致（装后按 subpath 解析）
+  // 4. exports 与【safe 变体】一致（装后按 subpath 解析）
+  //
+  //    §7.209: npm 通道发的是 safe ⇒ 它的 exports **不该**有 full 变体补丁的
+  //    条目 ⇒ 基准从「仓库根」改成「safe 变体」（仓库根两条都有：仓库自己
+  //    要用 full 变体）。
   const stageExports = Object.keys(manifest.exports ?? {}).length
   const repoExports = Object.keys(repoManifest.exports ?? {}).length
-  if (stageExports !== repoExports) fail(`exports 条数 ${stageExports} ≠ 仓库的 ${repoExports}`)
+  const expectedExports = NPM_VARIANT
+    ? Object.keys(variantExports(repoManifest.exports, NPM_VARIANT)).length
+    : repoExports
+  if (stageExports !== expectedExports) {
+    fail(`exports 条数 ${stageExports} ≠ safe 变体的 ${expectedExports}（仓库根 ${repoExports} 条）`)
+  }
 
   // 5. 凭据绝不随包走
   const files = manifest.files ?? []
@@ -179,6 +198,21 @@ if (process.argv.includes('--selftest')) {
     fail(`清单的 files 缺少排除项 ${missingNegations.join(' / ')} —— npm pack 会把活配置的备份一起发出去`)
   }
 
+  // 5d. §7.209: npm 包**不得携带** full 变体的补丁文件。
+  //     safe 通道的承诺是「不重写宿主默认值」—— 带着 full 的补丁既与承诺
+  //     自相矛盾，又让官方排障文档教的「手动 cp cordis.patch.yml 到嵌套包根」
+  //     变成一颗雷（safe 用户会静默切到 full 行为）。
+  if (NPM_VARIANT) {
+    for (const f of foreignPatchFiles(NPM_VARIANT)) {
+      if (existsSync(join(STAGE_DIR, f))) {
+        fail(`暂存目录里有 ${f} —— 那是 full 变体的补丁（改写宿主默认值），不该出现在 safe 通道的包里`)
+      }
+      if (files.includes(f)) {
+        fail(`清单的 files 包含 ${f} —— 那是 full 变体的补丁，不该被 safe 通道的包声明`)
+      }
+    }
+  }
+
   // 6. 不该出现的目录
   for (const d of ['scripts', 'src', 'tests', '.git']) {
     if (existsSync(join(STAGE_DIR, d))) fail(`暂存目录里有 ${d}/ —— 它不在 files 白名单内，但摆进去就是给自己埋雷`)
@@ -199,9 +233,12 @@ if (process.argv.includes('--selftest')) {
   console.log(`  scripts         : ${manifest.scripts ? '有（不该有！）' : '无 ✓'}`)
   console.log(`  devDependencies : ${manifest.devDependencies ? '有（不该有！）' : '无 ✓'}`)
   console.log(`  bundle.patch    : ${patchList.length} 个文件，都在 ✓`)
-  console.log(`  exports         : ${stageExports} 条（与仓库一致 ✓）`)
+  console.log(`  exports         : ${stageExports} 条（= safe 变体的 ${expectedExports} 条 ✓）`)
   console.log(`  config/edge.json: 不在 ✓`)
-  console.log(`  出货文件        : ${stagedFiles.length} 个（= 变体 ${variantFiles.length} + README + LICENSE）`)
+  // §7.209：把「暂存 = 变体 + 什么」**按实际差集**算出来，不写死 README/LICENSE
+  // （README 已在变体目录里 ⇒ 实际只多 LICENSE）。
+  const extras = [...expected].filter((f) => !variantFiles.includes(f))
+  console.log(`  出货文件        : ${stagedFiles.length} 个（= 变体 ${variantFiles.length} + ${extras.join(' + ') || '（无额外文件）'}）`)
   console.log(`  失败            : ${failures.length}`)
 
   if (failures.length > 0) {

@@ -48,10 +48,11 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join, relative, resolve } from 'node:path'
+import { dirname, join, relative, resolve, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { configShipViolations, describeConfigViolation } from './_config-ship-policy.mjs'
+import { foreignPatchFiles, variantByDir } from './_bundle-variants.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const DIST = join(ROOT, 'dist')
@@ -296,6 +297,26 @@ export function auditTarball(tarballPath, installableDir, { expectSecretConfig =
     }
   }
 
+  // ── 10. §7.209: the tarball must not carry the OTHER variant's patches ──
+  //    The two variants' patches are mutually exclusive: safe = "does NOT
+  //    rewrite host defaults", full = "rewrites host defaults" (model /
+  //    persona / approval / sandbox / session root / http-api).
+  //    A tarball carrying both contradicts its own variant's promise — and the
+  //    documented remediation ("copy cordis.patch.yml into the nested package
+  //    root") turns a safe install into a silent full one.
+  const variant = variantByDir(basename(installableDir))
+  if (variant) {
+    for (const f of foreignPatchFiles(variant)) {
+      if (tarball.files.includes(f)) {
+        failures.push(
+          `tarball 里带着 ${f} —— 那是**别的变体**的补丁（变体的补丁互斥：`
+          + `safe=不改写宿主默认值 / full=改写宿主默认值）⇒ 出货文件集必须按变体区分`
+          + '（scripts/_bundle-variants.mjs#variantFiles）',
+        )
+      }
+    }
+  }
+
   notes.push(`条目 ${tarball.files.length} 个`)
   return { failures, notes }
 }
@@ -491,6 +512,26 @@ function selftest() {
     const t = mk('stalechangelog', { ...GOOD_FILES, 'CHANGELOG.md': '# 旧变更记录\n' }, GOOD_MANIFEST)
     const r = auditTarball(t, join(ROOT_TMP, 'nonexistent'))
     expect('CHANGELOG 与仓库不一致 ⇒ 报失败', r.failures.some((f) => f.includes('陈旧')), true)
+  }
+
+  // 13. §7.209: a tarball carrying the OTHER variant's patch is caught.
+  //     The two variants' patches are mutually exclusive; a "safe" tarball
+  //     that also carries the full patch contradicts its own promise.
+  {
+    const variantDir = join(ROOT_TMP, 'dsh-edge-agent-desktop-safe')
+    mkdirSync(variantDir, { recursive: true })
+    writeFileSync(join(variantDir, 'package.json'), JSON.stringify(GOOD_MANIFEST))
+    const t = mk('foreignpatch', { ...GOOD_FILES, 'cordis.patch.yml': '[]\n' }, GOOD_MANIFEST)
+    const r = auditTarball(t, variantDir)
+    expect('safe 变体的 tar 包带着 full 的补丁 ⇒ 报失败', r.failures.some((f) => f.includes('cordis.patch.yml')), true)
+  }
+  {
+    const variantDir = join(ROOT_TMP, 'dsh-edge-agent-full')
+    mkdirSync(variantDir, { recursive: true })
+    writeFileSync(join(variantDir, 'package.json'), JSON.stringify(GOOD_MANIFEST))
+    const t = mk('foreignpatch2', { ...GOOD_FILES, 'presets/edge.desktop-safe.patch.yml': '[]\n' }, GOOD_MANIFEST)
+    const r = auditTarball(t, variantDir)
+    expect('full 变体的 tar 包带着 desktop-safe 的补丁 ⇒ 报失败', r.failures.some((f) => f.includes('edge.desktop-safe.patch.yml')), true)
   }
 
   rmSync(ROOT_TMP, { recursive: true, force: true })

@@ -26,7 +26,7 @@
 | **Realm 三级闸门** | ✅ | LOCAL → SANITIZED → CLOUD；缺件即降级本地 |
 | **威胁检测** | ✅ | `td-bus` 滑动窗口 + 分级 + 隔离；超阈值返回 503 |
 | **审计与可追溯** | ✅ | 追加式 JSONL 审计链 + ops log（PII + 密钥双重脱敏）|
-| **插件化** | ✅ | 按 subpath 导出（**37 条**入口）|
+| **插件化** | ✅ | 按 subpath 导出（每个适配器一条入口，清单见 `package.json#exports`）|
 | **零信任通信** | 🚧 | OHTTP 网关为**桩实现**；当前云端通道走标准 TLS |
 | **TEE / 远程证明** | 🚧 | `tcm` / `attestation` 为**桩实现** |
 

@@ -26,14 +26,20 @@ console.log(`bundle.patch:     ${pkg.dsh?.bundle?.patch}`)
 console.log(`client.entry:     ${pkg.dsh?.client?.entry}`)
 console.log(`exports count:    ${Object.keys(pkg.exports ?? {}).length}`)
 
+// §7.209: 必需文件**按变体**取 —— 变体的补丁互斥（safe 不带 full 的两个 yml）。
+//   之前这里写死了 `cordis.patch.yml` ⇒ §7.209 之后 safe 变体里根本没有它
+//   ⇒ 门禁误报「MISSING required file」。
 const requiredFiles = [
   'package.json',
-  'cordis.desktop-safe.patch.yml',
-  'cordis.patch.yml',
   'cordis.yml',
   'lib/index.js',
   'lib/client.js',
 ]
+// 本变体自己的两个补丁（cordis patch + Agent Preset patch）必须在
+const variantPatches = Array.isArray(pkg.dsh?.bundle?.patch) ? pkg.dsh.bundle.patch : []
+for (const p of variantPatches) {
+  requiredFiles.push(p.replace(/^\.\//u, ''))
+}
 for (const f of requiredFiles) {
   const p = join(TARGET, f)
   if (!existsSync(p)) {
@@ -48,10 +54,15 @@ console.log('=== edge-context-view patch row sanity ===')
 // §7.135: the edge-context-view row moved into the **Agent Preset** patch
 // (presets/edge.desktop-safe.patch.yml) — it is the Edge panel's host half
 // and belongs to the 边缘模式 work mode, not to the global patch layer.
-const patchCandidates = [
-  join(TARGET, 'presets', 'edge.desktop-safe.patch.yml'),
-  join(TARGET, 'cordis.desktop-safe.patch.yml'),
-]
+// §7.209: 候选也按变体取（本变体声明的两个补丁），不再写死 desktop-safe 的文件名。
+// 顺序：**Agent Preset 补丁在前** —— §7.135 起 edge-context-view 行搬进了
+// `presets/*.patch.yml`（它是 Edge 面板的宿主那一半，属于「边缘模式」这个工作方式，
+// 不是全局 patch 层）；cordis patch 里没有这一行。
+const patchCandidates = variantPatches
+  .slice()
+  .sort((a, b) => (a.includes('presets/') ? -1 : 1) - (b.includes('presets/') ? -1 : 1))
+  .map((p) => join(TARGET, p.replace(/^\.\//u, '')))
+  .filter((p) => existsSync(p))
 const patchPath = patchCandidates.find((p) => existsSync(p))
 if (patchPath === undefined) {
   console.error('no patch file to inspect for the edge-context-view row')
@@ -59,32 +70,53 @@ if (patchPath === undefined) {
 }
 const patch = readFileSync(patchPath, 'utf8')
 console.log(`  (inspected: ${patchPath.split(/[\\/]/).slice(-2).join('/')})`)
-// Find the edge-context-view row block. §7.136 moved it one level deeper
-// (inside the preset's `cordis:group`), so cut the slice at the NEXT row
-// header instead of a fixed byte count — otherwise the following row's
-// fields leak into this row's verdict.
-const rowStart = patch.indexOf('- id: edge-context-view')
-if (rowStart < 0) {
-  console.error('edge-context-view row not found in patch')
-  process.exit(1)
-}
-const rowSlice = patch.slice(rowStart, rowStart + 2000).split(/\n\s*- id: /)[0]
-const hasInject = /^\s*inject:/m.test(rowSlice)
-const hasConfig = /^\s*config:/m.test(rowSlice)
-const hasName = /^\s*name:\s*['"]([^'"]+)['"]/m.exec(rowSlice)?.[1]
 
-console.log(`row  id:           edge-context-view`)
-console.log(`row  name:         ${hasName}`)
-console.log(`row  has inject::  ${hasInject}   (must be false)`)
-console.log(`row  has config::  ${hasConfig}  (must be false)`)
+// §7.209: 这一行**不是每个变体都有** —— 实测（2026-11-13）：
+//   · `presets/edge.desktop-safe.patch.yml` 有 `- id: edge-context-view`
+//     （safe 变体 ⇒ Edge 面板的宿主那一半在 ✓）
+//   · `presets/edge.patch.yml`（full 变体）**没有**这一行
+//     ⇒ 装了 full 变体就没有 Edge 面板的宿主那一半（既有事实，本轮未改）。
+//
+// ⇒ 判据不能是「出货的 patch 里必须有这一行」，而是「**仓库源文件里有 ⇒ 出货的
+// 也必须有**」：源文件没有 ⇒ 这一项对**该变体**不适用 ⇒ 记一条 note，不判失败。
+const sourcePreset = variantPatches
+  .filter((p) => p.includes('presets/'))
+  .map((p) => join(ROOT, p.replace(/^\.\//u, '')))
+  .find((p) => existsSync(p))
+const sourceHasRow = sourcePreset !== undefined
+  && readFileSync(sourcePreset, 'utf8').includes('- id: edge-context-view')
 
-if (hasInject || hasConfig) {
-  console.error('Bug 1 regression: inject: / config: is back in the edge-context-view patch row.')
-  process.exit(1)
-}
-if (!hasName || !hasName.startsWith('@dsh-edge/dsh-edge-agent')) {
-  console.error(`Bug 2 regression: name='${hasName}' is not a valid bundle name.`)
-  process.exit(1)
+if (!sourceHasRow) {
+  console.log('  (this variant\'s preset does not declare the edge-context-view row — nothing to check here)')
+  console.log('')
+} else {
+  // Find the edge-context-view row block. §7.136 moved it one level deeper
+  // (inside the preset's `cordis:group`), so cut the slice at the NEXT row
+  // header instead of a fixed byte count — otherwise the following row's
+  // fields leak into this row's verdict.
+  const rowStart = patch.indexOf('- id: edge-context-view')
+  if (rowStart < 0) {
+    console.error('edge-context-view row not found in patch — the repository preset declares it, so the shipped one must too')
+    process.exit(1)
+  }
+  const rowSlice = patch.slice(rowStart, rowStart + 2000).split(/\n\s*- id: /)[0]
+  const hasInject = /^\s*inject:/m.test(rowSlice)
+  const hasConfig = /^\s*config:/m.test(rowSlice)
+  const hasName = /^\s*name:\s*['"]([^'"]+)['"]/m.exec(rowSlice)?.[1]
+
+  console.log(`row  id:           edge-context-view`)
+  console.log(`row  name:         ${hasName}`)
+  console.log(`row  has inject::  ${hasInject}   (must be false)`)
+  console.log(`row  has config::  ${hasConfig}  (must be false)`)
+
+  if (hasInject || hasConfig) {
+    console.error('Bug 1 regression: inject: / config: is back in the edge-context-view patch row.')
+    process.exit(1)
+  }
+  if (!hasName || !hasName.startsWith('@dsh-edge/dsh-edge-agent')) {
+    console.error(`Bug 2 regression: name='${hasName}' is not a valid bundle name.`)
+    process.exit(1)
+  }
 }
 
 console.log()

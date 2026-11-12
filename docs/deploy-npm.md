@@ -244,7 +244,7 @@ pnpm --dir "$env:USERPROFILE\.dsh\profiles\desktop" add "@dsh-edge/dsh-edge-agen
 | 查什么 | 怎么看 | 2026-11-11 实测值 |
 |---|---|---|
 | 装的是 registry 版还是 tarball 版 | 插件目录 `package.json` 的 `version` | `0.1.1`（tarball 通道是 `0.1.1-desktop-safe`） |
-| 文件全不全 | 数插件目录的文件数 | **238**（= registry `dist.fileCount`） |
+| 文件全不全 | 数插件目录的文件数 | **与 registry 的 `dist.fileCount` 一致**（`npm view @dsh-edge/dsh-edge-agent@<你装的版本> dist.fileCount`）—— 别背数字，每个模块出 3 个产物，一改代码就变 |
 | 内容对不对 | 与 `dist/installable/dsh-edge-agent-desktop-safe/` 逐文件 SHA256 | 236 个共有文件**全部一致**；只多 `README.md`/`LICENSE`；唯一差异是 `package.json#version` |
 | 包里有没有活配置 | 插件目录 `config/` | 只有 `edge.example.json` + `privacy-policy.json`，**没有 `edge.json`** |
 | 配置命中哪一档 | 审计链 `config.loaded` | `path=C:\Users\<你>\.dsh-edge-agent\edge.json`（顺位 1 不存在 ⇒ 命中顺位 2） |
@@ -286,17 +286,43 @@ node scripts/verify-npm-publish.mjs --selftest  # 自证 + 反向证伪（27 条
 **`prepare` 只对 git 安装有意义**（`publish.md:171`）—— npm 装的时候 tarball 里
 已经是构建好的 `lib/`，pnpm 不会跑 `prepare`。
 
-### 7.1 包里有什么（`npm pack --dry-run` 实测：238 文件 / 37 个 `exports` 入口，2026-11-11）
+### 7.1 包里有什么（`npm pack --dry-run` 实测口径，2026-11-12）
 
 ```
 lib/            ← Node 半侧（.js + .d.ts）+ 浏览器半侧 lib/client.js
 config/         ← edge.example.json + privacy-policy.json（**没有 edge.json**）
-presets/
-cordis.yml / cordis.patch.yml / cordis.desktop-safe.patch.yml
+cordis.yml              ← 宿主配置基线（两个变体都带）
+cordis.desktop-safe.patch.yml     ← **safe 变体**的宿主补丁
+presets/agent-preset-edge.json
+presets/edge.desktop-safe.patch.yml   ← **safe 变体**的插件装配补丁
 package.json / README.md / LICENSE / CHANGELOG.md
 ```
 
-> **238 = registry 上 0.1.1 的 `dist.fileCount`** —— 逐条对得上。
+> **§7.209（2026-11-12 起）：npm 通道发的 safe 变体，包里只有 safe 自己的补丁。**
+> **full 变体的 `cordis.patch.yml` 与 `presets/edge.patch.yml` 不再进包**
+> （合计 56,454 B = 20,482 + 35,972，且与仓库根的 full 版**逐字节相同**）。
+>
+> 为什么要剔：两个变体的补丁是**互斥**的（safe = 不改写宿主默认值 /
+> full = 改写宿主默认值），而旧口径是「两个变体共用同一份 `files` 白名单」
+> ⇒ safe 包里躺着 full 的补丁。它不会被自动应用（宿主按
+> `package.json#dsh.bundle.patch` 取文件），但**官方排障文档教的
+> 「手动 cp `cordis.patch.yml` 到嵌套包根」会让 safe 用户静默切到 full 行为**。
+> ⇒ 由三道门禁钉死：`verify:npm-stage` 第 5d 项、`verify:installable` 第 2d 项、
+> `verify:tarball` 第 10 条。
+
+> **⚠️ `exports` 条目数按变体走（§7.209）**：safe 通道的包里**没有**
+> `./cordis.patch.yml` 与 `./presets/edge.patch.yml` 两条入口（仓库根清单 37 条
+> ⇒ safe 变体 35 条、full 变体 36 条）。**别背这个数** —— 加一个适配器就变；
+> 要当前的数，问清单：`node -p "Object.keys(require('./package.json').exports).length"`。
+
+> **包里几个文件也不是固定值**（`lib/` 下每个模块出 3 个产物：`.js` / `.d.ts` /
+> `.d.ts.map`）⇒ 同样别背数字，用命令问：
+>
+> ```bash
+> npm view @dsh-edge/dsh-edge-agent@<你装的版本> dist.fileCount   # registry 上那一版
+> npm pack --dry-run --json                                       # 当前工作树
+> ```
+>
 > 比 `dist/installable/` 多的两个文件是 `README.md` 与 `LICENSE`：**npm 自动带，
 > 不靠 `files` 白名单**（`verify-npm-publish.mjs` 的 `isCoveredByFiles()` 把
 > `readme*` / `license*` 列为「永远进包」）。
@@ -315,7 +341,8 @@ package.json / README.md / LICENSE / CHANGELOG.md
 > 包里也没有 `postinstall`）。
 > 现在发布走一个**消毒过的暂存目录** `dist/.npm-stage/`：内容 = safe 变体 +
 > README + LICENSE，清单 = 去掉 `scripts` / `devDependencies` / `packageManager` 的那份。
-> **出货文件逐个不变**（仍是 238 个），只有清单瘦了 —— 由 `verify:npm-stage` 门禁守着。
+> **出货文件逐个不变**（0.1.2 那一版仍是 238 个 = registry 的 `dist.fileCount`），
+> 只有清单瘦了 —— 由 `verify:npm-stage` 门禁守着。
 
 ## 8. 发布链（CI）
 
@@ -570,7 +597,7 @@ node scripts/verify-ci-build-chain.mjs --selftest  # 自证 + 反向证伪（11 
 | 8 | **仓库公开**（provenance 的前提） | ✅ **已转公开**（2026-11-10） | 主人把仓库改成了 public；匿名 GitHub API 核实 `visibility = public` |
 | 9 | 包本身 public | ✅ | `--access public` |
 | 10 | `lib/` 预构建 | ✅ | §8.3 修的就是这个 |
-| 11 | `files` 白名单 | ✅ | 238 文件 / 37 个 `exports` 入口（2026-11-11 实测） |
+| 11 | `files` 白名单 | ✅ | **按变体派生**（`scripts/_bundle-variants.mjs#variantFiles`）：npm 通道发的 safe 变体**不含** full 变体的两个补丁（§7.209）；仓库根清单 37 条 `exports` ⇒ safe 变体 35 条 |
 | 12 | `dsh.bundle.patch` 列出的文件在包里 | ✅ | 两个 patch 都在白名单里 |
 | 13 | `engines.dsh` 声明 | ✅ | `>=0.2.1-rc.2` |
 | 14 | 版本未被占用 | ✅ **0.1.2 已发布**（2026-11-11） | 下一版必须改 `package.json#version`（同一版本不能重发）；tag `v0.1.2` 已推 origin |

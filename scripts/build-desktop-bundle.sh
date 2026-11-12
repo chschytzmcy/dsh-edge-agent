@@ -211,12 +211,12 @@ const base = JSON.parse(fs.readFileSync(path.join(repo, 'package.json'), 'utf8')
 // the shared module (require() of an ESM module — Node ≥22.12). This block
 // used to write the STRING form, which silently drops the Agent Preset layer
 // ⇒ the 边缘模式 work mode was never registered in the desktop.
-const { BUNDLE_VARIANTS, bundlePatchDeclaration } = require(path.join(repo, 'scripts', '_bundle-variants.mjs'))
+const { BUNDLE_VARIANTS, bundlePatchDeclaration, variantFiles, variantExports } = require(path.join(repo, 'scripts', '_bundle-variants.mjs'))
 
 const variants = BUNDLE_VARIANTS.map((v) => ({
+  ...v,
   name: v.dir,
   version: `${base.version}${v.versionSuffix}`,
-  description: v.description,
   patch: bundlePatchDeclaration(v),
 }))
 
@@ -238,14 +238,25 @@ for (const v of variants) {
   // config/edge.json — see below), so the runtime finds the shipped
   // config/edge.example.json as its last-resort configuration source
   // instead of falling back to the in-code defaults.
-  pkg.files = ['lib', 'config', 'cordis.patch.yml', 'cordis.desktop-safe.patch.yml', 'cordis.yml', 'presets']
+  // §7.209: 清单与 exports **按变体**派生（与 rebuild-installable.mjs /
+  // _pack-core.mjs 同一份）—— 别的变体的补丁不带、也不被指向。
+  //
+  // 这一段原来是**自己硬编码**的第四份清单 —— 与其它生产者各说各话，
+  // 正是 §7.207（README 只在 npm 包）/ §7.208（CHANGELOG 只在 npm 包）
+  // 那两个洞的来源。现在四个写入点全部走同一份派生。
+  pkg.files = variantFiles(base, v)
+  pkg.exports = variantExports(base.exports, v)
   pkg.dsh = { ...(pkg.dsh || {}), bundle: { ...(pkg.dsh.bundle || {}), patch: v.patch } }
 
   fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify(pkg, null, 2) + '\n')
-  copyTree(path.join(repo, 'lib'), path.join(dir, 'lib'))
-  copyTree(path.join(repo, 'presets'), path.join(dir, 'presets'))
-  for (const f of ['cordis.yml', 'cordis.patch.yml', 'cordis.desktop-safe.patch.yml']) {
-    fs.copyFileSync(path.join(repo, f), path.join(dir, f))
+  // 出货文件按变体清单拷（config 单独处理，见下）
+  for (const entry of variantFiles(base, v)) {
+    if (entry.startsWith('!') || entry === 'config') continue
+    const src = path.join(repo, entry)
+    if (!fs.existsSync(src)) continue
+    const dest = path.join(dir, entry)
+    fs.mkdirSync(path.dirname(dest), { recursive: true })
+    copyTree(src, dest)
   }
   // config/ ships WITHOUT config/edge.json — that file holds the
   // operator's real endpoints and API keys in plaintext and must never

@@ -44,7 +44,7 @@ import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { BUNDLE_VARIANTS, bundlePatchDeclaration } from './_bundle-variants.mjs'
+import { BUNDLE_VARIANTS, bundlePatchDeclaration, variantFiles, variantExports } from './_bundle-variants.mjs'
 import { isShippableConfigFile } from './_config-ship-policy.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -356,7 +356,18 @@ export function stageVariant(variant, destDir, { keepSecretConfig = false } = {}
   //   · WITHOUT it ⇒ the plaintext key is copied into node_modules.
   //
   // ⇒ take the root's list verbatim, so both producers agree by construction.
-  pkg.files = base.files
+  //
+  // §7.209: **按变体**派生 —— 别的变体的补丁文件被去掉。
+  //   · safe 变体不再带 full 的 `cordis.patch.yml` / `presets/edge.patch.yml`
+  //     （实测这两个文件与仓库根 full 版**逐字节相同**，合计 56,454 B）；
+  //   · full 变体不再带 desktop-safe 的那两个；
+  //   · 否定项（`!config/edge.json` 等）**原样保留** —— 它们对拷贝无意义、
+  //     对打包有意义（见上）。
+  pkg.files = variantFiles(base, variant)
+  // §7.209: exports 也要按变体收 —— 指向别的变体补丁的条目去掉，
+  // 否则就是「指针在而文件缺」⇒ 宿主启动时 ENOENT ⇒ boot 硬失败
+  // （docs/dev-notes/cordis-rc021-patch-loader.md §Bug3）。
+  pkg.exports = variantExports(base.exports, variant)
   // §7.153: the bundle carries TWO patch layers — the host-row overrides
   // (cordis patch) and the **Agent Preset** declaration (the 边缘模式 work
   // mode). The host's own dsh-web-app bundle uses the same list shape
@@ -374,10 +385,20 @@ export function stageVariant(variant, destDir, { keepSecretConfig = false } = {}
   }
 
   writeFileSync(join(destDir, 'package.json'), `${JSON.stringify(pkg, null, 2)}\n`, 'utf8')
-  cpSync(join(ROOT, 'lib'), join(destDir, 'lib'), { recursive: true })
-  cpSync(join(ROOT, 'presets'), join(destDir, 'presets'), { recursive: true })
-  for (const f of ['cordis.yml', 'cordis.patch.yml', 'cordis.desktop-safe.patch.yml']) {
-    cpSync(join(ROOT, f), join(destDir, f), { recursive: true })
+  // §7.209: 出货文件**按变体**派生（与 rebuild-installable.mjs 同一份清单）。
+  //
+  // 之前这里是**硬编码**的三行拷贝（lib / presets / 三个 yml）⇒ 与
+  // `rebuild-installable.mjs`（走 pkg.files）**各拷各的** ⇒ 两个生产者的
+  // 文件集会长得不一样（§7.207 的 README、§7.208 的 CHANGELOG 都是这个洞）。
+  // 现在两边都走 `variantFiles(base, variant)` ⇒ 由构造保证一致。
+  for (const entry of variantFiles(base, variant)) {
+    if (entry.startsWith('!')) continue // 否定项只对打包有意义
+    if (entry === 'config') continue // config 有自己的白名单处理，见下
+    const src = join(ROOT, entry)
+    if (!existsSync(src)) continue
+    const dest = join(destDir, entry)
+    mkdirSync(dirname(dest), { recursive: true })
+    cpSync(src, dest, { recursive: true })
   }
   // §7.207: README 也进 tar 包 ——
   // tar 包是**直接发给用户**的产物（GitHub Release 资产，桌面端粘 URL 就装），
