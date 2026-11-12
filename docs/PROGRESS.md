@@ -21265,3 +21265,80 @@ pnpm --dir "C:\Users\cheng\.dsh\profiles\desktop" add "@dsh-edge/dsh-edge-agent@
 - 探针包只在**本机 profile** 用过，**没有**进过 npm 通道。
 
 ---
+
+## §7.195 0.1.3 发布上线（实况记录）
+
+> 2026-11-12。主人批准后执行：§7.193 的门禁 + §7.194 的实盘验证一起发出去。
+
+### 一、这一版装出去是什么
+
+| | 内容 |
+|---|---|
+| 版本 | **0.1.3**（前一个真实版本 0.1.2） |
+| 包名 | `@dsh-edge/dsh-edge-agent` |
+| 出货 | **241 个文件**（= 变体 239 + README + LICENSE） |
+| 关键变化 | 边缘模式「发请求卡住」已修（§7.190 / §7.191 / §7.192）；发布前置条件门禁化（§7.193） |
+
+### 二、发布命令序列（实测跑通，与 §7.188 同一条路）
+
+```text
+1. package.json 版本 0.1.2 → 0.1.3；CHANGELOG 的 [Unreleased] 段落为 [0.1.3]
+2. npm run build                → EXIT=0（29 道门禁全绿；暂存目录版本 = 0.1.3）
+3. npm run publish:npm          → EXIT=1：「工作树不干净」⇒ 先提交再发（脚本的纪律是对的）
+4. git commit                   → bbef7e3 release(0.1.3)
+5. npm run publish:npm -- --yes --tag
+        → pnpm publish --access public --ignore-scripts --no-git-checks --no-provenance
+        → ✅ Published package @dsh-edge/dsh-edge-agent@0.1.3
+        → 本地打 tag v0.1.3
+6. git push origin main         → a184cc2..bbef7e3
+7. **等 versions 数组出现 0.1.3**（本次实测 11:36 → 11:41:34，约 4–5 分钟）
+8. git push origin v0.1.3       → 新 tag
+```
+
+第 3 步的 EXIT=1 不是失败，是**脚本在拦**：发布出去的必须是 git 里有的东西，
+否则 tag 复现不出来。
+
+### 三、registry 实况（发布后匿名查）
+
+| 项 | 值 |
+|---|---|
+| `versions` | `["0.0.0-stage", "0.1.1", "0.1.2", "0.1.3"]` |
+| `latest` | **0.1.3** |
+| `dist-tags` | `{ latest: "0.1.3" }` |
+| `0.1.3` 的发布时间 | `2026-11-12T03:40:59.120Z`（= 北京时间 11:40:59） |
+| `dist.fileCount` | **241**（与本地暂存目录一致） |
+
+⇒ **再次印证 §7.193 改掉的那条旧判据**：发布命令返回成功后，registry 的
+`versions` 数组要过 4–5 分钟才出现新版本 ⇒ 唯一可信的「已上线」判据仍是
+**看 `versions` 数组有没有新版本**，不是 `latest`、也不是 `npm view version`。
+
+### 四、把 npm 上的 0.1.3 拉下来拆开核验（决定性事实）
+
+| 检查项 | 0.1.1 | **0.1.3** |
+|---|---|---|
+| `lib/dsh-adapter/llm-drain-deadline.js` | **不存在** | **存在** |
+| `input-guard.js` 里 `isLocalPoolForward` 命中数 | **0** | **2**（`:53` import + `:274` 调用） |
+| 短路那行 | — | `if (isLocalPoolForward(options))` → `return false;` |
+| 出货文件数 | 238 | **241** |
+| **探针是否泄漏** | — | **0 命中**（`__edgeProbe` 全包扫描 = 0） |
+
+⇒ **0.1.3 是第一个带上这个修复的 npm 版本**（0.1.2 / 0.1.1 都没有），
+且 §7.194 的探针**没有**混进发布物（探针只在 `dist/probe/` 的本机试验包里）。
+
+### 五、tag 与 CI
+
+- tag：`v0.1.1` / `v0.1.2` / `v0.1.3` 都已在远端；`v0.1.3` → `bbef7e3`（发布提交）。
+- 推 tag 会触发 `publish.yml`：它的 publish job 会发现该版本已发过并**跳过**
+  （不会 409），release job 仍会建 GitHub Release。
+- 本机发布走 `--no-provenance`（`provenanceEnv()` 判定：不在受支持的 CI 环境里，
+  带 `--provenance` 必炸 —— §7.188 实测撞过）；CI 那条链仍带 `--provenance`。
+
+### 六、这一节**没有**做的事
+
+- **主人手上三件浏览器的事**（顺序不能反）：**先开账号 2FA**（WebAuthn / Windows Hello）
+  → **再挂 trusted publisher**（须勾「npm publish」，48 小时内推一次 tag）
+  → **轮换三个明文 key**（`deepseekApiKey` / `dashscopeApiKey` / `alitokenplanApiKey`）；
+- 「DELEGATE 到云端时闸门是否 fail-closed」仍是**待裁决**项（§7.189 / §7.190 的遗留）；
+- npm 包里 `full` 变体的两个惰性 patch 文件仍在（§7.188 的遗留，独立的产品决定）。
+
+---
