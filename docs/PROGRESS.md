@@ -21342,3 +21342,133 @@ pnpm --dir "C:\Users\cheng\.dsh\profiles\desktop" add "@dsh-edge/dsh-edge-agent@
 - npm 包里 `full` 变体的两个惰性 patch 文件仍在（§7.188 的遗留，独立的产品决定）。
 
 ---
+
+## §7.196 CI 从来没绿过：setup-node 与 pnpm/action-setup 顺序反了（2026-11-12）
+
+> 2026-11-12。主人指示：「修复 CI：把 pnpm/action-setup 移到 setup-node 前并升级
+> 相关 actions，提交推送后验证是否变绿」。
+
+### 一、症状：全部 152 次 run，零成功
+
+GitHub Actions API 实拉（`/actions/runs?per_page=100`，翻满 3 页）：
+
+| workflow | 次数 | 结论 |
+|---|---|---|
+| `ci` | **145** | 全部 failure |
+| `publish` | **3**（tag v0.1.1 / v0.1.2 / v0.1.3 各一次，另有 main 上的历史 run） | 全部 failure |
+| `upstream-latest` | **4** | 全部 failure |
+| **合计** | **152** | **success = 0** |
+
+⇒ **本仓库的 CI 从建仓起一次都没绿过**（最早一次 ci run 是 run #49 / 2026-10-26，
+最后一次是 run #145 / 2026-11-12，head_sha = `2444caf`，即 §7.195 那个发布提交）。
+
+### 二、失败点恒为同一处：Setup Node.js
+
+run #145 的 step 列表（实拉 `/actions/runs/<id>/jobs`）：
+
+```text
+Set up job                  success
+Checkout                    success
+Setup Node.js               failure   ← 挂在这里
+Setup pnpm                  skipped
+Install dependencies        skipped
+Build (…)                   skipped
+Verify (…)                  skipped
+Lint (eslint, …)            skipped
+Upload build artifact       skipped
+```
+
+后面 3 个 job（unit tests / unit tests (windows) / ops log coverage）整体 skipped。
+
+check-run annotation（**failure** 级，原文）：
+
+> Unable to locate executable file: pnpm. Please verify either the file path exists
+> or the file can be found within a directory specified by the PATH environment
+> variable. Also check the file mode to verify the file is executable.
+
+同一条 check 上还有一条 **warning** 级 annotation：
+
+> Node.js 20 is deprecated. The following actions target Node.js 20 but are being
+> forced to run on Node.js 24: actions/checkout@v4, actions/setup-node@v4.
+
+### 三、根因：两个 action 的顺序反了
+
+旧文件的 step 顺序是 **Checkout → Setup Node.js → Setup pnpm → Install**。
+
+而 `setup-node` 配了 `cache: 'pnpm'` ⇒ 它要去执行 `pnpm --version` 来定位 pnpm
+store 路径 ⇒ 那一刻 pnpm **还没装**（`pnpm/action-setup` 排在它后面）
+⇒ PATH 里找不到 pnpm ⇒ 该步直接失败 ⇒ 之后所有步全 skipped。
+
+**排除项**（避免把结论写歪）：
+
+- 不是 Node 版本写错：22.20 在 nodejs.org 真实存在；
+- 不是 runner 镜像坏了：报错指向「PATH 里没有 pnpm」，不是「找不到 node」；
+- 不是缓存本身的问题：`cache: 'pnpm'` 只是**触发点**，根因是 pnpm 装得太晚。
+
+### 四、连带后果（红得太早，此前没人看见）
+
+- `ci.yml` 的 4 个 job 全废 ⇒ **单测 / 覆盖率 / ops log 覆盖在 CI 上一次都没跑过**
+  （本地跑过 ≠ CI 跑过；`verify-ci-build-chain` 这道门禁保护的是步骤**在不在**，
+  它保护不了「整条 CI 根本没跑起来」）；
+- `publish.yml` 的 publish job 从未走到 `pnpm publish` ⇒ **trusted publishing
+  （OIDC）那条链一次都没被验证过**；
+- release job 被 `needs` 依赖跳过 ⇒ **GitHub Release 从来没建过**。
+
+⇒ 这解释了为什么 §7.193 查到的「账号没开 2FA / trusted publisher 没挂」不能靠
+推 tag 去验证：tag 推上去只会在同一个地方再次失败。
+
+### 五、修法（本次实际改动）
+
+| action | 旧 | 新 | 说明 |
+|---|---|---|---|
+| `actions/checkout` | `v4` | **`v7`** | 旧 @v4 目标 Node 20 |
+| `pnpm/action-setup` | `v4` | **`v6`** | **且提到 setup-node 之前** |
+| `actions/setup-node` | `v4` | **`v7`** | 旧 @v4 目标 Node 20 |
+| `actions/upload-artifact` | `v4` | **`v7`** | ci.yml 里 2 处 |
+
+理由两条，各自独立：
+
+1. **顺序**：pnpm 必须先于 setup-node 装好 —— 这条才是真正让 CI 一次没绿过的根因；
+2. **版本**：GitHub 已强制用 Node 24 跑那些目标 Node 20 的 action（annotation 里
+   明写），升到 v6/v7 后目标运行时即 Node 24，弃用警告消失。
+
+已核对 v6/v7 的 inputs 与现用参数**全部兼容**：`version` / `node-version` / `cache` /
+`registry-url` / `fetch-depth` 均在。
+
+**明确没动的**：`cache: 'pnpm'` 仍保留在 `setup-node` 上（pnpm 官方推荐顺序就是
+先装 pnpm、再让 setup-node 用它做缓存）；`node-version` 仍是 `22.20`；不动任何
+tag、不重发 npm 包、不改包内容。
+
+### 六、验证方式
+
+- push 到 `main` 自身就会触发 `ci.yml` ⇒ **不需要重发 npm、不需要碰 tag**；
+- 用 GitHub Actions API 轮询 run 结论（本机无 `gh` CLI，用 `node fetch` 取 JSON
+  再筛字段，避免整包输出）。
+
+实测结果见本节末尾「七、实测结果」。
+
+### 七、实测结果
+
+**（推送后的实况记录，见下方续记）**
+
+### 八、顺带记下的一条未来风险（这次没修）
+
+annotation 里还有一条 **notice** 级原文：
+
+> The "ubuntu-latest" label will migrate to Ubuntu 26 beginning October 19, 2026.
+
+⇒ 这次修的是「顺序」，但 **runner 镜像换代是另一条会独立把 CI 打红的线**：
+`e2e-opslog` 依赖 bash 脚本 + profile bootstrap + 装 `@deepseek-ai/dsh`，
+跨大版本最容易翻车。记在这里，等它真的迁移时按现象查，别到时候误以为是
+§7.196 的修复回退了。
+
+### 九、这一节**没有**做的事
+
+- npm 包内容、版本号（仍是 0.1.3）、`dist/` 产物**都没变**，也没有重发；
+- tag `v0.1.1` / `v0.1.2` / `v0.1.3` 一个没动；
+- 主人手上三件浏览器的事仍待办（§7.195 六：先开账号 2FA → 再挂 trusted publisher
+  → 轮换三个明文 key）；
+- 「DELEGATE 到云端时闸门是否 fail-closed」仍是**待裁决**项（§7.189 / §7.190 遗留）；
+- npm 包里 `full` 变体的两个惰性 patch 文件仍在（独立的产品决定，主人未拍板）。
+
+---

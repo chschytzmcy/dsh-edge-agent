@@ -10,6 +10,19 @@
 # Publishing targets:
 #   - npm (public, requires NPM_TOKEN)
 #   - GitHub release (auto-generated notes)
+#
+# §7.196 (2026-11-12): 本文件此前**从没跑到过 publish 那一步** ——
+# tag v0.1.3 的那次（run #3）失败点也是「Setup Node.js」，错误原文：
+# 「Unable to locate executable file: pnpm」。
+#
+# 根因与修法与 ci.yml 完全同一处：**setup-node 与 pnpm/action-setup 的顺序反了**。
+# setup-node 的 `cache: 'pnpm'` 要执行 `pnpm --version` 定位 store 路径，
+# 而 pnpm 当时排在它后面 ⇒ pnpm 还不存在 ⇒ 该步直接失败 ⇒ 后面全 skipped。
+# 现在 pnpm/action-setup 提到 setup-node **之前**，action 也升到 node24 版本
+# （setup-node@v7 / checkout@v7 / pnpm/action-setup@v6）。
+#
+# ⇒ 推 tag 之前**必须先确认 ci.yml 绿了**：publish job 要靠它验证产物
+# （lib/client.js、dist/installable/、dist/.npm-stage/），此前这一步从未跑过。
 
 name: publish
 
@@ -30,21 +43,22 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
+      # pnpm 必须先于 setup-node 装好（原因见文件头 §7.196）
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11.7.0
+
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '22.20'
           registry-url: 'https://registry.npmjs.org'
           cache: 'pnpm'
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 11.7.0
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -204,7 +218,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
