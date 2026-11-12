@@ -5,16 +5,15 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%5E22.19%20%7C%7C%20%3E%3D24-blue)](package.json)
 
-给 DSH 桌面版 / CLI 装上一个新的 **Agent Preset —— 边缘模式**：宿主自带的
+给 DSH 桌面版 / CLI 增加一个 **Agent Preset —— 边缘模式**：在宿主自带的
 标准 / 创造 / PTC / 极简之外，**边缘模式 = 标准模式 + 本项目的全部能力**
 （隐私护栏 · 意图判定 · 路由决策 · PII 脱敏 · Realm 闸门 · 审计链 · Edge 面板）。
-默认仍是标准模式，在设置页选中「边缘模式」才生效。
 
-> 这是**一种工作方式**，不是替代品：标准模式下本插件**完全不生效**（Edge tab 常驻可见）。
-> 判一个会话有没有走本链路，**唯一判据是审计链**。
-
-本包启用的是 `desktop-safe` 变体 —— 只 insert 插件行，不改写宿主的 persona /
-approval / sandbox 等全局设置。
+- **默认不生效**：要在设置页选中「边缘模式」才启用；标准模式下本插件**完全不生效**
+  （只有右栏的 Edge tab 常驻可见）。
+- **不接管宿主设置**：本包走 `desktop-safe` 变体 —— 只挂插件，不改写宿主的
+  persona / approval / sandbox 等全局设置。
+- **判据只有一条**：一个会话有没有走本链路，看**审计链**。
 
 ---
 
