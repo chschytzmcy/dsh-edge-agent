@@ -52,6 +52,12 @@
 //      secrets directly in if conditions, and doing it invalidates the WHOLE
 //      workflow file (the run shows the file path as its name and has no
 //      jobs ⇒ the whole CI dies with no log and no annotation to read).
+//   6. §7.199: vitest parameters must NOT be forwarded through `pnpm test -- …`.
+//      pnpm versions differ on whether the literal `--` reaches the script,
+//      and vitest's CLI parser (cac) treats everything after `--` as POSITIONAL
+//      FILTERS ⇒ `--reporter=json` / `--outputFile=…` are silently dropped and
+//      the run still exits 0. The parameters must live in package.json#scripts
+//      ("test:ci") and the workflow must call that script by name.
 //
 // A dropped step in a workflow turns this script red BEFORE the push,
 // instead of after.
@@ -231,6 +237,93 @@ export function auditJob(workflowText, jobName, scripts) {
   return { failures, runText, foundJob: true }
 }
 
+/**
+ * §7.199: vitest 的参数**不能**靠 `pnpm test -- …` 转发。
+ *
+ * 实测（run #153）：runner 上 `pnpm test -- --run --reporter=json
+ * --outputFile=/tmp/vitest.json` **没把参数交给 vitest** —— pnpm 把**字面 `--`**
+ * 透传给了脚本，vitest 的 CLI 解析器（cac）把 `--` 之后的一切当成**位置过滤器**
+ * ⇒ `--reporter=json` / `--outputFile=…` 被静默丢弃 ⇒ 跑的是默认 reporter、
+ * 报告文件不生成、**退出码仍是 0**。本机可重复复现（逐条同症状）：
+ *   node node_modules/vitest/vitest.mjs run tests/unit -- --reporter=json --outputFile=X
+ *
+ * 修法：参数烤进 package.json#scripts["test:ci"]，workflow 只调脚本名。
+ *
+ * 这里挡的是「写法回归」：有人图省事把命令改回 `pnpm test -- …`，症状是
+ * **假绿**（测试照跑、退出码 0），比红更危险 —— 所以必须挡住。
+ *
+ * 注释行不算（文档里经常要写出这个坏例子）。
+ *
+ * @param {string} workflowText
+ * @returns {string[]} the offending lines (empty when sound)
+ */
+export function findVitestArgForwarding(workflowText) {
+  const problems = []
+  for (const line of workflowText.split(/\r?\n/u)) {
+    if (line.trim().startsWith('#')) continue
+    const m = /\b(?:npm|pnpm)\s+(?:run\s+)?test\b/u.exec(line)
+    if (!m) continue
+    const after = line.slice(m.index + m[0].length)
+    // 命中 `--`（后面还跟着东西）⇒ 参数转发写法。
+    if (/(?:^|\s)--(?!\s*$)/u.test(after)) problems.push(line.trim())
+  }
+  return problems
+}
+
+/**
+ * §7.199: package.json 里的 `test:ci` 脚本必须自带 reporter 与 outputFile。
+ *
+ * @param {Record<string, string>} scripts package.json#scripts
+ * @returns {string[]} the problems (empty when sound)
+ */
+export function auditUnitTestScript(scripts) {
+  const failures = []
+  const ci = scripts['test:ci']
+  if (typeof ci !== 'string' || !ci.trim()) {
+    failures.push(
+      'package.json has no "test:ci" script — §7.199: the CI unit step must call a script'
+      + ' that bakes in --reporter=json/--outputFile, instead of forwarding them through'
+      + ' `pnpm test -- …` (pnpm may pass the literal `--` through, and vitest then treats'
+      + ' the flags as positional filters ⇒ no report file, exit code still 0).',
+    )
+    return failures
+  }
+  if (!/--reporter=json\b/u.test(ci)) {
+    failures.push('package.json#scripts["test:ci"] does not pass --reporter=json — the count gate needs the JSON report.')
+  }
+  const out = /--outputFile=(\S+)/u.exec(ci)
+  if (!out) {
+    failures.push('package.json#scripts["test:ci"] does not pass --outputFile=<path> — the count gate needs the JSON report file.')
+  } else if (out[1].startsWith('/') || /^[A-Za-z]:/u.test(out[1])) {
+    failures.push(
+      `package.json#scripts["test:ci"] writes the report to an absolute path (${out[1]}) — keep it`
+      + ' inside the repository (dist/ is gitignored) so the path means the same thing on every'
+      + ' runner and the report never lands outside the checkout.',
+    )
+  }
+  return failures
+}
+
+/**
+ * §7.199: 如果 workflow 有 `test:` job，它必须调 `pnpm run test:ci`。
+ *
+ * @param {string} workflowText
+ * @returns {string[]} the problems (empty when sound)
+ */
+export function auditUnitTestJob(workflowText) {
+  const failures = []
+  const body = extractJob(workflowText, 'test')
+  if (body === null) return failures // 没有单测 job 的 workflow 不强制
+  if (!/(?:npm|pnpm)\s+run\s+test:ci\b/u.test(body)) {
+    failures.push(
+      'the `test:` job does not run `pnpm run test:ci` — §7.199: the JSON reporter flags'
+      + ' must come from package.json#scripts["test:ci"], not from `pnpm test -- …`'
+      + ' forwarding (a literal `--` makes vitest drop the flags and still exit 0).',
+    )
+  }
+  return failures
+}
+
 /* ── self-proof + refutation ───────────────────────────────────────────── */
 
 /**
@@ -369,6 +462,61 @@ function selftest() {
     expect('改成 env. 上下文 ⇒ 无问题', findSecretInIf(good).length, 0)
   }
 
+  // 10. §7.199: vitest 参数**不能**靠 `pnpm test -- …` 转发。
+  {
+    const bad = [
+      '      - name: Run unit tests',
+      '        run: |',
+      '          pnpm test -- --run --reporter=json --outputFile=/tmp/vitest.json',
+      '',
+    ].join('\n')
+    const problems = findVitestArgForwarding(bad)
+    expect('pnpm test -- 转发参数 ⇒ 报 1 项', problems.length, 1)
+    expect('问题里点名 pnpm test', problems[0].includes('pnpm test'), true)
+
+    expect('pnpm run test:ci ⇒ 无问题', findVitestArgForwarding('        run: pnpm run test:ci\n').length, 0)
+    expect('pnpm install --frozen-lockfile ⇒ 无问题', findVitestArgForwarding('        run: pnpm install --frozen-lockfile\n').length, 0)
+    expect('注释里的坏例子不算', findVitestArgForwarding('# pnpm test -- --reporter=json 是坏写法\n').length, 0)
+  }
+
+  // 11. §7.199: package.json 的 test:ci 脚本必须自带 reporter + outputFile，
+  //     且报告写在仓库内（相对路径）。
+  {
+    expect('没有 test:ci 脚本 ⇒ 报 1 项', auditUnitTestScript({}).length, 1)
+    expect(
+      'test:ci 缺 --reporter=json ⇒ 报 1 项',
+      auditUnitTestScript({ 'test:ci': 'vitest run tests/unit --outputFile=dist/probe/vitest-ci.json' }).length,
+      1,
+    )
+    expect(
+      'test:ci 的报告写在绝对路径 ⇒ 报 1 项',
+      auditUnitTestScript({ 'test:ci': 'vitest run tests/unit --reporter=json --outputFile=/tmp/vitest.json' }).length,
+      1,
+    )
+    expect(
+      'test:ci 正确 ⇒ 无失败',
+      auditUnitTestScript({ 'test:ci': 'vitest run tests/unit --reporter=json --outputFile=dist/probe/vitest-ci.json' }).length,
+      0,
+    )
+  }
+
+  // 12. §7.199: 有 `test:` job 的 workflow 必须调 `pnpm run test:ci`。
+  {
+    const withTestJob = (runBody) => [
+      'name: fixture',
+      'on: push',
+      'jobs:',
+      '  test:',
+      '    steps:',
+      '      - name: Run unit tests',
+      `        run: ${runBody}`,
+      '',
+    ].join('\n')
+    expect('调 pnpm run test:ci ⇒ 无失败', auditUnitTestJob(withTestJob('pnpm run test:ci')).length, 0)
+    expect('调 pnpm test -- ⇒ 报 1 项', auditUnitTestJob(withTestJob('pnpm test -- --reporter=json')).length, 1)
+    expect('没有 test job ⇒ 无失败', auditUnitTestJob('name: fixture\non: push\njobs:\n  build:\n    steps: []\n').length, 0)
+  }
+
   if (failures > 0) {
     console.error(`\nselftest FAILED: ${failures} assertion(s)`)
     process.exit(2)
@@ -414,7 +562,25 @@ if (args.includes('--selftest')) {
         + ' job-level `env:` and reference it as `env.<NAME>` in the condition.',
       )
     }
+    // §7.199: vitest 参数靠 `pnpm test -- …` 转发 ⇒ pnpm 把字面 `--` 透传给脚本
+    // ⇒ vitest 把这些 flag 当位置过滤器丢弃 ⇒ **报告文件不生成、退出码仍是 0**
+    // （假绿：测试照跑，但计数门禁根本没判）。参数必须烤进 package.json 的脚本。
+    for (const line of findVitestArgForwarding(workflow)) {
+      failures.push(
+        `${target.file}: \`${line}\` forwards vitest flags through \`pnpm test -- …\` — §7.199:`
+        + ' pnpm may pass the literal `--` through, and vitest (cac) then treats'
+        + ' --reporter/--outputFile as POSITIONAL FILTERS ⇒ no JSON report, exit code still 0.'
+        + ' Put the flags in package.json#scripts["test:ci"] and call that script by name.',
+      )
+    }
+    for (const f of auditUnitTestJob(workflow)) {
+      failures.push(`${target.file}: ${f}`)
+    }
     audited.push(`${target.file}(${target.job})`)
+  }
+
+  for (const f of auditUnitTestScript(scripts)) {
+    failures.push(`package.json: ${f}`)
   }
 
   if (failures.length > 0) {

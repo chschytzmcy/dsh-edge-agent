@@ -21734,7 +21734,7 @@ records:
   但那句话里的修复路径指的是上游插件的配置项 ⇒ 我们翻译成自己的
   `WEB_PROVIDER_UNAVAILABLE`（code 不变，兼容既有断言），文案点名四条来源。
 
-配套单测 **5 条**（`tests/unit/web-search-tavily-bocha.test.ts`，新增
+配套单测 **6 条**（`tests/unit/web-search-tavily-bocha.test.ts`，新增
 `§7.197: Tier-3 走主机凭据（apply() 真接线）`）—— 驱动的是 **`apply()` 的真接线**，
 不是把接线抄一份到测试里（抄一遍的话，接线本身坏掉时测试还是绿的）：
 
@@ -21743,9 +21743,11 @@ records:
 3. 不是账号路由 ⇒ **不用**账号令牌，退回 API key；
 4. 一把凭据都没有 ⇒ `available()` 仍为 true（不再硬拒），搜索时抛可执行提示，
    且**一次请求都不发**；
-5. 宿主一个通道都没有 ⇒ `available()` 为 false（保持旧语义）。
+5. 宿主一个通道都没有 ⇒ `available()` 为 false（保持旧语义）；
+6. 宿主服务**在 `apply()` 之后才注册** ⇒ 照样用得上（通道是惰性取值 ——
+   宿主的插件装载顺序不保证 `credentials` 在我们 apply() 之前就绪）。
 
-本仓单测：**24/24 绿**（该文件）；全仓门禁 **29 道全绿 EXIT=0**。
+本仓单测：**25/25 绿**（该文件）；全仓门禁 **29 道全绿 EXIT=0**。
 
 ### 五、主人这台机器上**立刻**能生效的办法（两条，都不用改代码）
 
@@ -21763,5 +21765,164 @@ records:
 - **没有**改任何凭据、**没有**新建 `edge.json`、**没有**动主人的模型配置；
 - npm 包版本仍是 0.1.3（**还没发**），本节的修复在 `main` 上，未进任何已装版本；
 - 「DELEGATE 到云端时闸门是否 fail-closed」仍是待裁决项（§7.189 / §7.190 遗留）。
+
+---
+
+## §7.199 `unit tests` job 红了一百多轮：vitest 的参数被 pnpm 的 `--` 吃掉了（2026-11-12）
+
+### 一、症状：测试**跑完了**、退出码 **0**，但报告文件不存在
+
+run #153（sha `1413a40`）的 4 条注解里，最关键的一条原文（GitHub 公开可读，
+匿名 `GET /repos/chschytzmcy/dsh-edge-agent/check-runs/<id>/annotations` 就能取）：
+
+```
+::error::vitest 没有写出 /tmp/vitest.json —— 计数门禁无法判定
+vitest exit=0
+--- stdout tail ---
+ ✓ tests/unit/llm-max-turns.test.ts (7 tests) 5ms
+ ...
+ Test Files  82 passed (82)
+      Tests  1626 passed | 3 skipped (1629)
+   Duration  13.03s (transform 2.54s, setup 266ms, collect 6.93s, tests 14.26s, ...)
+--- stderr tail ---
+  Plugin: vite:esbuild
+  File: /home/runner/work/dsh-edge-agent/dsh-edge-agent/tests/unit/openai-sse-think-off.test.ts
+  [vite] warning: Unrecognized target environment "es2024"
+--- /tmp listing ---
+total 144
+... (没有 vitest.json)
+```
+
+**关键在 stdout**：那是**默认 reporter** 的输出（`✓` 逐文件 + `Test Files 82 passed`），
+不是 JSON reporter。也就是说 **`--reporter=json` 根本没生效**；而
+`--outputFile=/tmp/vitest.json` 跟着一起没生效 ⇒ 报告文件不存在 ⇒
+「Assert test count」这一门禁**无从判定**。
+
+而且 **`vitest exit=0`** —— 测试是真跑了、真通过了，**退出码还是绿的**。
+这个形状比红更危险：它看起来像「单测过了」，实际是**计数门禁被静默绕过**。
+
+### 二、根因：pnpm 把**字面 `--`** 透传给脚本，vitest 的 cac 把它之后的一切当**位置过滤器**
+
+vitest 的 CLI 解析器是 **cac**。cac 的语义是：**`--` 表示选项结束**，其后的一切
+都是**位置参数（过滤器）**，不再是选项。所以如果脚本收到的是
+
+```
+vitest run tests/unit -- --run --reporter=json --outputFile=/tmp/vitest.json
+```
+
+那么 `--reporter=json` 与 `--outputFile=…` 是**过滤器**，不是选项 ⇒
+vitest 用默认 reporter 跑、**不写文件**、过滤器又匹配不到任何测试文件 ⇒
+**82 个文件照跑、1629 条测试照过、退出码 0**。症状与注解**逐条吻合**。
+
+而 CI 那一步当时写的是：
+
+```yaml
+pnpm test -- --run --reporter=json --outputFile=/tmp/vitest.json \
+  > /tmp/vitest.out 2> /tmp/vitest.err || VITEST_EXIT=$?
+```
+
+**pnpm 有没有把 `--` 剥掉，不同环境下并不一致** —— 本机实测：
+
+| 调用方式 | 脚本实际收到的参数 |
+|---|---|
+| 本机全局 pnpm 11.7.0：`pnpm test -- --help` | `vitest run tests/unit "--help"`（**`--` 被剥掉**）|
+| npx 起的 pnpm 10.15.0：`npx pnpm@10.15.0 test -- --help` | `vitest run tests/unit "--" "--help"`（**`--` 原样透传**）|
+| npx 起的 pnpm 11.7.0：`npx pnpm@11.7.0 test -- --help` | `vitest run tests/unit "--" "--help"`（**`--` 原样透传**）|
+| **runner 上（run #153）** | **症状证明 `--` 原样透传到了 vitest** |
+
+⇒ **结论不是「pnpm 有 bug」，而是「靠 `--` 转发参数这件事本身不安全」**：
+去留取决于 pnpm 版本 + 调用方式 + runner 环境。runner 上具体是哪个 pnpm
+（`pnpm/action-setup@v6` 装的）当时拿不到（log 要登录），但这已经不影响修法 ——
+修法就是**不再依赖 `--`**。
+
+### 三、本机复现（可重复，逐条同症状）
+
+```powershell
+# A. 坏形态：-- 在 vitest 之前 ⇒ 报告文件不生成、默认 reporter、exit 0
+node node_modules/vitest/vitest.mjs run tests/unit -- --reporter=json --outputFile=<abs>
+#   → FILE MISSING；stdout 是默认 reporter；exit=0
+
+# B. 好形态（去掉 --）⇒ 报告文件正常写出（541 KB）、JSON reporter
+node node_modules/vitest/vitest.mjs run tests/unit --reporter=json --outputFile=<abs>
+#   → JSON report written to …；exit=0
+```
+
+Node 版本**不是**变量：用 Node 22.20（与 runner 同版本）跑 A，仍然是
+「FILE MISSING」；用 Node 24.13 跑 A 也一样。本机无 WSL/Docker，
+但症状已与 runner 注解逐条吻合，**足以定因**。
+
+### 四、为什么前面 8 轮（run #146–#153）没查出来
+
+§7.198 加的诊断是对的（把现场写进公开注解），但**注解被 GitHub 截断了**：
+诊断里 `--- /tmp listing ---` 用了 `head -20`，加上 stdout/stderr 各 `tail -20`，
+整条注解超过了长度上限 ⇒ **尾部被砍掉**，其中就有 `node --version` /
+`pnpm --version`。⇒ 前几轮看到的「退出码 0、没有报告文件」是对的，但**没有
+任何证据说明参数去哪了**，因为命令回显（pnpm 打印的 `$ vitest run …`）在
+stdout 的**头部**，而诊断只取了尾部。
+
+⇒ 顺带修的两件事：**诊断重排**（工具版本 → 命令回显 → 退出码 → 尾部，短的在前），
+以及把工具版本**同时**记成 `::notice::` 注解（成功路径也留痕 ⇒ 公开可读，
+不依赖登录看 log）。
+
+### 五、修法：参数**烤进 package.json 的脚本**，workflow 只调脚本名
+
+`package.json`：
+
+```json
+"test:ci": "vitest run tests/unit --reporter=json --outputFile=dist/probe/vitest-ci.json"
+```
+
+`.github/workflows/ci.yml` 的单测步改成：
+
+```yaml
+pnpm run test:ci > /tmp/vitest.out 2> /tmp/vitest.err || VITEST_EXIT=$?
+```
+
+⇒ **全程不出现 `--`** ⇒ 哪个 pnpm 版本、哪种调用方式都成立。
+报告路径也从 `/tmp/vitest.json` 改成**仓库内相对路径**
+`dist/probe/vitest-ci.json`（`dist/` 已 gitignore；见 `.gitignore` 的 `dist/`）：
+
+- 不再依赖 runner 的 `/tmp` 布局，也不再有 Windows/Linux 路径语义差异；
+- `files` 字段里没有 `dist/` ⇒ **不影响 npm 出货面**（实测出货仍是 241 个文件）。
+
+「Assert test count」那一步同步改读新路径。
+
+### 六、顺带抓到的**第二处**同形态缺陷
+
+新门禁一上来就红了：
+
+```
+publish.yml: `run: pnpm test -- --run` forwards vitest flags through `pnpm test -- …`
+```
+
+`publish.yml` 的「Run tests」也写了 `pnpm test -- --run`。那里的 `--run` 本来
+就是冗余（`test` 脚本已经是 `vitest run tests/unit`），所以**当时没出事**；
+但同一种写法配上 `--reporter=json` 就会让 CI 计数门禁**假绿**（§7.198 那个坑）。
+⇒ 改成裸 `pnpm test`。
+
+### 七、新门禁：`scripts/verify-ci-build-chain.mjs` 增 3 项检查
+
+这类缺陷「不会让 CI 红、只会让 CI 假绿」，所以必须**在 push 前**挡住：
+
+1. `findVitestArgForwarding()`：**任何** workflow 里都不许出现
+   `pnpm test -- …` / `npm test -- …` 这种**靠 `--` 转发 vitest 参数**的写法
+   （注释行不算 —— 文档里经常要写出这个坏例子）；
+2. `auditUnitTestScript()`：`package.json#scripts["test:ci"]` 必须存在、
+   必须自带 `--reporter=json` 与 `--outputFile=<path>`，
+   且报告路径**必须在仓库内**（不许绝对路径 —— `/tmp` 在不同 runner 上语义不同）；
+3. `auditUnitTestJob()`：有 `test:` job 的 workflow 必须调 `pnpm run test:ci`。
+
+自证从 9 组增到 **12 组**（新增 12 条断言），并且**当场抓到了 publish.yml 的那处**
+（见上一节）—— 门禁不是空转的。
+
+### 八、这一节**没有**做的事
+
+- **没有**改任何 runner 环境、**没有**动 pnpm/action-setup 的版本策略
+  （`version: 11.7.0` 原样保留）—— 修法不依赖 pnpm 版本；
+- **没有**给 e2e job 配 Actions secrets ⇒ `ops log coverage` 那一步仍然
+  **skipped**（带 `::warning::` 明说，不假绿）；
+- **没有**发 npm 包 ⇒ §7.198 的 web_search 修复仍未进任何已装版本；
+- runner 上的 pnpm **具体是哪个版本**当时仍未取证（log 要登录）——
+  §7.199 的修法不依赖这个答案，但本节起 `::notice::` 会把版本记进公开注解。
 
 ---

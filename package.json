@@ -251,6 +251,7 @@
     "build": "node scripts/run.mjs compile typecheck:client build:client build:installable pack:tarball stage:npm verify:build",
     "lint": "eslint src tests/unit scripts",
     "test": "vitest run tests/unit",
+    "test:ci": "vitest run tests/unit --reporter=json --outputFile=dist/probe/vitest-ci.json",
     "test:coverage": "vitest run tests/unit --coverage",
     "e2e:coverage": "bash scripts/e2e-ops-log-coverage.sh",
     "e2e:benchmark": "bash scripts/e2e-model-quality-bench.sh",

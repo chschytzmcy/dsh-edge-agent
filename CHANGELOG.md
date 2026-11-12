@@ -9,6 +9,58 @@
 
 ---
 
+## [Unreleased]
+
+**让网页搜索接上 DSH 配的 DeepSeek 模型，并修掉 CI 里「单测假绿」的那道门禁。**
+（2026-11-12，§7.196 / §7.197 / §7.198 / §7.199）
+
+### 行为修复：网页搜索报「registered but unavailable」
+
+**症状**：桌面版问「查询最新的美国新闻」⇒ 报
+`Error: configured web provider "tavily-bocha-fallback" is registered but unavailable`
+⇒ **搜索根本没发生**（不是搜不到，是没搜）。
+
+**根因**：我们的 Tier-3 凭据解析只认 `edge.json` 里的 `secrets.deepseekApiKey`，
+而主机凭据服务 / DSH 账号令牌 / 启动环境**一条都没接** ⇒ 三把 key 全空 ⇒
+`available()` 恒为 false ⇒ 宿主直接判定「配了但不可用」。
+
+**修复**（§7.198）：凭据解析按**上游同款**顺序接上主机 ——
+①`deepseek-account` 路由的**账号令牌** → ②`edge.json` 的 `secrets.deepseekApiKey`
+→ ③**主机凭据服务**（`ctx.credentials.resolve`）→ ④**启动环境**。
+且凭据通道**惰性取值**（每次搜索才取），宿主服务晚注册也不丢路。
+
+**修好之后怎么用**（两条都不用改代码）：
+
+1. **切到 DSH 里配的 DeepSeek 模型**（账号登录已在库里）⇒ 走 `deepseek-account`
+   路由的会话自动用账号令牌搜；
+2. 或给主机存一把 `DEEPSEEK_API_KEY`：桌面端「Plugins > Built-in plugin settings >
+   Web search」写入即可。
+
+### 修掉 CI 里「单测假绿」的那道门禁
+
+**症状**：CI 的 `unit tests` job 红了百余轮，注解是
+`vitest 没有写出 /tmp/vitest.json —— 计数门禁无法判定`，而诊断里
+**`vitest exit=0`**、stdout 是默认 reporter 的输出、82 个文件 1629 条测试**全过**。
+
+**根因**（§7.199）：命令写成 `pnpm test -- --reporter=json --outputFile=…`，
+而 pnpm 在 runner 上把**字面 `--`** 透传给了脚本 ⇒ vitest 的 CLI 解析器（cac）
+把 `--` 之后的一切当成**位置过滤器** ⇒ `--reporter` / `--outputFile` 被静默丢弃
+⇒ 报告文件不生成、**退出码仍是 0** ⇒ 计数门禁被静默绕过（假绿）。
+
+**修复**：参数**烤进 package.json 的 `test:ci` 脚本**，workflow 只调脚本名
+（全程不出现 `--`），报告路径改用仓库内相对路径；并给
+`scripts/verify-ci-build-chain.mjs` 加 3 项检查（挡「用 `--` 转发 vitest 参数」
+这种写法，自证从 9 组增到 12 组）。
+
+### 对使用者的影响
+
+**包内容不变**（仍是 241 个出货文件）—— 上面第一条是行为修复（搜索能用了），
+第二条只改 CI 与门禁，**不进 npm 包**。
+
+> ⚠️ **0.1.3 不含网页搜索的修复** ⇒ 停在 0.1.3 的用户仍会看到那个报错。
+
+---
+
 ## [0.1.3] — 2026-11-12
 
 **修掉「边缘模式发请求卡住」，并把发版前置条件变成第 29 道门禁。** 2026-11-11 → 2026-11-12。

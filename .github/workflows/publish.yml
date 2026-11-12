@@ -94,8 +94,14 @@ jobs:
       - name: Verify (boundary / contract / patch-surface / plugin-spec / package)
         run: pnpm run verify:build
 
+      # §7.199: 原来是 `pnpm test -- --run`。那个 `--` 是**危险**的 ——
+      # pnpm 某些版本会把字面 `--` 透传给脚本，vitest 的 CLI 解析器（cac）
+      # 把 `--` 之后的一切当成**位置过滤器** ⇒ 这里的 `--run` 会被丢掉
+      # （本仓的 test 脚本本来就含 `run`，所以丢掉也无害 —— 但同一种写法
+      # 配上 `--reporter=json` 就会让 CI 的计数门禁**假绿**，见 ci.yml）。
+      # ⇒ 参数一律靠 package.json 的脚本，不靠 `--` 转发。
       - name: Run tests
-        run: pnpm test -- --run
+        run: pnpm test
 
       # A tag that does not match the manifest version publishes a version
       # nobody can find. Cheap to check, and the failure is otherwise silent:

@@ -46,6 +46,23 @@
 # 并把 action 升到 node24 版本（setup-node@v7 / checkout@v7 /
 # pnpm/action-setup@v6 / upload-artifact@v7）—— 旧的 @v4 目标是 Node 20，
 # GitHub 已强制用 Node 24 跑它们并在报弃用警告。
+#
+# §7.199 (2026-11-12): 单测步的**参数转发**是个陷阱 —— `pnpm test -- --reporter=json
+# --outputFile=…` 在 runner 上**没把这两个参数交给 vitest**：pnpm 把**字面 `--`**
+# 透传给了脚本，vitest 的 CLI 解析器（cac）把 `--` 之后的一切当成**位置过滤器**
+# ⇒ `--reporter=json` / `--outputFile=…` 被静默丢弃 ⇒ 跑的是默认 reporter、
+# 报告文件没生成、**退出码还是 0**（run #153 实况：82 个文件全跑、1629 条测试、
+# exit=0，但 /tmp/vitest.json 不存在 ⇒ 计数门禁无从判定）。
+#
+# 本机复现（可重复）：`node node_modules/vitest/vitest.mjs run tests/unit --
+# --reporter=json --outputFile=X` ⇒ 默认 reporter、exit=0、报告文件不生成，
+# 与 runner 症状逐条一致。
+#
+# 修法：参数**烤进 package.json 的 `test:ci` 脚本**（`--reporter=json
+# --outputFile=dist/probe/vitest-ci.json`），workflow 只调 `pnpm run test:ci`
+# —— 全程不出现 `--`，彻底不依赖 pnpm 的 `--` 转发语义（哪个 pnpm 版本都成立）。
+# 报告路径也改成**仓库内相对路径**（dist/ 已 gitignore），不再依赖 /tmp。
+# scripts/verify-ci-build-chain.mjs 现在会挡住「用 `--` 转发 vitest 参数」这个写法。
 
 name: ci
 
@@ -125,7 +142,7 @@ jobs:
           retention-days: 7
 
   test:
-    name: unit tests (48 files, §7.100 delegate coverage)
+    name: unit tests (vitest suite, §7.199)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs: build
@@ -152,27 +169,37 @@ jobs:
       - name: Compile
         run: pnpm run compile
 
+      # §7.199: 这条命令**不能**写成 `pnpm test -- --reporter=json …` ——
+      # 实测 run #153：某些 pnpm 版本会把**字面 `--`** 传给脚本，vitest 的 CLI
+      # 解析器（cac）把 `--` 之后的一切当作**位置过滤器** ⇒ `--reporter=json` /
+      # `--outputFile=…` 被静默丢弃 ⇒ 跑的是默认 reporter、报告文件不生成、
+      # **退出码仍是 0**（"看起来绿了"，其实计数门禁根本没判）。
+      # ⇒ 参数**烤进 package.json 的 `test:ci` 脚本**里，workflow 只调脚本名，
+      #    彻底不依赖 pnpm 的 `--` 转发语义。
       - name: Run unit tests (JSON reporter for count assertion)
         run: |
           VITEST_EXIT=0
-          pnpm test -- --run --reporter=json --outputFile=/tmp/vitest.json \
-            > /tmp/vitest.out 2> /tmp/vitest.err || VITEST_EXIT=$?
+          pnpm run test:ci > /tmp/vitest.out 2> /tmp/vitest.err || VITEST_EXIT=$?
           echo "vitest exit=${VITEST_EXIT}"
+          # §7.199: 工具链版本记成**注解** —— 注解是公开可读的（匿名也能取），
+          # 而 runner 的 log 要登录才看得到 ⇒ 版本差异只能靠这条注解留痕。
+          # （本节根因就是「runner 上的 pnpm 与本机行为不一致」，版本必须留证。）
+          echo "::notice::toolchain — node $(node --version), pnpm $(pnpm --version)"
           # §7.198: 报告没写出来 ⇒ 计数门禁无从判定 ⇒ 这一步直接红，并把
-          # **现场**（退出码 + stdout/stderr 尾部 + 目录清单）写进注解 ——
-          # 注解是公开可读的，不必登录看 log。
-          if [ ! -f /tmp/vitest.json ]; then
+          # **现场**写进注解 —— 注解是公开可读的，不必登录看 log。
+          # §7.199: 诊断的**顺序**改了 —— GitHub 会截断过长的注解（实测
+          # run #153 的注解在 /tmp 清单处被砍掉，工具版本根本没进去）⇒
+          # 最重要的几行放最前面：工具版本 → 实际执行的命令行 → 退出码 → 尾部。
+          if [ ! -f dist/probe/vitest-ci.json ]; then
             {
+              echo "node $(node --version) | pnpm $(pnpm --version)"
               echo "vitest exit=${VITEST_EXIT}"
+              echo "--- command echo (stdout head) ---"
+              head -3 /tmp/vitest.out 2>/dev/null || echo "(no stdout)"
               echo "--- stdout tail ---"
-              tail -20 /tmp/vitest.out 2>/dev/null || echo "(no stdout)"
+              tail -8 /tmp/vitest.out 2>/dev/null || echo "(no stdout)"
               echo "--- stderr tail ---"
-              tail -20 /tmp/vitest.err 2>/dev/null || echo "(no stderr)"
-              echo "--- /tmp listing ---"
-              ls -la /tmp 2>/dev/null | head -20 || echo "(no /tmp)"
-              echo "--- tool versions ---"
-              node --version
-              pnpm --version
+              tail -8 /tmp/vitest.err 2>/dev/null || echo "(no stderr)"
             } > /tmp/vitest.diag 2>&1 || true
             # ⚠️ GitHub 的 workflow command 是**单行**的：注解消息里出现换行，
             # 那一行之后的全部内容就变成普通日志、**不进注解**。⇒ 整段诊断要
@@ -181,24 +208,25 @@ jobs:
             # 而 GNU sed 4.9 在「先 %25 再 N 循环」的组合下会把 %25 吞掉
             # （本机 Git Bash 4.9 实测）⇒ 只有 awk 这条往返是对的。
             DIAG=$(awk 'BEGIN{ORS=""} {gsub(/%/,"%25"); printf "%s%%0A", $0}' /tmp/vitest.diag 2>/dev/null)
-            echo "::error::vitest 没有写出 /tmp/vitest.json —— 计数门禁无法判定%0A${DIAG}"
+            echo "::error::vitest 没有写出 dist/probe/vitest-ci.json —— 计数门禁无法判定%0A${DIAG}"
             exit 1
           fi
 
       - name: Assert test count
         run: |
           set -e
-          TOTAL=$(node -e "const r=require('/tmp/vitest.json'); console.log(r.numTotalTests)")
-          PASSED=$(node -e "const r=require('/tmp/vitest.json'); console.log(r.numPassedTests)")
-          FAILED=$(node -e "const r=require('/tmp/vitest.json'); console.log(r.numFailedTests)")
-          SKIPPED=$(node -e "const r=require('/tmp/vitest.json'); console.log(r.numPendingTests ?? 0)")
+          REPORT=dist/probe/vitest-ci.json
+          TOTAL=$(node -e "const r=require('./${REPORT}'); console.log(r.numTotalTests)")
+          PASSED=$(node -e "const r=require('./${REPORT}'); console.log(r.numPassedTests)")
+          FAILED=$(node -e "const r=require('./${REPORT}'); console.log(r.numFailedTests)")
+          SKIPPED=$(node -e "const r=require('./${REPORT}'); console.log(r.numPendingTests ?? 0)")
           echo "Total: $TOTAL, Passed: $PASSED, Failed: $FAILED, Skipped: $SKIPPED"
           if [ "$FAILED" -ne 0 ]; then
             echo "::error::单元测试有 $FAILED 个 FAIL——PR block。"
             exit 1
           fi
           if [ "$TOTAL" -lt 600 ]; then
-            echo "::error::测试总数 ($TOTAL) 远低于 628 基线——可能漏跑了部分用例，PR block。"
+            echo "::error::测试总数 ($TOTAL) 远低于 600 基线——可能漏跑了部分用例，PR block。"
             exit 1
           fi
 
