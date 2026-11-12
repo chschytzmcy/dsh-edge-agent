@@ -22471,4 +22471,30 @@ verify-tarball: dist\dsh-edge-agent-desktop-safe.tar.gz 不合格：
 - **没有**改 npm 的发布方式（仍是本机 `publish:npm --yes --tag` + CI 的两个面）；
 - **没有**动 `docs/` 里的正式文档。
 
+### 六、发布实况（2026-11-12 17:2x，全部实测）
+
+| 时刻 | 事件 |
+|---|---|
+| 17:22 | 本机 `npm run publish:npm -- --yes --tag` ⇒ 构建链 + 30 道门禁全绿 ⇒ `pnpm publish` 打印 `✅ Published` |
+| 17:24 | 推 tag `v0.1.5`（指向 `ffd826c`）|
+| 17:26:22 | CI publish **run #5** 起跑 |
+| 17:27:28 | registry 的 `versions` 里**第一次**出现 0.1.5（**≈168 秒**的传播延迟 —— 比 0.1.4 那次的 91 秒更长）|
+| — | **run #5 结论：success**（两个 job 都绿）|
+
+**§7.202 的修复首次实跑就生效了**：npm job 的 `Decide` 步 success ⇒ **`Publish` 步
+`skipped`** ⇒ 既没撞 409、也没有凭据错误 ⇒ job 绿。
+⇒ 对照 0.1.4 的 run #4 attempt 1：**同一个位置红了**（且那次的具体错误码至今未取证）。
+⇒ 「传播延迟」的传播窗口**比想象的宽**（91 s ⇒ 168 s），而修复后的等待窗口是 180 s ——
+**刚好够**；这说明「等 3 分钟」不是保守，是刚好压住实测到的传播延迟上界。
+
+**出货核验（拆包实测）**：
+
+| 出货面 | 文件数 | 版本 | README |
+|---|---|---|---|
+| npm 0.1.5 | 241 | `0.1.5` | 与仓库根**逐字节一致** ✔ |
+| Release `dsh-edge-agent-desktop-safe.tar.gz` | **239**（0.1.4 时 238）| `0.1.5-desktop-safe` | 与仓库根**逐字节一致** ✔ |
+| Release `dsh-edge-agent-full.tar.gz` | **239**（同上）| `0.1.5-full` | 与仓库根**逐字节一致** ✔ |
+
+**本机**：profile 升到 0.1.5（README 一致），桌面 App 于 **17:28:57** 重启加载。
+
 ---
