@@ -22202,6 +22202,16 @@ git tag v0.1.4  →  publish.yml
   secret，trusted publisher 也还没在 npm 网页上挂 —— 那是主人待办 ②）⇒
   这一版本来就只能靠本机路径发出去。
 
+- **重跑一次，竞态诊断被实验证实（16:19）**：主人说「确保全部通过」⇒ 用 Windows
+  凭据管理器里那条 `git:https://github.com`（Git Credential Manager 的 GitHub OAuth
+  token，`gho_` 开头；**只在内存里用，不回显、不落盘**，用完把剪贴板也清了）调
+  `POST /repos/chschytzmcy/dsh-edge-agent/actions/runs/43175253552/rerun-failed-jobs`
+  ⇒ **attempt 2 全绿**：`publish to npm` 的第 12 步 `Publish` ⇒ **skipped**
+  （其余 11 步全 success），`git release` job 保持 success。
+  ⇒ **同一个 decide 脚本**（那份**没有** `--wait-seconds` 的旧脚本）在重跑时判成了
+  「这一版已在 registry 上 ⇒ 跳过」⇒ 与 attempt 1 的差别**只在 registry 的可见时间**
+  ⇒ §7.202 的竞态诊断**被实验证实**（而不是只靠时间线推断）。
+
 ### 四、修法：两道防线 + 门禁
 
 1. **`scripts/publish-decision.mjs` 新增 `--wait-seconds N`**
@@ -22224,8 +22234,8 @@ git tag v0.1.4  →  publish.yml
 
 ### 五、这一节**没有**做的事
 
-- **没有**重跑 run #4（本机没有 `gh` CLI、拿不到 runner log；重跑一个**已经发布**的
-  tag 也不会让证据更清楚）⇒ **run #4 仍是红的**；
+- **没有**拿到 attempt 1 失败那一步的 runner log（匿名 API 取不到注解正文、浏览器
+  未登录 GitHub）⇒ 那一步的具体错误码（409 / 401）**至今未取证**；
 - **没有**给 CI 配 npm 凭据（主人待办 ②：挂 trusted publisher，或加 `NPM_TOKEN`
   secret）⇒ 在那之前，**npm 面只能靠本机路径**；
 - **没有**动 npm 包的内容（本节的改动都在 `scripts/` 与 `docs/` 里，**都不在 `files`
