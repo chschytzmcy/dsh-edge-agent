@@ -1,4 +1,4 @@
-# dsh-edge-agent CI — three stages: build → unit → e2e-opslog.
+# dsh-edge-agent CI — three stages: build → unit → web-profile-smoke.
 #
 # Triggered on every push to main and every PR. The full sequence is:
 #   1. install (pnpm install --frozen-lockfile)
@@ -14,19 +14,24 @@
 #   4. unit    (vitest unit tests; asserts exact count via JSON reporter)
 #   5. coverage (vitest --coverage; per-directory thresholds in
 #               vitest.config.ts — §7.123)
-#   6. e2e-opslog (bash scripts/e2e-ops-log-coverage.sh; §7.46.9 回归,
-#                  21 节点 ops log 覆盖 + 3 重点用例（mibao/news/local-ip）断言)
+#   6. web-profile-smoke (§7.221: 在干净的 runner 上装 bundle、起真实的宿主
+#              profile、确认 http-api 拿到 bearer 正常起服 —— 见下面那个 job)
 #
 # §7.86(2026-09-18): 删除 e2e-privacy / e2e-tui-live / smoke 三个阶段 —— 前两个
 # 依赖历史 edge-m1 / dsh-tui rig(已废除);smoke.ts 引到 M5+ work 还没写的
-# local-tools.js(ERR_MODULE_NOT_FOUND)。统一回归闸 = e2e-ops-log-coverage.sh
-# (单 profile dsh-edge + 21 节点全链路覆盖)。
+# local-tools.js(ERR_MODULE_NOT_FOUND)。
+#
+# §7.221 (2026-11-13): **ops log 覆盖回归不再是 CI 阶段**。它需要一把真的模型
+# 凭据（`DEEPSEEK_API_KEY` 给宿主当模型 key 用），而主人裁定这个 secret 不用
+# ⇒ 那条回归**退休**，脚本 `scripts/e2e-ops-log-coverage.sh` 降级为**本地手动**
+# 跑（`make e2e-coverage`，需要本机 `config/edge.json` / `.env` 里的真 key）。
+# ⇒ 留下的是「bundle 装得上 + profile 起得来」的冒烟（不碰任何凭据）。
 #
 # 任一阶段失败 → PR block。Gate 总数：
 #   - 单元测试：必须 0 FAIL；低于 600 视为漏跑（CI 防漏跑阈值）
 #   - 覆盖率：src/dsh-adapter/ 目录级行/函数/分支下限（vitest.config.ts）
-#   - 隐私 E2E：必须 19/19 PASS（9 注入 → 400 + 5 业务 → 403 + 5 路由 → 200）
-#   - ops log 覆盖：必须 3/3 用例通过（mibao + news + local-ip）+ 21 节点全绿
+#   - web profile 冒烟：bundle 装得上 + profile 起得来 + http-api 拿到 bearer
+#   - （ops log 覆盖：§7.221 起**不在 CI 里** —— 本地手动跑）
 
 # §7.196 (2026-11-12): 本文件此前**一次都没绿过** —— 145 次 ci run（自 run #51 /
 # 2026-10-26 起）全部 failure，失败点恒为「Setup Node.js」，后面所有步全 skipped。
@@ -253,7 +258,7 @@ jobs:
   # §7.103 (2026-10-21) 曾记录 Windows 上 build 跑不完（门禁依赖 bash）并
   # 为此改造过门禁 —— 但没有 windows CI job 防回归，下次退化和 §7.104/§7.106
   # （都在 Windows 桌面部署上炸过）一样只能装机后才发现。本 job 只跑
-  # compile + 单测：verify:build / e2e-opslog 阶段含 bash 脚本，仍 Linux-only。
+  # compile + 单测：verify:build / web-profile-smoke 阶段含 bash 脚本，仍 Linux-only。
   test-windows:
     name: unit tests (windows)
     runs-on: windows-latest
@@ -285,33 +290,31 @@ jobs:
       - name: Run unit tests
         run: pnpm test
 
-  e2e-opslog:
-    name: ops log coverage (3 cases)
+  web-profile-smoke:
+    name: web profile smoke (bundle mounts + boots)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: build
-    # §7.46.9: 21 节点 ops log 覆盖 + 3 重点用例（mibao/news/local-ip）回归。
+    # §7.46.9: 这个 job 原来是「21 节点 ops log 覆盖 + 3 重点用例（mibao/news/
+    # local-ip）回归」。
     # §7.86(2026-09-18): web profile bootstrap —— dsh-edge bundle 注册 + cordis.patch.yml 同步。
-    # 单 profile dsh-edge 架构(§7.69)后,这里 bootstrap 一次就够 opslog 用了。
     #
-    # §7.198: secret 放在 **job 级 env**（不是 step 级）——
-    # GitHub 明确禁止在 `if:` 条件里直接引用 `secrets`（文档原话：不能把 secrets
-    # 直接用在 if 条件里）⇒ 那样写会让**整个 workflow 文件被判无效**：
-    # run 的名字会变成文件路径（".github/workflows/ci.yml"）、jobs 为空、
-    # 整条 CI 直接挂，而且**看不出原因**（实测 run #151 就是这样）。
-    # ⇒ 正确写法：secret 进 job 级 env，step 的 `if:` 用 `env.` 上下文引用。
+    # §7.221 (2026-11-13): **ops log 覆盖回归从这个 job 里退休**。它需要一把
+    # 真的模型凭据（`DEEPSEEK_API_KEY` 给宿主当模型 key：runner 上没有登录
+    # 账号、DELEGATE 没有转发目标），而主人裁定这个 secret 不用 ⇒ 那四个用例
+    # 在 runner 上永远跑不通 ⇒ 留着就是一段**永远 skipped 的死代码** + 一条
+    # 永远为假的门禁（仓库里那个 secret 本来就**没配过**：Actions secrets
+    # 列表 total_count = 0，实测 2026-11-13）。
+    # ⇒ 脚本 `scripts/e2e-ops-log-coverage.sh` 保留，降级为**本地手动**跑
+    #   （`make e2e-coverage`，需要本机 config/edge.json / .env 里的真 key）。
+    # ⇒ 本 job 现在的职责：**在干净的 runner 上装 bundle、起真实宿主 profile、
+    #   确认 http-api 拿到 bearer 正常起服** —— 不碰任何凭据。
     #
-    # §7.221: **`DSH_EDGE_API_KEY` 这个 secret 不再需要** ——
-    # 它不是外部凭据，是 edge 自己 HTTP API 的 bearer（`http-api` 拿到空 token
-    # 会拒绝启动）。谁都能自己造一把 ⇒ 改成 job 里**现场生成**一把随机令牌
-    # （每个 run 一把新的，不入库、不回显）。
-    #
-    # `DEEPSEEK_API_KEY` **仍然要留**，但**用途变了**：§7.221 之后它不再喂
-    # 网页搜索（DeepSeek 那一档已去掉），而是给**宿主**一把模型 key ——
-    # CI runner 上没有登录账号、DELEGATE 没有转发目标 ⇒ 不给它，两条云端
-    # 用例（news / mibao）必然跑不通。
-    env:
-      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+    # §7.198 的教训仍然有效（写在下面那步的注释里）：GitHub 禁止在 `if:` 条件里
+    # 直接引用 `secrets`（文档原话：不能把 secrets 直接用在 if 条件里）⇒ 那样写
+    # 会让**整个 workflow 文件被判无效**：run 的名字会变成文件路径
+    # (".github/workflows/ci.yml")、jobs 为空、整条 CI 直接挂，而且**看不出原因**
+    # （实测 run #151 就是这样）。
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -374,7 +377,6 @@ jobs:
 
       - name: Start dsh web profile (background)
         env:
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY || 'test-fake-deepseek-key-for-opslog-fixture' }}
           DSH_EDGE_HTTP_PORT: '21017'
         run: |
           export EDGE_API_KEY="$DSH_EDGE_API_KEY"
@@ -394,38 +396,13 @@ jobs:
             sleep 1
           done
 
-      # §7.198: 这个 job 需要**真凭据**才能真正跑通 ——
-      # `scripts/e2e-ops-log-coverage.sh` 的 .env（gitignored，仓库里没有）
-      # 里放的是真 key；没有真 key 时脚本自己就写明「云端用例会 FAIL」。
-      # ⇒ 没配 secret 时**明说并跳过**那一步（job 里那步显示 skipped，不是假绿），
-      # 配了 secret 才跑真回归。
-      # §7.221: 门禁条件**只留 DEEPSEEK_API_KEY** —— edge 自己的 bearer 已改成
-      # 现场生成（上一行），不再是 secret。
-      # ⚠️ `if:` 里用 `env.` 上下文（**不是** `secrets.`）—— 见本 job 头部的说明：
-      # GitHub 禁止在 if 条件里直接引用 secrets，那样会让整个 workflow 文件无效。
-      - name: 检查 e2e 凭据（缺 secret ⇒ 明说并跳过回归，不假装绿）
-        run: |
-          if [ -z "${DEEPSEEK_API_KEY:-}" ]; then
-            echo "::warning::ops log 覆盖回归需要一个 Actions secret：DEEPSEEK_API_KEY（仓库 Settings → Secrets and variables → Actions）。它给宿主当模型凭据用（runner 上没有登录账号、DELEGATE 没有转发目标）—— 没有它，云端用例会必然失败 —— 所以**回归那一步这次跳过**，而不是假绿。§7.221 起 edge 自己的 HTTP API bearer 已在 job 内现场生成，不再需要第二个 secret。"
-          else
-            echo "e2e 凭据齐备 ⇒ 跑真回归"
-          fi
-
-      - name: Run ops log coverage regression (3 重点用例)
-        if: ${{ env.DEEPSEEK_API_KEY != '' }}
-        env:
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          DSH_EDGE_HTTP_PORT: '21017'
-        run: |
-          set +e
-          export EDGE_API_KEY="$DSH_EDGE_API_KEY"
-          bash scripts/e2e-ops-log-coverage.sh 2>&1 | tail -60
-          E2E_EXIT=${PIPESTATUS[0]}
-          set -e
-          if [ "$E2E_EXIT" -ne 0 ]; then
-            echo "::error::ops log 覆盖回归失败（exit=${E2E_EXIT}）"
-            exit 1
-          fi
+      # §7.221 (2026-11-13): 这里原来有「检查 e2e 凭据」+「Run ops log
+      # coverage regression」两步（`if: env.DEEPSEEK_API_KEY != ''`）。
+      # ⇒ **两步都删了**：主人裁定 `DEEPSEEK_API_KEY` 这个 secret 不用，而仓库里
+      # 它**本来就没配过**（Actions secrets 列表 total_count = 0）⇒ 那一步
+      # **永远 skipped** ⇒ 留着就是一段永不执行的死代码 + 一条永远为假的门禁。
+      # ⇒ ops log 覆盖回归改由**本地手动**跑：`make e2e-coverage`
+      #   （需要本机 config/edge.json / .env 里的真 key）。
 
       - name: Upload ops log for debugging
         if: always()

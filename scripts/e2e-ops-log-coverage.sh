@@ -3,6 +3,14 @@
 # 3 个 ops log 重点用例的 E2E 回归测试。确保后续任何改动都不会
 # 破坏 21 节点覆盖 + 关键字段清晰度。
 #
+# ⚠️ §7.221 (2026-11-13)：本脚本**不再由 CI 自动跑**。
+# 它需要一把真的模型凭据（`DEEPSEEK_API_KEY` 给宿主当模型 key 用：CI runner
+# 上没有登录账号、DELEGATE 没有转发目标），而主人裁定那个 Actions secret 不用
+# ⇒ CI 里那一步永远是 skipped ⇒ 整段退休（`.github/workflows/ci.yml` 的
+# `web-profile-smoke` job 只保留「bundle 装得上 + profile 起得来」的冒烟）。
+# ⇒ 现在它是**本地手动**跑的脚本：需要本机 `config/edge.json` / `.env` 里的真
+#   key，入口 `make e2e-coverage`。
+#
 # 用法：
 #   bash scripts/e2e-ops-log-coverage.sh                  # 默认跑全部 3 用例
 #   bash scripts/e2e-ops-log-coverage.sh --only mibao     # 只跑密盒用例

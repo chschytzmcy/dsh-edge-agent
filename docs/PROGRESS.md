@@ -24202,14 +24202,39 @@ secret** ⇒ `e2e-ops-log-coverage.sh` 那条云端回归**一直是被跳过的
 也不是假绿 —— 门禁写明「明说并跳过」）。§7.221 之前它被跳过的原因是「两个 secret
 都不全」，现在只剩一个 secret 仍然为空 ⇒ **跳过的原因没变，但原因变了**。
 
-⇒ 操作者的两个动作（本节**没有**代做，因为它们要动仓库设置）：
+⇒ **这一节的「操作者两个动作」已被主人的裁决取代（2026-11-13，见下）** ——
+原文写的是「① `DSH_EDGE_API_KEY` 可以从仓库设置里删掉；② `DEEPSEEK_API_KEY`
+想跑云端回归就配上它」，而主人裁决是：**两个都删、都没用**。
 
-1. **`DSH_EDGE_API_KEY` 可以从仓库设置里删掉** —— 本轮起它不再被任何地方引用
-   （CI 已改成现场生成一把随机令牌）。
-2. **`DEEPSEEK_API_KEY` 想让云端回归真的跑起来，就要把它配上** —— 它的用途现在是
-   「给宿主当模型凭据」（runner 上没有登录账号、DELEGATE 没有转发目标），
-   **不是**网页搜索的凭据。
+### 十二、主人裁决后的收尾：两个 Actions secret 一个都不留（2026-11-13）
 
-⇒ 本节**没有**实跑那条云端回归（需要真 key），所以 §7.221 第十节第 3 条
-（`news` 用例的 `tool allow tool=web_search` 软断言在「两档都关」时必然不出现）
-**仍然只是推断，没有实跑证据**。
+> 主人指示：「`DSH_EDGE_API_KEY` 和 `DEEPSEEK_API_KEY` 删掉，没用」。
+
+**先查清事实**（`GET /repos/{owner}/{repo}/actions/secrets`，2026-11-13 实测）：
+
+```
+total_count = 0
+```
+
+⇒ **这两个 secret 仓库里本来就没配过**（不是「配了要删」，是**从来没有**）⇒
+「删」这个动作**没有东西可删**。这也解释了为什么上一节那次 CI 里
+「Run ops log coverage regression」是 `skipped` —— `secrets.DEEPSEEK_API_KEY`
+恒为空。
+
+⇒ 既然主人裁定这两个东西「没用」，**CI 侧对它们的依赖一并清掉**（否则仓库里
+留着一段**永远 skipped 的死代码** + 一条永远为假的门禁）：
+
+| 改动 | 内容 |
+|---|---|
+| `.github/workflows/ci.yml` | job 级 env 里的 `DEEPSEEK_API_KEY` **删掉**；profile 启动步里那个**假 key** 也删掉（没有真凭据时，注入假 key 只会让宿主注册一个「有 key 但 key 是假的」的 provider —— 不如干净地没有）；「检查 e2e 凭据」与「Run ops log coverage regression」**两步都删掉**，换成一段说明**为什么**退休的注释 |
+| job 改名 | `e2e-opslog` / "ops log coverage (3 cases)" ⇒ **`web-profile-smoke` / "web profile smoke (bundle mounts + boots)"** —— 它现在的职责只剩「在干净的 runner 上装 bundle、起真实宿主 profile、确认 http-api 拿到 bearer 正常起服」，**不碰任何凭据** |
+| `scripts/e2e-ops-log-coverage.sh` | **保留**，头部写明「§7.221 起不再由 CI 自动跑，需要本机真 key ⇒ 本地手动跑（`make e2e-coverage`）」 |
+| `docs/E2E_HTTP_API_CASES.md`、`scripts/e2e-model-quality-bench/README.md` | 把「每次 PR(进 CI)」这类**会读成「现在还成立」**的陈述改掉（§7.215 的同款纪律） |
+
+⇒ 连带结论：**§7.221 第十节第 3 条**（`news` 用例那条「tool allow
+tool=web_search」软断言在「两档都关」时必然不出现）**在 CI 里永远不会有实跑
+证据了** —— 那条回归已经不在 CI 里。它仍然是**本地**跑时会看到的现象（本地可以
+开 Tavily/博查档），记在这里不删。
+
+⇒ 本节**没有**做的事：没有在 GitHub 上删除任何 secret（**本来就没有**）；没有
+新建任何 secret；没有动 `NPM_TOKEN`（`publish.yml` 用的那个，与本轮无关）。

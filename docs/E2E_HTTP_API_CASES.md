@@ -7,6 +7,10 @@
 > （`e2e-tui-live.sh` / `m1`~`m6-smoke` / `smoke.ts` 等）全部在下面 §3 这张表里。
 >
 > **当前唯一活跃 E2E** = `scripts/e2e-ops-log-coverage.sh`(3 重点用例 mibao/news/local-ip,21 节点 ops log 全链路覆盖)。
+>
+> **§7.221（2026-11-13）**：它**不再由 CI 自动跑** —— 需要一把真的模型凭据
+> （`DEEPSEEK_API_KEY` 给宿主当模型 key），而主人裁定那个 Actions secret 不用
+> ⇒ CI 里那一步已退休，脚本降级为**本地手动**跑（见下 §1 的「前置」）。
 
 ## 1. e2e-ops-log-coverage.sh —— 21 节点回归(3 重点用例)
 
@@ -18,7 +22,10 @@
 
 **入口**:`make e2e-coverage` / `bash scripts/e2e-ops-log-coverage.sh [--only mibao|news|local-ip]`
 
-**前置**:dsh-edge HTTP API 已起(`bash install.sh --profile=dsh-edge`,端口 :21017)。
+**前置**:dsh-edge HTTP API 已起(`bash install.sh --profile=dsh-edge`,端口 :21017)；
+**并且要有真的模型凭据** —— `config/edge.json` 的 `secrets.edgeApiKey` +
+`.env` 里的 `DEEPSEEK_API_KEY`（§7.221 起这一步不再由 CI 提供，脚本自己会
+WARN 并用假 key 兜底 ⇒ 云端用例会 FAIL）。
 
 ## 2. 启动探针(`GET /v1/health`,所有 e2e 阶段共用)
 

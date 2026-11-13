@@ -108,7 +108,7 @@ verdict:
 
 | 脚本 | 用途 | 跑频 |
 |------|------|------|
-| `scripts/e2e-ops-log-coverage.sh` | **回归** — 验 dsh-edge 系统不 regress | 每次 PR(进 CI) |
+| `scripts/e2e-ops-log-coverage.sh` | **回归** — 验 dsh-edge 系统不 regress | 本地手动跑（§7.221 起 CI 不再自动跑：它需要 `DEEPSEEK_API_KEY` 那把模型凭据，主人裁定不用 ⇒ CI 里那步已退休） |
 | `scripts/e2e-model-quality-bench.sh` | **选型** — 验 model 是否适合本项目 | 手动跑(LAN 依赖) |
 
 两者互补:回归测系统,bench 测模型。
