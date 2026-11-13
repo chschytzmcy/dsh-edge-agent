@@ -398,10 +398,36 @@ function routeNode(rows: EdgeRow[]): FlowNode {
   //     ⇒ fail-closed 拒收（已被下面的 blocked 分支覆盖）。
   const intentLocal = latest(rows, r => r.kind === 'input-guard.intent.local')
   const blocked = latest(rows, r => /^input-guard\.blocked\./.test(r.kind))
+  // §7.219 (2026-11-13): 改道 / 委托那一跳被 **fail-closed 拒收** 的那条事件
+  // —— `input-guard.reroute.blocked`。它是 §7.210 的一等 security 事件，
+  // §7.214 的严格档（落点证不出来是本地 ⇒ 拒收）也落在这一条上。
+  //
+  // 面板此前**只认** `input-guard.blocked.*`（攻击 / 策略 / 模型选择那一族）
+  // ⇒ 严格档拒收那一轮，「路由决策」行仍写「LOCAL · 按模型选择」，
+  // **完全看不出这一轮被拒收了**（实机复现见 §7.216）。
+  const rerouteBlocked = latest(rows, r => r.kind === 'input-guard.reroute.blocked')
   // §7.175: `cloud-key.missing` / `cloud.unavailable` 随「云端不可用 → 降级
   // LOCAL」一起退役（边缘模式恒用本地模型，云池不参与路由判定）。
   // `route-missing` 还在 —— 那是「本地路由没注册」（§7.171），语义不同。
   const missing = latest(rows, r => /route-missing/.test(r.kind))
+  if (rerouteBlocked !== undefined && (blocked === undefined || rerouteBlocked.ts >= blocked.ts)) {
+    // 「已拦截 · <原因码>」—— 原因码就是**为什么被拒**：
+    // 严格档 ⇒ `local-endpoint-required`；本地路由不可用 ⇒ `local-provider-missing`
+    // 之类；解析不到本地模型 ⇒ `local-model-unresolved`。
+    const reason = str(field(rerouteBlocked, 'reason'))
+    const cause = reason !== '?' ? reason : '?'
+    // 落点证据（§7.214）：谁被拒、它的 realm 判定是什么、依据是什么。
+    // 全是元数据，**不含任何原文**（面板的硬规则：不显示原文）。
+    const sub: string[] = []
+    const landing = str(field(rerouteBlocked, 'delegateProvider'))
+    const realm = str(field(rerouteBlocked, 'delegateRealm'))
+    const realmSource = str(field(rerouteBlocked, 'realmSource'))
+    if (landing !== '?') sub.push(`${tr('flow.lbl.endpoint')} ${landing}`)
+    if (realm !== '?') sub.push(`${tr('flow.lbl.realm')} ${realm}`)
+    if (realmSource !== '?') sub.push(`${tr('flow.lbl.realmSource')} ${realmSource}`)
+    if (sub.length === 0) sub.push(`${tr('flow.lbl.cause')} ${cause}`)
+    return { label: tr('flow.route'), tone: 'stop', detail: `${tr('flow.route.blocked')} · ${cause}`, sub }
+  }
   if (blocked !== undefined) {
     // Evidence = classification metadata ONLY (reason/riskLevel/rationale).
     // The payload's `preview` can carry raw user text (audit stays local);

@@ -23673,3 +23673,101 @@ const chunk = readFileSync(repo + '\\dist\\probe\\sec-7.213.md', 'utf8')
   加的）⇒ **下一版**才有。
 
 ---
+
+## §7.219 被 fail-closed 拒收的那一轮，面板必须说「没作答」（2026-11-13）
+
+> 主人拍板（2026-11-13）：「修复严格档拒收时面板仍显示『本地模型作答』：改为
+> 『已拦截——未作答』和『已拦截·local-endpoint-required』」。
+> 这是 §7.216 第七节记下的两件「发现但没改」里的**第一件**。
+
+### 一、实机复现的现象（§7.216 的那一轮）
+
+严格档（`llm.local.requireLocalEndpoint=true`）拒收的那一轮，审计链是：
+
+```json
+{"level":"security","kind":"input-guard.reroute.blocked","payload":{
+  "provider":"qwen-token-plan-cn","model":"deepseek-v4.1-flash",
+  "reason":"local-endpoint-required","delegateProvider":"qwen-token-plan-cn",
+  "delegateRealm":"UNKNOWN","realmSource":"model-router-missing"}}
+```
+
+那一轮**没有发出任何 LLM 请求**（面板：LLM 调用 0、答案出口「路由未定」），
+可面板写的是：
+
+| 位置 | 修复前 | 修复后 |
+|---|---|---|
+| 顶部结论 | 「本轮：本地模型作答 —— 数据未离开设备」 | **「本轮：已拦截 —— 未作答」** |
+| 路由决策 | 「LOCAL · 按原选择」 | **「已拦截 · local-endpoint-required」** |
+
+⇒ 顶部那句是**与实际行为相反的陈述**（§7.129 最怕的那种）；路由决策那行则是
+**完全看不出这一轮被拒收了**。
+
+### 二、根因
+
+1. **结论行判的是「意图分类」，不是「这一轮真的作答了」**。
+   `verdict.ts` 的判据是 `intent.classify.end` 的 `category` —— 被拒收的那一轮
+   **照样**判定成 `LOCAL`（那往往正是它被拒的原因：本地路由不可用 / 落点证不出来
+   是本地）。⇒ 「category=LOCAL ⇒ 显示『本地模型作答』」这一步在**拒收**面前
+   推不出来。
+2. **路由决策分支只认 `input-guard.blocked.*`**（攻击 / 策略 / 模型选择那一族），
+   **不认** `input-guard.reroute.blocked` ⇒ 改道/委托那一跳被拒的事件在面板上
+   **没有任何落点**。
+
+⇒ 为什么 §7.210 之前没暴露：那时 DELEGATE **永远放行** ⇒ 「本地模型作答」这句话
+**总是**真的。**§7.214 的严格档第一次让「判定 LOCAL 但这一轮没作答」成为可能**
+⇒ 结论行没跟上。
+
+### 三、改了什么（4 个文件）
+
+| 文件 | 改动 |
+|---|---|
+| `src/client/verdict.ts` | 顶部结论优先判「**这一轮有没有被拒收**」⇒ `tr('verdict.blocked')` + tone `blocked`；新增 `VerdictTone` 的 `'blocked'` |
+| `src/client/flowPanel.tsx` | 路由决策新增分支：认 `input-guard.reroute.blocked` ⇒ detail = `已拦截 · <原因码>`，并透出落点证据（真实落点 / realm / 判定依据） |
+| `src/client/i18n.ts` | 新增 `verdict.blocked` / `flow.lbl.realm` / `flow.lbl.realmSource`（中英各一份） |
+| `src/client/theme.ts` | 新增 `.dsh-edge-verdict--blocked`（`#dc2626`，与 flow 节点的 stop 同色 ⇒ 红色 = 这一轮没走通） |
+
+判据写在代码注释里（§7.129 / §7.219 引用），口径是「**被拒收**」而不是「判定成
+什么类别」。
+
+### 四、为什么把 `input-guard.blocked.*` 一起纳入（口径一致）
+
+主人点的是「严格档拒收」，但**攻击拦截 / 策略拦截 / 模型选择拦截同样是「本轮没
+作答」** —— 它们此前也会让顶部结论行写「本地模型作答」（只要那一轮判定成 LOCAL）。
+⇒ 两种拒收统一显示「已拦截 —— 未作答」。
+
+理由：否则面板会自相矛盾 ——「严格档拒收显示已拦截，攻击拦截却仍显示作答了」。
+两类都是**同一个事实**（这一轮没走通），必须同一口径。
+
+⇒ **没有**改「严格档要不要开」这件事（默认仍 `false`，§7.211/§7.214 的裁决不动）。
+
+### 五、测试
+
+新文件 `tests/unit/flow-panel-blocked-reroute.test.ts`（**11 条**），fixture 用的是
+**§7.216 实机取到的那条 payload**（不是手编的形状）：
+
+- 顶部结论显示「已拦截 —— 未作答」、tone = `blocked`；
+- **不得**再出现「本地模型作答」/「数据未离开设备」；
+- 路由决策显示「已拦截 · local-endpoint-required」，且**不得**再说「按原选择」；
+- 落点证据透出：真实落点 / realm / 判定依据；
+- **不误伤**：没有被拒收的轮次，结论行仍是「本地模型作答」、路由决策仍是「按原选择」；
+- 别的拒收原因码（`local-model-unresolved`）也照样显示「已拦截 · <原因码>」；
+- **口径一致**：`input-guard.blocked.attack` 同样显示「已拦截 —— 未作答」；
+- **不显示原文**：payload 里即使带了 `preview` / `original`，面板也不许渲染出来
+  （面板的硬规则是 no original content，审计留在本地）。
+
+连同既有的 `flow-panel-verdict-honesty.test.ts`（17 条）⇒ **28 条全过**。
+
+### 六、这一节**没有**做的事
+
+- **没有**改 `input-guard` 的任何行为：本节**只动面板**（客户端），审计链的事件、
+  判定、默认档语义**一字未改**。
+- **没有**改「PII 脱敏」与「答案出口」两个节点的文案：拒收那一轮的出口行是
+  `llm.local.delegate.resolved`（没有 `delegate.end`）⇒ 答案出口照旧显示
+  「路由未定」（§7.181 的口径，**本来就是对的**）；PII 节点写「无需脱敏」也是对的
+  —— 那一轮确实什么都没出去。
+- **没有**动 §7.130 的出网判据（category vs 端点）：本节与它无关，判据没变。
+- **没有**动 `input-guard.blocked.*` 那一族既有分支的 detail 形状（仍是
+  「已拦截 · <子类>」）—— 只把结论行统一了。
+- **没有**改严格档的默认值（仍 `false`）。
+
+---

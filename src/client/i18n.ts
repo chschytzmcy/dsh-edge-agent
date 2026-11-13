@@ -22,6 +22,8 @@ const EN: Dict = {
   'guide.description': 'Intent classification · model routing · guard / sanitizer events · threat levels',
   'verdict.local': 'This turn: answered locally — data never left the device',
     'verdict.cloud': 'This turn: answered by the cloud route',
+  // §7.219: this turn was rejected fail-closed ⇒ it was NOT answered.
+  'verdict.blocked': 'This turn: blocked — not answered',
   'verdict.sanitized': ' (PII sanitized first)',
   'verdict.waiting': 'This turn: awaiting classification',
   'flow.guard': 'attack check',
@@ -117,6 +119,9 @@ const EN: Dict = {
   'flow.lbl.watched': 'signals watched',
   'flow.lbl.decidedBy': 'decided by',
   'flow.lbl.endpoint': 'endpoint',
+  // §7.219: the landing point's realm + how it was determined (§7.214).
+  'flow.lbl.realm': 'realm',
+  'flow.lbl.realmSource': 'determined by',
   // §7.184: 边缘模式「选型不动、请求改道」⇒ 面板要写明「你选的是 A、实际跑的是 B」。
   'flow.lbl.rerouted': 'selection → actual',
   'flow.lbl.onDevice': 'on this device',
@@ -176,6 +181,8 @@ const ZH: Dict = {
   'guide.description': '意图分类 · 模型路由 · 防护/脱敏事件 · 威胁档位',
   'verdict.local': '本轮：本地模型作答 —— 数据未离开设备',
     'verdict.cloud': '本轮：云端作答',
+  // §7.219: 这一轮被 fail-closed 拒收 ⇒ 它**没作答**（不能再写「本地模型作答」）。
+  'verdict.blocked': '本轮：已拦截 —— 未作答',
   'verdict.sanitized': '（已先脱敏）',
   'verdict.waiting': '本轮：等待意图判定',
   'flow.guard': '攻击检测',
@@ -271,6 +278,9 @@ const ZH: Dict = {
   'flow.lbl.watched': '已检信号',
   'flow.lbl.decidedBy': '裁决者',
   'flow.lbl.endpoint': '真实落点',
+  // §7.219: 落点的 realm 判定与判定依据（§7.214 的三个字段）。
+  'flow.lbl.realm': 'realm',
+  'flow.lbl.realmSource': '判定依据',
   // §7.184: 边缘模式「选型不动、请求改道」⇒ 面板要写明「你选的是 A、实际跑的是 B」。
   'flow.lbl.rerouted': '会话选型 → 实际落点',
   'flow.lbl.onDevice': '本机',

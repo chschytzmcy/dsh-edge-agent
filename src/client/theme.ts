@@ -40,6 +40,9 @@ const CSS = `
 .dsh-edge-verdict--local { color: #16a34a; }
 .dsh-edge-verdict--cloud { color: inherit; }
 .dsh-edge-verdict--wait { opacity: 0.55; font-weight: 400; }
+/* §7.219: 这一轮被 fail-closed 拒收 ⇒ 它**没作答** ⇒ 结论行说「已拦截」。
+   颜色与 flow 节点的 stop（#dc2626）一致 —— 红色 = 这一轮没走通。 */
+.dsh-edge-verdict--blocked { color: #dc2626; }
 /* §7.145: 未绑定会话 —— 明说「现在没有会话」，全局信号另起一组。 */
 .dsh-edge-unbound { display: flex; flex-direction: column; gap: 3px; padding: 6px 8px; border-radius: 6px; border-left: 2px solid color-mix(in srgb, currentColor 35%, transparent); background: color-mix(in srgb, currentColor 5%, transparent); }
 .dsh-edge-unbound b { font-weight: 600; }

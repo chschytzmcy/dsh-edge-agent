@@ -26,10 +26,30 @@
 import { tr } from './i18n'
 import type { EdgeRow } from './types'
 
-export type VerdictTone = 'local' | 'cloud' | 'wait'
+export type VerdictTone = 'local' | 'cloud' | 'wait' | 'blocked'
 
 export function verdictLine(rows: EdgeRow[]): { text: string; tone: VerdictTone } {
   const newest = <T extends EdgeRow>(list: T[]): T | undefined => list.at(-1)
+  // §7.219 (2026-11-13): 这一轮被 **fail-closed 拒收**时，它**根本没作答** ——
+  // 顶部结论行**不能说「本地模型作答」**（§7.129：不写与实际行为相反的陈述）。
+  //
+  // 实机复现（2026-11-13，严格档 `requireLocalEndpoint=true`）：那一轮被
+  // `input-guard.reroute.blocked` 拒收（LLM 调用 0、答案出口「路由未定」），
+  // 可顶部仍写着「本轮：本地模型作答 —— 数据未离开设备」。
+  //
+  // ⇒ 判据是「**这一轮有没有被拒收**」，不是「判定成什么类别」——
+  // 被拒收的那一轮**照样可能判定成 LOCAL**（那往往正是它被拒的原因）。
+  //
+  // 两种拒收都算：
+  //   · `input-guard.reroute.blocked` —— 出网那一跳改道/委托被拒（§7.210 /
+  //     §7.214 的严格档就是这条：委托落点证不出来是本地 ⇒ 拒收）；
+  //   · `input-guard.blocked.*` —— 攻击 / 策略 / 模型选择那一层的拒收。
+  //
+  // （两类都是「本轮没作答」，口径必须一致 —— 否则会出现「严格档拒收显示已拦截，
+  // 攻击拦截却仍显示作答了」的自相矛盾。）
+  const rejected = newest(rows.filter(r =>
+    r.kind === 'input-guard.reroute.blocked' || /^input-guard\.blocked\./.test(r.kind)))
+  if (rejected !== undefined) return { text: tr('verdict.blocked'), tone: 'blocked' }
   const classify = newest(rows.filter(r => r.kind === 'intent.classify.end'))
   const policy = newest(rows.filter(r => r.kind === 'input-guard.policy.route-applied'))
   const routed = newest(rows.filter(r => r.kind === 'input-guard.routed'))
