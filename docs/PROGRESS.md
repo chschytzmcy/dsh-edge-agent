@@ -23207,3 +23207,79 @@ preset 列表末尾多 `"edge-context-view"` 一项 ⇒ 用
   免得下一个人拿它们当权威。
 
 ---
+
+## §7.213 full 变体补上 `edge-context-view`：装 full 才有 Edge 面板的宿主那一半（2026-11-13）
+
+> 这是 §7.209 六节里记下的**第三条**既有事实，本轮**修掉了**（改 preset 补丁 + 快照，
+> 运行时逻辑一字未改）。
+
+### 一、根因：两个变体的 Agent Preset 补丁**差了整整一行**
+
+实测（2026-11-13，grep 两个 preset 补丁文件）：
+
+| preset 补丁文件 | 属于哪个变体 | `- id: edge-context-view` 命中 |
+|---|---|---|
+| `presets/edge.desktop-safe.patch.yml` | **safe** | 6 行（注释 + 定义） |
+| `presets/edge.patch.yml` | **full** | **0 行** ❌ |
+
+⇒ 装 **full** 变体 ⇒ 宿主不挂 `edge-context-view` ⇒ **Edge 面板的宿主那一半没有**
+（面板只剩浏览器半侧能显示，宿主侧拿不到上下文）。
+
+### 二、为什么这一行属于 **Agent Preset 补丁** 而不是全局 patch 层
+
+§7.135 起它被划到「边缘模式」这个**工作方式**的插件里（不是全局 patch 层）⇒
+只能出现在 preset 补丁里 ⇒ **safe 有、full 没有**，正是同一个东西的两份手抄副本
+漂移了。
+
+### 三、修法：补一行 + **连带补 isolate 名单**
+
+改 `presets/edge.patch.yml` 两处：
+
+1. **在 `input-guard` 之后**追加 `- id: edge-context-view` + `name: '@dsh-edge/dsh-edge-agent/edge-context-view'`
+   —— 位置与 safe 变体一致；
+2. **`edge-stack` 组的 isolate 名单**补 `edgeContextView: true`（按字母序排在 `edgeTools` 前）。
+
+⚠️ **这一行故意不带 `inject:` / `config:`** —— §7.101.x fix #1 实测：cordis 0.2.1-rc.2
+的 patch loader 会**静默跳过**这两个字段（`docs/dev-notes/cordis-rc021-patch-loader.md` Bug 1），
+依赖在 src 里声明、运行时旋钮走 `process.env`。
+
+### 四、门禁**当场抓到**了第 2 处漏改（这才是这一节的重点）
+
+只加第 1 处（补行）而不补 isolate 名单时，`verify:preset-isolate` 直接报：
+
+> provides service `edgeContextView` but that name is not in the group's isolate map
+> ⇒ 服务落进 root realm ⇒ **preset 挂载失败** ⇒ 设置页那张卡显示「加载失败」
+
+⇒ 也就是说：**只补行不补名单，会把「面板少一半」升级成「整个 preset 装不上」**。
+补上 isolate 名单后该项 EXIT=0。
+
+⇒ 这一节的**真正价值**不是「补了一行」，而是：**isolate 名单与提供方的耦合，由门禁
+`verify-preset-isolate.ts` 守着**（规则 1/2/4：行提供的服务必须在 isolate 名单里；
+名单里不许有没人提供的幽灵项）⇒ 下次再有人手抄副本漂移，门禁会先红。
+
+### 五、连带漂移：`patch-surface.snapshot.json` 要重生成
+
+`verify:patch-surface` 是快照门禁 ⇒ 补行后 diff **只有**一处：`edge.patch.yml` 的
+preset 列表末尾多 `"edge-context-view"` 一项 ⇒ 用
+`node --import tsx/esm scripts/verify-patch-surface.ts --snapshot` 重生成快照。
+
+### 六、本轮实跑通过的门禁
+
+`verify:preset-isolate` / `verify:patch-surface` / `verify:patch-row-shape` /
+`verify:installable` / `verify:installable-edge` / `verify:local-channel` ⇒ 全部 EXIT=0。
+
+### 七、这一节**没有**做的事
+
+- **没有**改任何**运行时逻辑**（`src/` 一行未动）：这一行是**补回** safe 变体早就有的
+  插件挂载，不是新增能力；
+- **没有**动 §7.209 六节记的**第四条**既有事实（safe 与 npm 包的惰性补丁已经修掉，
+  本轮是另一件事）；
+- **没有**改 `edge-context-view` 的**行为**（`src/dsh-adapter/edge-context-view.ts` 未动）
+  —— 本轮只解决「装 full 时它根本没被挂上」；
+- **没有**顺手把 `scripts/_isolate-edge-group.mjs` 与 `scripts/_gen-edge-preset.mjs`
+  这两个**一次性迁移脚本**改好 —— 它们对现状早已失效（前者期望 3 行宿主行还在 preset 里，
+  而它们早已搬走）⇒ preset/patch 文件现为**手工维护**，**单一事实源是门禁
+  `verify-preset-isolate.ts`**，不是那两个脚本 ⇒ 留着不删，但在 PROGRESS 里写明，
+  免得下一个人拿它们当权威。
+
+---
