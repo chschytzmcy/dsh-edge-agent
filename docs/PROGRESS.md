@@ -24382,6 +24382,14 @@ npm 暂存区逐项对比（`dist/probe/compare-pkg.mjs`）：
   在第 28 道 `verify:progress-sections` 红了 —— 原因只有一个：**本节当时还没写进
   `docs/PROGRESS.md`**，而 dev-note 里已经引用了 §7.222 ⇒ 门禁正确地抓住了
   「引用了一个不存在的章节」。本节落盘后复跑全绿。
+- **CI 实跑**：run **`43386079210`**（main，`778104e`）⇒ **4 个 job 全绿**：
+
+  | job | 结论 | 说明 |
+  |---|---|---|
+  | `build & verify` | success | compile → bundle → tarballs → npm stage → verify + lint 全过 |
+  | `unit tests (vitest suite, §7.199)` | success | JSON reporter + 计数断言 + 覆盖率门禁 |
+  | `unit tests (windows)` | success | Windows 侧单测 |
+  | `web profile smoke (bundle mounts + boots)` | success | **这一条是本节最关键的实机证据** —— 见下 |
 
 ### 八、这一节**没有**做的事
 
@@ -24400,12 +24408,15 @@ npm 暂存区逐项对比（`dist/probe/compare-pkg.mjs`）：
 
 ### 九、**没取到的证据**与遗留事实
 
-1. **没有**在本机装包实测「删掉 shim 后宿主仍能挂载」—— 判据是**解析层**的
+1. **本机没有**装包实测「删掉 shim 后宿主仍能挂载」—— 判据是**解析层**的
    （`exports` 映射 + `ERR_PACKAGE_PATH_NOT_EXPORTED` 的 dev-note 实测记录）＋
    `verify:package` / `verify:tarball` / `verify:installable` 三道门禁对
-   **exports 指向的文件必须真实存在**的断言。真正的实机证据在 CI 的
-   `web-profile-smoke` job（干净 runner 上装 bundle + 起真宿主 + 确认 http-api
-   拿到 bearer 正常起服）—— **本节尚未确认那次 CI 的结果**。
+   **exports 指向的文件必须真实存在**的断言。
+   ⇒ **但这个缺口已被 CI 的实机证据补上**：run `43386079210` 的
+   `web profile smoke (bundle mounts + boots)` job **success** —— 那个 job 在
+   **干净的 runner** 上装本轮构建出的 bundle、起**真实的宿主 profile**、确认
+   `http-api` 拿到 bearer 正常起服 ⇒ **删掉 20 个 shim 与旧聚合器之后，宿主
+   挂载链仍然是通的**。本机没装，**实机证据在 CI 里**。
 2. **没有**验证「`edge.json` 里已经写了 `agent.persona` / `localToolsWritable` 的
    既有部署」会不会因为字段消失而报错 —— 判据是**加载器对未知字段不做校验**
    （`JSON.parse` 后按已知键取值，多出来的键被忽略），但**没有**在真机上拿一份
@@ -24418,6 +24429,30 @@ npm 暂存区逐项对比（`dist/probe/compare-pkg.mjs`）：
    导出成 env，但 `edge-config.ts` 自己的 `ENV_OVERRIDES` 表里也有一条
    `DSH_EDGE_PERMISSION_MODE` ⇒ **两个方向都能设**。这轮**没动**它（它活着），
    但这个「双向可设」的口径值得主人哪天看一眼。
+5. **查的过程中撞见一处「同一个环境变量名、三处含义不一致」的隐患**（本轮
+   **没有**改，记在这里等主人拍板）：
+
+   | 位置 | 把 `DSH_EDGE_STORAGE_ROOT` 当成什么 |
+   |---|---|
+   | `scripts/edge-config-env.mjs:174` | 先从 **`tee.storageRoot`** 推一次 |
+   | `scripts/edge-config-env.mjs:185` | 再从 **`storage.root`** 推一次（同名 ⇒ **后者覆盖前者**，`tee.storageRoot` 永远传不出去） |
+   | `src/dsh-adapter/edge-config.ts` 的 `ENV_OVERRIDES` | 映射到 **`storage.root`**（不是 `tee.storageRoot`） |
+   | `cordis.yml:106/119/129/320` | 当成**基目录**用（`+ '/keys'`、`+ '/storage'`、`+ '/grants.json'`） |
+
+   ⇒ 显形条件：operator 在 `edge.json` 里真写了 `tee.storageRoot` 或
+   `storage.root`，**且** shell 侧 source 了 env 桥。那时会看到 `storage.root`
+   被写成 `tee.storageRoot`，或 local-storage 的 root 变成 `<storage.root>/storage`
+   这种双层路径。
+
+   ⇒ **本轮为什么没动**：`tee.storageRoot`（`tcm.ts:127` 读）与 `storage.root`
+   （`local-storage` 读）**两个字段都是活的** ⇒ 不属于本轮「删掉没人读的东西」的
+   范围；而修它要动**env 契约**（env 名 + `cordis.yml` 的派生路径）⇒ 属产品语义，
+   留给主人拍板。
+
+   ⇒ 备选修法（供拍板参考）：① 给 `tee.storageRoot` 单独的 env 名
+   （`DSH_EDGE_TEE_STORAGE_ROOT`），`DSH_EDGE_STORAGE_ROOT` 只映射 `storage.root`；
+   ② 或反过来，把 `cordis.yml` 里那些派生路径改成从 `storage.root` 推，让这个名字
+   只表示「local-storage 的 root」。
 
 ### 十、本轮的**改动清单**
 
