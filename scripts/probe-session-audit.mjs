@@ -56,9 +56,11 @@ const CAPABILITY_EVENTS = {
   'input-guard.intent.local': '意图判定为本地',
   'input-guard.reroute.local': '出网那一跳改道到本地池（选型不动）',
   // §7.210 (2026-11-12): DELEGATE 出网 —— 本地池是委托态（转发宿主模型）时，
-  // 改道过去其实**出了设备**。以前只是 `reroute.local` 行里的一个 mode 字段，
+  // 改道过去可能**出了设备**。以前只是 `reroute.local` 行里的一个 mode 字段，
   // 现在是独立的一等 security 级事件。
-  'input-guard.reroute.delegate-egress': 'DELEGATE 出网（本地池转发宿主模型 = 这一轮其实出了设备）',
+  // §7.214 (2026-11-13): 只在「委托落点不是本地」时记（落点证明是本地 ⇒ 它没出网）；
+  // 落点与 realm 写在 payload 的 delegateProvider / delegateRealm / realmSource 上。
+  'input-guard.reroute.delegate-egress': 'DELEGATE 出网（委托落点不是本地 = 这一轮出了设备）',
   'input-guard.reroute.blocked': '改道失败（fail-closed，绝不放行到云端）',
   'input-guard.blocked.attack': '攻击拦截',
   'input-guard.blocked.policy': '策略拦截',

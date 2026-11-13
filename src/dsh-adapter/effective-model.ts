@@ -66,9 +66,11 @@ export interface LocalPoolShape {
   delegateProvider?: string
   delegateModel?: string
   /**
-   * §7.210 (2026-11-12): true = 本地池是 DELEGATE 时 fail-closed 拒收。
-   * 默认 false（零行为变化）；input-guard 用它决定「DELEGATE 出网」是
-   * 只记审计还是直接拒收。
+   * §7.210 (2026-11-12) / §7.214 (2026-11-13): true = 本地池的委托落点
+   * **不是本地**时 fail-closed 拒收。默认 false（零行为变化）；input-guard
+   * 用它决定「DELEGATE 出网」是只记审计还是直接拒收。
+   *
+   * §7.214 起判据是落点的 realm（model-router 说了算），不是「有没有 baseUrl」。
    */
   requireLocalEndpoint?: boolean
 }

@@ -150,6 +150,15 @@ export function auditDelegateHint(hint) {
   if (!hint.includes('requireLocalEndpoint')) {
     failures.push('报错文案没有点名 requireLocalEndpoint —— operator 读完不知道要改哪个开关')
   }
+  // §7.214: 报错文案必须给出**委托落点的 realm 判定**。
+  //
+  // 为什么这是硬要求：§7.214 之后，严格档的判据不再是「有没有配 baseUrl」，
+  // 而是「委托落点是不是 LOCAL」（model-router 说了算）。⇒ operator 被拒时
+  // 必须能看见**判定结果**（realm 是什么 / 依据是什么），否则只看到「去配端点」
+  // —— 而他配完端点仍可能被拒（落点本来就不是本地）。
+  if (!hint.includes('realm')) {
+    failures.push('报错文案没有给出委托落点的 realm 判定 —— operator 不知道被拒是因为「落点不是本地的」')
+  }
   return failures
 }
 
@@ -316,6 +325,8 @@ function selftest() {
     const GOOD_DELEGATE = [
       'throw new Error(',
       '  `input-guard: 本轮 intent 判定为 LOCAL，但本地池处于 DELEGATE 模式`',
+      '  + `⇒ 改道会把请求转给委托落点 "qwen-token-plan-cn"，`',
+      '  + `而 model-router 判定它的 realm 不是 LOCAL（判定结果 CLOUD，依据 model-router）`',
       '  + `请配置本地 LLM 端点：编辑 ~/.dsh-edge-agent/edge.json 的 llm.local 段，`',
       '  + `填 baseUrl（OpenAI 兼容端点，必须含 /v1）与 model；`',
       '  + `端点需要鉴权时，把密钥写进同一文件的 secrets 段，`',
@@ -339,6 +350,13 @@ function selftest() {
       auditDelegateHint(extractHintByMarker('这里没有 throw new Error(', '本地池处于 DELEGATE 模式')).length > 0,
       true,
     )
+    // §7.214: 报错文案必须给出**落点的 realm 判定** ——
+    // operator 被拒时要能看见「判定结果」，而不只是「去配端点」。
+    expect(
+      'DELEGATE 提示不给 realm 判定 ⇒ 报失败',
+      auditDelegateHint(extractHintByMarker(GOOD_DELEGATE.replace('而 model-router 判定它的 realm 不是 LOCAL（判定结果 CLOUD，依据 model-router）', '改道会把请求转给宿主模型'), '本地池处于 DELEGATE 模式')).length > 0,
+      true,
+    )
   }
 
   // 8. §7.210：模板里的默认值必须是 false。
@@ -355,7 +373,8 @@ function selftest() {
     process.exit(2)
   }
   console.log('\nselftest OK — 门禁能抓住把用户指向进程 env 的旧文案，也能放过指向配置文件的正确文案；'
-    + '并能抓住 §7.210 的 DELEGATE 严格档提示漏点名开关、模板默认值被改成 true')
+    + '并能抓住 §7.210 的 DELEGATE 严格档提示漏点名开关、模板默认值被改成 true；'
+    + '以及 §7.214 起的「报错文案不给落点 realm 判定」')
 }
 
 /* ── entry ───────────────────────────────────────────────────────────────── */

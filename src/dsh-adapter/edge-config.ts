@@ -119,15 +119,22 @@ export interface EdgeLlmPool {
   /** Delegate 模式：wire model 覆盖（压过宿主选择 / 探针模型）。 */
   delegateModel?: string
   /**
-   * §7.210 (2026-11-12): 「本地」必须落在**直连端点**上。
+   * §7.210 (2026-11-12) / §7.214 (2026-11-13): 「本地」必须落在**本地**上。
    *
    * 默认 **false**（零行为变化）：本地池没配 `baseUrl` 时是 DELEGATE（转发宿主
-   * provider，§7.171）⇒ LOCAL 轮次改道过去其实**出网**。上游**有意**放行这个
+   * provider，§7.171）⇒ LOCAL 轮次改道过去**可能出网**。上游**有意**放行这个
    * 语义（`tests/unit/input-guard-local-reroute.test.ts` 有单测断言）⇒ 改它等于
    * 改产品语义 ⇒ 主人拍板前**不改语义**，只做可见化（一条 security 级审计事件）。
    *
-   * true = **opt-in 严格档**：DELEGATE ⇒ fail-closed 拒收（这一轮不出网）。
-   * 审计侧无论开关如何都会记 `input-guard.reroute.delegate-egress`。
+   * true = **opt-in 严格档**：落点不是本地 ⇒ fail-closed 拒收（这一轮不出网）。
+   *
+   * §7.214：判据是「委托落点是不是 LOCAL」（model-router 的 realm 说了算）——
+   * 落点**证明**是本地 ⇒ 放行（那一轮没出网）；落点不是本地、或 realm **证不出来**
+   * ⇒ 拒收（fail-closed）。
+   *
+   * 审计侧：落点不是本地时记 `input-guard.reroute.delegate-egress`（无论开关如何）；
+   * 落点是本地时**不记**那条（它没出网）⇒ 落点事实改记在 `input-guard.reroute.local`
+   * 行上（`delegateProvider` / `delegateRealm` / `realmSource`）。
    */
   requireLocalEndpoint?: boolean
 }
@@ -1152,7 +1159,10 @@ export function localPool(cfg: EdgeConfig = loadEdgeConfig()): {
   delegate: boolean
   delegateProvider?: string
   delegateModel?: string
-  /** §7.210: DELEGATE 时是否 fail-closed 拒收（默认 false —— 零行为变化）。 */
+  /**
+   * §7.210 / §7.214: 委托落点**不是本地**时是否 fail-closed 拒收
+   * （默认 false —— 零行为变化）。
+   */
   requireLocalEndpoint: boolean
 } {
   const pool = cfg.llm?.local ?? {}

@@ -1118,12 +1118,12 @@ checkout 里最不该待的东西。
 | `llm.local.delegate` | `true` | `false` = kill switch：路由不注册，LOCAL 意图 fail-closed（内部阶段降级到关键词/正则档） |
 | `llm.local.delegateProvider` | （自动） | 显式锁定委托目标路由 id |
 | `llm.local.delegateModel` | （跟随宿主选择） | 委托 wire model override |
-| `llm.local.requireLocalEndpoint` | `false` | §7.210：**DELEGATE 时是否 fail-closed 拒收**。默认 `false` = 维持既有语义（照常放行，只多留一条 security 级审计事件）；`true` = 严格档，DELEGATE 时该轮**拒收**（绝不出网）。⚠️ 默认开着会把「本地池留空 = DELEGATE」的默认部署**全部拒收** ⇒ 边缘模式全线不可用 ⇒ 除非你要的就是这个，否则先填 `llm.local.baseUrl` |
+| `llm.local.requireLocalEndpoint` | `false` | §7.210 / §7.214：**DELEGATE 时是否 fail-closed 拒收**。默认 `false` = 维持既有语义（照常放行，只多留一条 security 级审计事件）；`true` = 严格档，**落点不是本地就拒收**（绝不出网）。⚠️ 默认开着会把「本地池留空 = DELEGATE」的默认部署**全部拒收** ⇒ 边缘模式全线不可用 ⇒ 除非你要的就是这个，否则先填 `llm.local.baseUrl` |
 
 > **§7.210（2026-11-12）：本地池留空时，「留在设备上」这件事有个缺口。**
 >
 > intent=LOCAL 的轮次会被**改道**到本地池（§7.184），但本地池留空 = DELEGATE =
-> 转发宿主模型 ⇒ 改道过去其实**出网**了。这个放行是**上游有意**的
+> 转发宿主模型 ⇒ 改道过去其实**可能出网**。这个放行是**上游有意**的
 > （`tests/unit/input-guard-local-reroute.test.ts` 有单测断言）⇒ 改它等于改产品
 > 语义 ⇒ 主人未拍板前**不改语义**，只做两件事：
 >
@@ -1136,6 +1136,30 @@ checkout 里最不该待的东西。
 >
 > ⇒ 要彻底杜绝「本地池委托出去」，两条路：填 `llm.local.baseUrl`（直连自有池），
 > 或开 `requireLocalEndpoint`（宁可不答，也不出网）。
+
+> **§7.214（2026-11-13）：严格档的判据升级成「委托落点是不是 LOCAL」。**
+>
+> §7.210 的严格档是**粗粒度**的：「只要是 DELEGATE 就拒收」。但 DELEGATE 的落点
+> **可能本身就是本地的**（`llm.local.delegateProvider` 指向一条 model-router
+> 标注为 LOCAL 的路由）⇒ 那种情况**并不出网** ⇒ 按 §7.190 主人给的口径
+> （「DELEGATE 的委托目标按 model-router 的 realm 判定，非 LOCAL 就 fail-closed
+> 拒收」）不该拒收。
+>
+> 现在的判据：
+>
+> | 委托落点的 realm | 严格档（`requireLocalEndpoint=true`） | 审计 |
+> |---|---|---|
+> | `LOCAL` | **放行**（那一轮没出网） | 只有 `reroute.local`（带 `delegateProvider` / `delegateRealm`），**没有** `delegate-egress` |
+> | 其它（如 `CLOUD`） | fail-closed **拒收** | `delegate-egress`（`blocked=true`）+ `reroute.blocked`，都带 realm 证据 |
+> | **证不出来**（老宿主 / 清单里没有它） | fail-closed **拒收** | 同上，`delegateRealm=UNKNOWN` |
+>
+> ⇒ **证不出来 ≠ 本地**：判定只认 model-router 的 `listDetailed()`，刻意**不**靠
+> `local-` 前缀猜（那是 fail-open）。落点与 realm 会写进审计事件的
+> `delegateProvider` / `delegateRealm` / `realmSource` 三个字段。
+>
+> ⚠️ **默认仍是 `false`** ⇒ 默认部署（本地池留空 = DELEGATE）行为一个字没改。
+> ⚠️ 直连池（配了 `llm.local.baseUrl`）**完全不查 realm** —— §7.211 裁决：
+> 本地池直连什么端点都不做特殊处理。
 
 配了 `llm.local.baseUrl` 时，`local-llm-adapter` 走真实 OpenAI 兼容端点。
 端点指向任一 llama.cpp / vLLM / Ollama / DashScope 实例：

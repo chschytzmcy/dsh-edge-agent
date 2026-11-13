@@ -85,6 +85,11 @@ for (const file of sources) {
   // input-guard.ts; never inserted by a cordis patch row, not in
   // package.json exports.
   if (base === 'input-guard-messages') continue
+  // §7.214: pure helper module — 「某个 provider 落在哪个 realm」的判定
+  // （model-router 的 listDetailed() 是唯一事实源）。Imported by
+  // input-guard.ts; never inserted by a cordis patch row, not in
+  // package.json exports.
+  if (base === 'provider-realm') continue
   // §7.131: the egress-segmentation helpers extracted out of
   // cloud-llm-adapter.ts (云段/本地段切分 + provider 判定). Imported by
   // cloud-llm-adapter.ts / input-guard.ts; never inserted by a cordis patch

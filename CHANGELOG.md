@@ -11,10 +11,43 @@
 
 ## [Unreleased]
 
+**「本地池委托出去」这件事，严格档现在按「落点是不是本地」判，而不是「有没有配端点」。**
+（2026-11-13，§7.214）
+
+### 你会看到什么变化
+
+- `llm.local.requireLocalEndpoint=true`（**严格档**）时，判定口径变了：
+  - 委托落点的 realm 是 `LOCAL`（model-router 说了算）⇒ **放行** ——
+    那一轮**根本没出网**，拒它是误伤；
+  - 落点不是本地 ⇒ fail-closed **拒收**（绝不出网）；
+  - realm **证不出来**（老宿主 / 清单里没有它）⇒ 也拒收 ——
+    **证不出来 ≠ 本地**。
+- 审计事件的 payload 多了三个字段：`delegateProvider`（转给谁）/
+  `delegateRealm`（它的 realm）/ `realmSource`（判定依据）。
+- 委托落点证明是本地时，**不再**记 `input-guard.reroute.delegate-egress`
+  —— 它没出网，写「出网」就是与实际行为相反的陈述；落点事实改记在
+  `input-guard.reroute.local` 行上。
+- ⚠️ **默认仍是 `false`** ⇒ 默认部署（本地池留空 = DELEGATE）行为一个字没改。
+- ⚠️ 直连池（配了 `llm.local.baseUrl`）**完全不查 realm** —— 本地池直连什么
+  端点都不做特殊处理。
+
+### 测试与门禁
+
+- 新增 `tests/unit/input-guard-delegate-realm.test.ts`（13 条）：严格档按 realm
+  放行/拒收/证不出来拒收、默认档语义不变、落点 LOCAL 时不留出网事件、
+  直连池不查 realm、判定本身的前缀兜底被明确禁用。
+- `verify:edge-local-reroute` 加了第 10 组断言（落点 LOCAL 放行 / 非 LOCAL 拒收 /
+  证不出来拒收 / 直连池不查 realm）—— 已做**负向验证**：把判定临时改坏，门禁
+  立刻报 6 条违规。
+- `verify:config-hints` 加一条断言：严格档的报错文案**必须给出落点的 realm 判定**
+  （自证 17 → 19 条）。
+
+### 上一轮（§7.213）
+
 **装 full 变体，Edge 面板的宿主那一半现在真的在了。**
 （2026-11-13，§7.213）
 
-### 你会看到什么变化
+#### 你会看到什么变化
 
 - **full 变体**（`dsh-edge-agent-full`）以前**缺** `- id: edge-context-view` 这一行
   ⇒ 宿主不挂这个插件 ⇒ **Edge 面板只剩浏览器半侧**，宿主侧拿不到上下文。
@@ -25,7 +58,7 @@
   **静默跳过**这两个字段（§7.101.x fix #1）；依赖在 src 里声明、运行时旋钮走 `process.env`。
 - **运行时逻辑一字未改**（`src/` 未动）：这是**补回** safe 早就有的插件挂载，不是新增能力。
 
-### 测试与门禁
+#### 测试与门禁
 
 - 门禁 `verify:preset-isolate` **当场抓到**「只补行、不补 isolate 名单」的写法：服务
   `edgeContextView` 会落进 root realm ⇒ **整个 preset 挂载失败** ⇒ 设置页那张卡显示

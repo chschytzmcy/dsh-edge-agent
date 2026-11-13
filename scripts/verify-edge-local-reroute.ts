@@ -73,13 +73,26 @@ function fakeCtx(opts: {
   localRouteAvailable?: boolean
   llm?: unknown
   hostModel?: string
+  /** §7.214: model-router 的 `listDetailed()` 该返回的路由清单。 */
+  realms?: Array<{ provider: string; realm: string }>
 } = {}) {
   const live = ['qwen-token-plan-cn']
+  // §7.214: 记录 realm 查询次数 —— 直连池不该查（§7.211 裁决）。
+  const listDetailedCalls: number[] = []
   return {
+    listDetailedCalls,
     reflect: { provide(_n: string, _v: unknown) { return () => {} } },
     provide(_n: string, _v: unknown) { return () => {} },
     get(name: string) {
-      if (name === 'modelRouter') return { isAvailable: () => opts.localRouteAvailable ?? true }
+      if (name === 'modelRouter') {
+        return {
+          isAvailable: () => opts.localRouteAvailable ?? true,
+          listDetailed: () => {
+            listDetailedCalls.push(1)
+            return opts.realms ?? [{ provider: live[0]!, realm: 'CLOUD' }]
+          },
+        }
+      }
       if (name === 'llm') return opts.llm ?? { listProviders: () => [], stream: async function* () { /* unused */ } }
       if (name === 'agentDefaultModel') {
         return { currentSelection: () => (opts.hostModel ? { provider: live[0]!, model: opts.hostModel } : undefined) }
@@ -91,11 +104,17 @@ function fakeCtx(opts: {
 
 /** 覆写池形态 ⇒ 门禁不依赖机器上那份 edge.json。*/
 class GateGuard extends InputGuardServiceImpl {
-  constructor(ctx: any, config: Config, private readonly mode: 'direct' | 'delegate', auditLog?: any) {
+  constructor(
+    ctx: any,
+    config: Config,
+    private readonly mode: 'direct' | 'delegate' | Record<string, unknown>,
+    auditLog?: any,
+  ) {
     super(ctx, config, undefined, undefined, undefined, undefined, auditLog)
   }
 
   protected override localPoolShape(): any {
+    if (typeof this.mode === 'object') return this.mode
     return this.mode === 'direct'
       ? { baseUrl: 'http://127.0.0.1:8080/v1', model: 'qwen3.8-max' }
       : { delegate: true }
@@ -343,10 +362,129 @@ const CLOUD_OPTIONS = {
   }
 }
 
+// ── 10. §7.214: DELEGATE 严格档按 **realm** 判定（不是「有没有 baseUrl」） ─────
+
+// 10a. 委托落点 realm = LOCAL ⇒ 那一轮**没出网** ⇒ 严格档不该拒收。
+{
+  const audit = fakeAuditLog()
+  const calls: Array<{ provider?: string; model?: string; messages?: unknown }> = []
+  const ctx = fakeCtx({
+    llm: fakeLlmRuntime(calls),
+    hostModel: 'deepseek-v4.1-flash',
+    realms: [{ provider: 'qwen-token-plan-cn', realm: 'LOCAL' }],
+  })
+  const svc = new GateGuard(ctx as any, gateConfig(), { delegate: true, requireLocalEndpoint: true }, audit.api)
+  armEdgeSession(svc, 's1', 'LOCAL')
+
+  await drain(svc.handleLlmStream(CLOUD_OPTIONS as never, async function* () {
+    throw new Error('改道后不该走到默认处理')
+  }))
+
+  if (calls.length !== 1) {
+    fail(`§7.214: 委托落点 realm=LOCAL 时严格档拒收了 —— 那一轮根本没出网（calls=${calls.length}）`)
+  }
+  if (audit.entries.some(e => e.kind === 'input-guard.reroute.blocked')) {
+    fail('§7.214: 落点是 LOCAL 却留了 blocked 事件 —— 没被拦就不该写「被拦了」')
+  }
+  const egress = audit.entries.find(e => e.kind === 'input-guard.reroute.delegate-egress')
+  if (egress) {
+    fail('§7.214: 落点是 LOCAL 却留了 delegate-egress 事件 —— 它没出网（写「出网」= 与实际行为相反）')
+  }
+  const reroute = audit.entries.find(e => e.kind === 'input-guard.reroute.local')
+  if (!reroute) fail('§7.214: 改道没有留 reroute.local 审计行')
+  else if ((reroute.payload as any).delegateRealm !== 'LOCAL') {
+    fail(`§7.214: reroute.local 没记落点的 realm（=${String((reroute.payload as any).delegateRealm)}）—— 落点事实只能留在这里`)
+  }
+}
+
+// 10b. 委托落点 realm ≠ LOCAL ⇒ fail-closed 拒收，且审计里要写清依据。
+{
+  const audit = fakeAuditLog()
+  const calls: Array<{ provider?: string; model?: string; messages?: unknown }> = []
+  const ctx = fakeCtx({
+    llm: fakeLlmRuntime(calls),
+    hostModel: 'deepseek-v4.1-flash',
+    realms: [{ provider: 'qwen-token-plan-cn', realm: 'CLOUD' }],
+  })
+  const svc = new GateGuard(ctx as any, gateConfig(), { delegate: true, requireLocalEndpoint: true }, audit.api)
+  armEdgeSession(svc, 's1', 'LOCAL')
+
+  let threw = false
+  try {
+    await drain(svc.handleLlmStream(CLOUD_OPTIONS as never, async function* () {
+      throw new Error('改不动时绝不能走到默认处理')
+    }))
+  } catch {
+    threw = true
+  }
+  if (!threw) fail('§7.214: 委托落点 realm≠LOCAL 时严格档没有拒收 —— 这一轮会出网')
+  if (calls.length !== 0) fail('§7.214: 被拒收的这一轮仍然派发出去了')
+  const blocked = audit.entries.find(e => e.kind === 'input-guard.reroute.blocked')
+  if (!blocked) fail('§7.214: 拒收时没有留 blocked 审计行')
+  else {
+    if ((blocked.payload as any).delegateRealm !== 'CLOUD') {
+      fail(`§7.214: blocked 审计里没有落点的 realm（=${String((blocked.payload as any).delegateRealm)}）`)
+    }
+    if ((blocked.payload as any).delegateProvider !== 'qwen-token-plan-cn') {
+      fail('§7.214: blocked 审计里没有落点的 provider')
+    }
+  }
+}
+
+// 10c. realm **证不出来** ⇒ 仍然拒收（fail-closed：证不出来 ≠ 本地）。
+{
+  const audit = fakeAuditLog()
+  const calls: Array<{ provider?: string; model?: string; messages?: unknown }> = []
+  const ctx = fakeCtx({
+    llm: fakeLlmRuntime(calls),
+    hostModel: 'deepseek-v4.1-flash',
+    realms: [], // 清单里没有这个 provider
+  })
+  const svc = new GateGuard(ctx as any, gateConfig(), { delegate: true, requireLocalEndpoint: true }, audit.api)
+  armEdgeSession(svc, 's1', 'LOCAL')
+
+  let threw = false
+  try {
+    await drain(svc.handleLlmStream(CLOUD_OPTIONS as never, async function* () {
+      throw new Error('改不动时绝不能走到默认处理')
+    }))
+  } catch {
+    threw = true
+  }
+  if (!threw) fail('§7.214: realm 证不出来时没有拒收 —— fail-closed 失效（证不出来 ≠ 本地）')
+  if (calls.length !== 0) fail('§7.214: 被拒收的这一轮仍然派发出去了')
+  const blocked = audit.entries.find(e => e.kind === 'input-guard.reroute.blocked')
+  if (!blocked) fail('§7.214: 拒收时没有留 blocked 审计行')
+  else if ((blocked.payload as any).delegateRealm !== 'UNKNOWN') {
+    fail(`§7.214: 证不出来时 blocked 审计的 realm 应为 UNKNOWN（=${String((blocked.payload as any).delegateRealm)}）`)
+  }
+}
+
+// 10d. 直连池 ⇒ **不查** realm（§7.211 裁决：本地池直连什么端点都不做特殊处理）。
+{
+  const audit = fakeAuditLog()
+  const calls: Array<{ provider?: string; model?: string; messages?: unknown }> = []
+  const ctx = fakeCtx({
+    llm: fakeLlmRuntime(calls),
+    realms: [{ provider: 'qwen-token-plan-cn', realm: 'CLOUD' }],
+  })
+  const svc = new GateGuard(ctx as any, gateConfig(), { baseUrl: 'http://127.0.0.1:8080/v1', model: 'qwen3.8-max', requireLocalEndpoint: true }, audit.api)
+  armEdgeSession(svc, 's1', 'LOCAL')
+
+  await drain(svc.handleLlmStream(CLOUD_OPTIONS as never, async function* () {
+    throw new Error('改道后不该走到默认处理')
+  }))
+
+  if (calls.length !== 1) fail('§7.214: 直连池被严格档拒收了')
+  if (ctx.listDetailedCalls.length !== 0) {
+    fail('§7.214: 直连池也去查 model-router 的 realm —— §7.211 裁决：本地池直连什么端点都不做特殊处理')
+  }
+}
+
 if (violations.length > 0) {
   console.error('Edge local reroute gate FAILED:')
   for (const v of violations) console.error(`  - ${v}`)
   process.exit(1)
 }
 
-console.log('edge-local-reroute OK (选型不动 + LOCAL 轮次改道到本地池 + 同源 model id + 全部历史 + CLOUD 不改道 + 防自锁 + 标准模式零影响 + fail-closed)')
+console.log('edge-local-reroute OK (选型不动 + LOCAL 轮次改道到本地池 + 同源 model id + 全部历史 + CLOUD 不改道 + 防自锁 + 标准模式零影响 + fail-closed + §7.214 严格档按 realm 判定)')

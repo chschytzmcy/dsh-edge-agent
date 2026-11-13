@@ -171,9 +171,10 @@ dsh --profile <profile> --dump-config | grep -cE 'input-guard|file-logger|intent
 判一次会话到底用了哪个 provider，**唯一权威是审计链**：`input-guard.reroute.local`
 （改道发生，带 `from` / `to`）/ `input-guard.reroute.blocked`（改不动）。
 
-> ⚠️ **本地池没配直连端点时（默认），改道出去其实会出网。**
+> ⚠️ **本地池没配直连端点时（默认），改道出去可能出网。**
 > 本地池留空 = DELEGATE = 转发宿主模型 ⇒ 审计链会留一条 **security 级**事件
-> `input-guard.reroute.delegate-egress` 标出「这一轮其实出了设备」。
+> `input-guard.reroute.delegate-egress` 标出「这一轮出了设备」（委托落点证明是
+> 本地时**不记**这条 —— 它没出网）。
 > 要杜绝这种出网：在 `~/.dsh-edge-agent/edge.json` 的 `llm.local` 段填上
 > `baseUrl`（直连自有池），或把 `llm.local.requireLocalEndpoint` 设成 `true`
 > —— 后者会让这种轮次按 fail-closed **拒收**（默认 `false`，不改变既有行为）。

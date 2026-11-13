@@ -54,6 +54,10 @@ import {
   type LocalPoolShape,
 } from './effective-model.js'
 import { containsCredential } from './pii-utils.js'
+// §7.214: 「委托落点落在哪个 realm」—— DELEGATE 严格档的判定依据。
+// model-router 的 `listDetailed()` 是唯一事实源（与 cloud-llm-adapter /
+// host-egress-guard 同款），证不出来一律按「不是本地」处理（fail-closed）。
+import { providerRealm, type ProviderRealmVerdict } from './provider-realm.js'
 // §7.144: 宿主 provider 那一跳的 trace（delegate 出去的云池调用不在任何
 // adapter 里，adapter 记不到它 —— 面板里会整条缺失）。
 import { resolveLlmTraceConfig } from './llm-trace.js'
@@ -603,11 +607,11 @@ export class InputGuardServiceImpl extends Service {
       )
     }
 
-    // ── §7.210 (2026-11-12): DELEGATE 出网 —— 一等审计事件 + opt-in 严格档 ──
+    // ── §7.210 / §7.214: DELEGATE 出网 —— 一等审计事件 + opt-in 严格档 ──
     //
     // 背景：intent=LOCAL 的轮次会被改道到本地池（§7.184）。但本地池**默认**
     // 是 DELEGATE（没配 `llm.local.baseUrl` ⇒ 转发宿主 provider，§7.171）
-    // ⇒ 改道过去其实**出网**了 —— 而 intent=LOCAL 的承诺是「这一轮留在设备上」。
+    // ⇒ 改道过去**可能出网** —— 而 intent=LOCAL 的承诺是「这一轮留在设备上」。
     //
     // 上游**有意**放行这个语义（`tests/unit/input-guard-local-reroute.test.ts`
     // 有单测断言 DELEGATE 池照常改道）⇒ 改它 = 改产品语义 ⇒ 主人未拍板前
@@ -621,28 +625,61 @@ export class InputGuardServiceImpl extends Service {
     //
     // 位置：放在 `reroute.local` 审计行**之前** —— 被严格档挡下时不能留下
     // 「改道了」的记录（本文件一直避免这种假记录，见上面 runtime 不可用那段）。
+    //
+    // ── §7.214 (2026-11-13): 严格档的判据从「有没有配 baseUrl」升级成
+    // **「委托落点是不是 LOCAL」**（§7.190 主人给的口径）。
+    //
+    // §7.210 的粗粒度版本是「只要是 DELEGATE 就拒收」—— 比主人给的口径
+    // **粗一档**：DELEGATE 的落点**可能本身就是本地的**
+    // （`llm.local.delegateProvider` 指向一条 model-router 标 LOCAL 的路由）
+    // ⇒ 那种情况下改道过去**并不出网** ⇒ 按 §7.190 不该拒收。
+    //
+    // 判据（`provider-realm.ts`，单一事实源）：
+    //   - 落点 = §7.180 委托解析链解析出来的那个 provider（`effective.provider`）；
+    //   - 它的 realm 由 model-router 的 `listDetailed()` 给；
+    //   - **只有 `realm === 'LOCAL'` 才算「没出网」**；
+    //   - 证不出来（老宿主 / 清单里没有它）⇒ 按 fail-closed 当作**出网**。
+    // §7.214: 只有 DELEGATE 形态才有「委托落点」这回事 —— 直连池的落点就是
+    // baseUrl 本身，**不查**（§7.211 裁决：本地池直连什么端点都不做特殊处理）。
+    let landing: ProviderRealmVerdict | undefined
     if (!shape.baseUrl) {
       const strict = shape.requireLocalEndpoint === true
-      this.audit('security', 'input-guard.reroute.delegate-egress', {
-        ...sessionIdField(state.sessionId),
-        from: { provider: fromProvider, model: fromModel },
-        to: { provider: this.config.localProvider, model: effective.model },
-        // 为什么不写「转给谁」：DELEGATE 的落点是宿主当前选中的 provider
-        // （§7.180 的委托解析链），input-guard 这一层未必拿得到 ⇒ 不写不知道的事。
-        reason: 'local-pool-delegate',
-        blocked: strict,
-      })
-      if (strict) {
+      // 「这一轮到底发去哪儿了」—— 没有落点就判不了出不出网。
+      landing = providerRealm(this.ctx, effective.provider)
+      const landedLocal = landing.isLocal
+      if (!landedLocal) {
+        this.audit('security', 'input-guard.reroute.delegate-egress', {
+          ...sessionIdField(state.sessionId),
+          from: { provider: fromProvider, model: fromModel },
+          to: { provider: this.config.localProvider, model: effective.model },
+          // §7.214: 落点与它的 realm —— 「这一轮发去哪儿了」的事实。
+          // （§7.210 只写 `mode: 'delegate'`，看不出转给谁。）
+          delegateProvider: landing.provider,
+          delegateRealm: landing.realm,
+          realmSource: landing.source,
+          reason: 'local-pool-delegate',
+          blocked: strict,
+        })
+      }
+      if (strict && !landedLocal) {
         this.audit('security', 'input-guard.reroute.blocked', {
           ...sessionIdField(state.sessionId),
           provider: fromProvider,
           model: fromModel,
           reason: 'local-endpoint-required',
+          delegateProvider: landing.provider,
+          delegateRealm: landing.realm,
+          realmSource: landing.source,
         })
+        const landingLabel = landing.provider && landing.provider.length > 0
+          ? `"${landing.provider}"`
+          : '（落点未知）'
         throw new Error(
           'input-guard: 本轮 intent 判定为 LOCAL（必须留在设备上），但本地池处于 DELEGATE 模式'
           + '（~/.dsh-edge-agent/edge.json 的 llm.local 段没有 baseUrl）'
-          + '⇒ 改道会把请求转给宿主模型，也就是出网。'
+          + `⇒ 改道会把请求转给委托落点 ${landingLabel}，`
+          + `而 model-router 判定它的 realm 不是 LOCAL（判定结果 ${landing.realm}，依据 ${landing.source}）`
+          + '⇒ 这一轮会出网。'
           + '当前 llm.local.requireLocalEndpoint=true ⇒ 本轮按 fail-closed 拒收（不出网）。'
           // §7.159 门禁按**源码字面量**抽配置指引（verify-config-hints.mjs 取文件里
           // 第一个「本轮 intent 判定为 LOCAL」所在的 throw）⇒ 这段指引必须字面写
@@ -665,6 +702,14 @@ export class InputGuardServiceImpl extends Service {
       source: effective.source,
       ...(effective.via === undefined ? {} : { via: effective.via }),
       mode: shape.baseUrl ? 'direct' : 'delegate',
+      // §7.214: DELEGATE 形态补上「转给谁、它的 realm 是什么」——
+      // 落点是 LOCAL 时这一轮**没出网**（那就没有 delegate-egress 事件），
+      // 证据只能留在这里。
+      ...(landing === undefined ? {} : {
+        delegateProvider: landing.provider,
+        delegateRealm: landing.realm,
+        realmSource: landing.source,
+      }),
     })
 
     const raw = llm.stream.call(llm, rerouted)
