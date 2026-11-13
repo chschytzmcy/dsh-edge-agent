@@ -11,6 +11,23 @@
 
 ## [Unreleased]
 
+### 实机验证：DELEGATE 出网事件与严格档，在真机上各留下一条证据（§7.216）
+
+- 装上 0.1.6 的产物、起真实的宿主、发一条真实的消息，从**审计链**里取到了
+  `input-guard.reroute.delegate-egress`（security 级），payload 带
+  `delegateProvider` / `delegateRealm` / `realmSource`。
+- **默认档** `blocked=false`（照旧放行，上游那个有意的语义没动）；**严格档**
+  `blocked=true` + 追加 `input-guard.reroute.blocked`（fail-closed 拒收）——
+  两条都在真机上验过。
+- 同一份审计链里还留着 0.1.5 时期的旧行：那时候**只有** `reroute.local`，
+  **没有** `delegate-egress`，payload 里**也没有** realm 字段 ⇒ 可见化不是纸面改动。
+- ⚠️ 实机查出一条**依赖**：这类宿主里没有 model-router ⇒ 落点 realm 永远**证不
+  出来**（`UNKNOWN`）⇒ **严格档会把每一轮 DELEGATE 都拒收**。严格档依赖宿主提供
+  realm 事实，不是「装上就能用」的开关。
+- 顺手记下两处**面板口径**的待决项（本轮只记录、**未改**）：面板不认
+  `input-guard.reroute.blocked`（拒收那轮不显示「已拦截」）；顶部结论行在拒收时
+  仍写「本轮：本地模型作答」。
+
 ---
 
 ## [0.1.6] — 2026-11-13

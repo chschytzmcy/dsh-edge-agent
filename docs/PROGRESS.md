@@ -23132,154 +23132,336 @@ preset 列表末尾多 `"edge-context-view"` 一项 ⇒ 用
 
 ---
 
-## §7.213 full 变体补上 `edge-context-view`：装 full 才有 Edge 面板的宿主那一半（2026-11-13）
+## §7.214 DELEGATE 严格档升级为 **realm 判定**（§7.190 口径），默认仍 `false`（2026-11-13）
 
-> 这是 §7.209 六节里记下的**第三条**既有事实，本轮**修掉了**（改 preset 补丁 + 快照，
-> 运行时逻辑一字未改）。
+> §7.190 记下的**待裁决项**本轮落地。改的是**严格档的判据**（一个默认关闭的
+> opt-in 开关），**默认部署的行为一个字没改**。
 
-### 一、根因：两个变体的 Agent Preset 补丁**差了整整一行**
+### 一、§7.190 的原话与当时的选项
 
-实测（2026-11-13，grep 两个 preset 补丁文件）：
+> **DELEGATE 委托到云端时，闸门不拦。** `input-guard` 的 `dispatchRerouted()`
+> 只用 `localAvailable()`（问「`local-llm` 路由在不在」），**DELEGATE 模式下该
+> 路由是在的** ⇒ 放行；`mode` 只写进审计行，不参与判定。这不是漏写，而是**上游
+> 有意的产品决定**（`tests/unit/input-guard-local-reroute.test.ts` 明确断言「DELEGATE
+> 池 ⇒ 改道过去的 model 是委托落点那个」）⇒ **改它 = 改产品语义**。
+>
+> ⇒ 主人当时给的选项：「**DELEGATE 的委托目标按 model-router 的 realm 判定，
+> 非 LOCAL 就 fail-closed 拒收**」。
 
-| preset 补丁文件 | 属于哪个变体 | `- id: edge-context-view` 命中 |
+### 二、为什么 §7.210 的粗粒度版本不够
+
+§7.210 做了两件事：**可见化**（一等 security 事件
+`input-guard.reroute.delegate-egress`）+ **opt-in 严格档**
+（`llm.local.requireLocalEndpoint=true` ⇒ DELEGATE 时一律 fail-closed 拒收）。
+
+但「一律拒收」比主人给的口径**粗一档**：
+
+- DELEGATE 的落点**可能本身就是本地的** ——
+  `llm.local.delegateProvider` 可以指向一条 model-router 标注为 `LOCAL` 的路由
+  （例如宿主自己注册的本地推理服务）。
+- 那种情况下改道过去**并不出网** ⇒ 按 §7.190 的口径**不该拒收**。
+- §7.210 的粗粒度版本会把它一起拒掉 ⇒ 对一个**合法的本地部署**误伤。
+
+### 三、本轮的判据（`src/dsh-adapter/provider-realm.ts`，单一事实源）
+
+| 委托落点的 realm | 严格档（`requireLocalEndpoint=true`） | 默认档 | 审计 |
+|---|---|---|---|
+| `LOCAL` | **放行**（那一轮没出网） | 照常改道 | 只有 `reroute.local`（带 `delegateProvider` / `delegateRealm` / `realmSource`） |
+| 其它（如 `CLOUD`） | fail-closed **拒收** | 照常改道（上游有意的语义） | `delegate-egress`（`blocked=true`）+ `reroute.blocked`，都带 realm 证据 |
+| **证不出来** | fail-closed **拒收** | 照常改道 | 同上，`delegateRealm=UNKNOWN` |
+
+判据的实现要点：
+
+1. **落点** = §7.180 委托解析链解析出来的那个 provider（`effective.provider`）——
+   与 wire、模型目录**同一份**委托目标缓存 ⇒ 判的就是真正会跑的那个。
+2. **realm 的来源** = model-router 的 `listDetailed()`（`realm === 'LOCAL'`）
+   —— 与 `cloud-llm-adapter#localProviders()` / `host-egress-guard#localProviders()`
+   **同一份事实源**，避免「这一层认为它是本地、那一层认为它是云」。
+3. **fail-closed**：三种情况都判成「不是 LOCAL」——
+   model-router 读不到 / 清单里没有这个 provider / `realm` 字段缺失。
+   ⇒ **证不出来 ≠ 本地**。
+4. **刻意不靠 `local-` 前缀猜**：`isCloudBoundProvider()` 里那条前缀规则服务的是
+   **另一个方向**（「别把本地段当云段裁掉」，偏保守）；这里是「能不能放行」，
+   偏保守就该**不放行** ⇒ 前缀**不构成证据**。
+
+### 四、默认档**变了**什么（诚实地列全）
+
+严格档是本轮的主线，但默认档（开关未开）也有一处**可观测**的变化，如实写明：
+
+| 场景 | §7.210 | §7.214 |
 |---|---|---|
-| `presets/edge.desktop-safe.patch.yml` | **safe** | 6 行（注释 + 定义） |
-| `presets/edge.patch.yml` | **full** | **0 行** ❌ |
+| DELEGATE，落点 realm = `CLOUD` / 未知 | 留 `delegate-egress` | **照旧留**（payload 多了 `delegateProvider` / `delegateRealm` / `realmSource` 三个字段） |
+| DELEGATE，落点 realm = `LOCAL` | 留 `delegate-egress` | **不留** —— 它没出网，写「出网」就是**与实际行为相反的陈述**（主人的规矩）；落点事实改记在 `reroute.local` 行上 |
+| 直连池 | 不查 realm | **不查 realm**（§7.211 裁决：本地池直连什么端点都不做特殊处理） |
 
-⇒ 装 **full** 变体 ⇒ 宿主不挂 `edge-context-view` ⇒ **Edge 面板的宿主那一半没有**
-（面板只剩浏览器半侧能显示，宿主侧拿不到上下文）。
+⇒ **默认部署**（本地池留空 = DELEGATE，落点是宿主云模型）走的是第一行 ⇒
+事件在、行为不变，只是 payload 多了三个字段。
 
-### 二、为什么这一行属于 **Agent Preset 补丁** 而不是全局 patch 层
+### 五、门禁与单测
 
-§7.135 起它被划到「边缘模式」这个**工作方式**的插件里（不是全局 patch 层）⇒
-只能出现在 preset 补丁里 ⇒ **safe 有、full 没有**，正是同一个东西的两份手抄副本
-漂移了。
+- **新模块** `src/dsh-adapter/provider-realm.ts`（纯函数 + ctx 软读）。
+  ⚠️ 它落在 `src/dsh-adapter/` 下 ⇒ `verify:plugin-spec` 把它当**插件**查
+  （要 `export const name` / `inject` / `Config` / `apply`）⇒ 按既有惯例加进
+  纯辅助模块的豁免名单（与 `edge-config` / `llm-trace` / `input-guard-messages`
+  同款，带 §7.214 注释）。
+- **新单测** `tests/unit/input-guard-delegate-realm.test.ts`（13 条）：
+  严格档 LOCAL 放行 / 非 LOCAL 拒收 / 证不出来拒收 / `realm` 字段缺失也拒收 /
+  默认档语义不变 / 落点 LOCAL 时不留 `delegate-egress` / 直连池不查 realm /
+  `providerRealm` 本身的 6 条（含「刻意不靠 `local-` 前缀猜」）。
+  （连同 §7.210 的 9 条 ⇒ **22 条全过**；全量单测 **84 文件 1649 通过 / 2 跳过**。）
+- **门禁** `verify:edge-local-reroute` 加了第 10 组断言（10a–10d）：
+  落点 LOCAL 放行且不留 `delegate-egress` / 非 LOCAL 拒收且审计带 realm 证据 /
+  证不出来拒收 / 直连池**不查** realm（用调用计数断言）。
+  ⇒ **负向验证**（把 `landedLocal` 临时改成恒 `true`）门禁立刻报 **6 条违规**
+  ⇒ 这道门禁**抓得住**退化，不是摆设。
+- **门禁** `verify:config-hints` 加一条断言：严格档的报错文案**必须给出落点的
+  realm 判定**（`auditDelegateHint`）。
+  为什么是硬要求：operator 被拒时要能看见**判定结果**，而不只是「去配端点」——
+  他配完端点仍可能被拒（落点本来就不是本地）。
+  自证 **17 → 19 条**全过。
+- 全链 **31 道** EXIT=0；`lint` 0 error / 60 warning（与上轮同数）。
 
-### 三、修法：补一行 + **连带补 isolate 名单**
+### 六、这一节**没有**做的事
 
-改 `presets/edge.patch.yml` 两处：
-
-1. **在 `input-guard` 之后**追加 `- id: edge-context-view` + `name: '@dsh-edge/dsh-edge-agent/edge-context-view'`
-   —— 位置与 safe 变体一致；
-2. **`edge-stack` 组的 isolate 名单**补 `edgeContextView: true`（按字母序排在 `edgeTools` 前）。
-
-⚠️ **这一行故意不带 `inject:` / `config:`** —— §7.101.x fix #1 实测：cordis 0.2.1-rc.2
-的 patch loader 会**静默跳过**这两个字段（`docs/dev-notes/cordis-rc021-patch-loader.md` Bug 1），
-依赖在 src 里声明、运行时旋钮走 `process.env`。
-
-### 四、门禁**当场抓到**了第 2 处漏改（这才是这一节的重点）
-
-只加第 1 处（补行）而不补 isolate 名单时，`verify:preset-isolate` 直接报：
-
-> provides service `edgeContextView` but that name is not in the group's isolate map
-> ⇒ 服务落进 root realm ⇒ **preset 挂载失败** ⇒ 设置页那张卡显示「加载失败」
-
-⇒ 也就是说：**只补行不补名单，会把「面板少一半」升级成「整个 preset 装不上」**。
-补上 isolate 名单后该项 EXIT=0。
-
-⇒ 这一节的**真正价值**不是「补了一行」，而是：**isolate 名单与提供方的耦合，由门禁
-`verify-preset-isolate.ts` 守着**（规则 1/2/4：行提供的服务必须在 isolate 名单里；
-名单里不许有没人提供的幽灵项）⇒ 下次再有人手抄副本漂移，门禁会先红。
-
-### 五、连带漂移：`patch-surface.snapshot.json` 要重生成
-
-`verify:patch-surface` 是快照门禁 ⇒ 补行后 diff **只有**一处：`edge.patch.yml` 的
-preset 列表末尾多 `"edge-context-view"` 一项 ⇒ 用
-`node --import tsx/esm scripts/verify-patch-surface.ts --snapshot` 重生成快照。
-
-### 六、本轮实跑通过的门禁
-
-`verify:preset-isolate` / `verify:patch-surface` / `verify:patch-row-shape` /
-`verify:installable` / `verify:installable-edge` / `verify:local-channel` ⇒ 全部 EXIT=0。
-
-### 七、这一节**没有**做的事
-
-- **没有**改任何**运行时逻辑**（`src/` 一行未动）：这一行是**补回** safe 变体早就有的
-  插件挂载，不是新增能力；
-- **没有**动 §7.209 六节记的**第四条**既有事实（safe 与 npm 包的惰性补丁已经修掉，
-  本轮是另一件事）；
-- **没有**改 `edge-context-view` 的**行为**（`src/dsh-adapter/edge-context-view.ts` 未动）
-  —— 本轮只解决「装 full 时它根本没被挂上」；
-- **没有**顺手把 `scripts/_isolate-edge-group.mjs` 与 `scripts/_gen-edge-preset.mjs`
-  这两个**一次性迁移脚本**改好 —— 它们对现状早已失效（前者期望 3 行宿主行还在 preset 里，
-  而它们早已搬走）⇒ preset/patch 文件现为**手工维护**，**单一事实源是门禁
-  `verify-preset-isolate.ts`**，不是那两个脚本 ⇒ 留着不删，但在 PROGRESS 里写明，
-  免得下一个人拿它们当权威。
+- **没有**翻默认：`llm.local.requireLocalEndpoint` **仍是 `false`**。
+  理由：2026-11-11 裁决「npm 包装上就能用」—— 默认形态就是 DELEGATE，
+  翻成 `true` 会让默认部署全线不可用。严格口径留给主人拍板。
+- **没有**改**产品语义**：「DELEGATE 照常放行」这个上游有意的决定**一个字没动**
+  ⇒ 默认档仍然放行（只是多了落点事实与 realm 证据）。
+- **没有**对「本地池直连云端端点」加任何特殊处理（§7.211 裁决）⇒ 直连池分支
+  **完全不查 realm**（门禁 10d 用调用计数钉住这条）。
+- **没有**给「本地池指向云端端点」加检测/告警/改归属（§7.211 裁决）⇒ 代码里
+  对此**零特殊分支**。
+- **没有**动 §7.131 的出网裁剪口径（cloud-llm 只带云段历史 / local-llm 带全部
+  历史）—— 本节只管「这一轮能不能放行」，不管「带什么历史」。
+- **没有**改 `local-llm-adapter` / `cloud-llm-adapter` 的 wire 行为 ⇒
+  出网裁剪与委托转发**逐字未动**。
 
 ---
 
-## §7.213 full 变体补上 `edge-context-view`：装 full 才有 Edge 面板的宿主那一半（2026-11-13）
+## §7.215 发 0.1.6：DELEGATE 出网可见化 + realm 判定 + 变体纯净度，一起出货（2026-11-13）
 
-> 这是 §7.209 六节里记下的**第三条**既有事实，本轮**修掉了**（改 preset 补丁 + 快照，
-> 运行时逻辑一字未改）。
+> 本节分两半写：**发布前**（本小节）与**发布后**（末尾的「发布结果」一节，
+> 记 registry 可见时间、CI run、Release 链接）。
+> 之所以分两段：发布脚本要求**工作树干净**（发出去的必须是 git 里有的东西），
+> 而发布结果只有发完才知道 ⇒ 先提交，再发，发完把证据**追加**进去。
 
-### 一、根因：两个变体的 Agent Preset 补丁**差了整整一行**
+### 一、这一版的出货内容（对应 §7.208 – §7.214）
 
-实测（2026-11-13，grep 两个 preset 补丁文件）：
-
-| preset 补丁文件 | 属于哪个变体 | `- id: edge-context-view` 命中 |
+| § | 内容 | 对使用者的影响 |
 |---|---|---|
-| `presets/edge.desktop-safe.patch.yml` | **safe** | 6 行（注释 + 定义） |
-| `presets/edge.patch.yml` | **full** | **0 行** ❌ |
+| §7.208 | tar 包也带 `CHANGELOG.md`；新增第 31 道门禁 `verify:doc-gate-count` | git release 通道的用户也拿得到变更记录 |
+| §7.209 | npm 包与 safe 变体**不再携带** full 变体的两个补丁；出货文件集按变体派生 | **本版起，npm 包里不再有 full 补丁** |
+| §7.210 | DELEGATE 出网升级成**一等 security 级审计事件**；加默认关闭的 `llm.local.requireLocalEndpoint` | 审计链里能 grep 到「这一轮出了设备」 |
+| §7.211 | 主人的两条常驻边界（DELEGATE = 本地池没配端点；本地池直连云端不做特殊处理） | 边界写清，避免误读 |
+| §7.212 | 修掉 `docs/load-into-local-dsh.md` §3 那条**跑不通**的手工 recipe | 手搭隔离 profile 不再 boot 硬失败 |
+| §7.213 | full 变体补上 `edge-context-view` 行（连带补 isolate 名单） | 装 full 变体也有 Edge 面板的宿主那一半 |
+| §7.214 | 严格档的判据从「有没有 baseUrl」升级成**「委托落点是不是 LOCAL」** | 严格档不再误伤「委托到本地路由」的合法部署 |
 
-⇒ 装 **full** 变体 ⇒ 宿主不挂 `edge-context-view` ⇒ **Edge 面板的宿主那一半没有**
-（面板只剩浏览器半侧能显示，宿主侧拿不到上下文）。
+⇒ **运行时行为变了**（§7.210 / §7.214 改了 DELEGATE 那条路径的判定与审计，
+默认档行为不变）；其余各轮只动产物内容、门禁与文档。
 
-### 二、为什么这一行属于 **Agent Preset 补丁** 而不是全局 patch 层
+### 二、版本 bump 与 CHANGELOG 定版
 
-§7.135 起它被划到「边缘模式」这个**工作方式**的插件里（不是全局 patch 层）⇒
-只能出现在 preset 补丁里 ⇒ **safe 有、full 没有**，正是同一个东西的两份手抄副本
-漂移了。
+- `package.json#version`：`0.1.5` → **`0.1.6`**（**唯一**的版本事实源）。
+- `CHANGELOG.md`：把 `## [Unreleased]` 里累积的 §7.208 – §7.214 切成
+  **`## [0.1.6] — 2026-11-13`**，顶部留一个空的 `## [Unreleased]`。
+- 切版时顺手改掉三处**会读成「整个版本」的陈述**（它们各自只对自己的那一轮成立）：
+  - §7.209 的「运行时行为与 0.1.5 完全相同」⇒ 改成「**§7.209 这一轮**的运行时行为
+    与 0.1.5 完全相同」（本版的运行时行为因 §7.210 / §7.214 **变了**）；
+  - §7.208 的同一句 ⇒ 同样加限定；
+  - §7.209 的「已发布的 0.1.1 – 0.1.5 仍然带着 full 补丁 …… 要等**下一个版本**
+    发布才会消」⇒ 改成「**本版（0.1.6）起不再带**」（下一版就是这一版，别让读者
+    以为还要等）。
+- `verify:npm-publish` 的第 8 条断言要求 CHANGELOG 里**提到当前版本**
+  （`^#{1,3}\s+.*?\b0\.1\.6\b`）⇒ `## [0.1.6] — 2026-11-13` 满足。
 
-### 三、修法：补一行 + **连带补 isolate 名单**
+### 三、发布前的门禁
 
-改 `presets/edge.patch.yml` 两处：
+- 全链 **31 道** EXIT=0（版本 bump 后**复跑**过：`verify:npm-stage` 报
+  「清单版本 0.1.6（仓库 0.1.6）」、`verify:npm-publish` 报「版本 0.1.6」、
+  `verify:npm-readiness` 报「版本 0.1.6」⇒ 三处口径一致）。
+- `verify:doc-gate-count` 仍报「链内门禁 31 道」—— 本轮**没有**新增门禁
+  （§7.214 是给**已有**门禁加断言，不是加新门禁）。
+- 单测 **84 文件 1649 通过 / 2 跳过**；`lint` 0 error / 60 warning。
+### 四、发布结果（发完之后追加）
 
-1. **在 `input-guard` 之后**追加 `- id: edge-context-view` + `name: '@dsh-edge/dsh-edge-agent/edge-context-view'`
-   —— 位置与 safe 变体一致；
-2. **`edge-stack` 组的 isolate 名单**补 `edgeContextView: true`（按字母序排在 `edgeTools` 前）。
+| 环节 | 结果 |
+|---|---|
+| npm publish | `npm run publish:npm -- --yes` EXIT=0 ⇒ `✅ Published package @dsh-edge/dsh-edge-agent@0.1.6`（cwd = `dist/.npm-stage`） |
+| registry 可见 | 轮询 `https://registry.npmjs.org/@dsh-edge%2Fdsh-edge-agent` ⇒ **88 秒后** `versions` 里出现 0.1.6；`dist.fileCount = 242`（0.1.5 是 239；+3 = §7.214 新增 `provider-realm` 模块的三个产物） |
+| tag | `git tag -a v0.1.6` ⇒ `refs/tags/v0.1.6^{}` = `8bd4e29`（`git ls-remote` 确认） |
+| CI（publish run） | run `43359265783`：`publish to npm` job **success**；`git release (safe + full tarballs)` job **success** |
+| GitHub Release | `v0.1.6` 已建（published `2026-11-13T03:29:38Z`），两个资产：`dsh-edge-agent-desktop-safe.tar.gz`（623104 B）、`dsh-edge-agent-full.tar.gz`（630525 B） |
 
-⚠️ **这一行故意不带 `inject:` / `config:`** —— §7.101.x fix #1 实测：cordis 0.2.1-rc.2
-的 patch loader 会**静默跳过**这两个字段（`docs/dev-notes/cordis-rc021-patch-loader.md` Bug 1），
-依赖在 src 里声明、运行时旋钮走 `process.env`。
+另外，main 上对应的三个 CI run 也全绿：`43357324570` / `43358470694` / `43358875385`
+（分别对应 `5932340` / `2f9b90e` / `8bd4e29`）。
 
-### 四、门禁**当场抓到**了第 2 处漏改（这才是这一节的重点）
+三处值得记下来的事实：
 
-只加第 1 处（补行）而不补 isolate 名单时，`verify:preset-isolate` 直接报：
+1. **npm job 的 `Publish` 步是 `skipped`，不是 `success`** —— decide 步看到 0.1.6
+   已经在 registry 里 ⇒ 走了「**本机先发、CI 只补发布面**」那条路。这正是 §7.202
+   说的「两条发布路径共存」按设计工作（不是 bug）。要判「这版发没发出去」，**别看
+   那个步是 success 还是 skipped**，看 registry 的 `versions`。
+2. **registry 的传播不是即时的**：publish 打印「✅ Published」之后，registry 里的
+   `versions` 数组**过了 88 秒**才出现新版本 ⇒ 推 tag 之前**必须轮询到可见**，
+   否则 CI 的 decide 步会判成「没发过」而再发一次（npm 不允许覆盖 ⇒ 直接失败）。
+3. **本机发布走 `--no-provenance`**：本机不是 CI ⇒ provenance 需要 OIDC，拿不到
+   ⇒ 显式关掉（§7.188 的口径）。CI 那条路径仍然产出 provenance。
 
-> provides service `edgeContextView` but that name is not in the group's isolate map
-> ⇒ 服务落进 root realm ⇒ **preset 挂载失败** ⇒ 设置页那张卡显示「加载失败」
+---
 
-⇒ 也就是说：**只补行不补名单，会把「面板少一半」升级成「整个 preset 装不上」**。
-补上 isolate 名单后该项 EXIT=0。
+## §7.216 真机验证 §7.210：DELEGATE 出网事件与严格档，在**真机上**各留下一条证据（2026-11-13）
 
-⇒ 这一节的**真正价值**不是「补了一行」，而是：**isolate 名单与提供方的耦合，由门禁
-`verify-preset-isolate.ts` 守着**（规则 1/2/4：行提供的服务必须在 isolate 名单里；
-名单里不许有没人提供的幽灵项）⇒ 下次再有人手抄副本漂移，门禁会先红。
+> §7.210 / §7.214 的判定逻辑此前只有**单测 + 门禁**级别的证据。这一节是**实机**
+> 证据：装真实的 npm 包、起真实的宿主、发一条真实的消息，从**审计链本体**里取到
+> 那条 security 级事件 —— 并且顺手查出了两件**此前没人知道**的事。
 
-### 五、连带漂移：`patch-surface.snapshot.json` 要重生成
+### 一、验证目标
 
-`verify:patch-surface` 是快照门禁 ⇒ 补行后 diff **只有**一处：`edge.patch.yml` 的
-preset 列表末尾多 `"edge-context-view"` 一项 ⇒ 用
-`node --import tsx/esm scripts/verify-patch-surface.ts --snapshot` 重生成快照。
+| # | 目标 | 结果 |
+|---|---|---|
+| 1 | 装上 0.1.6 的产物后，DELEGATE 那一跳**真的**会留 `input-guard.reroute.delegate-egress` | ✅ 审计链第 404 行起 |
+| 2 | 事件带 §7.214 新增的 `delegateProvider` / `delegateRealm` / `realmSource` | ✅ 三个字段都在 |
+| 3 | **默认档**（`requireLocalEndpoint=false`）**照旧放行**（上游有意的语义没变） | ✅ `blocked: false` |
+| 4 | **严格档**（`requireLocalEndpoint=true`）**真的 fail-closed 拒收** | ✅ `blocked: true` + 追加 `input-guard.reroute.blocked` |
 
-### 六、本轮实跑通过的门禁
+### 二、验证环境：为什么不能直接用主人的桌面 profile
 
-`verify:preset-isolate` / `verify:patch-surface` / `verify:patch-row-shape` /
-`verify:installable` / `verify:installable-edge` / `verify:local-channel` ⇒ 全部 EXIT=0。
+三道坎，每一道都实测过：
 
-### 七、这一节**没有**做的事
+1. **桌面 profile 是 Electron 独占的**：`dsh` CLI 起它会被 `rejectElectronProfile`
+   拒掉（原文：`profile "desktop" is managed exclusively by the Electron application`）。
+   ⇒ 只能拿**桌面 profile 的整目录副本**跑（`edge-verify`）。
+2. **CLI 的第一个位置参数是 profile 名，不是 app 名**：实测 `dsh headless "任务"` 的
+   意思是「用名叫 `headless` 的 profile 跑」，不是「跑 headless 模式」。
+3. **桌面 profile 用的是 desktop-safe 变体** ⇒ **没有 http-api 监听**
+   （`cordis.desktop-safe.patch.yml:11` 明写 "no http-api listener"；http-api 行只在
+   full 变体 `presets/edge.patch.yml:332`）⇒ 没法用 curl 触发一轮 ⇒ 只能走 **web UI**。
 
-- **没有**改任何**运行时逻辑**（`src/` 一行未动）：这一行是**补回** safe 变体早就有的
-  插件挂载，不是新增能力；
-- **没有**动 §7.209 六节记的**第四条**既有事实（safe 与 npm 包的惰性补丁已经修掉，
-  本轮是另一件事）；
-- **没有**改 `edge-context-view` 的**行为**（`src/dsh-adapter/edge-context-view.ts` 未动）
-  —— 本轮只解决「装 full 时它根本没被挂上」；
-- **没有**顺手把 `scripts/_isolate-edge-group.mjs` 与 `scripts/_gen-edge-preset.mjs`
-  这两个**一次性迁移脚本**改好 —— 它们对现状早已失效（前者期望 3 行宿主行还在 preset 里，
-  而它们早已搬走）⇒ preset/patch 文件现为**手工维护**，**单一事实源是门禁
-  `verify-preset-isolate.ts`**，不是那两个脚本 ⇒ 留着不删，但在 PROGRESS 里写明，
-  免得下一个人拿它们当权威。
+于是：桌面 profile 已 `pnpm add @dsh-edge/dsh-edge-agent@0.1.6`（装好后
+`lib/dsh-adapter/provider-realm.js` 确实在包里），整目录复制成 `edge-verify`，
+用 `dsh --profile edge-verify --no-open --port 3080` 起 web app。
+
+**一个操作上的坑**（留给下一次做实机验证的人）：web UI 视口宽度会随窗口变化，
+窄视口下发送按钮被右侧面板的遮罩盖住 ⇒ **点按钮没反应、也没有任何网络请求**。
+换成「聚焦输入框 + **Enter**」就发出去了。⇒ 实机验证 Web UI 时**按 Enter，不要点按钮**。
+
+### 三、默认档的取证（`blocked: false`）
+
+审计链第 404 行（`~/.dsh-edge-agent/audit/audit.plain.jsonl`）：
+
+```json
+{"level":"security","kind":"input-guard.reroute.delegate-egress","source":"input-guard","payload":{
+  "sessionId":"session-8393eb16-9b90-49ed-a0b0-6b9d4fc9c7c0",
+  "from":{"provider":"qwen-token-plan-cn","model":"deepseek-v4.1-flash"},
+  "to":{"provider":"local-llm","model":"deepseek-v4.1-flash"},
+  "delegateProvider":"qwen-token-plan-cn","delegateRealm":"UNKNOWN","realmSource":"model-router-missing",
+  "reason":"local-pool-delegate","blocked":false}}
+```
+
+⇒ 四个字段一个不少：`level=security`、`delegateProvider`（真落点）、`delegateRealm`、
+`realmSource`，`blocked=false` ⇒ **默认档照旧放行**，上游那个有意的语义一个字没动。
+
+紧挨着的第 405 行是配对的 `input-guard.reroute.local`（`mode: delegate`，同样带
+`delegateProvider` / `delegateRealm` / `realmSource`）⇒ 两条行说的是同一件事的两个
+侧面：**改道到了本地池**（reroute.local）+ **这一轮出了设备**（delegate-egress）。
+
+**这一轮真的跑通了**：模型调用了工具、读到了本机 IPv4 地址、给出了带表格的答案
+（面板：轮次 1、token 11000 in / 111 out、时长 16 s；整轮 3 分 1 秒、40.7K tok）。
+
+### 四、严格档的取证（`blocked: true`）
+
+把严格档打开**只动隔离副本**：在
+`edge-verify/node_modules/@dsh-edge/dsh-edge-agent/config/edge.json` 写
+`{"llm":{"local":{"requireLocalEndpoint":true}}}` —— 走的是 §7.182 的**候选 1**
+（安装目录自己的 config 目录；该副本里没有 `src/dsh-adapter` ⇒ 不是 source
+checkout ⇒ 候选 1 生效）。审计链的 `config.loaded` 行印证了这一点：
+
+```json
+{"kind":"config.loaded","payload":{"path":"...\\edge-verify\\node_modules\\@dsh-edge\\dsh-edge-agent\\config\\edge.json", ...}}
+```
+
+（重启前那几行是 `(defaults — no config file found)`；主人的
+`~/.dsh-edge-agent/edge.json` **自始至终不存在**，验证完隔离副本里那份也已删除。）
+
+重启后再发一条消息 ⇒ 审计链第 486 / 487 行：
+
+```json
+{"level":"security","kind":"input-guard.reroute.delegate-egress","payload":{...,"delegateRealm":"UNKNOWN","realmSource":"model-router-missing","reason":"local-pool-delegate","blocked":true}}
+{"level":"security","kind":"input-guard.reroute.blocked","payload":{"provider":"qwen-token-plan-cn","model":"deepseek-v4.1-flash","reason":"local-endpoint-required","delegateProvider":"qwen-token-plan-cn","delegateRealm":"UNKNOWN","realmSource":"model-router-missing"}}
+```
+
+⇒ **fail-closed 在真机上生效**：这一轮**没有**发出 LLM 请求（面板：LLM 调用 0）。
+
+### 五、一个**自带对照组**的证据
+
+审计链是**全局**的（不分 profile）⇒ 同一份文件里同时留着**旧版本**的轮次：
+
+| 审计链行号 | 装的版本 | 有 `delegate-egress` 吗 | payload 里有 realm 字段吗 |
+|---|---|---|---|
+| 34 / 35 / 155 / 156 / … / 364 / 365 | **0.1.5** | **没有** | **没有**（只有 `mode: delegate`） |
+| 404 / 406 / 416 / 486 | **0.1.6** | **有** | **有** |
+
+⇒ §7.210 的「可见化」与 §7.214 的「realm 证据」**不是纸面改动**：旧行里确实
+什么都没有，新行里确实都有。**这一条不依赖任何新写的测试**。
+
+### 六、这一节查出来的**最重要**的一件事
+
+`realmSource: model-router-missing` ⇒ **这个宿主里没有注册 model-router 服务**
+⇒ 落点的 realm **永远证不出来** ⇒ 永远判成 `UNKNOWN` ⇒ 永远**不是 LOCAL**。
+
+⇒ **推论（主人开严格档前必读）**：在**这类宿主**（web / CLI 起的那种）上把
+`llm.local.requireLocalEndpoint` 设成 `true`，**每一轮 DELEGATE 都会被拒收** ——
+因为落点永远是宿主那个云 provider（`qwen-token-plan-cn`），而 realm 又永远证不出来
+⇒ 严格档的判据「证不出来 ≠ 本地」⇒ fail-closed。
+
+这不是 bug，是 §7.214 判据的**必然结果**，而且**正是主人给的口径**（§7.190：
+「非 LOCAL 就 fail-closed 拒收」）。但它有一个**实际后果**：严格档只在
+**model-router 能给出 realm 标注**的宿主上才有意义。在**自己接了本地推理服务**、
+并且宿主把那条路由标注成 `LOCAL` 的部署里，严格档才会**放行**（那一轮不出网）。
+
+⇒ 结论：**「严格档」不是「装上就能用」的开关**，它依赖宿主提供 realm 事实。
+本节把这条依赖**实测出来**了（此前只有代码层面的推理）。
+
+### 七、这一节**发现但没有修**的两件事（留给主人拍板）
+
+两件都发生在**严格档**下（默认档不可见），都属**面板口径**，按「不擅自改产品
+语义」的规矩，本轮**只记录不改**：
+
+1. **Edge 面板不认 `input-guard.reroute.blocked`**。
+   代码位置：`src/client/flowPanel.tsx:400` 的 blocked 分支只认
+   `/^input-guard\.blocked\./`（那是 `input-guard.blocked.attack` / `.policy` 那一族）
+   ⇒ 严格档拒收那一轮，面板的「路由决策」行仍写「LOCAL · 按模型选择」，**没有**
+   「已拦截」。
+2. **顶部结论行写「本轮：本地模型作答 —— 数据未离开设备」，但那一轮其实
+   **没作答**（被 fail-closed 拒收了）**。
+   判据是 `intent.classify.end` 的 `category=LOCAL`（i18n key `verdict.local`）——
+   它判的是**意图分类**，不是「这一轮真的作答了」。
+   §7.210 之前 DELEGATE 永远放行 ⇒ 「本地模型作答」这句话**总是**真的发生；
+   **严格档第一次让「判定 LOCAL 但这一轮没作答」成为可能**，结论行没跟上 ⇒
+   与 §7.129「不写与实际行为相反的陈述」相抵。
+
+⇒ 建议口径（**待主人拍板，本轮不实施**）：拒收时结论行写「本轮：已拦截 —— 未作答」，
+「路由决策」行显示「已拦截 · local-endpoint-required」。注意 §7.129 家族里已有的
+先例是**反方向**的（§7.181：明明作答了就不许写「路由未定」）⇒ 两边要一起看。
+
+### 八、这一节**没有**做的事
+
+- **没有**改任何产品语义：默认档放行、严格档 fail-closed，两条路径都是 §7.214
+  写明的语义，实机只是**验证**，没有改动。
+- **没有**动主人的运行配置：严格档**只**写在隔离副本的插件目录里；主人的
+  `~/.dsh-edge-agent/edge.json` **不存在、也没有被创建**；验证完隔离副本里那份
+  **已删除**。桌面 profile 的 `package.json` 依赖从 `0.1.5` 升到 `0.1.6`（这是
+  §7.215 出货的正常结果，不是本节改的）。
+- **没有**修第七节那两件面板口径的事（留给主人拍板）。
+- **没有**对「本地池指向云端端点」加任何特殊处理（§7.211 裁决）—— 本节的
+  `qwen-token-plan-cn` 就是宿主自己的云 provider，插件对它**零特殊分支**。
+- **没有**验证「落点 realm = LOCAL 时放行」那条路径的**实机**行为：这一节的环境里
+  model-router 压根不存在 ⇒ 造不出一个 realm=LOCAL 的落点 ⇒ 那条路径本轮**只有
+  单测与门禁**级别的证据（§7.214 第十组断言 10a）。
+- **没有**动 §7.131 的出网裁剪口径：本轮观测到的 `llm.local.egress` 是
+  `keptMessages=5, droppedLocalHistory=0`（这轮本来就没有本地段历史可裁），
+  裁剪行为**未改**。
 
 ---
