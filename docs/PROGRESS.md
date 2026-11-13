@@ -24241,7 +24241,7 @@ tool=web_search」软断言在「两档都关」时必然不出现）**在 CI �
 
 ---
 
-## §7.222 第一阶段收官：删掉「声明了却没人用」的配置与代码（2026-11-14）
+## §7.222 第一阶段收官：删掉「声明了却没人用」的配置与代码（2026-11-13）
 
 > 主人指示：「本项目第一阶段结束，基于这个能力范围，把多余的配置可以去掉了，简化优化整个代码」。
 
@@ -24487,7 +24487,7 @@ npm 暂存区逐项对比（`dist/probe/compare-pkg.mjs`）：
 
 ---
 
-## §7.223 一个 env 名字只对应一个配置字段：修掉 `DSH_EDGE_STORAGE_ROOT` 的四种含义（2026-11-14）
+## §7.223 一个 env 名字只对应一个配置字段：修掉 `DSH_EDGE_STORAGE_ROOT` 的四种含义（2026-11-13）
 
 > 主人指示：「5 个纯 stub 插件先留着。修正 撞见一处 env 变量名隐患」。
 > （第二句指的是 §7.222 第十一节记的那条隐患。）
@@ -24679,7 +24679,7 @@ x the two halves disagree on what DSH_EDGE_STORAGE_ROOT means:
 
 ---
 
-## §7.224 切版到 0.1.8 并构建验证（2026-11-14）
+## §7.224 切版到 0.1.8 并构建验证（2026-11-13）
 
 > 主人指示：「构建新版本验证下」。
 
@@ -24700,7 +24700,7 @@ x the two halves disagree on what DSH_EDGE_STORAGE_ROOT means:
 - **`pnpm-lock.yaml` 不用动** —— 实测它的根 importer（`.`）只记 devDependencies，
   **不带本包版本** ⇒ 升版不碰锁文件。
 - `CHANGELOG.md`：把 `## [Unreleased]` 里累积的 §7.221 – §7.223 切成
-  **`## [0.1.8] — 2026-11-14`**，顶部留一个空的 `## [Unreleased]`。
+  **`## [0.1.8] — 2026-11-13`**，顶部留一个空的 `## [Unreleased]`。
   （§7.220 的同款做法：定版时顺手改掉会读成「现在还成立」的陈述 —— 本轮扫过，
   **没有**「还没进 npm / 等下一版」这类需要改的句子。）
 - **registry 预检**：`versions` = `0.0.0-stage, 0.1.1 … 0.1.7`，`dist-tags.latest`
@@ -24717,7 +24717,7 @@ npm run publish:npm          # 构建 + 全部门禁 + dry-run
 脚本设计上「**不带 `--yes` 永远不会碰 registry**」（`scripts/publish-npm.mjs`
 的文件头第 5 条）⇒ 本轮**没有**发 npm、**没有**推 tag、**没有**建 GitHub Release。
 
-### 四、构建与验证结果（2026-11-14 实跑）
+### 四、构建与验证结果（2026-11-13 实跑）
 
 #### （1）构建 + 32 道门禁 + dry-run —— 全绿，EXIT=0
 
@@ -24799,3 +24799,141 @@ npm run publish:npm          # 构建 + 全部门禁 + dry-run
 | `70d8a30` | 本节的构建与逐键核验补记 | `43394406039` | 4 job 全绿 |
 
 （两个 commit 在同一次 push 里进 `main` ⇒ 共用同一个 run。）
+
+### 五、真发布 0.1.8（2026-11-13，主人指示「发布npm」）
+
+上一节写的是「只构建不发布」；主人随后指示发布 ⇒ 本节记**真发**的全过程。
+
+#### （1）凭据与前置
+
+| 项 | 实况 |
+|---|---|
+| `npm whoami` | `chschytzmcy`（= 包主人，与清单/文档一致） |
+| token | 1 个 granular、**到期 2026-11-18T01:43:55Z**、`bypass_2fa = true` |
+| 权限 | `package:write` + `org:write`；scope `@dsh-edge`（package）+ `dsh-edge`（org） |
+| 发布前 registry | `versions` 到 `0.1.7` 为止、**没有 0.1.8** ⇒ 不会撞 409 |
+| 工作树 | 干净（`d3997af`），脚本 0.1 的「工作树必须干净」检查过了 |
+
+#### （2）发布：一条命令
+
+```bash
+npm run publish:npm -- --yes
+```
+
+`--yes` ⇒ 真发（不带它永远是 dry-run）。脚本跑完整构建链 + **32 道门禁** +
+`pnpm publish`（cwd = `dist/.npm-stage`，pnpm 11.7.0，`--no-provenance`）。
+
+```
+📦 @dsh-edge/dsh-edge-agent@0.1.8 → https://registry.npmjs.org/
+✅ Published package @dsh-edge/dsh-edge-agent@0.1.8
+```
+
+EXIT=0。**为什么是 `--no-provenance`**：provenance 要 OIDC 徽章，本机拿不到（CI 里才拿得到）；
+脚本的 `decideProvenance` 在本地自动选 `--no-provenance`（2026-11-11 发 0.1.2 时撞过这个坑）。
+
+#### （3）registry 实况（唯一正确的判据是 `versions` 数组）
+
+轮询 `https://registry.npmjs.org/@dsh-edge%2Fdsh-edge-agent` ⇒ **141 秒后**
+`versions` 里出现 `0.1.8`：
+
+| 字段 | 值 |
+|---|---|
+| `dist-tags.latest` | **`0.1.8`** |
+| `versions` 个数 | 9（`0.0.0-stage` + `0.1.1`–`0.1.8`） |
+| `dist.fileCount` | **179**（与本地暂存区逐键核出来的数**一致**） |
+| `dist.unpackedSize` | 1889493 |
+| `dist.shasum` | `592f6d06bae2372ff3e9da0653ad89b26fdc10fd` |
+| `dist.integrity` | `sha512-sWylVzU4pDkgMDL6qR63hANXHMqNmi/5x/weJ+uZ5dZvS9TRfTmUzh8RJxgT6qU164iVNB9O4E7qfAYQ6hI/+g==` |
+| 发布时间 | `2026-11-13T08:57:07.832Z` |
+
+⇒ **这一版的 `fileCount` 恰好等于 §7.222 减法之后预期的 179** ⇒ registry 上那一版的
+**瘦身没有打折**。
+
+#### （4）把 registry 上那一版下载拆开逐键核 —— **40 条全绿，EXIT=0**
+
+这一步才是决定性的：registry 上的包可能来自任何一次构建 ⇒ 本地暂存区核过还不够，
+得把 **npm 上真实存在的那一版**下载回来再核一遍。核验脚本改成两个来源共用同一套断言
+（`--source=stage` / `--source=registry`）：
+
+```bash
+npm pack @dsh-edge/dsh-edge-agent@0.1.8 --pack-destination <dir>   # 真下载
+tar -xzf <tgz> -C <dir>                                            # 解开
+node dist/probe/verify-018-pkg.mjs --source=registry --version=0.1.8
+```
+
+⇒ **40/40 PASS**，与暂存区那份**逐条一致**：版本 0.1.8 / 179 文件 / `lib/` 顶层 4 个 /
+129 条 `exports` 目标全在 / 无 `localToolsWritable`·`localToolsAllowlist` /
+三个 env 名各一次且落到对字段 / 搜索档恰好 Tavily + 博查两档 / `DEEPSEEK_API_KEY`
+槽位按裁决保留 / 打包卫生全过。
+
+（tarball 大小 616127 B 与本地暂存区的 611238 B 不同 —— registry 会用 npm 自己的
+packer 重打一遍（元数据/gzip 参数不同），**文件清单与内容逐条一致**。）
+
+#### （5）tag
+
+沿用 v0.1.6 / v0.1.7 的惯例：**annotated tag 打在「发布提交」上**（不是最新 commit）：
+
+```
+v0.1.8 → d16ed26   "release: 切版到 0.1.8（§7.221 – §7.223 三个 § 一起出货）(§7.224)"
+tag 消息 : release: v0.1.8 — §7.221 / §7.222 / §7.223 一起出货 (§7.224)
+```
+
+已推送（`git ls-remote` 确认远端同时有 tag 对象 `4cd3eb0` 与 peeled commit `d16ed26`）。
+
+⇒ 推 tag 触发 CI 的 `publish.yml`：其 `npm` job 会发现版本已发过 ⇒ **跳过**
+（不会 409）；其 `release` job 独立建包、过 `verify:tarball` 门禁、建 GitHub Release。
+
+### 六、tag 触发的 publish CI 与 GitHub Release
+
+推 `v0.1.8` 触发 CI 的 `publish.yml`（event = `push`，head = `d16ed26`）：
+
+| CI run | job | 结论 |
+|---|---|---|
+| **`43397402314`** | `publish to npm` | **success** —— 决定步发现版本已发过 ⇒ **跳过**（没再发一次、没撞 409） |
+| **`43397402314`** | `git release (safe + full tarballs)` | **success** —— 自己建包 → 过 `verify:tarball` 门禁 → 建 Release |
+
+⇒ **2 个 job 全绿**。
+
+GitHub Release 实况（`GET /releases/tags/v0.1.8`）：
+
+| 字段 | 值 |
+|---|---|
+| `tag_name` / `name` | `v0.1.8` |
+| `draft` / `prerelease` | `false` / `false` |
+| `published_at` | `2026-11-13T08:58:45Z` |
+| `target_commitish` | `main` |
+| 资产 1 | `dsh-edge-agent-desktop-safe.tar.gz`（**626896 B**） |
+| 资产 2 | `dsh-edge-agent-full.tar.gz`（**634931 B**） |
+| 链接 | https://github.com/chschytzmcy/dsh-edge-agent/releases/tag/v0.1.8 |
+
+⇒ **npm 包 + GitHub Release 两个发布面都到位了**（与 0.1.6 / 0.1.7 同款）。
+
+### 七、一处日期订正：`2026-11-14` → `2026-11-13`
+
+核发布时戳时顺手发现的：**§7.221 / §7.222 / §7.223 / §7.224 这几节标的工作日全部写成了
+`2026-11-14`，而实际是 `2026-11-13`**。
+
+证据（四条互相印证）：
+
+- 本机时间：`2026-11-13 17:00 +08:00`（星期五）；
+- 全部相关 commit 的作者日期都是 **2026-11-13**（`91847aa` 15:13 → `d3997af` 16:38）；
+- registry 发布时间戳：`2026-11-13T08:57:07.832Z` ＝ 本地 **2026-11-13 16:57**；
+- GitHub Release `published_at`：`2026-11-13T08:58:45Z` ＝ 本地 **2026-11-13 16:58**。
+
+错误来源：会话被压缩时沿用了摘要里的日期写法（本轮一开始就带着）。
+
+**订正范围**：全仓 **18 处** / 8 个源文件（另有 2 处在 `lib/` 构建产物里，重建即覆盖）：
+
+| 文件 | 处数 |
+|---|---|
+| `CHANGELOG.md` | 4 |
+| `docs/PROGRESS.md` | 6 |
+| `src/dsh-adapter/edge-config.ts` | 3 |
+| `cordis.yml` / `docs/E2E_HTTP_API_CASES.md` / `scripts/edge-config-env.mjs` / `scripts/verify-env-bridge.mjs` / `tests/unit/edge-config-env-override.test.ts` | 各 1 |
+
+**只改注释与标题里的日期，一行逻辑都没动** ⇒ 重建后 32 道门禁全过、单测 **87 文件 /
+1682 通过 / 2 跳过**（与订正前逐条一致）。
+
+⚠️ **已发布的那一份改不了**：npm 上 0.1.8 的 tarball 里带着 `2026-11-14`（CHANGELOG 与
+编译后的注释）—— **同一个版本号不能重发** ⇒ 仓库从此刻起是订正后的，**下一版起
+CHANGELOG 与产物都会带正确的 2026-11-13**。

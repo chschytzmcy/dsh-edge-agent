@@ -6,7 +6,7 @@
 > 「详见本文档」+ 一张比本文档 §3 更小的历史脚本表,零独有信息。TUI 路径的历史脚本
 > （`e2e-tui-live.sh` / `m1`~`m6-smoke` 等）全部在下面 §3 这张表里。
 >
-> **§7.222（2026-11-14）**: `scripts/smoke.ts` 也已删除（它 import 了早就删掉的
+> **§7.222（2026-11-13）**: `scripts/smoke.ts` 也已删除（它 import 了早就删掉的
 > `local-tools.js` / `web-search.js`，跑起来必 ERR_MODULE_NOT_FOUND；它想覆盖的
 > 「插件导出形状」已由 `verify:plugin-spec` 门禁覆盖）。它原本也不在下面 §3 那张表里。
 >

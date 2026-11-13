@@ -25,7 +25,7 @@
 //   — the file is the source of truth and the plugin reads it directly —
 //   but it still means the shell side cannot reach that knob.
 //
-// §7.223 (2026-11-14) — the second family of defects this gate now covers:
+// §7.223 (2026-11-13) — the second family of defects this gate now covers:
 //
 //   The original gate compared the two name lists as **sets**. A set cannot
 //   see multiplicity, so it was blind to the defect it should have caught:

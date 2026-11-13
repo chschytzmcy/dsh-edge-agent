@@ -171,7 +171,7 @@ push('DSH_EDGE_SESSION_IDLE_MS', resources.sessionIdleMs)
 
 const tee = cfg.tee ?? {}
 push('DSH_EDGE_TEE_TYPE', tee.type)
-// §7.223 (2026-11-14): TCM 的两个路径字段各有各的 env 名。
+// §7.223 (2026-11-13): TCM 的两个路径字段各有各的 env 名。
 // 此前 `tee.storageRoot` 被推成 `DSH_EDGE_STORAGE_ROOT` —— 与下面
 // `storage.root` 那个**同名** ⇒ 后者无声覆盖前者，`tee.storageRoot`
 // **永远传不出去**（operator 设了它却毫无动静）。

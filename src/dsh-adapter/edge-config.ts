@@ -257,7 +257,7 @@ export interface EdgeResourcesConfig {
   maxBodyBytes?: number
   sessionIdleMs?: number
   /**
-   * §7.222 (2026-11-14): `sanMaxSessions` / `sanSweepMs` / `sanTtlMs` 已删除。
+   * §7.222 (2026-11-13): `sanMaxSessions` / `sanSweepMs` / `sanTtlMs` 已删除。
    *
    * 它们是 `privacy.*` 同名字段的**重复副本** —— sanitizer 插件读的是
    * `privacy.*`（见 `sanitizer-pipeline.ts`），`resources.*` 里的那份**从来
@@ -401,7 +401,7 @@ export function resolveWebSearchAvailability(cfg: EdgeConfig): EdgeWebSearchAvai
 }
 
 /**
- * §7.222 (2026-11-14): `persona` / `localToolsWritable` / `localToolsAllowlist`
+ * §7.222 (2026-11-13): `persona` / `localToolsWritable` / `localToolsAllowlist`
  * 已删除 —— 它们**声明了、进了模板，却没有任何消费者**。
  *
  * - `persona`：真正的 persona 来自**宿主 `system-prompt` 行**
@@ -1006,7 +1006,7 @@ const ENV_OVERRIDES: Array<{
   },
   { env: 'DSH_EDGE_LOG_ROOT', apply: (cfg, v) => { cfg.audit!.logRoot = v } },
   { env: 'DSH_EDGE_AUDIT_ROOT', apply: (cfg, v) => { cfg.audit!.root = v } },
-  // §7.223 (2026-11-14): `DSH_EDGE_STORAGE_ROOT` 的含义**收紧成唯一一个** ——
+  // §7.223 (2026-11-13): `DSH_EDGE_STORAGE_ROOT` 的含义**收紧成唯一一个** ——
   // 「local-storage 的 root」。
   //
   // 此前它同时被当成四样东西：① `tee.storageRoot`（env 桥推的，同名被后一条

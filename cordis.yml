@@ -103,7 +103,7 @@
   inject: [agents, llm, sessions, invariants]
   config:
     teeType: !!js process.env.DSH_EDGE_TEE_TYPE ?? 'simulated'
-    # §7.223 (2026-11-14): 这里原来还有一行
+    # §7.223 (2026-11-13): 这里原来还有一行
     #   storageRoot: process.env.DSH_EDGE_STORAGE_ROOT ?? (HOME + '/.dsh-edge-agent')
     # —— 那个 env 名当时同时被当成三样东西（「存储基目录」/「local-storage 的
     # root」/「TCM 的密钥库目录」），详见 docs/PROGRESS.md §7.223。
