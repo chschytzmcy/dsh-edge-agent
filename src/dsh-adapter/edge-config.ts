@@ -66,6 +66,17 @@ import { fileURLToPath } from 'node:url'
 
 export interface EdgeSecrets {
   edgeApiKey?: string
+  /**
+   * §7.221 (2026-11-13): **不再是 web search 的凭据** —— DeepSeek 那一档已经
+   * 去掉（搜索跟随所配置的云端模型）。
+   *
+   * 它现在的用途只有一个：**headless / CLI 部署的 DELEGATE 凭据**。那种宿主
+   * 没有登录账号（`deepseek-account` 路由不可用），DELEGATE 要转发到宿主的
+   * DeepSeek provider 就得有一把 key —— `scripts/deploy-profile.sh` 会把本槽位
+   * export 成 `DEEPSEEK_API_KEY` 给宿主进程（见那里的注释）。
+   *
+   * 桌面版（有账号登录）**不需要**这个槽位。
+   */
   deepseekApiKey?: string
   dashscopeApiKey?: string
   tavilyApiKey?: string
@@ -291,12 +302,96 @@ export interface EdgeThreatConfig {
 
 export interface EdgeWebSearchConfig {
   /** §7.182 (2026-11-11, owner ruling): the Tavily tier is **OFF by
-   *  default** ⇒ out of the box only the DeepSeek tier
-   *  (secrets.deepseekApiKey) is on the chain. Opt in with
-   *  `webSearch.tavilyEnabled: true`. */
+   *  default** ⇒ out of the box the tool-level `web_search` is **not**
+   *  offered at all; the model uses its own provider's native search.
+   *  Opt in with `webSearch.tavilyEnabled: true`. */
   tavilyEnabled?: boolean
   /** §7.182: the 博查 AI tier is **OFF by default** (same rule). */
   bochaEnabled?: boolean
+}
+
+/**
+ * §7.221 (2026-11-13, owner ruling): 「去掉 deepseek search，跟随所配置的云端模型」。
+ *
+ * 判据 —— **工具层 `web_search` 到底要不要给模型看**：
+ *   - Tavily / 博查 两档**任一**「enable 且配到了 key」⇒ 工具层 `web_search`
+ *     照旧提供，走 edge 自己的聚合器（Tavily → 博查）。
+ *   - 两档都拿不出 ⇒ 工具层 `web_search` **不提供** ⇒ 模型只能用它**自己
+ *     provider 的原生搜索** ⇒ 这才是「跟随所配置的云端模型」。
+ *
+ * ⚠️ 与 realm 的关系：这一条**不是** realm 规则（不是「哪个 realm 能用」），
+ * 而是「这个工具**存不存在**」。因此它落在**两个**闸门上，两处共用本文件：
+ *
+ *   1. **宿主原生闸门（主）** —— `@deepseek-ai/dsh-tool-web` 用
+ *      `when: ({ modelSelection }) => ctx.web.searchReady(modelSelection.provider)`
+ *      注册 `web_search`（宿主 `dsh-tool-web/src/search.ts`）。宿主 seam 的
+ *      `searchReady()` 只在**选中成功**时才去问 provider 的 `ready?.()`；
+ *      **选中失败反而返回 true**（宿主源码注释：selection failure answers true,
+ *      because `search()` reports that failure as a structured `WebError`）。
+ *      ⇒ 所以「两档都关」必须表现为「provider 被选中 + `ready()` 答 false」，
+ *      而不是「provider 不可用 / 没注册」—— 后者会让工具**反而可见**。
+ *      聚合器据此实现 `ready()`（见 `web-search-tavily-bocha.ts`）。
+ *   2. **edge 侧闸门（辅）** —— `realm-skill-bridge` 的工具过滤层
+ *      （`filterToolsField` + Layer 3 pre-execute）。它补的是宿主闸门**管不到**
+ *      的那一条面：external tool-schema face（`getToolSchemasForExternal` 直接
+ *      投影 registry schema，**不经过**宿主的 `when` 谓词）。
+ */
+export interface EdgeWebSearchAvailability {
+  /** Tavily 档：enable **且** 有 key。 */
+  tavily: boolean
+  /** 博查档：enable **且** 有 key。 */
+  bocha: boolean
+  /** 任一档可用 ⇒ 工具层 `web_search` 对模型可见。 */
+  toolAvailable: boolean
+}
+
+/**
+ * §7.221: 两档的**解析结果**（开关 + key）。这是「档位怎么算」的唯一事实源 ——
+ * 聚合器（`web-search-tavily-bocha.ts`）与闸门（`realm-skill-bridge.ts`）都走
+ * 这里，避免两边对「空串 / env 兜底」的判断出现分叉。
+ *
+ * key 的来源口径（与 §7.102 一致）：
+ *   1. `config/edge.json` 的 `secrets.tavilyApiKey` / `secrets.bochaApiKey`
+ *   2. `process.env` 的 `TAVILY_API_KEY` / `BOCHA_API_KEY` 兜底
+ *
+ * ⚠️ 「空串当未配置」：配置里写 `""`（占位）**不算**配到了 key，且**继续往
+ * env 兜底**。（早先聚合器里的 `secrets.x ?? env` 会让空串**挡住** env 兜底，
+ * 与本函数的 `||` 口径不一致 —— §7.221 统一成后者。）
+ */
+export interface EdgeWebSearchTiers {
+  /** Tavily 档的开关（默认 false —— §7.182）。 */
+  tavilyEnabled: boolean
+  /** Tavily 档的 key（未配到 = undefined）。 */
+  tavilyKey?: string
+  /** 博查档的开关（默认 false —— §7.182）。 */
+  bochaEnabled: boolean
+  /** 博查档的 key（未配到 = undefined）。 */
+  bochaKey?: string
+}
+
+/**
+ * 解析 web search 的两档（§7.221）。**唯一的档位事实源**。
+ */
+export function resolveWebSearchTiers(cfg: EdgeConfig): EdgeWebSearchTiers {
+  const s = cfg.secrets ?? {}
+  const tavilyKey = (s.tavilyApiKey ?? '').trim() || (process.env.TAVILY_API_KEY ?? '').trim() || undefined
+  const bochaKey = (s.bochaApiKey ?? '').trim() || (process.env.BOCHA_API_KEY ?? '').trim() || undefined
+  return {
+    tavilyEnabled: cfg.webSearch?.tavilyEnabled === true,
+    tavilyKey,
+    bochaEnabled: cfg.webSearch?.bochaEnabled === true,
+    bochaKey,
+  }
+}
+
+/**
+ * 算出 web search 的可用性（§7.221）。
+ */
+export function resolveWebSearchAvailability(cfg: EdgeConfig): EdgeWebSearchAvailability {
+  const t = resolveWebSearchTiers(cfg)
+  const tavily = t.tavilyEnabled && Boolean(t.tavilyKey)
+  const bocha = t.bochaEnabled && Boolean(t.bochaKey)
+  return { tavily, bocha, toolAvailable: tavily || bocha }
 }
 
 export interface EdgeAgentConfig {
@@ -456,9 +551,11 @@ export const DEFAULT_EDGE_CONFIG: EdgeConfig = {
   storage: {},
   etscli: { timeoutMs: 30000 },
   threat: { cloudRate: 20, blockLevel: 'critical' },
-  // §7.182 (2026-11-11, owner ruling): Tavily / 博查 are OFF by default ⇒
-  // out of the box the web-search chain is DeepSeek-only
-  // (secrets.deepseekApiKey). Opt in per tier.
+  // §7.182 (2026-11-11, owner ruling): Tavily / 博查 are OFF by default.
+  // §7.221 (2026-11-13, owner ruling): 两档都关 ⇒ 工具层 `web_search`
+  // **不提供** ⇒ 搜索跟随**所配置的云端模型**自带的原生搜索能力
+  // （DeepSeek 那一档已去掉，edge 不再自建 DeepSeek 搜索、不再读
+  // `DEEPSEEK_API_KEY`）。要工具层搜索就把对应开关写 true 并配上 key。
   webSearch: { tavilyEnabled: false, bochaEnabled: false },
   agent: {
     persona: 'You are edge-agent, a privacy-first AI assistant running on the user\'s device.',
@@ -638,6 +735,11 @@ const ENV_OVERRIDES: Array<{
     // would silently lose the credential and every authenticated call
     // would fail with 401. §7.102 keeps the file as the source of truth;
     // these keep the legacy env chain working on top of it.
+    //
+    // §7.221: `DEEPSEEK_API_KEY` **不再喂 web search**（DeepSeek 那一档已去掉）
+    // —— 它现在只服务 **headless / CLI 的 DELEGATE**：那种宿主没有登录账号，
+    // DELEGATE 要转发到宿主的 DeepSeek provider 就得有一把 key
+    // （`scripts/deploy-profile.sh` 会把本槽位 export 给宿主进程）。
     env: 'DEEPSEEK_API_KEY',
     apply: (cfg, v) => { cfg.secrets!.deepseekApiKey = v },
   },

@@ -474,21 +474,24 @@
               - id: edge-context-view
                 name: '@dsh-edge/dsh-edge-agent/edge-context-view'
 
-              # §7.107 (2026-10-23): web search aggregator — Tavily → 博查 AI →
-              # DeepSeek（三级链，§7.82）。它的 Tier-3 DeepSeek 用
-              # `web_search_20250305` server tool 打 DeepSeek Messages API，凭据读
-              # config/edge.json 的 secrets.deepseekApiKey —— 不依赖环境变量，所以
-              # CLI 起的 profile（dsh-http）也能用。
+              # §7.107 (2026-10-23): web search aggregator — Tavily → 博查 AI 两档链
+              # （§7.82）。凭据读 config/edge.json 的 secrets.tavilyApiKey /
+              # secrets.bochaApiKey —— 不依赖环境变量，所以 CLI 起的 profile
+              # （dsh-http）也能用。
+              # §7.221 (2026-11-13): **DeepSeek 那一档已去掉**（edge 不再自建
+              # DeepSeek 搜索、不再读 DEEPSEEK_API_KEY 搜索）—— 搜索跟随**所配置的
+              # 云端模型**。两档都没 enable 时工具层 web_search 不提供。
               - id: web-search-tavily-bocha
                 name: '@dsh-edge/dsh-edge-agent/web-search-tavily-bocha'
 
-      # ── web capability: DEEPSEEK Search + Fetch（§7.107）──────────────────────
+      # ── web capability: Search + Fetch（§7.107 / §7.221）─────────────────────
       #
       # §7.107 的路由规则把「需要检索公网上的信息」定为唯一允许出网的操作 ——
       # 那这条路径就得真的能搜公网、真的能抓网页，否则规则没有意义。
       #
-      #   - search → 本仓的 aggregator（Tavily → 博查 → DeepSeek）；DeepSeek 是
-      #     链上的兜底也是唯一不依赖环境变量的后端。
+      #   - search → 本仓的 aggregator（Tavily → 博查两档，§7.221 去掉 DeepSeek
+      #     那一档）。两档都没 enable 时工具层 web_search **不对模型提供**
+      #     ⇒ 搜索跟随**所配置的云端模型**自带的原生搜索。
       #   - fetch  → 宿主的 'http' provider（dsh-web-fetch-http，dsh-base 自带，
       #     匿名公共 HTTP(S) 抓取，自带目的地校验）。
       #
@@ -498,6 +501,8 @@
       # §7.107 允许出网的那些轮次能用它们。
       #
       # 注意：这些是宿主 row 的覆盖（disabled / config），不是 insert。上游
-      # 'deepseek-official' search provider 必须禁掉 —— aggregator 内部私有一份
-      # DeepSeekSearchProvider，两个都注册会让 seam 报 WEB_PROVIDER_AMBIGUOUS
+      # 'deepseek-official' search provider 必须禁掉 —— §7.221 之后它就是
+      # 「deepseek search」本体（一次带 `web_search_20250305` 服务端工具的独立
+      # 模型调用），主人裁决去掉它；同时它若与 aggregator 同注册，seam 会因
+      # 两个 usable provider 报 WEB_PROVIDER_AMBIGUOUS
       # （与 cordis.patch.yml 的 web 段同因同解）。

@@ -9675,21 +9675,21 @@ kill switch（路由不注册，LOCAL 意图 fail-closed）。
 分类器对这些资源归属没有视角。中文子串匹配，ASCII 词带词边界
 （`ets` 不会命中 `assets`）。
 
-## 2. DEEPSEEK Search + Fetch（§7.107）
+## 2. Web Search + Fetch（§7.107 / §7.221）
 
 「需要检索公网上的信息」是唯一允许出网的操作——这条路径必须真的能搜
 公网、真的能抓网页：
 
 | 能力 | provider | 凭据 |
 |---|---|---|
-| `web_search` | 本仓 aggregator：Tavily → 博查 AI → **DeepSeek**（`web_search_20250305` server tool） | `config/edge.json` 的 `secrets.tavilyApiKey` / `bochaApiKey` / `deepseekApiKey` |
+| `web_search` | 本仓 aggregator：**Tavily → 博查 AI** 两档（§7.221 起**没有第三档**） | `config/edge.json` 的 `secrets.tavilyApiKey` / `bochaApiKey` |
 | `web_fetch` | 宿主的 `http` provider（`dsh-web-fetch-http`，匿名公共 HTTP(S) 抓取，自带目的地校验防 SSRF） | 无 |
 
 两者都是 **CLOUD realm** 的工具（`tools.ts` 的 `DSH_NATIVE_REALM_MAP`）——
 realm 桥只在 CLOUD realm 下放行，只有 §7.107 允许出网的那些轮次能用
 它们；LOCAL realm 下模型根本看不到这两个工具。
 
-### search 的策略：一条三档 fail-down 链
+### search 的策略：两档 fail-down 链（§7.221）
 
 `web` row 选中的 provider 永远是本仓的 aggregator
 （`tavily-bocha-fallback`）。chain 内部：
@@ -9697,34 +9697,83 @@ realm 桥只在 CLOUD realm 下放行，只有 §7.107 允许出网的那些轮�
 | 档 | provider | 在链上的条件 | 失败时 |
 |---|---|---|---|
 | 1 | Tavily | `webSearch.tavilyEnabled` 为 true（**§7.182 默认关闭**）**且** `secrets.tavilyApiKey` 在 | warn → 落下一档 |
-| 2 | 博查 AI | `webSearch.bochaEnabled` 为 true（**§7.182 默认关闭**）**且** `secrets.bochaApiKey` 在 | warn → 落下一档 |
-| 3 | **DeepSeek** | **有凭据通道**（见下表） | `WEB_PROVIDER_UNAVAILABLE` |
+| 2 | 博查 AI | `webSearch.bochaEnabled` 为 true（**§7.182 默认关闭**）**且** `secrets.bochaApiKey` 在 | `WEB_PROVIDER_UNAVAILABLE` |
 
-> §7.198 订正：上游 `deepseek-official` row 被禁用的**原理由**（两个可用 provider
-> ⇒ seam 报 `WEB_PROVIDER_AMBIGUOUS`）只成立于**没配 `web.searchProvider`** 时；
-> 我们配了 id ⇒ 宿主 seam 走「配了 id」那条分支，只看这一个 provider。
-> ⇒ 上游那个 provider 被禁用，真正的影响是**它那条主机同款的凭据解析我们得自己接**
-> （下表）。
+两条独立的门：**开关**决定这一档在不在链上，**key**决定这一档能不能
+真答。没 key 的档直接跳过，一次请求都不发。一档成功就停——不是两档
+都查。
 
-两条独立的门：**开关**决定这一档在不在链上，**key** 决定这一档能不能
-真答。没 key 的档直接跳过，一次请求都不发。一档成功就停——不是三档
-都查。DeepSeek 档走官方 server-side 检索（`web_search_20250305`），自带
-引用来源。
+> **§7.221（2026-11-13，主人裁决）：去掉 DeepSeek 那一档。**
+> 原来还有第 3 档 DeepSeek——它本质是**一次带 `web_search_20250305` 服务端
+> 工具的独立模型调用**（宿主 `dsh-web-search-deepseek` 的实现），edge 自己
+> 造了个私有实例并自己解析凭据，于是 edge 侧需要一把 `DEEPSEEK_API_KEY`。
+> 裁决：搜索**跟随所配置的云端模型**，edge 不再自建 DeepSeek 搜索、不再拿
+> `DEEPSEEK_API_KEY` 去搜。
+>
+> `secrets.deepseekApiKey` 这个**槽位保留**（§7.221）：它还服务 headless / CLI
+> 部署的 DELEGATE —— 那种宿主没有登录账号，DELEGATE 转发到宿主的 DeepSeek
+> provider 需要一把 key（`scripts/deploy-profile.sh` 把它 export 成
+> `DEEPSEEK_API_KEY` 给宿主进程）。桌面版（有账号登录）不需要它。
 
-**DeepSeek 档的凭据解析（§7.198，与上游 `web-search-deepseek` 同款）**：
+### 「两档都没开」⇒ 工具层 `web_search` **不提供**（§7.221）
 
-| 顺位 | 来源 | 说明 |
+这是本轮最需要说清楚的一处机制，因为它**反直觉**：宿主 seam 对「provider
+不可用」的处理会让工具**反而可见**。
+
+宿主 `@deepseek-ai/dsh-tool-web` 注册 `web_search` 时带了一个**按模型步生效**
+的条件谓词：
+
+```ts
+ctx.tools.register(defineTool({ name: 'web_search', ... }),
+  { when: ({ modelSelection }) => ctx.web.searchReady(modelSelection.provider) })
+```
+
+`when` 的契约（宿主 `dsh-tools/src/contracts.ts`）：答 false ⇒ 工具**既不声明
+给模型、也不可被派发**；宿主给 `web_search` 的那段 system-prompt 指引也一并
+消失（它读的是 `ctx.tools.get('web_search', scope, toolSet)`）。
+
+而宿主 seam 的 `searchReady()`（`dsh-web/src/index.ts`）是：
+
+```ts
+async function selectedProviderReady(select, llmProvider) {
+  let provider
+  try { provider = select() } catch (_selectionFailure) { return true }
+  return await provider.ready?.(llmProvider) ?? true
+}
+```
+
+⚠️ **选中失败反而答 true**（宿主注释原文：selection failure answers true,
+because `search()` reports that failure as a structured `WebError`）。
+
+⇒ 所以「两档都没开」**不能**表达成「provider 没注册」或「`available()` 为
+false」—— 那两种情况宿主都**选中失败** ⇒ `searchReady()` 答 true ⇒ 工具照旧
+露给模型，模型一调就撞结构化错误。
+
+⇒ 唯一能让宿主把工具藏起来的形状是：**provider 被正常选中 + `ready()` 答
+false**。所以 aggregator：
+
+| 形状 | 值 | 为什么 |
 |---|---|---|
-| ① | DeepSeek **账号令牌** | 仅当当前会话的 provider 路由 = `deepseek-account`；认证头 `x-dsh-auth-token` |
-| ② | `config/edge.json` `secrets.deepseekApiKey` | 操作者显式配置优先 |
-| ③ | **主机凭据服务** `ctx.credentials.resolve('DEEPSEEK_API_KEY')` | 桌面端「Web search」设置页写进去的那把 |
-| ④ | **启动环境** `launchEnvironmentOf(ctx).get('DEEPSEEK_API_KEY')` | 启动器导出的 env |
-| ⑤ | 进程环境 `DEEPSEEK_API_KEY` | 兜底 |
+| 注册 | **恒注册** | 不注册 ⇒ `web.searchProvider` 这个钉死的 id 悬空 ⇒ 选中失败 |
+| `available()` | **恒 true** | false ⇒ 选中失败 ⇒ 工具反而可见 |
+| `ready()` | 两档任一「enable 且有 key」⇒ true，否则 **false** | 这才是宿主唯一会问的钩子 |
 
-⇒ 「DSH 里配的就是 DeepSeek 模型」现在**真的**能直接用 deepseek search：
-模型走账号路由时用账号登录（①），否则用主机凭据服务里那把 key（③）。
-`available()` 判「有没有凭据通道」而不是「此刻有没有 key」——凭据解析是**异步
-且按路由**的，同步判据做不到；没有凭据时搜索会给出点名四条来源的可执行提示。
+`available()` 恒 true 看着像谎报，但它的语义只被 `resolveProvider` 消费
+（「这个 provider 可不可被选中」），而宿主 `listProviders()` 明说
+「Availability does not filter the lists」——设置页的 provider 列表不受影响。
+
+**edge 侧还有一道辅助闸门**（`realm-skill-bridge`）：`filterToolsField`
+（模型可见性 + external tool-schema face）与 Layer 3（执行期）都按同一判据
+拦 `web_search`。它补的是宿主 `when` **管不到**的一面 ——
+`getToolSchemasForExternal()` 直接投影 registry schema，不经过 `when` 谓词。
+判据由 `edge-config.ts` 的 `resolveWebSearchAvailability()` 统一实现，
+聚合器与闸门共用 ⇒ 不会出现「模型看不见但还能调」或「看得见却调不通」。
+
+> ⚠️ 实测事实（§7.221 记档）：宿主这一版的**对话轮次**没有自动挂
+> `web_search_20250305` 服务端工具（宿主 `web_search_20250305` 只出现在
+> `dsh-web-search-deepseek` 里），`qwen-token-plan-cn` 这类第三方路线也不带
+> 原生搜索开关。⇒ 两档都关时，工具层搜索确实消失；模型是否还能搜，取决于
+> **所配置模型自己的 provider** 有没有服务端原生搜索能力。
 
 ## 3. 入口架构：单 profile 端口统一 + §7.107 双 profile
 

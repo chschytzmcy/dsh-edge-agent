@@ -163,10 +163,17 @@
   # web-search-deepseek's `inject: ['web']` never fires, and `web_search`
   # tool calls fail with "configured web provider ... is not registered".
   # 2026-09-04: fetchProvider now uses 'http' from dsh-web-fetch-http plugin.
-  # 2026-09-18 (§7.82): searchProvider 改 tavily-bocha-fallback —— 三级链
-  # provider(Tavily → 博查 AI → DeepSeek)。web-search-deepseek 仍 enabled 作
-  # Tier-3 内部兜底(由 aggregator 私有 DeepSeekSearchProvider 实例调用,
-  # 不暴露为独立 provider;否则 seam 会因 AMBIGUOUS 报错)。
+  # 2026-09-18 (§7.82): searchProvider 改 tavily-bocha-fallback。
+  # 2026-11-13 (§7.221): 聚合器现在只有**两档**（Tavily → 博查 AI），
+  # DeepSeek 那一档已去掉 —— 搜索跟随**所配置的云端模型**，edge 不再自建
+  # DeepSeek 搜索、不再拿 DEEPSEEK_API_KEY 去搜。
+  #
+  # ⚠️ searchProvider **必须钉死**在这个 id 上，不能省：
+  #   - 不钉 ⇒ 宿主自带的 deepseek-api provider（@deepseek-ai/dsh-web-deepseek-api，
+  #     dsh-base 默认的 web.searchProvider）会被选中 ⇒ 「deepseek search」回来了。
+  #   - 钉死 ⇒ 被选中的永远是 edge 自己的聚合器；两档都关时聚合器
+  #     `ready()` 答 false ⇒ 宿主把 web_search 从模型步里摘掉 ⇒ 模型走
+  #     所配置云端模型的原生搜索。
   config:
     searchProvider: tavily-bocha-fallback
     fetchProvider: http
@@ -181,10 +188,12 @@
   # Without this plugin, `deepseek-official` search provider is never registered,
   # so web_search tool calls fail with "provider not registered".
   # 2026-09-18 (§7.82): DISABLED —— web-search-tavily-bocha 接管 searchProvider
-  # 路由,在 aggregator 内部私有持有 DeepSeekSearchProvider 实例作 Tier-3
-  # fallback。若两 plugin 同 enabled, ctx.web 会同时注册 2 个 usable provider
-  # ('tavily-bocha-fallback' + 'deepseek-official') → AMBIGUOUS 报错。仍启用
-  # 会留 orphan DeepSeek 注册 + 浪费一次 HTTP probe。
+  # 路由。若两 plugin 同 enabled, ctx.web 会同时注册 2 个 usable provider
+  # ('tavily-bocha-fallback' + 'deepseek-official') → AMBIGUOUS 报错。
+  # 2026-11-13 (§7.221): **必须继续 disabled**。这一档就是「deepseek search」
+  # 本体（一次带 `web_search_20250305` 服务端工具的独立模型调用），主人裁决
+  # 去掉它 —— 搜索改跟随**所配置的云端模型**。edge 的聚合器也不再持有私有
+  # DeepSeekSearchProvider 实例（那条 Tier-3 已删）。
   disabled: true
 - id: web-fetch-http
   # 2026-09-04: ENABLED. Provides the 'http' fetch provider for web_fetch tool.

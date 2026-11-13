@@ -1,84 +1,103 @@
 /**
- * web-search-tavily-bocha — Phase 5 (§7.82) 3-tier fallback search provider.
+ * web-search-tavily-bocha — Phase 5 (§7.82) 2-tier fallback search provider.
  *
- * Provider chain (resolved per call, on `ctx.web.search`):
- *   1. Tavily        — primary (English/global, AI-tuned results, `tavilyApiKey`)
- *   2. 博查 AI        — secondary (Chinese search optimization, `bochaApiKey`)
- *   3. DeepSeek      — tertiary (re-imports `@deepseek-ai/dsh-web-search-deepseek`,
- *                       uses native `web_search_20250305` server tool on Anthropic
- *                       Messages; final backstop when both Tavily and Bocha fail
- *                       or when neither key is set and only DEEPSEEK_API_KEY is present)
+ * ## §7.221 (2026-11-13, owner ruling) —— 去掉 DeepSeek 档，跟随所配置的云端模型
  *
- * Configuration (.env-managed via §7.75 .env.sh source chain — bare names,
- * no DSH_/XDG_/DYLD_/BASH_FUNC_ prefix to bypass dsh-app-boot blacklist):
- *   - TAVILY_API_KEY    (Tier 1) — bare name, lives in repo .env
- *   - BOCHA_API_KEY     (Tier 2) — bare name, lives in repo .env
- *   - DEEPSEEK_API_KEY  (Tier 3 fallback, already required for cloud-llm)
- *   - DEEPSEEK_BASE_URL (optional, default https://api.deepseek.com/anthropic/v1)
+ * 原来这里是**三级链**：Tavily → 博查 AI → **DeepSeek**。第三档是 edge **自己**
+ * 造的一个 `DeepSeekSearchProvider` 实例，凭据自己解析（edge.json → 主机凭据
+ * 服务 → 启动环境 → 进程环境），于是 edge 侧需要一把 `DEEPSEEK_API_KEY`。
  *
- * Where the keys come from (§7.102, 2026-10-21): config/edge.json
- * `secrets.tavilyApiKey` / `secrets.bochaApiKey` / `secrets.deepseekApiKey`.
- * The old flow was: repo .env → install.sh `source .env.sh` → process.env
- * → this read. That chain is gone — the desktop GUI never sourced it, so
- * the desktop build had no search keys at all. The env names below stay
- * honoured as a per-process override.
+ * 主人的裁决：**去掉 deepseek search**。理由与 `cloud-llm` 那条一致 ——
+ * `cloud-llm` 默认是 DELEGATE（转发给**宿主 profile 已配置的模型**），搜索
+ * 也该跟着**所配置的云端模型**走，而不是 edge 自己拿一把 key 去调 DeepSeek。
  *
- * Why bare names (NOT DSH_EDGE_* prefix)?  DSH dsh-app-boot 0.1.2-rc.1's
- * BOOTSTRAP_PREFIXES = ["DSH_", "XDG_", "DYLD_", "BASH_FUNC_"] rejects any
- * DSH_-prefixed KEY in .env files when dsh itself parses them
- * (dsh-app-boot/lib/index.js:933-1015). Bare names stay compatible with
- * that launcher behaviour for the env override path.
+ * ⇒ 本文件现在只有**两档**（Tavily / 博查），两档都**默认关闭**（§7.182）。
  *
- * Cordis integration: registers as a single search provider with id
- * `tavily-bocha-fallback` in `ctx.web`. `available()` returns true iff at
- * least one tier has its key configured — when both Tavily and Bocha keys
- * are missing but DEEPSEEK_API_KEY is set, the aggregator still registers
- * (Tier-3 DeepSeek only), avoiding the seam's `WEB_PROVIDER_UNAVAILABLE`.
+ * ⇒ 「两档都没有」时的行为：**工具层 `web_search` 整个不提供** ⇒ 模型只能用
+ * 它**自己 provider 的原生搜索**。
  *
- * Fallback semantics mirror lingguard's `internal/tools/web.go` (Tavily →
- * 博查) but extend to a 3rd tier for resilience: any exception from a tier
- * (HTTP non-2xx, malformed JSON, AbortError) is logged and the next tier
- * takes over. Final WebError `WEB_PROVIDER_UNAVAILABLE` only fires when ALL
- * three tiers fail or are unavailable.
+ * ## 「不提供」怎么实现（关键机制，踩过的坑都记在这）
  *
- * §7.197 (2026-11-12): Tier-3 的凭据解析改成**与上游同款**（主机凭据服务 +
- * DeepSeek 账号登录），不再只认我们自己的 edge.json。
+ * 宿主 `@deepseek-ai/dsh-tool-web` 注册 `web_search` 时带了一个**按模型步
+ * 生效**的条件谓词（宿主 `dsh-tool-web/src/search.ts`）：
  *
- * 症状（桌面版实测 2026-11-12 12:46）：`web_search` 报
- *   `Error: configured web provider "tavily-bocha-fallback" is registered but unavailable`
- * 那是宿主 seam 的 `WEB_PROVIDER_CONFIGURED_UNAVAILABLE`（dsh-web
- * `resolveProvider()`：配置了 provider id、注册了，但 `available()` 为 false）。
+ * ```ts
+ * ctx.tools.register(defineTool({ name: 'web_search', ... }),
+ *   { when: ({ modelSelection }) => ctx.web.searchReady(modelSelection.provider) })
+ * ```
  *
- * 根因两层：
- *   1. `available()` 只认「我们自己的」三样东西：edge.json 的
- *      `secrets.tavilyApiKey` / `bochaApiKey` / `deepseekApiKey`（或同名 env）。
- *      而这台机器上**根本没有 edge.json**（仓库、已装包、`~/.dsh-edge-agent/`
- *      都没有）⇒ 三样全空 ⇒ `available()` false ⇒ seam 直接拒绝，搜索根本没发生。
- *   2. 更深一层：就算有 edge.json，我们的 Tier-3 也**只认我们自己的 key** ——
- *      上游 `web-search-deepseek` 是「账号令牌（仅 `deepseek-account` 路由）
- *      → 主机凭据服务 `ctx.credentials.resolve('DEEPSEEK_API_KEY')`
- *      → 启动环境」三条路，我们一条都没接。
- *      ⇒ 主人「我在 DSH 里配的就是 DeepSeek 模型，应该直接能用 deepseek search」
- *      这个预期，被我们的实现挡在了门外：**模型是 DeepSeek 的，搜索却用不上
- *      DeepSeek 的凭据**。
+ * `when` 的契约（宿主 `dsh-tools/src/contracts.ts`）：
+ * `readonly when?: (context) => boolean | Promise<boolean>`，且
+ * 「False excludes it from both declarations and dispatch」—— 答 false ⇒ 工具
+ * **既不声明给模型、也不可被派发**；宿主给 `web_search` 的那段 system-prompt
+ * 指引也一并消失（它读的是 `ctx.tools.get('web_search', scope, toolSet)`）。
  *
- * 修法：Tier-3 的凭据解析按上游的顺序来 ——
- *   ① DeepSeek 账号令牌（仅当当前会话的 provider 路由是 `deepseek-account`）
- *   ② 我们自己的 edge.json `secrets.deepseekApiKey`（操作者显式配置优先）
- *   ③ 主机凭据服务 `ctx.credentials.resolve('DEEPSEEK_API_KEY')`
- *   ④ 启动环境 `launchEnvironmentOf(ctx).get('DEEPSEEK_API_KEY')`
- *   ⑤ 进程环境 `DEEPSEEK_API_KEY`
- * 并且 `available()` 不再拿「此刻有没有 key」当硬门槛（凭据解析是**异步且按路由**
- * 的，同步判据做不到）—— 改成判「有没有凭据通道」。
+ * 而 `ctx.web.searchReady()` 的语义（宿主 `dsh-web/src/index.ts`）是：
+ *
+ * ```ts
+ * async function selectedProviderReady(select, llmProvider) {
+ *   let provider
+ *   try { provider = select() } catch (_selectionFailure) { return true }
+ *   return await provider.ready?.(llmProvider) ?? true
+ * }
+ * ```
+ *
+ * ⚠️ **选中失败反而答 true**（宿主注释原话：selection failure answers true,
+ * because `search()` reports that failure as a structured `WebError`）。
+ *
+ * ⇒ 所以「两档都关」**不能**表达成「provider 没注册」或「provider
+ * `available()` 为 false」—— 那两种情况宿主 seam 都会**选中失败** ⇒
+ * `searchReady()` 答 true ⇒ 工具**照旧可见**，模型一调就撞结构化错误。
+ *
+ * ⇒ 唯一能让宿主把工具藏起来的形状是：**provider 被正常选中 + `ready()` 答
+ * false**。所以本文件：
+ *
+ *   - **恒注册**（不因两档都关而跳过注册）—— 否则 `web.searchProvider` 这个
+ *     钉死的 id 会悬空（`WEB_PROVIDER_CONFIGURED_MISSING`），同样是选中失败。
+ *   - `available()` **恒 true** —— 让**选中成功**，宿主才会去问 `ready()`。
+ *   - `ready()` 按两档的可用性作答 —— 两档都关 ⇒ false ⇒ 宿主藏起工具。
+ *
+ * `available()` 恒 true 看起来像谎报，但它的语义只被 `resolveProvider` 消费
+ * （"这个 provider 可不可被选中"），而宿主 `listProviders()` 明说
+ * 「Availability does not filter the lists」—— 设置页的 provider 列表不受影响。
+ *
+ * ## 现在的链
+ *
+ * Provider chain (resolved per call, on `ctx.web`):
+ *   1. Tavily  — primary (English/global, AI-tuned results, `tavilyApiKey`)
+ *   2. 博查 AI — secondary (Chinese search optimization, `bochaApiKey`)
+ *
+ * 任一 tier 抛错（HTTP 非 2xx / 网络 / JSON 解析 / AbortError）⇒ 记日志，
+ * 下一 tier 接续；两档都失败 ⇒ `WEB_PROVIDER_UNAVAILABLE`。
+ *
+ * ## 凭据来源（§7.102, 2026-10-21）
+ *
+ * `config/edge.json` 的 `secrets.tavilyApiKey` / `secrets.bochaApiKey`
+ * 优先，`process.env` 的 `TAVILY_API_KEY` / `BOCHA_API_KEY` 兜底。
+ * 旧的 flow（repo .env → install.sh `source .env.sh` → process.env）已经没了
+ * —— 桌面 GUI 从不 source 它，所以桌面版本来就没有搜索 key。
+ *
+ * 这条口径由 `edge-config.ts` 的 `resolveWebSearchTiers()` **统一**实现，闸门
+ * 侧（`realm-skill-bridge.ts`）走同一个函数 ⇒ 两边不会对「空串 / env 兜底」
+ * 出现分叉。
+ *
+ * ## 为什么用裸名（NOT `DSH_EDGE_*` 前缀）
+ *
+ * DSH dsh-app-boot 0.1.2-rc.1 的 BOOTSTRAP_PREFIXES =
+ * ["DSH_", "XDG_", "DYLD_", "BASH_FUNC_"] 会在 dsh 自己解析 .env 时拒收任何
+ * 带这些前缀的 KEY。裸名与那个启动器行为兼容。
+ *
+ * ## Cordis 集成
+ *
+ * 注册为**一个** search provider，id = `tavily-bocha-fallback`。
+ *
+ * @module dsh-edge/dsh-edge-agent/web-search-tavily-bocha
  */
 
 import { WebError, type WebSearchProvider, type WebSearchRequest, type WebSearchResult } from '@deepseek-ai/dsh-web'
-import { DeepSeekSearchProvider } from '@deepseek-ai/dsh-web-search-deepseek'
-import { credentialRef } from '@deepseek-ai/dsh-credentials'
-import { launchEnvironmentOf } from '@deepseek-ai/dsh-launch-environment'
 import type { Context } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
-import { loadEdgeConfig } from './edge-config.js'
+import { loadEdgeConfig, resolveWebSearchTiers, type EdgeWebSearchTiers } from './edge-config.js'
 
 // ── Endpoints (fixed; these are the only authoritative hosts for each provider) ─────
 const TAVILY_ENDPOINT = 'https://api.tavily.com/search'
@@ -86,44 +105,6 @@ const TAVILY_ENDPOINT = 'https://api.tavily.com/search'
 // 官方开放平台 docs https://open.bochaai.com 明确指向 `api.bochaai.com`;
 // 旧域名持任何 key 都会 403 quota 错误,实际是路由不可达伪装成 quota)。
 const BOCHA_ENDPOINT = 'https://api.bochaai.com/v1/web-search'
-const DEEPSEEK_DEFAULT_BASE_URL = 'https://api.deepseek.com/anthropic/v1'
-
-/**
- * 宿主把「DeepSeek 账号」当作 provider 路由注册时的 id（上游
- * `web-search-deepseek` 的 `ACCOUNT_PROVIDER`）。只有当前会话走这条路由，
- * 搜索才用账号登录（`x-dsh-auth-token`）而不是 API key。
- */
-export const DEEPSEEK_ACCOUNT_PROVIDER = 'deepseek-account'
-
-/** 凭据引用的名字（上游 `web-search-deepseek` 的 `apiKeyEnv` 默认值）。 */
-const DEEPSEEK_API_KEY_REF = 'DEEPSEEK_API_KEY'
-
-/**
- * 主机侧的**凭据通道**（§7.197）。
- *
- * 这三个通道都不是我们能自己造出来的，只能从宿主服务里拿：
- *   - `credentials`：宿主凭据服务（`ctx.credentials`）—— 桌面端「Web search」
- *     设置页写进去的 key 就在这里；
- *   - `launchEnv`：启动环境快照（`launchEnvironmentOf(ctx)`）—— 启动器导出的 env；
- *   - `account`：DeepSeek 账号服务（`ctx.deepseekAccount`）—— 账号登录令牌。
- *
- * 全部可选：宿主没提供就退回到我们自己的 edge.json / 进程环境。
- *
- * ⚠️ 三个通道都是**惰性取值**（返回函数的引用，而不是服务本身）：
- * 宿主的插件装载顺序不保证「credentials / deepseekAccount 在我们 apply() 之前
- * 就已就位」⇒ 在 apply() 时把服务抓死，迟注册的那条路就永远丢了。
- * 上游 `web-search-deepseek` 也是**每次搜索**才 `ctx.get(...)` 的。
- */
-export interface DeepSeekCredentialPlane {
-  /** 宿主凭据服务：`resolve(ref)` → `{ value }`。 */
-  credentials?: () => { resolve(ref: ReturnType<typeof credentialRef>): Promise<{ value: string } | undefined> } | undefined
-  /** 启动环境快照：`get(name)` → `{ value }`。 */
-  launchEnv?: () => { get(name: string): { value: string } | undefined } | undefined
-  /** DeepSeek 账号服务：`resolveToken(endpoint)` → 令牌字符串。 */
-  account?: () => { resolveToken(endpoint: string): Promise<string | undefined> } | undefined
-  /** 当前会话的 provider 路由（判断是不是 `deepseek-account`）。 */
-  routeProvider?: () => string | undefined
-}
 
 /** Stable id for `ctx.web.searchProviderId` selection and audit messages. */
 export const TAVILY_BOCHA_PROVIDER_ID = 'tavily-bocha-fallback'
@@ -137,11 +118,10 @@ export const name = 'web-search-tavily-bocha'
 export const inject = ['web']
 
 /**
- * Config schema. The aggregator is fully env-driven (§7.82: TAVILY_API_KEY
- * / BOCHA_API_KEY / DEEPSEEK_API_KEY — bare names per §7.75), so the schema is
- * intentionally minimal — provided only to satisfy the `verify:plugin-spec`
- * battery. Future Phase 5 work (per-provider rate-limit split, domain
- * whitelist, SafeSearch) can add fields here without touching `apply()`.
+ * Config schema. The aggregator is fully config-driven (§7.82), so the schema
+ * is intentionally minimal — provided only to satisfy the `verify:plugin-spec`
+ * battery. Future work (per-provider rate-limit split, domain whitelist,
+ * SafeSearch) can add fields here without touching `apply()`.
  */
 export interface Config {
   /** Reserved for future tuning knobs. No-op in v0.1.x. */
@@ -153,80 +133,83 @@ export const Config: Schema<Config> = Schema.object({
 })
 
 /**
- * Aggregator provider: Tier-1 Tavily → Tier-2 Bocha → Tier-3 DeepSeek.
+ * Aggregator provider: Tier-1 Tavily → Tier-2 博查.
  * Implements the `WebSearchProvider` interface from `@deepseek-ai/dsh-web`.
+ *
+ * §7.221: 档位状态**不缓存** —— 每次 `available()` / `ready()` / `search()` 都
+ * 现读配置（`loadEdgeConfig(true)` 走 mtime+size 指纹快速路径，没变就只
+ * 一次 `statSync`）。这样 provider 的真实状态与闸门侧
+ * （`realm-skill-bridge`）读到的永远是同一份快照 ⇒ 不会出现「工具可见但调不
+ * 通」或「工具藏了但其实能搜」的裂缝。
  */
 export class TavilyBochaFallbackProvider implements WebSearchProvider {
   readonly id = TAVILY_BOCHA_PROVIDER_ID
 
+  /**
+   * @param loadTiers - 解析两档（开关 + key）的取数口。默认从 edge 配置读；
+   *   测试可注入固定值。
+   */
   constructor(
-    private readonly tavilyKey: string | undefined,
-    private readonly bochaKey: string | undefined,
-    private readonly dsKey: string | undefined,
-    private readonly deepseek: DeepSeekSearchProvider,
-    /**
-     * §7.107 (2026-10-24): per-tier switches. `config/edge.json` has always
-     * declared `webSearch.tavilyEnabled` / `bochaEnabled` — and NOTHING read
-     * them: the tiers were gated purely on "is the key present". An operator
-     * who wanted DeepSeek Search as the backend had no way to say so; every
-     * search burned two 401 round-trips on the way down the chain to it.
-     * §7.182 (2026-11-11, owner ruling): the shipped default is **OFF** for
-     * both tiers ⇒ out of the box only the DeepSeek tier is on the chain.
-     * An unset switch therefore means DISABLED (opt-in, not opt-out).
-     */
-    private readonly tiers: { tavilyEnabled?: boolean; bochaEnabled?: boolean } = {},
-    /**
-     * §7.197: 主机侧凭据通道。用来做两件事 ——
-     *   1. `available()`：判断「有没有凭据通道」（而不是「此刻有没有 key」）；
-     *   2. Tier-3 的凭据解析（见 `apply()` 里造的 upstream provider thunk）。
-     */
-    private readonly credentialPlane: DeepSeekCredentialPlane = {},
+    private readonly loadTiers: () => EdgeWebSearchTiers = () => resolveWebSearchTiers(loadEdgeConfig(true)),
   ) {}
 
-  private get tavilyEnabled(): boolean {
-    // §7.182: unset = disabled (the shipped default is off).
-    return this.tiers.tavilyEnabled === true
+  /** 当前两档的状态（现读，见类注释）。 */
+  private get tiers(): EdgeWebSearchTiers {
+    return this.loadTiers()
   }
 
-  private get bochaEnabled(): boolean {
-    // §7.182: unset = disabled (the shipped default is off).
-    return this.tiers.bochaEnabled === true
+  /** Tavily 档是否真的能打（开关开 **且** 配到了 key）。 */
+  private get tavilyReady(): boolean {
+    const t = this.tiers
+    return t.tavilyEnabled && Boolean(t.tavilyKey)
+  }
+
+  /** 博查档是否真的能打（开关开 **且** 配到了 key）。 */
+  private get bochaReady(): boolean {
+    const t = this.tiers
+    return t.bochaEnabled && Boolean(t.bochaKey)
   }
 
   /**
    * Cheap local availability check; no network calls.
    *
-   * §7.197: 判据从「此刻有没有 key」改成「**有没有凭据通道**」。
+   * §7.221: **恒 true**。
    *
-   * 为什么不能继续用「此刻有没有 key」：Tier-3 的凭据解析是**异步且按路由**
-   * 的 —— 账号令牌只有当当前会话走 `deepseek-account` 路由时才存在，而
-   * `available()` 是同步方法、拿不到路由。拿「此刻没 key」当硬门槛的后果是
-   * 宿主 seam 在**搜索还没发生**时就拒绝（`WEB_PROVIDER_CONFIGURED_UNAVAILABLE`），
-   * 主人看到的只是一句「registered but unavailable」，既不知道该配什么，
-   * 也不知道「用 DeepSeek 账号模型就能搜」。
+   * ⚠️ 别改成「两档都没关就 false」—— 宿主 seam 的 `resolveProvider` 在
+   * `available()` 为 false 时会**选中失败**（`WEB_PROVIDER_CONFIGURED_UNAVAILABLE`），
+   * 而 `selectedProviderReady` 对选中失败**答 true** ⇒ 宿主会把 `web_search`
+   * **照旧声明给模型**（`when` 谓词答 true）⇒ 模型一调就撞结构化错误，
+   * 正是本轮要消除的状态。
    *
-   * 真正的凭据判定发生在搜索时（上游同款）：解析不到就抛
-   * `WEB_PROVIDER_CREDENTIAL_MISSING`（我们翻译成自己的可执行提示）。
+   * 真正的「不可用」信号走 `ready()`（见下）。
    */
   available(): boolean {
-    if ((this.tavilyEnabled && this.tavilyKey) || (this.bochaEnabled && this.bochaKey)) return true
-    if (this.dsKey) return true
-    const plane = this.credentialPlane
-    // 主机凭据服务 / DeepSeek 账号服务：解析是**异步**的 ⇒ 只能判「有没有这个通道」。
-    // 少了它们，账号模型与主机凭据里的 key 就永远轮不到（§7.197 的主因）。
-    if (plane.credentials?.() || plane.account?.()) return true
-    // 启动环境是**同步**的 ⇒ 直接判那把 key 在不在。
-    // 注意 `launchEnvironmentOf(ctx)` 永远返回一个快照（process.env 兜底），
-    // 所以不能拿「快照存在」当判据 —— 那样 available() 恒为 true。
-    const fromLaunchEnv = plane.launchEnv?.()?.get(DEEPSEEK_API_KEY_REF)?.value?.trim()
-    return Boolean(fromLaunchEnv)
+    return true
+  }
+
+  /**
+   * §7.221: **宿主闸门（主）** —— 宿主 `dsh-tool-web` 用
+   * `when: ({ modelSelection }) => ctx.web.searchReady(modelSelection.provider)`
+   * 注册 `web_search`；`searchReady()` 选中成功后才问 provider 的 `ready?.()`。
+   *
+   * 两档都拿不出 ⇒ 答 **false** ⇒ 宿主把 `web_search` 从**声明**与**派发**
+   * 里一并摘掉（连带那段 system-prompt 指引）⇒ 模型看不见工具、也调不到 ⇒
+   * 走它**自己 provider 的原生搜索**。
+   *
+   * @param _llmProvider - 本次模型请求的 provider 路由 id。本聚合器与路由无关
+   *   （Tavily / 博查 都是独立凭据），故不参与判定。
+   */
+  async ready(_llmProvider?: string): Promise<boolean> {
+    return this.tavilyReady || this.bochaReady
   }
 
   async search(request: WebSearchRequest, signal?: AbortSignal): Promise<WebSearchResult> {
+    const tiers = this.tiers
+
     // Tier 1 — Tavily
-    if (this.tavilyEnabled && this.tavilyKey) {
+    if (tiers.tavilyEnabled && tiers.tavilyKey) {
       try {
-        return await this.searchTavily(request, signal)
+        return await this.searchTavily(request, signal, tiers.tavilyKey)
       } catch (err) {
         // Tier 1 failed; fall through to Tier 2. We log but do not throw —
         // this is the explicit lingguard-style "fail-down" contract.
@@ -238,50 +221,50 @@ export class TavilyBochaFallbackProvider implements WebSearchProvider {
     }
 
     // Tier 2 — 博查 AI
-    if (this.bochaEnabled && this.bochaKey) {
+    if (tiers.bochaEnabled && tiers.bochaKey) {
       try {
-        return await this.searchBocha(request, signal)
+        return await this.searchBocha(request, signal, tiers.bochaKey)
       } catch (err) {
         console.warn(
-          `[web-search-tavily-bocha] 博查 failed, falling through to DeepSeek: ` +
+          `[web-search-tavily-bocha] 博查 failed: ` +
             (err instanceof Error ? err.message : String(err)),
         )
       }
     }
 
-    // Tier 3 — DeepSeek (imported provider; uses native server-tool search).
+    // §7.221: 没有 DeepSeek 兜底了 —— 两档都没成 ⇒ 明确报「不可用」。
     //
-    // §7.197: 凭据解析交给 upstream provider 自己做（账号令牌 → API key，
-    // 顺序与上游 `web-search-deepseek` 一致，见 `apply()` 里的 thunk）。
-    // 我们只在**一个凭据都没有**时把它翻译成自己的提示 —— 上游抛的是
-    // `WEB_PROVIDER_CREDENTIAL_MISSING`，那句话里的修复路径是上游插件的
-    // 配置项，对本仓的操作者不适用。
-    try {
-      return await this.deepseek.search(request, signal)
-    } catch (err) {
-      if (err instanceof WebError && err.code === 'WEB_PROVIDER_CREDENTIAL_MISSING') {
-        throw new WebError(
-          'no web search credential is available: DeepSeek tier needs a credential, and none of the '
-          + 'four sources has one (config/edge.json secrets.deepseekApiKey / the host credentials '
-          + 'service (DEEPSEEK_API_KEY) / the launch environment / the DeepSeek account sign-in)',
-          'WEB_PROVIDER_UNAVAILABLE',
-          { cause: err },
-        )
-      }
-      throw err
+    // 走到这里只有两种可能：
+    //   (a) 两档都**没配置**（开关开但没 key，或两档都关）—— 正常情况下
+    //       宿主不会把工具声明给模型（`ready()` 答 false），但直接调
+    //       `ctx.web.search()` 仍可能走到这里；
+    //   (b) 两档都配了但**都失败**。
+    if (!this.tavilyReady && !this.bochaReady) {
+      throw new WebError(
+        'web search is unavailable: no Tavily or 博查 AI tier is enabled with a key. '
+        + 'Enable one of them in config/edge.json (webSearch.tavilyEnabled / webSearch.bochaEnabled) '
+        + 'with its key, or let the model use its own provider\'s native search.',
+        'WEB_PROVIDER_UNAVAILABLE',
+      )
     }
+    throw new WebError(
+      'web search is unavailable: neither the Tavily nor the 博查 AI tier succeeded. '
+      + 'Enable one of them in config/edge.json (webSearch.tavilyEnabled / webSearch.bochaEnabled) '
+      + 'with its key, or let the model use its own provider\'s native search.',
+      'WEB_PROVIDER_UNAVAILABLE',
+    )
   }
 
   // ── Tier 1: Tavily ───────────────────────────────────────────────────────
   // API: https://docs.tavily.com/docs/rest-api/api-reference#endpoint-search
   // Body: { api_key, query, max_results, search_depth, include_answer }
   // 200 OK response: { answer?: string, results: [{ title, url, content, score }] }
-  private async searchTavily(req: WebSearchRequest, signal?: AbortSignal): Promise<WebSearchResult> {
+  private async searchTavily(req: WebSearchRequest, signal: AbortSignal | undefined, apiKey: string): Promise<WebSearchResult> {
     const r = await fetch(TAVILY_ENDPOINT, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        api_key: this.tavilyKey,
+        api_key: apiKey,
         query: req.query,
         max_results: req.maxResults ?? 5,
         search_depth: 'basic',
@@ -316,12 +299,12 @@ export class TavilyBochaFallbackProvider implements WebSearchProvider {
   // Body: { query, count, summary, freshness } —— 4 个字段,无额外必填
   // 200 OK response: { code: 200, msg: null, log_id, data: { _type, queryContext, webPages: { webSearchUrl, totalEstimatedMatches, value: [...] }, images?, videos? } }
   // 错误 response: { code: 4xx, msg: '...', log_id } —— 无 data 字段
-  private async searchBocha(req: WebSearchRequest, signal?: AbortSignal): Promise<WebSearchResult> {
+  private async searchBocha(req: WebSearchRequest, signal: AbortSignal | undefined, apiKey: string): Promise<WebSearchResult> {
     const r = await fetch(BOCHA_ENDPOINT, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.bochaKey}`,
+        Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
         query: req.query,
@@ -370,7 +353,10 @@ export class TavilyBochaFallbackProvider implements WebSearchProvider {
         url: it.url,
         ...(it.name ? { title: it.name } : {}),
         ...(it.summary ? { snippet: it.summary } : it.snippet ? { snippet: it.snippet } : {}),
-        ...(it.datePublished ? { datePublished: it.datePublished } : {}),
+        // §7.221: 字段名是 `publishedAt` —— 早先这里写的是 `datePublished`，
+        // 而 `WebSearchSource` 没有这个字段 ⇒ 发布日期一直被**静默丢弃**
+        // （宿主 `formatSearchOutput` 读的是 `source.publishedAt`）。
+        ...(it.datePublished ? { publishedAt: it.datePublished } : {}),
       }))
     return {
       ...(json.data?.summary ? { content: json.data.summary } : {}),
@@ -386,108 +372,31 @@ export class TavilyBochaFallbackProvider implements WebSearchProvider {
  * guarantees `ctx.web` is non-null. We register one aggregator provider
  * whose id is `tavily-bocha-fallback`.
  *
- * The Tier-3 DeepSeek provider is constructed (not registered) so we can
- * invoke its `search()` directly inside our Tier-3 fallback path. The
- * upstream `web-search-deepseek` plugin row is kept enabled in
- * `cordis.patch.yml` so its `registerSearchProvider('deepseek-official')`
- * also fires — but DSH's seam then sees TWO registered search providers
- * (ours + deepseek-official) and would throw `WEB_PROVIDER_AMBIGUOUS`.
- *
- * To avoid that, the cordis.patch.yml disables `web-search-deepseek` when
- * `web-search-tavily-bocha` is enabled; the Tier-3 fallback inside the
- * aggregator reaches the same DeepSeek HTTP endpoint by holding a private
- * `DeepSeekSearchProvider` instance, so we never lose the backstop.
+ * §7.221: **恒注册**。两档都关时不是「不注册」，而是「注册了但 `ready()`
+ * 答 false」—— 原因见文件头：宿主 seam 对「选中失败」答 true，那样工具反而
+ * 会**照旧可见**给模型。
  *
  * @param ctx - Cordis context with `ctx.web` available per `inject`.
  */
-/**
- * 当前会话的 provider 路由（上游 `web-search-deepseek` 同款：
- * `ctx.agents.currentInitiator()?.session.requestContext()?.provider`）。
- *
- * 只有它是 `deepseek-account` 时，搜索才用账号登录令牌。拿不到就返回
- * undefined（⇒ 不走账号令牌）—— 拿不到不是错误，只是「这条路没有凭据」。
- */
-function currentRouteProvider(ctx: Context): string | undefined {
-  try {
-    const agents = ctx.get('agents') as
-      | { currentInitiator?: () => { session?: { requestContext?: () => { provider?: string } } } | undefined }
-      | undefined
-    const route = agents?.currentInitiator?.()?.session?.requestContext?.()?.provider
-    return typeof route === 'string' ? route : undefined
-  } catch {
-    return undefined
-  }
-}
-
 export async function apply(ctx: Context, _config: Config): Promise<void> {
   // §7.102 (2026-10-21): the search keys come from config/edge.json
-  // (secrets.tavilyApiKey / secrets.bochaApiKey / secrets.deepseekApiKey).
+  // (secrets.tavilyApiKey / secrets.bochaApiKey).
   // The old flow was: repo .env → install.sh `source .env.sh` → process.env
   // → this read. That chain is gone — the desktop GUI never sourced it.
   // Env names stay honoured as a per-process override.
-  const cfg = loadEdgeConfig(true)
-  const secrets = cfg.secrets ?? {}
-  const tavilyKey = (secrets.tavilyApiKey ?? process.env.TAVILY_API_KEY)?.trim() || undefined
-  const bochaKey = (secrets.bochaApiKey ?? process.env.BOCHA_API_KEY)?.trim() || undefined
-  const dsKey = (secrets.deepseekApiKey ?? process.env.DEEPSEEK_API_KEY)?.trim() || undefined
-  const dsBaseURL = process.env.DEEPSEEK_BASE_URL?.trim() || DEEPSEEK_DEFAULT_BASE_URL
+  const provider = new TavilyBochaFallbackProvider()
 
-  // ── §7.197: 主机侧凭据通道 ────────────────────────────────────────────
-  //
-  // 上游 `web-search-deepseek` 是这样解析凭据的（已从 app.asar 里核对源码）：
-  //   ① 账号令牌 —— 仅当当前会话的 provider 路由是 `deepseek-account`，
-  //      令牌由 `ctx.deepseekAccount.resolveToken(endpoint)` 给；
-  //   ② API key —— `ctx.credentials.resolve('DEEPSEEK_API_KEY')`，
-  //      拿不到再退到启动环境 `launchEnvironmentOf(ctx)`。
-  //
-  // 我们原来一条都没接（只读自己的 edge.json），所以「DSH 里配的就是 DeepSeek
-  // 模型」这件事，对搜索没有任何影响 —— 模型是 DeepSeek 的，搜索却用不上
-  // DeepSeek 的凭据。现在按上游同款接上。
-  const plane: DeepSeekCredentialPlane = {
-    credentials: () => ctx.get('credentials') as
-      | { resolve(ref: ReturnType<typeof credentialRef>): Promise<{ value: string } | undefined> }
-      | undefined,
-    launchEnv: () => launchEnvironmentOf(ctx),
-    account: () => ctx.get('deepseekAccount') as
-      | { resolveToken(endpoint: string): Promise<string | undefined> }
-      | undefined,
-    routeProvider: () => currentRouteProvider(ctx),
-  }
+  // §7.221: 两档都没启用时打一行 info —— 说明「工具层 web_search 会由宿主
+  // 按模型步藏起来，搜索跟随所配置的云端模型」。
+  void provider.ready().then((usable) => {
+    if (usable) return
+    ctx.logger?.info?.(
+      '[web-search-tavily-bocha] 两档都没启用（Tavily / 博查）⇒ 宿主会在模型步里'
+      + '把 web_search 藏起来（provider.ready() = false）；搜索跟随所配置的云端模型'
+      + '自带的原生搜索（§7.221）。',
+    )
+  })
 
-  // Construct upstream DeepSeek provider for Tier-3 fallback. The provider
-  // class is stateless across calls — credentials are resolved per search.
-  //
-  // §7.197: `resolveAccountToken` / `resolveApiKey` 现在是**主机同款**的两条路：
-  // 账号令牌优先（且只在账号路由上），API key 依次是
-  // 我们自己的 edge.json → 主机凭据服务 → 启动环境 → 进程环境。
-  const dsProvider = new DeepSeekSearchProvider(() => ({
-    resolveAccountToken: async (endpoint: string) => {
-      if (plane.routeProvider?.() !== DEEPSEEK_ACCOUNT_PROVIDER) return undefined
-      const token = await plane.account?.()?.resolveToken(endpoint)
-      return token && token.length > 0 ? token : undefined
-    },
-    resolveApiKey: async () => {
-      if (dsKey) return dsKey
-      const fromCredentials = await plane.credentials?.()?.resolve(credentialRef(DEEPSEEK_API_KEY_REF))
-      const credentialValue = fromCredentials?.value?.trim()
-      if (credentialValue) return credentialValue
-      const fromLaunchEnv = plane.launchEnv?.()?.get(DEEPSEEK_API_KEY_REF)?.value?.trim()
-      if (fromLaunchEnv) return fromLaunchEnv
-      return process.env.DEEPSEEK_API_KEY
-    },
-    baseURL: dsBaseURL,
-    model: 'deepseek-v4-flash',
-    apiVersion: '2023-06-01',
-    maxTokens: 4096,
-    maxUses: 5,
-  }))
-
-  const provider = new TavilyBochaFallbackProvider(tavilyKey, bochaKey, dsKey, dsProvider, {
-    // §7.107: the per-tier switches, finally read. §7.182: default =
-    // disabled ⇒ an unset config keeps only the DeepSeek tier on the chain.
-    tavilyEnabled: cfg.webSearch?.tavilyEnabled,
-    bochaEnabled: cfg.webSearch?.bochaEnabled,
-  }, plane)
   // The `web` seam is registered by `@deepseek-ai/dsh-tool-web` upstream;
   // it's not part of the stock `Context` interface, so cast narrowly.
   const webCtx = ctx as Context & {

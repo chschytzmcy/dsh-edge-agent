@@ -1001,8 +1001,8 @@ checkout 里最不该待的东西。
 | `dashscopeApiKey` | 通用（本机 `llm.local` 指的就是它）| 端点不鉴权时不需要 |
 | `aliyuntokenplanApiKey` | 阿里云 token-plan 直连 | 同上 |
 | `minimaxApiKey` | MiniMax 直连 | 同上 |
-| `deepseekApiKey` | 搜索 Tier 3（DeepSeek 兜底）| 搜索少了最后一档兜底 |
-| `tavilyApiKey` / `bochaApiKey` | 搜索 Tier 1 / Tier 2 | `available()` 变 false ⇒ 该 provider 被宿主从可用清单里过滤掉（搜索不可用），其余功能照常 |
+| `deepseekApiKey` | **§7.221 起不再是网页搜索的凭据**（DeepSeek 那一档已去掉，搜索跟随所配置的云端模型）。它现在只剩一个消费者：headless / CLI 部署的 DELEGATE（`scripts/deploy-profile.sh` 把它 export 成 `DEEPSEEK_API_KEY` 给宿主进程）—— 那种宿主没有登录账号，DELEGATE 转发到宿主的 DeepSeek provider 需要一把 key | **桌面版不需要**（有账号登录）；headless/CLI 且 DELEGATE 到 DeepSeek provider 时必填，否则那类轮次拿不到转发目标 |
+| `tavilyApiKey` / `bochaApiKey` | 搜索 Tier 1 / Tier 2 | 两档都不可用时，工具层 `web_search` **不对模型提供**（§7.221）⇒ 模型走**所配置的云端模型**自带的原生搜索；其余功能照常 |
 | `bailianApiKey` | jev 判定模型（`jev.apiKeyRef`）| jev 的决策模型档失效 ⇒ 该阶段降级到规则层 |
 
 > **`secrets` 整段可以不写** —— 桌面版装法下一个 secret 都不需要。

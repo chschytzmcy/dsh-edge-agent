@@ -26,10 +26,12 @@
  *   - @deepseek-ai/dsh-tool-bash (bash execution)
  *   - @deepseek-ai/dsh-tool-fs (file read/write/edit)
  *   - @deepseek-ai/dsh-tool-web (web_search + web_fetch)
- *   - @deepseek-ai/dsh-web-search-deepseek (DeepSeek search provider)
  *   - @dsh-edge/dsh-edge-agent/web-search-tavily-bocha
- *     (§7.82 Phase 5: 3-tier Tavily → 博查 → DeepSeek fallback, replaces
- *     upstream DeepSeek provider as the default `searchProvider`)
+ *     (§7.82 Phase 5: 2-tier Tavily → 博查 fallback, replaces
+ *     upstream DeepSeek provider as the default `searchProvider`;
+ *     §7.221: the DeepSeek tier is gone — search follows the configured
+ *     cloud model. Two tiers both off ⇒ the tool-level `web_search` is
+ *     not offered at all.)
  *
  * Each plugin's own `apply` declares its `inject` dependencies; the DSH
  * Loader activates them in topological order automatically. This file

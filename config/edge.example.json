@@ -1,7 +1,7 @@
 {
   "_comment": "dsh-edge-agent 配置模板（tracked）。§7.182（2026-11-11）起，运行时只认两个落点：①装好后的插件目录里的 config/edge.json（顺位 1 —— 打开插件目录就能看到能改的那个）；②~/.dsh-edge-agent/edge.json（顺位 2 —— 重装/删 profile 都活着，跨 npm/git/tarball 三条通道通用）。仓库的 config/ 目录不再放活配置（明文 API key 不该待在 git checkout 里）。本文件本身不再是运行时候选（模板里的部署值已并入代码默认值），它只是给你抄的那份模板：cp config/edge.example.json ~/.dsh-edge-agent/edge.json，然后填真实端点与 key。",
   "secrets": {
-    "_comment": "HTTP API 鉴权 + 各 LLM 池的直连凭据。直连模式下写入 Authorization 头。",
+    "_comment": "HTTP API 鉴权 + 各 LLM 池的直连凭据。直连模式下写入 Authorization 头。§7.221：deepseekApiKey **不再是网页搜索的凭据**（DeepSeek 那一档已去掉，搜索跟随所配置的云端模型）；它现在只剩一个用途 —— headless / CLI 部署的 DELEGATE：那种宿主没有登录账号，DELEGATE 转发到宿主的 DeepSeek provider 需要一把 key（scripts/deploy-profile.sh 会把它 export 成 DEEPSEEK_API_KEY 给宿主进程）。桌面版（有账号登录）不需要填。",
     "edgeApiKey": "",
     "deepseekApiKey": "",
     "dashscopeApiKey": "",
@@ -166,7 +166,7 @@
     "blockLevel": "critical"
   },
   "webSearch": {
-    "_comment": "Phase 5 web-search providers（§7.82）三级链：Tavily → 博查 AI → DeepSeek。任一可用即可，任一失败自动 fallback；不写 key 就跳过该 tier。§7.182 主人裁决：Tavily / 博查两档**默认关闭** ⇒ 出厂只有 DeepSeek 档在链上（secrets.deepseekApiKey）；要开就把对应开关写 true。",
+    "_comment": "§7.221：网页搜索只有**两档**（Tavily → 博查 AI），任一档「enable 且配上 key」即可用，任一档失败自动 fallback 到下一档。**没有第三档** —— DeepSeek 那一档已去掉（edge 不再自建 DeepSeek 搜索、不再拿 DEEPSEEK_API_KEY 去搜）。§7.182：两档**默认关闭**；§7.221：两档都没 enable 时，工具层 web_search **不对模型提供** ⇒ 搜索跟随**所配置的云端模型**自带的原生搜索能力。要开就把对应开关写 true，并在 secrets 里填上对应 key。",
     "tavilyEnabled": false,
     "bochaEnabled": false
   },

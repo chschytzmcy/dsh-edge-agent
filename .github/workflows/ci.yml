@@ -300,8 +300,17 @@ jobs:
     # run 的名字会变成文件路径（".github/workflows/ci.yml"）、jobs 为空、
     # 整条 CI 直接挂，而且**看不出原因**（实测 run #151 就是这样）。
     # ⇒ 正确写法：secret 进 job 级 env，step 的 `if:` 用 `env.` 上下文引用。
+    #
+    # §7.221: **`DSH_EDGE_API_KEY` 这个 secret 不再需要** ——
+    # 它不是外部凭据，是 edge 自己 HTTP API 的 bearer（`http-api` 拿到空 token
+    # 会拒绝启动）。谁都能自己造一把 ⇒ 改成 job 里**现场生成**一把随机令牌
+    # （每个 run 一把新的，不入库、不回显）。
+    #
+    # `DEEPSEEK_API_KEY` **仍然要留**，但**用途变了**：§7.221 之后它不再喂
+    # 网页搜索（DeepSeek 那一档已去掉），而是给**宿主**一把模型 key ——
+    # CI runner 上没有登录账号、DELEGATE 没有转发目标 ⇒ 不给它，两条云端
+    # 用例（news / mibao）必然跑不通。
     env:
-      DSH_EDGE_API_KEY: ${{ secrets.DSH_EDGE_API_KEY }}
       DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
     steps:
       - name: Checkout
@@ -354,12 +363,25 @@ jobs:
           # 删除 install.sh 自动加的 15 个重复 @deepseek-ai/*，避免 Symbol('dsh.scope') 双实例。
           bash scripts/fix-profile-duplicates.sh --profile=web
 
+      # §7.221: edge HTTP API 的 bearer **现场生成**一把 —— 不再依赖
+      # `DSH_EDGE_API_KEY` 这个 Actions secret（它不是外部凭据，是自己 API
+      # 的门锁令牌，谁都能造）。令牌只落在本 run 的进程环境里，不入库、不回显。
+      - name: 生成 edge HTTP API 的临时 bearer（§7.221）
+        run: |
+          TOKEN="$(node -e "console.log(require('crypto').randomBytes(24).toString('hex'))")"
+          echo "DSH_EDGE_API_KEY=$TOKEN" >> "$GITHUB_ENV"
+          echo "::notice::已生成临时 edge API bearer（本 run 内有效；不入库、不回显）"
+
       - name: Start dsh web profile (background)
         env:
-          EDGE_API_KEY: ${{ secrets.DSH_EDGE_API_KEY || 'test-secret-key' }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY || 'test-fake-deepseek-key-for-opslog-fixture' }}
           DSH_EDGE_HTTP_PORT: '21017'
         run: |
+          export EDGE_API_KEY="$DSH_EDGE_API_KEY"
+          if [ -z "${EDGE_API_KEY:-}" ]; then
+            echo "::error::临时 edge API bearer 没拿到（GITHUB_ENV 未生效？）—— http-api 拿到空 token 会拒绝启动"
+            exit 1
+          fi
           cd "$HOME/.dsh/profiles/web"
           nohup dsh --profile web > /tmp/dsh-web.log 2>&1 &
           echo $! > /tmp/dsh-web.pid
@@ -377,24 +399,26 @@ jobs:
       # 里放的是真 key；没有真 key 时脚本自己就写明「云端用例会 FAIL」。
       # ⇒ 没配 secret 时**明说并跳过**那一步（job 里那步显示 skipped，不是假绿），
       # 配了 secret 才跑真回归。
+      # §7.221: 门禁条件**只留 DEEPSEEK_API_KEY** —— edge 自己的 bearer 已改成
+      # 现场生成（上一行），不再是 secret。
       # ⚠️ `if:` 里用 `env.` 上下文（**不是** `secrets.`）—— 见本 job 头部的说明：
       # GitHub 禁止在 if 条件里直接引用 secrets，那样会让整个 workflow 文件无效。
       - name: 检查 e2e 凭据（缺 secret ⇒ 明说并跳过回归，不假装绿）
         run: |
-          if [ -z "${DEEPSEEK_API_KEY:-}" ] || [ -z "${DSH_EDGE_API_KEY:-}" ]; then
-            echo "::warning::ops log 覆盖回归需要两个 Actions secret：DEEPSEEK_API_KEY 与 DSH_EDGE_API_KEY（仓库 Settings → Secrets and variables → Actions）。没有它们，脚本只能用假 key，云端用例会必然失败 —— 所以**回归那一步这次跳过**，而不是假绿。"
+          if [ -z "${DEEPSEEK_API_KEY:-}" ]; then
+            echo "::warning::ops log 覆盖回归需要一个 Actions secret：DEEPSEEK_API_KEY（仓库 Settings → Secrets and variables → Actions）。它给宿主当模型凭据用（runner 上没有登录账号、DELEGATE 没有转发目标）—— 没有它，云端用例会必然失败 —— 所以**回归那一步这次跳过**，而不是假绿。§7.221 起 edge 自己的 HTTP API bearer 已在 job 内现场生成，不再需要第二个 secret。"
           else
             echo "e2e 凭据齐备 ⇒ 跑真回归"
           fi
 
       - name: Run ops log coverage regression (3 重点用例)
-        if: ${{ env.DEEPSEEK_API_KEY != '' && env.DSH_EDGE_API_KEY != '' }}
+        if: ${{ env.DEEPSEEK_API_KEY != '' }}
         env:
-          EDGE_API_KEY: ${{ secrets.DSH_EDGE_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           DSH_EDGE_HTTP_PORT: '21017'
         run: |
           set +e
+          export EDGE_API_KEY="$DSH_EDGE_API_KEY"
           bash scripts/e2e-ops-log-coverage.sh 2>&1 | tail -60
           E2E_EXIT=${PIPESTATUS[0]}
           set -e

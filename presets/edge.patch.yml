@@ -468,13 +468,17 @@
                   # §7.102: sessionTtlMs / maxSessions / sweepIntervalMs 迁到
                   # config/edge.json (privacy.*)。patch 不再读 process.env。
 
-              # ── Phase 5 (§7.82): Tavily → 博查 AI → DeepSeek 三级 web_search 兜底链
+              # ── Phase 5 (§7.82): Tavily → 博查 AI 两档 web_search 兜底链
               # 注册一个 aggregator search provider(id='tavily-bocha-fallback')到 ctx.web;
               # web.searchProvider = 'tavily-bocha-fallback' 即指向它。任一 tier 抛错
-              # (非 2xx / 网络 / JSON 解析) → 下一 tier 接续; 三 tier 都失败 →
-              # WEB_PROVIDER_UNAVAILABLE。配置走裸名 env (§7.75: .env + .env.sh source
-              # chain;避开 DSH 黑名单 DSH_/XDG_/DYLD_/BASH_FUNC_): TAVILY_API_KEY /
-              # BOCHA_API_KEY / DEEPSEEK_API_KEY,都在 repo .env 里跟其他 secret 同地。
+              # (非 2xx / 网络 / JSON 解析) → 下一 tier 接续; 两 tier 都失败 →
+              # WEB_PROVIDER_UNAVAILABLE。
+              # §7.221 (2026-11-13): **DeepSeek 那一档已去掉** —— 搜索跟随**所配置
+              # 的云端模型**，edge 不再自建 DeepSeek 搜索 provider、不再拿
+              # DEEPSEEK_API_KEY 去搜。两档都没 enable 时，聚合器 `ready()` 答 false
+              # ⇒ 宿主按模型步把 web_search 藏起来 ⇒ 模型走所配置云端模型的原生搜索。
+              # 凭据走 config/edge.json 的 secrets.tavilyApiKey / secrets.bochaApiKey
+              # (裸名 env TAVILY_API_KEY / BOCHA_API_KEY 兜底)。
               - id: web-search-tavily-bocha
                 name: '@dsh-edge/dsh-edge-agent/web-search-tavily-bocha'
                 inject: [web]

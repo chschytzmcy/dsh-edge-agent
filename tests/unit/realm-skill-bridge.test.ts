@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, it } from 'vitest'
 
 import * as plugin from '../../src/dsh-adapter/realm-skill-bridge.ts'
 import { RealmSkillBridgeService, globMatch } from '../../src/dsh-adapter/realm-skill-bridge.ts'
+import { loadEdgeConfig, resetEdgeConfigCache } from '../../src/dsh-adapter/edge-config.ts'
 import type { RealmConfig } from '../../src/dsh-adapter/realm-skill-bridge.ts'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -37,12 +38,33 @@ function fakeAuditLog() {
 
 let root: string
 
+/**
+ * §7.221: 本文件测的是**realm 语义**（哪个 realm 能用哪个工具），而
+ * `web_search` 在 §7.221 之后还多一道「搜索档位可用性」闸门（两档都没
+ * enable ⇒ 工具层 web_search 不提供）。本文件把 `web_search` 当 CLOUD 档的
+ * 夹具用 ⇒ 必须先把搜索档位**打开**，否则测的就不再是 realm 语义。
+ *
+ * 那道闸门本身在 `web-search-tool-gate.test.ts` 里单独测。
+ */
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'edge-realm-'))
+  const edgeConfigPath = join(root, 'edge.json')
+  writeFileSync(
+    edgeConfigPath,
+    JSON.stringify({
+      webSearch: { tavilyEnabled: true, bochaEnabled: false },
+      secrets: { tavilyApiKey: 'tvly-fake' },
+    }),
+    'utf8',
+  )
+  // 显式给候选路径 ⇒ 绕过 vitest 全局的 DSH_EDGE_CONFIG_FILE=off（那层是
+  // 为了不让开发机的活配置泄进断言）；之后 loadEdgeConfig() 命中这个缓存。
+  loadEdgeConfig(true, [edgeConfigPath])
 })
 
 afterEach(() => {
   rmSync(root, { recursive: true, force: true })
+  resetEdgeConfigCache()
 })
 
 function writeConfig(name: string, config: Partial<RealmConfig>): string {

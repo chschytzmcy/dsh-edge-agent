@@ -23982,3 +23982,198 @@ registry 上的包可能来自**任何一次构建** ⇒ 只有「**把那一版
 - **没有**动 2FA / trusted publisher 那条线（主人明说先不做，等指示）。
 - **没有**在本机 `pnpm add` 装 0.1.7 到主人的 `desktop` profile —— 那会动主人的运行环境，
   **本节只在隔离副本之外做了「下载拆开核」**，没碰主人的 profile。
+## §7.221 去掉 DeepSeek 搜索档：网页搜索跟随所配置的云端模型（2026-11-13）
+
+> 主人指示：「同时更新下 web search 的能力，去掉 deepseek search，而是跟随所配置的
+> 云端模型的 web search 能力」+「同时更新 edge.json」。
+> 此前已裁决：保留 Tavily / 博查两档（**默认关**），**两档都没有 enable 时**才让走
+> 模型自带的原生搜索。
+
+### 一、这一节改了什么（一句话版）
+
+edge 自建的**三级**搜索链（Tavily → 博查 AI → **DeepSeek**）变成**两档**
+（Tavily → 博查 AI）；DeepSeek 那一档整档删除，edge 不再拿 `DEEPSEEK_API_KEY`
+去搜。两档都没 enable 时，**工具层 `web_search` 整个不提供** ⇒ 模型走**所配置的
+云端模型**自带的原生搜索。
+
+### 二、最关键的一处机制：为什么「两档都关」**不能**表达成「provider 不可用」
+
+这一处是本轮最反直觉、也最容易做错的地方，所以单列一节。
+
+宿主 `@deepseek-ai/dsh-tool-web` 注册 `web_search` 时带了一个**按模型步生效**的
+条件谓词（宿主 `dsh-tool-web/src/search.ts`）：
+
+```ts
+ctx.tools.register(defineTool({ name: 'web_search', ... }),
+  { when: ({ modelSelection }) => ctx.web.searchReady(modelSelection.provider) })
+```
+
+`when` 的契约（宿主 `dsh-tools/src/contracts.ts`）：
+`readonly when?: (context) => boolean | Promise<boolean>` —— **支持异步谓词**，
+且「False excludes it from both declarations and dispatch」：答 false ⇒ 工具
+**既不声明给模型、也不可被派发**；宿主给 `web_search` 的那段 system-prompt 指引
+也一并消失（它读的是 `ctx.tools.get('web_search', scope, toolSet)`）。
+
+而宿主 seam 的 `searchReady()`（宿主 `dsh-web/src/index.ts`）是：
+
+```ts
+async function selectedProviderReady(select, llmProvider) {
+  let provider
+  try { provider = select() } catch (_selectionFailure) { return true }
+  return await provider.ready?.(llmProvider) ?? true
+}
+```
+
+⚠️ **选中失败反而答 true**（宿主注释原文：selection failure answers true,
+because `search()` reports that failure as a structured `WebError`）。
+
+⇒ 所以「两档都没开」如果表达成「provider 没注册」或「`available()` 为 false」，
+宿主 seam 都**选中失败** ⇒ `searchReady()` 答 true ⇒ 工具**照旧露给模型** ⇒
+模型一调就撞结构化错误。**那正是本轮要消除的状态。**
+
+⇒ 唯一能让宿主把工具藏起来的形状是：**provider 被正常选中 + `ready()` 答 false**。
+所以 aggregator 的形状被钉死成三件事：
+
+| 形状 | 值 | 为什么 |
+|---|---|---|
+| 注册 | **恒注册** | 不注册 ⇒ `web.searchProvider` 这个钉死的 id 悬空（`WEB_PROVIDER_CONFIGURED_MISSING`）⇒ 选中失败 |
+| `available()` | **恒 true** | false ⇒ `WEB_PROVIDER_CONFIGURED_UNAVAILABLE` ⇒ 选中失败 ⇒ 工具反而可见 |
+| `ready()` | 两档任一「enable 且有 key」⇒ true，否则 **false** | 这是宿主唯一会问的钩子（选中成功之后） |
+
+`available()` 恒 true 看着像谎报，但它的语义只被 `resolveProvider` 消费
+（「这个 provider 可不可被选中」）；宿主 `listProviders()` 明说
+「Availability does not filter the lists」⇒ 设置页的 provider 列表不受影响。
+
+### 三、宿主事实（本轮核到源码/asar 的几条，全部可复核）
+
+1. **上游 `dsh-web-search-deepseek` 的 provider 本质**：「DeepSeek search through an
+   Anthropic-compatible Messages model call with the native `web_search_20250305`
+   server tool」—— 它就是**一次带服务端搜索工具的独立模型调用**，自带引用来源。
+   ⇒ 「去掉 deepseek search」去掉的是**这一档**，不是「模型不能搜」。
+2. **宿主这一版的对话轮次没有自动挂 `web_search_20250305`**：asar 全量搜
+   `web_search_20250305`，命中只在 `@deepseek-ai/dsh-web-search-deepseek` 与
+   Anthropic SDK 的类型定义里；对话侧 LLM provider（`dsh-llm-deepseek` 等）没有
+   这个工具。`enable_search`（通义那类原生搜索开关）在 asar 里 **0 命中**。
+   ⇒ **实测事实**：两档都关时，工具层搜索确实消失；模型还能不能搜，取决于**所
+   配置模型自己的 provider** 有没有服务端原生搜索能力。主人当前的路由是
+   `qwen-token-plan-cn`（§7.216 实机审计链），宿主这一版**没有**给第三方路线挂
+   原生搜索开关。
+3. **`ctx.web` 的选择规则**（宿主 `dsh-web/src/index.ts`）：配了 id 且注册 ⇒ 看
+   `available()`；配了 id 没注册 ⇒ `WEB_PROVIDER_CONFIGURED_MISSING`；配了 id 但
+   不可用 ⇒ `WEB_PROVIDER_CONFIGURED_UNAVAILABLE`；没配 id 且恰好一个 usable ⇒
+   自动选；多个 usable ⇒ `WEB_PROVIDER_AMBIGUOUS`；没有 usable ⇒
+   `WEB_PROVIDER_UNAVAILABLE`。
+4. **宿主的 `web.searchProvider` 默认值**是 `deepseek-search-api`（来自
+   `@deepseek-ai/dsh-web-deepseek-api`）⇒ edge 必须**继续把 `searchProvider` 钉死**
+   在自己的 aggregator 上，否则宿主自带的 DeepSeek API 搜索 provider 会被选中 ⇒
+   「deepseek search」就回来了。
+
+### 四、代码改动清单
+
+| 文件 | 改了什么 |
+|---|---|
+| `src/dsh-adapter/web-search-tavily-bocha.ts` | **重写**：删掉 Tier-3 DeepSeek（不再 import `DeepSeekSearchProvider` / `credentialRef` / `launchEnvironmentOf`，不再读 `DEEPSEEK_API_KEY` / `secrets.deepseekApiKey`）；新增 `ready()` 钩子；`available()` 恒 true；**恒注册**（两档都关时也注册）；档位现读不缓存 |
+| `src/dsh-adapter/edge-config.ts` | 新增 `EdgeWebSearchTiers` + `resolveWebSearchTiers()`（**档位的唯一事实源**：开关 × key 的解析，含 env 兜底与空串口径）+ `resolveWebSearchAvailability()`；`secrets.deepseekApiKey` 的注释改成「只剩 headless DELEGATE 一个用途」；`ENV_OVERRIDES` 里 `DEEPSEEK_API_KEY` 的注释同步 |
+| `src/dsh-adapter/realm-skill-bridge.ts` | 新增 `isWebSearchToolName()` + `webSearchToolAvailable()`；`filterToolsField()`（模型可见性 + external schema face）与 Layer 3 `checkToolRealm()` 各加一道 web_search 闸门 |
+| `config/edge.example.json` | `secrets._comment` 与 `webSearch._comment` 改成新语义（**仓库里没有 `config/edge.json`** —— §7.182 之后活配置只有两个落点：插件目录的 `config/edge.json` 与 `~/.dsh-edge-agent/edge.json`；本机两个都不存在 ⇒ 本轮改的是**模板**） |
+| `cordis.patch.yml` | `web` 段的注释（为什么 `searchProvider` 必须钉死）+ `web-search-deepseek` 段的注释（这一档就是「deepseek search」本体，必须继续 disabled） |
+| `presets/edge.patch.yml` / `presets/edge.desktop-safe.patch.yml` | aggregator 那几行注释（两档 / 去掉 DeepSeek / 两档都关时的行为） |
+| `src/dsh-adapter/plugin.ts` | 插件清单注释（删掉 `dsh-web-search-deepseek` 那行） |
+| `docs/architecture.md` | 第 2 节整节重写（含宿主机制与宿主规则复刻） |
+| `docs/privacy-policy.md` | `secrets` 表里 `deepseekApiKey` / `tavilyApiKey` / `bochaApiKey` 三行的「消费者 / 不配会怎样」 |
+| `.github/workflows/ci.yml` | 见第七节 |
+
+### 五、edge 侧的辅助闸门（为什么不能只靠宿主那道）
+
+宿主那道 `when` 闸门**管不到** external tool-schema face ——
+`realm-skill-bridge.getToolSchemasForExternal()` 直接投影 registry schema，
+**不经过**宿主的 `when` 谓词 ⇒ 外部调用方仍会看见 `web_search`。
+
+⇒ edge 侧在 `filterToolsField`（模型可见性 + external face）与 Layer 3（执行期）
+各补一道，两处共用 `resolveWebSearchAvailability()` ⇒ 不会出现「模型看不见但
+还能调」或「看得见却调不通」的裂缝。
+
+⚠️ 读的是**非强制**缓存（`loadEdgeConfig()`），而聚合器每次 `available()` /
+`ready()` 都 `loadEdgeConfig(true)` 刷新**同一个模块级缓存** ⇒ 两边读到的永远是
+同一份快照 ⇒ 不会出现「工具可见但调不通」。
+
+⇒ 顺带得到一条口径：**改 `edge.json` 的搜索档位不需要重启宿主** —— 聚合器的档位
+是现读的，宿主的工具准入每个模型步重算一次 `searchReady()`，缓存随之刷新 ⇒
+下一个模型步就按新档位走。
+
+### 六、顺手修掉的一个真 bug
+
+博查的结果映射里，发布日期原来写的是 `datePublished`，而 `WebSearchSource` 的
+字段名是 **`publishedAt`** ⇒ `datePublished` 这个键**根本不存在** ⇒ **发布日期
+一直被静默丢弃**（宿主 `formatSearchOutput` 读的是 `source.publishedAt`）。
+本轮改为 `publishedAt`，并补了回归断言（`B13`）。
+
+另外统一了一处口径：配置里写空串（占位）现在**当未配置**，且**继续往 env 兜底**。
+早先聚合器里的 `secrets.x ?? env` 会让空串**挡住** env 兜底，与闸门侧的口径不一致。
+
+### 七、CI：主人的反问「这两个 Actions secret 还需要吗？有什么用？」
+
+**答：一个可以去掉，一个还得留（但用途变了）。**
+
+| secret | 还需要吗 | 到底干什么用 |
+|---|---|---|
+| `DSH_EDGE_API_KEY` | **不需要了 ⇒ 已去掉** | 它**不是外部凭据**，是 edge 自己 HTTP API 的门锁令牌（`http-api` 拿到空 token 会拒绝启动）。谁都能自己造一把 ⇒ 改成 job 里**现场生成**一把随机令牌（`node -e "crypto.randomBytes(24)"`），本 run 内有效、不入库、不回显 |
+| `DEEPSEEK_API_KEY` | **还得留** | §7.221 之后它**不再喂网页搜索**，而是给**宿主**一把模型 key —— CI runner 上没有登录账号、DELEGATE 没有转发目标 ⇒ 不给它，`news` / `mibao` 两条云端用例必然跑不通 |
+
+⇒ 门禁条件从 `env.DEEPSEEK_API_KEY != '' && env.DSH_EDGE_API_KEY != ''` 改成
+**只留前者**。job 级 `env` 里也删掉了 `DSH_EDGE_API_KEY`。
+
+### 八、测试
+
+- `tests/unit/web-search-tavily-bocha.test.ts` —— **重写**（旧的是三级链语义）：
+  档位解析 6 条 + provider 15 条 + **宿主规则复刻 4 条** + `apply()` 5 条 = **30 条**。
+  其中「宿主规则复刻」那组把宿主 `resolveProvider` / `selectedProviderReady` 的
+  逻辑抄成最小复刻，断言「两档都关 ⇒ `searchReady()` 答 false ⇒ 工具被摘掉」，
+  以及两条**防回归**：① `available()` 为 false ⇒ 选中失败 ⇒ 工具**反而可见**；
+  ② provider 没注册 ⇒ 同样反而可见。
+- `tests/unit/web-search-tool-gate.test.ts` —— **新增**（12 条）：edge 侧闸门
+  （`isWebSearchToolName` 的形状、`filterToolsField` 摘掉 `web_search` 但放过
+  `web_fetch`、Layer 3 拒、realm 未知也拒、开关开了但没 key 仍然关）。
+- `tests/unit/realm-skill-bridge.test.ts` —— **5 条旧测试的夹具改了**：那个文件
+  测的是 **realm 语义**，而 `web_search` 在 §7.221 之后多了一道「搜索档位可用性」
+  闸门 ⇒ 本文件把搜索档位**打开**（`loadEdgeConfig(true, [临时文件])` 钉住模块级
+  缓存），保证它测的仍然是 realm 语义；闸门本身在上面的新文件里单独测。
+- 全量：**86 个测试文件 / 1677 条通过 / 2 条跳过**（`vitest run tests/unit`）。
+
+### 九、这一节**没有**做的事
+
+- **没有**发版：版本仍是 `0.1.7`，npm 上的 `0.1.7` **不含**本节的任何改动
+  （`0.1.7` 是 §7.220 那一版）。要出货得走下一版。
+- **没有**动 2FA / trusted publisher 那条线（主人明说先不做，等指示）。
+- **没有**在本机装到主人的 `desktop` profile —— 那会动主人的运行环境。
+- **没有**改 `cordis.yml`（仓库的**独立开发 harness**）里宿主
+  `web-search-deepseek` 那一行。理由：① 那是**宿主 row**，不是 edge 的聚合器；
+  ② edge 的聚合器**本来就没**在 `cordis.yml` 里注册（独立模式下 edge 没有自己的
+  搜索链，搜索一直走宿主那一行）⇒ 改它等于改独立开发环境的形态，超出本轮裁决
+  的范围，且会连带改 `tests/unit/dsh-native-tools.test.ts` 的既有断言。
+  ⇒ **但这一处确实还留着「deepseek search」** —— 如果主人要「整个仓库一处不留」，
+  这一行需要单独拍板（独立模式下 edge 将**完全没有**工具层搜索）。
+- **没有**改宿主那一行 `web-search-deepseek: disabled: true` —— 它**必须**继续
+  禁着（理由见第三节第 4 条）。
+- **没有**把 `secrets.deepseekApiKey` 槽位删掉 —— 它还服务 headless / CLI 的
+  DELEGATE（`scripts/deploy-profile.sh` 会把它 export 成 `DEEPSEEK_API_KEY`
+  给宿主进程）。
+
+### 十、**没取到的证据**与遗留事实
+
+1. **没有实机验证「宿主按模型步把 `web_search` 摘掉」这条链路**—— 本轮的验证是
+   **源码级**的（宿主 `dsh-tool-web/src/search.ts` 的 `when` 谓词 + 宿主
+   `dsh-web/src/index.ts` 的 `selectedProviderReady`）＋**单测里对宿主规则的最小
+   复刻**。真实宿主里跑一轮「两档都关 ⇒ 工具不可见」需要装一个带 edge 的 profile
+   并起真模型，**本节没做**。
+2. **宿主这一版没有任何对话路线带服务端原生搜索**（第三节第 2 条）⇒ 「跟随所配置的
+   云端模型」在**当前宿主版本**上等价于「没有工具层搜索」。主人当前路由
+   `qwen-token-plan-cn` 属于这一类。**这一点必须让主人知道**：默认配置下 edge
+   不再有网页搜索；要恢复，开 Tavily 或博查任一档并配 key（§7.182 起两档默认关）。
+3. **`scripts/e2e-ops-log-coverage.sh` 的 `news` 用例**有一条软断言
+   「tool allow tool=web_search」（找不到只 warn 不 fail）—— §7.221 之后那行在
+   「两档都关」的 CI runner 上**必然不出现**（工具根本没声明给模型）。
+   硬断言（preflight category=CLOUD、cloud-llm 实际被调通、resultLen≥1、
+   tool result ≥1）不受影响，但 `tool result` 那条**依赖模型至少调一个工具** ——
+   模型改调 `web_fetch` 或 `bash` 都行，可行；但这属于「要看真实 CI 跑一次」的
+   事，本节**没有**实跑（需要真 `DEEPSEEK_API_KEY`）。

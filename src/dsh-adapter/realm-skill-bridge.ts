@@ -37,7 +37,7 @@ import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
 import { Service } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
-import { edgeHome, loadEdgeConfig } from './edge-config.js'
+import { edgeHome, loadEdgeConfig, resolveWebSearchAvailability } from './edge-config.js'
 import { sessionIdField } from './session-attribution.js'
 
 export const name = 'realm-skill-bridge'
@@ -305,6 +305,26 @@ async function ensureDefaultConfig(configPath: string): Promise<void> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// §7.221: 工具层 web_search 的可用性闸门（edge 侧）
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * §7.221: 判断一个工具名是不是**工具层网页搜索**。
+ *
+ * 宿主 `@deepseek-ai/dsh-tool-web` 注册的工具名就是 `web_search`（见宿主
+ * `dsh-tool-web/src/search.ts` 的 `defineTool({ name: 'web_search' })`）。
+ * 另有一种历史/变体形状是带 provider 后缀的 `web_search:<providerId>`
+ * （宿主 `http-api` 的诊断行 `names.some(n => n.startsWith('web_search:'))`
+ * 就是按这个前缀写的）⇒ 一并认。
+ *
+ * ⚠️ **只认 `web_search`，不认 `web_fetch`**：`web_fetch` 是「按 URL 取正文」，
+ * 与搜索档位无关（它的 provider 是宿主自带的 `http`），不受本闸门影响。
+ */
+export function isWebSearchToolName(name: string): boolean {
+  return name === 'web_search' || name.startsWith('web_search:')
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Service
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -412,6 +432,35 @@ export class RealmSkillBridgeService extends Service {
    *  constraint is configured (tool is unconstrained). */
   toolRealm(name: string): Set<RealmTag> | undefined {
     return this.toolRealms.get(name)
+  }
+
+  /**
+   * §7.221: 工具层 `web_search` 当前**是否可用** —— 判据 = Tavily / 博查
+   * 两档任一「enable 且配到了 key」（`resolveWebSearchAvailability`）。
+   *
+   * 两档都拿不出 ⇒ 工具层 `web_search` **不提供**，模型走**所配置的云端模型**
+   * 自带的原生搜索（主人的裁决）。
+   *
+   * ⚠️ 这条闸门是**辅助**闸门，主闸门在宿主侧：`dsh-tool-web` 用
+   * `when: ({ modelSelection }) => ctx.web.searchReady(modelSelection.provider)`
+   * 注册 `web_search`，聚合器 `ready()` 答 false 时宿主就把工具从声明与派发
+   * 里摘掉。本闸门补的是宿主 `when` **管不到**的那一面：external
+   * tool-schema face（`getToolSchemasForExternal` 直接投影 registry schema，
+   * 不经过宿主的 `when`）。
+   *
+   * ⚠️ 读的是**非强制**缓存（`loadEdgeConfig()`）：聚合器每次
+   * `available()`/`ready()` 都会 `loadEdgeConfig(true)` 刷新同一个模块级缓存
+   * ⇒ 两边读到的永远是同一份快照 ⇒ 不会出现「工具可见但调不通」的裂缝。
+   *
+   * 读不出来时**放行**（fail-open）：这一层是「少给能力」，读不出配置就
+   * 交给宿主闸门裁决，不自己瞎藏。
+   */
+  webSearchToolAvailable(): boolean {
+    try {
+      return resolveWebSearchAvailability(loadEdgeConfig()).toolAvailable
+    } catch {
+      return true
+    }
   }
 
   // ── Config reload ───────────────────────────────────────────────────────────
@@ -799,6 +848,10 @@ export class RealmSkillBridgeService extends Service {
   ): { tools: unknown[]; changed: boolean; removed: string[] } {
     const kept: unknown[] = []
     const removed: string[] = []
+    // §7.221: 工具层 web_search 的可用性闸门（与 Layer 3 同一判据）。
+    // 两档（Tavily / 博查）都没 enable 时，模型**看不见** `web_search`
+    // ⇒ 它只能走**所配置的云端模型**自带的原生搜索。
+    const webSearchUsable = this.webSearchToolAvailable()
     for (const t of tools) {
       const name = typeof t === 'string'
         ? t
@@ -807,6 +860,12 @@ export class RealmSkillBridgeService extends Service {
           ?? null)
       if (name === null) {
         kept.push(t)
+        continue
+      }
+      // §7.221: web_search 不可用 ⇒ 直接摘掉（不看 realm —— 这是「工具存不
+      // 存在」的问题，不是「哪个 realm 能用」的问题）。
+      if (!webSearchUsable && isWebSearchToolName(name)) {
+        removed.push(name)
         continue
       }
       const toolRealms = this.toolRealm(name)
@@ -905,6 +964,14 @@ export class RealmSkillBridgeService extends Service {
    * is allowed if the agent's realm is in the tool's realm set.
    */
   checkToolRealm(toolName: string, agentRealm: RealmTag | undefined): string | undefined {
+    // §7.221: 工具层 web_search 的**执行期**闸门 —— 两档都没 enable 时直接拒。
+    //
+    // 放在 `agentRealm === undefined` 的 fail-open **之前**：这是「工具存不
+    // 存在」而不是「哪个 realm 能用」—— realm 未知不代表工具可用。
+    if (isWebSearchToolName(toolName) && !this.webSearchToolAvailable()) {
+      return `Tool "${toolName}" is unavailable: no Tavily/博查 search tier is enabled `
+        + '(web search follows the configured cloud model\'s native search)'
+    }
     if (agentRealm === undefined) return undefined // unknown agent → allow (fail-open for now)
     if (agentRealm === 'hidden') return `Agent realm is 'hidden'; no tools allowed`
     const toolRealms = this.toolRealm(toolName)

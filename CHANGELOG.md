@@ -11,6 +11,28 @@
 
 ## [Unreleased]
 
+### 网页搜索不再走 DeepSeek：跟随你所配置的云端模型（§7.221）
+
+（2026-11-13，§7.221）
+
+edge 自建的搜索链从**三级**（Tavily → 博查 AI → **DeepSeek**）变成**两档**
+（Tavily → 博查 AI）。DeepSeek 那一档（一次带 `web_search_20250305` 服务端工具的
+独立模型调用）整档删除 —— edge 不再自己拿 `DEEPSEEK_API_KEY` 去搜，搜索改跟随
+**你所配置的云端模型**。
+
+- **Tavily / 博查两档仍是 opt-in、默认关**（`webSearch.tavilyEnabled` /
+  `webSearch.bochaEnabled` + 对应的 `secrets.tavilyApiKey` / `bochaApiKey`）。
+- **两档都没 enable 时**：工具层 `web_search` **整个不对模型提供**（模型看不见、
+  也调不到）⇒ 模型只能用它**自己 provider 的原生搜索**。
+  ⚠️ **这意味着默认配置下 edge 不再有网页搜索** —— 宿主这一版的对话轮次没有自动
+  挂服务端原生搜索工具（`qwen-token-plan-cn` 这类第三方路线也没有）⇒
+  **要网页搜索，请开 Tavily 或博查任一档并配上 key**。
+- `secrets.deepseekApiKey` 这个**槽位还在**（不再是搜索凭据）：它现在只服务
+  headless / CLI 部署的 DELEGATE —— 那种宿主没有登录账号，DELEGATE 转发到宿主的
+  DeepSeek provider 需要一把 key。桌面版不需要填。
+- 顺手修掉一个静默 bug：博查结果的**发布日期**原来被丢掉了（字段名写成了
+  `datePublished`，而接口的字段名是 `publishedAt`）。
+
 ## [0.1.7] — 2026-11-13
 
 **这一版让「被严格档拒收的那一轮」在面板上说明白，并补齐历史版本的 tar 包。**
