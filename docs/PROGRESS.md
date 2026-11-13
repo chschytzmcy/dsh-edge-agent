@@ -24716,3 +24716,77 @@ npm run publish:npm          # 构建 + 全部门禁 + dry-run
 
 脚本设计上「**不带 `--yes` 永远不会碰 registry**」（`scripts/publish-npm.mjs`
 的文件头第 5 条）⇒ 本轮**没有**发 npm、**没有**推 tag、**没有**建 GitHub Release。
+
+### 四、构建与验证结果（2026-11-14 实跑）
+
+#### （1）构建 + 32 道门禁 + dry-run —— 全绿，EXIT=0
+
+命令：`npm run publish:npm`（**不带 `--yes`** ⇒ 走安全默认，全程不碰 registry）。
+
+- 构建链：compile → typecheck:client → build:client → build:installable →
+  pack:tarball → stage:npm → verify:build。
+- 门禁 **32 道**全过：`verify:progress-sections OK (118 top-level sections)`、
+  `verify:doc-gate-count OK (32 道)`；readiness 报「版本 **0.1.8**」。
+- `pnpm publish --access public --ignore-scripts --no-git-checks --registry
+  https://registry.npmjs.org --no-provenance --dry-run` ⇒
+  `📦 @dsh-edge/dsh-edge-agent@0.1.8` + `[WARN] Skip publishing … (dry run)`
+  ⇒ **全程未碰 registry**。
+
+#### （2）把「将要发出去的那个包」拆开逐键核验 —— **40 条全绿，EXIT=0**
+
+纪律：registry 上的包可能来自任何一次构建 ⇒ 只有「把那一版拆开逐项核」才是决定性的
+（§7.217 / §7.220 同款）。核验对象 = `dist/.npm-stage`（`publish:npm` 要发给 registry
+的那个目录），做法 = `npm pack` 真打成 tarball → `tar.exe` 解开 → 逐项核
+（探针：`dist/probe/verify-018-pkg.mjs`，gitignored）。
+
+主要结论：
+
+| 面 | 结论 |
+|---|---|
+| 身份 | `version = 0.1.8`、`name = @dsh-edge/dsh-edge-agent`、**179 个文件**（0.1.7 是 242） |
+| §7.222 瘦身 | `lib/` 顶层只剩 **4** 个（`client.js` / `index.js` / `index.d.ts` / `index.d.ts.map`）；20 个 shim 的产物与旧聚合器 `lib/dsh-adapter/index.js` **都不在包里**；活聚合器 `lib/dsh-adapter/dsh-edge-agent.js` 在 |
+| §7.222 悬空导出 | **129 条 `exports` 映射的目标文件全部在包里**，`main` 指向的 `lib/index.js` 也在 ⇒ 删 shim 没留下外部不可达的悬空导出（这条是本轮**新加**的断言） |
+| §7.222 死配置 | 产物**活代码**里没有 `localToolsWritable` / `localToolsAllowlist`；`EdgeAgentConfig` 只剩 `permissionMode`；模板 `agent` 段 = `_comment,permissionMode`、`resources` 段无 `san*` |
+| §7.223 env | `DSH_EDGE_STORAGE_ROOT → storage.root`、`DSH_EDGE_TEE_STORAGE_ROOT → tee.storageRoot`、`DSH_EDGE_TEE_KEY_STORE_PATH → tee.keyStorePath`，三个名字**各出现且仅出现一次**（不重名） |
+| §7.221 搜索档 | 档位事实源 `resolveWebSearchTiers()` 的返回值**恰好**是 `{tavilyEnabled, tavilyKey, bochaEnabled, bochaKey}` 四键、无 deepseek；聚合器活代码里没有 `DEEPSEEK_API_KEY` / `deepseekApiKey` / `DeepSeekSearchProvider`，类名是 `TavilyBochaFallbackProvider` |
+| §7.221 保留项 | `DEEPSEEK_API_KEY → secrets.deepseekApiKey` 槽位**仍在**（§7.221 裁决：只服务 headless/CLI 的 DELEGATE，不再喂 web search） |
+| 打包卫生 | 没有 `config/edge.json`、没有 `scripts/`、清单里没有 `scripts` 段和 `devDependencies`；CHANGELOG（含 0.1.8）/ README / LICENSE / 两个 bundle patch 都在 |
+
+#### （3）核验脚本自己翻了三轮车（诚实记下来）
+
+首跑 40 条里 **3 条 FAIL** ⇒ 取证发现**三处全是注释里的历史叙述**，不是活引用；改口径后
+又连续暴露**脚本自己**的 3 个 bug。逐条记（脚本 `dist/probe/verify-018-pkg.mjs`）：
+
+| # | 首跑报的问题 | 真相 | 修法 |
+|---|---|---|---|
+| 1 | 产物里有 `localToolsWritable` / `localToolsAllowlist` | 命中的是 `edge-config.d.ts` 里 §7.222「已删除」的**说明注释**；`edge-config.js` 活代码 0 命中 | 检查改成**剥注释后再查**（JS/TS 注释剥离器）；模板改成按 **JSON 键结构**遍历（151 个键） |
+| 2 | 搜索聚合器里有 `DEEPSEEK_API_KEY` | 命中的是 `web-search-tavily-bocha.js` 第 8 行 §7.221 的**历史叙述注释** | 同上（剥注释） |
+| 3 | （脚本 bug）注释剥离器把**字符串内容**也涂成空格 | ⇒ `env: 'DSH_EDGE_STORAGE_ROOT'` 被抹掉，6 条 env 断言**全假失败** | 剥离器改成保留字符串字面量；并加**反证**：注释里的标识符必须消失、字符串里的必须保留 |
+| 4 | （脚本 bug）字段路径正则把 `!` 放错段位 | TS 编译后 `cfg.storage!.root` 的 `!` 被擦掉 ⇒ 正则不匹配 | 字段正则改成每段之间允许可选 `!` |
+| 5 | （脚本 bug）「不含 deepseek 子串」断言站不住 | 宿主包名本身就叫 `@deepseek-ai/dsh-web` | 改成**档位结构**断言（见上表） |
+| 6 | （脚本 bug）返回键正则只认 `,`/`;` | 漏掉 `tavilyEnabled:` 这种**冒号**结尾的行 | 正则改成 `[:,]` |
+
+⇒ 教训落地：「**当核验脚本说产物有问题时，先怀疑脚本自己**」这条纪律本轮真的救了三轮
+—— 首跑的 FAIL **全部**是脚本的锅，**产物本身零缺陷**。
+
+#### （4）顺带查清的三件事（都不是缺陷）
+
+- `secrets.deepseekApiKey` 槽位**还在**，而且是**活的**：真消费者是
+  `scripts/deploy-profile.sh`（第 216 行读 `edge.json` 的该槽并 export 成
+  `DEEPSEEK_API_KEY` 给宿主进程）⇒ §7.221 的「槽位保留」决策成立；它**不是** web search
+  的凭据（搜索侧已从**结构**上确认与 deepseek 无关）。
+- `DSH_EDGE_API_KEY` 全仓只剩 `.github/workflows/ci.yml` 两处 —— 那是 job 里**现场生成**的
+  随机门锁令牌（§7.221 的决定），不是 Actions secret。
+- `DSH_EDGE_PERSONA` 只剩 `cordis.patch.yml` 的宿主 `system-prompt` 行 —— 那是 persona 的
+  **真正来源**，不是 §7.222 删掉的 `agent.persona` 字段。
+
+#### （5）这一轮**没做**的事
+
+- **没有发布**：npm 上仍是 `latest = 0.1.7`（**0.1.8 未发**）。主人这次说的是「构建新版本
+  **验证**下」⇒ 走安全默认。**要真发得主人明说**：`npm run publish:npm -- --yes`
+  （真发 + 打 tag 还要 `--yes --tag`）。
+- **没有**推 tag、**没有**建 GitHub Release。
+- **没有**动 5 个纯 stub 插件（主人裁定先留着）；**没有**动 edge 自己的 `sessions.ts`
+  （去留仍待主人拍板）。
+- **没有**核「registry 上那一版」的逐键内容 —— 那一版是 0.1.7，已在 §7.220 核过；
+  本轮核的是**将要发出去的这一份**（暂存区），registry 上此刻还没有它。
