@@ -256,9 +256,15 @@ export interface EdgeResourcesConfig {
   maxSessions?: number
   maxBodyBytes?: number
   sessionIdleMs?: number
-  sanMaxSessions?: number
-  sanSweepMs?: number
-  sanTtlMs?: number
+  /**
+   * §7.222 (2026-11-14): `sanMaxSessions` / `sanSweepMs` / `sanTtlMs` 已删除。
+   *
+   * 它们是 `privacy.*` 同名字段的**重复副本** —— sanitizer 插件读的是
+   * `privacy.*`（见 `sanitizer-pipeline.ts`），`resources.*` 里的那份**从来
+   * 没有被任何代码读过**（env 桥 `edge-config-env.mjs` 导出的也是
+   * `privacy.san*`）。留着它等于给 operator 两个名字、同一个含义的开关，
+   * 改错一个不生效 —— 那正是「多余的配置」。生效口径唯一：`privacy.*`。
+   */
 }
 
 export interface EdgeAuditConfig {
@@ -394,10 +400,23 @@ export function resolveWebSearchAvailability(cfg: EdgeConfig): EdgeWebSearchAvai
   return { tavily, bocha, toolAvailable: tavily || bocha }
 }
 
+/**
+ * §7.222 (2026-11-14): `persona` / `localToolsWritable` / `localToolsAllowlist`
+ * 已删除 —— 它们**声明了、进了模板，却没有任何消费者**。
+ *
+ * - `persona`：真正的 persona 来自**宿主 `system-prompt` 行**
+ *   （`cordis.patch.yml` 的 `DSH_EDGE_PERSONA` / `presets/agent-preset-edge.json`
+ *   的 `persona` 字段），不是 `edge.json` 的 `agent.persona`。edge.json 里写
+ *   它**完全没有效果** —— 一个对 operator 说的假开关。
+ * - `localToolsWritable` / `localToolsAllowlist`：全仓无任何读取点。工具权限
+ *   由宿主的 approval / sandbox 配置决定（见 `cordis.patch.yml` 的
+ *   `approval.policy` / `sandbox.mode`），edge.json 里这两个字段是摆设。
+ *
+ * ⇒ 本段现在只剩 `permissionMode`：它经 `scripts/edge-config-env.mjs` 导成
+ *   `DSH_EDGE_PERMISSION_MODE`，再被 patch 行读成宿主的 `approval.policy` /
+ *   `sandbox.mode` ⇒ **活的**。
+ */
 export interface EdgeAgentConfig {
-  persona?: string
-  localToolsWritable?: boolean
-  localToolsAllowlist?: string
   permissionMode?: string
 }
 
@@ -535,9 +554,8 @@ export const DEFAULT_EDGE_CONFIG: EdgeConfig = {
     maxSessions: 100,
     maxBodyBytes: 1048576,
     sessionIdleMs: 1800000,
-    sanMaxSessions: 1000,
-    sanSweepMs: 60000,
-    sanTtlMs: 900000,
+    // §7.222: `san*` 已移出本段（唯一生效口径是 `privacy.san*`）。
+    // 本段现在只管 http-api 的三个资源闸门。
   },
   audit: {
     minLevel: 'info',
@@ -557,9 +575,10 @@ export const DEFAULT_EDGE_CONFIG: EdgeConfig = {
   // （DeepSeek 那一档已去掉，edge 不再自建 DeepSeek 搜索、不再读
   // `DEEPSEEK_API_KEY`）。要工具层搜索就把对应开关写 true 并配上 key。
   webSearch: { tavilyEnabled: false, bochaEnabled: false },
+  // §7.222: `agent` 段现在只剩 `permissionMode`（→ `DSH_EDGE_PERMISSION_MODE`
+  // → 宿主的 approval.policy / sandbox.mode）。persona / localTools*
+  // 是「声明了但没人读」的死字段，已删（理由见 EdgeAgentConfig 的注释）。
   agent: {
-    persona: 'You are edge-agent, a privacy-first AI assistant running on the user\'s device.',
-    localToolsWritable: true,
     permissionMode: 'workspace-write',
   },
 }

@@ -290,7 +290,7 @@ rsync -a --delete lib/ "$N/lib/"           # ③
    - 按依赖顺序实例化所有插件
    - 启动 agent loop
 
-3. **dsh-edge-agent 主插件**（`src/dsh-adapter/index.ts`）：
+3. **dsh-edge-agent 主插件**（`src/dsh-adapter/dsh-edge-agent.ts`，包根 `src/index.ts` re-export 它）：
    - 检查 TEE 可用性
    - 加载隐私策略
    - 注册 LLM 适配器
@@ -1816,7 +1816,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
 - `src/dsh-adapter/contract.ts` — 上游版本合约
 - `src/dsh-adapter/types.ts` — 上游类型 re-export
 - `src/dsh-adapter/invariant.ts` — 不变量 companion
-- `src/dsh-adapter/index.ts` — 主插件
+- `src/dsh-adapter/dsh-edge-agent.ts` — 主插件（宿主半边引导）；`src/index.ts` — 包根入口，re-export 它
 - `src/dsh-adapter/plugin.ts` — 主插件运行时
 - `scripts/verify-adapter-boundary.ts` — 边界检查
 - `scripts/verify-upstream-contract.ts` — 版本线校验

@@ -1,7 +1,8 @@
 /**
  * Plugin-spec battery: every src/dsh-adapter/*.ts plugin file must follow
  * the canonical `name` + `inject` + `Config` + `apply` shape, and the
- * main `src/dsh-adapter/index.ts` aggregator must mount them all.
+ * package root (`src/index.ts` → the aggregator `src/dsh-adapter/dsh-edge-agent.ts`)
+ * must mount them all.
  *
  * Verified properties:
  *   1. `name` is non-empty kebab-case (matches its filename).
@@ -132,7 +133,7 @@ for (const file of sources) {
   // Imported by prompt-guard.ts / intent-router.ts; never inserted by a cordis
   // patch row, not in package.json exports.
   if (base === 'llm-drain-deadline') continue
-  if (base === 'plugin' || base === 'index') continue
+  if (base === 'plugin') continue
   const content = readFileSync(file, 'utf8')
 
   // name
@@ -206,8 +207,19 @@ for (const [key, value] of Object.entries(exports)) {
   const v = value as Record<string, string> | string
   const importPath = typeof v === 'string' ? v : v.import
   if (!importPath) continue
-  // source maps to ./src/dsh-adapter/<x>.ts; lib maps to ./lib/types/dsh-adapter/<x>.js
-  const srcCandidate = join(root, 'src', 'dsh-adapter', `${basename(key) === '.' ? 'index' : key.replace(/^\.\//u, '')}.ts`)
+  // Subpath exports map to ./src/dsh-adapter/<x>.ts; the root export ('.') maps
+  // to ./src/index.ts — that is the flat package root the host mounts
+  // (package.json#main → lib/index.js).
+  //
+  // §7.222: the root used to be checked against `src/dsh-adapter/index.ts`.
+  // That file was a STALE COPY of the aggregator — superseded by
+  // `src/dsh-adapter/dsh-edge-agent.ts` (same plugin name, but a DIFFERENT
+  // `inject`: `[]` vs `['auditLog']`) and referenced by nothing but a smoke
+  // script that had already rotted (it imported plugins deleted long ago).
+  // The live aggregator is `dsh-edge-agent.ts`; the root source is `src/index.ts`.
+  const srcCandidate = basename(key) === '.'
+    ? join(root, 'src', 'index.ts')
+    : join(root, 'src', 'dsh-adapter', `${key.replace(/^\.\//u, '')}.ts`)
   if (!existsSync(srcCandidate)) {
     exportViolations.push(`export '${key}' → no source file at ${relative(root, srcCandidate)}`)
   }

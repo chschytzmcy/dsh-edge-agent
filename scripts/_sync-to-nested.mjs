@@ -65,7 +65,7 @@ const interesting = [
   'cordis.desktop-safe.patch.yml',
   'lib/client.js',
   'lib/index.js',
-  'lib/dsh-adapter/index.js',
+  'lib/dsh-adapter/dsh-edge-agent.js',
   'lib/dsh-adapter/edge-context-view.js',
 ]
 console.log()

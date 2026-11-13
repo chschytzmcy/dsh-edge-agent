@@ -74,7 +74,7 @@
  * plugin id (`profiles/dsh-edge-agent/cordis.patch.yml`) so its apply()
  * runs at boot — before audit-log / http-api / etc. The disabled
  * aggregator `dsh-edge-agent` (see cordis.patch.yml:26-29) means the
- * internal `src/dsh-adapter/index.ts:apply()` is never invoked, so we
+ * internal `src/dsh-adapter/dsh-edge-agent.ts:apply()` is never invoked, so we
  * can't rely on it to install the exporter. Each plugin id in the patch
  * is loaded independently via its `name:` field.
  *
@@ -365,8 +365,8 @@ export class FileLoggerServiceImpl extends Service {
  * Format a Cordis Message as one physical line:
  *   `<iso-ts> <LEVEL> [<plugin-name>] <message>\n`
  *
- * Mirrors the format the previous stdout exporter used
- * (`src/dsh-adapter/index.ts:80-88` before Step 1.5), so operator grep
+ * Mirrors the format the previous stdout exporter used (the host-half
+ * bootstrap's `apply()` before Step 1.5), so operator grep
  * habits (`grep '\[http-api\]' ~/.dsh-edge-agent/log/...`) carry over.
  *
  * Timestamp policy (§7.30): local-time ISO 8601 with numeric offset
@@ -498,7 +498,7 @@ function firstNonEmpty(...values: Array<string | undefined>): string | undefined
 
 /**
  * Install the file exporter on a fresh Cordis context. Called once at
- * the very top of `apply()` (`src/dsh-adapter/index.ts`) before any
+ * the very top of `apply()` (`src/dsh-adapter/dsh-edge-agent.ts`) before any
  * other plugin can call `ctx.logger.*`.
  *
  * Gating:

@@ -44,7 +44,11 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import type { Config } from './index.js'
+// §7.222: 这个类型导入原先指向 `src/dsh-adapter/index.ts` —— 那是被
+// `dsh-edge-agent.ts` 取代的过期聚合器副本（同名插件，但 `inject` 是 `[]`
+// 而活的那个是 `['auditLog']`）。活聚合器是 `dsh-edge-agent.ts`，两者的
+// `Config` 形状完全相同 ⇒ 改指活的那个，运行时行为不变。
+import type { Config } from './dsh-edge-agent.js'
 
 export async function apply(ctx: Context, config: Config): Promise<() => Promise<void>> {
   // The main plugin does not own state — it only:

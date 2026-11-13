@@ -138,7 +138,9 @@ grep -A4 '"client"' dist/installable/dsh-edge-agent-desktop-safe/package.json
 # 期望：仅 entry 字段，不要有 inject / platform
 
 # 4. main entry 必须 re-export edge-context-view
-grep "edge-context-view" src/dsh-adapter/index.ts lib/types/dsh-adapter/index.js
+#    §7.222: main entry 的源码是 src/index.ts（→ lib/index.js）——
+#    旧的 src/dsh-adapter/index.ts 是被 dsh-edge-agent.ts 取代的过期副本，已删。
+grep "edge-context-view" src/index.ts lib/index.js
 # 期望看到 export * from './edge-context-view.js'
 
 # 5. verify installable

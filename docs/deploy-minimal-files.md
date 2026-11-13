@@ -41,7 +41,7 @@ repo 根 `package.json` 的**逐字节镜像**(install.sh §2.8 diff-then-copy;�
 - **disable(撤编)**:剔除 edge 场景不用的上游/宿主插件(云直连、dsh 原生模块)。**当前数量**:full 变体顶层 **30 行**;desktop-safe 变体 **1 行**。另有 11 行「裸行」只声明 `- id:` 不带 config/disable —— 那是**重新启用/重新声明**宿主行(如 `tool-bash`、`goal`),不是覆盖。
 
 三条铁律(实证):
-1. **patch 说了算**:bundle 能力在 lib 里写了也不执行,上不上岗、按什么参数,全看这份派工单——聚合 id `dsh-edge-agent` 被 disable(`src/dsh-adapter/index.ts:apply()` 不执行),新增聚合级 wiring 必须另起独立插件 id。
+1. **patch 说了算**:bundle 能力在 lib 里写了也不执行,上不上岗、按什么参数,全看这份派工单——聚合 id `dsh-edge-agent` 被 disable(`src/dsh-adapter/dsh-edge-agent.ts:apply()` 不执行),新增聚合级 wiring 必须另起独立插件 id。
 2. **系统级、启动时**:一次组装管整个进程生命周期;与会话级的 ⑤ `agent.cordis.yml` 正交,别混。
 3. **inject 只能加不能减**(§7.59 源码实证):代码里的 `export const inject` 会被 loader 追加合并进插件依赖,yml 无法撤销。所以"最小部署形态"绕不开包的硬依赖闭包(此结论由已退役的极简 rig 推导得出,§7.170 保留结论)——而且**被点名的两个能力插件还不是执法者**:prompt-guard / privacy-policy 是纯 service,自己不挂事件 hook;真正挂在 `agent/pre-step` / `llm/stream` / `agent/request` 上、聊天时挨个调用它们的唯一执法者是 **input-guard**。它的传递依赖闭包 = **最小执法集,共 7 插件**:
 

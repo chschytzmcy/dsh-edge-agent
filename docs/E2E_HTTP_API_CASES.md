@@ -4,7 +4,11 @@
 >
 > **§7.145-D（2026-10-29）整理**: 原 `docs/E2E_TUI_CASES.md` 已删除 —— 它的正文只有一句
 > 「详见本文档」+ 一张比本文档 §3 更小的历史脚本表,零独有信息。TUI 路径的历史脚本
-> （`e2e-tui-live.sh` / `m1`~`m6-smoke` / `smoke.ts` 等）全部在下面 §3 这张表里。
+> （`e2e-tui-live.sh` / `m1`~`m6-smoke` 等）全部在下面 §3 这张表里。
+>
+> **§7.222（2026-11-14）**: `scripts/smoke.ts` 也已删除（它 import 了早就删掉的
+> `local-tools.js` / `web-search.js`，跑起来必 ERR_MODULE_NOT_FOUND；它想覆盖的
+> 「插件导出形状」已由 `verify:plugin-spec` 门禁覆盖）。它原本也不在下面 §3 那张表里。
 >
 > **当前唯一活跃 E2E** = `scripts/e2e-ops-log-coverage.sh`(3 重点用例 mibao/news/local-ip,21 节点 ops log 全链路覆盖)。
 >

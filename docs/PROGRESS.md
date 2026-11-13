@@ -24238,3 +24238,214 @@ tool=web_search」软断言在「两档都关」时必然不出现）**在 CI �
 
 ⇒ 本节**没有**做的事：没有在 GitHub 上删除任何 secret（**本来就没有**）；没有
 新建任何 secret；没有动 `NPM_TOKEN`（`publish.yml` 用的那个，与本轮无关）。
+
+---
+
+## §7.222 第一阶段收官：删掉「声明了却没人用」的配置与代码（2026-11-14）
+
+> 主人指示：「本项目第一阶段结束，基于这个能力范围，把多余的配置可以去掉了，简化优化整个代码」。
+
+### 一、先把「第一阶段」这个口径对齐（这一步不能跳）
+
+仓库里有**两套**「阶段」语言，口径不一样，直接影响「哪些算多余」：
+
+| 出处 | 口径 |
+|---|---|
+| `docs/architecture.md` §1.6 渐进式实施路线图 | **Phase 1-4 ✅ 已完成**（基础功能 / 基础安全加固 / 关键信息脱敏 / 隐私策略引擎）；**Phase 5 工具与多模态 10%**、**Phase 6 威胁检测 10%**、**Phase 7 TEE 可信计算 0% ⏸**、**Phase 8 零信任通信 0% ⏸**（2026-08-26 决策：待合规需求出现时再启动） |
+| `docs/privacy-policy.md` A.1 | 「第一阶段：入口安检」—— 那是**安检层内部**的分层，不是项目阶段 |
+
+⇒ 本轮按**仓库自述的 Phase 1-4 已交付能力集**执行「去多余」。这不是猜：§1.6.1
+的「已完成」表就是当前代码实际在跑的东西，而 Phase 5-8 的未实施项在 §1.6.2 里
+明写「⏸ 后续增强功能」。
+
+### 二、判定「多余」的**办法**（不是凭感觉删）
+
+写了一个盘点脚本（`dist/probe/inventory-fields.mjs`）：
+
+1. 解析 `src/dsh-adapter/edge-config.ts` 里**每一个** `export interface` 的字段名
+   （含内联对象类型的字段）；
+2. 在**真正的消费面**里逐个搜这个字段名：`src/**/*.ts` + `scripts/**`（运行时
+   与工具链）—— **第一版把 `lib/`、`.npm-cache/`、`.idea/` 也算进去了，产出
+   一堆假阳性，第二版收窄后才准**（教训见第十节）；
+3. 零命中 ⇒ 死字段候选 ⇒ 再用 `grep` 人工复核一遍。
+
+**同时**盘点了「每个 adapter 插件的实现量 + 它被哪些 patch 文件注册」
+（`dist/probe/inventory-modules.mjs`），用来回答「这个插件到底是不是交付物
+的一部分」。
+
+### 三、删掉的**死配置**（6 个字段，零行为变化）
+
+| 字段 | 为什么是死的 |
+|---|---|
+| `agent.persona` | 真正的 persona 来自**宿主 `system-prompt` 行**（`cordis.patch.yml` 的 `DSH_EDGE_PERSONA`、`presets/agent-preset-edge.json` 的 `persona`），**不是** `edge.json`。在 `edge.json` 里写它**完全没有效果** —— 一个对 operator 说的假开关 |
+| `agent.localToolsWritable` | 全仓零读取点 |
+| `agent.localToolsAllowlist` | 全仓零读取点（模板里写着 `"/tmp"`，读的人以为它生效） |
+| `resources.sanMaxSessions` | 是 `privacy.sanMaxSessions` 的**重复副本**；实际生效的是 `privacy.*`（`sanitizer-pipeline.ts` 读的就是它），`resources.*` 那份**从没有任何代码读过** |
+| `resources.sanSweepMs` | 同上 |
+| `resources.sanTtlMs` | 同上 |
+
+**`agent.permissionMode` 保留** —— 它是活的：经 `scripts/edge-config-env.mjs` 导成
+`DSH_EDGE_PERMISSION_MODE`，再被 `cordis.patch.yml` / `cordis.yml` 读成宿主的
+`approval.policy` / `sandbox.mode`。
+
+**「删 `resources.san*` 不改行为」是可证的**：那三个值（900000 / 1000 / 60000）
+与 `sanitizer-pipeline.ts` 自己 Schema 的默认值（`sessionTtlMs` 900_000 /
+`maxSessions` 1000 / `sweepIntervalMs` 60_000）**逐一相同** ⇒ 即便有人误配过，
+生效值也不变。
+
+改动落在三个文件：`src/dsh-adapter/edge-config.ts`（类型 + 默认值 + 注释）、
+`config/edge.example.json`（模板）、`scripts/edge-config-env.mjs`（**不用改** ——
+它读的一直是 `privacy.san*`）。
+
+### 四、删掉的**死代码**（22 个文件）
+
+**（一）`src/` 顶层 20 个 3 行 shim** —— 形如：
+
+```ts
+// @module dsh-edge-agent/audit-log
+export * from './dsh-adapter/audit-log.js'
+```
+
+**为什么它们是死的（证据在 dev-note 里）**：`docs/dev-notes/cordis-rc021-patch-loader.md`
+的 **Bug 2** 实测过 —— `name: '@scope/pkg/lib/types/dsh-adapter/edge-context-view.js'`
+会让 Node 抛 `ERR_PACKAGE_PATH_NOT_EXPORTED`，因为 `package.json#exports` 没暴露
+那条内嵌路径。同一套机制适用于 `lib/attestation.js`：**`package.json#exports` 里
+没有任何一条指向 `lib/<name>.js`**（全部指向 `./lib/dsh-adapter/<x>.js`）⇒ 这 20 个
+产物**从外部根本解析不到**。而包内唯一用得着它们的地方是 `src/index.ts`，它
+**直接** `export * from './dsh-adapter/*.js'` ⇒ shim 从来没被谁走过。
+
+**（二）`src/dsh-adapter/index.ts`（旧聚合器副本，125 行）** —— 它和
+`src/dsh-adapter/dsh-edge-agent.ts` **同名插件**（都 `name = 'dsh-edge-agent'`），
+但 `inject` 不一样（旧的是 `[]`，活的是 `['auditLog']`）。`dsh-edge-agent.ts` 的
+文件头把这段历史写清楚了：「flat-layout 那次移动把这个插件从
+`src/dsh-adapter/index.ts` 提到了包根，又因为 `verify-adapter-boundary` 把它挪
+回来了」。⇒ 活的是 `dsh-edge-agent.ts`，旧副本只剩一个引用者。
+
+**（三）`scripts/smoke.ts`（已损坏）** —— 它的 PLUGINS 列表里还写着
+`local-tools` 与 `web-search`，**这两个插件的文件早就删了** ⇒ 一跑必然
+`ERR_MODULE_NOT_FOUND`（`.github/workflows/ci.yml` 早就把这件事写进注释了）。
+而且它声称覆盖的「插件导出形状」检查，`verify:plugin-spec` 门禁**已经覆盖**
+（逐个校验 `name` / `inject` / `Config` / `apply`），`package.json` 里也**没有**
+`smoke` 这个 script（它文件头写的 `pnpm run smoke` 从来不存在）。
+
+**连带的三处修正**（不改行为，但不改就会说谎）：
+
+- `src/dsh-adapter/plugin.ts` 的 `import type { Config } from './index.js'` —— 改指
+  `./dsh-edge-agent.js`（两者 `Config` 形状完全相同 ⇒ 编译产物等价）。
+- `scripts/verify-plugin-spec.ts` 的 exports 源文件映射 —— `.` 这一条原先映射到
+  `src/dsh-adapter/index.ts`，现在映射到**真正的包根源码** `src/index.ts`
+  （`package.json#main` → `lib/index.js`，宿主挂载的就是它）。
+- `scripts/_sync-to-nested.mjs` 的「synced files」报表列 —— `lib/dsh-adapter/index.js`
+  → `lib/dsh-adapter/dsh-edge-agent.js`。
+
+### 五、可证的**瘦身幅度**（同口径实测，不是估算）
+
+把 npm 上**已发布**的 `0.1.7` 包用 npm 自己的 packer 列出清单，和本轮构建产出的
+npm 暂存区逐项对比（`dist/probe/compare-pkg.mjs`）：
+
+| | 总文件 | `lib/` | `lib/` 顶层 | `lib/dsh-adapter/` |
+|---|---|---|---|---|
+| 已发布 0.1.7 | 242 | 232 | **64** | 168 |
+| 本轮构建 | **179** | **169** | **4** | 165 |
+| 差 | **−63** | **−63** | −60 | −3 |
+
+差的 63 个正好是：20 个 shim × 3 个产物（`.js` + `.d.ts` + `.d.ts.map`）= 60，
+加旧聚合器的 `lib/dsh-adapter/index.{js,d.ts,d.ts.map}` = 3。**分毫不差**。
+
+⇒ 发布包里的 `lib/` 顶层从 64 个文件降到 **4 个**（`index.js` / `index.d.ts` /
+`index.d.ts.map` / `client.js`）。
+
+### 六、文档口径同步（§7.215 纪律：顺手改掉会读成「现在还成立」的陈述）
+
+| 文件 | 改了什么 |
+|---|---|
+| `docs/architecture.md` | 「主插件（`src/dsh-adapter/index.ts`）」→「`src/dsh-adapter/dsh-edge-agent.ts`，包根 `src/index.ts` re-export 它」；文件清单里那一行同步改 |
+| `docs/dev-notes/cordis-rc021-patch-loader.md` | checklist 第 4 条的 grep 路径改为 `src/index.ts lib/index.js`（并注明旧文件已删）；Bug 2 的历史记述保留原样 |
+| `docs/deploy-minimal-files.md` | 「聚合 id 被 disable（`src/dsh-adapter/index.ts:apply()` 不执行）」→ 指向 `dsh-edge-agent.ts` |
+| `docs/E2E_HTTP_API_CASES.md` | §7.145-D 那段把 `smoke.ts` 列进了「§3 那张表」—— 它**从来就不在那张表里**，且本轮已删 ⇒ 改为如实陈述并记下删除原因 |
+| `src/dsh-adapter/file-logger.ts` | 三处指向已删文件路径的注释（`index.ts:apply()`、`index.ts:80-88`）改指活文件 / 改成不依赖已删路径的表述 |
+
+**没改**：`docs/architecture.md` 里 2026-08-21 那份「工具复用变更总结」的「修改的
+文件」清单 —— 那是**历史记录**，记的是当时删了什么，不是现状。
+
+### 七、验证
+
+- **编译**：`tsc -p tsconfig.json` 通过（删 `index.ts` 后第一次编译红了 —— 是
+  `plugin.ts` 的类型导入还指着它 ⇒ 改指活聚合器后绿）。
+- **全量单测**：**86 个测试文件 / 1677 条通过 / 2 条跳过** —— 与本轮改动前
+  **逐条一致**（零回归）。`tests/unit/layer1-stubs-and-edge-config.test.ts` 里
+  那批 stub 断言**仍然全绿**（本轮**没有**动那些插件，见第十一节）。
+- **lint**：`eslint src tests/unit scripts` ⇒ **0 error / 60 warning**（与改动前一致）。
+- **全链门禁**：`npm run build`（compile → typecheck:client → build:client →
+  build:installable → pack:tarball → stage:npm → verify:build，共 32 道）⇒
+  **EXIT=0**。⚠️ 这一条是**追加本节之后**复跑的结果：第一次跑的时候前 27 道全绿，
+  在第 28 道 `verify:progress-sections` 红了 —— 原因只有一个：**本节当时还没写进
+  `docs/PROGRESS.md`**，而 dev-note 里已经引用了 §7.222 ⇒ 门禁正确地抓住了
+  「引用了一个不存在的章节」。本节落盘后复跑全绿。
+
+### 八、这一节**没有**做的事
+
+- **没有**删那 5 个纯 stub 插件（`attestation` / `ohttp-gateway` / `secure-bridge` /
+  `plugin-host` / `voice-input`）—— 它们对应 Phase 7/8（0% ⏸）与 Phase 5 的 10%，
+  属于**产品语义范围**（删不删 = 交付物里还包不包含「未来的扩展点」），**已交
+  主人拍板**（第十一节）。
+- **没有**删 edge 自己的 `sessions.ts`（171 行，真实实现）—— 它与宿主
+  `dsh-session` **同名服务**（`sessions`），只在开发 harness `cordis.yml` 里注册；
+  出厂 profile 不注册它 ⇒ 线上无影响。同样已交主人拍板。
+- **没有**发版：版本仍是 `0.1.7`，npm 上的 `0.1.7` **不含**本节任何改动。
+- **没有**动 2FA / trusted publisher 那条线（主人明说先不做，等指示）。
+- **没有**在本机装到主人的 `desktop` profile —— 那会动主人的运行环境。
+- **没有**改 `cordis.yml` 里宿主 `web-search-deepseek` 那一行（§7.221 已记为待拍板项）。
+- **没有**删 `secrets.deepseekApiKey` 槽位（它还服务 headless / CLI 的 DELEGATE）。
+
+### 九、**没取到的证据**与遗留事实
+
+1. **没有**在本机装包实测「删掉 shim 后宿主仍能挂载」—— 判据是**解析层**的
+   （`exports` 映射 + `ERR_PACKAGE_PATH_NOT_EXPORTED` 的 dev-note 实测记录）＋
+   `verify:package` / `verify:tarball` / `verify:installable` 三道门禁对
+   **exports 指向的文件必须真实存在**的断言。真正的实机证据在 CI 的
+   `web-profile-smoke` job（干净 runner 上装 bundle + 起真宿主 + 确认 http-api
+   拿到 bearer 正常起服）—— **本节尚未确认那次 CI 的结果**。
+2. **没有**验证「`edge.json` 里已经写了 `agent.persona` / `localToolsWritable` 的
+   既有部署」会不会因为字段消失而报错 —— 判据是**加载器对未知字段不做校验**
+   （`JSON.parse` 后按已知键取值，多出来的键被忽略），但**没有**在真机上拿一份
+   带这些字段的 `edge.json` 实跑过。
+3. **盘点脚本本身有两个坑**（都已在第二节记下）：① 第一版把 `lib/`、
+   `.npm-cache/`、`.idea/` 当成消费面 ⇒ 几百条假阳性；② 字段名在多个 interface
+   里重名（`enabled` / `timeoutMs` / `model` …）⇒ 纯按名字搜会**高估**存活率
+   ⇒ 最终结论是**逐条人工复核**出来的，不是脚本自动判定的。
+4. **`agent.permissionMode` 的链路有一处不对称**：它经 `edge-config-env.mjs`
+   导出成 env，但 `edge-config.ts` 自己的 `ENV_OVERRIDES` 表里也有一条
+   `DSH_EDGE_PERMISSION_MODE` ⇒ **两个方向都能设**。这轮**没动**它（它活着），
+   但这个「双向可设」的口径值得主人哪天看一眼。
+
+### 十、本轮的**改动清单**
+
+| 类别 | 文件 |
+|---|---|
+| 删除（22） | `src/` 顶层 20 个 shim + `src/dsh-adapter/index.ts` + `scripts/smoke.ts` |
+| 修改（10） | `src/dsh-adapter/edge-config.ts`、`src/dsh-adapter/plugin.ts`、`src/dsh-adapter/file-logger.ts`、`config/edge.example.json`、`scripts/verify-plugin-spec.ts`、`scripts/_sync-to-nested.mjs`、`docs/architecture.md`、`docs/dev-notes/cordis-rc021-patch-loader.md`、`docs/deploy-minimal-files.md`、`docs/E2E_HTTP_API_CASES.md` |
+| 新增 | `docs/PROGRESS.md` 本节、`CHANGELOG.md` 的 Unreleased 段 |
+
+### 十一、**待主人拍板**的一项（本节没有替主人决定）
+
+> **那 5 个纯 stub 插件（`attestation` / `ohttp-gateway` / `secure-bridge` /
+> `plugin-host` / `voice-input`）删还是留？**
+
+判据已备好（这就是第十一节为什么能写得这么细）：
+
+- 它们的方法体**恒返回空值**：`attestation.verifyToken` 恒 `valid:false`、
+  `ohttp.send` 恒 `{status:200, headers:{}, body:空}`、`plugin-host.list` 恒 `[]`、
+  `voice-input.transcribe` 恒 `''`。
+- 它们**只在开发 harness `cordis.yml` 里注册**，**任何出厂 preset 都不注册**
+  （`presets/edge*.patch.yml`、`cordis.patch.yml`、`cordis.desktop-safe.patch.yml`
+  全都没有）。
+- 仓库里**早就有**一份针对它们的审计（`tests/unit/layer1-stubs-and-edge-config.test.ts`，
+  §7.123）：那批断言是**绊线**（tripwire）——「如果有人真去实现 TEE / OHTTP，这些
+  断言会红，逼迫 README 与 architecture 在**同一次改动**里更新」。
+- ⚠️ **README 现在把它们写成核心特性**（「RFC 9458 OHTTP 零信任」「TEE 远程证明」）
+  ⇒ 无论删还是留，**那几句不实陈述都得改**。
+
+⇒ 三选一：**① 全删**（连带 tripwire 断言 + README/architecture 那几句一起改）；
+**② 保留文件但从 `cordis.yml` 摘掉注册**（代码留作未来扩展点）；**③ 全部保留
+不动**（本节就是最终范围）。

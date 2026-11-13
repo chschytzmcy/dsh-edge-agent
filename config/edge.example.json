@@ -117,13 +117,10 @@
     "sanSweepMs": 60000
   },
   "resources": {
-    "_comment": "Session / Sanitizer / body 限制。",
+    "_comment": "Session / body 限制。§7.222：sanitizer 的三个参数（TTL / 最大会话数 / 清扫间隔）只认 privacy 段那一套，这里不再重复。",
     "maxSessions": 100,
     "maxBodyBytes": 1048576,
-    "sessionIdleMs": 1800000,
-    "sanMaxSessions": 1000,
-    "sanSweepMs": 60000,
-    "sanTtlMs": 900000
+    "sessionIdleMs": 1800000
   },
   "audit": {
     "_comment": "Audit / Ops Log 落盘。root/logRoot 留空 = ~/.dsh-edge-agent/audit 与 ~/.dsh-edge-agent/log。",
@@ -171,10 +168,7 @@
     "bochaEnabled": false
   },
   "agent": {
-    "_comment": "agent persona + 工具权限。",
-    "persona": "You are edge-agent, a privacy-first AI assistant running on the user's device.",
-    "localToolsWritable": true,
-    "localToolsAllowlist": "/tmp",
+    "_comment": "§7.222：只剩权限模式。persona / localToolsWritable / localToolsAllowlist 已删除 —— persona 归宿主 system-prompt 行管，工具权限归宿主 approval / sandbox 管，在这里写**不生效**。",
     "permissionMode": "workspace-write"
   }
 }

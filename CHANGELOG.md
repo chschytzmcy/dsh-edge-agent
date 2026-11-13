@@ -11,6 +11,34 @@
 
 ## [Unreleased]
 
+### 配置瘦身：删掉「写了却不生效」的开关与一批死代码（§7.222）
+
+（2026-11-14，§7.222）
+
+第一阶段收官，按已交付的能力范围清理**声明了却没人读**的配置与代码。
+
+**配置（`config/edge.json`）**
+
+- `agent` 段现在只剩 `permissionMode`。删掉的三个字段**写了也不生效**：
+  - `persona` —— persona 归**宿主 `system-prompt` 行**管（`DSH_EDGE_PERSONA` /
+    preset 的 `persona`），不是 `edge.json`；
+  - `localToolsWritable` / `localToolsAllowlist` —— 工具权限归**宿主的 approval /
+    sandbox** 管，edge.json 里这两个字段从来没人读。
+- `resources` 段不再重复 sanitizer 的三个参数（`sanTtlMs` / `sanMaxSessions` /
+  `sanSweepMs`）—— 那三个**只认 `privacy` 段**（`resources` 那份是重复副本）。
+  ⚠️ 生效值不变：`privacy` 段的值与 sanitizer 插件自身默认值完全一致。
+
+**代码**
+
+- 删掉 `src/` 顶层 20 个 3 行 re-export shim —— 它们编译出的 `lib/<name>.js`
+  **不在 `package.json#exports` 的任何一条里**，从外部根本解析不到。
+- 删掉 `src/dsh-adapter/index.ts`（被 `dsh-edge-agent.ts` 取代的**旧聚合器副本**，
+  两者同名但 `inject` 不同）。
+- 删掉 `scripts/smoke.ts` —— 它 import 了早就删掉的插件文件，一跑必
+  `ERR_MODULE_NOT_FOUND`；它想覆盖的检查已由 `verify:plugin-spec` 门禁覆盖。
+
+**结果**：发布包文件数 **242 → 179**（`lib/` 顶层从 64 个文件降到 4 个）。
+
 ### 网页搜索不再走 DeepSeek：跟随你所配置的云端模型（§7.221）
 
 （2026-11-13，§7.221）
