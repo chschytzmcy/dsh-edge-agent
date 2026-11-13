@@ -1,0 +1,141 @@
+# dsh-edge-agent — 补建 GitHub Release（backfill）
+#
+# ## 为什么需要这个 workflow
+#
+# §7.217（2026-11-13）：tag `v0.1.1` / `v0.1.2` / `v0.1.3` **都存在**，但**都没有
+# GitHub Release**。查 publish.yml 的 run 记录，根因不是「那时候还没做 git 发布面」
+# （§7.201 的 release job 与 `files:` 块在那三个 tag 里**已经在了**），而是
+# **那三次 publish workflow 整个失败了**：
+#
+# | tag | publish run | 结论 |
+# |---|---|---|
+# | v0.1.1 | 43013259012 | failure |
+# | v0.1.2 | 43021623320 | failure |
+# | v0.1.3 | 43149932036 | failure |
+# | v0.1.4 | 43175253552 | success ⇒ Release 建成 |
+#
+# v0.1.3 那次的失败点记在 §7.196 里：「Unable to locate executable file: pnpm」
+# —— `setup-node`（cache: 'pnpm'）排在 `pnpm/action-setup` **前面**，pnpm 还不存在
+# ⇒ 那个步直接失败 ⇒ 后面全 skipped ⇒ release job 从没跑成。
+# v0.1.1 / v0.1.2 同类（同一处顺序问题）。
+#
+# ⇒ 这三个版本**从发布面看是缺一块的**：npm 上有包，git 上有 tag，但没有 tar 包可下。
+#
+# ## 这个 workflow 做什么
+#
+# 手工触发（workflow_dispatch），指定一个 tag，然后：
+#
+#   1. checkout **那个 tag 的源码**（`ref: <tag>`）—— 构建的是**当期源码**，
+#      不是今天的 main；
+#   2. 用与 publish.yml **完全一致**的工具链（pnpm 11.7.0 / node 22.20 /
+#      `pnpm install --frozen-lockfile`）⇒ 依赖由该 tag 自带的 lockfile 锁定；
+#   3. 跑与 publish.yml 的 release job **同一条** build 链
+#      （compile → typecheck:client → build:client → build:installable → pack:tarball）；
+#   4. 过 `verify-tarball` 门禁（**谁发谁验**）与 tag↔version 断言；
+#   5. 建 Release，**逐个点名**挂 safe 与 full 两个 tar 包。
+#
+# ## 它**不做**什么（边界）
+#
+# - **不碰 npm 面**：这个 workflow 里**没有** npm job ⇒ 不会 publish、不会动
+#   registry、不会与 §7.172/§7.202 的「本机先发、CI 跳过」逻辑打架。
+# - **不 push / 不 force-push 任何 tag**：tag 本来就在，源码是 checkout 出来的。
+# - **不挂 DEMO 包**：`dist/*-DEMO.tar.gz` 里带运维的**明文 API key**（§7.182）
+#   ⇒ 附件逐个点名，不用 `dist/*.tar.gz` 通配符（与 publish.yml 同款理由）。
+#
+# ## 为什么在 CI 里建、而不是本机构建后上传
+#
+# tar 包由 `scripts/_pack-core.mjs` 产出（走系统 tar）。本机是 Windows
+# （bsdtar），CI 是 Linux（GNU tar）⇒ gzip 头与权限位会不同 ⇒ **本机构建的包与
+# 同版本在 CI 里产出的包不是字节相同的产物**。补建历史发布面要的是「与当期
+# 发布链同源」，所以在 CI 里建。
+
+name: backfill release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build and publish as a GitHub Release (e.g. v0.1.1)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: backfill release (safe + full tarballs)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      # §7.217: checkout **那个 tag**（不是 main）⇒ 构建的是当期源码。
+      # fetch-depth: 0 让 tag 能被解析到。
+      - name: Checkout the tag
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+
+      # §7.196: pnpm 必须先于 setup-node 装好（setup-node 的 cache: 'pnpm'
+      # 要执行 pnpm --version 定位 store 路径，pnpm 不存在时那一步直接失败）。
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11.7.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22.20'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # 与 publish.yml 的 release job 同一条链（§7.201 定的 canonical 链）。
+      # 不带 stage:npm —— 那个是 npm 面专用的暂存步骤，这里不碰 npm。
+      - name: Build (compile → browser half → installable bundle → tarballs)
+        run: node scripts/run.mjs compile typecheck:client build:client build:installable pack:tarball
+
+      # §7.201: **谁发谁验** —— tarball 在发它的这个 job 里过门禁。
+      # 旧 tag 里没有 scripts/verify-git-release.mjs（§7.201 之后才加），
+      # 所以这里只跑 verify-tarball（内容门禁），附件点名由下面的
+      # action 自己做（fail_on_unmatched_files）。
+      - name: Verify (tarballs)
+        run: node scripts/verify-tarball.mjs
+
+      # 旧 tag 里没有 scripts/verify-tag-version.mjs（§7.201 之后才加），
+      # 而「tag 与 package.json#version 对不上」是**发出去就没人找得到**的那类错
+      # ⇒ 这里用等价的内联断言补上（输出用英文，避免非 ASCII 在 shell 里被改写）。
+      - name: Assert the tag matches package.json#version
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          node -e "const p=require('./package.json');const t=process.env.TAG;if('v'+p.version!==t){console.error('tag '+t+' does not match package.json version '+p.version);process.exit(1)}console.log('tag '+t+' matches package.json version '+p.version)"
+
+      # §7.201: 附件**逐个点名**，不用通配符 —— `dist/*.tar.gz` 会把带明文 API key
+      # 的 *-DEMO.tar.gz 一起扫进去，而 release 是公开的。
+      - name: Create GitHub release (safe + full tarballs)
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ inputs.tag }}
+          body: |
+            ${{ inputs.tag }}
+
+            本 Release 是**补建**的（§7.217，2026-11-13）。
+
+            这个 tag 的 publish workflow 在**当时**整个失败了
+            （v0.1.1 / v0.1.2 / v0.1.3 三次都是 failure）⇒ 它的 git 发布面
+            ——safe 与 full 两个预构建 tar 包——**从没建成**。根因与修法记在
+            `docs/PROGRESS.md` 的 §7.196 与 §7.217。
+
+            资产由 `backfill-release.yml` 在 ubuntu-latest + pnpm 11.7.0 +
+            node 22.20 上从**该 tag 的源码**构建（依赖由该 tag 自带的
+            `pnpm-lock.yaml` 锁定），并过了 `verify-tarball` 门禁。
+
+            npm 面不受影响：这三个版本当时已经发在 registry 上。
+          fail_on_unmatched_files: true
+          files: |
+            dist/dsh-edge-agent-desktop-safe.tar.gz
+            dist/dsh-edge-agent-full.tar.gz
