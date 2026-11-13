@@ -150,7 +150,8 @@
       "sanitizer-pipeline",
       "web-search-tavily-bocha",
       "function-call-external",
-      "input-guard"
+      "input-guard",
+      "edge-context-view"
     ]
   }
 }

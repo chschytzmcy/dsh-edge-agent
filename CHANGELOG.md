@@ -11,11 +11,37 @@
 
 ## [Unreleased]
 
+**装 full 变体，Edge 面板的宿主那一半现在真的在了。**
+（2026-11-13，§7.213）
+
+### 你会看到什么变化
+
+- **full 变体**（`dsh-edge-agent-full`）以前**缺** `- id: edge-context-view` 这一行
+  ⇒ 宿主不挂这个插件 ⇒ **Edge 面板只剩浏览器半侧**，宿主侧拿不到上下文。
+  safe 变体一直有 ⇒ 这是两份手抄副本**漂移**出来的差一行（实测：safe 命中 6 行、
+  full 命中 **0 行**）。
+- 现在 full 变体补上了这一行，与 safe 变体对齐（位置同样在 `input-guard` 之后）。
+- ⚠️ 这一行**故意不带** `inject:` / `config:` —— cordis 0.2.1-rc.2 的 patch loader 会
+  **静默跳过**这两个字段（§7.101.x fix #1）；依赖在 src 里声明、运行时旋钮走 `process.env`。
+- **运行时逻辑一字未改**（`src/` 未动）：这是**补回** safe 早就有的插件挂载，不是新增能力。
+
+### 测试与门禁
+
+- 门禁 `verify:preset-isolate` **当场抓到**「只补行、不补 isolate 名单」的写法：服务
+  `edgeContextView` 会落进 root realm ⇒ **整个 preset 挂载失败** ⇒ 设置页那张卡显示
+  「加载失败」⇒ 连带把 `edge-stack` 组的 isolate 名单补上 `edgeContextView: true`。
+- `patch-surface.snapshot.json` 按门禁重生成（diff 只有 preset 列表末尾多一项）。
+- 本轮实跑：`verify:preset-isolate` / `verify:patch-surface` / `verify:patch-row-shape` /
+  `verify:installable` / `verify:installable-edge` / `verify:local-channel` ⇒ 全 EXIT=0。
+  门禁总数仍是 **31 道**。
+
+### 上一轮（§7.210）
+
 **「本地池其实是委托出去的」这件事，从审计行里的一个字段变成了一等 security 事件；
 并多了一个默认关闭的开关，让它可以被彻底堵住。**
 （2026-11-12，§7.210）
 
-### 你会看到什么变化
+#### 你会看到什么变化
 
 - 判定为「本地」的轮次会被改道到本地池。**但本地池留空（默认）时是 DELEGATE**
   —— 转发宿主模型，也就是**这一轮其实出了设备**。
@@ -33,7 +59,7 @@
   **云端**端点，边缘模式**不做任何特殊处理**（不改 provider 归属、不裁它的历史、
   不把它判成云池、不因此拦它）—— 那是你的行为，不是 bug。
 
-### 测试与门禁
+#### 测试与门禁
 
 - 新增 `tests/unit/input-guard-delegate-egress.test.ts`（9 条）：默认档零行为变化 /
   security 事件 / 严格档拒收且不派发 / 被拒时不留「改道了」的假记录 / 直连池不受影响。

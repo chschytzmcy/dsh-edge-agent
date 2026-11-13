@@ -273,6 +273,13 @@
             name: cordis:group
             group: true
             isolate:
+              # §7.213 (2026-11-13): edgeContextView 进名单 —— 本 preset 现在**有**
+              # `- id: edge-context-view` 这一行了（Edge 面板的宿主那一半），
+              # 而它提供的服务名 `edgeContextView`（src/dsh-adapter/edge-context-view.ts
+              # 的 `super(ctx,'edgeContextView')`）必须与提供方同处一个隔离 realm，
+              # 否则它落进 root realm ⇒ 挂载审计判泄漏 ⇒ **整个 preset 挂载失败**
+              # ⇒ 设置页那张卡显示「加载失败」（safe 变体一直有这一行）。
+              edgeContextView: true
               edgeTools: true
               functionCallExternal: true
               httpApi: true
@@ -555,3 +562,20 @@
                   # 会话也钉成 local-llm。必须与上面 `config.id` 一致 ——
                   # scripts/verify-preset-isolate.ts 复核这一点。
                   presetId: edge
+
+              # ── Edge 面板的宿主那一半（§7.213, 2026-11-13）─────────────────────────
+              #
+              # 实测（2026-11-13）：本文件（**full** 变体的 Agent Preset 补丁）**缺**
+              # `- id: edge-context-view` 这一行 —— `edge.patch.yml` 命中 0 行，
+              # 而 `edge.desktop-safe.patch.yml` 命中 6 行 ⇒ 装 full 变体就没有
+              # Edge 面板的宿主那一半（只有 safe 变体有）。
+              #
+              # §7.135 起这一行属于 **Agent Preset 补丁**（它是「边缘模式」这个工作方式
+              # 的插件，不是全局 patch 层），位置与 safe 变体一致：**input-guard 之后**。
+              #
+              # ⚠️ 这一行**故意不带** `inject:` / `config:` ——
+              # §7.101.x fix #1 实测：cordis 0.2.1-rc.2 的 patch loader 会**静默跳过**
+              # 这两个字段（dev-notes/cordis-rc021-patch-loader.md Bug 1），依赖在
+              # src 里声明、运行时旋钮走 process.env。
+              - id: edge-context-view
+                name: '@dsh-edge/dsh-edge-agent/edge-context-view'
