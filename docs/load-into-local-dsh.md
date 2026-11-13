@@ -142,7 +142,12 @@ ln -s "$REPO/node_modules/@deepseek-ai" \
 export DSH_HOME=/tmp/dsh-edge-probe
 export DSH_EDGE_HTTP_PORT=21099
 export DSH_EDGE_HTTP_HOST=127.0.0.1
+# §7.223: `DSH_EDGE_STORAGE_ROOT` 的含义**收紧为唯一一个** —— 它就是
+# local-storage 的 root 本身（默认 ~/.dsh-edge-agent/storage）。
+# 以前它还被当成「存储基目录」（dev harness 会往上拼 '/storage' 与 '/keys'），
+# 现在不是了 ⇒ 想把**密钥库**也隔离出去，要单独设 TCM 那两个名字。
 export DSH_EDGE_STORAGE_ROOT="$DSH_HOME/data"
+export DSH_EDGE_TEE_STORAGE_ROOT="$DSH_HOME/data"
 export DSH_EDGE_AUDIT_ROOT="$DSH_HOME/audit"
 export DSH_EDGE_LOG_ROOT="$DSH_HOME/log"
 

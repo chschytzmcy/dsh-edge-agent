@@ -270,6 +270,7 @@
     "verify:local-pool-catalog": "node --import tsx/esm scripts/verify-local-pool-catalog.ts",
     "verify:edge-local-reroute": "node --import tsx/esm scripts/verify-edge-local-reroute.ts",
     "verify:env-bridge": "node scripts/verify-env-bridge.mjs",
+    "verify:env-bridge:selftest": "node scripts/verify-env-bridge.mjs --selftest",
     "verify:bundle-mount": "node scripts/verify-bundle-mounted.mjs",
     "verify:ci-build-chain": "node scripts/verify-ci-build-chain.mjs",
     "verify:git-release": "node scripts/verify-git-release.mjs",

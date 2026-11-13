@@ -1006,7 +1006,20 @@ const ENV_OVERRIDES: Array<{
   },
   { env: 'DSH_EDGE_LOG_ROOT', apply: (cfg, v) => { cfg.audit!.logRoot = v } },
   { env: 'DSH_EDGE_AUDIT_ROOT', apply: (cfg, v) => { cfg.audit!.root = v } },
+  // §7.223 (2026-11-14): `DSH_EDGE_STORAGE_ROOT` 的含义**收紧成唯一一个** ——
+  // 「local-storage 的 root」。
+  //
+  // 此前它同时被当成四样东西：① `tee.storageRoot`（env 桥推的，同名被后一条
+  // 静默覆盖 ⇒ 永远传不出去）、② `storage.root`（env 桥 + 本表）、③ dev
+  // harness 的「存储基目录」（`cordis.yml` 的 4 处 `!!js` 表达式）、④ 本表这条。
+  // ⇒ 一个名字四种含义，且 env 桥同名推两次时**后者无声吃掉前者**。
+  // ⇒ 现在：TCM 侧的两个路径各拿各的名字（见下），`DSH_EDGE_STORAGE_ROOT`
+  //   只表示 local-storage 的 root。
   { env: 'DSH_EDGE_STORAGE_ROOT', apply: (cfg, v) => { cfg.storage!.root = v } },
+  // §7.223: TCM 侧的两个路径字段此前**根本没有** env 入口（`tee.keyStorePath`
+  // 只能从文件里配），现在补齐，且与 `tee.storageRoot` 各占各的名字。
+  { env: 'DSH_EDGE_TEE_STORAGE_ROOT', apply: (cfg, v) => { cfg.tee!.storageRoot = v } },
+  { env: 'DSH_EDGE_TEE_KEY_STORE_PATH', apply: (cfg, v) => { cfg.tee!.keyStorePath = v } },
   { env: 'DSH_EDGE_PRIVACY_POLICY_PATH', apply: (cfg, v) => { cfg.privacy!.policyPath = v } },
   { env: 'DSH_EDGE_REALM_CONFIG', apply: (cfg, v) => { cfg.privacy!.realmConfigPath = v } },
   { env: 'DSH_EDGE_ETSCLI_BIN', apply: (cfg, v) => { cfg.etscli!.bin = v } },

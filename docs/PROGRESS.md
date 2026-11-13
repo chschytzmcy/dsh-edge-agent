@@ -24484,3 +24484,178 @@ npm 暂存区逐项对比（`dist/probe/compare-pkg.mjs`）：
 ⇒ 三选一：**① 全删**（连带 tripwire 断言 + README/architecture 那几句一起改）；
 **② 保留文件但从 `cordis.yml` 摘掉注册**（代码留作未来扩展点）；**③ 全部保留
 不动**（本节就是最终范围）。
+
+---
+
+## §7.223 一个 env 名字只对应一个配置字段：修掉 `DSH_EDGE_STORAGE_ROOT` 的四种含义（2026-11-14）
+
+> 主人指示：「5 个纯 stub 插件先留着。修正 撞见一处 env 变量名隐患」。
+> （第二句指的是 §7.222 第十一节记的那条隐患。）
+
+### 一、主人裁决的落地
+
+- **5 个纯 stub 插件**（`attestation` / `ohttp-gateway` / `secure-bridge` /
+  `plugin-host` / `voice-input`）**先留着** ⇒ §7.222 第十一节列的三项
+  （stub 插件删不删、`sessions.ts` 删不删、README 的不实陈述）**全部撤回**，
+  本节**一个字节都不动**它们。README 里那几句「RFC 9458 OHTTP 零信任」
+  「TEE 远程证明」**继续留着**（它们本来就是 §7.123 那道 tripwire 要盯的东西）。
+- 主人本轮只裁定了 stub 插件 ⇒ edge 自己的 `sessions.ts` **也没动**，它的去留
+  **仍然待拍板**（§7.222 第十一节）。
+
+### 二、隐患是什么：**一个名字，四种含义**
+
+| # | 谁在用 | 把 `DSH_EDGE_STORAGE_ROOT` 当成什么 |
+|---|---|---|
+| 1 | `scripts/edge-config-env.mjs:174` | `tee.storageRoot`（TCM 密钥库目录） |
+| 2 | `scripts/edge-config-env.mjs:185` | `storage.root`（local-storage 的 root） |
+| 3 | `src/dsh-adapter/edge-config.ts` 的 `ENV_OVERRIDES` | 映射到 `storage.root` |
+| 4 | `cordis.yml` 的 4 处 `!!js` 表达式 | 「存储基目录」（`+ '/keys'`、`+ '/storage'`、`+ '/grants.json'`） |
+
+⇒ 三个具体后果：
+
+1. **同名 push 两次 ⇒ 后者静默覆盖前者** ⇒ `tee.storageRoot` **永远传不出去**
+   （operator 设了它，shell 侧毫无动静）。
+2. **双层路径**：operator 设了 `storage.root = /data/storage` ⇒ env 桥推出
+   `DSH_EDGE_STORAGE_ROOT=/data/storage` ⇒ `cordis.yml` 再拼一次 `/storage`
+   ⇒ local-storage 实际落在 `/data/storage/storage`。
+3. **edge.json 在开发 harness 里被忽略**：行配置一旦给了 path，插件侧的回落
+   （`if (c.root === undefined)`）就**永远走不到** ⇒ `edge.json` 的
+   `storage.root` / `tee.storageRoot` / `tee.keyStorePath` 三处**全部失效**。
+   这正是 §7.102 明说「the patch no longer carries `!!js HOME` path
+   expressions」要清掉的**残留**（`local-storage.ts` 的注释就是这么写的）。
+
+### 三、修法：名字一对一 + 行配置不再抢文件的活
+
+新的映射表（**每个名字只对应一个字段**）：
+
+| env 名 | 对应 edge.json 字段 | env 桥推 | 插件侧读 | 缺省 |
+|---|---|---|---|---|
+| `DSH_EDGE_STORAGE_ROOT` | `storage.root` | ✓ | `ENV_OVERRIDES` → `local-storage.ts` | `~/.dsh-edge-agent/storage` |
+| `DSH_EDGE_TEE_STORAGE_ROOT` | `tee.storageRoot` | ✓（**新**） | `ENV_OVERRIDES`（**新**） | `~/.dsh-edge-agent` |
+| `DSH_EDGE_TEE_KEY_STORE_PATH` | `tee.keyStorePath` | ✓（**新**） | `ENV_OVERRIDES`（**新**） | `<tee.storageRoot>/tcm-keys.json` |
+
+改动清单：
+
+1. **`src/dsh-adapter/edge-config.ts`** —— 新增两条 `ENV_OVERRIDES`；
+   `DSH_EDGE_STORAGE_ROOT` 的含义**收紧成唯一一个**（「local-storage 的 root」）。
+2. **`scripts/edge-config-env.mjs`** —— `tee.storageRoot` 改推新名；补上
+   `tee.keyStorePath`（**此前 `tee.keyStorePath` 根本没有 env 入口**，只能从
+   文件里配）。
+3. **`cordis.yml`** —— 删掉 4 处 `!!js` 路径表达式（聚合器的 `storageRoot`、
+   tcm 的 `keyStorePath`、local-storage 的 `root`、plugin-host 的
+   `grantStorePath`），各自改由**插件侧**按 §7.102 的口径派生。
+
+### 四、为什么方向是「拉回既有口径」而不是「另立一套」
+
+三份**权威口径本来就一致**，只有 `cordis.yml` 那 4 行是异类：
+
+| 来源 | 写的什么意思 |
+|---|---|
+| `config/edge.example.json` 的 `tee` 段 | `storageRoot` 留空 = `~/.dsh-edge-agent`；`keyStorePath` 留空 = 上面那个目录 + `/tcm-keys.json` |
+| `config/edge.example.json` 的 `storage` 段 | `root` 留空 = `~/.dsh-edge-agent/storage` |
+| `docs/privacy-policy.md` §4 存储配置 | `DSH_EDGE_STORAGE_ROOT` 默认 = `~/.dsh-edge-agent/storage` |
+| 插件代码 | `tcm.ts` 从 `tee.storageRoot` 派生密钥库路径；`local-storage.ts` 从 `storage.root` 派生 root |
+
+⇒ **`docs/privacy-policy.md` 写的默认值正好就是「local-storage 的 root」**
+⇒ 本节的修法让代码、模板、文档、dev harness **四者归一**，而不是发明新口径。
+
+### 五、行为变化（**这一节有真实的可观察变化**，逐条列清）
+
+| 场景 | 之前 | 之后 |
+|---|---|---|
+| 开发 harness 的 TCM 密钥库路径 | `~/.dsh-edge-agent/keys`（`cordis.yml` 行写死） | `~/.dsh-edge-agent/tcm-keys.json`（插件侧派生 = `architecture.md` 记的那个路径） |
+| 开发 harness 的 local-storage root | `<DSH_EDGE_STORAGE_ROOT>/storage` | `<DSH_EDGE_STORAGE_ROOT>`（缺省仍是 `~/.dsh-edge-agent/storage`） |
+| edge.json 的 `storage.root` / `tee.*` 在开发 harness 里 | **被行配置完全忽略** | **生效** |
+| operator 设 `storage.root=/data/storage` | local-storage 落在 `/data/storage/storage` | local-storage 落在 `/data/storage` |
+| `tee.storageRoot` 能否经 env 传出去 | **不能**（被同名覆盖） | 能（`DSH_EDGE_TEE_STORAGE_ROOT`） |
+| `tee.keyStorePath` 能否经 env 传出去 | **不能**（压根没有 env 入口） | 能（`DSH_EDGE_TEE_KEY_STORE_PATH`） |
+
+⚠️ **一处隔离性回退，已修**：旧的探针配方（`docs/load-into-local-dsh.md` §4）
+靠 `DSH_EDGE_STORAGE_ROOT="$DSH_HOME/data"` 把**密钥库**也隔离开（旧语义下它落在
+`$DSH_HOME/data/keys`）；新语义下 TCM 的密钥库会回到 `~/.dsh-edge-agent/tcm-keys.json`
+⇒ **配方已补 `DSH_EDGE_TEE_STORAGE_ROOT="$DSH_HOME/data"`**。
+
+### 六、机器看守：门禁从「比集合」升级到「比含义」
+
+旧门禁 `scripts/verify-env-bridge.mjs` 只比两半的**名字集合** ⇒ **集合看不见
+重数** ⇒ 同名推两次它看不出来（这正是这个 bug 活到今天的原因）。
+
+新增三条不变量（另两条是原有的「两半名字对齐」）：
+
+2. 桥侧：同一个 env 名**不得**从两个不同的配置路径推出；
+3. 插件侧：同一个 env 名**不得**映射到两个不同的配置路径；
+4. 两半：同一个 env 名在两边必须指向**同一个字段**（按字段**末段名**比 ——
+   `storage.root` 与 `cfg.storage!.root` 是同一个字段，`tee.storageRoot` 不是）。
+
+**自证 7 条**（`node scripts/verify-env-bridge.mjs --selftest`）：干净树 ⇒ 绿；
+四类违规各一条 ⇒ 红；shell-only 的裸 provider key ⇒ 不算违规。
+
+**并且用修复前的旧树实证过**（`git show HEAD:` 取那两半，喂给新门禁）⇒ 精确报出
+那两条真错误：
+
+```
+x one env name emitted from 2 different config paths: DSH_EDGE_STORAGE_ROOT
+  ← tee.storageRoot / storage.root (the later push silently overwrites the earlier one)
+  [scripts/edge-config-env.mjs:174,185]
+x the two halves disagree on what DSH_EDGE_STORAGE_ROOT means:
+  bridge pushes tee.storageRoot [scripts/edge-config-env.mjs:174]
+  but the plugin maps it to storage.root [src/dsh-adapter/edge-config.ts:313]
+```
+
+⇒ **这正是旧门禁放过去的那两条。**（为此给门禁加了 ESM 入口守卫 —— 导入它只导出
+函数、不执行门禁本体；上面那条实证就是靠它跑的。）
+
+### 七、运行时也钉住：新增 5 条单测
+
+`tests/unit/edge-config-env-override.test.ts`（**新增**）—— 静态门禁管的是
+「读源码」，这个文件钉的是**运行时行为**：
+
+- `DSH_EDGE_STORAGE_ROOT` ⇒ 只落到 `storage.root`，**不碰** `tee.storageRoot`；
+- `DSH_EDGE_TEE_STORAGE_ROOT` ⇒ 只落到 `tee.storageRoot`，**不碰** `storage.root`；
+- `DSH_EDGE_TEE_KEY_STORE_PATH` ⇒ 只落到 `tee.keyStorePath`；
+- 三个同时设 ⇒ 三个字段各归各位（互不串台）；
+- 空串当未设置（不覆盖文件里的值）。
+
+### 八、文档同步
+
+| 文件 | 改了什么 |
+|---|---|
+| `docs/privacy-policy.md` §4 存储配置 | `DSH_EDGE_STORAGE_ROOT` 的说明改成「**local-storage 的 root 本身**（§7.223：此前它还被当成『存储基目录』/『TCM 的密钥库目录』，一个名字四种含义；现在只表示这一个）」；补 `DSH_EDGE_TEE_STORAGE_ROOT` / `DSH_EDGE_TEE_KEY_STORE_PATH` 两行 |
+| `docs/load-into-local-dsh.md` §4 探针配方 | 补 `DSH_EDGE_TEE_STORAGE_ROOT="$DSH_HOME/data"`（否则密钥库跑出隔离目录，见第五节） |
+
+### 九、验证
+
+- `verify:env-bridge`：修复后 **80 emitted / 80 consumed / 4 shell-only** ⇒ 绿；
+  **自证 7 条全绿**。
+- **旧树实证**：新门禁在修复前的树上**精确报出 2 条真错误**（第六节）。
+- 新增单测 **5 条**全过；全量：**87 个测试文件 / 1682 条通过 / 2 条跳过**
+  （比本节之前多 1 个文件 / 5 条；CI 的条数门禁是 `TOTAL >= 600` 的**下限**，不
+  会被新文件顶红）。
+- lint 与全链 32 道门禁：见本节提交后的 CI 实跑。
+
+### 十、这一节**没有**做的事
+
+- **没有**删那 5 个纯 stub 插件（主人裁定「先留着」）⇒ §7.222 第十一节那三项
+  **全部撤回**。
+- **没有**动 edge 自己的 `sessions.ts` —— 主人口头只裁定了 stub 插件；它的去留
+  **仍然待拍板**。
+- **没有**动 `DSH_EDGE_STORAGE_ROOT` 这个**名字本身**（它在 `docs/privacy-policy.md`
+  里一直就是这个意思，且它是 env 覆盖层的正式入口）⇒ 只是把它的含义**收紧成一个**，
+  另外三个含义各自拆出去。
+- **没有**把 `cordis.yml` 里其余的 `!!js` 路径表达式一并清掉（`policyPath` /
+  `configPath` / `DSH_EDGE_SESSION_ROOT` 等）—— 它们**不**参与本次的同名冲突，
+  逐个改是另一件事。
+- **没有**发版（npm 上仍是 `0.1.7`，不含本节任何改动）；没动 2FA / trusted
+  publisher；没往主人的 desktop profile 里装东西。
+
+### 十一、**没取到的证据**
+
+1. **没有**实机验证「开发 harness 的密钥库文件名换掉后，TCM 仍能正常起」——
+   TCM 是**存根**（`simulated`），密钥库路径本来就只是个字符串；但本节**没有**在
+   真机上起过一遍开发 harness。
+2. **没有**逐个审「operator 旧脚本里若写着 `DSH_EDGE_STORAGE_ROOT=<base>` 会怎样」
+   —— §7.102 之后 `.env` 链已退役（配置在 `edge.json`），影响面应该只在**旧脚本**
+   上；本节**没有**把旧脚本扫一遍。
+3. **没有**核对 `install.sh` 是否给 `DSH_EDGE_STORAGE_ROOT` 写过值 —— 全仓扫过，
+   `install.sh` 里**没有**这个变量（唯一命中是 `docs/load-into-local-dsh.md` 的
+   探针配方，已同步）。

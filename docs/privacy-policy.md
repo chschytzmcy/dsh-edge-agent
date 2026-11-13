@@ -1047,8 +1047,10 @@ checkout 里最不该待的东西。
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `DSH_EDGE_STORAGE_ROOT` | `~/.dsh-edge-agent/storage` | 存储根目录 |
+| `DSH_EDGE_STORAGE_ROOT` | `~/.dsh-edge-agent/storage` | **local-storage 的 root 本身**（§7.223：此前它还被当成「存储基目录」/「TCM 的密钥库目录」，一个名字四种含义；现在只表示这一个） |
 | `DSH_EDGE_STORAGE_FILE` | `storage.plain.jsonl` | JSONL 存储文件名（未加密；AES-256-GCM 加密见 [Planned](PROGRESS.md#planned)） |
+| `DSH_EDGE_TEE_STORAGE_ROOT` | `~/.dsh-edge-agent` | TCM 密钥库所在目录（缺省时密钥文件是 `<该目录>/tcm-keys.json`） |
+| `DSH_EDGE_TEE_KEY_STORE_PATH` | `<DSH_EDGE_TEE_STORAGE_ROOT>/tcm-keys.json` | TCM 密钥文件的完整路径 |
 
 ## 5. 策略配置
 

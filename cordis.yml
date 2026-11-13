@@ -103,7 +103,13 @@
   inject: [agents, llm, sessions, invariants]
   config:
     teeType: !!js process.env.DSH_EDGE_TEE_TYPE ?? 'simulated'
-    storageRoot: !!js process.env.DSH_EDGE_STORAGE_ROOT ?? ((process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent')
+    # §7.223 (2026-11-14): 这里原来还有一行
+    #   storageRoot: process.env.DSH_EDGE_STORAGE_ROOT ?? (HOME + '/.dsh-edge-agent')
+    # —— 那个 env 名当时同时被当成三样东西（「存储基目录」/「local-storage 的
+    # root」/「TCM 的密钥库目录」），详见 docs/PROGRESS.md §7.223。
+    # 聚合器**自己不读** storageRoot（apply 只做 installFileLogger → 上游漂移
+    # 警告 → bootstrap），它只会原样进 `edge-agent/boot` 事件载荷，而那个事件
+    # **没有订阅者** ⇒ 死字段，删掉。
     policyPath: !!js process.env.DSH_EDGE_POLICY_PATH ?? ((process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent/policy.json')
     defaultDataLevel: !!js process.env.DSH_EDGE_DEFAULT_DATA_LEVEL ?? 'sanitized'
     allowFallbackTls: !!js process.env.DSH_EDGE_ALLOW_FALLBACK_TLS === 'true'
@@ -116,7 +122,16 @@
   name: '@dsh-edge/dsh-edge-agent/tcm'
   config:
     teeType: !!js process.env.DSH_EDGE_TEE_TYPE ?? 'simulated'
-    keyStorePath: !!js (process.env.DSH_EDGE_STORAGE_ROOT ?? ((process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent')) + '/keys'
+    # §7.223: 原来这里写死了 keyStorePath = <DSH_EDGE_STORAGE_ROOT> + '/keys'。
+    # ① 那个 env 名当时是「四种含义」之一；② 行配置一旦给了 keyStorePath，
+    #    插件侧的回落（tcm.ts: `tee.keyStorePath` → `join(tee.storageRoot,
+    #    'tcm-keys.json')` → `edgeHome()`）就**永远走不到** ⇒ edge.json 里的
+    #    `tee.keyStorePath` / `tee.storageRoot` 被完全忽略 —— 这正是 §7.102
+    #    说「the patch no longer carries `!!js HOME` path expressions」要清掉的
+    #    残留。⇒ 删掉这一行，让插件自己派生（= architecture.md 记的那个路径
+    #    `~/.dsh-edge-agent/tcm-keys.json`）。
+    # 想要别的路径：改 edge.json 的 `tee.keyStorePath`（或 `tee.storageRoot`），
+    # 或设 `DSH_EDGE_TEE_KEY_STORE_PATH` / `DSH_EDGE_TEE_STORAGE_ROOT`。
     teeInference: !!js process.env.DSH_EDGE_TEE_INFERENCE === 'true'
     secureMemoryLimit: !!js parseInt(process.env.DSH_EDGE_SECURE_MEM ?? String(64 * 1024 * 1024), 10)
 
@@ -126,7 +141,14 @@
   name: '@dsh-edge/dsh-edge-agent/local-storage'
   inject: [tcm]
   config:
-    root: !!js (process.env.DSH_EDGE_STORAGE_ROOT ?? ((process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent')) + '/storage'
+    # §7.223: 原来这里写死了 root = <DSH_EDGE_STORAGE_ROOT> + '/storage'。
+    # ① 那个 env 名当时是「四种含义」之一；② 行配置一旦给了 root，插件侧的
+    #    回落（local-storage.ts: edge.json 的 `storage.root` → `edgeHome('storage')`）
+    #    就**永远走不到** ⇒ edge.json 的 `storage.root` 被完全忽略。
+    #    而且一旦 operator 设了 `storage.root`，env 桥推出来的值会被再拼一次
+    #    '/storage' ⇒ `<root>/storage` 的**双层路径**。
+    # ⇒ 删掉这一行，让插件自己派生（默认仍是 ~/.dsh-edge-agent/storage）。
+    # 想要别的路径：改 edge.json 的 `storage.root`，或设 `DSH_EDGE_STORAGE_ROOT`。
     filename: !!js process.env.DSH_EDGE_STORAGE_FILE ?? 'storage.enc.db'
 
 # Encrypted session lifecycle.
@@ -317,7 +339,10 @@
   inject: [agents, sessions]
   config:
     enableThirdParty: !!js process.env.DSH_EDGE_PLUGINS_THIRD_PARTY === 'true'
-    grantStorePath: !!js (process.env.DSH_EDGE_STORAGE_ROOT ?? ((process.env.USERPROFILE ?? process.env.HOME) + '/.dsh-edge-agent')) + '/grants.json'
+    # §7.223: 原来这里写死了 grantStorePath = <DSH_EDGE_STORAGE_ROOT> + '/grants.json'
+    # —— 同一个 env 名当时是「四种含义」之一。plugin-host 是**存根**（方法体恒
+    # 返回空值，apply 里 `void config`）⇒ 这个字段**无人读取**，删掉行里的
+    # 表达式，让它回落到插件自己的 Schema 默认值。
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 4. Sandbox + telemetry

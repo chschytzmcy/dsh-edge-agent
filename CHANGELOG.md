@@ -11,6 +11,31 @@
 
 ## [Unreleased]
 
+### 一个 env 名字只对应一个配置字段：`DSH_EDGE_STORAGE_ROOT` 的四种含义收成一种（§7.223）
+
+（2026-11-14，§7.223）
+
+`DSH_EDGE_STORAGE_ROOT` 这**一个**环境变量名，当时被当成**四样**东西：TCM 的密钥库
+目录、local-storage 的 root、插件侧映射到的那个字段、以及开发 harness 里的「存储
+基目录」。后果是：同名推两次时后者**静默覆盖**前者（`tee.storageRoot` 永远传不
+出去）、设了 `storage.root` 会得到 `<root>/storage` 的**双层路径**、而开发 harness
+里的行配置让 `edge.json` 的 `storage.root` / `tee.*` **完全失效**。
+
+- **`DSH_EDGE_STORAGE_ROOT` 现在只表示「local-storage 的 root 本身」**（= 一直
+  写在 `docs/privacy-policy.md` 与 `config/edge.example.json` 里的那个意思）。
+- **新增 `DSH_EDGE_TEE_STORAGE_ROOT`**（→ `tee.storageRoot`）与
+  **`DSH_EDGE_TEE_KEY_STORE_PATH`**（→ `tee.keyStorePath`）—— 后者此前**根本没有
+  env 入口**，只能从文件里配。
+- 开发 harness（`cordis.yml`）里那 4 处手写的路径表达式**删掉了** —— 它们正是
+  §7.102 说「the patch no longer carries `!!js HOME` path expressions」要清掉的
+  残留；现在各插件自己派生路径，**`edge.json` 在开发 harness 里也真正生效了**。
+- ⚠️ 一处可观察变化：开发 harness 的 TCM 密钥库路径从 `~/.dsh-edge-agent/keys`
+  变成 `~/.dsh-edge-agent/tcm-keys.json`（= `docs/architecture.md` 一直记的那个
+  路径）。把密钥库隔离出去的用法请改设 `DSH_EDGE_TEE_STORAGE_ROOT`。
+- 门禁 `verify:env-bridge` 从「比名字集合」升级到「比含义」：同一个 env 名不得从
+  两个配置路径推出、不得映射到两个字段、两半必须指向同一个字段（**自证 7 条**）。
+  新门禁能**精确复现**修复前那两条真错误。
+
 ### 配置瘦身：删掉「写了却不生效」的开关与一批死代码（§7.222）
 
 （2026-11-14，§7.222）
