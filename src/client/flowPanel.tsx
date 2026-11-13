@@ -403,8 +403,8 @@ function routeNode(rows: EdgeRow[]): FlowNode {
   // §7.214 的严格档（落点证不出来是本地 ⇒ 拒收）也落在这一条上。
   //
   // 面板此前**只认** `input-guard.blocked.*`（攻击 / 策略 / 模型选择那一族）
-  // ⇒ 严格档拒收那一轮，「路由决策」行仍写「LOCAL · 按模型选择」，
-  // **完全看不出这一轮被拒收了**（实机复现见 §7.216）。
+  // ⇒ 严格档拒收那一轮，「路由决策」行仍写「LOCAL · 按原选择」
+  // （`flow.route.kept`），**完全看不出这一轮被拒收了**（实机复现见 §7.216）。
   const rerouteBlocked = latest(rows, r => r.kind === 'input-guard.reroute.blocked')
   // §7.175: `cloud-key.missing` / `cloud.unavailable` 随「云端不可用 → 降级
   // LOCAL」一起退役（边缘模式恒用本地模型，云池不参与路由判定）。

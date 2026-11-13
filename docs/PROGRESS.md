@@ -23432,8 +23432,10 @@ checkout ⇒ 候选 1 生效）。审计链的 `config.loaded` 行印证了这�
 1. **Edge 面板不认 `input-guard.reroute.blocked`**。
    代码位置：`src/client/flowPanel.tsx:400` 的 blocked 分支只认
    `/^input-guard\.blocked\./`（那是 `input-guard.blocked.attack` / `.policy` 那一族）
-   ⇒ 严格档拒收那一轮，面板的「路由决策」行仍写「LOCAL · 按模型选择」，**没有**
-   「已拦截」。
+   ⇒ 严格档拒收那一轮，面板的「路由决策」行仍写「LOCAL · 按原选择」（`flow.route.kept`），
+   **没有**「已拦截」。
+   ⚠️ **取证边界**：这一条是**代码层面**的判断（读 `routeNode()` 的分支），**不是**
+   在面板上看到的 —— 见 §7.219 第一节。
 2. **顶部结论行写「本轮：本地模型作答 —— 数据未离开设备」，但那一轮其实
    **没作答**（被 fail-closed 拒收了）**。
    判据是 `intent.classify.end` 的 `category=LOCAL`（i18n key `verdict.local`）——
@@ -23680,7 +23682,7 @@ const chunk = readFileSync(repo + '\\dist\\probe\\sec-7.213.md', 'utf8')
 > 『已拦截——未作答』和『已拦截·local-endpoint-required』」。
 > 这是 §7.216 第七节记下的两件「发现但没改」里的**第一件**。
 
-### 一、实机复现的现象（§7.216 的那一轮）
+### 一、现象与取证边界
 
 严格档（`llm.local.requireLocalEndpoint=true`）拒收的那一轮，审计链是：
 
@@ -23691,16 +23693,34 @@ const chunk = readFileSync(repo + '\\dist\\probe\\sec-7.213.md', 'utf8')
   "delegateRealm":"UNKNOWN","realmSource":"model-router-missing"}}
 ```
 
-那一轮**没有发出任何 LLM 请求**（面板：LLM 调用 0、答案出口「路由未定」），
-可面板写的是：
+那一轮**没有发出任何 LLM 请求**（审计链里没有 `llm.local.delegate.end`；宿主侧的
+聊天区显示「本轮运行失败」，并给出 input-guard 的完整报错文案）。
+
+而面板那两行**会显示成什么**，是**代码层面**的判断（读 `verdict.ts` 与
+`routeNode()` 的分支）：
 
 | 位置 | 修复前 | 修复后 |
 |---|---|---|
 | 顶部结论 | 「本轮：本地模型作答 —— 数据未离开设备」 | **「本轮：已拦截 —— 未作答」** |
-| 路由决策 | 「LOCAL · 按原选择」 | **「已拦截 · local-endpoint-required」** |
+| 路由决策 | 「LOCAL · 按原选择」（`flow.route.kept`） | **「已拦截 · local-endpoint-required」** |
 
 ⇒ 顶部那句是**与实际行为相反的陈述**（§7.129 最怕的那种）；路由决策那行则是
 **完全看不出这一轮被拒收了**。
+
+⚠️ **取证边界（别把它读成「面板上看到过」）**：
+
+- **宿主侧**（聊天区）的报错文案**实机可见**且已经正确：实机截图里那段文字是
+  「…model-router 判定它的 realm 不是 LOCAL（判定结果 UNKNOWN，依据
+  model-router-missing）⇒ 这一轮会出网。当前 llm.local.requireLocalEndpoint=true ⇒
+  本轮按 fail-closed 拒收（不出网）…」。
+- **Edge 面板的会话级显示在本环境没能直接截到**：web UI 里的 Edge 面板**拿不到
+  会话行**（它显示「尚未绑定会话」+ 全局信号，§7.145 记过这条）
+  ⇒ 上面那张「修复前」表是**读代码**得出的，**不是**看图得出的。
+  （顺带纠正一处读图错误：上一版 §7.216 里把它写成「按模型选择」，那是**看图看错**
+  —— 作为**界面文案**，本仓从未有过这串字：对应 i18n key 是 `flow.route.kept`，
+  中文文案一直是「按原选择」（英文 `as selected`）。`git log -S '按模型选择'` 的命中
+  只来自**文档与注释里对这次更正的引用**，不是界面文案。）
+- ⇒ 修复**之后**的渲染结果用**更硬的办法**验过了：见第三节。
 
 ### 二、根因
 
@@ -23717,7 +23737,41 @@ const chunk = readFileSync(repo + '\\dist\\probe\\sec-7.213.md', 'utf8')
 **总是**真的。**§7.214 的严格档第一次让「判定 LOCAL 但这一轮没作答」成为可能**
 ⇒ 结论行没跟上。
 
-### 三、改了什么（4 个文件）
+### 三、修复后的渲染结果：用**审计链里的真实行**验过
+
+web UI 的 Edge 面板拿不到会话行（见第一节的取证边界）⇒ 换个更硬的验法：新增取证
+脚本 `scripts/probe-blocked-verdict.mjs` —— 把审计链里**那一轮的真实行**原样喂给
+本仓库的 `verdictLine()` 与 `FlowPanel()`，看它们**真的渲染成什么**。
+
+数据是实机产生的，渲染是本仓库的代码 ⇒ 缺的那一环（宿主怎么把行交给面板）
+不影响「面板会显示什么」这个结论。
+
+实测输出（`node --import tsx/esm scripts/probe-blocked-verdict.mjs`）：
+
+```
+session session-8393eb16-9b90-49ed-a0b0-6b9d4fc9c7c0: 51 rows; last blocked at #51
+=== 顶部结论 ===
+text : 本轮：已拦截 —— 未作答
+tone : blocked
+=== 路由决策节点附近 ===
+路由决策 已拦截 · local-endpoint-required 真实落点 qwen-token-plan-cn realm UNKNOWN
+判定依据 model-router-missing │ 答案出口 路由未定
+=== 关键断言 ===
+  PASS  结论含「已拦截」
+  PASS  结论含「未作答」
+  PASS  结论不含「本地模型作答」
+  PASS  路由含「已拦截 · local-endpoint-required」
+  PASS  路由不含「按原选择」
+  PASS  落点证据透出（真实落点 / realm / 判定依据）
+```
+
+⇒ 修复后的结论行与路由决策行**都拿到了实机数据的验证**。
+
+⚠️ 这个脚本是**手动取证工具**，**不是门禁**：它读的是本机的
+`~/.dsh-edge-agent/audit/audit.plain.jsonl`（CI 上没有那个文件）⇒ 不进
+`verify:build` 链。
+
+### 四、改了什么（4 个文件）
 
 | 文件 | 改动 |
 |---|---|
@@ -23729,7 +23783,7 @@ const chunk = readFileSync(repo + '\\dist\\probe\\sec-7.213.md', 'utf8')
 判据写在代码注释里（§7.129 / §7.219 引用），口径是「**被拒收**」而不是「判定成
 什么类别」。
 
-### 四、为什么把 `input-guard.blocked.*` 一起纳入（口径一致）
+### 五、为什么把 `input-guard.blocked.*` 一起纳入（口径一致）
 
 主人点的是「严格档拒收」，但**攻击拦截 / 策略拦截 / 模型选择拦截同样是「本轮没
 作答」** —— 它们此前也会让顶部结论行写「本地模型作答」（只要那一轮判定成 LOCAL）。
@@ -23740,7 +23794,7 @@ const chunk = readFileSync(repo + '\\dist\\probe\\sec-7.213.md', 'utf8')
 
 ⇒ **没有**改「严格档要不要开」这件事（默认仍 `false`，§7.211/§7.214 的裁决不动）。
 
-### 五、测试
+### 六、测试
 
 新文件 `tests/unit/flow-panel-blocked-reroute.test.ts`（**11 条**），fixture 用的是
 **§7.216 实机取到的那条 payload**（不是手编的形状）：
@@ -23757,7 +23811,7 @@ const chunk = readFileSync(repo + '\\dist\\probe\\sec-7.213.md', 'utf8')
 
 连同既有的 `flow-panel-verdict-honesty.test.ts`（17 条）⇒ **28 条全过**。
 
-### 六、这一节**没有**做的事
+### 七、这一节**没有**做的事
 
 - **没有**改 `input-guard` 的任何行为：本节**只动面板**（客户端），审计链的事件、
   判定、默认档语义**一字未改**。
