@@ -18304,187 +18304,6 @@ edge（边缘模式）｜ order 5 ｜ broken=tool-subagent-list-agents
 agent "session-…": agent/request proposed "local-llm/qwen3.8-flash" after step
 preparation fixed "qwen-token-plan-cn/deepseek-v4.1-flash";
 use agent.model.select() before step preparation
-```
-
-宿主 `dsh-agent-loop@0.2.2-rc.1` 的 `prepareRequest()` 现在有硬校验（lib/index.js:1000）：
-
-```js
-const proposedConfig = await this.dispatch.waterfall("agent/request", …);
-if (proposedConfig.provider !== selection.provider || proposedConfig.model !== selection.model)
-  throw new Error(`agent "…": agent/request proposed "…" after step preparation fixed "…"; use agent.model.select() before step preparation`);
-```
-
-⇒ **selection 在 step preparation 时就定死了**；`agent/request` 里再改 provider/model
-（或 reasoningEffort，第 1001 行同样校验）一律抛错。我们 §7.46 起那套「LOCAL 轮在
-`agent/request` 里把路由改写成 local-llm」的实现，正好撞在这条校验上。
-
-宿主的合规入口有两条：`agent.model.select(selection)`（会话级，写
-`model/selection` 事件）与 `sessionController.selectModel({sessionId, provider, model})`
-（我们 §7.106 已在用）。但两者都**改变会话的选择**，而我们现在的设计是**逐轮**
-按 intent 决定 LOCAL/CLOUD。
-
-**主人裁决（2026-11-10）**：**先做底座**——边缘模式恒用本地模型、暂不支持云端轮；
-本地模型默认值由 **preset 级 `agent-default-model` 行**给出（不是 UI 手动选）。
-⇒ 待做（本节不声称已完成）：
-
-- preset 里加一行 `agent-default-model`（provider=`local-llm`、model=`qwen3.8-flash`），
-  并实测它能否遮蔽宿主的全局行（宿主 `session-controller` 取默认模型走
-  `this.ctx.agentDefaultModel`，其 ctx 是不是 agent 所在 scope **待验**）；
-- `input-guard` 去掉 `agent/request` 里的 provider/model/reasoningEffort 改写；
-- `agent/pre-step` 载荷里带 `modelSelection`（宿主 preStep 第 689 行传）⇒ 可做
-  **fail-closed 校验**：本轮 realm 判 LOCAL 而 selection 不是本地模型 ⇒ 直接
-  `kind: 'reject'`（宿主会把该轮标成 blocked，不发 LLM 调用）。
-
-### 四、顺带查清的一件事：桌面 ops log 的「已上膛」行不稳定（**根因未定位**）
-
-守卫的 armed 行（`[etscli-shell-guard] armed on tools/pre-execute …`）在桌面侧
-**时有时无**（19:55:19 ✓、22:08:10 ✓，而 21:11–21:57 与 22:11–22:20 ✗），
-headless 侧稳定落盘。
-
-用临时文件探针（已撤除）逐环查实的事实：
-
-| 环节 | 结论 |
-|---|---|
-| 守卫插件在桌面**是否 apply** | ✅ apply 了（探针写入 apply 时刻） |
-| 守卫的 `ctx.inject(['auditLog'])` 延迟注入 | ✅ 触发（⇒ **拒绝路径的审计行能落**，§7.169 的修法有效） |
-| 守卫的 `ctx.inject(['fileLogger'])` 延迟注入 | ✅ 触发 |
-| 宿主 logger 的导出器表 | 3 个，其中 1 个是**我们**的（`3:OURS`） |
-| 我们导出器**是否被调用** | ❌ 一次都没被调用（export() 计数探针 = 0） |
-
-⇒ 断点在我们自己的导出器**没被宿主 logger 调用**（不是守卫没装、也不是文件没写）。
-同一构建在 headless（CLI，cordis 4.0.5）稳定落盘；桌面宿主是 **cordis 4.1.0**
-（`ctx.logger` 的 shadow 语义与 4.0.5 差异很大，4.1.0 的 `LoggerService.exporters`
-是 Map、且每个 scope 各自持有 LoggerService）。**根因未定位**，留作遗留项；
-诚实记录：**桌面侧目前看不到 armed 行**（不影响拦截本身——拦截挂在
-`tools/pre-execute` waterfall 上，与日志无关）。
-
-### 五、这一轮的产出与状态
-
-- ✅ 边缘模式卡片回来了（`edge（边缘模式）｜ 可组合`）；
-- ✅ 桌面 profile 的 bundle 依赖换成新 scope 名（主人在桌面版里加载）；
-- ✅ 两处 preset 对齐宿主的改动已落码、已实机验证；
-- ❌ **轮次仍会失败**（断链③），按主人裁决另做「底座」；
-- ❌ armed 行在桌面侧不稳定（第四节，根因未定位）。
-
----
-
-## §7.178 收尾：产物一致性、临时脚本清理与两处凭据残留（2026-11-11）
-
-### 一、桌面 App 占用 installable ⇒ 重建走 in-place（会打断桌面 profile 的链接）
-
-`npm run build:installable` 重建 `dist/installable/dsh-edge-agent-desktop-safe` 时，
-**桌面 App 正在运行**会锁住该目录 ⇒ 脚本降级为 **in-place 同步**（不换目录 inode），
-并在末尾告警：
-
-```
-warning: dsh-edge-agent-desktop-safe is locked (running desktop App?) — in-place sync instead of atomic swap
-WARNING: profile "desktop" holds @dsh-edge/dsh-edge-agent.old-20261111005709 under
-         node_modules/.ignored/ — pnpm saw the link break and set the package aside.
-```
-
-⇒ 桌面 profile 的 pnpm 在链接断裂时把旧副本**挪进 `node_modules/.ignored/`**。
-实测结论：**活动链接没坏**（`node_modules/@dsh-edge/dsh-edge-agent` 仍指向
-`dist/installable/dsh-edge-agent-desktop-safe`，profile 的 `package.json` 依赖声明
-也在），被挪走的是**历史副本**。
-
-**正确做法**：先按 PID 停桌面 App ⇒ 重建（此时走原子 swap，不再 in-place）⇒ 再起桌面。
-本轮按此顺序做完，重启后实测：审计链里**只有一套** input-guard 钩子、preset 名册
-`edge｜可组合`、新建边缘模式会话 `input-guard.model.defaulted`（local-llm /
-qwen3.8-flash / source=local-pool）。
-
-### 二、`.ignored/` 里的搁置副本带着**明文凭据**
-
-被挪进 `node_modules/.ignored/` 的旧 scope 副本
-（`@deepseek-harness-edge-agent.old-20261110132654/dsh-edge-agent`）里含
-`config/edge.json`，**6 个明文 key 全在**（edgeApiKey / deepseekApiKey /
-dashscopeApiKey / alitokenplanApiKey / tavilyApiKey / bochaApiKey）。
-
-它们**不参与装载**（名字解析不到、目录名带 `.old-` 后缀、`.ignored` 以点开头），
-但属于凭据的额外落盘副本 ⇒ 应清。
-
-### 三、本轮清理
-
-- ✅ 仓库内 **77 个** `.tmp-*` 临时探针脚本全部删除（`rm --`，逐条列明目标）。
-  这些是查宿主 asar / 铸 cookie / 探 preset / 重建调用链用的一次性脚本，
-  不留档（查到的结论已写进 §7.175-§7.177 与源码注释）。
-- ⛔ **工作区外**的三处删除**做不了**：本机 `rm` 的受信任执行器只接受工作区内的
-  目标，对工作区外路径直接拒（`Windows trash execution rejected a target outside
-  the workspace`）。**不绕过**（不换 `Remove-Item`、不写内联脚本）—— 改为列出精确
-  路径交主人执行（见本节末尾）。
-
-### 四、要主人手动清理的三处（含凭据）
-
-| 路径 | 为什么该删 |
-|---|---|
-| `C:\Users\cheng\.dsh\profiles\desktop\node_modules\.ignored\@deepseek-harness-edge-agent.old-20261110132654` | 旧 scope 的搁置副本，**含 6 个明文 key** |
-| `C:\Users\cheng\.dsh\profiles\desktop\node_modules\.ignored\@dsh-edge\dsh-edge-agent.old-20261111005709` | 同一包的旧副本，无凭据但占空间、容易误认成「在用的那份」 |
-| `C:\Users\cheng\.dsh-edge-agent\desktop-cookies.json` | 本轮探针导出的**宿主鉴权 cookie**（可直接复用宿主会话） |
-
-另有 `C:\Users\cheng\.dsh-edge-agent\edge.json.bak-20261030T025751`
-（10-30 的配置备份，含旧凭据）—— 待主人定：留作回滚还是一并清掉。
-
-### 五、本轮最终状态
-
-- ✅ safe 变体（桌面 / npm 常态）复核通过，构建链 + **25 道门禁全绿**（exit 0）；
-- ✅ §7.175 / §7.176 已写进 PROGRESS，README / CHANGELOG / architecture /
-  plugin-mount-points / privacy-policy / load-into-local-dsh 的**过时表述已改正**
-  （原文写「`agent/request` 把 provider/model 改写到 LOCAL」，与现在的代码相反）；
-- ⏸ full 变体（`:21017` + `POST /v1/chat`）本轮不验证（主人改口径）；
-- ⏸ npm 首次发布 `@dsh-edge/dsh-edge-agent@0.1.1` 待主人授权 commit/push。
-
-### 六、主人卸载插件后的清理（2026-11-11 12:42 起）
-
-主人在桌面版 Plugins 里卸载了本插件，指令：「把剩余的也清理下」。实测与处置：
-
-**卸载流程自己清掉的**（不必再管）：
-
-| 项 | 状态 |
-|---|---|
-| 桌面 profile `package.json#dependencies` 里的本包 | 已移除 |
-| 桌面 profile `dsh.profile.bundles` 里的本包 | 已移除 |
-| 桌面 profile `pnpm-lock.yaml` 里的本包 | 已移除（lock 只剩 dsh-context + zod） |
-| `~/.dsh-edge-agent/`（运行期数据根：审计链 / ops log / storage / sessions / `edge.json` / `edge.json.bak-20261030T025751` / 探针 cookie） | **整个目录已被卸载流程删除** |
-
-**本轮我清掉的**（仓库内，`rm --` 可用）：
-
-- `config/edge.json`（本地配置，含 6 个明文 key）—— 主人裁决「三份全清」；
-- `dist/installable/dsh-edge-agent-desktop-safe/config/edge.json`（同一份配置的副本）；
-- `dist/installable/dsh-edge-agent-full/config/edge.json`（同上）；
-- `dist/dsh-edge-agent-{desktop-safe,full}-DEMO.tar.gz`（**内嵌真实明文 key**，
-  构建脚本自己就标了「勿分发」）；
-- `dist/.edge-config-from-env.selftest/`（门禁 selftest 的临时目录；里面的
-  `operator-secret-value` 是脚本写死的**假值**，不是真 key）。
-
-**清空本地配置后的行为变化**（如实记录）：`config/edge.example.json` 里
-`llm.local.baseUrl` 是**空串** ⇒ 按 §7.171 走 **DELEGATE**（`local-llm` 转发宿主
-profile 已配置的提供商），**不是**直连 `127.0.0.1:8080`（那是 `cordis.yml` 里
-独立运行时的行内默认值，shipped 模板不走那条）。⇒ 重装插件后：
-
-- provider 身份仍是 `local-llm` ⇒ §7.175 的 fail-closed 闸门照常放行；
-- §7.176 仍把边缘模式会话默认钉到 `local-llm`；
-- 但 wire 上真正跑的是**宿主 GUI 选中的模型**（桌面 profile 当前是
-  `qwen-token-plan-cn/deepseek-v4.1-flash`），不是先前的本地 token-plan 端点
-  （`https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1` +
-  `qwen3.8-flash`）。要回到那个端点，主人重建
-  `~/.dsh-edge-agent/edge.json` 并填回自己的 key 即可。
-
-**工作区外、本机 `rm` 拒收的**（受信任执行器只收工作区内目标 ⇒ 交主人手动执行）：
-
-```
-C:\Users\cheng\.dsh\profiles\desktop\node_modules\@dsh-edge                      （只剩一个指向 installable 的链接）
-C:\Users\cheng\.dsh\profiles\desktop\node_modules\@deepseek-harness-edge-agent.old-20261110132654  （空目录）
-C:\Users\cheng\.dsh\profiles\desktop\node_modules\.ignored\@deepseek-harness-edge-agent.old-20261110132654  （230 文件 / 1.65 MB，**含 6 个明文 key**）
-C:\Users\cheng\.dsh\profiles\desktop\node_modules\.ignored\@dsh-edge              （232 文件 / 1.72 MB，同包的旧副本）
-```
-
-**另一条值得记的机制**：桌面 App 正在运行时重建 `dist/installable/…` 会锁住目录
-⇒ 重建降级为 in-place 同步 ⇒ 桌面 profile 的 pnpm 认为链接断了 ⇒ 把旧副本挪进
-`node_modules/.ignored/`。**每次重建都可能多攒一份搁置副本**（每份都带一份
-`config/edge.json`）⇒ 重装前先扫一遍 `.ignored/`。
-
-
----
-
 ## §7.175 退役 `agent/request` 的路由改写，改成 `agent/pre-step` 的 fail-closed 闸门（2026-11-11）
 
 ### 〇、这一节解决什么
@@ -18546,6 +18365,70 @@ C:\Users\cheng\.dsh\profiles\desktop\node_modules\.ignored\@dsh-edge            
 - `npx vitest run tests/unit` ⇒ **75 files / 1546 passed / 2 skipped**；
 - `npm run build`（compile → typecheck:client → build:client → build:installable →
   pack:tarball → verify:build，25 道门禁）⇒ 全绿（exit 0）。
+
+---
+
+```
+
+宿主 `dsh-agent-loop@0.2.2-rc.1` 的 `prepareRequest()` 现在有硬校验（lib/index.js:1000）：
+
+```js
+const proposedConfig = await this.dispatch.waterfall("agent/request", …);
+if (proposedConfig.provider !== selection.provider || proposedConfig.model !== selection.model)
+  throw new Error(`agent "…": agent/request proposed "…" after step preparation fixed "…"; use agent.model.select() before step preparation`);
+```
+
+⇒ **selection 在 step preparation 时就定死了**；`agent/request` 里再改 provider/model
+（或 reasoningEffort，第 1001 行同样校验）一律抛错。我们 §7.46 起那套「LOCAL 轮在
+`agent/request` 里把路由改写成 local-llm」的实现，正好撞在这条校验上。
+
+宿主的合规入口有两条：`agent.model.select(selection)`（会话级，写
+`model/selection` 事件）与 `sessionController.selectModel({sessionId, provider, model})`
+（我们 §7.106 已在用）。但两者都**改变会话的选择**，而我们现在的设计是**逐轮**
+按 intent 决定 LOCAL/CLOUD。
+
+**主人裁决（2026-11-10）**：**先做底座**——边缘模式恒用本地模型、暂不支持云端轮；
+本地模型默认值由 **preset 级 `agent-default-model` 行**给出（不是 UI 手动选）。
+⇒ 待做（本节不声称已完成）：
+
+- preset 里加一行 `agent-default-model`（provider=`local-llm`、model=`qwen3.8-flash`），
+  并实测它能否遮蔽宿主的全局行（宿主 `session-controller` 取默认模型走
+  `this.ctx.agentDefaultModel`，其 ctx 是不是 agent 所在 scope **待验**）；
+- `input-guard` 去掉 `agent/request` 里的 provider/model/reasoningEffort 改写；
+- `agent/pre-step` 载荷里带 `modelSelection`（宿主 preStep 第 689 行传）⇒ 可做
+  **fail-closed 校验**：本轮 realm 判 LOCAL 而 selection 不是本地模型 ⇒ 直接
+  `kind: 'reject'`（宿主会把该轮标成 blocked，不发 LLM 调用）。
+
+### 四、顺带查清的一件事：桌面 ops log 的「已上膛」行不稳定（**根因未定位**）
+
+守卫的 armed 行（`[etscli-shell-guard] armed on tools/pre-execute …`）在桌面侧
+**时有时无**（19:55:19 ✓、22:08:10 ✓，而 21:11–21:57 与 22:11–22:20 ✗），
+headless 侧稳定落盘。
+
+用临时文件探针（已撤除）逐环查实的事实：
+
+| 环节 | 结论 |
+|---|---|
+| 守卫插件在桌面**是否 apply** | ✅ apply 了（探针写入 apply 时刻） |
+| 守卫的 `ctx.inject(['auditLog'])` 延迟注入 | ✅ 触发（⇒ **拒绝路径的审计行能落**，§7.169 的修法有效） |
+| 守卫的 `ctx.inject(['fileLogger'])` 延迟注入 | ✅ 触发 |
+| 宿主 logger 的导出器表 | 3 个，其中 1 个是**我们**的（`3:OURS`） |
+| 我们导出器**是否被调用** | ❌ 一次都没被调用（export() 计数探针 = 0） |
+
+⇒ 断点在我们自己的导出器**没被宿主 logger 调用**（不是守卫没装、也不是文件没写）。
+同一构建在 headless（CLI，cordis 4.0.5）稳定落盘；桌面宿主是 **cordis 4.1.0**
+（`ctx.logger` 的 shadow 语义与 4.0.5 差异很大，4.1.0 的 `LoggerService.exporters`
+是 Map、且每个 scope 各自持有 LoggerService）。**根因未定位**，留作遗留项；
+诚实记录：**桌面侧目前看不到 armed 行**（不影响拦截本身——拦截挂在
+`tools/pre-execute` waterfall 上，与日志无关）。
+
+### 五、这一轮的产出与状态
+
+- ✅ 边缘模式卡片回来了（`edge（边缘模式）｜ 可组合`）；
+- ✅ 桌面 profile 的 bundle 依赖换成新 scope 名（主人在桌面版里加载）；
+- ✅ 两处 preset 对齐宿主的改动已落码、已实机验证；
+- ❌ **轮次仍会失败**（断链③），按主人裁决另做「底座」；
+- ❌ armed 行在桌面侧不稳定（第四节，根因未定位）。
 
 ---
 
@@ -18696,6 +18579,123 @@ preset 名册：`edge（边缘模式）｜ order 5 ｜ 可组合`（**不 broken
 - 📌 宿主 `session/prompt` 的 strict codec 形状仍未解（8 种写法全被
   `gateway/input-invalid: wire field "request" failed boundary validation` 拒）⇒
   无法用宿主 RPC 跑活体对话。
+
+---
+
+## §7.178 收尾：产物一致性、临时脚本清理与两处凭据残留（2026-11-11）
+
+### 一、桌面 App 占用 installable ⇒ 重建走 in-place（会打断桌面 profile 的链接）
+
+`npm run build:installable` 重建 `dist/installable/dsh-edge-agent-desktop-safe` 时，
+**桌面 App 正在运行**会锁住该目录 ⇒ 脚本降级为 **in-place 同步**（不换目录 inode），
+并在末尾告警：
+
+```
+warning: dsh-edge-agent-desktop-safe is locked (running desktop App?) — in-place sync instead of atomic swap
+WARNING: profile "desktop" holds @dsh-edge/dsh-edge-agent.old-20261111005709 under
+         node_modules/.ignored/ — pnpm saw the link break and set the package aside.
+```
+
+⇒ 桌面 profile 的 pnpm 在链接断裂时把旧副本**挪进 `node_modules/.ignored/`**。
+实测结论：**活动链接没坏**（`node_modules/@dsh-edge/dsh-edge-agent` 仍指向
+`dist/installable/dsh-edge-agent-desktop-safe`，profile 的 `package.json` 依赖声明
+也在），被挪走的是**历史副本**。
+
+**正确做法**：先按 PID 停桌面 App ⇒ 重建（此时走原子 swap，不再 in-place）⇒ 再起桌面。
+本轮按此顺序做完，重启后实测：审计链里**只有一套** input-guard 钩子、preset 名册
+`edge｜可组合`、新建边缘模式会话 `input-guard.model.defaulted`（local-llm /
+qwen3.8-flash / source=local-pool）。
+
+### 二、`.ignored/` 里的搁置副本带着**明文凭据**
+
+被挪进 `node_modules/.ignored/` 的旧 scope 副本
+（`@deepseek-harness-edge-agent.old-20261110132654/dsh-edge-agent`）里含
+`config/edge.json`，**6 个明文 key 全在**（edgeApiKey / deepseekApiKey /
+dashscopeApiKey / alitokenplanApiKey / tavilyApiKey / bochaApiKey）。
+
+它们**不参与装载**（名字解析不到、目录名带 `.old-` 后缀、`.ignored` 以点开头），
+但属于凭据的额外落盘副本 ⇒ 应清。
+
+### 三、本轮清理
+
+- ✅ 仓库内 **77 个** `.tmp-*` 临时探针脚本全部删除（`rm --`，逐条列明目标）。
+  这些是查宿主 asar / 铸 cookie / 探 preset / 重建调用链用的一次性脚本，
+  不留档（查到的结论已写进 §7.175-§7.177 与源码注释）。
+- ⛔ **工作区外**的三处删除**做不了**：本机 `rm` 的受信任执行器只接受工作区内的
+  目标，对工作区外路径直接拒（`Windows trash execution rejected a target outside
+  the workspace`）。**不绕过**（不换 `Remove-Item`、不写内联脚本）—— 改为列出精确
+  路径交主人执行（见本节末尾）。
+
+### 四、要主人手动清理的三处（含凭据）
+
+| 路径 | 为什么该删 |
+|---|---|
+| `C:\Users\cheng\.dsh\profiles\desktop\node_modules\.ignored\@deepseek-harness-edge-agent.old-20261110132654` | 旧 scope 的搁置副本，**含 6 个明文 key** |
+| `C:\Users\cheng\.dsh\profiles\desktop\node_modules\.ignored\@dsh-edge\dsh-edge-agent.old-20261111005709` | 同一包的旧副本，无凭据但占空间、容易误认成「在用的那份」 |
+| `C:\Users\cheng\.dsh-edge-agent\desktop-cookies.json` | 本轮探针导出的**宿主鉴权 cookie**（可直接复用宿主会话） |
+
+另有 `C:\Users\cheng\.dsh-edge-agent\edge.json.bak-20261030T025751`
+（10-30 的配置备份，含旧凭据）—— 待主人定：留作回滚还是一并清掉。
+
+### 五、本轮最终状态
+
+- ✅ safe 变体（桌面 / npm 常态）复核通过，构建链 + **25 道门禁全绿**（exit 0）；
+- ✅ §7.175 / §7.176 已写进 PROGRESS，README / CHANGELOG / architecture /
+  plugin-mount-points / privacy-policy / load-into-local-dsh 的**过时表述已改正**
+  （原文写「`agent/request` 把 provider/model 改写到 LOCAL」，与现在的代码相反）；
+- ⏸ full 变体（`:21017` + `POST /v1/chat`）本轮不验证（主人改口径）；
+- ⏸ npm 首次发布 `@dsh-edge/dsh-edge-agent@0.1.1` 待主人授权 commit/push。
+
+### 六、主人卸载插件后的清理（2026-11-11 12:42 起）
+
+主人在桌面版 Plugins 里卸载了本插件，指令：「把剩余的也清理下」。实测与处置：
+
+**卸载流程自己清掉的**（不必再管）：
+
+| 项 | 状态 |
+|---|---|
+| 桌面 profile `package.json#dependencies` 里的本包 | 已移除 |
+| 桌面 profile `dsh.profile.bundles` 里的本包 | 已移除 |
+| 桌面 profile `pnpm-lock.yaml` 里的本包 | 已移除（lock 只剩 dsh-context + zod） |
+| `~/.dsh-edge-agent/`（运行期数据根：审计链 / ops log / storage / sessions / `edge.json` / `edge.json.bak-20261030T025751` / 探针 cookie） | **整个目录已被卸载流程删除** |
+
+**本轮我清掉的**（仓库内，`rm --` 可用）：
+
+- `config/edge.json`（本地配置，含 6 个明文 key）—— 主人裁决「三份全清」；
+- `dist/installable/dsh-edge-agent-desktop-safe/config/edge.json`（同一份配置的副本）；
+- `dist/installable/dsh-edge-agent-full/config/edge.json`（同上）；
+- `dist/dsh-edge-agent-{desktop-safe,full}-DEMO.tar.gz`（**内嵌真实明文 key**，
+  构建脚本自己就标了「勿分发」）；
+- `dist/.edge-config-from-env.selftest/`（门禁 selftest 的临时目录；里面的
+  `operator-secret-value` 是脚本写死的**假值**，不是真 key）。
+
+**清空本地配置后的行为变化**（如实记录）：`config/edge.example.json` 里
+`llm.local.baseUrl` 是**空串** ⇒ 按 §7.171 走 **DELEGATE**（`local-llm` 转发宿主
+profile 已配置的提供商），**不是**直连 `127.0.0.1:8080`（那是 `cordis.yml` 里
+独立运行时的行内默认值，shipped 模板不走那条）。⇒ 重装插件后：
+
+- provider 身份仍是 `local-llm` ⇒ §7.175 的 fail-closed 闸门照常放行；
+- §7.176 仍把边缘模式会话默认钉到 `local-llm`；
+- 但 wire 上真正跑的是**宿主 GUI 选中的模型**（桌面 profile 当前是
+  `qwen-token-plan-cn/deepseek-v4.1-flash`），不是先前的本地 token-plan 端点
+  （`https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1` +
+  `qwen3.8-flash`）。要回到那个端点，主人重建
+  `~/.dsh-edge-agent/edge.json` 并填回自己的 key 即可。
+
+**工作区外、本机 `rm` 拒收的**（受信任执行器只收工作区内目标 ⇒ 交主人手动执行）：
+
+```
+C:\Users\cheng\.dsh\profiles\desktop\node_modules\@dsh-edge                      （只剩一个指向 installable 的链接）
+C:\Users\cheng\.dsh\profiles\desktop\node_modules\@deepseek-harness-edge-agent.old-20261110132654  （空目录）
+C:\Users\cheng\.dsh\profiles\desktop\node_modules\.ignored\@deepseek-harness-edge-agent.old-20261110132654  （230 文件 / 1.65 MB，**含 6 个明文 key**）
+C:\Users\cheng\.dsh\profiles\desktop\node_modules\.ignored\@dsh-edge              （232 文件 / 1.72 MB，同包的旧副本）
+```
+
+**另一条值得记的机制**：桌面 App 正在运行时重建 `dist/installable/…` 会锁住目录
+⇒ 重建降级为 in-place 同步 ⇒ 桌面 profile 的 pnpm 认为链接断了 ⇒ 把旧副本挪进
+`node_modules/.ignored/`。**每次重建都可能多攒一份搁置副本**（每份都带一份
+`config/edge.json`）⇒ 重装前先扫一遍 `.ignored/`。
+
 
 ---
 

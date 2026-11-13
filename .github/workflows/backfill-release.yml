@@ -119,6 +119,11 @@ jobs:
       - name: Create GitHub release (safe + full tarballs)
         uses: softprops/action-gh-release@v2
         with:
+          # `tag_name` 是**必填**：workflow_dispatch 下 `github.ref` 是**分支** ref
+          # （refs/heads/main），而 action 要的是一个 **tag** —— 少了这一行它会报
+          # 「GitHub Releases requires a tag」（实测 run 43362399052 就是挂在这一步，
+          # 前面 build 与 verify 全绿）。
+          tag_name: ${{ inputs.tag }}
           name: ${{ inputs.tag }}
           body: |
             ${{ inputs.tag }}
