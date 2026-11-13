@@ -24177,3 +24177,39 @@ because `search()` reports that failure as a structured `WebError`）。
    tool result ≥1）不受影响，但 `tool result` 那条**依赖模型至少调一个工具** ——
    模型改调 `web_fetch` 或 `bash` 都行，可行；但这属于「要看真实 CI 跑一次」的
    事，本节**没有**实跑（需要真 `DEEPSEEK_API_KEY`）。
+### 十一、CI 实跑结果（补记，commit `128e5be` 推送后）
+
+CI run **`43382326976`**（main，`128e5be`）：**4 个 job 全绿**。
+
+| job | 结论 | 备注 |
+|---|---|---|
+| `build & verify` | success | compile → bundle → tarballs → npm stage → verify + lint 全过 |
+| `unit tests (vitest suite, §7.199)` | success | JSON reporter + 计数断言 + 覆盖率门禁 |
+| `unit tests (windows)` | success | Windows 侧单测 |
+| `ops log coverage (3 cases)` | success | 见下 |
+
+`ops log coverage` 这个 job 的**逐步**结论（这是本节改过的那一段）：
+
+| step | 结论 | 说明 |
+|---|---|---|
+| 生成 edge HTTP API 的临时 bearer（§7.221） | **success** | 新加的那步 ⇒ `node -e "crypto.randomBytes(24)"` 在 runner 上可用，且 `GITHUB_ENV` 写法生效 |
+| Start dsh web profile (background) | **success** | 新加的「`EDGE_API_KEY` 为空就报错退出」守卫**没有**触发 ⇒ 现场生成的令牌确实到了宿主进程 ⇒ `http-api` 拿到了 bearer 并正常起服 |
+| 检查 e2e 凭据 | success | 明说「缺 secret ⇒ 跳过回归」 |
+| **Run ops log coverage regression** | **skipped** | ⇒ `secrets.DEEPSEEK_API_KEY` **当前是空的** |
+
+⚠️ **由此得到一条关于仓库现状的事实**：这个仓库**当前没有配 `DEEPSEEK_API_KEY`
+secret** ⇒ `e2e-ops-log-coverage.sh` 那条云端回归**一直是被跳过的**（不是失败，
+也不是假绿 —— 门禁写明「明说并跳过」）。§7.221 之前它被跳过的原因是「两个 secret
+都不全」，现在只剩一个 secret 仍然为空 ⇒ **跳过的原因没变，但原因变了**。
+
+⇒ 操作者的两个动作（本节**没有**代做，因为它们要动仓库设置）：
+
+1. **`DSH_EDGE_API_KEY` 可以从仓库设置里删掉** —— 本轮起它不再被任何地方引用
+   （CI 已改成现场生成一把随机令牌）。
+2. **`DEEPSEEK_API_KEY` 想让云端回归真的跑起来，就要把它配上** —— 它的用途现在是
+   「给宿主当模型凭据」（runner 上没有登录账号、DELEGATE 没有转发目标），
+   **不是**网页搜索的凭据。
+
+⇒ 本节**没有**实跑那条云端回归（需要真 key），所以 §7.221 第十节第 3 条
+（`news` 用例的 `tool allow tool=web_search` 软断言在「两档都关」时必然不出现）
+**仍然只是推断，没有实跑证据**。
