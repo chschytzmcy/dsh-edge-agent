@@ -23895,3 +23895,90 @@ tone : blocked
   ⇒ **0.1.7 未发过**（不会撞 409）。
 
 ### 四、发布结果（发完之后追加）
+
+| 环节 | 结果 |
+|---|---|
+| npm publish | `npm run publish:npm -- --yes` EXIT=0 ⇒ `✅ Published package @dsh-edge/dsh-edge-agent@0.1.7`（cwd = `dist/.npm-stage`，pnpm 11.7.0，`--no-provenance`） |
+| registry 可见 | 轮询 `https://registry.npmjs.org/@dsh-edge%2Fdsh-edge-agent` ⇒ **110 秒后** `versions` 里出现 0.1.7；`dist-tags.latest = 0.1.7`；`dist.fileCount = 242`（与 0.1.6 同数 —— 这一版只改内容，不加不减文件） |
+| tag | `git tag -a v0.1.7` ⇒ `v0.1.7` → `00d9684`（发布提交）；`git ls-remote` 确认远端已有 |
+| CI（publish run） | run `43374821674`：`publish to npm` job **success**、`git release (safe + full tarballs)` job **success** |
+| GitHub Release | `v0.1.7` 已建（published `2026-11-13T05:52:45Z`），两个资产：`dsh-edge-agent-desktop-safe.tar.gz`（625653 B）、`dsh-edge-agent-full.tar.gz`（633011 B） |
+
+main 上对应的 CI run `43374513084`（`00d9684`）四个 job 全绿。
+
+三件值得记下来的事实：
+
+1. **npm job 的 `Publish` 步是 `skipped`，不是 `success`** —— decide 步看到 0.1.7
+   已经在 registry 里 ⇒ 走的还是 §7.202 说的「**本机先发、CI 只补发布面**」那条路
+   （两条发布路径共存，按设计工作，不是 bug）。要判「这版发没发出去」，**别看**那个步
+   是 success 还是 skipped，**看 registry 的 `versions`**。
+2. **registry 的传播仍然不是即时的**：publish 打印「✅ Published」之后，**110 秒**
+   `versions` 数组才出现新版本 ⇒ **推 tag 之前必须轮询到可见**。本轮确实是先轮询到
+   可见才推的 tag —— 若抢在可见之前推，CI 的 decide 步会判成「没发过」而再发一次
+   ⇒ npm 不允许覆盖 ⇒ 直接失败。
+3. **本机发布走 `--no-provenance`**（本机不是 CI ⇒ provenance 需要 OIDC，拿不到）
+   —— 与 §7.215 同一口径。
+
+### 五、发布包的内容核验（**决定性**的那种核验）
+
+registry 上的包可能来自**任何一次构建** ⇒ 只有「**把那一版下载下来拆开核**」才是决定性的
+（§7.217 的同款纪律）。本轮核了三条通道。
+
+#### 5.1 npm 包（`npm pack @dsh-edge/dsh-edge-agent@0.1.7` ⇒ 解包）
+
+| 核验项 | 结果 |
+|---|---|
+| `package.json#version` | `0.1.7` ✓ |
+| 包名 | `@dsh-edge/dsh-edge-agent` ✓ |
+| 文件数 | **242**（= 0.1.6 的 242）✓ |
+| 不含 `scripts/` | ✓ |
+| 不含 `devDependencies` | ✓ |
+| 不含 `config/edge.json` | ✓（用户配置不该出货） |
+| `lib/dsh-adapter/provider-realm.js`（§7.214 的模块） | 在 ✓ |
+
+**§7.219 的三个键，逐键核**（把包里的 `lib/client.js` 的 EN / ZH 两张字典抽出来对）：
+
+| 键 | npm 0.1.6 | **npm 0.1.7** |
+|---|---|---|
+| `verdict.blocked`（ZH） | **无此键** | **`本轮：已拦截 —— 未作答`** |
+| `verdict.blocked`（EN） | **无此键** | `This turn: blocked — not answered` |
+| `flow.lbl.realm`（ZH） | **无此键** | `realm` |
+| `flow.lbl.realmSource`（ZH） | **无此键** | **`判定依据`** |
+| `flow.route.kept`（ZH） | `按原选择` | `按原选择`（本节之前就有） |
+| 主题类 `.dsh-edge-verdict--blocked` | 无 | **有** ✓ |
+
+⇒ **严格档的面板修复确实在发布包里**，而且 0.1.6 那三个键**确实不存在**（自带对照组）
+⇒ §7.219 第七节记的那条「0.1.6 不含本修复」到此**结清**。
+
+#### 5.2 git release 通道的两个 tar 包
+
+从 GitHub Release 把两个资产**下载下来解开**再核（不是看构建日志）：
+
+| 变体 | `package.json#version` | 含 `verdict.blocked` | ZH 的 `verdict.blocked` |
+|---|---|---|---|
+| desktop-safe | `0.1.7-desktop-safe` | ✓ | `本轮：已拦截 —— 未作答` |
+| full | `0.1.7-full` | ✓ | `本轮：已拦截 —— 未作答` |
+
+⇒ **两条出货通道都带上了这次修复。**
+
+### 六、核验过程中踩到的两个坑（留给下一次做发布核验的人）
+
+1. **esbuild 会把非 ASCII 转义成大写 `\uXXXX`** ⇒ 直接在 bundle 里 grep 中文原文
+   是**搜不到**的（会误判成「中文表根本没进 bundle」）。解法：按十六进制码位搜，或把
+   `\uXXXX` 反解回字符再比。
+2. **抽对象字面量不能用「下一个 `};`」当右边界** —— 那个对象往往以 `}` 收尾（`;` 在
+   外头），切片会一路吞进**下一个**对象 ⇒ 本轮一度把 EN 表和 ZH 表认成**同一张**
+   （两张都判成「含中文」），差点得出「EN 表里写的是中文」的错误结论。
+   ⇒ 改成**括号配对**抽取，并且**先自证「两张表抽对了」**（EN 含 `as selected`、
+   ZH 含「按原选择」）再往下核。
+   ⇒ 通用形式：**当一个核验脚本说「产物有问题」时，先怀疑脚本自己。**
+   本轮两次「FAIL」都是脚本自己的 bug（一次是抽表边界、一次是拿变体包的版本号去比
+   裸版本号），**不是产物的问题** —— 改完脚本，21 条断言全 PASS。
+
+### 七、这一节**没有**做的事
+
+- **没有**改任何产品行为：这一节只做**版本 bump + 发版 + 核验**。
+- **没有**改 `input-guard`、审计事件、默认档语义、严格档默认值。
+- **没有**动 2FA / trusted publisher 那条线（主人明说先不做，等指示）。
+- **没有**在本机 `pnpm add` 装 0.1.7 到主人的 `desktop` profile —— 那会动主人的运行环境，
+  **本节只在隔离副本之外做了「下载拆开核」**，没碰主人的 profile。
