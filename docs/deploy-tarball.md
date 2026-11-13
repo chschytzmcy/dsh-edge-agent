@@ -532,7 +532,7 @@ if (/^https?:\/\//i.test(spec)) {
 
 ```
 git tag v<version>  →  publish.yml
-                    ├─ job `npm`     → 构建 → verify:build（31 道门禁）→ pnpm publish
+                    ├─ job `npm`     → 构建 → verify:build（32 道门禁）→ pnpm publish
                     └─ job `release` → 构建 → verify:tarball → 建 Release，挂两个 tar 包
 ```
 

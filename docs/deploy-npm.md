@@ -385,7 +385,7 @@ npm run publish:npm -- --yes --tag     # 发完打 v<version> tag（再 git push
 1. **工作树必须干净**（`--allow-dirty` 可强行越过）—— 发出去的必须是 git 里有的东西；
 2. **registry 预检**：这个版本发过没有？发过 ⇒ 立刻停（不浪费一次构建 + 门禁）；
 3. **认证预检**（仅真发时）：`NPM_TOKEN` / `NODE_AUTH_TOKEN` / `~/.npmrc` / 仓库
-   `.npmrc` 里有没有 token？**没有就立刻停**（实测 3 秒）—— 不能等构建链 + 31 道
+   `.npmrc` 里有没有 token？**没有就立刻停**（实测 3 秒）—— 不能等构建链 + 32 道
    门禁跑完才在 `pnpm publish` 那一步才发现没登录。
    ⚠️ **两种 token 行都要认**（§7.185 实测踩过）：`npm login --auth-type=web` 写进
    `~/.npmrc` 的是**带 registry 前缀**的 `//registry.npmjs.org/:_authToken=…`；只认
@@ -393,7 +393,7 @@ npm run publish:npm -- --yes --tag     # 发完打 v<version> tag（再 git push
    预检却报「没找到凭据」）。自证：`npm run publish:npm -- --selftest`；
 4. **canonical 构建链**（`compile → typecheck:client → build:client → build:installable
    → pack:tarball → stage:npm`）—— 与 CI **一字不差**；
-5. **全部门禁**（`verify:build`，**31 项**，验的是**产物**）；
+5. **全部门禁**（`verify:build`，**32 项**，验的是**产物**）；
 6. **`pnpm publish --dry-run`** —— **默认不发**，只把「将要发出去的东西」摊开给你看。
 
 ⇒ **不带 `--yes` 永远不会碰 registry。** 这是这个脚本的默认值，也是它能被信任的原因。
