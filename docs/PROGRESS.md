@@ -24631,7 +24631,24 @@ x the two halves disagree on what DSH_EDGE_STORAGE_ROOT means:
 - 新增单测 **5 条**全过；全量：**87 个测试文件 / 1682 条通过 / 2 条跳过**
   （比本节之前多 1 个文件 / 5 条；CI 的条数门禁是 `TOTAL >= 600` 的**下限**，不
   会被新文件顶红）。
-- lint 与全链 32 道门禁：见本节提交后的 CI 实跑。
+- lint：**0 error / 60 warning**（与本节之前一致）。
+- 全链 32 道门禁：**EXIT=0**（含 `verify:env-bridge` 第 10 道、
+  `verify:progress-sections OK (117 top-level sections, refs intact)`、
+  `verify:doc-gate-count OK (链内门禁 : 32 道)`）。
+  ⚠️ 第一次跑的时候在第 29 道 `verify:progress-sections` 红了 —— 原因只有
+  一个：**本节当时还没写进 `docs/PROGRESS.md`**，而代码与文档里已经引用了
+  §7.223 ⇒ 门禁正确地抓住了「引用了一个不存在的章节」。本节落盘后复跑全绿。
+- **CI 实跑**：run **`43390208027`**（main，`7573d8a`）⇒ **4 个 job 全绿**：
+
+  | job | 结论 |
+  |---|---|
+  | `build & verify` | success |
+  | `unit tests (vitest suite, §7.199)` | success |
+  | `unit tests (windows)` | success |
+  | `web profile smoke (bundle mounts + boots)` | success |
+
+  ⇒ 最后那条说明**改了 `cordis.yml` 之后，出厂补丁链仍然是通的**（它不碰
+  `cordis.yml` 的那些行，但 `lib/` 产物与宿主挂载链确实重新验了一遍）。
 
 ### 十、这一节**没有**做的事
 
