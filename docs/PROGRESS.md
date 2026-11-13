@@ -24676,3 +24676,43 @@ x the two halves disagree on what DSH_EDGE_STORAGE_ROOT means:
 3. **没有**核对 `install.sh` 是否给 `DSH_EDGE_STORAGE_ROOT` 写过值 —— 全仓扫过，
    `install.sh` 里**没有**这个变量（唯一命中是 `docs/load-into-local-dsh.md` 的
    探针配方，已同步）。
+
+---
+
+## §7.224 切版到 0.1.8 并构建验证（2026-11-14）
+
+> 主人指示：「构建新版本验证下」。
+
+### 一、这一版装什么
+
+| § | 内容 | 对使用者的影响 |
+|---|---|---|
+| §7.221 | 去掉 DeepSeek 搜索档，网页搜索跟随**所配置的云端模型** | ⚠️ **默认配置下 edge 不再有网页搜索**（两档默认关 ⇒ 工具层 `web_search` 整个不提供） |
+| §7.222 | 第一阶段减法：删掉「写了不生效」的配置 + 22 个死文件 | `edge.json` 少 6 个无效字段；发布包文件数 **242 → 179** |
+| §7.223 | 一个 env 名字只对应一个配置字段 | `DSH_EDGE_STORAGE_ROOT` 含义收紧；开发 harness 的路径派生归位 |
+
+⇒ 这三个 § **一个都没发过**（registry 上 `versions` 到 `0.1.7` 为止）⇒ 都在这一版里。
+
+### 二、版本 bump 与 CHANGELOG 定版
+
+- `package.json#version`：`0.1.7` → **`0.1.8`**（**唯一**的版本事实源；
+  `scripts/verify-tag-version.mjs` 守 tag↔版本一致）。
+- **`pnpm-lock.yaml` 不用动** —— 实测它的根 importer（`.`）只记 devDependencies，
+  **不带本包版本** ⇒ 升版不碰锁文件。
+- `CHANGELOG.md`：把 `## [Unreleased]` 里累积的 §7.221 – §7.223 切成
+  **`## [0.1.8] — 2026-11-14`**，顶部留一个空的 `## [Unreleased]`。
+  （§7.220 的同款做法：定版时顺手改掉会读成「现在还成立」的陈述 —— 本轮扫过，
+  **没有**「还没进 npm / 等下一版」这类需要改的句子。）
+- **registry 预检**：`versions` = `0.0.0-stage, 0.1.1 … 0.1.7`，`dist-tags.latest`
+  = `0.1.7`（`fileCount` 242）⇒ **0.1.8 未发过** ⇒ 不会撞 409。
+
+### 三、这一轮**只构建、不发布**
+
+主人这次说的是「构建新版本**验证**下」⇒ 走发布脚本的**安全默认**：
+
+```bash
+npm run publish:npm          # 构建 + 全部门禁 + dry-run
+```
+
+脚本设计上「**不带 `--yes` 永远不会碰 registry**」（`scripts/publish-npm.mjs`
+的文件头第 5 条）⇒ 本轮**没有**发 npm、**没有**推 tag、**没有**建 GitHub Release。
