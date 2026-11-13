@@ -56,11 +56,19 @@ export DSH_BIN="/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cl
 ```bash
 cd /Users/<user>/cy/code/dsh-edge-agent
 pnpm install
-pnpm run compile
+pnpm run compile           # lib/（Node 半侧）
+pnpm run build:client      # lib/client.js（浏览器半侧）
+pnpm run build:installable # dist/installable/<变体>/（§3.2 要用的那份）
 ```
 
 > 本机若 `pnpm` 不在 PATH，可用 DSH 自带 pnpm：
 > `/Users/<user>/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/pnpm/bin/pnpm.mjs`
+
+> **为什么不能只跑 `compile`**：① `compile` 会**清空** `lib/`，浏览器半侧
+> `lib/client.js` 是**另一步** `build:client` 产出的 ⇒ 只跑 compile 的目录里没有它
+> ⇒ 桌面侧的症状是**静默**的（Edge tab 直接不出现，日志里什么都不说）；②
+> `build:installable` 缺 `lib/client.js` 会**直接让构建失败**（自带检查，见
+> `scripts/rebuild-installable.mjs`）。
 
 ## 3. 建一个隔离 profile（不碰 ~/.dsh/profiles/desktop）
 
@@ -97,16 +105,33 @@ EOF
 printf '[]\n' > "$DSH_HOME/profiles/$PROFILE/cordis.yml"
 printf '[]\n' > "$DSH_HOME/profiles/$PROFILE/cordis.patch.yml"
 
-# 3.2 嵌套 bundle：package.json + lib + bundle patch
-cp "$REPO/package.json" "$PKG/package.json"
-cp "$REPO/cordis.patch.yml" "$PKG/cordis.patch.yml"
-cp -R "$REPO/lib" "$PKG/lib"
+# 3.2 嵌套 bundle：直接用**构建好的变体目录**
+#     变体目录里的 package.json 与它声明的补丁文件是**配套**的 ——
+#     `dsh.bundle.patch` 指向的那两个文件就在目录里 ⇒ 不会出现
+#     「指针在而文件缺」的 boot 硬失败（§7.59 / dev-note §Bug3）。
+cp -R "$REPO/dist/installable/dsh-edge-agent-full/." "$PKG/"
 
 # 3.3 让 bundle 的 @deepseek-ai/* import 能解析
 #     开发态快捷方式：复用本仓已安装的 0.2.1-rc.2 依赖。
 ln -s "$REPO/node_modules/@deepseek-ai" \
       "$DSH_HOME/profiles/$PROFILE/node_modules/@deepseek-ai"
 ```
+
+> **⚠️ 不要手抄仓库根的 `package.json`**（这是本节此前的写法，**它是坏的**）。
+>
+> 仓库根清单的 `dsh.bundle.patch` 声明的是 **safe** 变体的两个补丁
+> （`./cordis.desktop-safe.patch.yml` + `./presets/edge.desktop-safe.patch.yml`），
+> 而手抄那一步最多只 `cp` 了 **full** 的 `cordis.patch.yml` ⇒ 嵌套目录里
+> **缺**清单声明要读的那两个文件 ⇒ 宿主启动时
+> `failed to read overlay …ENOENT` ⇒ **boot 硬失败**（不是「静默一个都不 mount」，
+> §7.59 实测）。变体目录则由 `scripts/rebuild-installable.mjs` 统一产出，
+> 清单的 `dsh.bundle.patch` / `exports` / `files` **按变体派生**（§7.209）
+> ⇒ 声明与文件必然配套。
+>
+> 这里用 **full** 变体：§8 的表写着「full = 和独立 edge profile 一致，适合专用
+> profile」—— 而 §3 这个探针 profile 正是专用隔离 profile（不碰
+> `~/.dsh/profiles/desktop`）。只想在日常桌面里用隐私管线，请用 **desktop-safe**
+> 变体（见 §8）。
 
 > `@deepseek-ai/dsh-base` 由 DSH app 自带（app.asar）解析；本仓不复制它。
 > 生产部署应走 `install.sh` 的 pnpm 链，而不是 symlink。

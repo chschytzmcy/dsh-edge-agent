@@ -22992,3 +22992,66 @@ verify（如再有精力的话）」—— **一直没做**。
 - **没有**对「local llm 指向云端」加任何特殊处理。
 
 ---
+
+## §7.212 修掉 `docs/load-into-local-dsh.md` §3 那条**跑不通**的手工 recipe（2026-11-13）
+
+> 这是 §7.209 六节记下的第二条既有事实，本轮**修掉了**（只改文档，没改代码）。
+
+### 一、根因：清单与文件**不是配套的**
+
+旧 recipe（§3.2）：
+
+```bash
+cp "$REPO/package.json" "$PKG/package.json"         # ← 仓库根清单
+cp "$REPO/cordis.patch.yml" "$PKG/cordis.patch.yml" # ← full 的宿主补丁
+cp -R "$REPO/lib" "$PKG/lib"
+```
+
+⇒ 嵌套目录里**缺**清单声明要读的那两个文件（实测 2026-11-13）：
+
+| 仓库根清单的 `dsh.bundle.patch` | 嵌套目录里有吗 |
+|---|---|
+| `./cordis.desktop-safe.patch.yml` | **没有** ❌ |
+| `./presets/edge.desktop-safe.patch.yml` | **没有** ❌ |
+
+⇒ 宿主启动时读 `dsh.bundle.patch` ⇒ `failed to read overlay …ENOENT` ⇒
+**boot 硬失败**（§7.59 实测口径；dev-note §Bug3 记的就是同一个形状）。
+
+⇒ 根因一句话：**仓库根清单是 safe 变体的清单，手抄 recipe 却只拷了 full 的一个补丁文件。**
+（对照实测：full 变体清单 `dsh.bundle.patch` = `./cordis.patch.yml` +
+`./presets/edge.patch.yml`，而这两个文件**都在变体目录里** ⇒ 变体目录是配套的，
+根清单 + 手抄拼装不是。）
+
+### 二、修法：直接用**构建好的变体目录**
+
+```bash
+cp -R "$REPO/dist/installable/dsh-edge-agent-full/." "$PKG/"
+```
+
+- 变体目录由 `scripts/rebuild-installable.mjs` 统一产出：清单的 `dsh.bundle.patch` /
+  `exports` / `files` **按变体派生**（§7.209）⇒ 声明与文件**必然配套**；
+- §2 补上 `build:client` 与 `build:installable` 两步（此前只跑 `compile`）：
+  `compile` 会**清空** `lib/` 而浏览器半侧 `lib/client.js` 是**另一步**产出的
+  ⇒ 只跑 compile 的目录缺它（桌面侧症状是**静默**的：Edge tab 不出现）；
+  `build:installable` 缺它会**直接让构建失败**（脚本自带检查）；
+- 这里用 **full** 变体：§3 这个探针 profile 是**专用隔离** profile（不碰
+  `~/.dsh/profiles/desktop`）⇒ 与 §8 的表一致（full = 和独立 edge profile 同款行为）；
+  日常桌面请用 **desktop-safe**；
+- 文档里补了一句「**不要手抄仓库根的 `package.json`**」并写清为什么。
+
+⇒ 改完后 §3 与 §8.1 指向**同一份产物**（`dist/installable/<变体>/`），不再有两条
+各写各的拼装路径。
+
+### 三、这一节**没有**做的事
+
+- **没有**改任何**代码**（产物侧的配套性由 `verify:installable` 第 2d 项 +
+  `rebuild-installable.mjs` 保证，本轮只改文档）；
+- **没有**给「文档里的手工 recipe」加门禁 —— 诚实的口径是：**这类 bug 机器兜不住**。
+  旧 recipe 引用的 `$REPO/cordis.patch.yml` **确实存在**，所以任何「文档提到的路径
+  必须存在」式的检查都**抓不到它**；真正错的是**语义**（清单与文件不是配套的）。
+  ⇒ 能兜住这类 bug 的只有「文档里的 recipe 直接执行一遍」，代价与收益不匹配
+  （要真起一个 DSH profile），本轮**不做**；
+- **没有**动 §7.209 六节记的**另一条**既有事实（`presets/edge.patch.yml` 缺
+  `edge-context-view` 行 ⇒ 改它 = 改 full 变体语义 ⇒ 等主人拍板）。
+
+---
